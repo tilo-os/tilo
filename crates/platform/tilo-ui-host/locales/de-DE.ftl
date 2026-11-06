@@ -20,16 +20,10 @@ tilolang-ask-always = Immer erlauben
 tilolang-ask-denied = Diese Änderung ist hier nicht erlaubt.
 tilolang-ask-needs-approval = Diese Änderung muss zuerst bestätigt werden.
 tilolang-embed-source = Block
-tilolang-did-renamed = hat dies umbenannt in
-tilolang-did-edited = hat { $field } bearbeitet
 tilolang-did-changed = hat { $field } geändert
-tilolang-did-completed = hat dies erledigt
-tilolang-did-reopened = hat dies wieder geöffnet
 tilolang-did-created = hat dies erstellt
 tilolang-did-removed = hat dies entfernt
 tilolang-did-moved = hat dies verschoben nach
-tilolang-did-moved-under = hat dies untergeordnet
-tilolang-did-moved-top = hat dies auf die oberste Ebene verschoben
 tilolang-did-taken-out = hat dies entfernt aus
 tilolang-did-assigned = hat dies zugewiesen an
 tilolang-did-unassigned = hat die Zuweisung aufgehoben
@@ -53,6 +47,8 @@ tilolang-all = Alle { $kind }
 # Wer eine Zeile des Verlaufs geschrieben hat: die Person selbst.
 tilolang-you = Du
 tilolang-empty = Noch nichts hier
+# What a list says when it lists none of its kind's items: "Noch keine Notizen".
+tilolang-empty-kind = Noch keine { $kind }
 # What a list's entry at its end says while it is empty.
 tilolang-add = Etwas hinzufügen
 

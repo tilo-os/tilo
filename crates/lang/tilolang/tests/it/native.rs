@@ -21,8 +21,8 @@ fn ok(body: &str) {
 }
 
 const NOTES: &str = r#"type Note {
-    title: Text (title)
-    body: Text (body)
+    title: Text
+    body: Text
     pinned: Bool = false
 }
 
@@ -136,15 +136,8 @@ fn fields_variants_and_the_app_carry_what_they_are() {
     let m = notes().meta;
     assert_eq!(m.icon.as_deref(), Some("bookmark"));
     let note = m.types.iter().find(|t| t.name == "Note").expect("Note");
-    let role = |f: &str| {
-        note.fields
-            .iter()
-            .find(|x| x.name == f)
-            .and_then(|x| x.role.as_ref().map(tilolang::types::FieldRole::text))
-    };
-    assert_eq!(role("title").as_deref(), Some("title"));
-    assert_eq!(role("body").as_deref(), Some("body"));
-    assert_eq!(role("pinned"), None);
+    let names: Vec<&str> = note.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, vec!["title", "body", "pinned"]);
     let filter = m
         .enums
         .iter()
@@ -190,7 +183,7 @@ fn enum_variants_carry_their_icon() {
     assert!(imported.is_ok(), "{:?}", imported.err());
 }
 
-const PIN: &str = "type Note {\n    title: Text (title)\n    pinned: Bool = false\n}\n/// Pin the note.\naction toggle_pin(n: Note, pinned: Bool = not n.pinned) (label: if n.pinned { \"Unpin\" } else { \"Pin\" }, icon: if n.pinned { .bell_off } else { .pin }, on: n.pinned) {\n    n.pinned = pinned\n}";
+const PIN: &str = "type Note {\n    title: Text\n    pinned: Bool = false\n}\n/// Pin the note.\naction toggle_pin(n: Note, pinned: Bool = not n.pinned) (label: if n.pinned { \"Unpin\" } else { \"Pin\" }, icon: if n.pinned { .bell_off } else { .pin }, on: n.pinned) {\n    n.pinned = pinned\n}";
 
 // An action's label and icon may follow its subject, and `on:` says it is pressed: the parts
 // that depend on the subject become a hidden view of it, one `present` node; the static label
@@ -273,7 +266,7 @@ fn a_view_of_one_item_draws_that_items_row() {
     // The row is the view's whole body, so the parameters after the item are what the place
     // around the row says: a list grouped by a day gives the day, and the row leaves it out.
     ok(r#"type Note {
-    title: Text (title)
+    title: Text
     pinned: Bool = false
 }
 
@@ -309,7 +302,7 @@ fn a_view_of_one_item_that_draws_more_than_its_row_is_no_row() {
     expect(
         "E097",
         r"type Note {
-    title: Text (title)
+    title: Text
 }
 
 type Notebook {
@@ -348,7 +341,7 @@ fn row_views_are_in_the_metadata() {
 fn the_views_a_window_switches_between_are_declared() {
     let c = crate::common::compile_body(
         r#"type Note {
-    title: Text (title)
+    title: Text
 }
 
 root Notebook
@@ -386,7 +379,7 @@ views note_cards, note_board for Notebook"#,
     // Without the declaration, the type's views are all helpers and no bar switches them.
     let plain = crate::common::compile_body(
         r#"type Note {
-    title: Text (title)
+    title: Text
 }
 
 root Notebook
@@ -418,7 +411,7 @@ fn a_views_declaration_names_the_types_own_views_and_its_default_one() {
     expect(
         "E018",
         r"type Note {
-    title: Text (title)
+    title: Text
 }
 
 root Notebook
@@ -447,7 +440,7 @@ views note_cards, note_page for Notebook",
     expect(
         "E018",
         r#"type Note {
-    title: Text (title)
+    title: Text
 }
 
 root Notebook
@@ -473,7 +466,7 @@ view note_board(nb: Notebook) {
 views note_board for Notebook"#,
     );
     ok(r#"type Note {
-    title: Text (title)
+    title: Text
 }
 
 root Notebook
@@ -658,14 +651,17 @@ fn e091_unknown_icons() {
 }
 
 #[test]
-fn e092_field_markers() {
-    expect("E092", "type T {\n    n: Int (title)\n}");
+fn a_field_is_its_name_its_type_and_its_default() {
+    // What a record is shown by comes from its type's `row view` and the app's own views; a
+    // field says nothing of it.
+    expect("E003", "type T {\n    n: Int (title)\n}");
+    expect("E003", "type T {\n    n: Int (done)\n}");
+    expect("E003", "type T {\n    n: Option<Date> (time of: due)\n}");
     expect(
-        "E092",
-        "type T {\n    a: Text (title)\n    b: Text (title)\n}",
+        "E003",
+        "type T {\n    n: Option<std.Repeat> (repeats: due)\n}",
     );
-    expect("E092", "type T {\n    a: Text (heading)\n}");
-    ok("type T {\n    a: Text (title)\n    b: Text merge register (body) = \"x\"\n}");
+    ok("type T {\n    a: Text\n    b: Text merge register = \"x\"\n}");
 }
 
 #[test]
@@ -963,7 +959,7 @@ fn a_date_field_binds_a_date() {
     );
 }
 
-const DATED: &str = "type Task {\n    title: Text (title)\n    due: Option<Date> = .none\n    start: Date = Date(\"2026-10-24\")\n    done_at: Option<Time> = .none\n}\n";
+const DATED: &str = "type Task {\n    title: Text\n    due: Option<Date> = .none\n    start: Date = Date(\"2026-10-24\")\n    done_at: Option<Time> = .none\n}\n";
 
 #[test]
 fn dates_and_times_are_nominal_iso_text() {
@@ -1044,7 +1040,7 @@ fn dated_props_say_what_they_are() {
 #[test]
 fn an_action_whose_on_is_its_subjects_field_says_which_state_it_toggles() {
     let src = "app so.tilo.todo \"Todo\"\n\
-        type Todo {\n    title: Text (title)\n    done: Bool = false\n    starred: Bool = false\n}\n\
+        type Todo {\n    title: Text\n    done: Bool = false\n    starred: Bool = false\n}\n\
         action check(item: Todo, done: Bool = not item.done) (icon: .check, on: item.done) {\n    item.done = done\n}\n\
         action flip(item: Todo, starred: Bool = not item.starred) (icon: .check, on: not item.starred) {\n    item.starred = starred\n}\n\
         action star(item: Todo) (icon: .plus) {\n    item.starred = true\n}\n";
@@ -1067,7 +1063,7 @@ fn an_action_whose_on_is_its_subjects_field_says_which_state_it_toggles() {
 fn an_action_carries_the_shortcut_it_declares() {
     let m = compile_body(
         r#"type Thread {
-    subject: Text (title)
+    subject: Text
 }
 action archive(t: Thread) (icon: .archive, key: "e") {}
 action reply(t: Thread) (key: "Ctrl+Enter") {}
@@ -1088,7 +1084,7 @@ action nothing(t: Thread) {}"#,
     for wrong in [r#"key: "ee""#, r#"key: "Entr""#, r#"key: "Ctrl+""#] {
         let said = format!(
             r"type Thread {{
-    subject: Text (title)
+    subject: Text
 }}
 action a(t: Thread) ({wrong}) {{}}"
         );
@@ -1102,10 +1098,10 @@ action a(t: Thread) ({wrong}) {{}}"
 #[test]
 fn two_actions_of_one_subject_share_no_shortcut() {
     let thread = r"type Thread {
-    subject: Text (title)
+    subject: Text
 }
 type Draft {
-    subject: Text (title)
+    subject: Text
 }";
     expect(
         "E090",

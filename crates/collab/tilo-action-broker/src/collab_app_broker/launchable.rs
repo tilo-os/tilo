@@ -618,6 +618,17 @@ mod tests {
         workspace
     }
 
+    /// An agent inside a turn the workspace owner's message caused, in
+    /// `workspace`.
+    fn agent_of(workspace: &str) -> Caller {
+        Caller::agent_turn(
+            "scribe",
+            "owner",
+            tilo_action_policy::turn::Turn::new("chat/workspace/channels/1", "m1"),
+        )
+        .in_workspace(workspace.to_owned())
+    }
+
     /// A broker session hosting `workspace`, and its workspace.
     fn broker(workspace: &Workspace) -> (Arc<AppBrokerState>, String) {
         let (state, workspace, _) = broker_with_fanout(workspace);
@@ -806,7 +817,7 @@ mod tests {
         let mut notes_stream = state.capture_invocations_for_test(5);
         let (streams, launches, places) = app_comes_up_placed(&state, 8);
 
-        let agent = Caller::local_agent("scribe").in_workspace(&workspace);
+        let agent = agent_of(&workspace);
         invoke(&state, &agent, "5", "write", None).expect("the agent works in Notes");
         assert_eq!(
             notes_stream.try_recv().expect("delivered").actor,
@@ -851,7 +862,7 @@ mod tests {
         state.launchable.retain(&surface(7, &workspace));
         let (streams, launches, places) = app_comes_up_placed(&state, 8);
 
-        let agent = Caller::local_agent("scribe").in_workspace(&workspace);
+        let agent = agent_of(&workspace);
         let provider = offered_provider(&state, &agent, "new-window")
             .expect("the closed app's action is offered to the agent");
         invoke(&state, &agent, &provider, "new-window", None).expect("admitted once launched");
@@ -926,7 +937,7 @@ mod tests {
             beside_chat,
             "the press proved one open; Chat's next one, on its own, opens beside it"
         );
-        let agent = Caller::local_agent("scribe").in_workspace(&workspace_id);
+        let agent = agent_of(&workspace_id);
         assert_eq!(
             state.launch_place(&agent, &workspace_id, None),
             LaunchPlace::Aside,
@@ -1051,7 +1062,7 @@ mod tests {
             .expect("surfaces")
             .insert(5, surface(5, &workspace));
         let mut app = state.capture_invocations_for_test(5);
-        let agent = Caller::local_agent("scribe").in_workspace(&workspace);
+        let agent = agent_of(&workspace);
 
         let page = state
             .action_query(&agent, &CatalogueQuery::default())

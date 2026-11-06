@@ -38,18 +38,54 @@ use super::{DesktopHandle, Shared};
 
 impl DesktopHandle {
     /// The windows whose bar was asked for its menu since the last call — a
-    /// secondary click — in the order they asked.
-    pub fn take_tab_menus(&self) -> Vec<TabId> {
+    /// secondary click — in the order they asked, each with the place on the
+    /// desk the person pressed, where the menu stands.
+    pub fn take_tab_menus(&self) -> Vec<(TabId, ui::kurbo::Point)> {
         std::mem::take(&mut self.shared.borrow_mut().menus)
     }
 }
 
-/// The tabs whose bar asked for its menu, in the row's window order.
-pub(super) fn take_asked_menus(row: &mut ui::widget::GroupRow) -> Vec<TabId> {
+/// The tabs whose bar asked for its menu and where it was pressed, in the
+/// row's window order.
+pub(super) fn take_asked_menus(row: &mut ui::widget::GroupRow) -> Vec<(TabId, ui::kurbo::Point)> {
     row.groups
         .iter_mut()
-        .filter_map(|group| group.take_tab_context_menu().map(|(tab, _)| tab))
+        .filter_map(ui::widget::WindowGroup::take_tab_context_menu)
         .collect()
+}
+
+/// The window a menu is on, named as the person knows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowSubject {
+    pub title: String,
+    pub app: Option<String>,
+}
+
+impl DesktopHandle {
+    /// The window `tab` shows, named as the person knows it: its title and
+    /// the app that paints it.
+    #[must_use]
+    pub fn window_subject(&self, tab: TabId) -> Option<WindowSubject> {
+        let shared = self.shared.borrow();
+        let tab = shared
+            .tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|shown| shown.id == tab)?;
+        let app = match &tab.tile {
+            TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
+                Some(app_id.clone())
+            }
+            _ => None,
+        };
+        Some(WindowSubject {
+            title: tab.title.clone(),
+            app,
+        })
+    }
 }
 
 pub const REVEAL: &str = "window-reveal";

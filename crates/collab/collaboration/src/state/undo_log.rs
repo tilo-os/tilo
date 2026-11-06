@@ -336,12 +336,17 @@ impl UndoLog {
             && (presented.is_some() || reach.device.wrote(&version.actor))
     }
 
-    /// The step a change is taken back with: the step this session closed
-    /// it in, else the step its entry recorded.
-    fn step_of(&self, version: &Version) -> Option<String> {
-        match self.presented.get(&version.hash) {
-            Some(presented) => Some(format!("session:{}", presented.step)),
-            None => steps::gesture_of(version),
+    /// Whether `next` is a change of the step `last` is in: the step this
+    /// session closed both in, else the step their entries record (one
+    /// gesture, or one action's invocation).
+    fn joins(&self, last: &Version, next: &Version) -> bool {
+        match (
+            self.presented.get(&step_key(last)),
+            self.presented.get(&step_key(next)),
+        ) {
+            (Some(last), Some(next)) => last.step == next.step,
+            (None, None) => steps::same_step(last, next),
+            _ => false,
         }
     }
 
@@ -402,7 +407,7 @@ impl UndoLog {
             .steps(
                 doc,
                 &|version| self.claims(version, author, instance, &open),
-                &|version| self.step_of(version),
+                &|last, next| self.joins(last, next),
                 1,
             )
             .into_iter()
@@ -473,7 +478,7 @@ impl UndoLog {
             .steps(
                 doc,
                 &|version| self.claims(version, None, None, &open),
-                &|version| self.step_of(version),
+                &|last, next| self.joins(last, next),
                 usize::MAX,
             )
             .len()
@@ -497,7 +502,7 @@ impl UndoLog {
             .steps(
                 doc,
                 &|version| self.claims(version, None, None, &open),
-                &|version| self.step_of(version),
+                &|last, next| self.joins(last, next),
                 usize::MAX,
             )
             .iter()

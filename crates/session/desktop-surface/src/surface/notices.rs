@@ -63,6 +63,9 @@ struct NoticeState {
     /// The host shows the banners elsewhere (an app of their own); the
     /// surface shows only the centre.
     banners_elsewhere: Cell<bool>,
+    /// The notification centre is open: no banner stands over it, and what
+    /// arrives while it is open goes into it rather than onto the desk.
+    centre_open: Cell<bool>,
     /// Told of each outcome as it happens.
     taps: RefCell<Vec<OutcomeTap>>,
     /// Why fresh banners are held right now (Do Not Disturb, a focus
@@ -218,13 +221,19 @@ pub struct DesktopNotifications {
 
 impl DesktopNotifications {
     /// Show `notification` as a banner; any it pushes off the stack retire
-    /// to the centre. Returns its id.
+    /// to the centre. Returns its id. One that arrives while the centre is
+    /// open goes straight into the centre: the person is reading it, so a
+    /// banner there would cover a row and take the press meant for it.
     pub fn post(&self, notification: Notification) -> u64 {
         let id = notification.id;
         self.log.unread.borrow_mut().insert(id);
-        let evicted = self.log.log.borrow_mut().show(notification);
-        for retired in evicted {
-            self.log.log.borrow_mut().retain(retired);
+        if self.log.centre_open.get() {
+            self.log.log.borrow_mut().retain(notification);
+        } else {
+            let evicted = self.log.log.borrow_mut().show(notification);
+            for retired in evicted {
+                self.log.log.borrow_mut().retain(retired);
+            }
         }
         self.log.touch();
         id
@@ -365,9 +374,29 @@ impl DesktopNotifications {
     }
 
     /// The banners shown now, for a banner surface of the host's own.
+    /// Nothing while the centre is open: a banner there would stand over
+    /// the rows the person is reading.
     #[must_use]
     pub fn feed(&self) -> BannerFeed {
-        BannerFeed::of(self.host())
+        if self.log.centre_open.get() {
+            BannerFeed::default()
+        } else {
+            BannerFeed::of(self.host())
+        }
+    }
+
+    /// Say the centre is open (or no longer): from now on no banner stands,
+    /// and what arrives goes into the centre.
+    pub fn set_centre_open(&self, open: bool) {
+        if self.log.centre_open.replace(open) != open {
+            self.log.touch();
+        }
+    }
+
+    /// Whether the centre is open.
+    #[must_use]
+    pub fn centre_open(&self) -> bool {
+        self.log.centre_open.get()
     }
 
     /// Carry out what the person did on a banner surface of the host's own.
@@ -734,13 +763,16 @@ impl NotificationLayer {
     }
 
     /// Hand the stack the banners shown now: none while the host shows
-    /// them elsewhere.
+    /// them elsewhere, and none while the centre is open — the person is
+    /// reading the centre, so no banner stands over it and takes the press
+    /// meant for a row.
     fn feed_stack(&mut self) {
-        let feed = if self.notifications.log.banners_elsewhere.get() {
-            BannerFeed::default()
-        } else {
-            BannerFeed::of(self.notifications.host())
-        };
+        let feed =
+            if self.notifications.centre_open() || self.notifications.log.banners_elsewhere.get() {
+                BannerFeed::default()
+            } else {
+                BannerFeed::of(self.notifications.host())
+            };
         self.stack.set_feed(feed);
     }
 
@@ -770,6 +802,8 @@ impl NotificationLayer {
             self.center =
                 open.then(|| Centre::new(&NOTIFICATION_CENTRE, (), |make, ()| make.make()));
             self.dirty = true;
+            self.notifications.set_centre_open(open);
+            self.feed_stack();
         }
     }
 
@@ -1249,6 +1283,52 @@ mod tests {
         notifications.open_center();
         Widget::update(&mut layer, &(), &());
         assert!(layer.center_open(), "the centre opens on the host's word");
+    }
+
+    /// The person opened the centre to read what it holds: no banner stands
+    /// over the rows it covers, wherever the host draws the banners, what
+    /// arrives meanwhile goes into the centre, and the ones that came before
+    /// are back on the desk once it closes.
+    #[test]
+    fn a_banner_never_stands_over_the_open_centre() {
+        let (mut layer, notifications) = layer_with(2);
+        notifications.show_banners_elsewhere();
+        layer.feed_stack();
+        assert_eq!(
+            notifications.feed().banners.len(),
+            2,
+            "the host's own surface shows the banners"
+        );
+        layer.set_center_open(true);
+        assert_eq!(
+            notifications.feed().banners.len(),
+            0,
+            "nothing stands over the centre"
+        );
+        assert_eq!(layer.stack.feed().banners.len(), 0);
+        // One arriving now belongs to the rows the person is reading.
+        notifications.post(Notification::new("Kaffee ist fertig", ""));
+        assert_eq!(
+            notifications.feed().banners.len(),
+            0,
+            "it does not become a banner"
+        );
+        assert!(
+            notifications
+                .log()
+                .history()
+                .iter()
+                .any(|notification| notification.title == "Kaffee ist fertig"),
+            "it is a row of the centre"
+        );
+        layer.set_center_open(false);
+        layer.feed_stack();
+        assert_eq!(
+            notifications.feed().banners.len(),
+            2,
+            "the desk's banners come back"
+        );
+        assert_eq!(layer.stack.feed().banners.len(), 2);
     }
 
     #[test]

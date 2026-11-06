@@ -2286,7 +2286,10 @@ impl AppHandler {
             other => other,
         };
         let app = &mut self.app;
-        let Some(root_node) = app.layout.root_node else {
+        // A card is the app's own content on another surface: its pointer
+        // lands where the app's widget stands in the presented tree, the
+        // same node the primary window dispatches at.
+        let Some(root_node) = app.live_app_node() else {
             return;
         };
         let mut handled = false;
@@ -4293,15 +4296,30 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .root_widget
                 .next_wake_deadline()
                 .is_some_and(|due| due <= now);
-            if updated || host_due || !widget_due || app.root_widget.serve_deadline(now) {
+            // Only when a widget's own deadline is the reason to sync does
+            // serving it say whether anything changed; the other reasons
+            // already present.
+            let served_widget =
+                (!updated && !host_due && widget_due).then(|| app.root_widget.serve_deadline(now));
+            if updated || host_due || !widget_due || served_widget == Some(true) {
                 let _ = app.sync_model(true);
             }
             let structure = app.forget_replaced_widgets();
             if present_after_deadline_sync(
                 updated || structure || app.layout.layout_dirty,
                 app.root_widget.needs_animation_frame(),
+                served_widget == Some(true),
             ) {
                 request_primary_redraw();
+                // The frame presents the app, and the app's other surfaces
+                // draw the same state: a reading it re-read on this wake (a
+                // call's run time) is theirs too, and nothing in the tree
+                // reports a model change they would hear about.
+                for surface in &self.floating_windows {
+                    if auxiliary_redraw_allowed(surface.render.as_ref()) {
+                        surface.window.request_redraw();
+                    }
+                }
             }
         }
 
@@ -5374,13 +5392,20 @@ fn present_hook(
     }))
 }
 
-/// A due `next_wake_deadline` runs sync. Present only when that sync
-/// changed the model, the tree, or an in-flight animation. `needs_redraw`
-/// is not a reason: Files stays `needs_redraw` after `mark_drawn` (closed
-/// menus and other default leaves), so treating it as dirty recommits
-/// every 750ms metadata poll.
-fn present_after_deadline_sync(model_or_layout_dirty: bool, needs_animation: bool) -> bool {
-    model_or_layout_dirty || needs_animation
+/// A due `next_wake_deadline` runs sync. Present when that sync changed the
+/// model, the tree, or an in-flight animation, or when the widget whose
+/// deadline came due served work that reaches its drawing (a call's run
+/// time, which is the clock, not the model). `needs_redraw` is not a reason:
+/// Files stays `needs_redraw` after `mark_drawn` (closed menus and other
+/// default leaves), so treating it as dirty recommits every 750ms metadata
+/// poll. A poll that found nothing answers `serve_deadline` with `false` and
+/// presents nothing.
+fn present_after_deadline_sync(
+    model_or_layout_dirty: bool,
+    needs_animation: bool,
+    served_deadline: bool,
+) -> bool {
+    model_or_layout_dirty || needs_animation || served_deadline
 }
 
 #[cfg(test)]
@@ -5390,14 +5415,23 @@ mod deadline_present_tests {
     #[test]
     fn idle_scheduled_sync_does_not_request_frames() {
         assert!(
-            !present_after_deadline_sync(false, false),
+            !present_after_deadline_sync(false, false, false),
             "an idle scheduled poll must not keep requesting frames"
         );
         // Sticky `needs_redraw` after mark_drawn is not an argument: the
         // helper no longer takes that bit. Model/structure/layout OR into
         // the first flag at the call site (keeps clippy's bool limit).
-        assert!(present_after_deadline_sync(false, true));
-        assert!(present_after_deadline_sync(true, false));
+        assert!(present_after_deadline_sync(false, true, false));
+        assert!(present_after_deadline_sync(true, false, false));
+    }
+
+    /// A call's card reads a clock, so the model, the tree and the layout all
+    /// stay as they were and the frame that shows the next second exists only
+    /// because the widget served its deadline: presenting nothing froze the
+    /// card at the second it first drew.
+    #[test]
+    fn a_served_widget_deadline_presents_the_reading_it_draws() {
+        assert!(present_after_deadline_sync(false, false, true));
     }
 }
 

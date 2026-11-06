@@ -19,7 +19,7 @@ mod cases {
     const PIN: &str = r#"app so.tilo.pins "Pins"
 
 type Note {
-    title: Text (title)
+    title: Text
     pinned: Bool = false
 }
 
@@ -76,9 +76,9 @@ action rename(n: Note, t: Text) (label: "Rename", on: n.title != "") {
     const TASKS: &str = r#"app so.tilo.tasks "Tasks"
 
 type Task {
-    title: Text (title)
+    title: Text
     due: Option<Date> = .none
-    at: Option<Time> (time of: due) = .none
+    at: Option<Time> = .none
     start: Date = Date("2026-10-24")
     done_at: Option<Time> = .none
     seen: Text
@@ -177,7 +177,7 @@ view rows(l: Tasks) {
     }
 
     #[test]
-    fn dates_reach_the_ui_marked_and_a_date_control_edits_them() {
+    fn dates_reach_the_ui_and_a_date_control_edits_them() {
         let app = App::compile(TASKS, &[]);
         let rt = runtime(&app);
         let t = rt.create("Task").unwrap();
@@ -195,8 +195,8 @@ view rows(l: Tasks) {
         );
         assert!(!dates[1].props.contains_key("optional"));
         // The page's own facts are the chips its type's days make, after the controls the
-        // view writes: the day it is due, then the day it starts. The one it is due pairs the
-        // time of day it is due at, whose control stands in the chip's popover.
+        // view writes: the day it is due, then the day it starts. A time of day is the app's
+        // data, so no field's time stands paired with a day.
         assert_eq!(
             dates.len(),
             4,
@@ -209,9 +209,11 @@ view rows(l: Tasks) {
             Some(Value::none()),
             "none is the day a page holds none of"
         );
-        let times = of_kind(&chip, "ui.TimeField");
-        assert_eq!(times.len(), 1, "the time of day: {}", dump(&chip));
-        assert_eq!(view.bound_value(&times[0].key), Some(Value::none()));
+        assert!(
+            of_kind(view.tree(), "ui.TimeField").is_empty(),
+            "a time of day is the app's to draw: {}",
+            dump(view.tree())
+        );
         let control = dates[0].key.clone();
         assert_eq!(view.bound_value(&control), Some(Value::none()));
         view.edit(&control, &Value::text("2026-12-24")).unwrap();
@@ -239,12 +241,12 @@ view rows(l: Tasks) {
     const BOARD: &str = r#"app so.tilo.board "Board"
 
 type Task {
-    title: Text (title)
+    title: Text
     done_at: Option<Time> = .none
 }
 
 type Tasks {
-    name: Text (title)
+    name: Text
     items: Collection<Task>
 }
 

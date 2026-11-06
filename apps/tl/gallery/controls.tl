@@ -15,7 +15,7 @@ enum Urgency {
 /// picture choice, a row of controls, and a link. Each is bound to a real field of the document,
 /// so a change made in the window is the document's.
 type Controls {
-    title: Text (title)
+    title: Text
     /// Whether the report goes by email.
     by_email: Bool = false
     /// Whether it repeats.

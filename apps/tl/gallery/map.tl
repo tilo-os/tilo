@@ -1,6 +1,6 @@
 /// What the gallery holds of a canvas: places at points on a surface that pans and zooms.
 type Places {
-    title: Text (title)
+    title: Text
 }
 
 default view places for Places

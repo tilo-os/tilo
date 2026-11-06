@@ -99,6 +99,8 @@ tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 iroh-base = { workspace = true, features = ["key"] }
 tilo-test-env = { path = "../../dev/test-env" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# Membership replay is a property over operation sets, not one fixture.
+proptest.workspace = true
 
 [[test]]
 name = "renewed_membership"

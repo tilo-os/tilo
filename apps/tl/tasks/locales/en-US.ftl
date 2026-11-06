@@ -35,17 +35,6 @@ d-4sriymst = Priority
 d-3pf74ifm = Parent
     .doc = The task it is a subtask of; none for a task of its own.
 
-d-z3mub5ke = Finished
-    .doc = Whether it is finished: done itself, and so is every task under it.
-
-d-oddfuemr = Folded
-    .doc = Whether it stands in a list's Done tail: finished, and so is every task it is under, so a step done with under a task still open stays where it stands, checked and muted.
-
-d-rc3gzwpo = Subtasks
-    .doc = How many tasks are under it, and how many of those are done ("1/3"): the two counts a row and the page's outline show.
-
-d-olnvvb3s = Subtasks done
-
 d-bfqi332m = Project
     .doc = A project: tasks that work towards one outcome.
     .noun = { $count ->
@@ -113,7 +102,7 @@ d-ifftrju4 = Its project, as a project's list is of one
 d-rs3ubifz = New task
     .doc = Adds a task: under the title a program or an agent gives it, or the words typed in the entry at the end of a list, to the inbox or to `p`, in the lane `s` of its board.
 
-d-boggc6yt = Add a task
+d-boggc6yt = New task due today
     .doc = Adds a task that is due today: what the entry of the Today place runs, so a task typed there stands in Today.
 
 d-zjuy7y7f = New project
@@ -198,14 +187,11 @@ d-vi6srojh = Delete section
 d-pcn3xgni = New task
     .doc = Adds a task to a project, at the end of the lane `s` of its board (none for the first), under a title a program or an agent gives it.
 
-d-scjlkb6d = Place
+d-scjlkb6d = Place in board
     .doc = Puts a task into a lane of its project's board, `s` (none for the first lane), at the place `at` among the tasks already there.
 
 d-kjbukd2o = Rename
     .doc = Renames a project.
-
-d-m2xarbfd = Copy below
-    .doc = Copies the tasks under `t` under `copy`, each in its place, so a copy reads as the task it copies did; answers the last task the copies end with.
 
 d-qwizihx4 = Check~present
 
@@ -233,6 +219,8 @@ d-mg3c777a = Move to~present
 
 d-tpvjqy5m = Clear done~present
 
+d-rxpe5yqk = Place~present
+
 d-i2mhsb3h = Home
     .w-tasks = Tasks
     .w-projects = Projects
@@ -258,6 +246,8 @@ d-rj4l44km = Task summary
 d-ypbiaiq3 = Task outline row
 
 d-mtmufg3w = Task page
+    .w-what-to-do = What to do
+    .w-anything-worth-remembering-about-it = Anything worth remembering about it.
     .w-inbox = Inbox
     .w-subtasks = Subtasks
     .w-add-a-subtask = Add a subtask

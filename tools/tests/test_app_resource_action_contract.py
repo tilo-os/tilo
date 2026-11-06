@@ -1259,6 +1259,11 @@ class AppResourceActionContractTests(unittest.TestCase):
             " toolbar.action(ToolbarAction { menu: true, ..action(UP, \"up\", t, true, false) });\n"
             " tree.action(&id, \"activate\");\n"
             "}\n"
+            # The view context's binder of the same name and arity binds the node's
+            # event to a published action: the shared route, not a closure-run button.
+            "fn channel(cx: &ViewCx<Filter>) {\n"
+            " let press = cx.action(&subscribe, \"press\", \"subscribe\");\n"
+            "}\n"
         )
         counts: dict[tuple[str, str], int] = {}
         contract.audit(root, counts)

@@ -20,6 +20,7 @@ use tilolang_runtime::ids::{AppId, DocId, TypeId};
 use tilolang_runtime::store::{ChangeSummary, FieldKey, ListingChange};
 
 use crate::action::apply_edits;
+use crate::chunk::ChunkNo;
 use crate::schema::lookup;
 
 use super::{Inner, ItemTouches, LocalWrite, TxnState, scan_of};
@@ -60,6 +61,7 @@ pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState, by: &str) 
     if state.saved > 0 {
         return false;
     }
+    let mut collections = std::mem::take(&mut state.collections);
     for (doc, fields) in std::mem::take(&mut state.touched) {
         if fields.is_empty() {
             continue;
@@ -70,8 +72,13 @@ pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState, by: &str) 
                 .partition(|change| change.key.doc() == doc);
         state.listings = rest;
         inner.notify(&ChangeSummary {
-            doc,
+            doc: doc.clone(),
             fields: fields.into_iter().collect(),
+            collections: collections
+                .remove(&doc)
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
             listings: own,
             by: Some(by.to_owned()),
         });
@@ -97,12 +104,12 @@ impl Inner {
         self.changed_within(&reached);
     }
 
-    /// Derive one write into the overlay, naming what it derived to whoever reads: a value the
-    /// index works out may move on an item the write did not name.
+    /// Derive one write into the overlay, naming what it derived to whoever reads: a field may
+    /// move on a resource the write did not name.
     pub(super) fn derive_write(&mut self, write: &mut LocalWrite) {
-        let Some(mirror) = self.mirror.clone() else {
+        if !self.chunks.has_record() {
             return;
-        };
+        }
         let Some(held) = self.apps.get(&write.app).filter(|held| held.ready()) else {
             return;
         };
@@ -112,11 +119,11 @@ impl Inner {
             overlay,
             snapshot: Some(&snapshot),
         };
-        let mut derive = crate::index::derive::Derive::new(&mirror, &self.index, &self.nested);
+        let mut derive = crate::index::derive::Derive::new(&self.chunks, &self.index, &self.nested);
         if let Err(error) = derive.changes(&mut sink, &write.app, &write.reached()) {
             tracing::warn!(app = write.app, %error, "a change was not indexed");
         }
-        for keys in derive.derived_keys.into_values() {
+        for keys in derive.notified.into_values() {
             for key in keys {
                 if !write.touched.contains(&key) {
                     write.touched.push(key);
@@ -125,14 +132,15 @@ impl Inner {
         }
     }
 
-    /// [`Inner::drop_local_from`], keeping every write an origin derives: those are never the
-    /// record's, so the record moving on leaves them where they are (the caller applies them
-    /// again onto its new copy, as the rollback took the whole transaction out).
-    pub(super) fn drop_committed_local(&mut self) -> ItemTouches {
+    /// [`Inner::drop_local_from`], for the writes into the chunk `chunk`, keeping every write
+    /// an origin derives: those are never the record's, so the record moving on leaves them
+    /// where they are (the caller applies them again onto its new copy, as the rollback took
+    /// the whole transaction out).
+    pub(super) fn drop_committed_local(&mut self, chunk: ChunkNo) -> ItemTouches {
         let mut items = ItemTouches::new();
         let mut kept = Vec::with_capacity(self.local.len());
         for write in std::mem::take(&mut self.local) {
-            if write.derived {
+            if write.derived || write.chunk != chunk {
                 kept.push(write);
                 continue;
             }
@@ -144,20 +152,21 @@ impl Inner {
         items
     }
 
-    /// Write the store's derived writes onto the mirror again, as pending ops: after the
-    /// record's changes reached it, which dropped everything else the store wrote. The
-    /// mirror's committed state (the record's) is untouched, so nothing else rolls back.
-    pub(super) fn reapply_derived(&mut self) {
+    /// Write the store's derived writes of the chunk `chunk` onto the mirror again, as pending
+    /// ops: after the record's changes reached it, which dropped everything else the store
+    /// wrote. The mirror's committed state (the record's) is untouched, so nothing else rolls
+    /// back.
+    pub(super) fn reapply_derived(&mut self, chunk: ChunkNo) {
         let derived: Vec<LocalWrite> = self
             .local
             .iter()
-            .filter(|write| write.derived)
+            .filter(|write| write.derived && write.chunk == chunk)
             .cloned()
             .collect();
         if derived.is_empty() {
             return;
         }
-        if let Some(mirror) = self.mirror_mut() {
+        if let Some(mirror) = self.chunks.mirror_mut(chunk) {
             for write in &derived {
                 if let Err(error) = apply_edits(
                     mirror,
@@ -171,9 +180,9 @@ impl Inner {
         }
     }
 
-    /// Re-read which resources the mirror holds: the record's, plus what an origin derives
-    /// (those are in the mirror still, as its open writes, but [`super::scan_of`] reads only
-    /// committed records).
+    /// Re-read which resources the documents the store holds have: those of each chunk, plus
+    /// what an origin derives (those are in the mirrors still, as their open writes, but
+    /// [`super::scan_of`] reads only committed records).
     pub(super) fn rescan(&mut self) {
         let derived: Vec<(DocId, (AppId, TypeId))> = self
             .index
@@ -181,7 +190,7 @@ impl Inner {
             .filter(|(_, (_, ty))| lookup(ty).is_some_and(crate::schema::TypeSchema::derived))
             .map(|(doc, held)| (doc.clone(), held.clone()))
             .collect();
-        self.index = scan_of(self.mirror.as_deref());
+        self.index = scan_of(&self.chunks);
         for (doc, held) in derived {
             self.index.insert(doc, held);
         }
@@ -200,14 +209,17 @@ impl Inner {
         items
     }
 
-    /// Drop the mirror's open transaction and apply the store's committed writes again: the
-    /// mirror as those writes left it, without whatever was written after them. Writes an
+    /// Drop the mirrors' open transactions and apply the store's committed writes again: each
+    /// document as those writes left it, without whatever was written after them. Writes an
     /// origin derives stay: nothing of the record takes them back.
     pub(super) fn reapply(&mut self) {
-        self.rollback();
+        let chunks: Vec<ChunkNo> = self.chunks.docs().map(|(chunk, _)| chunk).collect();
+        for chunk in chunks {
+            self.rollback(chunk);
+        }
         let local = self.local.clone();
-        if let Some(mirror) = self.mirror_mut() {
-            for write in &local {
+        for write in &local {
+            if let Some(mirror) = self.chunks.mirror_mut(write.chunk) {
                 // Each applied once already, on this same base: one that fails now is a fault.
                 if let Err(error) = apply_edits(
                     mirror,

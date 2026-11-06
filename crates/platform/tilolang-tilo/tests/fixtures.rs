@@ -136,6 +136,12 @@ impl Replica {
         )
         .with_app("so.tilo.lang", "tilolang")
         .with_invoker(invoker);
+        // As the record does: every change of a run names it, so the workspace commits the
+        // action and its calls as one, and one undo takes the whole of it back.
+        if let Some(run) = &action.authorship.invocation {
+            context =
+                context.with_source_invocation(Some(tilolang_tilo::action::invocation_id(run)));
+        }
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }

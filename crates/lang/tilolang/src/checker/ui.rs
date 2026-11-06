@@ -163,7 +163,7 @@ impl Checker<'_> {
                         None => self.expr(value, None),
                     };
                     let bound = v.ty.clone();
-                    self.bind_let(&name.name, bound, v, s.span);
+                    self.bind_let(&name.name, bound, v);
                 }
                 UiKind::If { cond, then, els } => {
                     let c = self.expr_as(cond, &Ty::Bool);
@@ -949,8 +949,7 @@ impl Checker<'_> {
     }
 
     /// `bind:` to a field or view state whose type is one of `allowed`, or — with `enum_case` —
-    /// of whichever enum the field declares; `titled` when the control draws a document's title,
-    /// bound to the field marked `(title)`.
+    /// of whichever enum the field declares.
     pub(super) fn bind_typed(
         &mut self,
         node: &Ex,
@@ -1053,15 +1052,15 @@ impl Checker<'_> {
             vec![node.clone(), b, Ex::str(&f.id)],
             Ty::Unit,
         )));
-        // A control bound to the field marked `(title)` draws the resource's title, as TextInput
-        // does: the field is text, and the control declares `title`, so one that does not is
-        // never sent a prop it does not declare. Any other control is given the value it binds
-        // alone; a document's body is placed by the view as `ui.BlockEditor(bind: doc.body)`.
+        // A control the description declares `title` on draws the resource's title when it binds
+        // the field the type is named by: a document's large title, as TextInput does.
         if titled
             && f.ty == Ty::Text
-            && f.role
-                .as_ref()
-                .is_some_and(crate::types::FieldRole::is_title)
+            && self
+                .env
+                .type_info(&key)
+                .and_then(TypeInfo::name_field)
+                .is_some_and(|named| named.id == f.id)
         {
             self.emit(Stmt::Eval(Ex::host(
                 Imp::UiPropI,
@@ -1174,10 +1173,10 @@ impl Checker<'_> {
 fn removed_prim(name: &str) -> Option<&'static str> {
     Some(match name {
         "heading" => {
-            "`heading` is gone: the window's title is the root resource's `(title)` field, and the platform draws it in the header. Group content with `section(\"Title\") { }`, or write `text(x, role: .title)`"
+            "`heading` is gone: the window's title is the root resource's first text field, and the platform draws it in the header. Group content with `section(\"Title\") { }`, or write `text(x, role: .title)`"
         }
         "list_row" => {
-            "`list_row` is now `row(title, secondary: ...)`, inside a list's item block (`list(xs) { x -> row(x.title) }`), as a `row view`, or as the body of a view of the item it draws"
+            "`list_row` is now `row`, inside a list's item block (`list(xs) { x -> row(x.title) }`), as a `row view`, or as the body of a view of the item it draws"
         }
         "column" => "`column` is `stack`: a column of content",
         "card" => {

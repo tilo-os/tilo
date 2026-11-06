@@ -55,7 +55,7 @@ pub(crate) fn read(r: &Replica, item: &Value, field: &str) -> Value {
 }
 
 /// The resource a field refers to, whoever's code made the reference.
-fn target(v: &Value) -> Option<String> {
+pub(crate) fn target(v: &Value) -> Option<String> {
     match v {
         Value::Opt(Some(inner)) => target(inner),
         Value::Ref(r) => Some(r.target.id_string()),
@@ -85,7 +85,7 @@ fn items(r: &Replica) -> Vec<Value> {
 pub(crate) type ShownPlace = (String, Option<i64>);
 
 /// A heading of the sidebar with the places under it, in the order they stand.
-type ShownSection = (String, Vec<ShownPlace>);
+pub(crate) type ShownSection = (String, Vec<ShownPlace>);
 
 /// The sidebar's places as the window shows them.
 pub(crate) fn places(view: &ViewInstance) -> Vec<ShownPlace> {
@@ -503,7 +503,7 @@ fn lanes(view: &ViewInstance) -> Vec<Lane> {
 }
 
 /// The key of the node of `kind` that `holds` holds of, in the window `view` shows.
-fn key_of(view: &ViewInstance, kind: &str, holds: &dyn Fn(&UiNode) -> bool) -> String {
+pub(crate) fn key_of(view: &ViewInstance, kind: &str, holds: &dyn Fn(&UiNode) -> bool) -> String {
     fn walk(node: &UiNode, kind: &str, holds: &dyn Fn(&UiNode) -> bool) -> Option<String> {
         if node.kind == kind && holds(node) {
             return Some(node.key.clone());
@@ -692,7 +692,7 @@ fn row_of(view: &ViewInstance, item: &Value) -> String {
 }
 
 /// The drawn node with this key, at any depth.
-fn node_of<'a>(node: &'a UiNode, key: &str) -> Option<&'a UiNode> {
+pub(crate) fn node_of<'a>(node: &'a UiNode, key: &str) -> Option<&'a UiNode> {
     if node.key == key {
         return Some(node);
     }
@@ -700,7 +700,7 @@ fn node_of<'a>(node: &'a UiNode, key: &str) -> Option<&'a UiNode> {
 }
 
 /// The task with this title.
-fn task(r: &Replica, title: &str) -> Value {
+pub(crate) fn task(r: &Replica, title: &str) -> Value {
     items(r)
         .into_iter()
         .find(|item| read(r, item, "title") == Value::text(title))
@@ -914,7 +914,7 @@ fn checking_a_task_off_checks_every_task_under_it() {
 /// Every row of the home list, in the order it stands: its place, the key of the row the host
 /// draws, the task it presents, and whether its box is drawn checked. A place that holds nothing
 /// draws no list, and no rows.
-fn home_list_rows(view: &mut ViewInstance) -> Vec<(usize, String, String, bool)> {
+pub(crate) fn home_list_rows(view: &mut ViewInstance) -> Vec<(usize, String, String, bool)> {
     view.poll_patches().unwrap();
     let lists = all(view.tree(), "ui.VirtualList");
     let Some(list) = lists.first() else {
@@ -1199,7 +1199,7 @@ fn priority(r: &Replica, task: &Value) -> String {
 
 /// The key of the node bound to `field`.
 #[cfg(feature = "record")]
-fn bound_key(node: &UiNode, field: &str) -> Option<String> {
+pub(crate) fn bound_key(node: &UiNode, field: &str) -> Option<String> {
     if node
         .binding
         .as_ref()
@@ -1317,13 +1317,13 @@ fn the_assignee_is_one_person_field_whose_chip_shows_each_pick() {
     // assignee as a chip, with no label beside it.
     let shown = texts(page.tree());
     assert!(
-        shown.iter().any(|text| text == "You unassigned this"),
+        shown.join(" ").contains("You unassigned this"),
         "clearing the assignee last, the step says so: {shown:?}"
     );
     pick_the_assignee(&mut ada, &mut page, &key, &Value::text("ben"));
     let shown = texts(page.tree());
     assert!(
-        shown.iter().any(|text| text == "You assigned this to"),
+        shown.join(" ").contains("You assigned this to"),
         "assigned last, the step says that instead: {shown:?}"
     );
     assert!(
@@ -1568,29 +1568,8 @@ fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
     // when each writes, so the branch is not finished in either of them.
     call(&ada, "check", vec![outline.clone()]);
     ada.commit();
-    call(&ben, "check", vec![screenshots]);
+    call(&ben, "check", vec![screenshots.clone()]);
     ben.commit();
-    assert_eq!(
-        read(&ada, &post, "folded"),
-        Value::Bool(false),
-        "Ada's copy still has a step open under the task"
-    );
-
-    ada.sync_with(&mut ben);
-    assert_eq!(
-        read(&ada, &post, "folded"),
-        Value::Bool(true),
-        "the branch is finished once both steps are, though neither change named the task"
-    );
-    assert_eq!(
-        read(&ben, &post, "folded"),
-        Value::Bool(true),
-        "and the other copy works it out too, from the changes it took"
-    );
-    // The list the person sees says the same: the finished task stands in the Done tail.
-    let mut view = ada.view(APP);
-    go_to(&mut view, "Website launch");
-    let rows = home_rows(&mut view);
     let of = |item: &Value| target(item).expect("a task");
     let at = |rows: &[(String, Option<String>, Option<String>, bool)], item: &Value| {
         let of = of(item);
@@ -1598,17 +1577,40 @@ fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
             .position(|(row, _, _, _)| *row == of)
             .unwrap_or_else(|| panic!("the row of {of}"))
     };
+    let mut view = ada.view(APP);
+    go_to(&mut view, "Website launch");
+    let rows = home_rows(&mut view);
+    assert!(
+        !rows[at(&rows, &post)].3,
+        "Ada's copy still has a step open under the task"
+    );
+
+    ada.sync_with(&mut ben);
+    let mut view = ada.view(APP);
+    go_to(&mut view, "Website launch");
+    let rows = home_rows(&mut view);
     assert!(
         rows[at(&rows, &post)].3,
-        "the finished branch folds away into the Done group"
+        "the branch is finished once both steps are, so its row folds away into the Done group"
     );
+    // The copy that took the change has both steps checked, so its own view code works out the
+    // same folded branch: nothing of the fold travelled with the change.
+    for step in [&outline, &screenshots] {
+        assert_eq!(
+            read(&ben, step, "done"),
+            Value::Bool(true),
+            "the other copy took the step the first one checked"
+        );
+    }
 
     // Opening one step unfinishes the branch, and the row leaves the tail.
     call(&ada, "check", vec![outline, Value::Bool(false)]);
     ada.commit();
-    assert_eq!(
-        read(&ada, &post, "folded"),
-        Value::Bool(false),
+    let mut view = ada.view(APP);
+    go_to(&mut view, "Website launch");
+    let rows = home_rows(&mut view);
+    assert!(
+        !rows[at(&rows, &post)].3,
         "a branch with an open step under it does not fold"
     );
     let rows = home_rows(&mut view);
@@ -1618,8 +1620,8 @@ fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
     );
 }
 
-/// A scenario's branch reads its counts and its fold as soon as the record has it: the index
-/// works the keys out from what the scenario wrote, so no migration runs after a record.
+/// A scenario's branch reads its counts and its fold from the tasks it staged, as soon as the
+/// record has them: no migration runs after a record.
 #[test]
 fn a_scenario_reads_the_keys_of_the_branch_it_stages() {
     let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), PACKAGES);
@@ -1642,33 +1644,36 @@ fn a_scenario_reads_the_keys_of_the_branch_it_stages() {
         .unwrap();
     ada.commit();
     let post = task(&ada, "Write the launch post");
+    let outline = task(&ada, "Outline");
+    let quotes = task(&ada, "Collect the quotes from the beta testers");
+    let mut view = ada.view(APP);
+    go_to(&mut view, "Website launch");
+    let rows = home_rows(&mut view);
+    let of = |item: &Value| target(item).expect("a task");
+    let at = |item: &Value| {
+        rows.iter()
+            .position(|(row, _, _, _)| *row == of(item))
+            .unwrap_or_else(|| panic!("the row of {:?}", of(item)))
+    };
     assert_eq!(
-        read(&ada, &post, "subtasks"),
-        Value::Int(3),
-        "three steps under it"
+        rows[at(&post)].2.as_deref(),
+        Some("1/3"),
+        "three steps under it, one of them done"
     );
-    assert_eq!(
-        read(&ada, &post, "subtasks_done"),
-        Value::Int(1),
-        "one of them done"
-    );
-    assert_eq!(
-        read(&ada, &post, "folded"),
-        Value::Bool(false),
+    assert!(
+        !rows[at(&post)].3,
         "it is not done, so the branch is unfinished"
     );
-    let outline = task(&ada, "Outline");
     assert_eq!(
-        read(&ada, &outline, "folded"),
-        Value::Bool(false),
-        "a done task with an open step under it does not fold"
+        rows[at(&outline)].1,
+        target(&post),
+        "a done step with an open step beside it stands under its task"
     );
-    let quotes = task(&ada, "Collect the quotes from the beta testers");
-    assert_eq!(
-        read(&ada, &quotes, "subtasks"),
-        Value::Int(0),
-        "a leaf counts nothing"
+    assert!(
+        !rows[at(&outline)].3,
+        "a done task with an open step beside it does not fold"
     );
+    assert_eq!(rows[at(&quotes)].2, None, "a leaf counts nothing");
 }
 
 /// A step names the day it is due only when that is not the day of the task it stands under:
@@ -1778,6 +1783,7 @@ pub(crate) fn all<'a>(node: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
 /// What each row of the home list presents: the task, the task it stands under, what its row says
 /// of the task's subtasks, and whether it stands in the folded tail.
 fn home_rows(view: &mut ViewInstance) -> Vec<(String, Option<String>, Option<String>, bool)> {
+    let _ = view.set_lazy_rows(false);
     view.poll_patches().unwrap();
     let list = all(view.tree(), "ui.VirtualList")
         .first()
@@ -1986,8 +1992,10 @@ fn menu_command(node: &UiNode) -> Command {
 }
 
 /// The commands a task's menus offer, in the order a person reads them: every command, and of
-/// the two moves only the one this task's place allows. This is a task with nothing over it in
-/// its group standing at the top level: neither move has a place, so neither is offered.
+/// the commands that need something the task may not have, the ones this task has. This is a
+/// task in the inbox, with nothing standing over it and nothing under it: it is on no board to be
+/// placed on, so it offers none of that, and it can still be moved under another task and copied
+/// with the steps it has.
 fn spec_commands() -> Vec<&'static str> {
     vec![
         "Complete",
@@ -2006,6 +2014,7 @@ fn spec_commands() -> Vec<&'static str> {
         "Project…",
         "Inbox",
         "Assign…",
+        "Move to…",
         "Duplicate",
         "Delete",
     ]
@@ -2105,8 +2114,8 @@ pub(crate) fn page_commands(view: &ViewInstance) -> Vec<Command> {
 }
 
 /// A task's row menu is every command a person can run on that task, worded once, in one order:
-/// it takes something away before it adds, dates before priorities, and nothing a gesture alone
-/// runs.
+/// it takes something away before it adds, dates before priorities, and a move a gesture also
+/// runs among the commands like any other.
 #[test]
 fn a_tasks_row_menu_offers_every_command_in_one_order() {
     let (mut ada, root) = workspace();
@@ -2142,16 +2151,63 @@ fn a_tasks_row_menu_offers_every_command_in_one_order() {
         commands[7]
     );
     assert_eq!(
-        commands[15].key.as_deref(),
+        commands[16].key.as_deref(),
         Some("Ctrl+Shift+d"),
         "Duplicate"
     );
-    let delete = commands.last().unwrap();
+    let delete = commands
+        .iter()
+        .find(|command| command.label == "Delete")
+        .expect("the menu offers deleting the task");
     assert!(
         delete.destructive,
         "delete is drawn as taking something away"
     );
     assert_eq!(delete.key.as_deref(), Some("delete"));
+}
+
+/// Every command is offered once, in the order the app declares it, and the ones that need
+/// something of the task stand in that same order among the rest: a task of a project is placed
+/// on its board where it is declared, and the move that needs nothing of the task stands where
+/// it is declared.
+#[test]
+fn the_commands_a_task_takes_beside_every_other_stand_in_the_one_order() {
+    let (mut ada, root) = workspace();
+    let flat = call(&ada, "new_project", vec![root.clone()]);
+    let booked = call(&ada, "new_task", create(&root, "Book a haircut"));
+    call(
+        &ada,
+        "add_subtask",
+        vec![root, booked.clone(), Value::text("Find the number")],
+    );
+    call(&ada, "file", vec![booked.clone(), flat]);
+    ada.commit();
+    let mut home = ada.view(APP);
+    go_to(&mut home, "New project");
+    let commands = row_commands(&mut home, &booked);
+    let row = labels(&commands);
+    let at = |label: &str| {
+        row.iter()
+            .position(|shown| *shown == label)
+            .unwrap_or_else(|| panic!("the menu offers {label}: {row:?}"))
+    };
+    assert_eq!(
+        row[at("Move to…") - 1],
+        "Assign…",
+        "the move stands where the app declares it: {row:?}"
+    );
+    assert_eq!(
+        row[at("Place in board…") - 1],
+        "Delete",
+        "the board's place follows what takes a task away, as it is declared: {row:?}"
+    );
+    assert_eq!(
+        row.last().copied(),
+        Some("Place in board…"),
+        "and nothing of the task's steps is its own command: {row:?}"
+    );
+    let page = page_commands(&task_page(&ada, &booked));
+    assert_eq!(labels(&page), row, "the row and the page offer one menu");
 }
 
 /// A window whose type declares more than one view offers them as one labeled switch, in the
@@ -2424,10 +2480,80 @@ fn adding_a_subtask_from_a_menu_asks_for_its_title_and_names_it_under_its_row() 
     );
 }
 
-/// What a person can do to a task is offered wherever actions are listed; the one gesture alone
-/// runs (`place`, and the moves the app makes itself) is listed nowhere.
+/// Copying a task copies every task under it, level after level, as one step of history: one
+/// undo takes the copy and the steps it brought away together.
+#[cfg(feature = "record")]
 #[test]
-fn the_offered_actions_are_the_person_facing_ones() {
+fn duplicating_a_task_copies_every_task_under_it_in_one_step() {
+    use collaboration::history_source::verbs::HistoryEdit;
+
+    let (mut ada, root) = workspace();
+    let parent = call(&ada, "new_task", create(&root, "Plan the trip"));
+    let step = call(
+        &ada,
+        "add_subtask",
+        vec![root.clone(), parent.clone(), Value::text("Book a room")],
+    );
+    call(
+        &ada,
+        "add_subtask",
+        vec![root.clone(), step, Value::text("Check the prices")],
+    );
+    ada.commit();
+    let copy = call(&ada, "duplicate", vec![root, parent.clone()]);
+    ada.commit();
+    let made = items(&ada);
+    assert_eq!(
+        titles(&ada),
+        [
+            Value::text("Plan the trip"),
+            Value::text("Book a room"),
+            Value::text("Check the prices"),
+            Value::text("Plan the trip"),
+            Value::text("Book a room"),
+            Value::text("Check the prices"),
+        ],
+        "the copy stands after the task it copies, with every task under it"
+    );
+    assert_eq!(
+        target(&read(&ada, &copy, "parent")),
+        target(&read(&ada, &parent, "parent")),
+        "the copy stands where the task it copies stands"
+    );
+    assert_eq!(
+        target(&read(&ada, &made[5], "parent")),
+        target(&made[4]),
+        "a copied step stands under the copy of the task it stood under"
+    );
+    assert_eq!(
+        target(&read(&ada, &made[4], "parent")),
+        target(&copy),
+        "and the first of them under the copy itself"
+    );
+    ada.history(&HistoryEdit::Undo {
+        steps: None,
+        run: None,
+        by: None,
+        to: None,
+        step: None,
+    });
+    ada.commit();
+    assert_eq!(
+        titles(&ada),
+        [
+            Value::text("Plan the trip"),
+            Value::text("Book a room"),
+            Value::text("Check the prices"),
+        ],
+        "one undo takes the copy and every task it brought with it"
+    );
+}
+
+/// Every action the app declares is offered wherever actions are listed: a person chooses it from
+/// a menu or the palette, an agent from its choices, and a program names it. Nothing is reserved
+/// for a gesture alone.
+#[test]
+fn every_declared_action_is_offered() {
     let (ada, _) = workspace();
     let meta = &ada.host.package(APP).unwrap().meta;
     let offered: Vec<&str> = meta
@@ -2447,430 +2573,24 @@ fn the_offered_actions_are_the_person_facing_ones() {
         "indent",
         "outdent",
         "remove",
+        "new_task_today",
+        "place",
+        "move_to",
     ] {
         assert!(
             offered.contains(&wanted),
             "{wanted} is offered: {offered:?}"
         );
     }
-    for gesture in ["place", "move_to", "copy_below"] {
-        assert!(
-            !offered.contains(&gesture),
-            "{gesture} runs from the app's own gestures alone: {offered:?}"
-        );
-    }
-}
-
-/// The places under each heading of the sidebar, in order.
-fn sections(view: &ViewInstance) -> Vec<ShownSection> {
-    fn places_in(node: &UiNode, out: &mut Vec<ShownPlace>) {
-        if node.kind == "ui.NavItem"
-            && let Some(Value::Text(label)) = node.props.get("label")
-        {
-            let count = match node.props.get("count") {
-                Some(Value::Int(count)) => Some(*count),
-                _ => None,
-            };
-            out.push((label.clone(), count));
-        }
-        for child in &node.children {
-            places_in(child, out);
-        }
-    }
-    fn walk(node: &UiNode, out: &mut Vec<ShownSection>) {
-        if node.kind == "ui.NavSection" {
-            let title = match node.props.get("title") {
-                Some(Value::Text(title)) => title.clone(),
-                other => panic!("a section is headed: {other:?}"),
-            };
-            let mut places = Vec::new();
-            places_in(node, &mut places);
-            out.push((title, places));
-        }
-        for child in &node.children {
-            walk(child, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(view.tree(), &mut out);
-    out
-}
-
-/// The sidebar the app draws: the window's own places in the order it lists them, counted where
-/// the filter of a place asks for a count, and the projects the root holds under a heading that
-/// adds one of them.
-#[test]
-fn the_sidebar_is_the_windows_places_and_the_projects_the_root_holds() {
-    let (mut ada, root) = workspace();
-    let project = call(&ada, "new_project", vec![root.clone()]);
-    call(
-        &ada,
-        "rename",
-        vec![project.clone(), Value::text("Groceries")],
-    );
-    let milk = call(&ada, "new_task", create(&root, "Buy oat milk"));
-    call(&ada, "file", vec![milk, project]);
-    let done = call(&ada, "new_task", create(&root, "Take the bins out"));
-    call(&ada, "check", vec![done]);
-    ada.commit();
-    let view = ada.view(APP);
-    let labels: Vec<String> = places(&view).into_iter().map(|(label, _)| label).collect();
-    assert_eq!(
-        labels,
-        ["Inbox", "Today", "Upcoming", "Done", "Groceries"],
-        "the sidebar is the window's own places in the order it lists them, then the root's \
-         projects: a priority is searched, never offered as a place: {labels:?}"
-    );
-    assert_eq!(
-        count(&view, "Inbox"),
-        None,
-        "what waits to be sorted counts, and a count of zero says nothing: {:?}",
-        places(&view)
-    );
-    assert_eq!(
-        count(&view, "Today"),
-        None,
-        "and what is due says nothing while nothing is due: {:?}",
-        places(&view)
-    );
-    assert_eq!(
-        count(&view, "Upcoming"),
-        None,
-        "what is due later counts nothing: {:?}",
-        places(&view)
-    );
-    assert_eq!(
-        count(&view, "Done"),
-        None,
-        "and Done counts nothing: {:?}",
-        places(&view)
-    );
-    let groups = sections(&view);
-    assert_eq!(
-        groups,
-        vec![("Projects".to_owned(), vec![("Groceries".to_owned(), None)]),],
-        "the root's projects, each its own place, none of them counted"
-    );
-    // The heading's add is the action that makes another project on the root.
-    let section = key_of(&view, "ui.NavSection", &|node| {
-        node.props.get("title") == Some(&Value::text("Projects"))
-    });
-    let add = node_of(view.tree(), &section)
-        .and_then(|node| node.props.get("add"))
-        .unwrap_or_else(|| panic!("the group offers an add"));
-    let Value::Offered(add) = add else {
-        panic!("an offered action: {add:?}");
-    };
-    assert_eq!(add.label, "New project");
-    assert!(
-        node_of(view.tree(), &section).is_some_and(|node| node.events.contains_key("add.0")),
-        "pressing it runs the action"
-    );
-    assert_eq!(add.icon.as_deref(), Some("folder-plus"));
-}
-
-/// A project's place shows that project's tasks in the same window, and the entry at the
-/// list's foot adds into it: choosing a place navigates in place, never away.
-#[test]
-fn a_project_place_shows_its_tasks_and_adds_into_it_in_the_same_window() {
-    let (mut ada, root) = workspace();
-    let project = call(&ada, "new_project", vec![root.clone()]);
-    call(
-        &ada,
-        "rename",
-        vec![project.clone(), Value::text("Groceries")],
-    );
-    let milk = call(&ada, "new_task", create(&root, "Buy oat milk"));
-    call(&ada, "file", vec![milk.clone(), project.clone()]);
-    call(&ada, "new_task", create(&root, "Book a haircut"));
-    ada.commit();
-    let mut view = ada.view(APP);
-    assert_eq!(home_list_rows(&mut view).len(), 1, "the inbox first");
-    go_to(&mut view, "Groceries");
-    let listed: Vec<String> = home_list_rows(&mut view)
-        .into_iter()
-        .map(|(_, _, of, _)| of)
-        .collect();
-    assert_eq!(listed, vec![target(&milk).unwrap()], "the project's tasks");
-    let want = Value::text(format!("project:{}", target(&project).unwrap()));
-    let nav = key_of(&view, "ui.NavList", &|node| {
-        node.props.get("selected") == Some(&want)
-    });
-    assert!(
-        node_of(view.tree(), &nav).is_some(),
-        "the window's place is the project's"
-    );
-    let shells = all(view.tree(), "ui.NavShell");
-    let shell = shells.first().expect("the window");
-    assert_eq!(
-        shell.props.get("overview_title"),
-        Some(&Value::text("Groceries")),
-        "and the window's page is titled after it"
-    );
-    assert!(
-        !shell.props.contains_key("overview_count"),
-        "a project's place is its own list, not a tally"
-    );
-    let entry = key_of(&view, "ui.TextInput", &|node| {
-        node.props.get("placeholder") == Some(&Value::text("New task in Groceries"))
-    });
-    // The entry holds what is typed until Enter: its submit carries the title.
-    view.fire_with(&entry, "submit", Some(&Value::text("Buy bread")))
-        .unwrap();
-    view.poll_patches().unwrap();
-    let bread = task(&ada, "Buy bread");
-    assert_eq!(
-        target(&read(&ada, &bread, "project")),
-        target(&project),
-        "added into the place's project"
-    );
-    let listed: Vec<String> = home_list_rows(&mut view)
-        .into_iter()
-        .map(|(_, _, of, _)| of)
-        .collect();
-    assert!(
-        listed.contains(&target(&bread).unwrap()),
-        "the list shows it at once: {listed:?}"
-    );
-}
-
-/// Every place of the sidebar leads to a page of its own: a list, or the list's own empty
-/// state. None lands on the window of nothing chosen.
-#[test]
-fn every_place_leads_to_a_list_not_to_the_nothing_chosen_page() {
-    let (mut ada, root) = workspace();
-    let project = call(&ada, "new_project", vec![root.clone()]);
-    call(&ada, "rename", vec![project, Value::text("Groceries")]);
-    call(&ada, "new_task", create(&root, "Book a haircut"));
-    ada.commit();
-    let mut view = ada.view(APP);
-    let labels: Vec<String> = places(&view).into_iter().map(|(label, _)| label).collect();
-    for place in labels {
-        go_to(&mut view, &place);
-        let shells = all(view.tree(), "ui.NavShell");
-        let shell = shells.first().expect("the window");
-        assert_eq!(
-            shell.props.get("overview_title"),
-            Some(&Value::text(&place)),
-            "{place} is the page the window shows"
-        );
-        let shown = !all(view.tree(), "ui.VirtualList").is_empty()
-            || all(view.tree(), "ui.EmptyState").into_iter().any(|node| {
-                node.props
-                    .get("title")
-                    .is_some_and(|title| *title != Value::text("No task selected"))
-            });
-        assert!(shown, "{place} lands on the nothing-chosen page");
-    }
-}
-
-/// With every task in the place done, the place says so calmly, over the foot that folds what is
-/// done away, and the places that count count nothing: what is done with leaves nothing open.
-#[test]
-fn a_place_whose_tasks_are_all_done_says_so() {
-    let (mut ada, root) = workspace();
-    // A project, the place that folds what is done with under its list: the places that count
-    // count what they leave open, so theirs counts nothing.
-    let project = call(&ada, "new_project", vec![root.clone()]);
-    call(
-        &ada,
-        "rename",
-        vec![project.clone(), Value::text("Groceries")],
-    );
-    let mut made = Vec::new();
-    for title in ["Buy oat milk", "Take the bins out", "Book a haircut"] {
-        let task = call(&ada, "new_task", create(&root, title));
-        call(&ada, "file", vec![task.clone(), project.clone()]);
-        made.push(task);
-    }
-    ada.commit();
-    for task in &made {
-        call(&ada, "check", vec![task.clone()]);
-    }
-    ada.commit();
-    let mut view = ada.view(APP);
-    assert_eq!(
-        count(&view, "Inbox"),
-        None,
-        "nothing is open, so the place says nothing: {:?}",
-        places(&view)
-    );
-    assert_eq!(
-        count(&view, "Today"),
-        None,
-        "and the day's place says nothing open either"
-    );
-    go_to(&mut view, "Groceries");
-    let inline: Vec<&UiNode> = all(view.tree(), "ui.EmptyState")
-        .into_iter()
-        .filter(|node| {
-            matches!(
-                node.props.get("inline"),
-                Some(Value::Bool(true) | Value::Int(1))
-            )
-        })
-        .collect();
-    assert_eq!(inline.len(), 1, "one calm all-done state, above the fold");
-    // The words are the window's, which the test host hands back as the phrase's id.
-    let Some(Value::Text(title)) = inline[0].props.get("title") else {
-        panic!("the all-done state is titled");
-    };
-    let title = title.clone();
-    assert!(
-        title == "All done" || title == "tilolang-all-done",
-        "a calm all-done state, not the empty list's: got {title:?}"
-    );
-    assert_eq!(
-        home_list_rows(&mut view).len(),
-        3,
-        "and what is done with folds under it"
-    );
-}
-
-/// A place that holds nothing says it holds nothing: nothing there waits, but nothing there is
-/// done with either, so it is not that all of it is.
-#[test]
-fn a_place_that_holds_nothing_says_so_rather_than_all_done() {
-    let (mut ada, root) = workspace();
-    // Due today, so the place of what nobody sorted does not hold it.
-    let task = call(&ada, "new_task", create(&root, "Buy oat milk"));
-    call(
-        &ada,
-        "schedule",
-        vec![task, Value::some(Value::text("2026-10-29"))],
-    );
-    ada.commit();
-    let mut view = ada.view(APP);
-    let said: Vec<String> = all(view.tree(), "ui.EmptyState")
-        .into_iter()
-        .filter_map(|node| match node.props.get("title") {
-            Some(Value::Text(title)) => Some(title.clone()),
-            _ => None,
-        })
-        .collect();
-    assert!(
-        said.iter().any(|title| title == "No tasks here"),
-        "the place says it holds nothing: {said:?}"
-    );
-    assert!(
-        !said
-            .iter()
-            .any(|title| title == "All done" || title == "tilolang-all-done"),
-        "and not that everything is done: {said:?}"
-    );
-    assert!(
-        home_list_rows(&mut view).is_empty(),
-        "a place that holds nothing draws no list"
-    );
-}
-
-/// A workspace that names who a task belongs to offers the place of what the person looking
-/// holds once someone else is in it, after the type's own places, so the place a window opens
-/// on does not move; on their own, nothing is anyone's but theirs and the place would say what
-/// a list of everything does. The filter is the app's, over its own assignee field and the
-/// person looking; the sidebar is the app's too.
-#[test]
-fn a_shared_workspace_offers_the_place_of_what_the_person_looking_holds() {
-    use tilolang_runtime::members::Member;
-
-    let (mut ada, _root) = workspace();
-    let mut view = ada.view(APP);
-    view.poll_patches().unwrap();
-    assert!(
-        !places(&view)
-            .iter()
-            .any(|(label, _)| label == "Assigned to me"),
-        "a workspace of one has no place of their own: {:?}",
-        places(&view)
-    );
-    let scenario = ada
-        .host
-        .package(APP)
-        .unwrap()
-        .meta
-        .scenarios
+    let meta = &ada.host.package(APP).unwrap().meta;
+    let declared: Vec<&str> = meta
+        .actions
         .iter()
-        .find(|scenario| scenario.name == "a shared week")
-        .expect("Tasks stages a shared week")
-        .action
-        .clone();
-    ada.host
-        .runtime()
-        .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
-        .unwrap();
-    ada.commit();
-    view.poll_patches().unwrap();
-    let all = places(&view);
+        .filter(|a| !a.scenario)
+        .map(|a| a.name.as_str())
+        .collect();
     assert_eq!(
-        all.iter()
-            .take(5)
-            .map(|(label, _)| label.as_str())
-            .collect::<Vec<_>>(),
-        ["Inbox", "Today", "Upcoming", "Done", "Assigned to me"],
-        "the place of what the person looking holds comes after the type's own, so the one a \
-         window opens on does not move: {all:?}"
-    );
-    assert_eq!(
-        all.get(4),
-        Some(&("Assigned to me".to_owned(), Some(1))),
-        "and counts the one open task the person looking holds: {all:?}"
-    );
-    // The workspace narrows to the person looking alone: the place goes.
-    ada.host
-        .runtime()
-        .set_members(vec![Member::person("ada", "owner")], None);
-    view.poll_patches().unwrap();
-    assert!(
-        !places(&view)
-            .iter()
-            .any(|(label, _)| label == "Assigned to me"),
-        "the place goes when no one else is in the workspace: {:?}",
-        places(&view)
-    );
-}
-
-/// The assignee's person field offers the workspace's members and its agents, by the people
-/// and software a staged workspace has in it.
-#[cfg(feature = "record")]
-#[test]
-fn the_assignee_offers_the_workspaces_people_and_agents() {
-    let (mut ada, _root) = workspace();
-    let scenario = ada
-        .host
-        .package(APP)
-        .unwrap()
-        .meta
-        .scenarios
-        .iter()
-        .find(|scenario| scenario.name == "a shared week")
-        .expect("Tasks stages a shared week")
-        .action
-        .clone();
-    ada.host
-        .runtime()
-        .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
-        .unwrap();
-    ada.commit();
-    let post = task(&ada, "Write the launch post");
-    let page = task_page(&ada, &post);
-    let field = {
-        let meta = &ada.host.package(APP).unwrap().meta;
-        crate::fixtures::field_id(meta, "Task", "assignee")
-    };
-    let key = bound_key(page.tree(), &field).expect("the page binds its assignee");
-    let node = node_of(page.tree(), &key).expect("the bound node is drawn");
-    assert_eq!(node.kind, "ui.PersonField");
-    assert_eq!(
-        node.props.get("people"),
-        Some(&Value::List(vec![
-            Value::Principal(Principal::new("scenario:Mia")),
-            Value::Principal(Principal::new("scenario:Scout")),
-        ])),
-        "the list offers the workspace's people and agents"
-    );
-    assert_eq!(
-        node.props.get("me"),
-        Some(&Value::Principal(Principal::new("ada"))),
-        "the list leads with the person the page is shown to"
+        offered, declared,
+        "every action is offered, in declaration order"
     );
 }

@@ -50,7 +50,7 @@ impl TiloStore {
         self.load_record()?;
         let inner = self.inner.borrow();
         let (app, ty) = inner.locate(at)?;
-        let mirror = inner.mirror()?;
+        let mirror = inner.held_doc(&at.doc)?;
         let hash: ChangeHash = change
             .parse()
             .map_err(|_| not_found(format!("change {change}")))?;

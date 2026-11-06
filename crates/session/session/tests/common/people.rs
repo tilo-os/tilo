@@ -526,14 +526,6 @@ fn door_responder(
                             .header("content-type", "application/json")
                             .body(json!({ "error": refusal.to_string() }).to_string()),
                     ),
-                    Err(tilo_relay::workspaces::DoorRefusal::InvitationOnly) => Some(
-                        Reply::status(403)
-                            .header("content-type", "application/json")
-                            .body(
-                                json!({ "error": "this workspace is joined by invitation" })
-                                    .to_string(),
-                            ),
-                    ),
                 }
             }
             _ => Some(Reply::status(404)),
@@ -1408,16 +1400,40 @@ impl Chat<'_> {
     /// Wait until the conversation with `peer` shows `texts` in that order,
     /// and nothing else.
     pub fn wait_for_texts(&self, peer: &str, texts: &[&str]) {
+        self.wait_for_texts_ordered(peer, texts, true);
+    }
+
+    /// Wait until the conversation with `peer` shows `texts`, and nothing
+    /// else, in whatever order: for messages written at the same time on
+    /// devices that had not seen each other's, whose order is the records'
+    /// and not the writers'.
+    pub fn wait_for_texts_in_any_order(&self, peer: &str, texts: &[&str]) {
+        self.wait_for_texts_ordered(peer, texts, false);
+    }
+
+    fn wait_for_texts_ordered(&self, peer: &str, texts: &[&str], in_order: bool) {
+        let mut wanted: Vec<&str> = texts.to_vec();
+        if !in_order {
+            wanted.sort_unstable();
+        }
         let deadline = tilo_test_env::hang_deadline();
         loop {
             let held = if self.reads(peer) {
-                Some(self.texts(peer))
+                let shown = self.texts(peer);
+                Some(if in_order {
+                    shown
+                } else {
+                    let mut shown: Vec<String> = shown;
+                    shown.sort_unstable();
+                    shown
+                })
             } else {
                 None
             };
-            let matches = held
-                .as_ref()
-                .is_some_and(|shown| shown.iter().map(String::as_str).eq(texts.iter().copied()));
+            let matches = held.as_ref().is_some_and(|shown| {
+                shown.len() == wanted.len()
+                    && shown.iter().map(String::as_str).eq(wanted.iter().copied())
+            });
             if matches {
                 return;
             }

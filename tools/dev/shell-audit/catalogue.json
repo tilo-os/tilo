@@ -958,6 +958,35 @@
      "capture": "the next window in front"
     },
     {
+     "id": "window-more-menu",
+     "story": "open the window's More menu with a note open",
+     "steps": [
+      {
+       "door": "window.launch",
+       "app": "notes"
+      },
+      {
+       "wait": 0.8
+      },
+      {
+       "snapshot": "more-before"
+      },
+      {
+       "click": "More actions"
+      },
+      {
+       "wait": 0.8
+      }
+     ],
+     "measure": [
+      "the note's commands in the menu",
+      "how many More buttons the bar holds"
+     ],
+     "drawn_late": true,
+     "see": "menu",
+     "capture": "the window's one More menu"
+    },
+    {
      "id": "window-menu-open",
      "story": "open the window menu from the window's tab",
      "steps": [
@@ -967,6 +996,9 @@
       },
       {
        "wait": 0.7
+      },
+      {
+       "snapshot": "menu-before"
       },
       {
        "door": "window.menu"
@@ -979,6 +1011,8 @@
       "a menu opened",
       "items it offers"
      ],
+     "drawn_late": true,
+     "see": "menu",
      "capture": "the window menu"
     },
     {
@@ -993,6 +1027,9 @@
        "wait": 0.7
       },
       {
+       "snapshot": "menu-before"
+      },
+      {
        "door": "window.tab-menu"
       },
       {
@@ -1003,6 +1040,8 @@
       "a menu opened",
       "items it offers"
      ],
+     "drawn_late": true,
+     "see": "menu",
      "capture": "the tab's right-click menu"
     },
     {
@@ -2212,6 +2251,9 @@
        "wait": 0.7
       },
       {
+       "snapshot": "menu-before"
+      },
+      {
        "door": "desk.shortcut",
        "action": "tab_menu"
       },
@@ -2223,6 +2265,8 @@
       "a menu opened",
       "what it offers"
      ],
+     "drawn_late": true,
+     "see": "menu",
      "capture": "the tab menu"
     },
     {

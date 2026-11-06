@@ -37,18 +37,18 @@ package that declares no hosts reaches none. The grant is part of the manifest a
 and the workspace may revoke a host.
 
 A package migrates its own records when its schema changes shape. The field the type no longer
-uses stays, marked `(previously)`: its values stay in the records, and only a migration reads
-it. A `migration action` on the type moves what it held to where the type keeps it now:
+uses stays as an ordinary field: its values stay in the records, and a migration reads them. A
+`migration action` on the type moves what a field held to where the type keeps it now:
 
 ```
 type Column {
-    title: Text (title)
+    title: Text
     cards: Collection<Card>
 }
 
 type Board {
     columns: Collection<Column>
-    cards: Collection<Card> (previously)
+    cards: Collection<Card>
 }
 
 /// Puts each card of a board from before into its column, in the order the board showed them.
@@ -60,33 +60,21 @@ migration action place_cards(b: Board) {
 }
 ```
 
-The platform runs it once on each resource of its type that holds something in a `(previously)`
-field (a type without one: once on each resource), as an ordinary action of the person whose
-window opened the data: it is in history, undone like any other, and records in the same change
-that it ran. A migration is never offered. It cannot delete anything; moving items between
-collections keeps their ids and history.
+The platform runs it once on each resource of its type, as an ordinary action of the person
+whose window opened the data: it is in history, undone like any other, and records in the same
+change that it ran. A migration is never offered. It cannot delete anything; moving items
+between collections keeps their ids and history.
 
-An `internal action` is never offered either: it is an ordinary action that only the app's own
-gestures run — a drag, an entry, a lane's button — so no surface that lists a subject's actions
-shows it: not the header, not an item's menu, not the palette. It is how an app says what a drag
-means:
+An action is a thing somebody does, so every action is offered: people choose it from the
+header, an item's menu or the palette, agents choose among them, and programs call it. An app
+places its actions where its views show them — a drag's `place`, an entry's create, a key a
+control runs — and the same actions stay reachable everywhere a command is listed. A helper the
+app needs but nobody chooses is a `fn`, which computes from what it is given; an action that
+writes gets a name that says what it does, because a person can choose it too.
 
-```
-internal action place(t: Task, s: Option<Section>, at: Int) { ... }
-
-ui.TreeView(rows: tasks.items, reorder: true, place: place) { ... }
-```
-
-The action is reachable from the description a gesture names it by — `reorder:`, an entry's
-`add:`, a key a control runs — and from `run(place(...))` in the app's own code. It cannot also
-be a `primary`, `destructive` or `migration` action, which are the other side of the same
-question: what a surface offers.
-
-`internal` is not how an action stays out of the header. Where a surface draws an offered action
-is not a property of the action's role: `frequent: true` puts it in the header row as a button,
-every other offered action sits in the header's menu beside the same commands an item's menu
-lists. Marking a command a person chooses `internal` takes it out of the header *and* out of
-every menu and the palette.
+Where a surface draws an offered action is not a property of the action's role: `frequent: true`
+puts it in the header row as a button, every other offered action sits in the header's menu
+beside the same commands an item's menu lists.
 
 To start a package, make a directory next to the others with one file:
 
@@ -540,7 +528,7 @@ resources of an outside service when it names one of the service's kinds:
 
 ```
 type Message (origin: imap.message) {
-    subject: Text (title)
+    subject: Text
     from: Text
     unread: Bool
     mailbox: Text
@@ -565,7 +553,7 @@ filter in field order, and the first Time the default order, newest first.
 
 ```
 type Message {
-    subject: Text (title)
+    subject: Text
     from: std.Identifier
     received: Time
     unread: Bool = true
@@ -586,35 +574,27 @@ A named filter reads only the type's own fields and literals (`not done`, `due !
 `workspace.me`, which is each person it is asked by (`filter "Assigned to me" = assignee ==
 workspace.me and not done`). The index keeps it as fields change.
 
-**Derived keys** (DECISIONS.md, "Derived keys"). A value that follows from the other records of
-a collection is declared on the type, not written: a branch is finished when it and everything
-under it are, a task's row says how many of its subtasks are done. The store's index works it
-out, keeps it where a view reads fields from, and reads, sorts, filters and groups by it as by
-any field; no action writes it.
+**Values across records.** A value that follows from other records of a collection — a branch
+finished when it and everything under it are, a row saying how many of its subtasks are done —
+is an ordinary `fn` over the collection, called from the views that show it:
 
 ```
 type Task {
-    title: Text (title)
+    title: Text
     done: Bool = false
-    parent: Option<Task> (parent) = .none     // what the items under it nest by
-    // Finished: done itself, and so is every task under it.
-    derive finished: Bool = children.all(finished) and (done or children.count > 0)
-    // Folded away: finished, and so is every task it is under.
-    derive folded: Bool = finished and parent.all(folded)
-    derive subtasks: Int = children.count
-    derive subtasks_done: Int = children.count(done)
+    parent: Option<Task> = .none     // what the items under it nest by
+}
+
+/// Whether `t` is finished: done itself, and so is every task under it.
+fn finished(items: List<Task>, t: Task) -> Bool {
+    let under = items.descendants(t, .parent)
+    if under.is_empty() { t.done } else { under.all(x -> x.done) }
 }
 ```
 
-A key is a `Bool` or an `Int`, read from the type's own fields of those types and from
-`children` — the items naming it in its parent field — with `count`, `count(x)`, `all(x)` and
-`any(x)`, from the items above it with `parent.all(x)`, and from two counts compared
-(`children.count > 0`), combined with `not`, `and` and `or`. A key reads one way, the items
-under an item or the items above it, never both: `finished` reads down the steps, `folded`
-reads up the chain. It reads itself and the keys declared before it in the type body. A write
-of one (an assignment, or a record made with one) is refused: two people checking the last two
-steps of a branch at once each derive it from what they hold, and both agree once the changes
-meet.
+`items.descendants(t, .parent)` and `items.ancestors(t, .parent)` follow a reference field
+through the items the view passes in. Nothing writes the result: each person reads it from what
+they hold, and both agree once the changes meet.
 
 A `std.Identifier`
 is an account of any service held as its URI: `std.Identifier("mailto:jane@x.com")`, a bare
@@ -762,6 +742,10 @@ measures it in, read as one with `Duration(n)`.
 - `xs.first()` and `xs.last()` give an `Option` of the item.
 - A row view may have `let`s before its `row`. `row(r)` with a resource shows that resource's
   row. `ui.Card(item: r, count: n)` shows a count.
+- A record shown where no view of it is drawn — a link, a search result, the palette, a history
+  entry, a notification — is drawn through its type's `row view`; a type without one shows its
+  type's name and `created(r)`. Where code needs a record's name it is the first `Text` or
+  `RichText` field, cut to its first non-blank line, and search indexes every text field.
 - A view of one item whose whole body is one row is that item's row wherever it is drawn
   (`view task_row(t: Task, place: RowPlace) { row(t.title, ...) }`), so the parameters after
   the item are what the place around the row says: a list grouped by a day gives the day, a

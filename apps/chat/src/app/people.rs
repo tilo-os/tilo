@@ -100,6 +100,20 @@ impl ChatApp {
         crate::identity::unnamed_label(id)
     }
 
+    /// How a narrow line names someone: their given name, so a line that
+    /// carries faces, three names and a count still says who leads the crowd
+    /// instead of eliding a surname. A person named in full once — a
+    /// message's author, a call's accessible reading — keeps `user_name`.
+    pub(crate) fn given_name(&self, id: &str) -> String {
+        let name = self.user_name(id);
+        match name.split_once(' ') {
+            Some((given, rest)) if !given.is_empty() && !rest.trim().is_empty() => {
+                given.to_string()
+            }
+            _ => name,
+        }
+    }
+
     /// The avatar monogram for `id`, derived from whatever the workspace calls them
     /// so the letter never disagrees with the name beside it.
     pub fn initials_for(&self, id: &str) -> String {

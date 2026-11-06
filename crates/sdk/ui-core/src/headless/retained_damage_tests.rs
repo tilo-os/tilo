@@ -5,8 +5,8 @@
 
 use super::*;
 use crate::retained_raster::{
-    FrameContent, RasterCheck, Repaint, RetainedFrames, RetainedRaster, RetainedTarget, TargetKey,
-    Unknown,
+    FrameContent, RasterCheck, Readback, Repaint, RetainedFrames, RetainedRaster, RetainedTarget,
+    TargetKey, Unknown,
 };
 use crate::widget::{
     Column, Dropdown, GroupRow, ScrollAxis, Scrollable, TabDescriptor, Text, TextInput,
@@ -323,17 +323,25 @@ fn session_matches_full_renders(sparse: bool) {
         .unwrap();
         // Another test polling the shared device may be the one that runs
         // the readback's callbacks, after this poll returns.
-        let differing = loop {
+        let readback = loop {
             let _ = device.poll(vello::wgpu::PollType::wait_indefinitely());
-            if let Some(differing) = check.differing() {
-                break differing;
+            if let Some(readback) = check.differences() {
+                break readback;
             }
             std::thread::yield_now();
         };
-        assert_eq!(
-            differing, 0,
-            "after {what} (sparse {sparse}), repainting {regions:?} left stale pixels"
-        );
+        match readback {
+            Readback::Differing(differences) => assert_eq!(
+                differences.count, 0,
+                "after {what} (sparse {sparse}), repainting {regions:?} left stale pixels at {:?}",
+                differences.bounds
+            ),
+            // A check that could not run proves nothing either way, and the
+            // test says so rather than calling the frame stale.
+            Readback::Unreadable(why) => panic!(
+                "after {what} (sparse {sparse}), the check could not read its frames back: {why}"
+            ),
+        }
     };
     step(&mut harness, "the first frame");
 

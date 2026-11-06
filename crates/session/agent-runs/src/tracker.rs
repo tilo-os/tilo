@@ -39,7 +39,12 @@ impl TrackerRuns for AgentRuns {
         let policy = self
             .workspace_policy(workspace)
             .ok_or("this workspace's grants are not at hand")?;
-        requirement.check_tracker_policy(&policy, workspace, run, wall())
+        // What this session looked up about the run's turn: it holds the ask
+        // and the steering, but not the conversation record a message's author
+        // and the agent's part in it are read from. A run whose turn this
+        // session names waits for its cause to arrive rather than running
+        // unasked (a run asked from the desk names none).
+        requirement.check_tracker_policy(&policy, workspace, run, None, wall())
     }
 
     fn presented(

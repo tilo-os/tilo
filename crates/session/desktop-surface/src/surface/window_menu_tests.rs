@@ -130,22 +130,13 @@ fn every_row_the_desktop_has_for_a_window_is_offered_in_its_order() {
     // Nowhere to move it to: the rows stay, disabled, saying why.
     let strip = row(&rows, MOVE_TO_STRIP).unwrap();
     assert!(!strip.enabled);
-    assert_eq!(
-        strip.reason.as_deref(),
-        Some("This workspace has no other strip")
-    );
+    assert_eq!(strip.reason.as_deref(), Some("No other strip"));
     let workspace = row(&rows, MOVE_TO_WORKSPACE).unwrap();
     assert!(!workspace.enabled);
-    assert_eq!(
-        workspace.reason.as_deref(),
-        Some("There is no other workspace")
-    );
+    assert_eq!(workspace.reason.as_deref(), Some("No other workspace"));
     let display = row(&rows, MOVE_TO_DISPLAY).unwrap();
     assert!(!display.enabled);
-    assert_eq!(
-        display.reason.as_deref(),
-        Some("This window is on the only display")
-    );
+    assert_eq!(display.reason.as_deref(), Some("Only display"));
     for offered in rows.iter().filter(|row| row.enabled) {
         assert!(
             command(&tree, &route, &offered.id, Some("A name")).is_some(),
@@ -300,11 +291,7 @@ fn every_width_row_gives_the_window_the_share_it_names() {
     let rows = handle.window_menu(route.tab);
     let widest = row(&rows, WIDER).unwrap();
     assert!(!widest.enabled, "no wider than the strip");
-    assert_eq!(
-        widest.reason.as_deref(),
-        Some("As wide as the strip"),
-        "the row says why"
-    );
+    assert_eq!(widest.reason.as_deref(), Some("Widest"), "the row says why");
     let tree = handle.read(Clone::clone);
     assert!(matches!(
         command(&tree, &route, NARROWER, None),
@@ -329,10 +316,7 @@ fn every_width_row_gives_the_window_the_share_it_names() {
     let rows = handle.window_menu(route.tab);
     let narrowest = row(&rows, NARROWER).unwrap();
     assert!(!narrowest.enabled, "no narrower than a window goes");
-    assert_eq!(
-        narrowest.reason.as_deref(),
-        Some("As narrow as a window goes")
-    );
+    assert_eq!(narrowest.reason.as_deref(), Some("Narrowest"));
     assert!(
         handle
             .choose_window_menu(route.tab, NARROWER, None)
@@ -925,7 +909,7 @@ fn someone_elses_window_offers_no_move_nor_close() {
     for id in [CLOSE, CLOSE_WINDOW, SPLIT_RIGHT, NEW_GROUP, NEW_TAB] {
         let held = row(&rows, id).unwrap_or_else(|| panic!("{id} is offered"));
         assert!(!held.enabled, "{id} is theirs: {held:?}");
-        assert_eq!(held.reason.as_deref(), Some("Ben opened this window"));
+        assert_eq!(held.reason.as_deref(), Some("Ben's window"));
     }
     assert!(
         row(&rows, MAXIMIZE).unwrap().enabled,

@@ -148,8 +148,8 @@ impl TopBarChrome {
         // The centre carousel owns a fixed central lane.  Long translated or
         // user-authored workspace names must yield to it instead of painting
         // underneath it.
-        let center_left =
-            f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
+        let center_left = f64::midpoint(self.rect.x0, self.rect.x1)
+            - self.center_band_width(theme, text_renderer) / 2.0;
         // Capsule chrome around the label: a leading pad, the gap to the
         // chevron, the chevron itself and a trailing pad of the same size — so
         // the pill reads centred on its contents. The `s4` beyond that is

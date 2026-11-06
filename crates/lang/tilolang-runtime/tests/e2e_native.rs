@@ -14,7 +14,7 @@ mod cases {
     const SOURCE: &str = r#"app so.tilo.notes "Notes" (icon: .bookmark)
 
 type Note {
-    title: Text (title)
+    title: Text
     pinned: Bool = false
     due: Option<Date> = .none
 }

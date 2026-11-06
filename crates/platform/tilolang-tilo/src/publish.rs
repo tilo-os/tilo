@@ -562,6 +562,27 @@ pub enum Moved {
     Everything,
 }
 
+/// Whether a change to `changed` moves what a read of `read` saw.
+///
+/// The same resource and field, either read or changed whole, is the same thing read and changed
+/// again. A requirement that read a resource whole sees everything published under it, so a
+/// change to one of its items reads it again. A change to a resource above what was read does
+/// not: what an item's own fields are is what a requirement of the item reads, and a collection
+/// changing around it is a change to the collection.
+#[must_use]
+pub fn reached(changed: &Field, read: &Field) -> bool {
+    const WHOLE: &str = tilolang_runtime::ANY_FIELD;
+    let above = |outer: &str, inner: &str| {
+        inner
+            .strip_prefix(outer)
+            .is_some_and(|rest| rest.starts_with('/'))
+    };
+    if changed.0 == read.0 {
+        return changed.1 == read.1 || changed.1 == WHOLE || read.1 == WHOLE;
+    }
+    above(&read.0, &changed.0) || (changed.1 == WHOLE && above(&changed.0, &read.0))
+}
+
 /// What the updates since a revision moved of the records' text, as a reader that keeps one
 /// entry per resource (the search index) reads it: a task checked replaces its entry, a task
 /// added or deleted adds or drops one, whatever else the workspace holds.
@@ -1440,7 +1461,7 @@ impl Published<'_> {
         };
         // The field of the record the name is read through, when an item holds it: a field
         // after it in naming order cannot name the record while it does
-        // ([`TypeSchema::in_naming_order`]).
+        // ([`TypeSchema::naming_scan`]).
         let named_chain = named_by
             .filter(|at| *at != self.doc)
             .and_then(|at| self.chain(at));
@@ -1913,36 +1934,25 @@ fn published_holder(tree: &ResourceSpec, id: &str) -> Option<String> {
     None
 }
 
-/// What names an item, as [`crate::reads::first_text`] names a resource: its own texts first —
-/// a `title` field, then a `body`'s first line, then the rest in declaration order — and only a
-/// record holding none of its own is named by an item it holds (a record that is nothing but
-/// its list). A channel's messages never name the channel: its `name` does.
+/// What names an item, as [`crate::reads::first_text`] names a resource: its own texts first, in
+/// declaration order, by their first non-blank line, and only a record holding none of its own
+/// is named by an item it holds (a record that is nothing but its list). A channel's messages
+/// never name the channel: its `name` does.
 fn item_label(item: &crate::record::DynRecord) -> Option<String> {
     use crate::record::DynValue;
-    use crate::schema::{FieldRole, MergeKind};
+    use crate::schema::MergeKind;
     let schema = item.schema();
     let read = |field: &crate::schema::FieldSchema| match item.get(&field.id) {
-        Some(DynValue::Text(text)) if !text.trim().is_empty() => Some(text.clone()),
+        Some(DynValue::Text(text)) if !text.trim().is_empty() => text
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(str::to_owned),
         _ => None,
     };
     let mut texts = schema
         .fields
         .iter()
         .filter(|field| field.kind == MergeKind::Text);
-    let titled = texts.clone().find(|field| field.role == FieldRole::Title);
-    if let Some(text) = titled.as_ref().and_then(|field| read(field)) {
-        return Some(text);
-    }
-    let bodied = texts.clone().find(|field| field.role == FieldRole::Body);
-    if let Some(text) = bodied.as_ref().and_then(|field| read(field)) {
-        let first = text
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or_default();
-        if !first.trim().is_empty() {
-            return Some(first.to_owned());
-        }
-    }
     if let Some(text) = texts.find_map(read) {
         return Some(text);
     }

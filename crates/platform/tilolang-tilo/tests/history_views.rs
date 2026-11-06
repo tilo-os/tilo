@@ -218,7 +218,7 @@ fn a_change_shows_what_the_title_and_the_due_day_held_before_and_after() {
     assert_eq!(text(after), Some("Shopping"));
     // What it did, in the words of the field it wrote: it renamed the note.
     assert!(
-        says(&section).contains(&"bo renamed this to".to_owned()),
+        reads_as(&section).contains("bo changed title"),
         "the entry says what was done: {section:#?}"
     );
 
@@ -278,7 +278,7 @@ fn undo_on_an_older_step_takes_back_that_step_alone() {
                 && n.children.first().is_some_and(|row| {
                     nodes(row)
                         .into_iter()
-                        .any(|t| text(t) == Some("You renamed this to"))
+                        .any(|t| text(t) == Some("changed title"))
                 })
         })
         .cloned()
@@ -451,7 +451,7 @@ fn a_history_entry_says_the_day_a_task_moved_to_or_was_taken_away() {
     ada.commit();
     let said = says(&history_of(&ada, &target(&set)));
     assert!(
-        said.contains(&"bo set the due date to".to_owned()),
+        said.join(" ").contains("bo set the due date to"),
         "a day a task did not have is set: {said:?}"
     );
     assert!(said.contains(&"2026-11-02".to_owned()), "{said:?}");
@@ -469,7 +469,7 @@ fn a_history_entry_says_the_day_a_task_moved_to_or_was_taken_away() {
     ada.commit();
     let said = says(&history_of(&ada, &target(&moved)));
     assert!(
-        said.contains(&"bo moved this to".to_owned()),
+        said.join(" ").contains("bo moved this to"),
         "a day a task had is moved to another: {said:?}"
     );
     assert!(said.contains(&"2026-10-31".to_owned()), "{said:?}");
@@ -477,7 +477,7 @@ fn a_history_entry_says_the_day_a_task_moved_to_or_was_taken_away() {
     ada.commit();
     let said = says(&history_of(&ada, &target(&moved)));
     assert!(
-        said.contains(&"bo cleared the due date".to_owned()),
+        said.join(" ").contains("bo cleared the due date"),
         "a day taken away is said so: {said:?}"
     );
 }
@@ -496,7 +496,7 @@ fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to(
     );
     ada.commit();
     let said = says(&history_of(&ada, &target(&urgent)));
-    assert!(said.contains(&"bo set priority to".to_owned()), "{said:?}");
+    assert!(said.join(" ").contains("bo set priority to"), "{said:?}");
     assert!(said.contains(&"High".to_owned()), "{said:?}");
 
     let filed = a_task_of(&mut ada, &tasks, "Book the van");
@@ -510,7 +510,7 @@ fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to(
     ada.commit();
     let said = says(&history_of(&ada, &target(&filed)));
     assert!(
-        said.contains(&"bo moved this to".to_owned()),
+        said.join(" ").contains("bo moved this to"),
         "a task put in a project is moved to it: {said:?}"
     );
     assert!(said.contains(&"New project".to_owned()), "{said:?}");
@@ -528,7 +528,7 @@ fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to(
     ada.commit();
     let said = says(&history_of(&ada, &target(&unfiled)));
     assert!(
-        said.contains(&"bo moved this out of".to_owned()),
+        said.join(" ").contains("bo moved this out of"),
         "a task taken out of a project says the one it left: {said:?}"
     );
 
@@ -546,7 +546,7 @@ fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to(
     ada.commit();
     let said = says(&history_of(&ada, &target(&assigned)));
     assert!(
-        said.contains(&"bo assigned this to".to_owned()),
+        said.join(" ").contains("bo assigned this to"),
         "a task given to someone says who: {said:?}"
     );
     assert!(said.contains(&"Ada Lovelace".to_owned()), "{said:?}");
@@ -567,17 +567,21 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
     ada.commit();
     call(&ada, "bo", TASKS_APP, "check", vec![done.clone()]);
     ada.commit();
-    let said = says(&history_of(&ada, &target(&done)));
+    let checked = says(&history_of(&ada, &target(&done)));
     assert!(
-        said.contains(&"bo completed this".to_owned()),
-        "checking a task off says it was completed: {said:?}"
+        checked.join(" ").contains("bo set done to"),
+        "checking a task off says what it set: {checked:?}"
     );
     call(&ada, "bo", TASKS_APP, "check", vec![done.clone()]);
     ada.commit();
-    let said = says(&history_of(&ada, &target(&done)));
+    let reopened = says(&history_of(&ada, &target(&done)));
     assert!(
-        said.contains(&"bo reopened this".to_owned()),
-        "opening it again says so: {said:?}"
+        reopened.join(" ").contains("bo set done to"),
+        "opening it again says what it set: {reopened:?}"
+    );
+    assert_ne!(
+        checked, reopened,
+        "the check and the reopening read unlike: the flag each set is shown"
     );
 
     let above = call(
@@ -605,16 +609,19 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
     ada.commit();
     let said = says(&history_of(&ada, &target(&under)));
     assert!(
-        said.contains(&"bo moved this under".to_owned()),
-        "a task put under another is moved under it: {said:?}"
+        said.join(" ").contains("bo moved this to"),
+        "a task put under another says what it moved to: {said:?}"
     );
-    assert!(said.contains(&"Plan the week".to_owned()), "{said:?}");
+    assert!(
+        said.contains(&"Plan the week".to_owned()),
+        "the parent it moved to is shown: {said:?}"
+    );
     call(&ada, "bo", TASKS_APP, "outdent", vec![under.clone()]);
     ada.commit();
     let said = says(&history_of(&ada, &target(&under)));
     assert!(
-        said.contains(&"bo moved this to the top level".to_owned()),
-        "a task taken out from under another says so: {said:?}"
+        said.join(" ").contains("bo moved this out of"),
+        "a task taken out from under another says what it left: {said:?}"
     );
 }
 
@@ -622,9 +629,9 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
 const SENTENCES: &str = r#"app so.tilo.test.sentences "Sentences"
 
 type Task {
-    title: Text (title)
+    title: Text
     due: Option<Date>
-    at: Option<Time> (time of: due)
+    at: Option<Time>
 }
 
 type Tasks {
@@ -633,11 +640,6 @@ type Tasks {
 
 action new_task(tasks: Tasks, title: Text, at: Option<Time>) -> Task {
     tasks.items.insert(Task(title: title, at: at))
-}
-
-/// Sets the day a task is due by, leaving the time of day it holds where it stands.
-action reschedule(t: Task, due: Date) {
-    t.due = .some(due)
 }
 
 /// Renames a task, and moves it to a day, in one change.
@@ -667,8 +669,8 @@ view task_page(t: Task) {
 "#;
 const SENTENCES_APP: &str = "so.tilo.test.sentences";
 
-/// A change that wrote two fields reads as one sentence, and a day reads with the time of day
-/// it holds. The window shows the task's history, as an app's does.
+/// A change that wrote two fields reads as one sentence, and each field shows what it held. The
+/// window shows the task's history, as an app's does.
 #[test]
 fn a_change_that_wrote_two_fields_reads_as_one_sentence() {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(SENTENCES, "")]);
@@ -688,32 +690,6 @@ fn a_change_that_wrote_two_fields_reads_as_one_sentence() {
     );
     ada.commit();
     let at = target(&task);
-    // The time of day stands while the day moves: the two read as one fact.
-    call(
-        &ada,
-        "bo",
-        SENTENCES_APP,
-        "reschedule",
-        vec![task.clone(), Value::text("2026-07-01")],
-    );
-    ada.commit();
-    let section = history_of(&ada, &at);
-    let said = says(&section);
-    assert!(
-        said.contains(&"bo set the due date to".to_owned()),
-        "the day the change sets: {said:?}"
-    );
-    let day = nodes(&section)
-        .into_iter()
-        .find(|node| node.props.get("value:as") == Some(&Value::text("date")))
-        .expect("the day the change set is shown as a day");
-    assert_eq!(day.props.get("value"), Some(&Value::text("2026-07-01")));
-    assert_eq!(
-        day.props.get("value:time"),
-        Some(&Value::text("2026-06-30T09:00:00Z")),
-        "the day reads with the time of day it holds"
-    );
-
     // Two fields written by one change read as one sentence, the second going on with "and".
     call(
         &ada,
@@ -729,11 +705,11 @@ fn a_change_that_wrote_two_fields_reads_as_one_sentence() {
     ada.commit();
     let said = says(&history_of(&ada, &at));
     assert!(
-        said.contains(&"bo renamed this to".to_owned()),
+        said.join(" ").contains("bo changed title"),
         "the first field the change wrote: {said:?}"
     );
     assert!(
-        said.contains(&"and moved this to".to_owned()),
+        said.contains(&"and set the due date to".to_owned()),
         "the second goes on with and: {said:?}"
     );
     assert!(
@@ -971,6 +947,18 @@ fn says(section: &UiNode) -> Vec<String> {
         .collect()
 }
 
+/// What a section of history reads as: its texts in the order the rows show them, so an entry
+/// reads as who made it and, beside the words of what it did, what was done. A row's buttons
+/// (`Undo`, a flag's yes and no) stand in the row but are not part of what the entry says.
+fn reads_as(section: &UiNode) -> String {
+    nodes(section)
+        .into_iter()
+        .filter(|node| node.kind == "ui.Text")
+        .filter_map(text)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The history section of a window on `at`.
 fn history_of(ada: &Replica, at: &ResourceRef) -> UiNode {
     let mut page = ada.host.open_resource(at, None).unwrap();
@@ -1014,10 +1002,10 @@ fn a_history_row_names_the_person_as_the_avatar_does_and_an_agent_as_its_name_an
     let mut editor = ada.host.open_resource(&target(&note), None).unwrap();
     let section = history(&mut editor);
     // The run's rename, newest, then Ada's own: the agent reads as its name plus that it is
-    // software, and the step the person looking made reads as the platform's word for them.
+    // software, the person looking as the platform's word for them, each over what it did.
     assert_eq!(
         labels(&section),
-        ["Helper (agent)", "You renamed this to"],
+        ["Helper (agent)", "You", "changed title"],
         "the rows name people as the avatars do, never their ids"
     );
     assert!(
@@ -1069,12 +1057,16 @@ fn typing_in_a_bound_field_reads_as_an_edit_of_that_field() {
     let section = history(&mut page);
     let said = says(&section);
     assert!(
-        said.contains(&"You renamed this to".to_owned()),
+        said.join(" ").contains("You changed title"),
         "the entry says what was done: {said:?}"
     );
+    page.press(&button(&section, "tilolang-history-show"))
+        .unwrap();
+    let section = history(&mut page);
+    let said = says(&section);
     assert!(
         said.contains(&"Bring oat milk".to_owned()),
-        "the entry says the name it took: {said:?}"
+        "the entry opened says the name it took: {said:?}"
     );
     assert!(
         !said.iter().any(|what| what.contains("dit-text")),
@@ -1086,7 +1078,7 @@ fn typing_in_a_bound_field_reads_as_an_edit_of_that_field() {
 /// did: it took the tasks under it with it, and the step before it is an entry of its own.
 #[test]
 fn checking_a_task_off_is_one_entry_saying_what_it_did() {
-    const SAYS: &str = "You completed this";
+    const SAYS: &str = "You set done to";
     let (mut ada, _, tasks) = two_people();
     let parent = call(
         &ada,
@@ -1123,7 +1115,7 @@ fn checking_a_task_off_is_one_entry_saying_what_it_did() {
         "newest first: the check, then Bo's step, then the making"
     );
     assert!(
-        nodes(&section).iter().any(|n| text(n) == Some(SAYS)),
+        reads_as(&section).contains(SAYS),
         "the check's entry says who checked it and what it did: {section:#?}"
     );
     let (label, ..) = changes(&section)
@@ -1239,4 +1231,191 @@ fn a_command_over_many_chosen_tasks_is_one_change_its_undo_takes_back() {
             "Undo takes every task the change reached back with it"
         );
     }
+}
+
+/// Whether the task `at` is done.
+fn done(r: &Replica, at: &ResourceRef) -> Value {
+    field(r, TASKS_APP, at, "Task", "done")
+}
+
+/// How many tasks the list `root` holds.
+fn held(r: &Replica, root: &ResourceRef) -> usize {
+    match r.host.runtime().read(root, "items").unwrap() {
+        Value::List(items) => items.len(),
+        other => panic!("a list of tasks: {other:?}"),
+    }
+}
+
+/// How many changes the workspace holds of `roots`: of each resource in it.
+fn changes_of(r: &Replica, roots: &[&ResourceRef]) -> usize {
+    roots
+        .iter()
+        .map(|root| r.host.store().versions(root).unwrap().len())
+        .sum()
+}
+
+/// An action that calls two of its app's own actions is one step of the person's: one Undo
+/// takes back every change it made, and one Redo brings them all back.
+#[test]
+fn an_action_that_calls_two_of_its_apps_actions_is_one_step() {
+    let (mut ada, _notes, tasks) = two_people();
+    let root = target(&tasks);
+    let parent = target(&call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "new_task",
+        crate::tasks::create(&tasks, "Parent"),
+    ));
+    call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "check",
+        vec![Value::resource(&parent), Value::Bool(true)],
+    );
+    ada.commit();
+    assert_eq!(done(&ada, &parent), Value::Bool(true));
+    let before = changes_of(&ada, &[&root, &parent]);
+
+    // A subtask under the task that was done: the action inserts it and calls `check` to open
+    // the task again, so the person's one press made two changes.
+    call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "add_subtask",
+        vec![tasks, Value::resource(&parent), Value::text("Child")],
+    );
+    ada.commit();
+    assert_eq!(
+        done(&ada, &parent),
+        Value::Bool(false),
+        "the subtask opened the task again"
+    );
+    assert_eq!(held(&ada, &root), 2, "and it stands in the list");
+    assert_eq!(
+        changes_of(&ada, &[&root, &parent]),
+        before + 2,
+        "the one action made two changes"
+    );
+
+    // One Undo takes the whole action back: the subtask goes, and the task is done again.
+    ada.history(&HistoryAsk::Undo.edit());
+    assert_eq!(held(&ada, &root), 1, "Undo took the subtask back");
+    assert_eq!(
+        done(&ada, &parent),
+        Value::Bool(true),
+        "and made the task done again"
+    );
+
+    // One Redo brings both of them back.
+    ada.history(&HistoryAsk::Redo.edit());
+    assert_eq!(held(&ada, &root), 2, "Redo brought the subtask back");
+    assert_eq!(
+        done(&ada, &parent),
+        Value::Bool(false),
+        "and opened the task again"
+    );
+}
+
+/// An app whose action calls two of its own actions, each changing the one record: what makes
+/// the action's changes two, of one person, on one resource.
+const PAIRED: &str = r#"app test.paired "Paired"
+
+type Tally {
+  value: Int merge counter
+  note: Text
+}
+
+root Tally
+
+default view tally for Tally
+
+view tally(t: Tally) {
+  std.page(t) {
+    ui.Text("{t.value}")
+    std.history(t)
+  }
+}
+
+action bump(t: Tally) {
+  t.value += 1
+}
+
+action note(t: Tally) {
+  t.note = "noted"
+}
+
+action both(t: Tally) {
+  bump(t)
+  note(t)
+}
+"#;
+
+const PAIRED_APP: &str = "test.paired";
+
+/// The changes one action made on one record are one entry of its history, and its Undo takes
+/// them all back together.
+#[test]
+fn the_changes_of_one_action_are_one_entry_of_history_its_undo_takes_back() {
+    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(PAIRED, "")]);
+    let tally = ada.host.root_of(PAIRED_APP).unwrap();
+    ada.commit();
+    let before = changes_of(&ada, &[&tally]);
+    call(
+        &ada,
+        "ada",
+        PAIRED_APP,
+        "both",
+        vec![Value::resource(&tally)],
+    );
+    ada.commit();
+    assert_eq!(
+        changes_of(&ada, &[&tally]),
+        before + 2,
+        "the action and the two it called are two changes"
+    );
+
+    // History lists the action once: one entry saying how many changes it made, beside the
+    // record's own first entry.
+    let mut window = ada.host.open_resource(&tally, None).unwrap();
+    let section = history(&mut window);
+    let said = says(&section);
+    assert_eq!(
+        entries(&section).len(),
+        2,
+        "the record's creation, then the action: {said:#?}"
+    );
+    assert_eq!(
+        said.iter()
+            .filter(|said| said.as_str() == "tilolang-history-changes")
+            .count(),
+        1,
+        "the action stands in history once, saying how many changes it made: {said:?}"
+    );
+
+    // One Undo takes every change of it back, and one Redo brings them back.
+    ada.history(&HistoryAsk::Undo.edit());
+    assert_eq!(
+        field(&ada, PAIRED_APP, &tally, "Tally", "value"),
+        Value::Int(0),
+        "Undo took the action's first change back"
+    );
+    assert_eq!(
+        field(&ada, PAIRED_APP, &tally, "Tally", "note"),
+        Value::text(""),
+        "and its second with it"
+    );
+    ada.history(&HistoryAsk::Redo.edit());
+    assert_eq!(
+        field(&ada, PAIRED_APP, &tally, "Tally", "value"),
+        Value::Int(1),
+        "Redo brought the action's first change back"
+    );
+    assert_eq!(
+        field(&ada, PAIRED_APP, &tally, "Tally", "note"),
+        Value::text("noted"),
+        "and its second with it"
+    );
 }

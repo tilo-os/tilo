@@ -7,10 +7,10 @@ use ed25519_dalek::Signer as _;
 use tilo_actions::door::ActionAddress;
 use tilo_actions::remote::feedback::{FeedbackAdmission, FeedbackAnswer, FeedbackQuery};
 use tilo_actions::remote::{ActionHostError, Caller, Completer};
-use tilo_desktop::feedback::Destination;
-use tilo_desktop::feedback::transport::{
+use tilo_feedback_transport::{
     CanonicalDestination, CanonicalReceiptSource, Enrollment, ReceiptSigner, ReceiptSigningRequest,
 };
+use ui::feedback::Destination;
 use ui::feedback::{Error, Receipt, Submission};
 
 use super::{AppCatalogue, DocumentRoute, WorkspaceMember, WorkspaceRecordsLink, reads, record_of};

@@ -29,7 +29,9 @@ use std::sync::Arc;
 
 use collaboration::action_directory::PublishedDirectory;
 use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit, VIEW_TYPE};
-use collaboration::{CollabEvent, CollabRequest, SurfacePublication};
+use collaboration::{
+    CollabEvent, CollabRequest, DocumentMutation, SurfacePublication, WorkspaceCommit,
+};
 use tilo_actions::{
     ActionAddress, ActionContext, ActionDescriptor, ActionInvoker, ActionRegistry, ActorKind,
     EncodedAction, InvocationId, InvocationUpdate, ResourceSpec,
@@ -45,7 +47,7 @@ use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
 use tilolang_tilo::publish::package_resource_id;
 use tilolang_tilo::publish::{
-    Caller, Committer, Planner, Publications, host_resource, publish_package,
+    Caller, Committer, Moved, Planner, Publications, host_resource, publish_package, reached,
 };
 use tilolang_tilo::{HostEffect, OpenEffect};
 
@@ -222,15 +224,18 @@ impl Surface {
 /// `None` when nothing of it is shown: a record of ten thousand items publishes the rows on
 /// screen.
 fn pruned(spec: &ResourceSpec, shown: &Shown) -> Option<ResourceSpec> {
-    if !shown.contains(spec.id.as_str()) {
-        return None;
-    }
     let mut out = shallow(spec);
     out.children = spec
         .children
         .iter()
         .filter_map(|child| pruned(child, shown))
         .collect();
+    // A resource the window does not name is kept when one under it is: the record's shape
+    // holds a row not as its id spells it (a conversation under its account), and what the
+    // window shows is reached through the resources that hold it.
+    if out.children.is_empty() && !shown.contains(spec.id.as_str()) {
+        return None;
+    }
     Some(out)
 }
 
@@ -371,6 +376,101 @@ pub struct Kept {
     pub indexes: Option<std::path::PathBuf>,
 }
 
+/// What the actions of the rows a window shows answered, by resource and action: a window asks
+/// about every action of every row it shows, and the rows it shows move as it scrolls.
+#[derive(Default)]
+struct Answers {
+    /// The answer to each question, by the resource and the action it was asked of.
+    said: std::collections::HashMap<(String, String), Answered>,
+    /// The loaded packages the answers were read over: a package that loads is answered again.
+    packages: Vec<tilolang_tilo::runtime::PackageId>,
+}
+
+/// What one action of one published resource answered, and what reading it read.
+struct Answered {
+    /// Where the publications stood when the answer was read ([`Publications::moved`]).
+    at: u64,
+    /// What can run on the resource by the action: `None` for an action whose app keeps no
+    /// requirement it can decide, which is offered as it is published.
+    said: Option<tilo_actions::Availability>,
+    /// The fields reading the answer read; `None` for an answer that read beyond the workspace
+    /// (the clock, the window's space, the person's view state), which moves without it moving.
+    reads: Option<Vec<(String, String)>>,
+}
+
+/// How many answers a window's rows keep: a person scrolling a list of ten thousand asks about
+/// the rows they reach, so keeping every answer of every row would grow with the workspace.
+/// Past this, the answers start over.
+const ANSWERS_KEPT: usize = 8_192;
+
+impl Answers {
+    /// What can run on `resource` by `action`, as `host` says it now, with the publications
+    /// where `at` says: an answer read earlier stands while nothing it read moved
+    /// ([`Self::forget`]).
+    fn answer(
+        &mut self,
+        host: &Host,
+        at: u64,
+        resource: &str,
+        action: &str,
+    ) -> Option<tilo_actions::Availability> {
+        let key = (resource.to_owned(), action.to_owned());
+        if let Some(answered) = self.said.get(&key) {
+            return answered.said.clone();
+        }
+        let (said, reads) = match host.availability_reading(resource, action) {
+            Some((availability, reading)) => (
+                Some(availability),
+                (!reading.beyond).then_some(reading.reads),
+            ),
+            None => (None, Some(Vec::new())),
+        };
+        if self.said.len() >= ANSWERS_KEPT {
+            self.said.clear();
+        }
+        self.said.insert(
+            key,
+            Answered {
+                at,
+                said: said.clone(),
+                reads,
+            },
+        );
+        said
+    }
+
+    /// Forget what a change reached since an answer was read ([`Publications::changed_since`]),
+    /// and every answer when the packages loaded changed: an answer read nothing but the
+    /// workspace, so it stands until a field it read moves.
+    fn forget(
+        &mut self,
+        publications: &Publications,
+        packages: &[tilolang_tilo::runtime::PackageId],
+    ) {
+        if packages != self.packages.as_slice() {
+            self.packages = packages.to_vec();
+            self.said.clear();
+            return;
+        }
+        let mut since: std::collections::HashMap<u64, Option<Moved>> =
+            std::collections::HashMap::new();
+        self.said.retain(|_, answered| {
+            let Some(reads) = &answered.reads else {
+                return false;
+            };
+            match since
+                .entry(answered.at)
+                .or_insert_with(|| publications.changed_since(answered.at))
+            {
+                None | Some(Moved::Everything) => false,
+                Some(Moved::These(changed)) => !changed
+                    .iter()
+                    .any(|changed| reads.iter().any(|read| reached(changed, read))),
+            }
+        });
+    }
+}
+
 /// One app instance. See the module docs.
 pub struct Hosted {
     spec: Spec,
@@ -398,6 +498,10 @@ pub struct Hosted {
     published_from: Option<(Rc<Surface>, SurfaceInputs)>,
     /// Why the surface was last refused instead of published: empty once it publishes.
     refused: Vec<tilo_actions::ContractViolation>,
+    /// What can run on the rows the window shows, and what reading each answer read: a scroll or
+    /// a place switch asks again only for the rows that came into view, and only when what their
+    /// answers read moved ([`Answers`]).
+    answers: Answers,
     registry: ActionRegistry,
     /// What the instance last published to the session's persistent search index, and what it
     /// published from: it publishes the app's resources' entries when the record's heads move,
@@ -413,6 +517,10 @@ pub struct Hosted {
     search_entries: std::collections::BTreeMap<String, tilo_resource::search_index::IndexEntry>,
     /// How many builds of the entries the index has been sent: the state's generation.
     search_index_build: u64,
+    /// The invocation the person's last step ran in, when they asked to undo it: the host takes
+    /// the action back in every unit that holds a change of it, all under one commit, whether
+    /// this endpoint's logs still remember the action or only the records do.
+    undo_ask: Option<InvocationId>,
     /// The identity-service connection the instance's connection signs through, held for as
     /// long as the instance runs.
     #[allow(
@@ -513,12 +621,14 @@ impl Hosted {
             directory_from: None,
             published_from: None,
             refused: Vec::new(),
+            answers: Answers::default(),
             registry,
             search_index: tilo_resource::search_index::Publisher::default(),
             search_index_from: None,
             search_index_moved: None,
             search_entries: std::collections::BTreeMap::new(),
             search_index_build: 0,
+            undo_ask: None,
             identity: None,
         }
     }
@@ -599,18 +709,15 @@ impl Hosted {
         // After what the person did before asking is committed: an undo takes back their last
         // step, typing they did just before it included.
         for asked in self.instance.take_history() {
-            let (resource, kind) = &self.resource;
-            let done = self
-                .record
-                .asked(&mut self.instance, &asked, resource, kind);
-            match done {
-                Ok(done) => changed |= done,
-                Err(error) => {
-                    tracing::warn!(app = self.spec.app, ?asked, %error, "an undo or redo failed");
-                    self.instance.history_failed(error.to_string());
-                    changed = true;
-                }
+            if matches!(asked, tilolang_tilo::instance::HistoryAsk::Undo)
+                && let Some(invocation) = self.record.last_step_invocation()
+            {
+                // The units that hold a change of the step's action take it back together,
+                // so the host does it, once, and publishes the reverts as one action.
+                self.undo_ask = Some(invocation);
+                continue;
             }
+            changed |= self.take_step(&asked);
         }
         for event in events {
             changed |= self.delivered(event);
@@ -630,6 +737,94 @@ impl Hosted {
                 false
             }
         }
+    }
+
+    /// One history ask run through the record: the person's step taken back, brought back, or
+    /// answered with why it cannot be. Whether what the instance holds changed.
+    fn take_step(&mut self, asked: &tilolang_tilo::instance::HistoryAsk) -> bool {
+        let (resource, kind) = &self.resource;
+        match self.record.asked(&mut self.instance, asked, resource, kind) {
+            Ok(done) => done,
+            Err(error) => {
+                tracing::warn!(app = self.spec.app, ?asked, %error, "an undo or redo failed");
+                self.instance.history_failed(error.to_string());
+                true
+            }
+        }
+    }
+
+    /// The invocation of the step the person asked to undo, once: the host takes the action back
+    /// in every unit of the workspace that holds a change of it.
+    pub fn take_undo_ask(&mut self) -> Option<InvocationId> {
+        self.undo_ask.take()
+    }
+
+    /// Take the step the person asked to undo back in this unit alone, when no other unit of
+    /// the workspace holds a change of its action.
+    pub fn undo_here(&mut self) -> bool {
+        self.take_step(&tilolang_tilo::instance::HistoryAsk::Undo)
+    }
+
+    /// The changes of this instance's unit the invocation `invocation` made: the unit's part of
+    /// the action, read from its record.
+    #[must_use]
+    pub fn changes_of(&self, invocation: InvocationId) -> Vec<[u8; 32]> {
+        self.record.changes_of(invocation)
+    }
+
+    /// Whether this instance holds the step the change `change` is part of, still to take back:
+    /// what the person's undo of it takes back.
+    #[must_use]
+    pub fn can_revert(&self, change: &[u8; 32]) -> bool {
+        self.record.can_revert(change)
+    }
+
+    /// Take back the step the change `change` is part of in this instance, as a step of the
+    /// person in `ambient`, and leave it unsent: the host sends every unit of the action under
+    /// one commit. The instance shows what it now holds.
+    ///
+    /// # Errors
+    /// The step is undone already, is not this person's to take back, or its inverse could not
+    /// be applied.
+    pub fn revert_step(
+        &mut self,
+        change: &[u8; 32],
+        ambient: &ActionContext,
+    ) -> Result<(), RecordError> {
+        let (resource, kind) = &self.resource;
+        let invoker = ActionInvoker::actor(self.spec.person.clone());
+        self.record
+            .revert_step(&mut self.instance, resource, kind, invoker, ambient, change)
+    }
+
+    /// What this instance holds that the workspace was not handed yet: its part of an action
+    /// ([`Self::share_under`]). None when the workspace holds all of it.
+    pub fn unsent_change(&mut self) -> Option<DocumentMutation> {
+        match self.record.unsent_change() {
+            DocumentMutation::Incremental(bytes) if bytes.is_empty() => None,
+            change => Some(change),
+        }
+    }
+
+    /// Send this instance's unsent change on its own: the workspace takes it as this unit's
+    /// action. What the workspace refused for good, it says to the window.
+    pub fn share(&mut self) {
+        let unshared = self.record.share();
+        self.took_share(unshared);
+    }
+
+    /// Send this instance's unsent change as its part of `commit`, the action across every unit
+    /// it wrote. What the workspace refused for good, it says to the window.
+    pub fn share_under(&mut self, commit: &WorkspaceCommit) {
+        let unshared = self.record.share_under(commit);
+        self.took_share(unshared);
+    }
+
+    fn took_share(&mut self, unshared: Option<String>) {
+        if let Some(why) = unshared {
+            self.instance.unshared(why);
+        }
+        self.instance.sync(Some(self.record.doc()));
     }
 
     /// Publish the app's resources to the session's persistent search index, over the
@@ -706,21 +901,50 @@ impl Hosted {
     /// app's to answer for them. Every other row is answered when a caller asks about it
     /// ([`Self::answer_directory`]), so nothing carries a condition's answer for every item a
     /// query could name.
-    fn answer_what_the_window_shows(&self, descriptors: &mut [ActionDescriptor]) {
+    ///
+    /// An answer stands while nothing it read moved ([`Answers`]): a scroll shows rows whose
+    /// answers are known, and costs only the rows that came into view.
+    fn answer_what_the_window_shows(&mut self, descriptors: &mut [ActionDescriptor]) {
         let Some(host) = self.instance.host() else {
             return;
         };
         let shown = self.instance.shown_resources();
+        self.forget_answers();
+        let at = self.moved();
         for descriptor in descriptors {
             if !shown.contains(&descriptor.address.resource) {
                 continue;
             }
-            if let Some(availability) =
-                host.availability(&descriptor.address.resource, &descriptor.address.action)
-            {
+            if let Some(availability) = self.answers.answer(
+                &host,
+                at,
+                &descriptor.address.resource,
+                &descriptor.address.action,
+            ) {
                 descriptor.contract.availability = availability;
             }
         }
+    }
+
+    /// Where the publications stand now: what an answer is read at, and how far it stands
+    /// without being read again.
+    fn moved(&self) -> u64 {
+        self.surface
+            .borrow()
+            .as_ref()
+            .map_or(0, |surface| surface.publications.borrow().moved())
+    }
+
+    /// Forget the answers a change since reached ([`Answers::forget`]): what a window shows is
+    /// answered again only where what it read moved, and rows no change reached keep theirs.
+    fn forget_answers(&mut self) {
+        let surface = self.surface.borrow().clone();
+        let Some(surface) = surface else {
+            return;
+        };
+        let publications = surface.publications.borrow();
+        let packages = surface.host.package_ids();
+        self.answers.forget(&publications, &packages);
     }
 
     /// Publish every entry of the app's resources again: the first publication, a new route, and
@@ -765,12 +989,15 @@ impl Hosted {
                 self.drop_entry(&id, &mut remove);
             }
         }
-        // A resource that holds no text any more is no entry, though it is still there.
+        // A resource that holds no text any more is no entry, though it is still there: only its
+        // own entry goes, as what it published under it is the entries of its own resources.
         for package in host.packages() {
+            let upserted: std::collections::BTreeSet<&str> =
+                upsert.iter().map(|entry| entry.resource.as_str()).collect();
             for path in texts {
                 let id = tilolang_tilo::publish::resource_id(&package.meta.app, path);
-                if !upsert.iter().any(|entry| entry.resource == id) {
-                    self.drop_entry(&id, &mut remove);
+                if !upserted.contains(id.as_str()) && self.search_entries.remove(&id).is_some() {
+                    remove.push(id);
                 }
             }
         }
@@ -813,13 +1040,16 @@ impl Hosted {
             }
             return;
         };
+        self.forget_answers();
+        let at = self.moved();
+        let answers = &mut self.answers;
         for request in requests {
             self.directory.answer_refreshed(request, |row| {
                 let Some(descriptor) = row.descriptor.as_mut() else {
                     return;
                 };
                 if let Some(availability) =
-                    host.availability(&descriptor.resource, &descriptor.action)
+                    answers.answer(&host, at, &descriptor.resource, &descriptor.action)
                 {
                     descriptor.contract.availability = availability;
                 }

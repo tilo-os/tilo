@@ -3715,16 +3715,38 @@ impl NotesApp {
         } else {
             index
         };
-        match index {
-            0 => self.sidebar.new_note(Some(page), false),
-            1 => self.main.begin_title_edit(),
-            2 => self.sidebar.duplicate(page),
-            3 => self.sidebar.request(&NotesEffect::CopyLink { page }),
-            4 => self.sidebar.request(&NotesEffect::ExportMarkdown { page }),
-            5 => self.sidebar.request(&NotesEffect::InsertImage { page }),
-            7 => self.sidebar.delete(page),
+        self.apply_note_action_on(index, page);
+        self.refresh_status();
+    }
+
+    /// Run the page command in [`crate::sidebar::menu_row`] position `row` on
+    /// `page`: the page menu's rows and the window's bar's rows are the same
+    /// declared commands, so both run here.
+    fn apply_note_action_on(&mut self, row: usize, page: PageId) {
+        match row {
+            crate::sidebar::menu_row::NEW_CHILD => self.sidebar.new_note(Some(page), false),
+            crate::sidebar::menu_row::RENAME => self.main.begin_title_edit(),
+            crate::sidebar::menu_row::DUPLICATE => self.sidebar.duplicate(page),
+            crate::sidebar::menu_row::COPY_LINK => {
+                self.sidebar.request(&NotesEffect::CopyLink { page });
+            }
+            crate::sidebar::menu_row::EXPORT => {
+                self.sidebar.request(&NotesEffect::ExportMarkdown { page });
+            }
+            crate::sidebar::menu_row::INSERT_IMAGE => {
+                self.sidebar.request(&NotesEffect::InsertImage { page });
+            }
+            crate::sidebar::menu_row::DELETE => self.sidebar.delete(page),
             _ => {}
         }
+    }
+
+    /// Run the page command the window's bar sent for the note that is open.
+    fn apply_note_action(&mut self, row: usize) {
+        let Some(page) = self.workspace.selected() else {
+            return;
+        };
+        self.apply_note_action_on(row, page);
         self.refresh_status();
     }
 

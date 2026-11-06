@@ -391,6 +391,53 @@ fn a_card_dragged_loose_stays_where_it_is_left_but_reachable() {
     );
 }
 
+/// A card its app draws stands in the layer's column: as wide as every other
+/// card there and on the same edge, whatever width its app asked for, and as
+/// tall as its app asked.
+#[test]
+fn a_card_its_app_draws_is_as_wide_as_the_column_and_stands_on_its_edge() {
+    let placement = screen(1280.0, 800.0);
+    let mut call = Card::new("so.tilo.chat", activity(Kind::Call, "call"));
+    call.size = Some(Size::new(110.0, 256.0));
+    call.rich = true;
+    let mut call_again = Card::new("so.tilo.clocks", activity(Kind::Call, "another"));
+    call_again.size = Some(Size::new(110.0, 200.0));
+    call_again.rich = true;
+    let mut route = Card::new("so.tilo.maps", activity(Kind::Navigation, "route"));
+    route.size = Some(Size::new(360.0, 240.0));
+    route.rich = true;
+    let held = vec![call.clone(), call_again.clone(), route.clone()];
+    let layer = place(&placement, Corner::BottomRight, &held, false);
+    assert_layer(&placement, Corner::BottomRight, &held, &layer);
+    let at = |activity: &str| {
+        layer
+            .cards
+            .iter()
+            .find(|card| card.activity() == activity)
+            .map(|card| card.rect)
+            .expect("every card stands")
+    };
+    let column = card_size(placement.work, &call.summary).width;
+    let call_rect = at("call");
+    let route_rect = at("route");
+    assert!(
+        (call_rect.width() - column).abs() < 0.5 && (route_rect.width() - column).abs() < 0.5,
+        "the cards share the layer's one column width: {call_rect:?} {route_rect:?}"
+    );
+    assert!(
+        (call_rect.x1 - route_rect.x1).abs() < 0.5,
+        "the cards share one right edge"
+    );
+    assert!(
+        (call_rect.height() - 256.0).abs() < 0.5,
+        "the height its app asked for stands"
+    );
+    assert!(
+        (at("another").height() - 200.0).abs() < 0.5,
+        "each card keeps its own height"
+    );
+}
+
 /// The pill says the most urgent activity and counts the rest: a call before
 /// directions, directions before a timer due within a minute, that timer
 /// before another timer, timers before music, music before anything else.

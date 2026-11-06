@@ -10,7 +10,7 @@ use so.tilo.lang.chat as chat
 /// host recorded them, is its code author: what it does with an action asks the person first
 /// unless they trust that author.
 type WrittenView {
-    title: Text (title)
+    title: Text
     /// What was asked, when an agent answered with it.
     question: Text
     /// The view, as its author wrote it.
@@ -143,37 +143,14 @@ action send(v: WrittenView, to: chat.TextChannel) {
 
 /// Every view, the kept ones a place of their own, each opening in a window of its own.
 view views_list(all: Views) {
-    state query: Text = ""
-    let places = [WrittenView.kept]
-    let everything = "All views"
-    let title = places.find(f -> f.query == query)?.label ?? everything
-    let shown = all.items.matching(query)
-    ui.NavShell(
-        content_kind: .document,
-        sidebar_title: .some(meta(all).title),
-        overview_title: .some(title),
-        overview_count: .some(shown.len()),
-    ) {
-        sidebar: {
-            std.places(query, places, everything, icon: meta(WrittenView).icon)
-        }
-        overview: {
-            if shown.is_empty() {
-                ui.EmptyState("No views yet", icon: meta(WrittenView).icon)
-            } else {
-                std.list(shown) { (v, at) ->
-                    ui.ListItem(item: v, presence: at) {
-                        view_row(v)
-                    }
-                }
-            }
-        }
-        content: {
-            ui.EmptyState(
-                phrase("tilolang-none-selected", kind: meta(WrittenView).noun),
-                icon: meta(WrittenView).icon,
-            )
-        }
+    std.browse(
+        all,
+        all.items,
+        places: [WrittenView.kept],
+        everything: "All views",
+        empty: "No views yet",
+    ) { v ->
+        view_row(v)
     }
 }
 

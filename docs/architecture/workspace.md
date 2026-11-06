@@ -128,14 +128,31 @@ kept if it orders first, the role change is moot if it orders later.
 Concurrent edits that do not conflict (two people invited at once) both
 apply.
 
-**Admitting.** An invitation is an op naming the role it grants and, when
-narrowed, the person it is for. Redeeming it is the joiner's op, written on
-the invitation's ops and signed by the joiner's device; any participant that
-holds the invitation admits it, with no particular device needed online. A
-member's own further devices need no invitation: a device certified by a
-member's root is that member's device, and any participant admits it when it
-first asks. Which role the device takes in the workspace (participant or
-store) is the member's choice, recorded in the same resource.
+**The log starts from what the workspace already held.** A workspace made
+before the log has its membership in the document's own rows; its owner's
+device writes them in as the first op, a genesis naming the membership those
+rows held and the heads it was read at. Every receiver checks the heads are
+history it holds and the author is the workspace's owner, so nobody can take
+the membership back to an earlier one. A genesis by anyone else's device, or
+naming a history a receiver does not hold, starts nothing.
+
+The rows stay, as a projection: every admission writes them from the ops it
+holds, and refuses a batch that changes a row the ops do not change. An older
+build, a store and a relay that keep only the document therefore read the
+same membership every device computes, and the log is what decides it. A
+batch may only add ops; a held op is never changed or dropped.
+
+**Admitting.** An invitation is a signed grant naming the role it gives and,
+when narrowed, the person it is for. Redeeming it writes the receipt, with
+its signed invitation, into the workspace's rows; every participant folds the
+receipts it holds into the membership, checking the invitation at the joining
+time the workspace records for that person, so the invitation is judged once
+and every participant judges it the same. Any participant that holds the
+invitation admits it, with no particular device needed online. A member's own
+further devices need no invitation: a device certified by a member's root is
+that member's device, and any participant admits it when it first asks. Which
+role the device takes in the workspace (participant or store) is the member's
+choice, recorded in the same resource.
 
 ### Keys follow membership
 

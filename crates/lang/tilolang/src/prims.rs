@@ -91,10 +91,8 @@ pub const PRIMS: &[Prim] = &[
         component: None,
         builds: None,
     },
-    // A resource's page, from what its type declares: what it opens with (whether it is done
-    // and the field marked `(title)`, then the field marked `(body)`), and its facts — one row
-    // of chips, each from the field it shows, with the view's own chips in its block.
-    prim_of("opening", &["of"], &[]),
+    // A resource's facts as one row of chips, each from the field it shows, with the view's own
+    // chips in its block.
     prim_of("facts", &["of"], &[]),
     // Native controls that are no component: a form's fields, and the control for a view state
     // of an enum's cases.

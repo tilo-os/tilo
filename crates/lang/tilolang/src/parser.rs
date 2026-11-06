@@ -5,11 +5,11 @@
 
 use crate::ast::{
     ActionDecl, ActionOpt, ActionRole, AliasDecl, AppHeader, Arg, AssignOp, BinOp, Block,
-    DefaultViewDecl, DerivedDecl, EnumDecl, Expr, ExprKind, FieldDecl, FieldMarker, FnDecl, Ident,
-    Item, LetBind, MarkerArg, MatchArm, MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal,
-    RootDecl, ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl, Stmt, StmtKind,
-    StrPart, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UseDecl,
-    VariantDecl, ViewDecl, ViewsDecl,
+    DefaultViewDecl, EnumDecl, Expr, ExprKind, FieldDecl, FnDecl, Ident, Item, LetBind, MatchArm,
+    MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, RootDecl, ScenarioDecl,
+    SearchBlock, SearchEntry, SearchEntryKind, StateDecl, Stmt, StmtKind, StrPart, TypeDecl,
+    TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UseDecl, VariantDecl, ViewDecl,
+    ViewsDecl,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Comment, StrPiece, Tok, Token, lex, lex_at};
@@ -690,11 +690,10 @@ impl<'a> Parser<'a> {
             Tok::Ident(n) if n == "primary" => ActionRole::Primary,
             Tok::Ident(n) if n == "destructive" => ActionRole::Destructive,
             Tok::Ident(n) if n == "migration" => ActionRole::Migration,
-            Tok::Ident(n) if n == "internal" => ActionRole::Internal,
             _ => return None,
         };
-        let next_is_role = matches!(self.peek_at(1), Tok::Ident(n) if n == "primary" || n == "destructive" || n == "migration" || n == "internal");
-        (matches!(self.peek_at(1), Tok::Kw("action")) || next_is_role).then_some(role)
+        let next_is_role = matches!(self.peek_at(1), Tok::Ident(n) if n == "primary" || n == "destructive" || n == "migration");
+        (matches!(self.peek_at(1), Tok::Kw("action" | "flow")) || next_is_role).then_some(role)
     }
 
     /// `root T` at the start of an item.
@@ -975,7 +974,7 @@ impl<'a> Parser<'a> {
                 self.diags.push(Diagnostic::new(
                     "E090",
                     span,
-                    "an action is `primary`, `destructive`, a `migration` or `internal`, one of them: the primary action is the one main thing to do, a destructive one never is, a migration is never offered, and an internal one only the app's own gestures run. Keep one of the words",
+                    "an action is `primary`, `destructive` or a `migration`, one of them: the primary action is the one main thing to do, a destructive one never is, and a migration is never offered. Keep one of the words",
                 ));
                 continue;
             }
@@ -1127,7 +1126,6 @@ impl<'a> Parser<'a> {
         }
         self.expect(&Tok::LBrace)?;
         let mut fields = Vec::new();
-        let mut derives = Vec::new();
         let mut search: Option<SearchBlock> = None;
         loop {
             self.skip_nl();
@@ -1159,19 +1157,11 @@ impl<'a> Parser<'a> {
                 continue;
             }
             if matches!(self.peek_at(at), Tok::Ident(w) if w == "derive") {
-                match self.derived() {
-                    Ok(d) => {
-                        derives.push(d);
-                        if !self.eat(&Tok::Comma)
-                            && !matches!(self.peek(), Tok::Newline | Tok::RBrace)
-                        {
-                            let _: PResult<()> =
-                                self.unexpected("a new line, `,` or `}` after the derived key");
-                            self.recover_stmt();
-                        }
-                    }
-                    Err(Abort) => self.recover_stmt(),
-                }
+                let _: PResult<()> = self.fail(
+                    self.span(),
+                    "a type holds fields; a value worked out from what a collection holds is computed by a view or a function that reads the collection",
+                );
+                self.recover_stmt();
                 continue;
             }
             match self.field() {
@@ -1193,32 +1183,7 @@ impl<'a> Parser<'a> {
             name,
             origin,
             fields,
-            derives,
             search,
-            span: start.to(Span::new(self.prev_end(), self.prev_end())),
-        })
-    }
-
-    /// `derive folded: Bool = finished and parent.all(folded)`: a value the store derives from
-    /// the collection, never the record.
-    fn derived(&mut self) -> PResult<DerivedDecl> {
-        let doc = self.docs();
-        let start = self.span();
-        if !matches!(self.bump().tok, Tok::Ident(w) if w == "derive") {
-            return self.unexpected("`derive`");
-        }
-        let node = self.node();
-        let name = self.ident("a name for the derived key")?;
-        self.expect(&Tok::Colon)?;
-        let ty = self.type_expr()?;
-        self.expect(&Tok::Assign)?;
-        let expr = self.expr()?;
-        Ok(DerivedDecl {
-            node,
-            doc,
-            name,
-            ty,
-            expr,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
     }
@@ -1359,41 +1324,16 @@ impl<'a> Parser<'a> {
             None
         };
         let marker_at = self.span();
-        let marker = if self.eat(&Tok::LParen) {
-            let name =
-                self.ident("`title`, `body`, `previously`, `repeats`, `reminds` or `time`")?;
-            let mut args = Vec::new();
-            // A marker reads its fields after a colon, `(repeats: due)`, or after the words it
-            // takes, `(time of: due)`.
-            if self.eat(&Tok::Colon) || !matches!(self.peek(), Tok::RParen) {
-                loop {
-                    let first = self.ident("a field of the type")?;
-                    let arg = if self.eat(&Tok::Colon) {
-                        MarkerArg {
-                            name: Some(first),
-                            field: self.ident("a field of the type")?,
-                        }
-                    } else {
-                        MarkerArg {
-                            name: None,
-                            field: first,
-                        }
-                    };
-                    args.push(arg);
-                    if !self.eat(&Tok::Comma) {
-                        break;
-                    }
-                }
+        if self.eat(&Tok::LParen) {
+            let _: PResult<()> = self.fail(
+                marker_at,
+                "a field is its name, its type and its default; what the platform shows comes from the type's `row view` and the app's own views",
+            );
+            while !matches!(self.peek(), Tok::RParen | Tok::Eof) {
+                self.bump();
             }
-            self.expect(&Tok::RParen)?;
-            Some(FieldMarker {
-                name,
-                args,
-                span: marker_at.to(Span::new(self.prev_end(), self.prev_end())),
-            })
-        } else {
-            None
-        };
+            self.eat(&Tok::RParen);
+        }
         let default = if self.eat(&Tok::Assign) {
             Some(self.expr()?)
         } else {
@@ -1405,7 +1345,6 @@ impl<'a> Parser<'a> {
             name,
             ty,
             merge,
-            marker,
             default,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })

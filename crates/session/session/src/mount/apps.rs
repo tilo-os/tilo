@@ -114,6 +114,19 @@ struct State {
     wake: Option<tilo_service::Wake>,
 }
 
+/// What a launch does about the app it names: the window the app has, or is
+/// on its way to, comes forward, or the app starts.
+enum Beginning {
+    /// The window the app has, or the place one is on its way to, came
+    /// forward: nothing starts.
+    Raised,
+    /// The app starts, with a window of its own when `new_window`.
+    Start { new_window: bool },
+    /// The app starts into the tab `tab`, a saved window's that nothing was
+    /// asking for: the window the person left open fills it.
+    StartIn { tab: u64 },
+}
+
 impl Apps {
     /// The apps `environment` starts, waking `wake`'s loop when one ends.
     #[must_use]
@@ -547,10 +560,28 @@ impl Apps {
         workspace: &Workspace,
         instance: Option<u64>,
     ) -> Result<bool, DoorError> {
-        let Some(new_window) = self.starting(launch, workspace) else {
-            return Ok(false);
-        };
-        self.start_window(launch, workspace, new_window, instance)
+        match self.starting(launch, workspace, instance) {
+            Beginning::Raised => Ok(false),
+            Beginning::Start { new_window } => {
+                self.start_window(launch, workspace, new_window, instance)
+            }
+            Beginning::StartIn { tab } => {
+                let started = self.start_window(launch, workspace, false, Some(tab));
+                // The desk's own tab for this launch holds the place of the
+                // window that now fills the tab a saved window waited in: it
+                // goes, so the app is not left showing twice.
+                if started.is_ok()
+                    && let Some(theirs) = instance
+                    && theirs != tab
+                {
+                    let desktop = self.desktop.borrow().clone();
+                    if let Some(desktop) = desktop {
+                        desktop.with_policy(|policy| policy.release_tab(theirs));
+                    }
+                }
+                started
+            }
+        }
     }
 
     /// The apps that ended since the last pass: one that chose to end leaves
@@ -615,46 +646,59 @@ impl Apps {
     }
 
     /// What a launch does about the app maybe already showing in
-    /// `workspace`: `Some(new_window)` to start it, `None` when the window it
-    /// has was raised instead, and nothing starts.
+    /// `workspace`: start it, start it into the tab a saved window of it
+    /// waits in, or raise the window it has or the place one is on its way
+    /// to.
     ///
-    /// A launch is decided against the windows on the workspace in front,
-    /// which is the one it belongs to. A launch into another workspace starts
+    /// A launch is decided against the tabs the desk has for apps on the
+    /// workspace in front, which is the one it belongs to, less `instance`:
+    /// the tab this launch itself holds, which is its own window's place and
+    /// not another launch of the app. A launch into another workspace starts
     /// its own process, as it always has: that workspace's windows are not
     /// showing.
-    fn starting(&self, launch: &Launch, workspace: &Workspace) -> Option<bool> {
+    fn starting(&self, launch: &Launch, workspace: &Workspace, instance: Option<u64>) -> Beginning {
         let Some(desktop) = self.desktop.borrow().clone() else {
-            return Some(false);
+            return Beginning::Start { new_window: false };
         };
         if workspace.is_workspace() && self.active_workspace().id != workspace.id {
-            return Some(false);
-        }
-        let shown = Shown::new(desktop.with_policy(|policy| policy.windows_in_front()));
-        if shown.is_empty() {
-            // Nothing of this app can be showing on a desk with no windows.
-            return Some(false);
+            return Beginning::Start { new_window: false };
         }
         let Some(app) = Instance::of(
             launch,
             &desktop_entry::cache::cached_scan(&crate::app_names::entry_locales()),
         ) else {
-            return Some(false);
+            return Beginning::Start { new_window: false };
         };
-        let window = match app.answer(launch, &shown) {
-            Answer::Start { new_window } => return Some(new_window),
-            Answer::Raise { window } => window,
-        };
-        if !desktop.with_policy(|policy| policy.focus(window)) {
-            // The window went as it was asked for: the app starts again.
-            return Some(false);
-        }
-        desktop.with_widgets(WidgetHost::relayout);
-        tracing::info!(
-            app = %app.id,
-            window,
-            "raised the window the app already has"
+        let shown = Shown::new(
+            desktop
+                .with_policy(|policy| policy.app_tabs_in_front())
+                .into_iter()
+                .filter(|(tab, _)| Some(*tab) != instance),
         );
-        None
+        let answer = app.answer(launch, &shown);
+        if let Answer::Raise { tab } = answer
+            && desktop.with_policy(|policy| policy.focus_tab(tab))
+        {
+            desktop.with_widgets(WidgetHost::relayout);
+            tracing::info!(
+                app = %app.id,
+                tab,
+                "raised the window the app already has, or the place one is on its way to"
+            );
+            return Beginning::Raised;
+        }
+        // A window the person left open waits in its own tab for the app, and
+        // nothing has asked for it yet: this launch starts the app into that
+        // tab — the way the restore opens a saved window — instead of beside
+        // it, so one window of the app comes and not two.
+        if let Some(tab) = desktop.with_policy(|policy| policy.waiting_tab(&app.id))
+            && desktop.with_policy(|policy| policy.adopt_tab(tab, false))
+        {
+            return Beginning::StartIn { tab };
+        }
+        Beginning::Start {
+            new_window: matches!(answer, Answer::Start { new_window: true }),
+        }
     }
 
     /// The workspace a launch from the desktop belongs to: the one in front,

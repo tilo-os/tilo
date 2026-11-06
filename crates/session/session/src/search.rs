@@ -809,27 +809,24 @@ impl SearchThrough {
 
 /// The search hits `found` names, as a caller who addresses resources reads
 /// them: the resource each is about, best first, and never below the one
-/// `place_found` places. The canvas takes the first hit that names a
-/// resource a place can show (`shows`); `find` leads with that same hit, so
-/// an agent asked for a text answers with what typing it would place, then
-/// with what else the search found under it. Without one (a file, a
-/// command, a window's focus), the resources the search does name stand on
-/// their own.
+/// `place_found` places. The canvas stands the hit [`arrangement::placed`]
+/// chooses; `find` leads with that same hit, so an agent asked for a text
+/// answers with what typing it would place, then with what else the search
+/// found under it. Without one (a file, a command, a window's focus), the
+/// resources the search does name stand on their own.
 pub(crate) fn found_all(
     text: &str,
     hits: Vec<tilo_desktop_search::Hit>,
     shows: impl Fn(&str) -> bool,
 ) -> Vec<Found> {
-    // The lead is the hit the canvas places, read by the canvas's own
-    // reading of these hits: the first that names a resource a place can
-    // show. A row that names one it cannot (`session`'s own places, a
-    // record no app publishes as placeable) stands in the way of nothing,
-    // exactly as it does on the canvas.
-    let placed = crate::arrangement::found(text, &|_| hits.clone(), shows);
-    let lead = placed.as_ref().and_then(|placed| {
-        hits.iter()
-            .position(|hit| found_of(hit).is_some_and(|found| found.resource == *placed))
-    });
+    // The lead is the hit the canvas places, by the canvas's own ranking of
+    // these hits: the top one that names a resource a place can show. Its
+    // own row leads even when another row about the same resource ranks
+    // above it (an action on it), which is what typing the text stands. A
+    // row that names a resource a place cannot show (`session`'s own
+    // places, a record no app publishes as placeable) stands in the way of
+    // nothing, exactly as it does on the canvas.
+    let lead = crate::arrangement::placed(&hits, text, shows);
     let mut out: Vec<Found> = Vec::new();
     for (at, hit) in hits.into_iter().enumerate() {
         let Some(found) = found_of(&hit) else {

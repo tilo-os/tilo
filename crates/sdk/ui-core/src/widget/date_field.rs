@@ -8,8 +8,8 @@
 //! picking a day sets the date and closes it. A field whose date may be empty adds "Clear date" under the calendar.
 //!
 //! The time of day the day is due at is picked in the same popover, in the field's `time` slot:
-//! the type pairs one with the day (`at: Option<Time> (time of: due)`), so the two are one fact
-//! and one control, never a second chip beside it. What the chip says comes from the `at` the
+//! the app keeps one beside the day (`at: Option<Time>` beside `due`), so the two are one
+//! fact and one control, never a second chip beside it. What the chip says comes from the `at` the
 //! owner shows it, through [`DateField::set_at`]: the field itself changes nothing but the day.
 //!
 //! The owner learns of a change through [`DateField::on_change`] and tells the field a date from

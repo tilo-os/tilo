@@ -18,7 +18,7 @@ mod cases {
     const SOURCE: &str = r#"app so.tilo.days "Days"
 
 type Task {
-    title: Text (title)
+    title: Text
     done: Bool = false
     due: Option<Date> = .none
 
@@ -29,7 +29,7 @@ type Task {
 }
 
 type Message {
-    subject: Text (title)
+    subject: Text
     received: Time = Time("2026-01-01T00:00:00Z")
 
     search {

@@ -169,8 +169,8 @@ impl Runtime {
         Ok(hash)
     }
 
-    /// Give the store the types every loaded package declares: what a store that works a
-    /// derived key out as it reads it finds the key and its parent field by.
+    /// Give the store the types every loaded package declares: the fields a record's links are
+    /// read by.
     fn publish_types(&self) {
         let types = self.core.registry.borrow().loaded_types();
         self.core.store.borrow_mut().loaded_types(&types);

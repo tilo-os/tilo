@@ -219,7 +219,7 @@ impl SwitcherModel {
     }
 }
 
-fn default_strip_name(i: usize) -> String {
+pub(crate) fn default_strip_name(i: usize) -> String {
     t_args(
         "strip-switcher-unnamed",
         &[("number", i.saturating_add(1).to_string().into())],

@@ -210,6 +210,11 @@ impl ChatApp {
                 }
             }
             WindowEvent::CursorLeft { .. } => {
+                // The pointer is no longer over anything this surface draws:
+                // a control it left can no longer be hovered.
+                if self.call_hovered.take().is_some() {
+                    *handled = true;
+                }
                 if self.hovered_message.take().is_some() {
                     *handled = true;
                 }
@@ -325,24 +330,17 @@ impl ChatApp {
         self.last_mouse = last_mouse;
         // Live-drag the floating call overlay.
         if self.call.placement.is_dragging() {
-            // Freeze the complete last in-app presentation, including its
-            // soft silhouette and controls. The compositor uses this exact
-            // region as the visual bridge until the app-owned native surface
-            // commits its first buffer.
-            let source_region = self.huddle_panel().inflate(8.0, 8.0);
+            // The call's place over the desk is the shell's: the drag only
+            // decides when it leaves the window.
             let desktop = self.desktop_floating_bounds();
             let handoff = self
                 .call
                 .placement
                 .update_drag(self.last_mouse, self.rect, desktop);
             if handoff == ui::floating_surface::Handoff::Detached {
-                let mut request = self
-                    .call
-                    .floating_request(source_region, self.call_video_rect());
-                if let Some(request) = request.as_mut() {
-                    request.presentation_rect = Some(self.huddle_panel().inflate(8.0, 8.0));
-                }
-                self.pending_floating = request;
+                // Over the desk the call is the card's, whatever it looked
+                // like in the window.
+                self.pending_floating = self.call_card_request();
             }
             self.request_relayout();
             *handled = true;
@@ -364,6 +362,7 @@ impl ChatApp {
                         | Hit::CallScreen
                         | Hit::CallExpand
                         | Hit::CallLeave
+                        | Hit::CallOpenWindow
                 )
             })
         };
@@ -732,11 +731,24 @@ impl ChatApp {
     /// Top-most matching region (regions are recorded back-to-front, so a
     /// reverse scan resolves the visually-topmost first).
     fn hit_at(&self, p: Point) -> Option<Hit> {
-        self.hits
-            .iter()
+        let hits = if self.call_card_owns_input() {
+            &self.card_hits
+        } else {
+            &self.hits
+        };
+        hits.iter()
             .rev()
             .find(|(rect, _)| rect.contains(p))
             .map(|(_, h)| h.clone())
+    }
+
+    /// Whether the input being dispatched came from the window that draws the
+    /// call card over the desk. Both frames hold desk coordinates, so the
+    /// source is what says which of them a point belongs to.
+    fn call_card_owns_input(&self) -> bool {
+        self.input_agent_surface.as_deref().is_some_and(|source| {
+            source.strip_prefix("chat-call:") == Some(self.call.channel.as_str())
+        })
     }
 
     #[allow(
@@ -925,6 +937,13 @@ impl ChatApp {
                 self.request_relayout();
             }
             Hit::CallLeave => self.leave_voice(),
+            Hit::CallOpenWindow => {
+                // The card asks for the window that draws the call: the desk
+                // brings Chat's window forward and the call is drawn there
+                // again, rather than in a card standing over it.
+                self.call.placement.request_app_return();
+                self.request_relayout();
+            }
             Hit::ToggleRightFlap => {
                 if self.pins_open && self.right_flap_open() && self.thread_open.is_none() {
                     self.pins_open = false;

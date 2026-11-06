@@ -62,47 +62,7 @@ impl Shared {
         let asks = std::mem::take(&mut *self.asks.borrow_mut());
         for ask in asks {
             match ask {
-                DesktopAsk::Intent(ChromeIntent::ToggleQuickSettings) => {
-                    // The press that closed it is still being delivered: the
-                    // same press does not open it again.
-                    if self.quick_settings && !self.overlays.dismissed_recently(Slot::QuickSettings)
-                    {
-                        if self.overlays.is_open(Slot::QuickSettings) {
-                            self.overlays.close(Slot::QuickSettings);
-                        } else {
-                            self.overlays.open(Slot::QuickSettings, None);
-                        }
-                    }
-                }
-                DesktopAsk::Intent(ChromeIntent::ShowQuickSettings) => self.show_quick_settings(),
-                // The bar's faces, the launcher's Happening now header and a
-                // press on someone in a banner all open who is here.
-                DesktopAsk::Intent(ChromeIntent::ToggleCollaborators) => {
-                    self.people.borrow().toggle();
-                }
-                DesktopAsk::Intent(ChromeIntent::ShowPerson(person)) => {
-                    self.people.borrow().show_person(&person);
-                }
-                // This person's own avatar in the bar: their own card, the
-                // same card as anyone else's, where the roster stands.
-                DesktopAsk::Intent(ChromeIntent::ToggleProfile) => {
-                    self.people.borrow().show_self();
-                }
-                // Pulling an activity out of the bar's pill: its card is
-                // the floating layer's to draw.
-                DesktopAsk::Intent(ChromeIntent::ExpandActivity { activity }) => {
-                    self.activities.expand(&activity);
-                }
-                // Inviting people: the link into the workspace in front is
-                // made in the invite sheet, wherever it was asked for — the
-                // bar's invite button, the roster's footer, workspace
-                // settings or the launchpad's own verb.
-                DesktopAsk::Intent(ChromeIntent::Invite) => self.open_invite(),
-                // A click on an application's tray icon is the
-                // application's own to answer.
-                DesktopAsk::Intent(ChromeIntent::AppTray { key, request }) => {
-                    self.tray_request(&key, request);
-                }
+                DesktopAsk::Intent(intent) => self.bar_ask(intent),
                 DesktopAsk::Shortcut(action) => self.shortcut(action),
                 DesktopAsk::FixedShortcut(action) => self.fixed_shortcut(action),
                 DesktopAsk::HostAction(action) => self.host_action(&action),
@@ -123,13 +83,19 @@ impl Shared {
                     self.handle
                         .liveness_choice(tab, tilo_desktop_surface::LivenessChoice::ForceQuit);
                 }
-                other => tracing::debug!(?other, "desktop ask the session has no part in yet"),
+                DesktopAsk::ReportProblem => {
+                    tracing::debug!(
+                        "desk asked to report a problem; the session has no part in it yet"
+                    );
+                }
             }
         }
         // What the press asked is carried out: what it closed may be raised
         // again, though the press it closed for may already be over—a quick
         // click comes up faster than its own toggle does.
         self.overlays.settle_press();
+        // One anchored surface at a time, whichever side opened it.
+        self.lone_surface();
         // What the person chose where only a host performs it: search and a
         // banner hand their host action back here, as the ask on the
         // person's own avatar does.
@@ -137,6 +103,13 @@ impl Shared {
             self.host_action(&choice);
         }
         self.follow_sheets(look);
+        self.follow_search_choices(look);
+    }
+
+    /// Carry out the rows the person chose in search, and follow a row that
+    /// asked the session for something of its own: that is another round of
+    /// asks.
+    fn follow_search_choices(&self, look: &mut tilo_surface_host::Look<'_>) {
         let choices = self.handle.take_search_choices();
         if choices.is_empty() {
             return;
@@ -163,8 +136,67 @@ impl Shared {
                 }
             }
         }
-        // What the session's own actions asked of it.
         self.follow_asks(look);
+    }
+
+    /// What the bar and the desk ask of the chrome's, carried out where only
+    /// the session can: quick settings, who is here, the person's own card, an
+    /// activity's card, an invitation, an application's tray, and the menu a
+    /// secondary press on the desk asks the chrome to put at that place.
+    fn bar_ask(&self, intent: ChromeIntent) {
+        match intent {
+            ChromeIntent::ToggleQuickSettings => {
+                // The press that closed it is still being delivered: the same
+                // press does not open it again.
+                if self.quick_settings && !self.overlays.dismissed_recently(Slot::QuickSettings)
+                {
+                    if self.overlays.is_open(Slot::QuickSettings) {
+                        self.overlays.close(Slot::QuickSettings);
+                    } else {
+                        self.surfaces.clear_shell();
+                        self.surfaces.clear_panel();
+                        self.overlays.open(Slot::QuickSettings, None);
+                    }
+                }
+            }
+            ChromeIntent::ShowQuickSettings => self.show_quick_settings(),
+            // The bar's faces, the launcher's Happening now header and a
+            // press on someone in a banner all open who is here: one
+            // surface at a time, so what stood over the desk goes down.
+            ChromeIntent::ToggleCollaborators => {
+                if !self.people.borrow().is_open() {
+                    self.surfaces.clear_shell();
+                    self.surfaces.clear_panel();
+                }
+                self.people.borrow().toggle();
+            }
+            ChromeIntent::ShowPerson(person) => {
+                self.surfaces.clear_shell();
+                self.surfaces.clear_panel();
+                self.people.borrow().show_person(&person);
+            }
+            // This person's own avatar in the bar: their own card, the same
+            // card as anyone else's, where the roster stands.
+            ChromeIntent::ToggleProfile => self.people.borrow().show_self(),
+            // Pulling an activity out of the bar's pill: its card is the
+            // floating layer's to draw.
+            ChromeIntent::ExpandActivity { activity } => self.activities.expand(&activity),
+            // Inviting people: the link into the workspace in front is made in
+            // the invite sheet, wherever it was asked for — the bar's invite
+            // button, the roster's footer, workspace settings or the launchpad's
+            // own verb.
+            ChromeIntent::Invite => self.open_invite(),
+            // A secondary press on the desk asks the chrome for the menu of the
+            // place it pressed: the same menu the bar's workspace name opens,
+            // and the chrome is where it is drawn.
+            intent @ ChromeIntent::ToggleWorkspaceMenu { .. } => {
+                self.intents.borrow_mut().push(intent);
+            }
+            // A click on an application's tray icon is the application's own to
+            // answer.
+            ChromeIntent::AppTray { key, request } => self.tray_request(&key, request),
+            other => tracing::debug!(?other, "desk ask the session has no part in yet"),
+        }
     }
 
     /// Open this person's conversation with the person `key` names, in Chat:
@@ -512,7 +544,7 @@ impl Shared {
             &self.person,
             &self.search,
             &self.ws_settings_fed,
-            &self.workspace_emoji,
+            &self.workspace_tabs,
             self.file_picker.as_ref(),
             self.personal.as_ref(),
             self.engine.as_deref(),

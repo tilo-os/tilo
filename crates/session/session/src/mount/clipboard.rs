@@ -652,8 +652,9 @@ pub(crate) enum ClipboardAction {
     /// Clear the history, keeping what the person pinned
     #[effect(own_device, idempotent)]
     Clear,
-    /// Paste the copied files into a folder, as a copy or (after a cut) a move
-    #[effect(own_device)]
+    /// Paste the copied files into a folder, as a copy, or a move after a
+    /// cut
+    #[effect(own_device, label = "Paste files")]
     PasteFiles {
         /// The folder to paste them into
         #[param("The folder")]

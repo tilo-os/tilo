@@ -270,23 +270,55 @@ fn title_of(policy: &DesktopPolicy, tab: u64) -> String {
 }
 
 #[test]
-fn the_desk_names_the_windows_in_front_with_their_apps() {
+fn the_desk_names_the_tabs_it_has_for_apps_with_their_apps() {
     let (mut driver, mut policy) = mount();
     map(&mut driver, &mut policy, 4, "so.tilo.notes");
     map(&mut driver, &mut policy, 5, "org.gnome.Terminal");
+    let notes = policy.tab_of(4).expect("the window has its tab");
+    let terminal = policy.tab_of(5).expect("the window has its tab");
     assert_eq!(
-        policy.windows_in_front(),
+        policy.app_tabs_in_front(),
         [
-            (4, "so.tilo.notes".to_owned()),
-            (5, "org.gnome.Terminal".to_owned())
+            (notes, "so.tilo.notes".to_owned()),
+            (terminal, "org.gnome.Terminal".to_owned())
         ],
         "each window with the id its app announces itself by"
+    );
+    // A launch the desk holds a place for has a tab from the frame it is
+    // asked for, and that tab is the app's window on its way: the next
+    // launch of the app goes there instead of starting a second process.
+    assert!(
+        policy.hold_beside("so.tilo.notes", None, false),
+        "a place beside the window the app has"
+    );
+    // The place shows a window that has not come, which never stops moving.
+    frames(&mut driver, 2);
+    let place = policy
+        .app_tabs_in_front()
+        .into_iter()
+        .find_map(|(tab, app)| (tab != notes && app == "so.tilo.notes").then_some(tab))
+        .expect("the place the launch holds is one of the app's tabs");
+    assert!(policy.holds_a_place(place), "the tab shows the place");
+    assert!(
+        policy.focus_tab(place),
+        "the place comes forward with the window that fills it"
+    );
+    // The launch started nothing: its place goes, and the app's own window is
+    // the one the desk has.
+    policy.release_held("so.tilo.notes");
+    frames(&mut driver, 2);
+    assert_eq!(
+        policy.app_tabs_in_front(),
+        [
+            (notes, "so.tilo.notes".to_owned()),
+            (terminal, "org.gnome.Terminal".to_owned())
+        ]
     );
     policy.unmap(4);
     settle(&mut driver);
     assert_eq!(
-        policy.windows_in_front(),
-        [(5, "org.gnome.Terminal".to_owned())],
+        policy.app_tabs_in_front(),
+        [(terminal, "org.gnome.Terminal".to_owned())],
         "a window gone is not one a launch could raise"
     );
 }
@@ -603,10 +635,45 @@ fn a_desk_launch_holds_the_tab_the_apps_window_takes() {
         "the app's place is there from this frame, in the tab the launch names"
     );
     assert_eq!(
+        title_of(&policy, tab),
+        "Notes",
+        "the tab opens with the app's name, never with its id"
+    );
+    assert_eq!(
         policy.layout(),
         Layout::default(),
         "and no window is here before the app's is"
     );
+}
+
+#[test]
+fn a_window_that_names_no_title_is_tabbed_under_its_apps_name() {
+    let (mut driver, mut policy) = mount();
+    policy
+        .handle()
+        .dispatch(ChromeEffect::OpenApp {
+            app: "so.tilo.notes".into(),
+            beside: None,
+            background: None,
+        })
+        .unwrap();
+    settle(&mut driver);
+    let tab = policy.take_launches()[0].tab.expect("a held tab");
+    // A window that has not said what it shows takes the held tab under the
+    // name of its app.
+    policy
+        .map(Window {
+            title: None,
+            ..window(1, "so.tilo.notes")
+        })
+        .unwrap();
+    settle(&mut driver);
+    assert_eq!(title_of(&policy, tab), "Notes");
+    // The toolkit then labels the window with the app's unlocalised name:
+    // the tab keeps the name this desk gives the app.
+    policy.retitle(1, "Notes");
+    settle(&mut driver);
+    assert_eq!(title_of(&policy, tab), "Notes");
 }
 
 #[test]

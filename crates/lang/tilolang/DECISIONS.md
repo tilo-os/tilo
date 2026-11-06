@@ -167,12 +167,12 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - Pinned references (`@kind:id@version`) parse but compile to E070: `ref_lit` has no version.
 - Integer division and remainder trap on zero, as in wasm.
 - `proposal view` may also be written `proposal view(a, b)`, naming action parameters.
-- **A role says what an action is; only `internal` and `scenario` keep it from being listed.**
-  `primary`, `destructive`, `migration` and `internal` are the four words. `offered_actions()`
-  skips the `scenario` actions and those with a hiding role, so a gesture-only action
-  (`internal action place(...)` behind a tree's `reorder:`) never turns up in `actions(r)`, in
-  the host's bar or a window's menus, or in an agent's choices, while the app can still name it
-  where the gesture wants it.
+- **A role says what an action is; only a `scenario` keeps it from being listed.**
+  `primary`, `destructive` and `migration` are the three words. `offered_actions()` skips the
+  `scenario` actions (the bodies scenarios run) and the migrations, which the platform runs
+  itself; every other action is in `actions(r)`, in the host's bar and a window's menus, and in
+  an agent's choices. An action is never hidden from people to reserve it for a gesture: a
+  helper nobody chooses is a `fn`, and one that writes is a command like any other.
 - **A window's bar shows its primary action and the commands the app marks `frequent` as
   buttons, and every other action behind the bar's one menu.** The host builds them that way
   from the declarations of the type the window shows: a button per primary and per `frequent`
@@ -211,9 +211,10 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   and `checker::component::component_prim` checks and lowers the call as the component's own, so
   its props, slots, events and bindings are the description's and nothing is added. `button` (a
   declared action's button) builds `ui.Button` (`Prim::builds`) because its arguments are the
-  statement form's own. `opening(of)` and `facts(of)` read the fields the type declares and build
-  from them: the page's start, and one wrapping row of chips, each the field it shows (a day's
-  `ui.DateField`, a person's chip). Removed with replacements named in
+  statement form's own. `facts(of)` reads the fields the type declares and builds from them one
+  wrapping row of chips, each the field it shows (a day's `ui.DateField`, a person's chip); what
+  a page opens with is its view's own, as what it says under the heading is. Removed with
+  replacements named in
   E096: `card` (`ui.Card(item: x, title: meta(x).title)`), `column` (`stack`), `date`
   (`ui.DateField`, or `ui.DatePicker` for a calendar), and the arguments a component's own props
   carry (`text(x, style:)`, `button(act, size:)`, `image(src, width:)`). Layout stays the
@@ -257,48 +258,6 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   the UI's numeric formatting (`numeric: true`), not a pure text method. Bytes↔Text is not part
   of the language at all: there is no Bytes type.
 
-## Derived keys
-
-- **Resources store facts; the index derives.** A value that follows from other records (a
-  branch finished, a parent's done and total children) is not a field anyone writes: it is a
-  `derive` key on the type, and the store's index works it out from the collection, keeps it
-  where a view reads fields from, and moves it with every change of what it reads. A stored
-  copy diverges under concurrent edits — two people checking the last two steps of a branch
-  would each write their own answer, and neither would see the branch finished — and needs a
-  migration for every record written before it, one that can only guess.
-- **What a key may read.** `derive name: Type = expr` declares one, a line in a type body, its
-  `Type` a `Bool` or an `Int`: the type's own fields of those types, another key the same type
-  derives, and `not`, `and`, `or`, comparisons of two counts (`>`, `>=`, `<`, `<=`, `==`,
-  `!=`), `children.count`, `children.count(x)`, `children.all(x)`, `children.any(x)` and
-  `parent.all(x)`. `children` are the items naming the item in its parent field, `parent` the
-  item it names there, so a type whose keys read either marks that field:
-  `parent: Option<Item> (parent) = .none` (E119 says so). Nothing else is derived from other
-  records: text, a day, a record or arithmetic on counts cannot be a key.
-- **A key reads one way.** It reads the items under an item or the items above it, never both
-  (E119): the two are worked out by walks in opposite directions, and one value cannot be
-  settled by both. Reading one direction takes two keys — `finished` downward, `folded`
-  upward — which is what makes a branch fold when its last steps are checked and unfold when
-  one is opened.
-- **A key reads itself and the keys declared before it.** The item's own keys are worked out in
-  the order the type declares them, so `folded: Bool = finished and parent.all(folded)` reads
-  `finished` declared over it. A key that reads one declared below it is E119: it would read a
-  value not worked out yet.
-- **Nothing writes a key.** It is a field of its type: a view reads it as any other, and search
-  filters, sorts and groups by it. An action that assigns it, or a record made with one, is
-  E119 — the change is derived again wherever it is applied, so a written value would be a
-  second answer to the same question.
-- **A key is worked out where its items change.** The index keeps each item's children and the
-  chain it stands in. A change derives the item, walks the items above it deepest first, and
-  then — from the highest whose value moved — the items under it, stopping where a value no
-  longer moves; a key that reads neither is not recomputed for it, so a title keystroke costs
-  nothing. A write of the parent field moves the item between two lists and derives the old
-  and the new chain; a whole-record write derives every item it visits, the items under each
-  before the items above.
-- **Readers are told.** A derived value is named to the views that read it and, in a change
-  another replica sent, as that item's own change (`Derive::derived_keys`): a branch that folds
-  because someone checked its last step elsewhere is redrawn there, though the change named
-  only the step.
-
 ## What links to a resource
 
 - **`linked(r)` is three answers, in one order.** A resource links to another when an action
@@ -316,7 +275,7 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - **A change tells its readers.** A resource's outgoing set is derived where its fields are: a
   rich text written, a field set or cleared, a resource removed, and a resource made (the
   `created_from` pair, from the change's source). The entries move with it, and the keys are
-  named as the changes that made them (`Derive::links`, `derived_keys`), so a view of
+  named as the changes that made them (`Derive::notified`), so a view of
   `linked(r)` runs again when one more resource is made from or names `r`.
 
 ## Packages of several files
@@ -397,6 +356,11 @@ workspace-model.md. The grammar is [grammar.md](grammar.md); the README shows it
   variants are lowercase. Ids: the enum `Name`, each variant `Name.v`, each payload field
   `Name.v.f`, all in `app.ids`. A payload field holds a value type (not `Action` or `View`).
   Payload fields are positional or named at construction (`.b(1, "z")`, `.b(x: 1, y: "z")`).
+- **No field markers.** A field is its name, its type, its merge and its default. A record is
+  named by its first `Text` or `RichText` field, cut to its first non-blank line; where a view
+  does not draw it (a link, a search result, the palette, history, a notification) it is shown
+  through its type's `row view`, and a type without one shows its type's name and
+  `created(r)`. What a field means to the UI is the app's own views' business, not the type's.
 - **Values.** `.v` / `.v(args)` resolve against the type the context expects (a parameter, a
   field, an annotation, the other side of `==`, a branch's agreed type, a UI option); with none,
   E037 asks for `Name.v`. A qualified `pkg.Name.v` names another package's enum.
@@ -601,6 +565,9 @@ literals only, written `7d` in a query and nowhere else.
 
 search.md, "What a type declares" and "Types, references and paths".
 
+- **Every text is indexed.** Search reads every `Text` and `RichText` field of a resource, in
+  declaration order; the first is what a result is called by, the rest are found by their
+  words. No marker gives one text more weight than another.
 - **`search` blocks.** `search` is contextual: a type body's line `search {` starts the block,
   one per type (a second is a syntax error). Lines: `filter field ["Label"]`,
   `filter "Label" = expr`, `sort field newest|oldest|a_z|z_a`, `hide field`. A filter's key is
@@ -651,6 +618,14 @@ search.md, "What a type declares" and "Types, references and paths".
   offers what its app declares, and a place of days or projects is the app's own `ui.NavList`.
   Places draw no badge: a count is a query of the app's own (`items.matching(p.query).len()`),
   which a view that counts writes.
+- **A window that is only a list is `std.browse`.** It writes that window from the inputs the app
+  names alone — `of` (the resource the window is of), `items`, `places`, `sort`, `everything`, the
+  `empty` state, the `entry` action — with its query state, the title and count that name the place
+  chosen, and the pane beside the list when rows open there. It scans nothing (`filters(T)`) and
+  reads no layout off a type; the one fact it takes from the type is `opens`, whether its rows have
+  a window of their own, and a window whose rows open in front of it states `opens: false`. An app
+  whose window needs a sidebar of counts, grouped rows or a bar action of its own composes
+  `std.list`, `std.places` and `std.header` itself.
 - **A list groups by the key its caller gives.** `ui.ListItem(group:)` takes the item's own key and
   heads each run of items naming the same key with the key itself, as the platform presents a
   value of its kind — a day as Today, Tomorrow, a weekday; a word as it is written. Items that
@@ -753,8 +728,7 @@ search.md, "What a type declares" and "Types, references and paths".
   and one to its Markdown `Text` (the same text round-tripped byte for byte), and edits the one
   the view bound. `bind:` takes the binding whose type the bound place has, since a component
   may declare several. So a body is `ui.BlockEditor(bind: doc.body, placeholder: "…")` where
-  the document's window draws it; a field marked `(body)` is the document's metadata and says
-  nothing about which control edits it, and neither the host nor the compiler places an editor.
+  the document's window draws it; neither the host nor the compiler places an editor.
 - **`std.Repeat` and `std.Reminder` are built-in value types, held as their RFC 5545 text.** A
   repeat is its RRULE (`FREQ=WEEKLY;INTERVAL=2`), with `X-FROM=DONE` appended when the next
   occurrence counts from the day it was completed rather than from the day it was due; a

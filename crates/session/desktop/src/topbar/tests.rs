@@ -50,7 +50,10 @@ fn desktop_topbar_uses_scaled_tokens_once_and_contains_workspace_text() {
             .with_weight(bar.workspace_name_text_weight()),
     );
     assert!(f64::from(height) <= bar.ws_pill_rect.height());
-    assert!(bar.ws_pill_rect.x1 <= bar.rect.center().x - bar.center_band_width(&theme) / 2.0);
+    assert!(
+        bar.ws_pill_rect.x1
+            <= bar.rect.center().x - bar.center_band_width(&theme, &mut renderer) / 2.0
+    );
 }
 
 fn sample_chrome() -> TopBarChrome {
@@ -281,7 +284,7 @@ fn a_hidden_bar_gives_its_strip_to_the_windows_and_shows_over_them_in_place() {
     assert!(click(&mut bar, menu), "shown, its controls work");
     assert_eq!(
         chrome.borrow().intents.as_slice(),
-        &[ChromeIntent::ToggleWorkspaceMenu]
+        &[ChromeIntent::ToggleWorkspaceMenu { at: None }]
     );
 
     bar.set_presence(TopBarPresence::Hidden);
@@ -928,7 +931,7 @@ fn keyboard_activation_matches_pointer_actions() {
     assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Space));
     assert_eq!(
         chrome.borrow().intents.last(),
-        Some(&ChromeIntent::ToggleWorkspaceMenu)
+        Some(&ChromeIntent::ToggleWorkspaceMenu { at: None })
     );
 }
 
@@ -980,7 +983,7 @@ fn the_bar_names_the_strip_after_the_workspace_and_it_opens_the_strip_switcher()
     assert!(click(&mut bar, pill));
     assert_eq!(
         chrome.borrow().intents.last(),
-        Some(&ChromeIntent::ToggleWorkspaceMenu)
+        Some(&ChromeIntent::ToggleWorkspaceMenu { at: None })
     );
 }
 
@@ -1248,9 +1251,9 @@ fn the_bar_leads_with_one_menu_and_ends_with_you() {
     assert_eq!(
         intents,
         [
-            ChromeIntent::ToggleWorkspaceMenu,
+            ChromeIntent::ToggleWorkspaceMenu { at: None },
             ChromeIntent::ToggleProfile,
-            ChromeIntent::ToggleWorkspaceMenu
+            ChromeIntent::ToggleWorkspaceMenu { at: None }
         ]
     );
 }
@@ -1371,6 +1374,49 @@ fn the_clock_pill_hugs_the_time_and_holds_its_width() {
             .with_weight(sample_chrome().clock_text_weight()),
     );
     assert!(x1 - x0 >= f64::from(time), "the time fits its content lane");
+}
+
+/// A phone-wide bar grows its centre lane around a live activity's reading
+/// rather than pinning it to the clock's width: the highlight stands centred
+/// behind the text it belongs to, and the workspace name beside it yields
+/// instead of drawing underneath.
+#[test]
+fn a_narrow_bar_centres_its_pill_on_the_reading_it_shows() {
+    let mut tree = DesktopTree {
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
+        collaborators: Vec::new(),
+        ..Default::default()
+    };
+    tree.active = tree.workspaces[0].slot;
+    let chrome = super::fixture::FixtureChrome::new(tree.clone());
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+    lay_out_and_draw(&mut bar, 520.0);
+    let clock = (bar.center_rect, bar.center_lane);
+    chrome.borrow_mut().activities = vec![
+        ui::live_activity::Summary::new(ui::live_activity::Kind::Call, "Ada and Milo", "0:42")
+            .with_id("chat-call:c_huddle"),
+    ];
+    bar.refresh_status_and_media_state();
+    lay_out_and_draw(&mut bar, 520.0);
+    let (pill, lane) = (bar.center_rect, bar.center_lane);
+    assert!(
+        pill.width() > clock.0.width(),
+        "the pill stands on its reading, not the clock's width: {pill:?} beside {clock:?}"
+    );
+    assert!(
+        (pill.center().x - bar.rect.center().x).abs() <= 1.0,
+        "the highlight is centred behind the text it belongs to: {pill:?} in {:?}",
+        bar.rect
+    );
+    let band_left = bar.rect.center().x - lane.width() / 2.0;
+    assert!(
+        bar.ws_pill_rect.x1 <= band_left + 1.0,
+        "the workspace name yields to the pill: {:?} beside a lane from {band_left}",
+        bar.ws_pill_rect
+    );
 }
 
 #[test]

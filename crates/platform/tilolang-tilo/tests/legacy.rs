@@ -508,7 +508,7 @@ fn an_older_boards_cards_move_into_their_columns_by_its_migration_keeping_their_
 }
 
 #[test]
-fn a_board_the_new_version_made_is_not_migrated() {
+fn a_board_the_new_version_made_is_migrated_once_and_left_as_it_was() {
     let packages = vec![app!("board")];
     let mut replica = Replica::new("ada", AutoCommit::new(), &packages).0;
     let app = "so.tilo.lang.board";
@@ -520,8 +520,26 @@ fn a_board_the_new_version_made_is_not_migrated() {
         "new_column",
         vec![Value::resource(&board)],
     );
+    let (columns_field, column_ty) = field(&replica, app, "Board", "columns");
+    let (cards_field, _) = field(&replica, app, "Board", "cards");
+    let (lane_field, _) = field(&replica, app, "Column", "cards");
+    let columns = listed(&replica, &board, &columns_field);
+    assert_eq!(columns.len(), 1, "the column the new version added");
+
+    // A migration runs once on each record of its subject type, on a record the same version
+    // made as on an older one: the board the new version made is migrated once, and the
+    // migration leaves it as it was, nothing of the older form being there to move.
+    assert_eq!(replica.host.migrate(), 1);
+    for done in replica.host.take_committed() {
+        replica.apply(&done.action);
+    }
+    assert_eq!(listed(&replica, &board, &columns_field), columns);
+    assert!(listed(&replica, &board, &cards_field).is_empty());
+    assert!(listed(&replica, &board.item(&columns[0], column_ty), &lane_field).is_empty());
+    // It ran once: the next open runs nothing.
     assert_eq!(replica.host.migrate(), 0);
     assert!(replica.host.take_committed().is_empty());
+    check_index(&replica, &packages, app);
 }
 
 #[test]

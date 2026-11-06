@@ -1,0 +1,43 @@
+[package]
+name = "tilo-feedback-transport"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license = "MIT"
+description = "A report's authenticated transport to the destination's canonical owner, and that owner's signed receipt."
+
+[dependencies]
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# A reviewed report, its outbox and its private feedback host: this crate is
+# the transport and receipt half of the same contract.
+tilo-feedback = { version = "0.1.0", path = "../feedback" }
+# The destination is the app's own registered submit action, and a reporter's
+# authority over it is the workspace's policy.
+tilo-actions = { path = "../actions" }
+durable-store = { path = "../../system/durable-store" }
+# The record a canonical owner reads its filed reports from, and the policy
+# context the admitted reporter acts under.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+# A receipt is the owner's device signature over its own admission.
+ed25519-dalek.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+automerge.workspace = true
+tempfile.workspace = true
+# The owner's retained record is a real Chat workspace, filed into through
+# the app's own actions.
+chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
+tilo-app-state = { path = "../../system/app-state" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-test-env = { path = "../../dev/test-env" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, features = ["test-support"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

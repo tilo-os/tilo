@@ -93,10 +93,11 @@ impl ResourceKind {
 /// How far a hit is from the person: what they have, an app Tilo opens at
 /// once, or an app they would first have to install. A property of the hit,
 /// set by the provider that knows it, and read by the merge
-/// ([`order_hits`]): what the person has, and the Tilo apps that just open,
-/// rank by match quality; a third-party app the person does not have (a
-/// Flathub app's Store page) ranks after all of them, however well its name
-/// matches, ordered among its kind by match quality and still listed.
+/// ([`order_hits`]): what the person has ranks by match quality; the Store's
+/// offers follow it, however well their names match, the Tilo apps that just
+/// open before the third-party apps whose Store page they would first
+/// install. Each band is ordered among its own kind by match quality and
+/// still listed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Availability {
     /// On this device or the person's own: an installed app, a file, a
@@ -118,8 +119,9 @@ impl Availability {
     #[must_use]
     pub const fn band(self) -> u8 {
         match self {
-            Self::OnDevice | Self::TiloCatalogue => 0,
-            Self::ThirdPartyCatalogue => 1,
+            Self::OnDevice => 0,
+            Self::TiloCatalogue => 1,
+            Self::ThirdPartyCatalogue => 2,
         }
     }
 }

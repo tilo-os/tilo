@@ -14,13 +14,15 @@
 //! **The person** ([`Questions`]): nothing the client sends past its
 //! `initialize` is read until the person, on the sheet the question opens,
 //! allows it to work in the workspace in front of them as an agent.
-//! Answering admits it: the agent becomes a member of that workspace with
-//! the Observer preset's grants — the membership the workspace's settings
-//! list and revoke, so removing it there ends what the client may do.
+//! Answering admits it as an agent acting for them
+//! ([`tilo_actions::remote::Caller::delegated_to`]): what it does is that
+//! agent's, for the person, and no more than the person and the delegation a
+//! device gives its agents both allow. An agent is not a member; the person's
+//! session is what ends it.
 //!
 //! **The broker**: an admitted connection is served as
-//! `Caller::local_agent(agent).in_workspace(workspace)`, so discovery and
-//! invocation pass the same gate as every other caller.
+//! `Caller::local_person(person).delegated_to(agent)` in that workspace, so
+//! discovery and invocation pass the same gate as every other caller.
 //!
 //! **Acting as the person.** A client may ask to act as the person rather
 //! than as an agent of theirs: a REPL (`tilolang repl`), whose lines the
@@ -40,9 +42,8 @@
 //!
 //! "Allow for this session" and "Always allow" remember that this client is
 //! that agent, by the executable the kernel names and the name the client
-//! gives, so its next connection is let in without asking wherever that
-//! agent is already a member. "Always allow" is kept in this account's
-//! private state, never in the workspace document.
+//! gives, so its next connection is let in without asking. "Always allow" is
+//! kept in this account's private state, never in the workspace document.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
@@ -61,7 +62,6 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     ConfirmedInvocation, ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
-use tilo_clock::unix_now;
 use tilo_compositor::ReadableWatch;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
@@ -505,10 +505,6 @@ pub(crate) struct Loop {
     /// The control protocol's door, which a program inside an app this session
     /// started is served at, as that app.
     control: Arc<crate::test_control::Door>,
-    /// The workspace governance this device holds: where an agent's admission
-    /// is written, so it is a member everywhere the workspace is, not only on
-    /// this desk.
-    engine: Option<Arc<crate::engine::Engine>>,
     /// The agents the person admitted, as their desk seats them.
     seats: Arc<Seats>,
 }
@@ -533,7 +529,6 @@ pub(crate) fn mount_named(
     options: &crate::Options,
     questions: Option<Questions>,
     doors: Arc<SessionDoors>,
-    engine: Option<Arc<crate::engine::Engine>>,
     control: Arc<crate::test_control::Door>,
     seats: Arc<Seats>,
 ) -> Option<Mounted> {
@@ -546,7 +541,6 @@ pub(crate) fn mount_named(
         state: options.state.as_deref(),
         admits: &options.admit_repl,
         doors,
-        engine,
         control,
         seats,
     }) {
@@ -570,7 +564,6 @@ pub(crate) struct Doorway<'a> {
     state: Option<&'a Path>,
     admits: &'a [PathBuf],
     doors: Arc<SessionDoors>,
-    engine: Option<Arc<crate::engine::Engine>>,
     control: Arc<crate::test_control::Door>,
     seats: Arc<Seats>,
 }
@@ -590,7 +583,6 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
         state,
         admits,
         doors,
-        engine,
         control,
         seats,
     } = doorway;
@@ -637,7 +629,6 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
         admits,
         person_session: std::collections::HashSet::new(),
         doors,
-        engine,
         control,
         seats,
     };
@@ -684,7 +675,7 @@ impl Loop {
         while let Ok(request) = self.asked.try_recv() {
             self.request(handle, request, person);
         }
-        self.settle_waiting(handle, person);
+        self.settle_waiting(person);
     }
 
     /// Accept every waiting connection, each on its own thread.
@@ -769,7 +760,6 @@ impl Loop {
             ));
             return;
         };
-        let now = unix_now();
         let Some((workspace, name)) = handle.read(|tree| {
             tree.active_workspace()
                 .map(|held| (held.id().to_string(), held.name.clone()))
@@ -801,12 +791,9 @@ impl Loop {
             .as_ref()
             .and_then(|key| self.session.get(key).or_else(|| self.always.get(key)))
             .cloned();
-        if !as_person
-            && let Some(agent) = &remembered
-            && Self::member(handle, &workspace, agent, now)
-        {
-            // What the person said to remember: this client is this agent,
-            // let in wherever that agent is already a member.
+        if !as_person && let Some(agent) = &remembered {
+            // What the person said to remember: this client is that agent,
+            // acting for the person whose session it was admitted to.
             self.seats.admitted(seat, agent, &facts.client, &name);
             let _ = decide.send(Consent::Admit {
                 workspace,
@@ -851,7 +838,7 @@ impl Loop {
 
     /// Settle the questions the person answered — or whose client left —
     /// and let the admitted agents in.
-    fn settle_waiting(&mut self, handle: &DesktopHandle, person: &str) {
+    fn settle_waiting(&mut self, person: &str) {
         let mut still = Vec::with_capacity(self.waiting.len());
         for mut waiting in std::mem::take(&mut self.waiting) {
             if waiting.decide.is_closed() {
@@ -870,7 +857,7 @@ impl Loop {
                 Poll::Pending => still.push(waiting),
                 Poll::Ready(answer) => {
                     waiting.asked = None;
-                    let consent = self.settle(handle, &waiting, answer, person);
+                    let consent = self.settle(&waiting, answer, person);
                     let _ = waiting.decide.send(consent);
                 }
             }
@@ -880,13 +867,7 @@ impl Loop {
 
     /// What the person's answer means for `waiting`: admitted as the agent
     /// it proposed, or refused with the reason.
-    fn settle(
-        &mut self,
-        handle: &DesktopHandle,
-        waiting: &Waiting,
-        answer: Option<Answer>,
-        person: &str,
-    ) -> Consent {
+    fn settle(&mut self, waiting: &Waiting, answer: Option<Answer>, person: &str) -> Consent {
         let Some(choice) = answer.and_then(|answer| answer.choice) else {
             return Consent::Refuse(word("agent-door-declined"));
         };
@@ -909,9 +890,6 @@ impl Loop {
                 workspace: waiting.workspace.clone(),
                 person: person.to_owned(),
             };
-        }
-        if let Err(reason) = self.admit(handle, &waiting.workspace, &waiting.proposed, person) {
-            return Consent::Refuse(reason);
         }
         self.seats.admitted(
             waiting.seat,
@@ -936,50 +914,6 @@ impl Loop {
             agent: waiting.proposed.clone(),
             person: person.to_owned(),
         }
-    }
-
-    /// Make `agent` a member of the workspace `workspace` with the Observer
-    /// preset's grants, through the workspace's governance, unless it already
-    /// is one.
-    ///
-    /// # Errors
-    /// The workspace is gone, or the person does not administer it.
-    fn admit(
-        &self,
-        handle: &DesktopHandle,
-        workspace: &str,
-        agent: &str,
-        person: &str,
-    ) -> Result<(), String> {
-        let mut tree = handle.read(Clone::clone);
-        let Some(room) = tree
-            .workspaces
-            .iter()
-            .find(|held| held.id().to_string() == workspace)
-            .map(tilo_desktop_model::Workspace::id)
-        else {
-            return Err(word("agent-door-workspace-gone"));
-        };
-        let actor = person.to_owned();
-        if !crate::membership::admit_agent(self.engine.as_deref(), &mut tree, &room, &actor, agent)?
-        {
-            return Ok(());
-        }
-        handle.replace_tree(tree.clone());
-        if let Some(desk) = &self.desk {
-            desk.publish(tree);
-        }
-        Ok(())
-    }
-
-    /// Whether `agent` is a live member of the workspace `workspace`.
-    fn member(handle: &DesktopHandle, workspace: &str, agent: &str, now: u64) -> bool {
-        handle.read(|tree| {
-            tree.workspaces
-                .iter()
-                .find(|held| held.id().to_string() == workspace)
-                .is_some_and(|held| held.agent_role_at(agent, now).is_some())
-        })
     }
 
     /// Keep "Always allow" in this account's private state. The loop does

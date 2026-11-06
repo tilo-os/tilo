@@ -835,6 +835,14 @@ readers = [
 ]
 
 [[cargo]]
+package = "tilolang-youtube"
+# The origin's tests compile tube's package from its source and ids lock.
+inputs = ["apps/tl/tube/"]
+readers = [
+  "crates/platform/tilolang-youtube/tests/origin.rs",
+]
+
+[[cargo]]
 package = "tilolang-host"
 # The host compiles built-in packages and embeds the UI host's catalogues, and its task's tests
 # hold native apps' packages from their surfaces, as a session hands them.

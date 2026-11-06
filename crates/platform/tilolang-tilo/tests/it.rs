@@ -11,10 +11,12 @@
 )]
 
 mod agent_queries;
+mod atomic;
 mod bundle;
 mod capture;
 mod chained;
 mod chat;
+mod chunks;
 mod collab;
 mod columns;
 mod composer;
@@ -46,7 +48,6 @@ mod record;
 mod records;
 mod records_service;
 mod reflection;
-mod reminders;
 mod rich_text;
 mod scenarios;
 #[cfg(feature = "record")]
@@ -57,6 +58,7 @@ mod sync;
 mod task;
 mod task_door;
 mod tasks;
+mod tasks_places;
 mod tasks_today;
 mod triggers;
 #[cfg(feature = "record")]

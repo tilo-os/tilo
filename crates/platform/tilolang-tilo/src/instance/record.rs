@@ -27,7 +27,7 @@ use collaboration::{
 use durable_store::DurableStore;
 
 use serde_json::Value as Json;
-use tilo_actions::{ActionContext, ActionInvoker, ActionRegistry, EncodedAction};
+use tilo_actions::{ActionContext, ActionInvoker, ActionRegistry, EncodedAction, InvocationId};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::Doc;
 
@@ -337,6 +337,87 @@ impl InstanceRecord {
         )
     }
 
+    /// The invocation the person's last step in the record ran in: the id every change of the
+    /// action that made it names, in this unit and in every other one the action wrote.
+    #[must_use]
+    pub fn last_step_invocation(&self) -> Option<InvocationId> {
+        let scope = Scope::Invoker(self.person.clone());
+        let step = steps::undo_preview(&self.doc, &scope, 1)
+            .into_iter()
+            .next()?;
+        self.invocation_of(&step.hash.0)
+    }
+
+    /// The changes of this unit the invocation `invocation` made, oldest first: the unit's part
+    /// of that action, read from the document itself. An undo across the action needs nothing
+    /// else, so it works after a restart that lost every log the transport kept.
+    #[must_use]
+    pub fn changes_of(&self, invocation: InvocationId) -> Vec<[u8; 32]> {
+        self.doc
+            .committed_document()
+            .get_changes(&[])
+            .iter()
+            .filter(|change| {
+                change
+                    .message()
+                    .and_then(ActionContext::from_change_message)
+                    .is_some_and(|context| context.source_invocation == Some(invocation))
+            })
+            .map(|change| change.hash().0)
+            .collect()
+    }
+
+    /// The invocation the change `change` of this document ran in.
+    fn invocation_of(&self, change: &[u8; 32]) -> Option<InvocationId> {
+        self.doc
+            .committed_document()
+            .get_changes(&[])
+            .into_iter()
+            .find(|known| known.hash().0 == *change)
+            .and_then(|known| known.message().and_then(ActionContext::from_change_message))
+            .and_then(|context| context.source_invocation)
+    }
+
+    /// Whether the step the change `change` is part of is still in effect for the person: what an
+    /// undo of it takes back, and not a step already undone or not theirs.
+    #[must_use]
+    pub fn can_revert(&self, change: &[u8; 32]) -> bool {
+        let scope = Scope::Invoker(self.person.clone());
+        steps::steps_in_effect(&self.doc, &|version| scope.owns(version), usize::MAX)
+            .into_iter()
+            .flatten()
+            .any(|version| version.hash.0 == *change)
+    }
+
+    /// Take back the step the change `change` is part of through the history verb `undo`, as a
+    /// step of `invoker` in `ambient`, and leave it unsent: the caller sends every unit of the
+    /// action under one commit ([`Self::unsent_change`], [`Self::share_under`]). The instance is
+    /// brought up to date.
+    ///
+    /// # Errors
+    /// The step is undone already, is not one this undo may take back, or its inverse could not
+    /// be applied.
+    pub fn revert_step(
+        &mut self,
+        instance: &mut Instance,
+        resource: &str,
+        kind: &str,
+        invoker: ActionInvoker,
+        ambient: &ActionContext,
+        change: &[u8; 32],
+    ) -> Result<(), RecordError> {
+        let edit = HistoryEdit::Undo {
+            steps: None,
+            run: None,
+            by: None,
+            to: None,
+            step: Some(ChangeHash(*change).to_string()),
+        };
+        self.history_apply(&edit, resource, kind, invoker, Some(ambient))?;
+        instance.sync(Some(&self.doc));
+        Ok(())
+    }
+
     /// Take back the person's last step through the history verb `undo` on `resource` (a
     /// resource `kind`), as a step of their own that the workspace is handed like any other; the
     /// instance is brought up to date. Whether there was one.
@@ -463,6 +544,20 @@ impl InstanceRecord {
         invoker: ActionInvoker,
         ambient: Option<&ActionContext>,
     ) -> Result<(Option<Json>, Option<String>), RecordError> {
+        let result = self.history_apply(edit, resource, kind, invoker, ambient)?;
+        Ok((result, self.share()))
+    }
+
+    /// Apply the history verb `edit` as one step, leaving it unsent: its caller sends it, alone or
+    /// as its unit's part of one action.
+    fn history_apply(
+        &mut self,
+        edit: &HistoryEdit,
+        resource: &str,
+        kind: &str,
+        invoker: ActionInvoker,
+        ambient: Option<&ActionContext>,
+    ) -> Result<Option<Json>, RecordError> {
         // An undo or redo ends the gesture: what is typed after it is a step of its own.
         self.gesture = None;
         let action = HostHistoryEdit {
@@ -479,11 +574,7 @@ impl InstanceRecord {
         self.apply_with(&action, encoded, context, invoker, ambient)?;
         let after = self.doc.get_heads();
         let patches = self.doc.diff(&before, &after);
-        let unshared = self.share();
-        Ok((
-            verbs::result(edit.verb(), &self.doc, &patches, &self.words),
-            unshared,
-        ))
+        Ok(verbs::result(edit.verb(), &self.doc, &patches, &self.words))
     }
 
     /// Answer the history view `payload` asks ([`verbs::VIEW_TYPE`]) of the record.
@@ -494,13 +585,31 @@ impl InstanceRecord {
         verbs::answer(&self.doc, payload, &self.words)
     }
 
-    /// Keep the record on disk, and hand the workspace what it holds past what it was handed, as one
-    /// change. What the collab client cannot take yet (its queue is full, or the route is still
-    /// connecting) stays in the record and goes with the next send: a frame sends again while
-    /// any is left ([`Self::unsent`]), and the client wakes its owner once it has workspace. A change
-    /// it refuses for good (above its size limit) stays on this device, kept in the record and
-    /// on disk: the reason is returned the first time, for the window to say so.
+    /// Hand the workspace what the record holds past what it was handed, as one change. What the
+    /// collab client cannot take yet (its queue is full, or the route is still connecting) stays
+    /// in the record and goes with the next send: a frame sends again while any is left
+    /// ([`Self::unsent`]), and the client wakes its owner once it has workspace. A change it
+    /// refuses for good (above its size limit) stays on this device, kept in the record and on
+    /// disk: the reason is returned the first time, for the window to say so.
     pub fn share(&mut self) -> Option<String> {
+        self.send(None)
+    }
+
+    /// What the record holds past what the workspace was handed, as this unit's change: the part
+    /// of an action its caller sends with every other unit of the action ([`Self::share_under`]).
+    /// Empty when the workspace holds all of it.
+    pub fn unsent_change(&mut self) -> DocumentMutation {
+        DocumentMutation::Incremental(self.doc.save_after(&self.sent))
+    }
+
+    /// [`Self::share`] as this unit's part of `commit`, the one action across every unit it
+    /// wrote: the parts travel together, each carrying the same commit, so a peer applies all of
+    /// the action or none of it.
+    pub fn share_under(&mut self, commit: &collab_types::WorkspaceCommit) -> Option<String> {
+        self.send(Some(commit))
+    }
+
+    fn send(&mut self, commit: Option<&collab_types::WorkspaceCommit>) -> Option<String> {
         if !self.unsent() {
             return None;
         }
@@ -516,10 +625,14 @@ impl InstanceRecord {
             self.sent = self.doc.get_heads();
             return None;
         }
-        let sent = match self
-            .manager
-            .try_send(CollabRequest::document_incremental(change))
-        {
+        let request = match commit {
+            Some(commit) => CollabRequest::document_action(
+                DocumentMutation::Incremental(change),
+                commit.clone(),
+            ),
+            None => CollabRequest::document_incremental(change),
+        };
+        let sent = match self.manager.try_send(request) {
             Ok(()) => true,
             Err(error @ collaboration::CollabSendError::TooLarge { .. }) => {
                 tracing::warn!(%error, "workspace: the record's changes stay on this device");
@@ -665,6 +778,12 @@ impl InstanceRecord {
             &action.kind,
         );
         context.gesture = gesture;
+        // A change of a run names the run's invocation, so the workspace commits the caller's
+        // change and its callees' as one action.
+        if let Some(invocation) = &action.authorship.invocation {
+            context =
+                context.with_source_invocation(Some(crate::action::invocation_id(invocation)));
+        }
         self.apply_with(action, encoded, context, invoker, ambient)
     }
 

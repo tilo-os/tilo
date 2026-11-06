@@ -760,6 +760,9 @@ pub struct RasterCheck {
     height: u32,
     row: u32,
     mapped: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// Why the readback failed, when it did: a check that could not read
+    /// the frames back says so, rather than claiming they differ.
+    unreadable: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl RasterCheck {
@@ -847,14 +850,24 @@ impl RasterCheck {
         }
         queue.submit([encoder.finish()]);
         let mapped = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let unreadable = std::sync::Arc::new(std::sync::Mutex::new(None));
         for buffer in [&retained, &full_pixels] {
             let mapped = mapped.clone();
+            let unreadable = unreadable.clone();
             buffer
                 .slice(..)
                 .map_async(wgpu::MapMode::Read, move |result| {
-                    // A failed map counts as a mismatch, never as a pass.
-                    let step = if result.is_ok() { 1 } else { 100 };
-                    mapped.fetch_add(step, std::sync::atomic::Ordering::AcqRel);
+                    // A failed map counts as a check that could not run,
+                    // never as a pass.
+                    if let Err(error) = result {
+                        let mut why = unreadable.lock().unwrap_or_else(|e| e.into_inner());
+                        if why.is_none() {
+                            *why = Some(error.to_string());
+                        }
+                        mapped.fetch_add(100, std::sync::atomic::Ordering::AcqRel);
+                        return;
+                    }
+                    mapped.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 });
         }
         Ok(Self {
@@ -864,21 +877,27 @@ impl RasterCheck {
             height,
             row,
             mapped,
+            unreadable,
         })
     }
 
-    /// The pixels that differ beyond antialiasing once both images are
-    /// read back; `None` while they are not. A failed readback differs
-    /// everywhere.
-    pub fn differing(&self) -> Option<usize> {
+    /// What reading the frames back said: how the pixels that differ fall on
+    /// the frame, so a stale repaint is found on the screen rather than only
+    /// counted, or why the frames could not be read. `None` while they are
+    /// not read yet.
+    pub fn differences(&self) -> Option<Readback> {
         let mapped = self.mapped.load(std::sync::atomic::Ordering::Acquire);
         if mapped < 2 {
             return None;
         }
-        let everywhere =
-            usize::try_from(u64::from(self.width) * u64::from(self.height)).unwrap_or(usize::MAX);
         if mapped != 2 {
-            return Some(everywhere);
+            let why = self
+                .unreadable
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+                .unwrap_or_else(|| "its map failed".to_owned());
+            return Some(Readback::Unreadable(why));
         }
         let tight = |buffer: &vello::wgpu::Buffer| {
             let range = buffer.slice(..).get_mapped_range();
@@ -893,14 +912,78 @@ impl RasterCheck {
             }
             pixels
         };
-        let differing = crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
-            &tight(&self.retained),
-            &tight(&self.full),
+        let width = usize::try_from(self.width).unwrap_or(0);
+        let (kept, rendered) = (tight(&self.retained), tight(&self.full));
+        let blank = (
+            kept.iter().all(|byte| *byte == 0),
+            rendered.iter().all(|byte| *byte == 0),
         );
+        // A full render that read back empty was not drawn: the check has
+        // nothing to compare with and says so rather than blaming the frame.
+        if blank.1 {
+            self.retained.unmap();
+            self.full.unmap();
+            return Some(Readback::Unreadable(
+                "the full render read back empty".to_owned(),
+            ));
+        }
+        let (count, bounds) =
+            crate::offscreen::OffscreenRenderer::differing_beyond_aa(&kept, &rendered, width);
+        let first = kept
+            .chunks_exact(4)
+            .zip(rendered.chunks_exact(4))
+            .enumerate()
+            .find(|(_, (kept, rendered))| {
+                kept.iter().zip(*rendered).any(|(p, q)| p.abs_diff(*q) > 1)
+            })
+            .and_then(|(index, (kept, rendered))| {
+                let at = u32::try_from(index).ok()?;
+                Some((
+                    at % self.width.max(1),
+                    at / self.width.max(1),
+                    [kept[0], kept[1], kept[2], kept[3]],
+                    [rendered[0], rendered[1], rendered[2], rendered[3]],
+                ))
+            });
         self.retained.unmap();
         self.full.unmap();
-        Some(differing)
+        Some(Readback::Differing(Differences {
+            count,
+            first,
+            bounds: bounds.map(|(x0, y0, x1, y1)| {
+                (
+                    u32::try_from(x0).unwrap_or(u32::MAX),
+                    u32::try_from(y0).unwrap_or(u32::MAX),
+                    u32::try_from(x1).unwrap_or(u32::MAX),
+                    u32::try_from(y1).unwrap_or(u32::MAX),
+                )
+            }),
+        }))
     }
+}
+
+/// What reading a frame repainted in part and a full render of it back said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Readback {
+    /// Both frames were read: how one differs from the other.
+    Differing(Differences),
+    /// The frames could not be read, so there is nothing to compare: why
+    /// not. A check that could not run never passes.
+    Unreadable(String),
+}
+
+/// How a frame repainted in part differed from a full render of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Differences {
+    /// How many pixels differ.
+    pub count: usize,
+    /// The first pixel that differs beyond the ±1 two renders of one frame
+    /// may differ by: where it is, then its colour in the frame repainted in
+    /// part and in the full render.
+    pub first: Option<(u32, u32, [u8; 4], [u8; 4])>,
+    /// The left, top, right and bottom of the pixels that differ, the far
+    /// edges exclusive, or `None` where none do.
+    pub bounds: Option<(u32, u32, u32, u32)>,
 }
 
 #[cfg(test)]

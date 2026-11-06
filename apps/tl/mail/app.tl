@@ -5,7 +5,7 @@ app so.tilo.lang.mail "Mail" (icon: .mail, category: .office, records: .own)
 /// custody; the system keeps this in step with the server.
 type Account (origin: imap.account) {
     key: Text merge register
-    address: Text (title)
+    address: Text
     name: Text
     trouble: Text
     online: Bool
@@ -19,7 +19,7 @@ type Account (origin: imap.account) {
 /// A mailbox of an account.
 type Mailbox (origin: imap.mailbox) {
     key: Text merge register
-    name: Text (title)
+    name: Text
     role: Text merge register
     unread: Int
     total: Int
@@ -29,9 +29,9 @@ type Mailbox (origin: imap.mailbox) {
 type Thread (origin: imap.thread) {
     key: Text merge register
     account: Text merge register
-    subject: Text (title)
+    subject: Text
     latest: Time
-    snippet: Text (body)
+    snippet: Text
     senders: Text
     count: Int
     unread: Bool
@@ -70,7 +70,7 @@ type Thread (origin: imap.thread) {
 /// A label the person gave their conversations: their own, never the server's, as Gmail's and
 /// Fastmail's are. A conversation holds its labels by name, so giving one twice makes it once.
 type Label {
-    name: Text (title)
+    name: Text
 
     search {
         sort name a_z
@@ -81,14 +81,14 @@ type Label {
 type Message (origin: imap.message) {
     key: Text merge register
     account: Text merge register
-    subject: Text (title)
+    subject: Text
     from: Text
     from_name: Text
     to: Text
     cc: Text
     received: Time
     snippet: Text
-    body: Text (body)
+    body: Text
     message_id: Text merge register
     references: Text merge register
     attachments: Text
@@ -103,8 +103,8 @@ type Draft {
     from: Text
     to: Text
     cc: Text
-    subject: Text (title)
-    body: Text (body)
+    subject: Text
+    body: Text
     in_reply_to: Text
     references: Text
     sent: Bool = false

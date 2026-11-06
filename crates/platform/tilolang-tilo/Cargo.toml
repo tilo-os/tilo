@@ -9,6 +9,8 @@ description = "Tilo platform integration for tilolang apps: dynamic records in t
 
 [dependencies]
 automerge.workspace = true
+# The id a run's changes name, one for every change of the action and its calls.
+uuid.workspace = true
 chrono = { workspace = true, features = ["std"] }
 crc32fast.workspace = true
 # The index each package's records are listed and searched from: B-trees in one file, read

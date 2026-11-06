@@ -844,6 +844,44 @@ view tinted_row(item: Item, tint: Text) {
         assert!(!settled.contains(&before[2]));
     }
 
+    /// Rows a person checks one after another stand where they are: each kept row keeps its
+    /// own place, and the list goes on rendering.
+    #[test]
+    fn rows_checked_one_after_another_keep_their_places() {
+        let rows = Rows::new(6);
+        let mut view = rows.view("chosen");
+        choose(&view, "is:open");
+        view.poll_patches().unwrap();
+        let list = list_key(&view);
+        let before = row_keys(&view, &list);
+        for i in 0..3 {
+            rows.call("check", vec![Value::resource(&rows.items[i])]);
+            let patches = view.poll_patches().unwrap();
+            assert!(
+                !patches.iter().any(|p| matches!(
+                    p,
+                    Patch::Insert { .. } | Patch::Remove { .. } | Patch::Move { .. }
+                )),
+                "no row moves: {patches:?}"
+            );
+            assert_eq!(
+                row_keys(&view, &list),
+                before,
+                "the rows the person checked stay: {patches:?}"
+            );
+            for at in 0..=i {
+                assert_eq!(
+                    titles(view.row(&list, at).unwrap().unwrap()).concat(),
+                    format!("item {at}"),
+                    "the row checked at {at} stays where it stood"
+                );
+            }
+        }
+        let keys = row_keys(&view, &list);
+        let unique: std::collections::HashSet<&String> = keys.iter().collect();
+        assert_eq!(unique.len(), keys.len(), "each row is one row: {keys:?}");
+    }
+
     #[test]
     fn a_view_that_reads_every_item_follows_every_change() {
         let rows = Rows::new(300);
@@ -970,5 +1008,134 @@ view tinted_row(item: Item, tint: Text) {
             .map(|i| titles(view.row(&list, i).unwrap().unwrap()).concat())
             .collect();
         assert_eq!(titles_now, ["item 0", "item 1", "item 2"]);
+    }
+
+    // ----- a view call whose branch leaves the tree ------------------------------------------
+
+    /// A view whose two branches both stand, each holding a call of the same view, so two
+    /// boundaries can want one key. A record change leaves both to run; neither may write
+    /// where the whole view's content belongs.
+    const SWAPPING: &str = r#"app so.tilo.swap "Swap"
+
+type Board {
+    way: Text
+    said: Text
+}
+
+root Board
+
+default view board for Board
+
+action switch(b: Board) {
+    b.way = "one"
+}
+
+action switch_back(b: Board) {
+    b.way = ""
+}
+
+action say(b: Board, s: Text) {
+    b.said = s
+}
+
+view chosen(b: Board) {
+    section("Chosen") {
+        text("chosen says {b.said}")
+    }
+}
+
+view board(b: Board) {
+    stack {
+        text("a banner")
+        if b.way == "one" {
+            chosen(b)
+        } else {
+            chosen(b)
+        }
+        text("a footer")
+    }
+}
+"#;
+
+    fn swapping() -> (Runtime, App, ResourceRef, ViewInstance) {
+        let app = App::compile(SWAPPING, &[]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        app.load(&rt);
+        let board = rt.create("Board").unwrap();
+        let view = rt
+            .open_view(&me(), &app.view("board"), vec![Value::resource(&board)])
+            .unwrap();
+        (rt, app, board, view)
+    }
+
+    fn call(rt: &Runtime, app: &App, name: &str, args: Vec<Value>) {
+        let id = app.action(name);
+        rt.invoke_action(&me(), (id.as_str(), args)).unwrap();
+    }
+
+    /// The whole view, as its text, in order: every line the board draws.
+    fn lines(view: &ViewInstance) -> Vec<String> {
+        texts(view.tree())
+    }
+
+    /// A boundary that the tree no longer holds must not write where the whole view's content
+    /// belongs. A view call's `fragment` leaves the tree when the branch holding it swaps, but
+    /// the boundary made for it is still a boundary of the view, still marked to run by the
+    /// change it read, and its cached path is then the empty trail of a call never placed — the
+    /// trail that names the root. Writing there put that one call's content over the whole
+    /// view, and the diff that followed dropped every other child of the screen.
+    ///
+    /// The shape that reaches it has the same call in both branches: the boundary the departing
+    /// branch made is left behind when the other branch's call takes the key, and the change
+    /// that follows asks it to run.
+    ///
+    /// Through the public interface a swap clears the departing boundary's dirtiness, so this
+    /// test passes with and without the guard: it states the behaviour, not the mechanism. The
+    /// mechanism — a planted orphan whose cached trail is the empty one — is
+    /// `view_instance::orphan_tests::a_boundary_the_tree_does_not_hold_writes_nowhere`, which
+    /// fails without the guard.
+    #[test]
+    fn a_boundary_the_tree_no_longer_holds_does_not_replace_the_whole_view() {
+        let (rt, app, board, mut view) = swapping();
+        assert_eq!(
+            lines(&view),
+            ["a banner", "chosen says ", "a footer"],
+            "the first branch draws"
+        );
+
+        // The branch swaps: the chosen call leaves the tree where it stood, and the other
+        // branch's call takes its place.
+        call(&rt, &app, "switch", vec![Value::resource(&board)]);
+        view.poll_patches().unwrap();
+        assert_eq!(
+            lines(&view),
+            ["a banner", "chosen says ", "a footer"],
+            "the other branch draws"
+        );
+
+        // The record changes. Every boundary that read it runs, including the one the departing
+        // branch left: none of them may stand in for the whole view.
+        call(
+            &rt,
+            &app,
+            "say",
+            vec![Value::resource(&board), Value::text("hello")],
+        );
+        view.poll_patches().unwrap();
+        assert_eq!(
+            lines(&view),
+            ["a banner", "chosen says hello", "a footer"],
+            "the view is whole: the branch that stands drew the change"
+        );
+        let stack = of_kind(view.tree(), "stack")
+            .into_iter()
+            .max_by_key(|node| node.children.len())
+            .expect("the view's stack");
+        assert_eq!(
+            stack.children.len(),
+            3,
+            "the stack keeps every child: {}",
+            dump(stack)
+        );
     }
 }

@@ -9,6 +9,7 @@
 use std::rc::Rc;
 
 use tilo_render_protocol::patch::{self as ui, Lane, ToUi, Words};
+use tilolang_runtime::store::StoreError;
 
 use super::rows::{FIRST_ROWS, ListRows};
 use super::wire;
@@ -17,6 +18,7 @@ use super::{
     referenced_resource, rows_message, show_content_rows, sort, virtual_list_paths, virtual_lists,
 };
 use crate::host::Host;
+use crate::runtime::Store as _;
 use crate::runtime::{ResourceRef, ViewEvent};
 
 impl Instance {
@@ -197,6 +199,18 @@ impl Instance {
         self.out.extend(sent);
     }
 
+    /// Whether the view of `lane` has no record to run over: a resource the record does not
+    /// name — what was removed, or an item a change has not brought here yet — has no view, and
+    /// the window keeps the tree it has until the record holds it.
+    fn unheld(&self, host: &Host, lane: Lane) -> bool {
+        self.lane(lane).is_some_and(|shown| {
+            matches!(
+                host.store().type_of(&shown.target),
+                Err(StoreError::NotFound(_))
+            )
+        })
+    }
+
     /// Re-run the views whose reads changed, and send the window what changed: their trees'
     /// patches, and the changes of their virtual lists' rows. Whether anything did.
     pub(super) fn poll_views(&mut self) -> bool {
@@ -206,6 +220,9 @@ impl Instance {
         let names = Rc::clone(&self.names);
         let mut changed = false;
         for lane in [Lane::Root, Lane::Detail] {
+            if self.unheld(&host, lane) {
+                continue;
+            }
             let Some(view) = self.lane_mut(lane) else {
                 continue;
             };
@@ -215,7 +232,10 @@ impl Instance {
             let patches = match view.view.borrow_mut().poll_patches() {
                 Ok(patches) => patches,
                 Err(error) => {
+                    // A window keeps the frame it has and runs its view again on what comes
+                    // next; a test sees the error instead, so none passes over one.
                     tracing::warn!(%error, "a view failed to run");
+                    debug_assert!(false, "a view failed to run: {error}");
                     continue;
                 }
             };

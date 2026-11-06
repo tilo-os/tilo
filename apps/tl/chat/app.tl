@@ -10,7 +10,7 @@ root conversations: Conversations
 
 /// A named group of channels in the sidebar.
 type Category {
-    name: Text (title)
+    name: Text
     /// The server's channels.
     // TODO: `Collection<Channel>` with `type Channel = TextChannel | VoiceChannel |
     // ForumChannel` once voice and forum channels land.
@@ -20,7 +20,7 @@ type Category {
 /// Messages in one stream; any message can start a thread. A post is a change of its channel,
 /// so it is unseen to everyone but its author: the sidebar counts the new ones.
 type TextChannel {
-    name: Text (title)
+    name: Text
     topic: Text
     messages: Collection<Message>
     /// The threads its messages started, each the one a message's `thread` names.
@@ -30,7 +30,7 @@ type TextChannel {
 
 /// A message. Who wrote it, when, and its edits come from the log.
 type Message {
-    body: RichText (body)
+    body: RichText
     /// The message this one answers inline, quoted above it.
     reply_to: Option<Message>
     /// The side conversation branched off this message.
@@ -53,7 +53,7 @@ type Message {
 
 /// A side conversation branched off one message.
 type Thread {
-    name: Text (title)
+    name: Text
     messages: Collection<Message>
     archived: Bool = false
 }
@@ -63,7 +63,7 @@ type Thread {
 /// place in the sidebar is a person (`ui.NavItem(person: ...)`), so a direct message reads as
 /// the person's row and a group as its own. A one-to-one talks like any conversation.
 type Direct {
-    name: Text (title)
+    name: Text
     /// The one person it is with, for a direct message. TODO(language): a group holds several
     /// (`people: Set<Principal>`); the language has no set literal to make one yet.
     person: Principal

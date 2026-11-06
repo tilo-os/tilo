@@ -190,6 +190,24 @@ pub fn page_shortcut_action(
     })
 }
 
+/// The fixed action a key press in a browser page asks for: the chords
+/// Settings cannot rebind, read from the same table the native shell reads.
+/// A chord with Super in it reads Super, or the page's stand-in for it; one
+/// with no Super at all — F1, Alt+F4 — is read as the browser reports it.
+/// `None` for a chord the keys answer where they are resolved (the window
+/// walk, the workspace steps) and for the ones no [`FixedAction`] carries.
+pub fn page_fixed_action(
+    logical_key: &Key,
+    physical_key: PhysicalKey,
+    modifiers: Modifiers,
+    mac: bool,
+) -> Option<FixedAction> {
+    match page_chord(logical_key, physical_key, modifiers, mac) {
+        Some((key, modifiers)) => fixed_shortcut_action(&key, modifiers),
+        None => fixed_shortcut_action(logical_key, modifiers),
+    }
+}
+
 /// The key and modifiers [`page_shortcut_action`] looks up, or `None` when
 /// neither Super nor the stand-in is held.
 pub fn page_chord(
@@ -361,5 +379,68 @@ mod tests {
                 "{state:?}"
             );
         }
+    }
+
+    /// The fixed chords Settings cannot rebind resolve on the page from the
+    /// same table: Super itself or the page's stand-in for it, and a chord
+    /// with no Super at all — F1 — as the browser reports it. A plain key is
+    /// none of them.
+    #[test]
+    fn the_page_runs_the_fixed_chords_as_the_native_shell_does() {
+        let fixed = |logical: &Key, code: KeyCode, state: ModifiersState| {
+            page_fixed_action(logical, PhysicalKey::Code(code), state.into(), false)
+        };
+        let stand_in = ModifiersState::ALT | ModifiersState::SHIFT;
+        let chord = [
+            ("W", KeyCode::KeyW, FixedAction::CloseTab),
+            ("N", KeyCode::KeyN, FixedAction::NewWindow),
+            ("T", KeyCode::KeyT, FixedAction::DuplicateTab),
+            ("H", KeyCode::KeyH, FixedAction::WorkspaceHistory),
+        ];
+        for (letter, code, want) in chord {
+            // The stand-in's Shift types a capital; its place reads the letter.
+            assert_eq!(
+                fixed(&Key::Character(letter.into()), code, stand_in),
+                Some(want),
+                "Alt+Shift+{letter}"
+            );
+            // Super itself.
+            assert_eq!(
+                fixed(&Key::Character(letter.into()), code, ModifiersState::SUPER),
+                Some(want),
+                "Super+{letter}"
+            );
+            assert_eq!(
+                fixed(
+                    &Key::Character(letter.to_lowercase().into()),
+                    code,
+                    ModifiersState::empty()
+                ),
+                None,
+                "a bare {letter}"
+            );
+        }
+        // S alone with the stand-in is the strip switcher; with Super passed
+        // through, the chord that also holds Shift is the capture.
+        assert_eq!(
+            fixed(&Key::Character("S".into()), KeyCode::KeyS, stand_in),
+            Some(FixedAction::StripSwitcher)
+        );
+        assert_eq!(
+            fixed(
+                &Key::Character("S".into()),
+                KeyCode::KeyS,
+                ModifiersState::SUPER | ModifiersState::SHIFT
+            ),
+            Some(FixedAction::CaptureScreenshot)
+        );
+        assert_eq!(
+            fixed(
+                &Key::Named(NamedKey::F1),
+                KeyCode::F1,
+                ModifiersState::empty()
+            ),
+            Some(FixedAction::ShortcutGuide)
+        );
     }
 }

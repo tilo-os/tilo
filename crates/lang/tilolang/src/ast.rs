@@ -121,25 +121,8 @@ pub struct TypeDecl {
     /// (convergence.md, "Outside services"), as the dotted name of one of its kinds.
     pub origin: Option<Ident>,
     pub fields: Vec<FieldDecl>,
-    /// `derive folded: Bool = finished and parent.all(folded)`: a value the store derives
-    /// from the collection, which no record keeps ([`crate::derived`]).
-    pub derives: Vec<DerivedDecl>,
     /// `search { ... }`: what search, a list's filters and agents offer of the type.
     pub search: Option<SearchBlock>,
-    pub span: Span,
-}
-
-/// `derive folded: Bool = finished and parent.all(folded)` in a type: a key the store derives
-/// from the collection rather than the record keeping it. Code reads it as a field; nothing writes
-/// it, as the store keeps it in step with every change ([`crate::derived`]).
-#[derive(Clone, Debug, PartialEq)]
-pub struct DerivedDecl {
-    pub node: NodeId,
-    pub doc: Vec<String>,
-    pub name: Ident,
-    /// The type of the value: `Bool` or `Int`.
-    pub ty: TypeExpr,
-    pub expr: Expr,
     pub span: Span,
 }
 
@@ -307,58 +290,8 @@ pub struct FieldDecl {
     pub name: Ident,
     pub ty: TypeExpr,
     pub merge: Option<MergeSpec>,
-    /// What the field is to the platform (`(title)`, `(repeats: due)`); see
-    /// [`crate::types::FieldRole`].
-    pub marker: Option<FieldMarker>,
     pub default: Option<Expr>,
     pub span: Span,
-}
-
-/// A field's marker: `(title)`, `(body)`, `(previously)`, `(repeats: due)`,
-/// `(reminds: due, at, who: assignee)` or `(time of: due)`. Its arguments name the type's own
-/// fields.
-#[derive(Clone, Debug, PartialEq)]
-pub struct FieldMarker {
-    pub name: Ident,
-    /// The fields it names, in the order written.
-    pub args: Vec<MarkerArg>,
-    pub span: Span,
-}
-
-impl FieldMarker {
-    /// The marker as the declaration writes it, `repeats: due`, `reminds: due, at, who:
-    /// assignee` or `time of: due`.
-    #[must_use]
-    pub fn text(&self) -> String {
-        if self.args.is_empty() {
-            return self.name.name.clone();
-        }
-        let args: Vec<String> = self.args.iter().map(MarkerArg::text).collect();
-        let named = self.args.iter().all(|a| a.name.is_some());
-        if named {
-            return format!("{} {}", self.name.name, args.join(", "));
-        }
-        format!("{}: {}", self.name.name, args.join(", "))
-    }
-}
-
-/// One field a marker names: `due`, or `who: assignee` where it says what the field is to it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MarkerArg {
-    /// `who` for `who: assignee`; none for a field written bare.
-    pub name: Option<Ident>,
-    pub field: Ident,
-}
-
-impl MarkerArg {
-    /// The argument as the declaration writes it.
-    #[must_use]
-    pub fn text(&self) -> String {
-        match &self.name {
-            Some(name) => format!("{}: {}", name.name, self.field.name),
-            None => self.field.name.clone(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -401,13 +334,13 @@ pub struct Proposal {
     pub args: Option<Vec<Ident>>,
 }
 
-/// `primary`, `destructive`, `migration` or `internal` before `action`: how the action is, not
-/// where a surface shows it.
+/// `primary`, `destructive` or `migration` before `action`: how the action is, not where a
+/// surface shows it.
 ///
 /// A surface decides placement from what the action offers a person: `frequent: true` earns a
 /// button in the header, every other offered action goes in an item's menu, the header's menu or
-/// the palette. A role never moves an action between those lists — the two hiding roles take it
-/// out of all of them.
+/// the palette. A role never moves an action between those lists — only a migration, which the
+/// platform runs itself, is left out of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionRole {
     /// The one main action on its subject: the header's Primary button and the empty state's
@@ -417,14 +350,8 @@ pub enum ActionRole {
     Destructive,
     /// `migration action`: never offered; the platform runs it once on each resource of its
     /// subject's type that a version before it wrote, as an ordinary action, to bring what that
-    /// version stored to where this one keeps it. Only a migration reads `(previously)` fields.
+    /// version stored to where this one keeps it.
     Migration,
-    /// `internal action`: never offered. Only the app's own gestures run it — a drag, an entry,
-    /// a lane's button — and no surface that lists a subject's actions shows it: not the header,
-    /// not an item's menu, not the palette, not an agent's choices. An action a person chooses
-    /// from a list is offered, and `frequent` alone decides whether the header draws it as a
-    /// button or leaves it in the header's menu.
-    Internal,
 }
 
 impl ActionRole {
@@ -433,7 +360,6 @@ impl ActionRole {
             Self::Primary => "primary",
             Self::Destructive => "destructive",
             Self::Migration => "migration",
-            Self::Internal => "internal",
         }
     }
 }

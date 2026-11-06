@@ -209,9 +209,23 @@ struct KeptRows {
 }
 
 impl KeptRows {
-    /// How many kept rows stand before `index`.
+    /// How many kept rows stand before the row `index`.
     fn before(&self, index: usize) -> usize {
         self.kept.partition_point(|(place, _)| *place < index)
+    }
+
+    /// Where the base's item `index` stands among the rows: after every kept row at or before
+    /// the place it lands on. Each kept row before it moves it on by one, and a kept row at the
+    /// place it lands on stands there instead ([`Self::get`]).
+    fn place_of(&self, index: usize) -> usize {
+        let mut kept = 0;
+        while let Some((place, _)) = self.kept.get(kept) {
+            if *place > index.saturating_add(kept) {
+                break;
+            }
+            kept = kept.saturating_add(1);
+        }
+        index.saturating_add(kept)
     }
 }
 
@@ -239,7 +253,7 @@ impl crate::store::PagedItems for KeptRows {
             return Some(Some(*place));
         }
         let index = self.base.position(id)?;
-        Some(index.map(|index| index.saturating_add(self.before(index.saturating_add(1)))))
+        Some(index.map(|index| self.place_of(index)))
     }
 }
 

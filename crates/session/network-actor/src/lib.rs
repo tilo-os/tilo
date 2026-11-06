@@ -4692,6 +4692,17 @@ fn host_event(
     })
 }
 
+/// Whether `data`, a delta this device is receiving, is the host sending
+/// back what it retains of a record the device asked to open
+/// ([`RelayCoeditSession::open_record`]): its history, which a device that
+/// restarts reads its records from, and not a write made now. The host
+/// sends a record's frames and then says it sent them; until that word
+/// arrives every frame of the record is history.
+fn owed_replay(data: &[u8], session: &RelayCoeditSession) -> bool {
+    tilo_relay_session::retention_metadata(data)
+        .is_some_and(|(channel, _)| session.awaiting_replay(&channel))
+}
+
 fn spawn_host_pump(
     ws: WorkspaceId,
     host: EndpointId,
@@ -4723,7 +4734,8 @@ fn spawn_host_pump(
             let Some(inbound) = inbound else {
                 break;
             };
-            let replay = replaying.load(Ordering::Acquire);
+            let replay = replaying.load(Ordering::Acquire)
+                || matches!(&inbound, HostInbound::Delta { data, .. } if owed_replay(data, &session));
             let Some(event) =
                 host_event(inbound, ws, host, &replaying, replay, native_scope.as_ref())
             else {

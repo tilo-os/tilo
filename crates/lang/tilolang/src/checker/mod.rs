@@ -157,8 +157,7 @@ struct FnState {
     /// Whether the callable takes a resource: an outside effect is queued on the first one,
     /// so an action without one cannot hand any over.
     takes_resource: bool,
-    /// The role of the action being checked (`primary`, `destructive`, `migration`): a
-    /// migration reads `(previously)` fields.
+    /// The role of the action being checked (`primary`, `destructive`, `migration`).
     role: Option<String>,
     /// Who `invoker` is outside an action: while checking an action's requirements where it
     /// is presented, the person looking, who would invoke it.
@@ -173,11 +172,6 @@ struct FnState {
     row_views: usize,
     /// What the locals bound by `let` hold, in terms of places (see [`outcomes::Sym`]).
     syms: HashMap<LocalId, outcomes::Sym>,
-    /// The locals a day value travels with: for a local holding a day whose type pairs a time
-    /// of day with it (`at: Option<Time> (time of: due)`), the local holding that time of day
-    /// as `Option<Time>`. The declaration pairs them, so they travel together wherever the
-    /// value flows — a local, a branch of an `if` — and a row shows one fact (`Today 09:00`).
-    day_times: HashMap<LocalId, LocalId>,
     /// The parameters of the templates being expanded that are not values: view state,
     /// lambdas and blocks of the caller ([`template::Macro`]).
     macros: HashMap<String, template::Macro>,
@@ -337,7 +331,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         if let Item::Action(a) = item
             && !matches!(
                 a.role.as_ref().map(|(role, _)| *role),
-                Some(ast::ActionRole::Internal | ast::ActionRole::Migration)
+                Some(ast::ActionRole::Migration)
             )
             && !c.last_writes.is_empty()
         {
@@ -1114,19 +1108,16 @@ impl Checker<'_> {
             );
             ty = Ty::Error;
         }
-        let id = self.bind_let(name, ty, ex, value.span);
+        let id = self.bind_let(name, ty, ex);
         if let Some(sym) = sym {
             self.st.syms.insert(id, sym);
         }
     }
 
-    /// Bind the checked value `ex` to the new local `name`, of type `ty`: what a `let` holds,
-    /// and — for a day — the time of day it is due at, which travels with it.
-    fn bind_let(&mut self, name: &str, ty: Ty, ex: Ex, span: Span) -> LocalId {
+    /// Bind the checked value `ex` to the new local `name`, of type `ty`: what a `let` holds.
+    fn bind_let(&mut self, name: &str, ty: Ty, ex: Ex) -> LocalId {
         let id = self.declare(name, ty);
-        let time = self.day_time(&ex, span);
         self.emit(Stmt::Set(id, ex));
-        self.set_day_time(id, time);
         id
     }
 
@@ -1277,9 +1268,7 @@ impl Checker<'_> {
                 }
             }
         };
-        let time = self.day_time(&new, name.span);
         self.emit(Stmt::Set(id, new));
-        self.set_day_time(id, time);
     }
 
     fn assign_field(
@@ -1321,20 +1310,6 @@ impl Checker<'_> {
             let _ = self.expr(value, None);
             return;
         };
-        if f.role
-            .as_ref()
-            .is_some_and(crate::types::FieldRole::is_previously)
-            && self.st.role.as_deref() != Some("migration")
-        {
-            self.err("E115", field.span, format!("`{}` is what `{}` held previously: nothing writes it any more, and only a `migration action` reads it; write where the type keeps it now", f.name, key.name));
-            let _ = self.expr(value, None);
-            return;
-        }
-        if f.derived.is_some() {
-            self.err("E119", field.span, format!("`{}` is a derived key: the store works it out from the collection, and nothing writes it. Leave it out of what changes", f.name));
-            let _ = self.expr(value, None);
-            return;
-        }
         if let Some(kind) = info.origin.as_deref().and_then(crate::origin::kind)
             && let Some(of) = kind.field(&field.name)
             && !of.people

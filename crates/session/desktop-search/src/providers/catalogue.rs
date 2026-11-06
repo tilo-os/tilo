@@ -29,6 +29,10 @@ const CATALOGUE_STEP: i32 = 3;
 /// What a Flathub app's Store page gives way at the merge: after everything
 /// the person already has.
 const STORE_PAGE_INTENT: f32 = -2.0;
+/// The most rows the catalogue offers one query. The Store is something to
+/// find, not a page of the card: the nearest few are what a person decides
+/// from, and the rest of the search is what they already have.
+const MAX_ROWS: usize = 6;
 
 /// What the palette groups an app the person does not have under: the Store,
 /// beside the apps they do have. One query then finds what is here first, and
@@ -189,7 +193,10 @@ impl StoreCatalogue {
                         .clone()
                         .or_else(|| Some(entry.name.clone())),
                     Vec::new(),
-                    ResourceKind::Action,
+                    // A row offering an action belongs to the Store, with
+                    // the app it is offered with: the person has neither
+                    // yet, and the palette lists the two together.
+                    store_kind(),
                     None,
                     Some(glyph(entry)),
                     Target::Invoke(Box::new(InvokeTarget::action(
@@ -224,7 +231,7 @@ impl StoreCatalogue {
 
 impl Source for StoreCatalogue {
     fn id(&self) -> &'static str {
-        "store-catalogue"
+        crate::model::CATALOGUE_SOURCE
     }
 
     fn name(&self) -> String {
@@ -236,11 +243,15 @@ impl Source for StoreCatalogue {
             return Vec::new();
         }
         let ranks = crate::rank::rank_rows(&self.ranker, needle, &self.fields);
-        self.rows
+        let mut found: Vec<Hit> = self
+            .rows
             .iter()
             .zip(ranks)
             .filter_map(|(row, rank)| self.hit(row, rank?))
-            .collect()
+            .collect();
+        found.sort_by_key(|hit| std::cmp::Reverse(hit.score));
+        found.truncate(MAX_ROWS);
+        found
     }
 
     fn intent(&self, hit: &Hit) -> f32 {
@@ -333,6 +344,34 @@ mod tests {
         assert_eq!(
             target.address,
             tilo_actions::ActionAddress::new("calendar.calendar", "show-tasks")
+        );
+        assert_eq!(
+            tasks[0].kind,
+            store_kind(),
+            "an offered action is the Store's too: the person has neither it \
+             nor the app it runs in"
+        );
+    }
+
+    #[test]
+    fn the_catalogue_offers_the_nearest_rows_of_a_wide_query() {
+        let mut tasks = entry("so.tilo.tasks", "Tasks", tilo());
+        tasks.actions = (0..MAX_ROWS + 4)
+            .map(|at| CatalogueAction {
+                resource: "tasks.task".into(),
+                action: format!("add-{at}"),
+                label: format!("Add task {at}"),
+                description: None,
+            })
+            .collect();
+        let catalogue = StoreCatalogue::new(vec![tasks], "workspace");
+        let hits = catalogue.query("add task");
+        assert_eq!(hits.len(), MAX_ROWS, "the card is not the Store");
+        let mut scores: Vec<i32> = hits.iter().map(|hit| hit.score).collect();
+        scores.sort_unstable_by(|a, b| b.cmp(a));
+        assert!(
+            scores.first() > scores.last(),
+            "the rows kept are the nearest, not whichever came first"
         );
     }
 

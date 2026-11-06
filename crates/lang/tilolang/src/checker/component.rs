@@ -144,7 +144,7 @@ impl Checker<'_> {
     ) -> LocalId {
         let span = c.call.span;
         let key = self.node_key(c);
-        let n = self.new_node(&toolkit::kind(&d.name), key.clone());
+        let n = self.new_node(&toolkit::kind(&d.name), key);
         let positional: Vec<&str> = d.positional().map(|p| p.name.as_str()).collect();
         let mut given: HashSet<String> = HashSet::new();
         let mut at = 0usize;
@@ -182,7 +182,7 @@ impl Checker<'_> {
                 );
                 continue;
             }
-            self.component_arg(n, d, &name, &a.value, &key);
+            self.component_arg(n, d, &name, &a.value);
         }
         for p in d.props.iter().filter(|p| p.required) {
             if !given.contains(&p.name) {
@@ -217,7 +217,6 @@ impl Checker<'_> {
         d: &'static Description,
         name: &str,
         value: &ast::Expr,
-        key: &Ex,
     ) {
         if let Some(msg) = super::ui::removed_arg(&d.name, name) {
             self.err("E096", value.span, msg);
@@ -237,7 +236,7 @@ impl Checker<'_> {
                     ),
                 );
             } else {
-                self.binding_prop(n, d, value, &d.bindings, key);
+                self.binding_prop(n, d, value, &d.bindings);
             }
             return;
         }
@@ -256,7 +255,7 @@ impl Checker<'_> {
             // view's `on change(v)`, which asks whoever holds the value to change it.
             self.typed_prop(n, d, name, &b.ty, &b.doc, value, false);
         } else if let Some(b) = d.binding(name) {
-            self.binding_prop(n, d, value, std::slice::from_ref(b), key);
+            self.binding_prop(n, d, value, std::slice::from_ref(b));
         } else if let Some(s) = d.state(name) {
             self.typed_prop(n, d, name, &s.ty, &s.doc, value, false);
         } else if prims::NODE_ARGS.contains(&name) {
@@ -282,7 +281,7 @@ impl Checker<'_> {
         }
     }
 
-    /// A binding of the component `d` bound to what `value` names: checked against the binding's
+    /// A binding of the component bound to what `value` names: checked against the binding's
     /// own type, and the node carries the binding's name, which is the name the host merges
     /// under. Of `bindings`, the one whose type the bound place has is the one bound.
     pub(super) fn binding_prop(
@@ -291,12 +290,12 @@ impl Checker<'_> {
         d: &'static Description,
         value: &ast::Expr,
         bindings: &[tilo_ui_graph::component::Binding],
-        key: &Ex,
     ) {
         let node = Ex::local(n, Ty::View);
         let want: Vec<Ty> = bindings.iter().flat_map(|b| binding_types(&b.ty)).collect();
         let enum_case = bindings.iter().any(|b| b.ty == Type::Enum);
-        // A document's title is drawn by a control that declares it, as TextInput does.
+        // A control that declares `title` draws the resource's title when it edits it, as a
+        // document's large title is drawn.
         let titled = d.prop("title").is_some_and(|title| title.ty == Type::Bool);
         let Some(ty) = self.bind_typed(&node, value, &want, enum_case, titled) else {
             return;
@@ -308,114 +307,6 @@ impl Checker<'_> {
             Imp::UiPropH,
             vec![node, Ex::str("bind"), Ex::str(&b.name)],
         ));
-        // A day the type pairs a time of day with reads as one fact: the day's control says the
-        // time of day beside the day, and picks it in its own popover.
-        self.paired_control(n, d, value, &ty, key);
-    }
-
-    /// The day's control `n` takes the time of day its type pairs with it: the record `b` of
-    /// the type `info`, its field `day`. The chip says the day and the time it is due at as one
-    /// fact, and the toolkit's `TimeField` picks it inside the day's popover, in its `time` slot
-    /// — never as a second control beside it.
-    fn paired_control(
-        &mut self,
-        n: LocalId,
-        d: &Description,
-        value: &ast::Expr,
-        ty: &Ty,
-        key: &Ex,
-    ) {
-        if d.name != "DateField" || !matches!(ty, Ty::Date | Ty::Option(_)) {
-            return;
-        }
-        let ast::ExprKind::Field { base, name } = &value.kind else {
-            return;
-        };
-        if !matches!(
-            base.kind,
-            ast::ExprKind::Ident(_) | ast::ExprKind::Field { .. }
-        ) {
-            return;
-        }
-        let b = self.expr(base, None);
-        let Ty::Record(record) = b.ty.clone() else {
-            return;
-        };
-        let env = self.env;
-        let Some(info) = env.type_info(&record).cloned() else {
-            return;
-        };
-        let Some(day) = info.field(&name.name).cloned() else {
-            return;
-        };
-        self.date_control(&Ex::local(n, Ty::View), key, &b, &day, &info, value.span);
-    }
-
-    /// Give the day's control `node` the time of day the type pairs with `day`
-    /// (`at: Option<Time> (time of: due)`): what the chip says after the day, and the control
-    /// that picks it, in the day's popover above its calendar.
-    pub(super) fn date_control(
-        &mut self,
-        node: &Ex,
-        key: &Ex,
-        b: &Ex,
-        day: &crate::resolve::FieldInfo,
-        info: &crate::resolve::TypeInfo,
-        span: Span,
-    ) {
-        let Some(time) = info.time_of(&day.name) else {
-            return;
-        };
-        // What the chip says after the day: the time of day it is due at.
-        let at = self.field_read(
-            b.clone(),
-            &ast::Ident {
-                name: time.name.clone(),
-                span,
-            },
-        );
-        self.emit(host(Imp::UiPropH, vec![node.clone(), Ex::str("at"), at]));
-        // The control that picks it: bound to the time of day, as the day's is to the day.
-        let env = self.env;
-        let Some(d) = env.toolkit.and_then(|toolkit| toolkit.get("TimeField")) else {
-            return;
-        };
-        let Some(binding) = d.bindings.first() else {
-            return;
-        };
-        let n = self.new_node(
-            &toolkit::kind(&d.name),
-            Ex::host(
-                Imp::StrConcat,
-                vec![key.clone(), Ex::str("#time")],
-                Ty::Text,
-            ),
-        );
-        let picker = Ex::local(n, Ty::View);
-        self.emit(host(
-            Imp::UiBind,
-            vec![picker.clone(), b.clone(), Ex::str(&time.id)],
-        ));
-        self.emit(host(
-            Imp::UiPropH,
-            vec![picker.clone(), Ex::str("bind"), Ex::str(&binding.name)],
-        ));
-        // It stands in the day's popover, above the calendar: the day's `time` slot.
-        let slot = self.new_node(
-            "slot",
-            Ex::host(
-                Imp::StrConcat,
-                vec![key.clone(), Ex::str("#time-slot")],
-                Ty::Text,
-            ),
-        );
-        let held = Ex::local(slot, Ty::View);
-        self.emit(host(
-            Imp::UiPropH,
-            vec![held.clone(), Ex::str("name"), Ex::str("time")],
-        ));
-        self.emit(host(Imp::UiChild, vec![held.clone(), picker]));
-        self.emit(host(Imp::UiChild, vec![node.clone(), held]));
     }
 
     /// Whether `value` names somewhere a control can be bound to: a field, or a piece of the
@@ -640,23 +531,6 @@ impl Checker<'_> {
         self.push_sink();
         let inner = Self::unwrap_opt(opt, held);
         self.prop(node.clone(), name, inner, span);
-        let then = self.pop_sink();
-        self.emit(Stmt::If(test, then, Vec::new()));
-    }
-
-    /// Set the companion `name` to the time of day the `Option<Time>` `v` holds, and leave it
-    /// unset while it holds none: the instant (`2026-11-03T17:00:00Z`) that reads with the day
-    /// beside it as one fact. A companion says nothing of its own kind — the day it completes
-    /// does.
-    pub(super) fn set_time_when_some(&mut self, node: &Ex, name: &str, v: Ex) {
-        let ty = v.ty.clone();
-        let tmp = self.fresh(ty.clone());
-        self.emit(Stmt::Set(tmp, v));
-        let opt = Ex::local(tmp, ty);
-        let test = Ex::host(Imp::IsSome, vec![opt.clone()], Ty::Bool);
-        self.push_sink();
-        let inner = Self::unwrap_opt(opt, &Ty::Time).typed(Ty::Text);
-        self.prop_text(node.clone(), name, inner);
         let then = self.pop_sink();
         self.emit(Stmt::If(test, then, Vec::new()));
     }

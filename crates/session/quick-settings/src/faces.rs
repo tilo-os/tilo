@@ -92,7 +92,7 @@ impl Sliders {
                 .sound_outputs
                 .iter()
                 .find(|output| output.current)
-                .map(|output| output.name.clone()),
+                .map(|output| crate::sound::short_output(&output.name)),
             value: if muted { t("qs-muted") } else { percent(level) },
             // A muted output is silent at any level: its track is empty, as
             // the volume readout's is.
@@ -1064,7 +1064,7 @@ pub(crate) fn copies_caption(query: &str, matches: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SoundInput, SoundOutput, SoundStream};
+    use crate::{DisplayBrightness, SoundInput, SoundOutput, SoundStream};
 
     fn network(name: &str, signal: u8, connected: bool, known: bool) -> WifiNetwork {
         WifiNetwork {
@@ -1133,6 +1133,60 @@ mod tests {
         );
         assert_eq!(volume.value, "40%");
         assert!((volume.level - 0.4).abs() < 0.001);
+    }
+
+    /// Two displays are two rows, each named as a person knows the display —
+    /// its model, or the part it plays — and never by its connector.
+    #[test]
+    fn each_display_has_its_own_row_named_as_a_person_knows_it() {
+        let mut state = QuickSettingsState::fixture();
+        state.displays = vec![
+            DisplayBrightness {
+                connector: "eDP-1".into(),
+                name: "Built-in display".into(),
+                level: 0.7,
+            },
+            DisplayBrightness {
+                connector: "HDMI-A-1".into(),
+                name: "LG ULTRAGEAR+".into(),
+                level: 0.3,
+            },
+        ];
+        let rows: Vec<SliderFace> = Sliders::of(&state)
+            .rows
+            .into_iter()
+            .filter(|row| matches!(row.kind, SliderKind::Display(_)))
+            .collect();
+        let names: Vec<String> = rows.iter().map(|row| row.name.clone()).collect();
+        assert_eq!(
+            names,
+            [
+                t_args(
+                    "qs-brightness-display",
+                    &[("display", "Built-in display".into())]
+                ),
+                t_args(
+                    "qs-brightness-display",
+                    &[("display", "LG ULTRAGEAR+".into())]
+                ),
+            ],
+            "each row says the display it dims"
+        );
+        let devices: Vec<Option<String>> = rows.iter().map(|row| row.device.clone()).collect();
+        assert_eq!(
+            devices,
+            [
+                Some("Built-in display".into()),
+                Some("LG ULTRAGEAR+".into())
+            ],
+            "and names it on its own line"
+        );
+        let ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
+        assert_eq!(
+            ids,
+            ["qs-brightness-eDP-1", "qs-brightness-HDMI-A-1"],
+            "the connector is what the row's control addresses, not its name"
+        );
     }
 
     #[test]

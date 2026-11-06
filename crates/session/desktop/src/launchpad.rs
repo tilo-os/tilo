@@ -341,6 +341,17 @@ impl CollaborationLaunchpad {
         self
     }
 
+    /// Another launchpad saying the same words, for a second display's empty
+    /// desk: every empty display shows the start cards, and each takes its
+    /// own pointer and keyboard.
+    #[must_use]
+    pub fn for_another_display(&self) -> Self {
+        let mut pad = Self::new();
+        pad.copy.clone_from(&self.copy);
+        pad.scope = self.scope;
+        pad
+    }
+
     /// Say what the workspace shown in is: private, shared or public.
     pub fn set_scope(&mut self, scope: WorkspaceScope) {
         if scope != self.scope {

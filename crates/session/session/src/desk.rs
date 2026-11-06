@@ -154,6 +154,9 @@ pub(crate) fn desk(
     });
     let mut policy = policy;
     policy.with_samples(Rc::new(RefCell::new(BarSamples { reveals })));
+    // A tab opens with the name of its app in the person's language, never
+    // with the app's id.
+    policy.reads_app_names(Rc::new(crate::app_names::app_name));
     (desktop, policy, asks)
 }
 

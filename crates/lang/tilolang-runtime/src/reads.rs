@@ -241,7 +241,8 @@ fn regex(pattern: &str) -> Result<regex::Regex, String> {
 /// A text field of a type, with how its anchors are written.
 struct TextField {
     info: FieldInfo,
-    /// Cited by paragraph alone (`¶3`): the type's body, or its one long text.
+    /// Cited by paragraph alone (`¶3`): the one text a type's records have, a message's or an
+    /// article's substance.
     body: bool,
 }
 
@@ -255,24 +256,20 @@ struct TextOf {
 }
 
 impl Core {
-    /// The text fields of the type `info` (of the package `meta`), secrets left out.
-    fn text_fields(meta: &crate::meta::Meta, info: &TypeInfo) -> Vec<TextField> {
-        let declared = meta.types.iter().find(|t| t.id == info.id);
-        let role = |f: &FieldInfo| {
-            declared
-                .and_then(|t| t.fields.iter().find(|m| m.id == f.id))
-                .and_then(|m| m.role.clone())
-        };
+    /// The text fields of the type `info`, secrets left out.
+    fn text_fields(info: &TypeInfo) -> Vec<TextField> {
         let texts: Vec<&FieldInfo> = info
             .fields
             .iter()
             // Prose: a text that merges by splices. A register of text is a code or a label.
             .filter(|f| matches!(f.kind, FieldKind::Text | FieldKind::RichText))
             .collect();
-        let body = texts
-            .iter()
-            .find(|f| role(f).is_some_and(|role| role.is_body()))
-            .map(|f| f.id.clone());
+        // A type with one text has a body: its paragraphs are cited by the paragraph alone.
+        // A type with several names each text's field, so a citation says which it is of.
+        let body = match texts.as_slice() {
+            [one] => Some(one.id.clone()),
+            _ => None,
+        };
         texts
             .into_iter()
             .map(|f| TextField {
@@ -370,7 +367,7 @@ impl Core {
         let mut out = Vec::new();
         let mut unlisted = Vec::new();
         for info in &pkg.types {
-            let fields = Self::text_fields(&pkg.meta, info);
+            let fields = Self::text_fields(info);
             if fields.is_empty() {
                 continue;
             }
@@ -577,12 +574,12 @@ impl Core {
 
     /// `target` as `read` gives it.
     pub(crate) fn read_local(&self, target: &ResourceRef) -> Result<ReadAnswer, String> {
-        let (pkg, info) = self
+        let (_pkg, info) = self
             .registry
             .borrow()
             .type_info(&target.ty)
             .ok_or_else(|| format!("no resource `{}` here", target.id_string()))?;
-        let fields = Self::text_fields(&pkg.meta, &info);
+        let fields = Self::text_fields(&info);
         let parts = self.text_of(target, &fields).parts;
         let mut others = Vec::new();
         for f in &info.fields {
@@ -702,15 +699,7 @@ impl Core {
                     names.join(", ")
                 )
             })?;
-            let mut out = format!(
-                "{alias}.{}.{}: {}{}",
-                t.name,
-                f.name,
-                short_ty(&f.ty, app),
-                f.role
-                    .as_ref()
-                    .map_or_else(String::new, |r| format!(" ({})", r.text()))
-            );
+            let mut out = format!("{alias}.{}.{}: {}", t.name, f.name, short_ty(&f.ty, app));
             if !f.doc.is_empty() {
                 let _ = write!(out, "\n  {}", f.doc);
             }
@@ -799,11 +788,7 @@ pub fn describe_type(meta: &crate::meta::Meta, t: &crate::meta::TypeMeta, alias:
     }
     let _ = write!(out, "type {alias}.{} {{", t.name);
     for f in &t.fields {
-        let role = f
-            .role
-            .as_ref()
-            .map_or_else(String::new, |r| format!(" ({})", r.text()));
-        let _ = write!(out, "\n    {}: {}{role}", f.name, short_ty(&f.ty, app));
+        let _ = write!(out, "\n    {}: {}", f.name, short_ty(&f.ty, app));
     }
     out.push_str("\n}");
     let filters: Vec<&str> = t.search.filters.iter().map(|f| f.key.as_str()).collect();

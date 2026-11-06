@@ -225,17 +225,28 @@ struct Ports {
 /// publishes: the first free one up from it, so two rooms on one machine are
 /// apart while each stands where the ingress expects.
 fn ports() -> Ports {
-    let free = |wanted: u16| -> u16 {
+    // A port that was free when it was looked at is held until every one is
+    // chosen: two listeners that both find the deployment's first port taken
+    // would otherwise be handed the same one, and the room fails to bind.
+    let mut held: Vec<(std::net::TcpListener, std::net::UdpSocket)> = Vec::new();
+    let mut free = |wanted: u16| -> u16 {
         (wanted..wanted.saturating_add(200))
             .find(|port| {
-                std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok()
-                    && std::net::UdpSocket::bind(("127.0.0.1", *port)).is_ok()
+                let Ok(tcp) = std::net::TcpListener::bind(("127.0.0.1", *port)) else {
+                    return false;
+                };
+                let Ok(udp) = std::net::UdpSocket::bind(("127.0.0.1", *port)) else {
+                    return false;
+                };
+                held.push((tcp, udp));
+                true
             })
             .expect("a free loopback port in the deployment's range")
     };
     let relay = free(9780);
     let live = free(9781);
     let http = free(8790);
+    drop(held);
     Ports {
         relay,
         live,
@@ -250,20 +261,19 @@ fn ports() -> Ports {
 /// that build ran.
 fn entrypoint() -> std::path::PathBuf {
     let built = std::env::current_exe().expect("the test binary's own path");
-    // <root>/target/<profile>/deps/<test>
-    let root = built
-        .parent()
-        .and_then(std::path::Path::parent)
-        .and_then(std::path::Path::parent)
-        .and_then(std::path::Path::parent)
-        .expect("the checkout the run built from");
-    let entrypoint = root.join("os/containers/tilo-lounge/entrypoint.sh");
-    assert!(
-        entrypoint.is_file(),
-        "the image's entrypoint at {}",
-        entrypoint.display()
-    );
-    entrypoint
+    // The checkout is the nearest ancestor of the binary holding the image's
+    // entrypoint: the binary sits under `target/`, however deep the profile
+    // and the builder's artifact directory put it.
+    built
+        .ancestors()
+        .map(|dir| dir.join("os/containers/tilo-lounge/entrypoint.sh"))
+        .find(|entrypoint| entrypoint.is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "no Lounge image entrypoint in any directory above {}",
+                built.display()
+            )
+        })
 }
 
 /// A PATH holding the relay the run built, so the image's `exec tilo-relay`

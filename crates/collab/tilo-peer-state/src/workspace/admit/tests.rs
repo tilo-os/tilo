@@ -5,6 +5,7 @@ use automerge::transaction::Transactable;
 use automerge::{ObjType, ROOT, ReadDoc, ScalarValue};
 use std::collections::BTreeMap;
 use tilo_action_policy::{Role, Subject, roles};
+use tilo_user_identity::DeviceCert;
 
 const WORKSPACE: &str = "0b5c3f1e-7d2a-4c1b-9e8f-6a5d4c3b2a19";
 const OWNER: [u8; 32] = [0x11; 32];
@@ -853,4 +854,289 @@ fn a_membership_change_is_judged_where_its_writer_made_it() {
         admit(Some(&revoked), member(&key(0x05), ADMIN), &OWNER, &later),
         Err(WorkspaceRefusal::Membership(_))
     ));
+}
+
+/// A device whose person root `seed` names: its certificate is signed by that
+/// root, so a workspace document can name its person in its rows.
+fn rooted(seed: u8) -> (ed25519_dalek::SigningKey, DeviceCert) {
+    let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    let key = ed25519_dalek::SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: format!("device {seed}"),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    (key, cert)
+}
+
+fn person_of(cert: &DeviceCert) -> String {
+    hex::encode(cert.user_public_key)
+}
+
+/// A membership with its grants in the order every device reads them in.
+fn sorted(policy: &tilo_action_policy::WorkspacePolicy) -> tilo_action_policy::WorkspacePolicy {
+    let mut policy = policy.clone();
+    policy
+        .grants
+        .sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+    policy
+}
+
+fn member_of<'a>(key: &'a str, cert: &DeviceCert) -> Writer<'a> {
+    Writer {
+        key,
+        standing: Standing::Member {
+            person: cert.user_public_key,
+            foreign: false,
+        },
+    }
+}
+
+/// An operation `cert` writes on top of `parents`, admitting `who` as a
+/// commenter.
+fn admitting(
+    cert: &DeviceCert,
+    key: &ed25519_dalek::SigningKey,
+    parents: Vec<crate::members::OpId>,
+    who: &DeviceCert,
+) -> crate::members::SignedMembershipOp {
+    crate::members::SignedMembershipOp::signed(
+        cert,
+        key,
+        parents,
+        crate::workspace::saved_shortcut::ns_at(NOW),
+        crate::members::MembershipOpCommand::Project {
+            changes: vec![tilo_action_policy::Change::AddMember {
+                person: person_of(who),
+                role: Role::Commenter,
+            }],
+        },
+    )
+    .unwrap()
+}
+
+/// A workspace whose log its owner's device started: the genesis operation
+/// of the membership its rows held is written into it, so every device replays
+/// its membership operations.
+struct Started {
+    doc: AutoCommit,
+    owner: DeviceCert,
+    admin_key: ed25519_dalek::SigningKey,
+    admin: DeviceCert,
+    editor: DeviceCert,
+    viewer: DeviceCert,
+}
+
+fn started() -> Started {
+    let (owner_key, owner) = rooted(0x11);
+    let (admin_key, admin) = rooted(0x21);
+    let (_, editor) = rooted(0x31);
+    let (_, viewer) = rooted(0x41);
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "room", WORKSPACE).unwrap();
+    doc.put(ROOT, "owner", person_of(&owner)).unwrap();
+    let members = doc.put_object(ROOT, "members", ObjType::Map).unwrap();
+    for (who, role) in [
+        (&admin, Role::Moderator),
+        (&editor, Role::Editor),
+        (&viewer, Role::Viewer),
+    ] {
+        doc.put(
+            &members,
+            person_of(who),
+            ScalarValue::Bytes(serde_json::to_vec(&role).unwrap()),
+        )
+        .unwrap();
+    }
+    let grants = doc.put_object(ROOT, "grants", ObjType::Map).unwrap();
+    let given_by = Subject::Person(person_of(&owner));
+    for grant in roles::workspace_role_grants(WORKSPACE, &given_by)
+        .into_iter()
+        .chain([roles::administrator_grant(
+            WORKSPACE,
+            &person_of(&admin),
+            given_by,
+        )])
+    {
+        doc.put(
+            &grants,
+            grant.id.as_str(),
+            ScalarValue::Bytes(serde_json::to_vec(&grant).unwrap()),
+        )
+        .unwrap();
+    }
+    doc.commit();
+    let policy = tilo_desktop_model::projection::workspace_policy_of(&doc, WORKSPACE);
+    let genesis = crate::members::legacy::genesis_op(
+        &owner,
+        &owner_key,
+        &doc.get_heads(),
+        &policy,
+        crate::workspace::saved_shortcut::ns_at(NOW),
+    )
+    .unwrap();
+    crate::members::legacy::put_op(&mut doc, &genesis).unwrap();
+    doc.commit();
+    assert!(crate::members::starts(&doc, WORKSPACE));
+    Started {
+        doc,
+        owner,
+        admin_key,
+        admin,
+        editor,
+        viewer,
+    }
+}
+
+/// Nobody writes the rows the log projects: where the log has started, a batch
+/// that brings rows disagreeing with it is admitted, and the receiver writes
+/// the rows the replay gives, so the rows never say more than the operations.
+#[test]
+fn the_rows_a_batch_brings_are_rewritten_from_the_replay() {
+    let workspace = started();
+    let before = &workspace.doc;
+    let guest = rooted(0x51).1;
+    let reached = crate::members::heads(&crate::members::ops(before));
+    let op = admitting(&workspace.admin, &workspace.admin_key, reached, &guest);
+    let batch = changes_after(before, |doc| {
+        crate::members::legacy::put_op(doc, &op).unwrap();
+        // The administrator writes itself the owner's role beside its own
+        // operation: rows are no authority, and the receiver projects the log.
+        put_role(doc, workspace.admin.user_public_key, Role::Owner);
+        put_role(doc, workspace.viewer.user_public_key, Role::Owner);
+    });
+    let admin = hex::encode(workspace.admin.device_public_key);
+    let admitted = admit(
+        Some(before),
+        member_of(&admin, &workspace.admin),
+        &workspace.owner.user_public_key,
+        &batch,
+    )
+    .expect("rows are the log's projection, and the operation proves its writer");
+    let projected = sorted(&tilo_desktop_model::projection::workspace_policy_of(
+        &admitted.candidate,
+        WORKSPACE,
+    ));
+    assert_eq!(
+        projected,
+        crate::members::replay(&admitted.candidate, WORKSPACE),
+        "the rows are the replay"
+    );
+    assert_eq!(
+        projected.role_of(&person_of(&workspace.admin)),
+        Some(Role::Moderator)
+    );
+    assert_eq!(
+        projected.role_of(&person_of(&workspace.viewer)),
+        Some(Role::Viewer)
+    );
+    assert_eq!(projected.role_of(&person_of(&guest)), Some(Role::Commenter));
+}
+
+/// Where the log has not started yet there is no replay to project from: a
+/// batch that carries an operation and moves the rows beside it would be
+/// admitted by the operation and write the change through the rows, so it is
+/// refused. The same operation alone is admitted, and changes nothing until
+/// the workspace's log starts.
+#[test]
+fn rows_a_batch_moves_beside_an_operation_are_refused_before_the_log_starts() {
+    let workspace = started();
+    // The same document with its genesis dropped: a workspace on an older
+    // build, its rows governing its membership.
+    let mut legacy = workspace.doc.clone();
+    legacy.delete(ROOT, "members_v2").unwrap();
+    legacy.commit();
+    assert!(!crate::members::starts(&legacy, WORKSPACE));
+    let guest = rooted(0x52).1;
+    let admin = hex::encode(workspace.admin.device_public_key);
+    let op = admitting(&workspace.admin, &workspace.admin_key, Vec::new(), &guest);
+    let escalating = changes_after(&legacy, |doc| {
+        crate::members::legacy::put_op(doc, &op).unwrap();
+        put_role(doc, workspace.editor.user_public_key, Role::Owner);
+    });
+    assert_eq!(
+        admit(
+            Some(&legacy),
+            member_of(&admin, &workspace.admin),
+            &workspace.owner.user_public_key,
+            &escalating,
+        )
+        .unwrap_err(),
+        WorkspaceRefusal::GovernanceWriter,
+        "the operation would admit the row change"
+    );
+
+    // The operation on its own: kept for when the owner starts the log, and no
+    // membership change until then.
+    let alone = changes_after(&legacy, |doc| {
+        crate::members::legacy::put_op(doc, &op).unwrap();
+    });
+    let admitted = admit(
+        Some(&legacy),
+        member_of(&admin, &workspace.admin),
+        &workspace.owner.user_public_key,
+        &alone,
+    )
+    .expect("an operation that proves its writer is kept");
+    assert_eq!(
+        tilo_desktop_model::projection::workspace_policy_of(&admitted.candidate, WORKSPACE),
+        tilo_desktop_model::projection::workspace_policy_of(&legacy, WORKSPACE),
+        "the rows govern until the log starts"
+    );
+}
+
+/// A member's batch with no operation behind it is still the membership change
+/// it names, judged where its writer made it: an editor writing itself the
+/// owner's role is refused.
+#[test]
+fn a_row_change_without_an_operation_is_judged_by_the_membership_it_names() {
+    let workspace = started();
+    let before = &workspace.doc;
+    let worker = hex::encode(workspace.editor.device_public_key);
+    let seize = changes_after(before, |doc| {
+        put_role(doc, workspace.editor.user_public_key, Role::Owner);
+    });
+    assert!(
+        matches!(
+            admit(
+                Some(before),
+                member_of(&worker, &workspace.editor),
+                &workspace.owner.user_public_key,
+                &seize,
+            ),
+            Err(WorkspaceRefusal::Membership(_))
+        ),
+        "an editor writes itself no role above its own"
+    );
+}
+
+/// A device that only reads the workspace relays the operations it holds: the
+/// operation proves its writer, so who sent it says nothing about who wrote it.
+#[test]
+fn a_reader_relays_an_operation_that_proves_its_writer() {
+    let workspace = started();
+    let before = &workspace.doc;
+    let guest = rooted(0x53).1;
+    let reached = crate::members::heads(&crate::members::ops(before));
+    let op = admitting(&workspace.admin, &workspace.admin_key, reached, &guest);
+    let batch = changes_after(before, |doc| {
+        crate::members::legacy::put_op(doc, &op).unwrap();
+    });
+    let relay = hex::encode(workspace.viewer.device_public_key);
+    let admitted = admit(
+        Some(before),
+        member_of(&relay, &workspace.viewer),
+        &workspace.owner.user_public_key,
+        &batch,
+    )
+    .expect("the operation is the administrator's, whoever relayed it");
+    assert_eq!(
+        crate::members::replay(&admitted.candidate, WORKSPACE).role_of(&person_of(&guest)),
+        Some(Role::Commenter)
+    );
 }

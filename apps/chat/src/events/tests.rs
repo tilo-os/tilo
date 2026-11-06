@@ -1050,7 +1050,7 @@ fn call_overlay_keeps_the_roster_and_fills_its_surface_at_every_size() {
         app.stage_floating_call("floating-call-collapse-000");
 
         let stable_content = app.call_video_rect();
-        let mut prior_height = f64::INFINITY;
+        let mut prior_height: Option<f64> = None;
         for reveal in [1.0_f32, 0.75, 0.5, 0.25, 0.0] {
             app.call_chrome_motion.pin_for_visual_review(reveal);
             render_frame(&mut app, 1200.0, 800.0);
@@ -1062,12 +1062,18 @@ fn call_overlay_keeps_the_roster_and_fills_its_surface_at_every_size() {
             assert_eq!(presentation.content_rect, stable_content);
             assert_eq!(
                 presentation.window_rect,
-                app.huddle_panel().inflate(8.0, 8.0)
+                stable_content.inflate(8.0, 8.0),
+                "over the desk the window is the card the layer places"
             );
-            assert!(presentation.window_rect.height() <= prior_height);
-            prior_height = presentation.window_rect.height();
+            if let Some(prior) = prior_height {
+                assert_eq!(
+                    presentation.window_rect.height(),
+                    prior,
+                    "and the reveal does not resize the card"
+                );
+            }
+            prior_height = Some(presentation.window_rect.height());
         }
-        assert_eq!(prior_height, app.huddle_panel().inflate(8.0, 8.0).height());
     }
 }
 
@@ -2017,7 +2023,12 @@ fn call_tiles_and_controls_stay_honest_and_live_when_detached() {
         render_frame(&mut app, 1200.0, 800.0);
         assert_eq!(
             count_hits(&app, |hit| matches!(hit, Hit::CallDragHandle)),
-            1
+            0,
+            "over the desk the call is the card's, not a draggable huddle"
+        );
+        assert!(
+            count_hits(&app, |hit| matches!(hit, Hit::CallOpenWindow)) >= 1,
+            "the card offers the way back into its window"
         );
         let prepared_content = app.call_video_rect();
         let prepared_window = app.huddle_panel().inflate(8.0, 8.0);
@@ -2059,6 +2070,16 @@ fn call_tiles_and_controls_stay_honest_and_live_when_detached() {
             0
         );
         let mut scene = Scene::new();
+        let drawn_here = ui::widget::FloatingSurfaceWidgetExt::draw_floating_surface(
+            &mut app,
+            "chat-call:c_huddle",
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text_renderer,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        assert!(drawn_here, "the card's own window paints the call");
         ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
             &mut app,
             &mut scene,
@@ -2069,7 +2090,12 @@ fn call_tiles_and_controls_stay_honest_and_live_when_detached() {
         );
         assert_eq!(
             count_hits(&app, |hit| matches!(hit, Hit::CallDragHandle)),
-            1
+            0,
+            "over the desk the call is the card's, not a draggable huddle"
+        );
+        assert!(
+            count_hits(&app, |hit| matches!(hit, Hit::CallOpenWindow)) >= 1,
+            "the card offers the way back into its window"
         );
 
         // Drag back well inside Chat. The runtime sees `returning_to_app` in
@@ -2507,7 +2533,11 @@ fn agent_work_thread_survives_pointer_navigation_and_projects_updates() {
 }
 
 fn count_hits(app: &ChatApp, pred: impl Fn(&Hit) -> bool) -> usize {
-    app.hits.iter().filter(|(_, h)| pred(h)).count()
+    app.hits
+        .iter()
+        .chain(app.card_hits.iter())
+        .filter(|(_, h)| pred(h))
+        .count()
 }
 
 fn click_point(app: &mut ChatApp, doc: &mut AutoCommit, point: Point) {

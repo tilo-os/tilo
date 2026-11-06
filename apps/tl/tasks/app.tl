@@ -32,14 +32,14 @@ enum RowPlace {
 
 /// Something to do: what, by when, by whom, and in which project.
 type Task {
-    title: Text (title)
-    done: Bool (done) = false
+    title: Text
+    done: Bool = false
     /// The day it is due by, if any.
     due: Option<Date> = .none
     /// The moment on that day it is due at, if it has one.
-    at: Option<Time> (time of: due) = .none
+    at: Option<Time> = .none
     /// Anything worth remembering about it.
-    notes: RichText (body)
+    notes: RichText
     /// Who is doing it.
     assignee: Option<Principal> = .none
     /// The project it belongs to; none while it waits in the inbox.
@@ -49,18 +49,7 @@ type Task {
     section: Option<Section> = .none
     priority: Priority = .none
     /// The task it is a subtask of; none for a task of its own. Tasks nest to any depth.
-    parent: Option<Task> (parent) = .none
-    /// Whether it is finished: done itself, and so is every task under it. A task with steps is
-    /// finished when its steps are, so the branch two people finish at once is finished once
-    /// both changes are in, though neither change named it.
-    derive finished: Bool = children.all(finished) and (done or children.count > 0)
-    /// Whether it stands in a list's Done tail: finished, and so is every task it is under, so
-    /// a step done with under a task still open stays where it stands, checked and muted.
-    derive folded: Bool = finished and parent.all(folded)
-    /// How many tasks are under it, and how many of those are done ("1/3"): the two counts a
-    /// row and the page's outline show.
-    derive subtasks: Int = children.count
-    derive subtasks_done: Int = children.count(done)
+    parent: Option<Task> = .none
 
     search {
         filter "Inbox" = project == .none and due == .none and not done (icon: .inbox)
@@ -76,22 +65,19 @@ type Task {
         filter parent
         hide at
         hide section
-        hide folded
-        hide subtasks
-        hide subtasks_done
     }
 }
 
 /// A project: tasks that work towards one outcome.
 type Project {
-    name: Text (title)
+    name: Text
     /// What it is for, and anything worth remembering about it.
-    notes: RichText (body)
+    notes: RichText
 }
 
 /// A section of a project: one lane of its board, such as "Doing".
 type Section {
-    name: Text (title)
+    name: Text
     /// The project it is a section of.
     project: Project
 }
@@ -143,12 +129,13 @@ primary action new_task(
 }
 
 /// Adds a task that is due today: what the entry of the Today place runs, so a task typed
-/// there stands in Today. It is the one create action with the day it is added on.
-internal action new_task_today(
+/// there stands in Today. It is the one create action with the day it is added on, and a person
+/// choosing it from the bar or the palette gets the same task.
+action new_task_today(
     tasks: Tasks,
     p: Option<Project> = .none,
     title: Text = "",
-) -> Task uses time (label: "Add a task", icon: .plus) {
+) -> Task uses time (label: "New task due today", icon: .plus) {
     new_task(tasks, p: p, due: .some(today), title: title)
 }
 
@@ -284,13 +271,8 @@ action assign(t: Task, who: Option<Principal>) (label: "Assign", icon: .user) {
 /// Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level
 /// for none), where `before` stands when it is given, or at the end of the top level. A task
 /// cannot go inside itself, and open work put under a done task opens it. The outline's drag,
-/// `Ctrl+]` and `Ctrl+[` name it; it is not a command of its own.
-internal action move_to(
-    tasks: Tasks,
-    moved: Task,
-    parent: Option<Task>,
-    before: Option<Task>,
-) uses time {
+/// `Ctrl+]` and `Ctrl+[` name it, and a person or an agent may name the place it goes itself.
+action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before: Option<Task>) uses time {
     require not within(tasks.items, parent, moved)
         and not within(tasks.items, before?.parent, moved) "A task cannot go inside itself"
     if let b = before {
@@ -336,11 +318,20 @@ action duplicate(tasks: Tasks, t: Task) -> Task (
     icon: .copy,
     key: "Ctrl+Shift+D",
 ) {
+    let under = tasks.items.descendants(t, .parent)
     let copy = tasks.items.insert(copied(t, t.parent))
     if let last = last_below(tasks.items, t) {
         tasks.items.move(copy, after: last)
     } else { tasks.items.move(copy, after: t) }
-    copy_below(tasks, t, copy)
+    // The copies stand in the shape of the tasks they copy, in the order they are made: a task's
+    // copy hangs under the copy of the task it stands under, at the place it takes itself.
+    for x in under {
+        let under_copy = under.index_of(x.parent ?? t) ?? -1
+        let at = tasks.items.descendants(copy, .parent).at(under_copy) ?? copy
+        let below = last_below(tasks.items, at) ?? at
+        let made = tasks.items.insert(copied(x, .some(at)))
+        tasks.items.move(made, after: below)
+    }
     copy
 }
 
@@ -361,10 +352,13 @@ destructive action clear_done(tasks: Tasks) -> Int (
     icon: .circle_check,
     label: "Delete finished tasks",
 ) {
-    require tasks.items.count(x -> x.finished) > 0 "Nothing is finished yet"
-    // A branch is finished when it and everything under it is done, which the list's index
-    // works out for each task: nothing here walks what is under one.
-    let gone = tasks.items.filter(x -> x.finished)
+    // A task that is done stands in a finished branch or under unfinished work: the entry says
+    // nothing of it, so the guard is every task's own mark, read once.
+    require tasks.items.count(x -> x.done) > 0 "Nothing is finished yet"
+    // Every task the workspace holds, read once: a branch is finished when it and everything
+    // under it is done, which is read from the tasks a task stands over.
+    let every = tasks.items.filter(x -> true)
+    let gone = every.filter(x -> finished(every, x))
     for x in gone {
         tasks.items.remove(x)
     }
@@ -414,8 +408,12 @@ primary action add_to(p: Project, title: Text, s: Option<Section> = .none) -> Ta
 }
 
 /// Puts a task into a lane of its project's board, `s` (none for the first lane), at the place
-/// `at` among the tasks already there. It is what a card's drag names.
-internal action place(t: Task, s: Option<Section>, at: Int) {
+/// `at` among the tasks already there. It is what a card's drag names, and a person or an agent
+/// may name the lane and the place itself. A task in the inbox stands on no board, so it is not
+/// among the commands that task offers.
+action place(t: Task, s: Option<Section>, at: Int) (label: "Place in board") {
+    require s == .none or s?.project == t.project "That lane belongs to another project"
+    applies t.project != .none "It is in no project's board"
     t.section = s
     tasks.items.move(
         t,
@@ -458,25 +456,31 @@ fn last_below(items: List<Task>, t: Task) -> Option<Task> {
     items.filter(x -> x == t or items.ancestors(x, .parent).any(a -> a == t)).last()
 }
 
-/// Copies the tasks under `t` under `copy`, each in its place, so a copy reads as the task it
-/// copies did; answers the last task the copies end with. It is what Duplicate runs, not a
-/// command of its own.
-internal action copy_below(tasks: Tasks, t: Task, copy: Task) -> Task {
-    for k in tasks.items.filter(x -> x.parent == .some(t)) {
-        // Where the copy of this one goes: after the run the copies under `copy` make so far,
-        // read before it is inserted, since it would end that run itself.
-        let after = last_below(tasks.items, copy)
-        let made = tasks.items.insert(copied(k, .some(copy)))
-        if let last = after { tasks.items.move(made, after: last) }
-        copy_below(tasks, k, made)
-    }
-    last_below(tasks.items, copy) ?? copy
+/// Whether `t` is finished: done itself, and so is every task under it. A task with subtasks is
+/// finished when they are, so the branch two people finish at once is finished once both
+/// changes are in, though neither change named it. `items` is the list the caller reads the
+/// tasks under `t` from: a project's tasks, or the tasks the window holds.
+fn finished(items: List<Task>, t: Task) -> Bool {
+    let under = items.descendants(t, .parent)
+    if under.is_empty() { t.done } else { under.all(x -> x.done) }
+}
+
+/// Whether `t` stands in a list's Done tail: finished, and so is every task it is under, so a
+/// subtask done with under a task still open stays where it stands, checked and muted.
+fn folded(items: List<Task>, t: Task) -> Bool {
+    finished(items, t) and items.ancestors(t, .parent).all(a -> finished(items, a))
 }
 
 /// How many of a task's subtasks are done, of all of them ("1/3"): its row in a list and its
-/// node in the page's outline read the two counts the list's index keeps.
-fn subtask_count(t: Task) -> Option<Text> {
-    if t.subtasks == 0 { .none } else { .some("{t.subtasks_done}/{t.subtasks}") }
+/// node in the page's outline count among the tasks that name a parent, read once for the view
+/// around them, so a row counts what is under it and nothing else.
+fn subtask_count(kids: List<Task>, t: Task) -> Option<Text> {
+    let mine = kids.filter(x -> x.parent == .some(t))
+    if mine.is_empty() {
+        .none
+    } else {
+        .some("{mine.count(x -> x.done)}/{mine.len()}")
+    }
 }
 
 /// When a task is due of its own, beside what the row it stands under already says: a subtask
@@ -501,8 +505,8 @@ fn finished_day(t: Task) -> Option<Date> {
 
 /// The day a task stands under in a list of a place: the day it is due on, or the day it was
 /// finished on in Done, or none where the place groups nothing.
-fn task_day(t: Task, by_day: Bool, finished: Bool) -> Option<Date> {
-    if by_day { t.due } else if finished { finished_day(t) } else { .none }
+fn task_day(t: Task, by_day: Bool, done_place: Bool) -> Option<Date> {
+    if by_day { t.due } else if done_place { finished_day(t) } else { .none }
 }
 
 /// The tasks of a project, in order.
@@ -545,16 +549,18 @@ view home(t: Tasks) {
     // what waits to be sorted lists plainly. A project's list folds a finished branch under its
     // foot, so the open work it holds stands over what is done with.
     let by_day = place == Task.today or place == Task.upcoming or project != .none
-    let finished = place == Task.done
+    let done_place = place == Task.done
     let folds = project != .none
     let in_today = place == Task.today
     // What is due reads under the day it is due on, soonest first. What is done reads newest
     // first, by when it was finished; any other list by the day it is due. A project's list
     // stands its finished branch last, under the foot that folds it away.
     let ordered = found.sort_by(.due)
-    let shown = if finished {
+    // The tasks of the place that name a parent, read once: a row counts its own under them.
+    let kids = found.filter(x -> x.parent != .none)
+    let shown = if done_place {
         found.sort_by(x -> finished_at(x), desc)
-    } else if folds { ordered.sort_by(.folded) } else { ordered }
+    } else if folds { ordered.sort_by(x -> folded(found, x)) } else { ordered }
     let title = if let p = project { p.name } else { chosen?.label ?? "Tasks" }
     // What waits in the place: what it holds, less what is done in a project's place, never a
     // walk over the window's list, so the answer reads the same from three tasks to three
@@ -613,7 +619,7 @@ view home(t: Tasks) {
                 foot: {
                     stack {
                         if all_done {
-                            task_list(shown, by_day, finished, folds)
+                            task_list(shown, kids, by_day, done_place, folds)
                         }
                         if in_today {
                             std.add_entry(entry_placeholder, new_task_today(t, p: project))
@@ -627,7 +633,7 @@ view home(t: Tasks) {
                 } else if shown.is_empty() {
                     ui.EmptyState("No tasks here", icon: .list_checks)
                 } else {
-                    task_list(shown, by_day, finished, folds)
+                    task_list(shown, kids, by_day, done_place, folds)
                 }
             }
         }
@@ -640,19 +646,19 @@ view home(t: Tasks) {
 /// The tasks of a place as a list: under the day they are due on, or the day they were finished
 /// on in Done, each branch nested under the task it is a subtask of, a project's finished work
 /// folded under the list's tail.
-view task_list(items: List<Task>, by_day: Bool, finished: Bool, folds: Bool) {
+view task_list(items: List<Task>, kids: List<Task>, by_day: Bool, done_place: Bool, folds: Bool) {
     std.list(
         items,
         tree: true,
         ungrouped: if by_day { .some(phrase("tilolang-no-date")) } else { .none },
         tail_title: if folds { .some(phrase("tilolang-done")) } else { .none },
     ) { (x, at) ->
-        let heading = task_day(x, by_day, finished)
-        let folded = folds and x.folded
+        let heading = task_day(x, by_day, done_place)
+        let tail = folds and folded(items, x)
         // The task just over this one in its group, on this side of the fold, as the list shows
         // them: the place the actions offered on the row get, and none for the first of a group.
         let above: Option<Task> = if let p = items.previous(x) {
-            if task_day(p, by_day, finished) == heading and (folds and p.folded) == folded {
+            if task_day(p, by_day, done_place) == heading and (folds and folded(items, p)) == tail {
                 .some(p)
             } else { .none }
         } else { .none }
@@ -660,12 +666,12 @@ view task_list(items: List<Task>, by_day: Bool, finished: Bool, folds: Bool) {
             item: x,
             presence: at,
             group: heading,
-            group_done: finished,
-            tail: folded,
+            group_done: done_place,
+            tail: tail,
             above: above,
             parent: x.parent,
             parent_title: x.parent?.title,
-            progress: subtask_count(x),
+            progress: subtask_count(kids, x),
         ) {
             task_row(x, .day, x.parent)
         }
@@ -676,6 +682,8 @@ view task_list(items: List<Task>, by_day: Bool, finished: Bool, folds: Bool) {
 /// bar switches it to the project's board, the same tasks as a lane per section.
 view project_list(p: Project) {
     let shown = tasks_of(p)
+    // The project's tasks that name a parent, read once: a row counts its own under them.
+    let kids = shown.filter(x -> x.parent != .none)
     ui.NavShell(content_kind: .document, overview_title: p.name) {
         overview: {
             ui.Docked {
@@ -694,7 +702,7 @@ view project_list(p: Project) {
                             above: shown.previous(x),
                             parent: x.parent,
                             parent_title: x.parent?.title,
-                            progress: subtask_count(x),
+                            progress: subtask_count(kids, x),
                         ) {
                             task_row(x, .project, x.parent)
                         }
@@ -822,9 +830,19 @@ view task_outline_row(t: Task, project: Option<Project>, under: Option<Task>) {
 view task_page(t: Task) {
     state step: Text
     std.document(t) {
-        opening(t) {
+        // What the page opens with: whether the task is done and what it is, where it came from,
+        // and what is written about it, one row lead in under the text the title leads to.
+        stack(gap: .related) {
+            row(gap: .related, align: .start) {
+                ui.Checkbox(bind: t.done) {
+                    on check: check(t)
+                }
+                ui.TextInput(bind: t.title, placeholder: "What to do", title: true, fill: 1.0)
+            }
             std.origin(t)
-            on check: check(t)
+            stack(lead: 1) {
+                ui.BlockEditor(bind: t.notes, placeholder: "Anything worth remembering about it.")
+            }
         }
         // What follows the heading stands in its body, under the text its title leads to.
         std.body() {
@@ -862,7 +880,7 @@ view task_page(t: Task) {
                             before,
                         ),
                         x -> check(x),
-                        progress: x -> subtask_count(x),
+                        progress: x -> subtask_count(kids, x),
                         fill: false,
                     ) { (x, under) ->
                         task_outline_row(x, t.project, under)

@@ -8,8 +8,8 @@ use super::*;
 
 #[test]
 fn a_scroll_that_carries_on_mounts_rows_ahead_and_a_jump_only_what_it_shows() {
-    // Rows of 20 px in a 200 px view: an overscan of 40 px, and a
-    // quarter of the view (50 px) mounted ahead of a scroll.
+    // Rows of 20 px in a 200 px view: an overscan of 40 px, and a view (200 px) mounted ahead
+    // of a scroll, so a notch of a wheel lands among the rows already mounted.
     let model = VecListModel::new((0..1000_u64).collect(), |key| *key).unwrap();
     let mut list = VirtualList::new(model, 20.0, |_, _, key| {
         Box::new(ProbeRow::new(
@@ -34,8 +34,8 @@ fn a_scroll_that_carries_on_mounts_rows_ahead_and_a_jump_only_what_it_shows() {
     let _ = lay_out(&mut list, 300.0);
     assert_eq!(
         list.mounted_range,
-        0..16,
-        "the rows ahead come with the first"
+        0..24,
+        "the rows a view ahead come with the first"
     );
     let mounted = keys(&list);
 
@@ -45,12 +45,14 @@ fn a_scroll_that_carries_on_mounts_rows_ahead_and_a_jump_only_what_it_shows() {
     let _ = lay_out(&mut list, 300.0);
     assert_eq!(keys(&list), mounted);
 
-    list.set_scroll_offset(100.0);
+    // Further still the view reaches past what the band holds: it moves as a whole, and the
+    // rows behind let go.
+    list.set_scroll_offset(400.0);
     let _ = lay_out(&mut list, 300.0);
-    assert_eq!(list.mounted_range, 3..20);
+    assert_eq!(list.mounted_range, 18..43);
     assert_eq!(
         list.mounted.first().map(|row| row.key),
-        Some(3),
+        Some(18),
         "rows behind let go"
     );
 
@@ -66,7 +68,7 @@ fn a_scroll_that_carries_on_mounts_rows_ahead_and_a_jump_only_what_it_shows() {
     // Back up: the rows ahead are above.
     list.set_scroll_offset(1_980.0);
     let _ = lay_out(&mut list, 300.0);
-    assert_eq!(list.mounted_range, 94..112);
+    assert_eq!(list.mounted_range, 87..112);
 }
 
 #[test]

@@ -694,8 +694,6 @@ impl Reader<'_> {
             merge,
             doc: field.title.clone(),
             default: None,
-            role: None,
-            derived: None,
         })
     }
 

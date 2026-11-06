@@ -1,5 +1,7 @@
 //! The native session: `tilo-session [--backend drm|headless|nested]
-//! [--size WxH] [--scale S|--panel-mm WxH] [--shell screen] [--host-desktop]
+//! [--size WxH] [--connector NAME]
+//! [--output [NAME=]WxH[@X,Y]]... [--scale S|--panel-mm WxH]
+//! [--shell screen] [--host-desktop]
 //! [--firstboot|--firstboot-only]
 //! [--provision-identity|--verify-collaboration-identity] [--no-x11]
 //! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none]
@@ -9,7 +11,9 @@
 //! clients one display per workspace (unless `--no-x11`), prints the socket
 //! and the agent door it serves (`TILO_AGENT_DOOR=`, what `tilolang repl
 //! --door` takes) and starts `command` with `WAYLAND_DISPLAY` set to it; with
-//! a command, the session lasts as long as it does. `--shell
+//! a command, the session lasts as long as it does. A headless session's
+//! first output carries `HEADLESS-1` unless `--connector` names another, so
+//! it can pose as a desk whose panel is a named connector. `--shell
 //! screen` shows the tilolang shell (`apps/tl/shell`): the whole screen, its
 //! bar, dock and the person's arrangement as their preset shows it, every
 //! window in its place's well. The desktop services serve
@@ -212,6 +216,11 @@ struct CommandLine {
     /// of its panel (`--panel-mm`), which decides the scale
     /// ([`tilo_compositor::panel_scale`]). `None` draws at 1.
     headless: HeadlessPanel,
+    /// The connector a headless session's first output carries
+    /// (`--connector`).
+    connector: String,
+    /// The displays a headless session opens after the first (`--output`).
+    outputs: Vec<NamedOutput>,
     reach: Reach,
     /// Whether the tilolang shell runs, when the command line asked for it.
     shell: bool,
@@ -269,6 +278,102 @@ fn value<'a>(ours: &'a [String], flag: &str) -> Option<&'a str> {
         .map(String::as_str)
 }
 
+/// Every argument `flag` names on `ours`, in order.
+#[cfg(target_os = "linux")]
+fn values<'a>(ours: &'a [String], flag: &str) -> Vec<&'a str> {
+    ours.iter()
+        .enumerate()
+        .filter(|(_, arg)| *arg == flag)
+        .filter_map(|(index, _)| ours.get(index.saturating_add(1)))
+        .map(String::as_str)
+        .collect()
+}
+
+/// A headless display `--output` names: its connector, its size in pixels,
+/// and where its picture starts across and down the desktop.
+#[cfg(target_os = "linux")]
+type NamedOutput = (String, (u16, u16), Option<(i32, i32)>);
+
+/// The headless display `value` names: `WxH`, `WxH@X,Y`, and `NAME=` before
+/// either to name the connector, which is `HEADLESS-{index}` otherwise.
+#[cfg(target_os = "linux")]
+fn named_output(value: &str, index: usize) -> Option<NamedOutput> {
+    let (name, rest) = match value.split_once('=') {
+        Some((name, rest)) => (name.to_owned(), rest),
+        None => (format!("HEADLESS-{index}"), value),
+    };
+    let (size, place) = match rest.split_once('@') {
+        Some((size, place)) => {
+            let (x, y) = place.split_once(',')?;
+            (size, Some((x.parse().ok()?, y.parse().ok()?)))
+        }
+        None => (rest, None),
+    };
+    let (across, down) = size.split_once('x')?;
+    Some((name, (across.parse().ok()?, down.parse().ok()?), place))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::{named_output, parse_output};
+
+    fn flags(extra: &[&str]) -> Vec<String> {
+        std::iter::once("session")
+            .chain(extra.iter().copied())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn a_headless_session_names_the_connector_of_its_first_output() {
+        let output = parse_output(&flags(&[
+            "--backend",
+            "headless",
+            "--connector",
+            "eDP-1",
+            "--output",
+            "HDMI-A-1=1920x1080@1280,0",
+        ]))
+        .expect("parsed");
+        assert_eq!(output.connector, "eDP-1");
+        assert_eq!(
+            output.outputs,
+            vec![("HDMI-A-1".to_owned(), (1920, 1080), Some((1280, 0)))]
+        );
+
+        assert_eq!(
+            parse_output(&flags(&["--backend", "headless"])).map(|output| output.connector),
+            Some("HEADLESS-1".to_owned()),
+            "the default connector"
+        );
+        assert!(
+            parse_output(&flags(&["--backend", "nested", "--connector", "eDP-1"])).is_none(),
+            "only a headless session's outputs have connectors of their own"
+        );
+    }
+
+    #[test]
+    fn an_output_names_its_size_place_and_connector() {
+        let named = |value: &str| named_output(value, 2);
+        assert_eq!(
+            named("1280x800"),
+            Some(("HEADLESS-2".to_owned(), (1280, 800), None))
+        );
+        assert_eq!(
+            named("1920x1080@1280,0"),
+            Some(("HEADLESS-2".to_owned(), (1920, 1080), Some((1280, 0))))
+        );
+        assert_eq!(
+            named("DP-2=2560x1440@-2560,0"),
+            Some(("DP-2".to_owned(), (2560, 1440), Some((-2560, 0)))),
+            "a connector named outright, left of the first display"
+        );
+        assert_eq!(named("wide"), None);
+        assert_eq!(named("1280"), None);
+        assert_eq!(named("1280x800@middle"), None);
+    }
+}
+
 /// The output `ours` asks for: its backend, the panel it draws, and whether
 /// the tilolang shell runs.
 #[cfg(target_os = "linux")]
@@ -278,6 +383,12 @@ struct Output {
     size: (u16, u16),
     /// The density a headless output draws at.
     headless: HeadlessPanel,
+    /// The connector a headless session's first output carries, so a desk
+    /// can be posed as one whose panel is a named connector.
+    connector: String,
+    /// The displays a headless session opens after the first, each its own
+    /// output where it is put.
+    outputs: Vec<NamedOutput>,
     shell: bool,
 }
 
@@ -323,10 +434,37 @@ fn parse_output(ours: &[String]) -> Option<Output> {
     if !matches!(backend, Backend::Headless) && headless != HeadlessPanel::Scale(1.0) {
         eprintln!("tilo-session: --scale and --panel-mm are for a headless session");
     }
+    let connector = match value(ours, "--connector") {
+        None => "HEADLESS-1".to_owned(),
+        Some(_) if !matches!(backend, Backend::Headless) => {
+            eprintln!("tilo-session: --connector is for a headless session");
+            return None;
+        }
+        Some("") => {
+            eprintln!("tilo-session: --connector takes a connector name");
+            return None;
+        }
+        Some(connector) => connector.to_owned(),
+    };
+    let asked = values(ours, "--output");
+    let mut outputs = Vec::with_capacity(asked.len());
+    for (index, asked) in asked.into_iter().enumerate() {
+        let Some(output) = named_output(asked, index.saturating_add(2)) else {
+            eprintln!("tilo-session: --output takes WxH, WxH@X,Y or NAME=WxH@X,Y, not {asked}");
+            return None;
+        };
+        outputs.push(output);
+    }
+    if !outputs.is_empty() && !matches!(backend, Backend::Headless) {
+        eprintln!("tilo-session: --output is for a headless session");
+        return None;
+    }
     Some(Output {
         backend,
         size,
         headless,
+        connector,
+        outputs,
         shell,
     })
 }
@@ -458,6 +596,8 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
         backend: output.backend,
         size: output.size,
         headless: output.headless,
+        connector: output.connector,
+        outputs: output.outputs,
         shell: output.shell,
         reach: reach(ours, output.backend),
         admit_repl: admit_repl(ours),
@@ -488,6 +628,8 @@ fn start(
         backend,
         size,
         headless,
+        connector,
+        outputs,
         reach,
         shell,
         admit_repl,
@@ -621,7 +763,7 @@ fn start(
     let test_control = options.test_control.clone();
     let admin_control = options.admin_control.clone();
     tilo_startup_metrics::mark("session-open-start");
-    let mut session = match start_session(backend, options, size, headless) {
+    let mut session = match start_session(backend, options, size, headless, &connector, &outputs) {
         Ok(session) => session,
         Err(error) => {
             eprintln!("tilo-session: {error}");
@@ -667,19 +809,34 @@ fn start_session(
     options: tilo_session::Options,
     size: (u16, u16),
     headless: HeadlessPanel,
+    connector: &str,
+    outputs: &[NamedOutput],
 ) -> Result<tilo_session::Session, tilo_compositor::Error> {
     use tilo_compositor::{DisplayConfig, NestedConfig, OutputConfig};
     use tilo_session::Session;
     match backend {
         Backend::Headless => {
-            let output = OutputConfig::new("HEADLESS-1", i32::from(size.0), i32::from(size.1));
+            let output = OutputConfig::new(connector, i32::from(size.0), i32::from(size.1));
             // The scale a real connector starts at: the one named, or the one
             // its panel's density argues for, as DRM derives it.
             let output = match headless {
                 HeadlessPanel::Scale(scale) => output.with_scale(scale),
                 HeadlessPanel::Millimetres(mm) => output.panel(mm),
             };
-            Session::headless(options, &[output])
+            let mut displays = vec![output];
+            for (name, (across, down), place) in outputs {
+                let mut output =
+                    OutputConfig::new(name.as_str(), i32::from(*across), i32::from(*down));
+                output = match headless {
+                    HeadlessPanel::Scale(scale) => output.with_scale(scale),
+                    HeadlessPanel::Millimetres(mm) => output.panel(mm),
+                };
+                if let Some((x, y)) = place {
+                    output = output.at(*x, *y);
+                }
+                displays.push(output);
+            }
+            Session::headless(options, &displays)
         }
         Backend::Drm => Session::drm(options, DisplayConfig::default()),
         Backend::Nested => Session::nested(

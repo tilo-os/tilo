@@ -228,6 +228,10 @@ kind = "userspace"
 scope = "session"
 packages = ["launcher"]
 bins = ["tilo-launcher"]
+# The resident system service runs this launcher, and a unit's mount namespace
+# keeps the `/usr` it started with: a swap restarts it so the running service
+# is the swapped one.
+units = ["tilo-runtime-resident.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-launcher", to = "/usr/libexec/tilo/tilo-launcher", mode = "0755" },
@@ -315,10 +319,15 @@ kind = "userspace"
 scope = "session"
 packages = ["app-cli"]
 bins = ["app"]
+# The store's update run is this component's own binary, so the units that
+# start it travel with it and a swap restarts them.
+user_units = ["tilo-app-update.service", "tilo-app-update.timer"]
 layer = "desktop-binaries"
 files = [
   { from = "app", to = "/usr/bin/app", mode = "0755" },
   { link = "app", to = "/usr/bin/store" },
+  { from = "@manifest/usr/lib/systemd/user/tilo-app-update.service", to = "/usr/lib/systemd/user/tilo-app-update.service", mode = "0644" },
+  { from = "@manifest/usr/lib/systemd/user/tilo-app-update.timer", to = "/usr/lib/systemd/user/tilo-app-update.timer", mode = "0644" },
   # Shell completions the image build generates from the binary; a dev build
   # of the binary alone leaves them absent.
   { from = "completions/bash/app", to = "/usr/share/bash-completion/completions/app", mode = "0644", optional = true },

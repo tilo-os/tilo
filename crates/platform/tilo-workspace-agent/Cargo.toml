@@ -1,0 +1,28 @@
+[package]
+name = "tilo-workspace-agent"
+version = "0.1.0"
+edition = "2024"
+# Published: every app window of the SDK opens it (tools/sdk/publish_check.py).
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "A workspace's agents: one record Chat keeps, holding each agent's name, colour, keeper and model"
+
+[dependencies]
+automerge.workspace = true
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+serde.workspace = true
+serde_json.workspace = true
+tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-files = { version = "0.1.0", path = "../tilo-files" }
+
+[lints]
+workspace = true

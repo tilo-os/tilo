@@ -137,6 +137,8 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "share",
     "floating-call-attached",
     "floating-call",
+    "floating-call-crowd",
+    "floating-call-muted",
     "floating-call-hover",
     "floating-call-returning",
     "floating-call-returned",
@@ -160,9 +162,11 @@ impl ResourceApp for ChatShell {
     /// The chat's messages, kept in parts beside the workspace's chat record.
     fn records(records: &mut ui::framework::Records<'_>) {
         records.chain::<crate::parts::ChatPart>();
-        // The workspace's emoji are Chat's: every app of the workspace opens
-        // them, and their changes are decided against Chat's surface.
+        // The workspace's emoji and its agents are Chat's: every app of the
+        // workspace opens them, and their changes are decided against Chat's
+        // surface.
         records.shared_workspace::<ui::tilo_workspace_emoji::WorkspaceEmoji>();
+        records.shared_workspace::<ui::tilo_workspace_agent::WorkspaceAgents>();
     }
 
     fn view(cx: &mut ViewCx<Chat>) -> Element {
@@ -749,12 +753,11 @@ impl ChatApp {
             .filter(|found| found.is_channel())
             .ok_or_else(|| format!("there is no channel `{channel}` in this chat"))?;
         let held = self.held_messages();
-        let mut messages: Vec<_> = held
+        // Oldest first, in the order the window shows the channel.
+        let messages: Vec<_> = held
             .iter()
             .filter(|(_, message)| message.channel == id)
             .collect();
-        // Oldest first; posts of one second keep the chain's order.
-        messages.sort_by_key(|(_, message)| message.ts);
         let transcript = crate::transcript::Channel {
             id: channel,
             name: &found.name,

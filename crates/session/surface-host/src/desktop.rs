@@ -526,9 +526,17 @@ impl DesktopHost {
     }
 
     /// The windows whose bar asked for its menu since the last call, oldest
-    /// first: a secondary click on a bar.
-    pub fn take_tab_menus(&self) -> Vec<u64> {
-        self.desk.borrow().policy.handle().take_tab_menus()
+    /// first: a secondary click on a bar, and the place on the desk it was
+    /// pressed.
+    pub fn take_tab_menus(&self) -> Vec<(u64, f64, f64)> {
+        self.desk
+            .borrow()
+            .policy
+            .handle()
+            .take_tab_menus()
+            .into_iter()
+            .map(|(tab, at)| (tab, at.x, at.y))
+            .collect()
     }
 
     /// What the desktop asked to open since the last call, oldest first:
@@ -864,6 +872,13 @@ impl StripPolicy {
     /// go: the chrome that keeps out of the way until reached for.
     pub fn with_samples(&mut self, samples: Rc<RefCell<dyn PointerSamples>>) {
         self.samples = Some(samples);
+    }
+
+    /// Name apps with `names`, the session's: the installed package's
+    /// localised name, else the machine's desktop entry, else the registry's.
+    /// A tab opens with the name of its app, never with the app's id.
+    pub fn reads_app_names(&mut self, names: Rc<dyn Fn(&str) -> String>) {
+        self.desk.borrow_mut().policy.reads_app_names(names);
     }
 
     /// Give `window` its tab, once, and lay the desktop out so its place

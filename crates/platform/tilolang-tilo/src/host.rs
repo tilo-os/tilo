@@ -23,7 +23,7 @@ use tilolang_runtime::meta::{Meta, Ty, parse_ty};
 use tilolang_runtime::store::NewRecord;
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
 use tilolang_runtime::{
-    InvokeOutcome, ModuleHash, PackageId, Principal, Runtime, RuntimeError, StoreError,
+    InvokeOutcome, ModuleHash, PackageId, Principal, Reading, Runtime, RuntimeError, StoreError,
     ViewInstance,
 };
 
@@ -598,44 +598,74 @@ impl HostInner {
     /// published the answer for what it shows, so no surface carries a condition's answer for
     /// every item it holds.
     fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
-        let package = self
-            .packages
-            .borrow()
-            .iter()
-            .find(|package| package.meta.actions.iter().any(|held| held.id == action))
-            .cloned()?;
-        let meta = package.meta.actions.iter().find(|held| held.id == action)?;
-        if !meta.guard && !meta.applies {
+        self.availability_reading(resource, action)
+            .map(|(availability, _)| availability)
+    }
+
+    /// [`Self::availability`], with what reading the answer read of the workspace: a caller
+    /// keeping the answer asks again only when one of those fields moves ([`Reading`]).
+    fn availability_reading(
+        &self,
+        resource: &str,
+        action: &str,
+    ) -> Option<(tilo_actions::Availability, Reading)> {
+        // What asking reads of the app's package: the action's declaration and the type of its
+        // subject. Copied out of the registry by value, not the package: a package is the whole
+        // app's compiled metadata, and a window asks this once for each action of each row it
+        // shows, so cloning it here would cost more than reading the requirements.
+        let (app, has_guard, has_applies, declared) = {
+            let packages = self.packages.borrow();
+            let package = packages
+                .iter()
+                .find(|package| package.meta.actions.iter().any(|held| held.id == action))?;
+            let meta = package.meta.actions.iter().find(|held| held.id == action)?;
+            let declared = package.meta.subject_of(&meta.params)?.id.clone();
+            (package.meta.app.clone(), meta.guard, meta.applies, declared)
+        };
+        if !has_guard && !has_applies {
             return None;
         }
-        let declared = package.meta.subject_of(&meta.params)?;
         let id = resource
-            .strip_prefix(&crate::publish::resource_id(&package.meta.app, ""))
+            .strip_prefix(&crate::publish::resource_id(&app, ""))
             .unwrap_or(resource);
-        let target = ResourceRef::parse_id(id, declared.id.clone())?;
+        let target = ResourceRef::parse_id(id, declared)?;
         // Where the action cannot apply at all, the offer leaves it out: that reason is the
         // answer, before what it needs to run.
         let decided = |reason: Option<String>| match reason {
-            Some(reason) => Some(tilo_actions::Availability::Unavailable {
+            Some(reason) => tilo_actions::Availability::Unavailable {
                 code: "unmet".to_owned(),
                 reason,
-            }),
-            None => Some(tilo_actions::Availability::Available),
+            },
+            None => tilo_actions::Availability::Available,
         };
-        if meta.applies {
+        // What deciding the action read: what applies decided, and what its requirement did.
+        let mut read = Reading::default();
+        if has_applies {
             match self.runtime.applies_reading(action, &target, &self.viewer) {
-                Ok((Some(reason), _)) => return decided(Some(reason)),
-                Ok((None, _)) => {}
+                Ok((Some(reason), applies)) => return Some((decided(Some(reason)), applies)),
+                Ok((None, applies)) => read = applies,
                 // A condition that cannot be read says nothing of the action: it is offered,
                 // and refuses with its reason when it runs.
                 Err(_) => return None,
             }
         }
-        if !meta.guard {
-            return decided(None);
+        if !has_guard {
+            return Some((decided(None), read));
         }
         match self.runtime.refusal_reading(action, &target, &self.viewer) {
-            Ok((reason, _)) => decided(reason),
+            Ok((reason, guard)) => {
+                let mut reads = read.reads;
+                reads.extend(guard.reads);
+                reads.sort_unstable();
+                reads.dedup();
+                Some((
+                    decided(reason),
+                    Reading {
+                        reads,
+                        beyond: read.beyond || guard.beyond,
+                    },
+                ))
+            }
             Err(_) => None,
         }
     }
@@ -721,6 +751,7 @@ impl HostInner {
                 from: request.from.cloned(),
                 suggested_by: None,
                 count: 1,
+                invocation: None,
             },
             edits: Vec::new(),
         };
@@ -1038,6 +1069,18 @@ impl Host {
         self.inner.availability(resource, action)
     }
 
+    /// As [`Self::availability`], with what reading the answer read of the workspace: the fields
+    /// it read, each once, so a caller keeping the answer knows what has to move for it to be
+    /// read again, and whether it read beyond the workspace at all ([`Reading`]).
+    #[must_use]
+    pub fn availability_reading(
+        &self,
+        resource: &str,
+        action: &str,
+    ) -> Option<(tilo_actions::Availability, Reading)> {
+        self.inner.availability_reading(resource, action)
+    }
+
     /// The resource `action` returned when the person last ran it here, once: a window opens
     /// what its primary action made.
     #[must_use]
@@ -1234,6 +1277,12 @@ impl Host {
         self.inner.store.sync_from(record)
     }
 
+    /// Bring the runtime's view of the chunk `chunk` of the workspace record up to date; see
+    /// [`TiloStore::sync_chunk`].
+    pub fn sync_chunk(&self, chunk: crate::chunk::ChunkNo, doc: &tilo_resource::Doc) -> bool {
+        self.inner.store.sync_chunk(chunk, doc)
+    }
+
     /// Whether the runtime reads exactly what the workspace record `record` holds; see
     /// [`TiloStore::is_at`].
     #[must_use]
@@ -1325,10 +1374,9 @@ impl Host {
             .ok_or_else(|| HostError::NotFound(format!("a root type with a default view in {app}")))
     }
 
-    /// Run each loaded package's migrations (`migration action`) on the resources an earlier
-    /// version of it wrote: once on each resource of the migration's subject type that holds
-    /// something in a field the type now keeps `(previously)` (or, for a type without such a
-    /// field, that the migration has not run on), as an action of the package version
+    /// Run each loaded package's migrations (`migration action`): once on each resource of the
+    /// migration's subject type that the migration has not run on, whether an earlier version
+    /// of the package wrote the resource or this one, as an action of the package version
     /// ([`crate::authority::migration_principal`]), which records in the same change that it
     /// ran. A field the new build keeps as `RichText` where the old one kept `Text` has its
     /// text carried into rich text first, the same words ([`crate::store`]'s
@@ -1357,23 +1405,12 @@ impl Host {
                 else {
                     continue;
                 };
-                let previously: Vec<&str> = ty
-                    .fields
-                    .iter()
-                    .filter(|f| {
-                        f.role
-                            .as_ref()
-                            .is_some_and(tilolang_runtime::meta::FieldRole::is_previously)
-                    })
-                    .map(|f| f.id.as_str())
-                    .collect();
                 for doc in self.inner.store.resources_of(&package.meta.app, &ty.id) {
                     if self
                         .inner
                         .store
                         .migrated(&doc, &migration.id)
                         .unwrap_or(true)
-                        || !self.holds_previously(&doc, &previously)
                     {
                         continue;
                     }
@@ -1423,14 +1460,6 @@ impl Host {
     #[must_use]
     pub fn next_trigger(&self, now: i64) -> Option<i64> {
         crate::triggers::next(self, now)
-    }
-
-    /// Whether the resource `doc` holds anything in the fields `previously` (none: whether it
-    /// may hold what an earlier version wrote, which only the migration can tell).
-    fn holds_previously(&self, doc: &str, previously: &[&str]) -> bool {
-        // Read from the record's own map: a record of ten thousand items is not built to
-        // learn whether one field a migration replaces was ever written.
-        self.inner.store.holds_any(doc, previously)
     }
 
     /// Open the window of `app`'s root resource, through the default view of its type: its

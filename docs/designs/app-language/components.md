@@ -54,14 +54,14 @@ view contact_row(c: Contact) {
 - A box bound to a value writes that field when it is pressed, unless the view names what a
   press means: `ui.Checkbox(bind: t.done) { on check: check(t) }` and
   `row(t.title, checkbox: t.done, check: check(t))` show the field and run the app's action,
-  so completing a task completes what is under it in the same step, one undo, and `check` is
-  what history says it did.
+  so completing a task completes what is under it in the same step, one undo, and history
+  records the flag the app's action set.
 - A document's running text is placed like any other component:
   `ui.BlockEditor(bind: doc.body, placeholder: "Write")`. It declares a binding to the field as
   a `RichText` (`rich`, its paragraphs) and to a Markdown `Text` field (`markdown`, the same
   text round-tripped), and edits the one the view bound; a change from elsewhere shows when the
-  person is not typing there. Nothing about a field marked `(body)` changes what a control
-  draws: the role is the document's metadata, and the view places the editor.
+  person is not typing there. The view places the editor; no marker on a field says which
+  control draws it.
 
 Some components *attach*: `ui.ContextMenu`, `ui.HoverToolbar` and `ui.Swipe` draw nothing where
 a view puts them and give the view they stand in a menu, a toolbar shown on hover and focus, or
@@ -101,6 +101,15 @@ pages, forms. It relies on general language features any author can use:
 - resource metadata: title field, type name, icon.
 
 An app that needs something `std` doesn't do composes `ui.*` directly and loses nothing native.
+
+A window that is only a list is `std.browse`: it takes the resource its window is of, the items,
+the places and the sort, and writes that window the standard way — the place a person chose as its
+state, the list that place finds, the title and count naming that place, the empty state, the entry
+that adds an item, and the pane beside the list when the rows open there. It draws what the caller
+named and never reads a shell off the type; `opens` is the one fact it takes from the type, whether
+its rows have a window of their own, and a window whose rows open in front of it states
+`opens: false`. An app whose window is more than this — a sidebar of its own, rows that group or
+nest — composes `std.list`, `std.places` and `std.header` itself.
 
 A list groups without a second widget: the row a list draws takes `group:`, naming the item's
 key, and the list draws a section band for each run of items that names the same key and holds

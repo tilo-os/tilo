@@ -807,29 +807,22 @@ impl Core {
             .flatten()
     }
 
-    /// Whether `at` edits the field `resource`'s type names it by.
+    /// Whether `at` edits the field `resource`'s type is named by.
     fn edits_title(&self, at: usize, resource: &str) -> bool {
         self.binding_of(at).is_some_and(|binding| {
             let BindTarget::Field { target, field } = &binding.target else {
                 return false;
             };
             target.id_string() == resource
-                && self.title_field(&target.ty).is_some_and(|id| &id == field)
+                && self.name_field(&target.ty).is_some_and(|id| &id == field)
         })
     }
 
-    /// The field `ty` names its records by: the one its declaration marks `(title)`.
-    fn title_field(&self, ty: &str) -> Option<String> {
+    /// The field `ty` names its records by: its first text field.
+    fn name_field(&self, ty: &str) -> Option<String> {
         let registry = self.registry.borrow();
-        let (pkg, info) = registry.type_info(ty)?;
-        let ty = pkg.meta.types.iter().find(|t| t.id == info.id)?;
-        let field = ty.fields.iter().find(|field| {
-            field
-                .role
-                .as_ref()
-                .is_some_and(crate::meta::FieldRole::is_title)
-        })?;
-        Some(field.id.clone())
+        let (_, info) = registry.type_info(ty)?;
+        Some(info.name_field()?.id.clone())
     }
 
     // ----- the arena --------------------------------------------------------------------

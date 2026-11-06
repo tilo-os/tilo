@@ -1,7 +1,9 @@
-//! The one menu behind the top bar's workspace name: everything about where
-//! the person is, in one place. Which workspace (the others, to switch to),
-//! where it is hosted, joining or leaving one, renaming it, the overview and
-//! a new strip.
+//! The one menu behind the top bar's workspace name, and the menu a
+//! secondary press on the desk opens where the pointer is: everything about
+//! where the person is, in one place. Which workspace (the others, to switch
+//! to), where it is hosted, joining or leaving one, renaming it, the overview
+//! and a new strip — and, opened on the desk, what the desk itself offers
+//! ([`WorkspaceMenuModel::desk`]).
 //!
 //! [`WorkspaceMenuModel`] is what the host knows when the menu opens; the
 //! menu is a [`ContextMenu`] of it, and what the person chose comes back as a
@@ -43,9 +45,28 @@ pub struct WorkspaceAction {
     pub destructive: bool,
 }
 
+impl WorkspaceAction {
+    /// The row this command is, with its own picture.
+    fn item(&self) -> MenuItem {
+        let mut item = if self.destructive {
+            MenuItem::destructive_selection(&self.title)
+        } else {
+            MenuItem::selection(&self.title)
+        };
+        if let Some(icon) = self.icon {
+            item = item.with_icon(icon);
+        }
+        item
+    }
+}
+
 /// What the menu shows, as the host knows it when it opens.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkspaceMenuModel {
+    /// What the place a press opened the menu on offers: the desk's own
+    /// verbs, above the workspaces. Empty for the bar's menu, which stands
+    /// on the workspace name rather than on the desk.
+    pub desk: Vec<WorkspaceAction>,
     pub workspaces: Vec<WorkspaceChoice>,
     /// The site the workspace is hosted by, as the person reached it
     /// ("tilo.coffee"); `None` on the person's own computer.
@@ -87,6 +108,15 @@ impl WorkspaceMenu {
     /// The rows `model` makes, each with what choosing it means.
     fn rows(model: &WorkspaceMenuModel) -> Vec<(MenuItem, Option<WorkspaceMenuChoice>)> {
         let mut rows: Vec<(MenuItem, Option<WorkspaceMenuChoice>)> = Vec::new();
+        for action in &model.desk {
+            rows.push((
+                action.item(),
+                Some(WorkspaceMenuChoice::Action(action.id.clone())),
+            ));
+        }
+        if !model.desk.is_empty() {
+            rows.push((MenuItem::separator(), None));
+        }
         for workspace in &model.workspaces {
             rows.push((
                 MenuItem::selection(&workspace.name).with_checked(workspace.current),
@@ -106,15 +136,10 @@ impl WorkspaceMenu {
         if !model.actions.is_empty() {
             rows.push((MenuItem::separator(), None));
             for action in &model.actions {
-                let mut item = if action.destructive {
-                    MenuItem::destructive_selection(&action.title)
-                } else {
-                    MenuItem::selection(&action.title)
-                };
-                if let Some(icon) = action.icon {
-                    item = item.with_icon(icon);
-                }
-                rows.push((item, Some(WorkspaceMenuChoice::Action(action.id.clone()))));
+                rows.push((
+                    action.item(),
+                    Some(WorkspaceMenuChoice::Action(action.id.clone())),
+                ));
             }
         }
         rows.push((MenuItem::separator(), None));
@@ -145,6 +170,23 @@ impl WorkspaceMenu {
             self.close();
             return;
         }
+        self.show(model, anchor, viewport);
+    }
+
+    /// Open the menu for `model` with its first row at `at` (a secondary
+    /// press on the desk) within `viewport`, or close it when it is open:
+    /// the same menu, standing where the person pressed.
+    pub fn open_at(&mut self, model: &WorkspaceMenuModel, at: Point, viewport: Rect) {
+        if self.menu.is_open() {
+            self.close();
+            return;
+        }
+        self.show(model, Rect::new(at.x, at.y, at.x, at.y), viewport);
+    }
+
+    /// Draw the rows `model` makes, anchored `anchor`, kept inside `viewport`
+    /// (the [`ContextMenu`] flips it above or left at an edge).
+    fn show(&mut self, model: &WorkspaceMenuModel, anchor: Rect, viewport: Rect) {
         let (items, rows): (Vec<_>, Vec<_>) = Self::rows(model).into_iter().unzip();
         self.menu.set_items(items);
         self.rows = rows;
@@ -269,6 +311,7 @@ mod tests {
 
     fn model() -> WorkspaceMenuModel {
         WorkspaceMenuModel {
+            desk: Vec::new(),
             workspaces: vec![
                 WorkspaceChoice {
                     key: "1".into(),
@@ -375,5 +418,48 @@ mod tests {
         let mut menu = opened(&model());
         menu.toggle(&model(), Rect::ZERO, Rect::new(0.0, 0.0, 800.0, 600.0));
         assert!(!menu.is_open());
+    }
+
+    #[test]
+    fn a_press_on_the_desk_opens_the_same_menu_where_it_pressed() {
+        let mut menu = WorkspaceMenu::new();
+        let desk = WorkspaceMenuModel {
+            desk: vec![WorkspaceAction {
+                id: "launchpad-notes".into(),
+                title: "Notes".into(),
+                icon: None,
+                destructive: false,
+            }],
+            ..model()
+        };
+        menu.open_at(
+            &desk,
+            Point::new(640.0, 400.0),
+            Rect::new(0.0, 0.0, 1280.0, 720.0),
+        );
+        assert!(menu.is_open());
+        let labels: Vec<String> = menu.labels().into_iter().flatten().collect();
+        assert_eq!(
+            &labels[..2],
+            ["Notes", "Lounge"],
+            "the desk's own command stands first, then the workspaces"
+        );
+        assert!(menu.choose("Notes"));
+        assert_eq!(
+            menu.take_choice(),
+            Some(WorkspaceMenuChoice::Action("launchpad-notes".into()))
+        );
+        menu.open_at(
+            &desk,
+            Point::new(10.0, 10.0),
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
+        assert!(menu.is_open(), "opening it again after choosing opens it");
+        menu.open_at(
+            &desk,
+            Point::new(10.0, 10.0),
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
+        assert!(!menu.is_open(), "a second press on the desk closes it");
     }
 }
