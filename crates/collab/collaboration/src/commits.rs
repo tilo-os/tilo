@@ -195,6 +195,7 @@ impl Commits {
 
     /// Every action this endpoint has seen in `workspace`, oldest first: one
     /// action with its author, its time and every unit change it made.
+    #[cfg(test)]
     pub fn history(&self, workspace: &str) -> Vec<CommitHistory> {
         self.log.history(workspace)
     }
@@ -222,13 +223,6 @@ impl Commits {
     /// The whole action the change `hash` of `workspace` is part of: every
     /// unit and every change of it, so an undo of one change takes its action
     /// back whole.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "undo takes a whole action back through this query"
-        )
-    )]
     pub fn action_of(&mut self, workspace: &str, hash: &[u8; 32]) -> Option<CommitHistory> {
         self.log.action_of(workspace, hash)
     }

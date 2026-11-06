@@ -19,9 +19,10 @@ use std::sync::Arc;
 use collaboration::action_directory::{
     ActionDirectoryPage, ActionDirectoryQuery, ActionDirectoryResolution,
 };
+use collaboration::commit_log::CommitHistory;
 use collaboration::{
-    ActionDirectoryRequest, CollabEvent, CollabRequest, CollaborationManager, PeerTransport,
-    RouteSpec,
+    ActionDirectoryRequest, CollabEvent, CollabRequest, CollaborationManager, CommitAuthor,
+    CommitPart, PeerTransport, RouteSpec, WorkspaceCommit,
 };
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
@@ -49,6 +50,8 @@ fn counter() -> Bundle {
 
 type Sent = Rc<RefCell<Vec<CollabRequest>>>;
 type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
+/// The actions a broker learned, as its log keeps them.
+type Actions = Rc<RefCell<Vec<CommitHistory>>>;
 
 /// The instance's action directory as the broker holds it: the apps it was offered under, and
 /// what the test asks of it.
@@ -66,6 +69,9 @@ struct Broker {
     inbox: Inbox,
     joined: Option<RouteSpec>,
     directory: Rc<RefCell<Directory>>,
+    /// The actions the broker learned, as a peer's log keeps them: what one undo takes back
+    /// across the workspace.
+    actions: Actions,
 }
 
 impl PeerTransport for Broker {
@@ -77,8 +83,30 @@ impl PeerTransport for Broker {
         if matches!(request, CollabRequest::Hello { .. }) {
             self.joined = Some(self.route.clone());
         }
+        if let CollabRequest::Document {
+            commit: Some(commit),
+            ..
+        } = &request
+        {
+            self.actions.borrow_mut().push(CommitHistory::of(commit));
+        }
         self.sent.borrow_mut().push(request);
         Ok(())
+    }
+
+    fn action_of(&self, workspace: &str, change: &[u8; 32]) -> Option<CommitHistory> {
+        self.actions
+            .borrow()
+            .iter()
+            .rev()
+            .find(|action| {
+                action.workspace == workspace
+                    && action
+                        .parts
+                        .iter()
+                        .any(|part| part.changes.contains(change))
+            })
+            .cloned()
     }
 
     fn poll(&mut self) -> Vec<CollabEvent> {
@@ -234,8 +262,43 @@ fn running_on(
     directory: Rc<RefCell<Directory>>,
     doc: automerge::AutoCommit,
 ) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
-    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let route = RouteSpec::app(app, uuid::Uuid::new_v4());
+    let mut host = TilolangHost::new(None, wake());
+    let (window, sent, inbox) = instance_on(
+        &mut host,
+        spec(1, person, &route),
+        bundle,
+        &route,
+        directory,
+        Rc::default(),
+        doc,
+    );
+    (host, window, sent, inbox, route)
+}
+
+/// What the instance `number` for `person` on `route` is.
+fn spec(number: u64, person: &str, route: &RouteSpec) -> Spec {
+    Spec {
+        app: route.app_id.clone(),
+        workspace: route.cluster_id.to_string(),
+        instance: number,
+        person: person.to_owned(),
+    }
+}
+
+/// The instance `attributes` names, of `bundle`, in `host` on `route`, over `doc` as the workspace
+/// handed it: its window, what its connection sent and what the broker holds for it. The broker
+/// keeps the actions it learns in `actions`.
+fn instance_on(
+    host: &mut TilolangHost,
+    attributes: Spec,
+    bundle: Bundle,
+    route: &RouteSpec,
+    directory: Rc<RefCell<Directory>>,
+    actions: Actions,
+    doc: automerge::AutoCommit,
+) -> (Window, Sent, Inbox) {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
     let mut manager = CollaborationManager::with_peer_transport(Broker {
         route: route.clone(),
@@ -243,27 +306,22 @@ fn running_on(
         inbox: Rc::clone(&inbox),
         joined: None,
         directory,
+        actions,
     });
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
         record: None,
         record_kind: None,
-        handle: Some(person.to_owned()),
+        handle: Some(attributes.person.clone()),
     }));
     let _ = manager.poll();
-    let record = InstanceRecord::new(doc, manager, route.clone(), person);
-    let mut host = TilolangHost::new(None, wake());
-    let kept = host.kept(app).unwrap();
+    let record = InstanceRecord::new(doc, manager, route.clone(), &attributes.person);
+    let kept = host.kept(&attributes.app).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
     let hosted = Hosted::with_record(
-        Spec {
-            app: app.to_owned(),
-            workspace: route.cluster_id.to_string(),
-            instance: 1,
-            person: person.to_owned(),
-        },
+        attributes,
         record,
         Arc::new(bundle),
         &kept,
@@ -280,7 +338,7 @@ fn running_on(
         activated: false,
         bound: BTreeMap::new(),
     };
-    (host, window, sent, inbox, route)
+    (window, sent, inbox)
 }
 
 /// Run the host as its loop does: a frame whenever something woke it, until nothing has for a
@@ -332,6 +390,7 @@ fn opened_from_own_copy_in(
         inbox: Rc::default(),
         joined: None,
         directory: Rc::default(),
+        actions: Rc::default(),
     });
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
@@ -505,6 +564,183 @@ fn a_press_in_the_window_is_a_step_on_the_instances_connection_and_undo_takes_it
         (true, false),
         "and it is ada's to undo again"
     );
+}
+
+/// The last change a window's press sent the workspace.
+fn pressed(sent: &Sent) -> [u8; 32] {
+    sent.borrow()
+        .iter()
+        .rev()
+        .find_map(|request| {
+            let CollabRequest::Document {
+                mutation: collaboration::DocumentMutation::Incremental(bytes),
+                ..
+            } = request
+            else {
+                return None;
+            };
+            let changes = collab_types::parse_changes(bytes).ok()?;
+            changes.last().map(|change| change.hash().0)
+        })
+        .expect("the connection sent the step")
+}
+
+/// The last commit the connection sent a change under.
+fn sent_under(sent: &Sent) -> Option<WorkspaceCommit> {
+    sent.borrow()
+        .iter()
+        .rev()
+        .find_map(|request| match request {
+            CollabRequest::Document {
+                commit: Some(commit),
+                ..
+            } => Some(commit.clone()),
+            _ => None,
+        })
+}
+
+/// The one action two units of the counter made, as the workspace's commit names it.
+fn two_unit_action(cluster: uuid::Uuid, steps: [(&str, [u8; 32]); 2]) -> WorkspaceCommit {
+    WorkspaceCommit::new(
+        cluster.to_string(),
+        CommitAuthor {
+            principal: Some("ada".to_owned()),
+            device: [1; 32],
+        },
+        1,
+        Some(uuid::Uuid::new_v4()),
+        None,
+        steps
+            .into_iter()
+            .map(|(record, change)| CommitPart {
+                app: APP.to_owned(),
+                record: record.to_owned(),
+                changes: vec![change],
+            })
+            .collect(),
+    )
+}
+
+fn values(host: &TilolangHost) -> Vec<i64> {
+    host.instances().map(value_of).collect()
+}
+
+#[test]
+fn one_undo_takes_back_every_unit_of_an_action_and_sends_the_reverts_as_one_action() {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let cluster = uuid::Uuid::new_v4();
+    let mut host = TilolangHost::new(None, wake());
+    let actions: Actions = Rc::default();
+    let first_route = RouteSpec::record(APP, cluster, "a");
+    let (mut first, first_sent, _) = instance_on(
+        &mut host,
+        spec(1, "ada", &first_route),
+        counter(),
+        &first_route,
+        Rc::default(),
+        Rc::clone(&actions),
+        automerge::AutoCommit::new(),
+    );
+    let second_route = RouteSpec::record(APP, cluster, "b");
+    let (mut second, second_sent, _) = instance_on(
+        &mut host,
+        spec(2, "ada", &second_route),
+        counter(),
+        &second_route,
+        Rc::default(),
+        Rc::default(),
+        automerge::AutoCommit::new(),
+    );
+    settle(&mut host, &mut first);
+    second.take();
+    assert_eq!(values(&host), vec![0, 0]);
+
+    // The person's one action wrote both units: a press in each, the two steps composing the
+    // comment a task takes in its discussion and its tasks.
+    for window in [&mut first, &mut second] {
+        let (key, event) = window.increment();
+        window.send(&[ToApp::Fire {
+            lane: Lane::Root,
+            key,
+            event,
+            value: None,
+        }]);
+    }
+    settle(&mut host, &mut first);
+    second.take();
+    assert_eq!(values(&host), vec![1, 1], "both units took the action");
+
+    // The workspace's log knows the action wrote both units, as a commit names them.
+    let action = two_unit_action(
+        cluster,
+        [("a", pressed(&first_sent)), ("b", pressed(&second_sent))],
+    );
+    actions.borrow_mut().push(CommitHistory::of(&action));
+
+    // One undo, asked at one window: every unit the action wrote takes its step back, and the
+    // reverts go out as one action of their own.
+    first.send(&[ToApp::Undo]);
+    settle(&mut host, &mut first);
+    second.take();
+    assert_eq!(
+        values(&host),
+        vec![0, 0],
+        "one undo took the action back in both units"
+    );
+    let (undo_a, undo_b) = (
+        sent_under(&first_sent).expect("the first unit's revert is part of an action"),
+        sent_under(&second_sent).expect("the second unit's revert is part of an action"),
+    );
+    assert_eq!(
+        undo_a.id(),
+        undo_b.id(),
+        "both units reverted as one action"
+    );
+    assert_eq!(
+        undo_a.parts.len(),
+        2,
+        "the undo names both units it reverted"
+    );
+    assert_eq!(undo_a.parts, undo_b.parts);
+    assert_ne!(undo_a.id(), action.id(), "the undo is an action of its own");
+    assert!(
+        undo_a.invocation.is_some(),
+        "every change of the undo ran under one invocation"
+    );
+    assert_ne!(
+        undo_a.invocation, action.invocation,
+        "the undo ran under an invocation of its own"
+    );
+    // The two units reverted through their own live instances: each record holds the undo as its
+    // own step, which the person can redo.
+    let redoable: Vec<bool> = host
+        .instances()
+        .map(|hosted| hosted.record().can_undo().1)
+        .collect();
+    assert_eq!(redoable, vec![true, true], "each unit can redo its revert");
+
+    // History reads the action and its undo once each, both naming the two units.
+    let history = actions.borrow();
+    let of_workspace: Vec<&CommitHistory> = history
+        .iter()
+        .filter(|action| action.workspace == cluster.to_string())
+        .collect();
+    assert_eq!(
+        of_workspace.len(),
+        2,
+        "the action and its undo: {of_workspace:?}"
+    );
+    assert!(of_workspace.iter().all(|action| action.parts.len() == 2));
+    let undo = host
+        .instances()
+        .next()
+        .unwrap()
+        .record()
+        .manager()
+        .action_of(&cluster.to_string(), &undo_a.parts[0].changes[0])
+        .expect("the log knows the undo");
+    assert_eq!(undo.commit, undo_a.id());
+    assert_eq!(undo.parts.len(), 2);
 }
 
 #[test]
@@ -1727,6 +1963,7 @@ fn applier_of(
         inbox: Rc::default(),
         joined: None,
         directory: Rc::default(),
+        actions: Rc::default(),
     });
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),

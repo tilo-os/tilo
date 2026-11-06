@@ -28,8 +28,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use collaboration::action_directory::PublishedDirectory;
+use collaboration::commit_log::CommitHistory;
 use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit, VIEW_TYPE};
-use collaboration::{CollabEvent, CollabRequest, SurfacePublication};
+use collaboration::{
+    CollabEvent, CollabRequest, DocumentMutation, SurfacePublication, WorkspaceCommit,
+};
 use tilo_actions::{
     ActionAddress, ActionContext, ActionDescriptor, ActionInvoker, ActionRegistry, ActorKind,
     EncodedAction, InvocationId, InvocationUpdate, ResourceSpec,
@@ -512,6 +515,9 @@ pub struct Hosted {
     search_entries: std::collections::BTreeMap<String, tilo_resource::search_index::IndexEntry>,
     /// How many builds of the entries the index has been sent: the state's generation.
     search_index_build: u64,
+    /// The action the person's Undo asked for that wrote units beyond this one: the host takes
+    /// it back in every unit of the action, all under one commit.
+    undo_across: Option<CommitHistory>,
     /// The identity-service connection the instance's connection signs through, held for as
     /// long as the instance runs.
     #[allow(
@@ -619,6 +625,7 @@ impl Hosted {
             search_index_moved: None,
             search_entries: std::collections::BTreeMap::new(),
             search_index_build: 0,
+            undo_across: None,
             identity: None,
         }
     }
@@ -699,6 +706,14 @@ impl Hosted {
         // After what the person did before asking is committed: an undo takes back their last
         // step, typing they did just before it included.
         for asked in self.instance.take_history() {
+            if matches!(asked, tilolang_tilo::instance::HistoryAsk::Undo)
+                && let Some(action) = self.record.action_of_last_step()
+            {
+                // The action wrote units beyond this one: taking it back takes every unit
+                // back, so the host does it, once, and publishes the reverts as one action.
+                self.undo_across = Some(action);
+                continue;
+            }
             let (resource, kind) = &self.resource;
             let done = self
                 .record
@@ -730,6 +745,67 @@ impl Hosted {
                 false
             }
         }
+    }
+
+    /// The action the person asked to undo that wrote units beyond this one, once: the host takes
+    /// it back in every unit it wrote.
+    pub fn take_undo_across(&mut self) -> Option<CommitHistory> {
+        self.undo_across.take()
+    }
+
+    /// Whether this instance holds the step the change `change` is part of, still to take back:
+    /// what the person's undo of it takes back.
+    #[must_use]
+    pub fn can_revert(&self, change: &[u8; 32]) -> bool {
+        self.record.can_revert(change)
+    }
+
+    /// Take back the step the change `change` is part of in this instance, as a step of the
+    /// person in `ambient`, and leave it unsent: the host sends every unit of the action under
+    /// one commit. The instance shows what it now holds.
+    ///
+    /// # Errors
+    /// The step is undone already, is not this person's to take back, or its inverse could not
+    /// be applied.
+    pub fn revert_step(
+        &mut self,
+        change: &[u8; 32],
+        ambient: &ActionContext,
+    ) -> Result<(), RecordError> {
+        let (resource, kind) = &self.resource;
+        let invoker = ActionInvoker::actor(self.spec.person.clone());
+        self.record
+            .revert_step(&mut self.instance, resource, kind, invoker, ambient, change)
+    }
+
+    /// What this instance holds that the workspace was not handed yet: its part of an action
+    /// ([`Self::share_under`]). None when the workspace holds all of it.
+    pub fn unsent_change(&mut self) -> Option<DocumentMutation> {
+        match self.record.unsent_change() {
+            DocumentMutation::Incremental(bytes) if bytes.is_empty() => None,
+            change => Some(change),
+        }
+    }
+
+    /// Send this instance's unsent change on its own: the workspace takes it as this unit's
+    /// action. What the workspace refused for good, it says to the window.
+    pub fn share(&mut self) {
+        let unshared = self.record.share();
+        self.took_share(unshared);
+    }
+
+    /// Send this instance's unsent change as its part of `commit`, the action across every unit
+    /// it wrote. What the workspace refused for good, it says to the window.
+    pub fn share_under(&mut self, commit: &WorkspaceCommit) {
+        let unshared = self.record.share_under(commit);
+        self.took_share(unshared);
+    }
+
+    fn took_share(&mut self, unshared: Option<String>) {
+        if let Some(why) = unshared {
+            self.instance.unshared(why);
+        }
+        self.instance.sync(Some(self.record.doc()));
     }
 
     /// Publish the app's resources to the session's persistent search index, over the
