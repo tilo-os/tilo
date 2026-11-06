@@ -877,7 +877,13 @@ class Doors:
     # -- clipboard and text ----------------------------------------------
 
     def clipboard_set(self, text: str):
-        """Put text on the session's clipboard, as a person copying would."""
+        """Put text on the side's clipboard, as a person copying would."""
+        if self.new:
+            # The session's clipboard is what its apps copy: it publishes no
+            # action that copies text, and its desk is not a Wayland client for
+            # wl-copy to reach, so nothing outside can put text on it.
+            raise DoorMissing("the session publishes no action that copies text; its "
+                              "clipboard is what an app there copies")
         address = self.side.bus_address()
         env = dict(os.environ)
         env.update(LOCALE)
@@ -907,7 +913,10 @@ class Doors:
 
     def clipboard_paste(self):
         if self.new:
-            return self.side.chord("v", ctrl=True)
+            # Ctrl+V as the seat delivers it, key-down and key-up: the desk's
+            # own fields read the chord, not a client.
+            self.side.chord("v", ctrl=True)
+            return "Ctrl+V at the seat"
         self.side.modifiers(ctrl=True)
         self.side.client_key("v")
         self.side.modifiers()

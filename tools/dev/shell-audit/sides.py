@@ -39,6 +39,33 @@ LOCALE = {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "LANGUAGE": "C"}
 # The apps a session installs unless the run names its own: what an audit of a
 # desktop's everyday work needs.
 APPS = "notes file-explorer chat settings terminal"
+# The home folder both sides start on: the same ordinary files, so a Files story
+# has folders and files to show and the two sides show the same ones.
+HOME_FILES = {
+    "Notes.txt": """Packing for the coast
+- the red tent
+- headlamp, batteries
+- the good coffee
+""",
+    "Documents/Project brief.md": """# Project brief
+
+Bring the workshop notes, the two photos of the bay and the quote from the
+printer. One page, no slides.
+""",
+    "Documents/Quarter plan.md": """# Next quarter
+
+1. Finish the workshop write-up
+2. Move the shared folder to the new drive
+3. Two weeks of nothing at the end of March
+""",
+    "Documents/Receipts/2025-11 rent.txt": """Rent, November
+Paid 1 November, bank transfer
+""",
+    "Downloads/Invoice 0042.txt": """Invoice 0042
+Workshop shelving, 4 units
+Due on the 15th
+""",
+}
 
 
 class Failed(Exception):
@@ -175,6 +202,17 @@ class Side:
 
     def start(self, *, fresh: bool = True) -> dict:
         raise NotImplementedError
+
+    def seed_home(self, home: Path) -> None:
+        """Fill the home folder the session starts on with ordinary files, the
+        same on both sides: a Files story shows files, not an empty room."""
+        for relative, text in HOME_FILES.items():
+            path = home / relative
+            if path.exists():
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        self.details["home"] = str(home)
 
     def stop(self) -> None:
         raise NotImplementedError
@@ -439,6 +477,7 @@ class OldSide(Side):
         self.root.mkdir(parents=True, exist_ok=True)
         for name in ("run", "home", "config", "data", "cache", "state"):
             (self.root / name).mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.seed_home(self.root / "home")
         env = self.environment(bins)
         started = time.monotonic()
         self.start_bus(env)
@@ -710,6 +749,7 @@ class NewSide(Side):
         started = time.monotonic()
         remote = os.environ.get("SHELL_AUDIT_NEW_BUILD_EXEC") or None
         self.real_apps.prepare(self.state_dir, apps=self.apps, built=False, remote=remote)
+        self.seed_home(self.state_dir / "home")
         session = self.real_apps.Session(self.state_dir)
         # A machine under a heavy load can take longer than the session script
         # waits for; the run asks for the session once more before it gives up
@@ -731,9 +771,32 @@ class NewSide(Side):
         self.session = session
         self.started_at = time.monotonic()
         self.details.update({"build": str(build), "binary_ref": self.sha})
+        self.details["surfaces_missing"] = self.missing_surfaces()
+        if self.details["surfaces_missing"]:
+            self.say("!! this session started without part of its desktop: "
+                     + "; ".join(self.details["surfaces_missing"]))
         self.dismiss_onboarding()
         self.apply_theme()
         return {"seconds": round(time.monotonic() - started, 2), **self.details}
+
+    # What the session logs when a surface it starts is not there. A dev
+    # session without one is a broken desktop, and every story about it is
+    # judged against nothing, so a run says so instead of quietly capturing it.
+    SURFACE_WARNINGS = ("no quick settings app is installed",
+                        "no on-screen keyboard is installed",
+                        "no lock screen",
+                        "the audio service is not installed",
+                        "the audio service did not start")
+
+    def missing_surfaces(self) -> list[str]:
+        log = self.state_dir / "logs" / "session.log"
+        try:
+            text = log.read_text(errors="replace")
+        except OSError:
+            return [f"no session log at {log}"]
+        return list(dict.fromkeys(
+            line.strip() for line in text.splitlines()
+            if any(warning in line for warning in self.SURFACE_WARNINGS)))
 
     def stop(self) -> None:
         if self.session is not None:

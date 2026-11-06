@@ -18,6 +18,7 @@ Captures and manifests stay out of git; point `--out` anywhere with room.
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 import shutil
@@ -40,6 +41,18 @@ CATALOGUE = HERE / "catalogue.json"
 DEFAULT_OLD = os.environ.get("SHELL_AUDIT_OLD_REF", "5e0e173af2e^")
 # A frame that changed by fewer pixels than this is a clock or a caret.
 QUIET = 400
+# A surface that answers an action before it draws its first frame needs longer
+# than a settle: the quick settings panel in a dev session paints seconds later,
+# and later still on a loaded machine. These are the seconds to keep looking,
+# and the frame that drew the most is the one kept.
+LATE = 20
+# A desk that still differs from the empty one by more than this has something
+# left on it: a sheet, a popover, a panel the next story must not start under.
+LEFTOVER = 12000
+# Doors that open an app of their own rather than a surface of the desk: a run
+# installs what its stories open, and these open an app without naming it.
+DOOR_APPS = {"desk.settings": "settings", "desk.settings-pane": "settings",
+             "desk.files-shared": "files"}
 
 
 # --- pictures ----------------------------------------------------------------
@@ -97,12 +110,13 @@ class Catalogue:
             raise SystemExit(f"the catalogue has no {', '.join(sorted(unknown))}")
         return chosen
 
-    def apps(self) -> str:
-        """Every app the catalogue launches, for the session that installs apps."""
+    def apps(self, chosen=None) -> str:
+        """Every app the run launches, for the session that installs apps."""
         found = []
-        for _, scenario in self.order():
+        for _, scenario in (self.order() if chosen is None else chosen):
             for step in scenario["steps"]:
-                app = step.get("app") if "door" in step else step.get("launch")
+                app = step.get("app") or step.get("launch") \
+                    or DOOR_APPS.get(step.get("door"))
                 if app == "files":
                     app = "file-explorer"
                 if app and app not in found:
@@ -346,14 +360,67 @@ class Run:
             row["target_count"] = len(row["targets"])
             row["windows"] = len(self.side.windows())
             row["overlays"] = self.side.overlays()
+            # An action that answered without the desk changing may have been
+            # answered before its surface drew: ask once more, later, so the
+            # pair tells "slow to draw" apart from "nothing drew".
+            showing = [key for key, value in row["overlays"].items() if value]
+            if (row.get("changed_px") or 0) < QUIET and showing:
+                # The surface answered before it drew. Look for the whole window
+                # and keep the frame that drew the most: the first seconds can
+                # hold a press highlight or a hover, and stopping at the first
+                # change would judge that instead of the surface.
+                late = pair / f"{self.side.name}-late.png"
+                late_px, late_s = 0, 0
+                for waited in range(1, LATE + 1):
+                    time.sleep(1.0)
+                    frame = self.capture(f"_{name}-late", settle=0.2)
+                    drawn = changed_pixels(before, frame)
+                    if drawn > late_px:
+                        late_px, late_s = drawn, waited
+                        shutil.copy2(frame, late)
+                row["late_px"] = late_px
+                row["late_s"] = late_s
+                if late_px >= QUIET:
+                    # What the story drew is this frame, not the empty desk the
+                    # action answered on: it is the picture the pair is judged
+                    # on, and the early one is kept beside it.
+                    early = pair / f"{self.side.name}-early.png"
+                    shutil.move(str(target), early)
+                    shutil.copy2(late, target)
+                    late.unlink()
+                    row["early_png"] = str(early)
+                    row["changed_px_early"] = row.get("changed_px")
+                    row["changed_px"] = late_px
+                    row["changed_bbox"] = diff_bbox(before, target)
+                else:
+                    if late.exists():
+                        row["late_png"] = str(late)
+                drew = row["changed_px_early"] if "changed_px_early" in row \
+                    else row.get("changed_px")
+                print(f"    nothing drew yet ({drew} px); "
+                      f"{late_px} px after {late_s} s", flush=True)
 
         # Back to a clean desk for the next story, and what was left behind.
-        if scenario.get("reset", "clean") != "keep":
-            row["cleared"] = self.clean(close_windows=scenario.get("desk", "empty") != "keep")
+        keeps_windows = scenario.get("desk", "empty") == "keep"
+        cleans = scenario.get("reset", "clean") != "keep"
+        if cleans:
+            row["cleared"] = self.clean(close_windows=not keeps_windows)
         try:
             residue = self.capture(f"_{name}-after", settle=0.7)
             row["residual_px"] = changed_pixels(self.idle, residue)
             row["residual_bbox"] = diff_bbox(self.idle, residue)
+            # Something still on the desk would be the ground of the next
+            # story: dismiss again, and say so when it stays.
+            if cleans and not keeps_windows and (row["residual_px"] or 0) > LEFTOVER:
+                print(f"    the desk was not clean ({row['residual_px']} px left); "
+                      f"dismissing again", flush=True)
+                row["cleared_again"] = self.clean()
+                residue = self.capture(f"_{name}-after-again", settle=0.7)
+                row["residual_px"] = changed_pixels(self.idle, residue)
+                row["residual_bbox"] = diff_bbox(self.idle, residue)
+                if (row["residual_px"] or 0) > LEFTOVER:
+                    print(f"    still {row['residual_px']} px of something on the desk",
+                          flush=True)
         except Exception as error:
             row["residual_px"] = None
             row["residual_bbox"] = None
@@ -361,28 +428,41 @@ class Run:
         return row
 
     def clean(self, tries: int = 4, *, close_windows: bool = True) -> str:
+        """Back to a known desk: every anchored and modal surface dismissed, the
+        windows closed and the pointer out of the way.
+
+        Escape is what a person presses, and it is pressed whether or not the
+        session lists an overlay as showing: a sheet, a magnifier, a shortcut
+        card or a menu the desk draws is not in that list, and a story that
+        starts under one is a story judged against the wrong picture.
+        """
         closed = []
-        for _ in range(tries):
+        pressed = 0
+        while pressed < tries:
             try:
                 showing = [key for key, value in self.side.overlays().items() if value]
-            except Failed:
+            except Exception:
                 showing = []
-            if not showing:
+            # Two presses even on a desk that lists nothing: one takes the
+            # layer on top, the next the one under it.
+            if not showing and pressed >= 2:
                 break
             try:
                 self.doors.escape()
-            except Failed as error:
+            except Exception as error:
                 closed.append(str(error)[:120])
+                break
             closed += showing
-            time.sleep(0.25)
+            pressed += 1
+            time.sleep(0.2)
         if close_windows:
             try:
                 closed.append(self.doors.window_close_all())
-            except Failed as error:
+            except Exception as error:
                 closed.append(f"windows left: {str(error)[:120]}")
         try:
             self.doors.inert()
-        except Failed:
+        except Exception:
             pass
         time.sleep(0.2)
         return ", ".join(entry for entry in closed if entry)
@@ -426,13 +506,21 @@ class Run:
                 if area["id"] != current:
                     self.area(area)
                     current = area["id"]
-                row = self.scenario(area, scenario)
+                try:
+                    row = self.scenario(area, scenario)
+                except Exception as error:
+                    # A side that stops answering loses this story, not the run.
+                    row = {"id": scenario["id"], "area": area["id"], "steps": [],
+                           "outcome": "failed", "error": str(error)[:400]}
+                    print(f"    failed: {str(error)[:160]}", flush=True)
                 self.rows.append(row)
         finally:
             if not self.keep:
                 self.side.stop()
         return {"side": self.side.name, "ref": self.side.ref, "commit": self.side.sha,
                 "start": start_info, "apps": self.side.apps, "theme": self.theme,
+                "surfaces_missing": self.side.missing_surfaces()
+                if hasattr(self.side, "missing_surfaces") else [],
                 "seconds": round(time.monotonic() - started, 1),
                 "rows": self.rows, "problems": self.problems}
 
@@ -440,7 +528,53 @@ class Run:
 # --- pairing -----------------------------------------------------------------
 
 
-def pair(out: Path, catalogue: Catalogue) -> Path:
+def take_side(sources, out: Path, side: str, chosen, catalogue: Catalogue) -> None:
+    """Take one side's rows and pair pictures from earlier runs.
+
+    A run that drives one side only — the new session against the same
+    catalogue, on the same stories — is still judged side by side, against what
+    the other side did when it was run. With more than one earlier run, the
+    first that holds a story gives it: a side re-run for a few stories, with a
+    fresh home or a newer build, is taken for those and the rest come from the
+    run before it.
+    """
+    order = [scenario["id"] for _, scenario in chosen]
+    wanted = set(order)
+    manifests = []
+    for source in sources:
+        path = source / f"manifest-{side}.json"
+        if not path.exists():
+            raise SystemExit(f"no {path}: --from names a run's output directory")
+        manifests.append((source, json.loads(path.read_text())))
+    rows: dict[str, dict] = {}
+    problems = []
+    for _, manifest in manifests:
+        for row in manifest.get("rows", []):
+            if row.get("id") in wanted and row["id"] not in rows:
+                rows[row["id"]] = row
+        problems += [problem for problem in manifest.get("problems", [])
+                     if str(problem.get("state")) in wanted]
+    source, first = manifests[0]
+    taken = {key: value for key, value in first.items() if key not in ("rows", "problems")}
+    taken["rows"] = [rows[scenario_id] for scenario_id in order if scenario_id in rows]
+    taken["problems"] = problems
+    taken["taken_from"] = [str(source) for source, _ in manifests]
+    pictures = 0
+    for scenario_id in order:
+        for source, _ in manifests:
+            picture = source / "pairs" / scenario_id / f"{side}.png"
+            if picture.exists():
+                target = out / "pairs" / scenario_id / f"{side}.png"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(picture, target)
+                pictures += 1
+                break
+    (out / f"manifest-{side}.json").write_text(json.dumps(taken, indent=1))
+    print(f"took {len(taken['rows'])} {side} rows and {pictures} pictures from "
+          f"{', '.join(taken['taken_from'])}")
+
+
+def pair(out: Path, catalogue: Catalogue, chosen=None) -> Path:
     manifests = {}
     for name in ("old", "new"):
         path = out / f"manifest-{name}.json"
@@ -451,6 +585,17 @@ def pair(out: Path, catalogue: Catalogue) -> Path:
         lines.append(f"- {name}: `{manifest.get('ref')}` at `{str(manifest.get('commit'))[:12]}`, "
                      f"started in {manifest.get('start', {}).get('seconds')}s, "
                      f"{sum(1 for row in manifest['rows'] if 'outcome' in row)} scenarios")
+        if manifest.get("taken_from"):
+            sources = manifest["taken_from"]
+            if isinstance(sources, str):
+                sources = [sources]
+            lines.append(f"  - taken from {', '.join(f'`{source}`' for source in sources)}, "
+                         f"run separately on the same stories")
+        missing = (manifest.get("surfaces_missing")
+                   or manifest.get("start", {}).get("surfaces_missing") or [])
+        if missing:
+            lines.append(f"  - !! this session started without part of its desktop: "
+                         f"{'; '.join(missing)}")
         if manifest.get("problems"):
             lines.append(f"  - {len(manifest['problems'])} run problem(s), at the end")
     lines += ["", "A door one side lacks is in the table as `door missing` with what that",
@@ -474,7 +619,9 @@ def pair(out: Path, catalogue: Catalogue) -> Path:
     def mean(values):
         return f"{sum(values) / len(values):.0f}" if values else "-"
 
-    for area in catalogue.areas:
+    areas = catalogue.areas if chosen is None else \
+        [area for area in catalogue.areas if any(area["id"] == a["id"] for a, _ in chosen)]
+    for area in areas:
         old = side_of(manifests.get("old"), area["id"])
         new = side_of(manifests.get("new"), area["id"])
         lines.append(f"| {area['id']} | {len(area['scenarios'])} | "
@@ -496,10 +643,12 @@ def pair(out: Path, catalogue: Catalogue) -> Path:
                 return f"{row['outcome']}: {detail[:150]}"
             return (f"{row['total_ms']} ms, {row.get('changed_px')} px, "
                     f"{row.get('target_count')} elements, {row.get('windows')} windows, "
-                    f"residue {row.get('residual_px')}")
+                    f"residue {row.get('residual_px')}"
+                    + (f", drawn after {row['late_s']} s"
+                       if row.get("changed_px_early") is not None else ""))
         return "not run"
 
-    for area, scenario in catalogue.order():
+    for area, scenario in (catalogue.order() if chosen is None else chosen):
         old = describe(manifests.get("old"), scenario["id"])
         new = describe(manifests.get("new"), scenario["id"])
         pair_dir = out / "pairs" / scenario["id"]
@@ -588,6 +737,15 @@ def check(catalogue: "Catalogue") -> list[str]:
                 problems.append(f"{scenario['id']}: several step verbs in {json.dumps(step)[:120]}")
             if "door" in step and step["door"] not in known:
                 problems.append(f"{scenario['id']}: no door `{step['door']}`")
+            if "door" in step and step["door"] in known:
+                # A step's keys are the door's arguments: one the door does not
+                # take is a story that would break only when run.
+                takes = inspect.signature(known[step["door"]]).parameters
+                if not any(param.kind is param.VAR_KEYWORD for param in takes.values()):
+                    extra = sorted(set(step) - {"door"} - set(takes))
+                    if extra:
+                        problems.append(f"{scenario['id']}: `{step['door']}` takes no "
+                                        f"{', '.join(extra)}")
     return problems
 
 
@@ -614,6 +772,11 @@ def main() -> int:
                                       "catalogue's own)")
     parser.add_argument("--side", choices=("both", "old", "new"), default="both")
     parser.add_argument("--only", default="", help="areas or scenario ids, comma separated")
+    parser.add_argument("--from", dest="taken_from", type=Path, metavar="DIR",
+                        action="append",
+                        help="an earlier run's output directory to take the side this run "
+                             "does not drive from, so the pairs are still judged side by side; "
+                             "give it again for a story only a later run holds")
     parser.add_argument("--theme", choices=("dark", "light"), default="dark")
     parser.add_argument("--size", default="1280x800", help="display size, WxH")
     parser.add_argument("--out", type=Path,
@@ -646,16 +809,17 @@ def main() -> int:
 
     out = options.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
+    chosen = catalogue.select(options.only)
     if options.index_only:
-        print(pair(out, catalogue))
+        print(pair(out, catalogue, chosen if options.only else None))
         return 0
 
     width, height = (int(part) for part in options.size.lower().split("x"))
-    chosen = catalogue.select(options.only)
-    apps = options.apps or catalogue.apps()
+    apps = options.apps or catalogue.apps(chosen)
     root = out / "profiles"
     results = {}
-    for name in (("old", "new") if options.side == "both" else (options.side,)):
+    ran = ("old", "new") if options.side == "both" else (options.side,)
+    for name in ran:
         side = open_side(name, options.old if name == "old" else options.new,
                          root, size=(width, height), theme=options.theme, apps=apps,
                          bins=options.old_bin if name == "old" else None,
@@ -671,7 +835,12 @@ def main() -> int:
                              "start": {}, "rows": run.rows,
                              "problems": [{"state": "run", "error": str(error)[:1000]}]}
         (out / f"manifest-{name}.json").write_text(json.dumps(results[name], indent=1))
-    print(pair(out, catalogue))
+    if options.taken_from:
+        for name in ("old", "new"):
+            if name not in ran:
+                take_side([path.resolve() for path in options.taken_from],
+                          out, name, chosen, catalogue)
+    print(pair(out, catalogue, chosen if options.taken_from else None))
     return 0
 
 

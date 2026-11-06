@@ -13,7 +13,13 @@ The two sides:
   ran. Default ref: the tree just before the session replaced it.
 - **new** — the session of a tree that has `crates/session/session`, run through
   that tree's own `dist/dev/nested-session.sh`: its apps installed as packages
-  and opened through its own launcher, on lavapipe.
+  and opened through its own launcher, on lavapipe, with its own surfaces (lock
+  screen, quick settings, on-screen keyboard) and its own sound server.
+
+Both sides start on the same home folder, filled with ordinary files
+(`Documents/`, `Downloads/`, `Notes.txt`), so a Files story has something to
+show. A dev session that starts without a surface it needs says so at the top of
+`index.md` — that is a broken session, not a smaller one.
 
 Each side is started and driven its own way, but a scenario never knows that.
 It says what a person does, through a *door* (`sides.py`, `doors.py`); a door a
@@ -52,7 +58,16 @@ python3 tools/dev/shell-audit/audit.py --side old              # one side
 python3 tools/dev/shell-audit/audit.py --theme light --size 1600x1000
 python3 tools/dev/shell-audit/audit.py --keep                  # leave both running
 python3 tools/dev/shell-audit/audit.py --index-only            # rebuild index.md
+python3 tools/dev/shell-audit/audit.py --side new --only qs-open,bar-clock \
+    --from DIR                                                # re-run a few stories
 ```
+
+`--from` names an earlier run's output directory: the side this run does not
+drive is taken from it, rows and pictures, so a run that re-checks a handful of
+stories on one side still pairs them against the other side's frames. Give it
+again for a run that holds only some of the stories — the first one that has a
+story gives it — and the index says where each side was taken from. The
+scenarios it lists, per-area totals included, are the ones the run covers.
 
 When something is already built, hand it in rather than rebuilding it:
 `--old-bin DIR` (the old shell's `shell`, `notes`, … binaries), `--new-build
@@ -100,9 +115,15 @@ one method, both sides, and a `DoorMissing` with what the side offers instead.
 `changed_px` is how much of the desk the story changed from before it started
 (a story that ends where it began reads 0); `target_count` is how many named
 controls the desk listed at the capture; `residual_px` is how much of the idle
-desk was left changed after the tool closed what the story opened. Timings are
-wall time on one machine, so compare the two sides within a run, not across
-runs.
+desk was left changed after the tool closed what the story opened — a story
+starts on a clean desk, or the tool dismisses again and says so. A surface that
+answers an action before it draws gets up to twenty seconds, and the frame that
+drew the most is the pair's picture — `index.md` says how long it took
+(`late_s`), and a frame that drew too little is kept beside the pair as
+`old-late.png` / `new-late.png`.
+
+Timings are wall time on one machine, so compare the two sides within a run, not
+across runs.
 
 Each scenario ends in one of four states: `captured` (the story ran and the
 frame was taken), `door_missing` (that side has no such surface, with what it
