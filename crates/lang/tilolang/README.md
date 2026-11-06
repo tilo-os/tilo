@@ -30,6 +30,12 @@ have, and its actions change them there; what it creates goes under the new id. 
 before is signed into the app's manifest, and installing it over an app of that id from another
 publisher is refused; from the same publisher it takes that app's place.
 
+A package that reaches services outside Tilo says which hosts its requests may reach, in the
+same header: `app so.tilo.feed "Feed" (web: ["example.com", "*.rss.org"])`. `*.rss.org` covers
+its subdomains, not `rss.org` itself. A request to any other host is refused as a value; a
+package that declares no hosts reaches none. The grant is part of the manifest an install shows,
+and the workspace may revoke a host.
+
 A package migrates its own records when its schema changes shape. The field the type no longer
 uses stays, marked `(previously)`: its values stay in the records, and only a migration reads
 it. A `migration action` on the type moves what it held to where the type keeps it now:
@@ -350,6 +356,32 @@ A view reads the person's zone and the day it is as what it is drawn with, not a
 has no `now` (E049) and nothing it does is replayed, while the day a filter reads is the query's
 and the window draws again when the day turns. A scenario is seed data, run where a developer
 runs it and never replayed, so it reads every effect without saying so.
+
+**Requests.** An action or flow that calls a service outside Tilo declares `uses web` and uses
+`web.get(url, headers:, if_none_match:)` or `web.post(url, body:, headers:)`. Both answer a
+`Response`:
+
+```
+action refresh(feed: Feed) uses web {
+    let response = web.get(feed.url, if_none_match: feed.etag)
+    if response.ok {
+        feed.body = response.text()
+        feed.etag = response.headers.find(h -> h.starts_with("ETag: ")) ?? feed.etag
+    }
+}
+```
+
+`ok` is `200..=299`, `status` and `status_text` what the service answered, `headers` a list of
+`Name: value`, `body` the bytes it sent, with `.text()` and `.len()`. `headers:` take the same list
+of lines, and `if_none_match:` the tag a service gave, so an unchanged answer comes back as a
+`304`.
+
+The request runs once, where the invocation runs: on the person's device, or on the host for a
+host-run invocation. Its answer is a `Web` journal entry of that invocation, so a replay, and a
+flow resumed tomorrow, answer from the record and do not ask again. What can go wrong is a value,
+never a trap: a host the package did not declare, a host the workspace revoked, a timeout (30
+seconds) and no network each answer `ok == false` with `status == 0` and a `status_text` that
+says why, and the invocation carries on. A reply's body may be up to 2 MiB; nothing streams.
 
 **Parameter defaults.** An action parameter may have a default written in terms of the
 parameters before it. An invocation that leaves the argument out gets it, computed when it is

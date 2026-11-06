@@ -899,6 +899,12 @@ impl Runtime {
         catalogue(&metas)
     }
 
+    /// Where `web.get` and `web.post` reach: the network of the device whose code makes the
+    /// request, which runs each request once, and whose journal entry a replay answers from.
+    pub fn set_web(&self, transport: impl crate::web::WebTransport + 'static) {
+        *self.core.web.borrow_mut() = Some(Box::new(transport));
+    }
+
     /// Where `model_call` goes.
     pub fn set_model_host(&self, host: impl ModelHost + 'static) {
         *self.core.models.borrow_mut() = Some(Box::new(host));

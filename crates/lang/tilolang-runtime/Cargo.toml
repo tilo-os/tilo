@@ -33,6 +33,8 @@ serde.workspace = true
 serde_json.workspace = true
 # A draw comes from the system's CSPRNG, on the device the invocation runs on.
 getrandom.workspace = true
+# A reply's body that is not text is kept in the journal as base64.
+base64.workspace = true
 # `grep` and `read(matching:)` in agents' programs.
 regex.workspace = true
 thiserror.workspace = true

@@ -146,6 +146,15 @@ imports! {
     PrincipalEq = "principal_eq" ([H, H] -> [I32]);
     PrincipalName = "principal_name" ([H] -> [H]);
     Now = "now" ([] -> [H]);
+    WebGet = "web_get" ([H, H, H] -> [H]);
+    WebPost = "web_post" ([H, H, H] -> [H]);
+    WebOk = "web_ok" ([H] -> [I32]);
+    WebStatus = "web_status" ([H] -> [I64]);
+    WebStatusText = "web_status_text" ([H] -> [H]);
+    WebHeaders = "web_headers" ([H] -> [H]);
+    WebBody = "web_body" ([H] -> [H]);
+    WebText = "web_text" ([H] -> [H]);
+    BytesLength = "bytes_length" ([H] -> [I64]);
     TimeShift = "time_shift" ([H, I64, I32] -> [H]);
     WallClock = "wall_clock" ([H] -> [H]);
     PrincipalNamed = "principal_named" ([H] -> [H]);

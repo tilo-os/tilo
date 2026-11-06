@@ -981,7 +981,7 @@ impl Resolver<'_> {
 
     fn field(&mut self, owner: &str, f: &ast::FieldDecl, lock: &IdsLock) -> FieldInfo {
         let ty = self.resolve_type(&f.ty, true);
-        if matches!(ty, Ty::Action | Ty::View) {
+        if matches!(ty, Ty::Action | Ty::View | Ty::Bytes | Ty::Response) {
             self.err("E023", f.ty.span, format!("a field cannot hold `{ty}`: it is not stored state; fields hold scalars, Text, records, enums, List, Option, Set, Map and Collection"));
         } else if ty == Ty::Duration {
             self.err("E023", f.ty.span, "a field cannot hold a `Duration`: a stored length of time keeps the number the app measures it in (`Int`), and `Duration(n)` reads it as one where a moment moves by it".to_string());
@@ -1819,6 +1819,8 @@ impl Resolver<'_> {
                 "Time" => return Ty::Time,
                 "Duration" => return Ty::Duration,
                 "RichText" => return Ty::RichText,
+                "Bytes" => return Ty::Bytes,
+                "Response" => return Ty::Response,
                 "Action" => return Ty::Action,
                 "View" => return Ty::View,
                 name if self.own_types.contains(name) => {
@@ -1866,7 +1868,7 @@ impl Resolver<'_> {
             } else {
                 String::new()
             };
-            self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, RichText, Principal, Date, Time, Duration, Action, View and {known}{held}"));
+            self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, RichText, Bytes, Principal, Date, Time, Duration, Action, View and {known}{held}"));
             return Ty::Error;
         }
         if let Some(ty) = std_text_ty(&dotted) {

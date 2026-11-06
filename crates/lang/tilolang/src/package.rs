@@ -467,6 +467,7 @@ fn build_meta(
         category: module.app.category.clone(),
         previously: module.app.previously.clone(),
         own_records: module.app.own_records,
+        web: module.app.web.clone(),
         ..PackageMeta::default()
     };
     let type_id =

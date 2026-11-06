@@ -104,7 +104,7 @@ pub trait Publication {
 
 mod platform;
 
-pub use platform::{Platform, PlatformWords};
+pub use platform::{Platform, PlatformWeb, PlatformWords};
 
 /// How an instance starts.
 pub struct Config {
@@ -746,6 +746,8 @@ impl Instance {
             .set_shown_host(PlatformShown(Rc::clone(&self.platform)));
         let platform = Rc::clone(&self.platform);
         host.set_clock(move || platform.now());
+        host.runtime()
+            .set_web(PlatformWeb(Rc::clone(&self.platform)));
         let platform = Rc::clone(&self.platform);
         host.runtime().set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);

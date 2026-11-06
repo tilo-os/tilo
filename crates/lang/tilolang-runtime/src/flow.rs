@@ -66,18 +66,61 @@ pub struct Clock {
 /// A request to a service outside Tilo, as it was made.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WebRequest {
+    /// `GET` or `POST`.
     pub method: String,
     pub url: String,
+    /// The headers asked for, each `Name: value`, as `web.get` and `web.post` write them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<String>,
+    /// A `POST`'s body, as the text the language gave.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub body: Option<serde_json::Value>,
+    pub body: Option<String>,
+    /// The tag a `GET` sent as `If-None-Match`, so an unchanged answer comes back as a `304`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_none_match: Option<String>,
 }
 
 /// What the service answered.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WebResponse {
+    /// The status the service answered with; 0 when none answered (a timeout, no network, a
+    /// refused host), and `status_text` then says why.
     pub status: u16,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub status_text: String,
+    /// The headers it sent, each `Name: value`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<String>,
+    /// The body: a JSON string when it read as text, `{"base64": "..."}` when it did not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<serde_json::Value>,
+}
+
+impl WebResponse {
+    /// Whether the service answered success (`200..=299`).
+    #[must_use]
+    pub fn ok(&self) -> bool {
+        (200..=299).contains(&self.status)
+    }
+
+    /// The body as bytes.
+    #[must_use]
+    pub fn bytes(&self) -> Vec<u8> {
+        match &self.body {
+            Some(serde_json::Value::String(text)) => text.as_bytes().to_vec(),
+            Some(serde_json::Value::Object(map)) => map
+                .get("base64")
+                .and_then(serde_json::Value::as_str)
+                .map(|text| {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::STANDARD
+                        .decode(text)
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// Everything needed to replay a run.

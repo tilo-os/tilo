@@ -54,6 +54,10 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
         if app.own_records {
             options.push("records: .own".to_owned());
         }
+        if !app.web.is_empty() {
+            let hosts: Vec<String> = app.web.iter().map(|host| quote(host)).collect();
+            options.push(format!("web: [{}]", hosts.join(", ")));
+        }
         let one = format!(
             "app {} {}{}",
             app.id,

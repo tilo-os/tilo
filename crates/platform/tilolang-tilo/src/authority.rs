@@ -57,6 +57,10 @@ struct State {
     agents: HashMap<String, Option<String>>,
     /// The packages whose records are each member's own (`records: .own`), by app id.
     own: HashSet<String>,
+    /// The hosts each app's package declares its `uses web` requests may reach, as installed.
+    web: HashMap<String, Vec<String>>,
+    /// The `(app, host)` the workspace took away: a request to one answers as a value.
+    revoked_web: HashSet<(String, String)>,
 }
 
 /// The platform's authority. Clones share their state.
@@ -86,6 +90,9 @@ impl TiloAuthority {
         if meta.own_records {
             state.own.insert(meta.app.clone());
         }
+        if !meta.web.is_empty() {
+            state.web.insert(meta.app.clone(), meta.web.clone());
+        }
         for action in &meta.actions {
             let kind = meta
                 .subject_of(&action.params)
@@ -95,6 +102,51 @@ impl TiloAuthority {
         for flow in &meta.flows {
             state.kinds.insert(flow.id.clone(), meta.package_kind());
         }
+    }
+
+    /// The hosts each app's code may reach with `uses web`, as its package declares them: what
+    /// an install shows, by app, in the order their names sort. A host the workspace revoked is
+    /// left out.
+    #[must_use]
+    pub fn web_grants(&self) -> Vec<(String, Vec<String>)> {
+        let state = self.state.borrow();
+        let mut apps: Vec<&String> = state.web.keys().collect();
+        apps.sort();
+        apps.into_iter()
+            .map(|app| {
+                let hosts = state
+                    .web
+                    .get(app)
+                    .map(|hosts| {
+                        hosts
+                            .iter()
+                            .filter(|host| {
+                                !state.revoked_web.contains(&(app.clone(), (*host).clone()))
+                            })
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (app.clone(), hosts)
+            })
+            .collect()
+    }
+
+    /// The workspace refuses `app`'s requests to `host` from now on: the request answers as a
+    /// value, saying the workspace revoked the host.
+    pub fn revoke_web(&self, app: &str, host: &str) {
+        self.state
+            .borrow_mut()
+            .revoked_web
+            .insert((app.to_owned(), host.to_ascii_lowercase()));
+    }
+
+    /// The workspace lets `app` reach `host` again, as its package declares it.
+    pub fn grant_web(&self, app: &str, host: &str) {
+        self.state
+            .borrow_mut()
+            .revoked_web
+            .remove(&(app.to_owned(), host.to_ascii_lowercase()));
     }
 
     /// The code of the app `app` runs here no more: its modules are trusted no longer, until a
@@ -180,6 +232,14 @@ const fn decision(answer: Answer) -> Decision {
 }
 
 impl Authority for TiloAuthority {
+    fn may_fetch(&self, app: &str, host: &str) -> bool {
+        !self
+            .state
+            .borrow()
+            .revoked_web
+            .contains(&(app.to_owned(), host.to_ascii_lowercase()))
+    }
+
     fn decide(&self, invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
         let standing = (self.standing)();
         let state = self.state.borrow();
@@ -581,6 +641,57 @@ mod tests {
         assert_eq!(
             authority.decide(&me, &[], &info(EffectClass::Undoable, true)),
             Decision::Allow
+        );
+    }
+
+    #[test]
+    fn a_packages_declared_hosts_are_shown_and_the_workspace_may_take_one_back() {
+        let authority = TiloAuthority::new(Principal::new(PERSON), || None);
+        let meta = Meta {
+            app: APP.to_owned(),
+            web: vec!["example.com".to_owned(), "*.rss.org".to_owned()],
+            ..Meta::default()
+        };
+        authority.load(&module(), &meta);
+        // What an install shows: the hosts the package's header declares.
+        assert_eq!(
+            authority.web_grants(),
+            vec![(
+                APP.to_owned(),
+                vec!["example.com".to_owned(), "*.rss.org".to_owned()]
+            )]
+        );
+        let other = Meta {
+            app: "so.tilo.lang.notes".to_owned(),
+            ..Meta::default()
+        };
+        authority.load(&ModuleHash("notes-v1".to_owned()), &other);
+        assert_eq!(
+            authority.web_grants().len(),
+            1,
+            "a package declaring none grants none"
+        );
+        // The workspace takes one host away: the request is refused, and the install says so.
+        assert!(authority.may_fetch(APP, "example.com"));
+        authority.revoke_web(APP, "Example.COM");
+        assert!(!authority.may_fetch(APP, "example.com"));
+        assert_eq!(
+            authority.web_grants(),
+            vec![(APP.to_owned(), vec!["*.rss.org".to_owned()])]
+        );
+        // Declared or not, a host the workspace did not take away is the package's own to refuse.
+        assert!(authority.may_fetch(APP, "not.declared.example"));
+        // Reloading the package keeps the revocation, and the workspace may hand it back.
+        authority.load(&module(), &meta);
+        assert!(!authority.may_fetch(APP, "example.com"));
+        authority.grant_web(APP, "example.com");
+        assert!(authority.may_fetch(APP, "example.com"));
+        assert_eq!(
+            authority.web_grants(),
+            vec![(
+                APP.to_owned(),
+                vec!["example.com".to_owned(), "*.rss.org".to_owned()]
+            )]
         );
     }
 }

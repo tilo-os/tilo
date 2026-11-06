@@ -88,6 +88,10 @@ pub struct Core {
     pub store: RefCell<Box<dyn Store>>,
     pub authority: Box<dyn Authority>,
     pub models: RefCell<Option<Box<dyn ModelHost>>>,
+    /// Where `web.get` and `web.post` reach (`Runtime::set_web`): the network of the device
+    /// whose code makes the request. Until the host sets one, every request answers with a
+    /// failure saying the host reaches no services.
+    pub web: RefCell<Option<Box<dyn crate::web::WebTransport>>>,
     /// What names principals; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
@@ -241,6 +245,7 @@ impl Core {
             store: RefCell::new(store),
             authority,
             models: RefCell::new(None),
+            web: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),
             members: RefCell::new(crate::members::Members::default()),
@@ -337,7 +342,7 @@ impl Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, AgentNamed, ArgAt, CallFn,
+            Abort, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, AgentNamed, ArgAt, BytesLength, CallFn,
             ChangeView, CollCount, CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered,
             CollRemove, CollWhere, CollWhereWith, CountBy, DayParse, DayPart, DayShift,
             DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef, DurationText, EditField,
@@ -364,7 +369,8 @@ impl Core {
             Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
             TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn,
             UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
-            VersionEnd, Versions, Viewer, WallClock, Withdraw, Word, WorkspaceMembers,
+            VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
+            WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
@@ -383,10 +389,7 @@ impl Core {
             CollWhere => self.ret_h(self.coll_where(a.h(0)?, a.h(1)?)?),
             CollWhereWith => self.ret_h(self.coll_where_with(a.h(0)?, a.h(1)?, a.h(2)?)?),
             CollOrdered => self.ret_h(self.coll_ordered(a.h(0)?, a.h(1)?)?),
-            Query => {
-                let found = self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?;
-                self.ret_h(found)
-            }
+            Query => self.ret_h(self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?),
             Filters | FilterLit => self.catalogue_import(imp, a),
             IdentPart => self.ret_h(self.ident_part(a.h(0)?, a.h(1)?)?),
             RepeatNext | RepeatNextAt | RepeatLabel | ReminderAt | ReminderLabel | WallClock => {
@@ -409,6 +412,8 @@ impl Core {
             | OutsideAt | Withdraw | ModelCall | Invoker | PrincipalEq | PrincipalName
             | QueueBlock | Now | TimeShift | PrincipalNamed | AgentNamed | InvokerPush
             | InvokerPop | FromPush | FromPop | SeedState => self.effect_import(imp, a),
+            WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
+            | WebText | BytesLength => self.web_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet
             | ActThen | ActOpen | ActUndo | ChangeView | UiActions | UiAction => {

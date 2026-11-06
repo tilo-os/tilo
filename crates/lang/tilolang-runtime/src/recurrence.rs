@@ -142,7 +142,9 @@ impl Core {
     /// clock, else the host's, when it named one this build knows.
     fn zone_name(&self) -> Option<String> {
         if let Some(clock) = self.pinned_clock() {
-            return clock.zone.and_then(|zone| tilo_recurrence::canonical_zone(&zone));
+            return clock
+                .zone
+                .and_then(|zone| tilo_recurrence::canonical_zone(&zone));
         }
         let name = self.zone_name.borrow().as_ref().and_then(|name| name())?;
         tilo_recurrence::canonical_zone(&name)

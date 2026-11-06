@@ -238,6 +238,13 @@ impl Platform for HostPlatform {
         chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
     }
 
+    fn web(
+        &self,
+        request: &tilolang_tilo::runtime::flow::WebRequest,
+    ) -> tilolang_tilo::runtime::web::WebReply {
+        crate::web::fetch(request)
+    }
+
     fn waker(&self) -> Waker {
         Arc::clone(&self.wake)
     }

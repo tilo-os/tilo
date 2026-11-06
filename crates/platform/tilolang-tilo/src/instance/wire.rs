@@ -153,6 +153,8 @@ impl Convert<'_> {
             | Value::Event
             | Value::EventPart(_)
             | Value::State { .. }
+            | Value::Bytes(_)
+            | Value::Response(_)
             | Value::AtEvent { .. } => wire::Value::Unit,
         }
     }

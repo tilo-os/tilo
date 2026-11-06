@@ -906,6 +906,26 @@ impl Checker<'_> {
     pub(super) fn field_read(&mut self, b: Ex, name: &ast::Ident) -> Ex {
         match b.ty.clone() {
             Ty::Error => Ex::error(),
+            Ty::Response => {
+                let (imp, ty) = match name.name.as_str() {
+                    "ok" => (Imp::WebOk, Ty::Bool),
+                    "status" => (Imp::WebStatus, Ty::Int),
+                    "status_text" => (Imp::WebStatusText, Ty::Text),
+                    "headers" => (Imp::WebHeaders, Ty::List(Box::new(Ty::Text))),
+                    "body" => (Imp::WebBody, Ty::Bytes),
+                    other => {
+                        self.err(
+                            "E021",
+                            name.span,
+                            format!(
+                                "a Response has no field `{other}`; its fields are ok, status, status_text, headers and body, and `.text()` reads the body as text"
+                            ),
+                        );
+                        return Ex::error();
+                    }
+                };
+                Ex::host(imp, vec![b], ty)
+            }
             Ty::Identifier => self.identifier_part(b, name),
             Ty::RichText => self.rich_part(b, name),
             // A filter's fields: what a query names it by, what a control shows, what it asks.

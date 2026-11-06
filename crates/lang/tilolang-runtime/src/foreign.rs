@@ -607,10 +607,12 @@ impl Decoder<'_> {
                 encoded => crate::value::from_json(encoded),
             },
             Ty::Result(..) | Ty::RichText | Ty::Map(_) => crate::value::from_json(json),
-            Ty::Action | Ty::View | Ty::Choice(_) | Ty::Error => Err(format!(
-                "a value of type `{}` is not read from another app's reading",
-                ty.meta_text("")
-            )),
+            Ty::Action | Ty::View | Ty::Choice(_) | Ty::Bytes | Ty::Response | Ty::Error => {
+                Err(format!(
+                    "a value of type `{}` is not read from another app's reading",
+                    ty.meta_text("")
+                ))
+            }
         }
     }
 

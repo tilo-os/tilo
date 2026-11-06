@@ -43,6 +43,14 @@ impl Checker<'_> {
                 {
                     return self.builtin_random(name, args, span);
                 }
+                // `web.get` and `web.post`: a request to a service outside Tilo, which the
+                // invocation makes once and records (effects.md).
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == "web")
+                    && self.lookup("web").is_none()
+                    && self.env.find_import("web").is_none()
+                {
+                    return self.builtin_web(name, args, span);
+                }
                 if let Some(key) = self.enum_path(base) {
                     let ty = Ty::Enum(key);
                     return match super::enums::Shape::of(self, &ty) {
@@ -1742,6 +1750,125 @@ impl Checker<'_> {
         }
     }
 
+    /// `web.get(url, headers:, if_none_match:)` and `web.post(url, body:, headers:)`: a request
+    /// to a service outside Tilo, which the invocation makes once, records, and replays from the
+    /// record (effects.md).
+    fn builtin_web(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        let get = match name.name.as_str() {
+            "get" => true,
+            "post" => false,
+            other => {
+                self.err(
+                    "E022",
+                    name.span,
+                    format!(
+                        "`web` has `get` and `post`; not `{other}`. `web.get(url, headers:, if_none_match:)` fetches, `web.post(url, body:, headers:)` sends"
+                    ),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            }
+        };
+        let what = if get { "`web.get`" } else { "`web.post`" };
+        let Some(url) = args.first().filter(|a| a.name.is_none()) else {
+            self.err(
+                "E022",
+                span,
+                format!(
+                    "{what} takes the url first: `web.get(\"{}\")`",
+                    "https://example.com/"
+                ),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        let url = self.expr_as(&url.value, &Ty::Text);
+        let headers = Ty::List(Box::new(Ty::Text));
+        let mut headers_arg = None;
+        let mut if_none_match = None;
+        let mut body = None;
+        for arg in &args[1..] {
+            let Some(named) = &arg.name else {
+                self.err(
+                    "E022",
+                    arg.value.span,
+                    format!(
+                        "{what} takes the url by position; the rest by name: {}",
+                        if get {
+                            "`headers:`, `if_none_match:`"
+                        } else {
+                            "`body:`, `headers:`"
+                        }
+                    ),
+                );
+                let _ = self.expr(&arg.value, None);
+                continue;
+            };
+            match (get, named.name.as_str()) {
+                (_, "headers") => {
+                    headers_arg = Some(self.expr_as(&arg.value, &headers));
+                }
+                (true, "if_none_match") => {
+                    let value = self.expr(&arg.value, None);
+                    if_none_match = Some(if matches!(value.ty, Ty::Text) {
+                        Ex::host(Imp::SomeH, vec![value], Ty::Option(Box::new(Ty::Text)))
+                    } else if matches!(&value.ty, Ty::Option(inner) if **inner == Ty::Text)
+                        || value.ty.is_error()
+                    {
+                        value
+                    } else {
+                        let t = self.show(&value.ty);
+                        self.err(
+                            "E022",
+                            arg.value.span,
+                            format!("`if_none_match:` takes the ETag a service gave, as Text or an `Option<Text>`; this is {t}"),
+                        );
+                        Ex::error()
+                    });
+                }
+                (false, "body") => {
+                    body = Some(self.expr_as(&arg.value, &Ty::Text));
+                }
+                (_, other) => {
+                    self.err(
+                        "E022",
+                        named.span,
+                        format!(
+                            "`{other}:` is no argument of {}",
+                            if get { "`web.get`" } else { "`web.post`" }
+                        ),
+                    );
+                    let _ = self.expr(&arg.value, None);
+                }
+            }
+        }
+        let headers_arg = headers_arg.unwrap_or_else(|| Ex::host(Imp::ListNew, vec![], headers));
+        self.reads(crate::effects::Effect::Web, span, what);
+        if get {
+            let if_none_match = if_none_match
+                .unwrap_or_else(|| Ex::host(Imp::NoneV, vec![], Ty::Option(Box::new(Ty::Text))));
+            Ex::host(
+                Imp::WebGet,
+                vec![url, headers_arg, if_none_match],
+                Ty::Response,
+            )
+        } else {
+            let Some(body) = body else {
+                self.err(
+                    "E022",
+                    span,
+                    "`web.post` sends a body, named `body:`: `web.post(\"https://example.com/\", body: text)`",
+                );
+                return Ex::error();
+            };
+            Ex::host(Imp::WebPost, vec![url, body, headers_arg], Ty::Response)
+        }
+    }
+
     /// A method that stands on a type instead of a value: `Date.parse(text, near: now)` and
     /// `Time.parse(text, near: now)`, the day or the moment a text names when people type it
     /// ("tomorrow", "fri 10am", "in 2 weeks"), read at a moment in the person's zone.
@@ -1827,6 +1954,11 @@ impl Checker<'_> {
             (Ty::RichText, "is_empty") if args.is_empty() => {
                 Ex::host(Imp::RichEmpty, vec![r], Ty::Bool)
             }
+            // The body of a response, and bytes, read as the text they decode as; bytes counted.
+            (Ty::Response | Ty::Bytes, "text") if args.is_empty() => {
+                Ex::host(Imp::WebText, vec![r], Ty::Text)
+            }
+            (Ty::Bytes, "len") if args.is_empty() => Ex::host(Imp::BytesLength, vec![r], Ty::Int),
             // A day read as people read it: the day of the week it is, the day, month and year
             // it names, and the first day of the week it stands in.
             (Ty::Date, "weekday") if args.is_empty() => {

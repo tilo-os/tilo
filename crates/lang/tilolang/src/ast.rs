@@ -35,6 +35,10 @@ pub struct AppHeader {
     /// record there, which only that person's devices read; `false` (`.shared`, the default)
     /// keeps them in the workspace's record of the app, which every member reads.
     pub own_records: bool,
+    /// `(web: ["example.com", "*.rss.org"])`: the hosts the app's `uses web` requests may
+    /// reach. A request to any other host is refused as a value, and recorded. `*.rss.org`
+    /// covers its subdomains, not `rss.org` itself.
+    pub web: Vec<String>,
     pub span: Span,
 }
 

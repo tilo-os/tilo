@@ -142,6 +142,17 @@ impl Effects<'_> {
         }
     }
 
+    /// Records a read for the invocation to replay.
+    pub fn push(&mut self, entry: crate::flow::JournalEntry) {
+        match self {
+            Self::Action(a) => a.effects.push(entry),
+            Self::Flow(f) => {
+                f.journal.entries.push(entry);
+                f.cursor = f.cursor.saturating_add(1);
+            }
+        }
+    }
+
     /// Pins what the clock read answered, without recording it again: a replay answering from
     /// the entry the invocation recorded the first time.
     pub fn pin(&mut self, clock: crate::flow::Clock) {
@@ -156,17 +167,6 @@ impl Effects<'_> {
     pub fn pin_clock(&mut self, clock: crate::flow::Clock) {
         self.pin(clock.clone());
         self.push(crate::flow::JournalEntry::Clock(clock));
-    }
-
-    /// Records the entry this invocation made for a read, where a replay answers from it.
-    pub fn push(&mut self, entry: crate::flow::JournalEntry) {
-        match self {
-            Self::Action(a) => a.effects.push(entry),
-            Self::Flow(f) => {
-                f.journal.entries.push(entry);
-                f.cursor = f.cursor.saturating_add(1);
-            }
-        }
     }
 }
 

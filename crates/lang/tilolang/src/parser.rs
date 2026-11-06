@@ -200,6 +200,7 @@ struct AppOptions {
     category: Option<String>,
     previously: Vec<String>,
     own_records: bool,
+    web: Vec<String>,
 }
 
 /// The launcher categories an app declares (`category: .office`), as the platform's menu
@@ -418,6 +419,7 @@ impl<'a> Parser<'a> {
     fn app_options(&mut self) -> PResult<AppOptions> {
         let mut out = AppOptions::default();
         let mut seen_previously = false;
+        let mut seen_web = false;
         let mut records: Option<String> = None;
         if !self.eat(&Tok::LParen) {
             return Ok(out);
@@ -427,9 +429,32 @@ impl<'a> Parser<'a> {
             if self.eat(&Tok::RParen) {
                 break;
             }
-            let key = self.ident("`icon`, `category`, `previously` or `records`")?;
+            let key = self.ident("`icon`, `category`, `previously`, `records` or `web`")?;
             self.expect(&Tok::Colon)?;
-            if key.name == "previously" {
+            if key.name == "web" {
+                if std::mem::replace(&mut seen_web, true) {
+                    return self.fail(key.span, "`web:` is given twice".to_owned());
+                }
+                if self.eat(&Tok::LBracket) {
+                    loop {
+                        self.skip_nl();
+                        if self.eat(&Tok::RBracket) {
+                            break;
+                        }
+                        out.web
+                            .push(self.plain_string("a host in quotes, such as \"example.com\"")?);
+                        self.skip_nl();
+                        if !self.eat(&Tok::Comma) {
+                            self.skip_nl();
+                            self.expect(&Tok::RBracket)?;
+                            break;
+                        }
+                    }
+                } else {
+                    out.web
+                        .push(self.plain_string("a host in quotes, such as \"example.com\"")?);
+                }
+            } else if key.name == "previously" {
                 if std::mem::replace(&mut seen_previously, true) {
                     return self.fail(key.span, "`previously:` is given twice".to_owned());
                 }
@@ -451,6 +476,16 @@ impl<'a> Parser<'a> {
                     out.previously.push(self.app_id()?);
                 }
             } else {
+                if !matches!(key.name.as_str(), "icon" | "category" | "records") {
+                    return self.fail(
+                        key.span,
+                        format!(
+                            "an app has an `icon:`, a `category:`, `previously:`, `records:` \
+                             and `web:`, not `{}:`",
+                            key.name
+                        ),
+                    );
+                }
                 self.expect(&Tok::Dot)?;
                 let value = self.ident("a name after the dot, such as `.note`")?;
                 let slot = match key.name.as_str() {
@@ -489,8 +524,8 @@ impl<'a> Parser<'a> {
                         return self.fail(
                             key.span,
                             format!(
-                                "an app has an `icon:`, a `category:`, `previously:` and \
-                                 `records:`, not `{other}:`"
+                                "an app has an `icon:`, a `category:`, `previously:`, `records:` \
+                                 and `web:`, not `{other}:`"
                             ),
                         );
                     }
@@ -666,6 +701,7 @@ impl<'a> Parser<'a> {
                 category: options.category,
                 previously: options.previously,
                 own_records: options.own_records,
+                web: options.web,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }
         } else {
@@ -713,6 +749,7 @@ impl<'a> Parser<'a> {
                         category: options.category,
                         previously: options.previously,
                         own_records: options.own_records,
+                        web: options.web,
                         span: start.to(Span::new(self.prev_end(), self.prev_end())),
                     });
                 }

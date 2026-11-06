@@ -115,6 +115,11 @@ pub struct PackageMeta {
     /// (`app ... (records: .own)`), which only that person's devices read.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_records: bool,
+    /// The hosts the app's `uses web` requests may reach, as its header declares them
+    /// (`app ... (web: ["example.com", "*.rss.org"])`). A request to any other host is refused
+    /// as a value, and recorded with the invocation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub web: Vec<String>,
     /// SHA-256 (hex) of the wasm module without the metadata section.
     pub module_hash: String,
     pub types: Vec<TypeMeta>,

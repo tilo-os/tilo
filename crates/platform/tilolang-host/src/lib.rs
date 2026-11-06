@@ -23,6 +23,7 @@ pub mod hosted;
 pub mod phrases;
 pub mod task;
 pub mod wait;
+pub mod web;
 
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::PathBuf;

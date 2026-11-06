@@ -226,3 +226,96 @@ fn random_is_a_module_of_draws_and_nothing_else() {
     let not_a_list = "action draw(d: Drawer) uses random {\n    d.ask = random.choice(d.n)\n}\n";
     assert_eq!(codes(&with_drawer(not_a_list)), ["E020"]);
 }
+
+const BOARD: &str = "type Board {\n    feed: Text\n    count: Int\n}\n\n";
+
+#[test]
+fn a_request_declares_uses_web() {
+    let read = format!(
+        "{BOARD}action fetch(b: Board) {{\n    b.feed = web.get(\"https://example.com/a\").text()\n}}\n"
+    );
+    assert_eq!(codes(&read), ["E121"]);
+    let declared = format!(
+        "{BOARD}action fetch(b: Board) uses web {{\n    b.feed = web.get(\"https://example.com/a\").text()\n}}\n"
+    );
+    assert_eq!(codes(&declared), Vec::<String>::new());
+    let posted = format!(
+        "{BOARD}flow send() -> Bool uses web {{\n    return web.post(\"https://example.com/a\", body: \"x\").ok\n}}\n"
+    );
+    assert_eq!(codes(&posted), Vec::<String>::new());
+    let undeclared = format!(
+        "{BOARD}flow send() -> Bool {{\n    return web.post(\"https://example.com/a\", body: \"x\").ok\n}}\n"
+    );
+    assert_eq!(codes(&undeclared), ["E121"]);
+}
+
+#[test]
+fn a_view_makes_no_request() {
+    let view = format!(
+        "{BOARD}view look(b: Board) {{\n    row(web.get(\"https://example.com/a\").text())\n}}\n"
+    );
+    assert_eq!(
+        codes(&view),
+        ["E121"],
+        "a view is drawn again, never replayed: it makes no request"
+    );
+}
+
+#[test]
+fn a_response_has_its_fields_and_asks_the_body_as_text() {
+    let fields = format!(
+        "{BOARD}action fetch(b: Board) uses web {{\n    let r = web.get(\"https://example.com/a\")\n    b.feed = if r.ok {{ r.text() }} else {{ r.status_text }}\n    b.count = r.status + r.body.len() + r.headers.len()\n}}\n"
+    );
+    assert_eq!(codes(&fields), Vec::<String>::new());
+    let missing = format!(
+        "{BOARD}action fetch(b: Board) uses web {{\n    let r = web.get(\"https://example.com/a\")\n    let x = r.missing\n}}\n"
+    );
+    let errs = compile_with(&format!("app t.x \"X\"\n{missing}"), &[])
+        .expect_err("a Response has no such field");
+    let message = errs.first().map(|d| d.message.clone()).unwrap_or_default();
+    assert!(
+        message.contains("status_text") && message.contains("status"),
+        "the message lists what a Response has: {message}"
+    );
+    // The answer of one run is no field: a record keeps the text it read, not the response.
+    assert_eq!(
+        codes(&format!("{BOARD}type Held {{\n    r: Response\n}}\n")),
+        ["E023"]
+    );
+}
+
+#[test]
+fn the_app_header_declares_the_hosts_its_requests_reach() {
+    let src = "app so.tilo.feed \"Feed\" (web: [\"example.com\", \"*.rss.org\"])\n";
+    let module = parse(src).unwrap_or_else(|d| panic!("{d:#?}"));
+    assert_eq!(
+        module.app.web,
+        ["example.com".to_owned(), "*.rss.org".to_owned()]
+    );
+    assert_eq!(print_module(&module), src);
+    let one = "app so.tilo.feed \"Feed\" (web: \"example.com\")\n";
+    let module = parse(one).unwrap_or_else(|d| panic!("{d:#?}"));
+    assert_eq!(module.app.web, ["example.com".to_owned()]);
+    let unknown = "app so.tilo.feed \"Feed\" (net: [\"example.com\"])\n";
+    let errs = compile_with(unknown, &[]).expect_err("only `web` grants hosts");
+    let message = errs.first().map(|d| d.message.clone()).unwrap_or_default();
+    assert!(
+        message.contains("web") && message.contains("net"),
+        "the message names the option: {message}"
+    );
+}
+
+#[test]
+fn the_manifest_keeps_the_hosts_the_header_declares() {
+    let src = "app so.tilo.feed \"Feed\" (web: [\"example.com\", \"*.rss.org\"])\n";
+    let compiled = compile_with(src, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
+    assert_eq!(compiled.meta.web, ["example.com", "*.rss.org"]);
+    let json = serde_json::to_string(&compiled.meta).unwrap();
+    let back: tilolang::PackageMeta = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        back.web, compiled.meta.web,
+        "the grant travels with the manifest"
+    );
+    let none = compile_with("app t.x \"X\"\n", &[]).unwrap_or_else(|d| panic!("{d:#?}"));
+    assert!(none.meta.web.is_empty(), "no `web:` grants no host");
+}

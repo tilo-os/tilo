@@ -22739,6 +22739,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-desktop-search",
  "tilo-history",
+ "tilo-net",
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-startup-metrics",
@@ -22776,6 +22777,7 @@ dependencies = [
 name = "tilolang-runtime"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "chrono",
  "chrono-tz",

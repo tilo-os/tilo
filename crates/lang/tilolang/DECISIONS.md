@@ -784,3 +784,36 @@ search.md, "What a type declares" and "Types, references and paths".
   nothing until a run asks for it; what a package costs to open is what it costs to open
   (`tilolang profile`, `Runtime::record_costs`, `assert_costs`), in counts that do not depend on
   the machine, rather than in seconds, which measure the runner as much as the app.
+
+## Web requests
+
+effects.md, "Web". A request is an effect whose answer is kept, so the language needs a value for
+what came back and a rule for when it is sent.
+
+- **`web.get` and `web.post` answer a `Response`, and `Response.body` is a `Bytes`.** `Bytes` is
+  the buffer itself (`len()`, and `text()` decoding it as UTF-8 with the bad bytes replaced); a
+  `Response` answers `ok`, `status`, `status_text`, `headers` and `body`, and `text()` reads the
+  body's text, so `web.get(url).text()` is one call. Both are values a call answers, not types a
+  field may hold or an action may take (E118, "cannot be stored"): the answer belongs to the run
+  that made it, and a program keeps what it read by writing it into a record's `Text`.
+- **A request is sent once, where the invocation runs, and its answer is journalled.** The first
+  run asks the invoking device's transport; the `Web { request, response }` entry it writes is
+  what every later run and every resume answers from, so a replay makes no request. The journal
+  keeps the request whole — method, URL, headers, body, `if_none_match` — and a run that reaches
+  the effect with a different request than its journal recorded traps: it diverged from the
+  journal, and answering the recorded reply would answer a question nobody asked.
+- **A failure is a value.** A refused host, a timeout, a network error and a reply over the limit
+  all answer a `Response` with `ok` false and status 0 (the recorded error in `status_text`), so
+  an app decides what to do with it like any other outcome. Determinism comes from the journal
+  entry, not from the transport: replaying a failed entry fails the same way.
+- **The hosts are declared by the package, and the workspace may revoke one.** The app header's
+  `(web: ["example.com", "*.rss.org"])` is the grant: `PackageMeta.web`, checked at the build and
+  kept in the manifest, so an install shows the hosts before the app runs. The runtime refuses a
+  request to a host the calling package did not declare, as a value, and records it. `*.suffix`
+  covers subdomains only (not `suffix` itself), and only `http` and `https` URLs reach a
+  transport. Revocation is `Authority::may_fetch`, which the platform answers from the grants it
+  installed minus the hosts the workspace revoked (`TiloAuthority::revoke_web`), so a revoked
+  host is refused the same way without editing the package.
+- **Limits are fixed, not negotiated.** One request waits at most 30 seconds and answers at most
+  2 MiB; a longer body is refused with a status-0 `Response` naming the limit. Streaming and
+  redirect policy beyond the transport's own are not part of this effect.
