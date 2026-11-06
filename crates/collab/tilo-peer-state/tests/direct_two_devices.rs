@@ -58,6 +58,26 @@ fn addr(endpoint: &Endpoint) -> EndpointAddr {
     )))
 }
 
+/// Write `value` into the test record as `key`'s device, and answer the heads
+/// the record holds afterwards.
+fn edit(peer: &DirectSync, key: &SigningKey, value: &str) -> Option<Vec<automerge::ChangeHash>> {
+    let mut edit =
+        AutoCommit::load(&peer.read(|peer| peer.document(APP, RECORD)).unwrap()).unwrap();
+    edit.set_actor(automerge::ActorId::from(
+        key.verifying_key().to_bytes().to_vec(),
+    ));
+    let heads = edit.get_heads();
+    edit.put(ROOT, "value", value).unwrap();
+    edit.commit_edit("fixture", "value");
+    let change = edit.save_after(&heads);
+    peer.publish(|peer, key, now| {
+        peer.publication_mut()
+            .publish_incremental(APP, RECORD, change, key, now)
+    })
+    .unwrap();
+    peer.read(|peer| peer.document_heads(APP, RECORD))
+}
+
 /// Wait until `done` holds of `sync`'s replica.
 async fn until(sync: &DirectSync, done: impl Fn(&StatePeer) -> bool + Sync) {
     let mut changes = sync.changes();
@@ -132,21 +152,7 @@ async fn two_devices_of_one_person_converge_directly() {
     );
 
     // B edits the document; A converges to B's edit.
-    let mut edit = AutoCommit::load(&b.read(|b| b.document(APP, RECORD)).unwrap()).unwrap();
-    edit.set_actor(automerge::ActorId::from(
-        b_key.verifying_key().to_bytes().to_vec(),
-    ));
-    let heads = edit.get_heads();
-    edit.put(ROOT, "value", "from b").unwrap();
-    edit.commit_edit("fixture", "value");
-    let change = edit.save_after(&heads);
-    b.publish(|b, key, now| {
-        b.publication_mut()
-            .publish_incremental(APP, RECORD, change, key, now)
-    })
-    .unwrap();
-    let edited = b.read(|b| b.document_heads(APP, RECORD));
-    assert_eq!(edited, Some(edit.get_heads()));
+    let edited = edit(&b, &b_key, "from b");
     until(&a, |a| a.document_heads(APP, RECORD) == edited).await;
     let on_a = AutoCommit::load(&a.read(|a| a.document(APP, RECORD)).unwrap()).unwrap();
     assert_eq!(
@@ -206,7 +212,8 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
     document.commit_edit("fixture", "value");
     a.install_seed(
         SeedState {
-            workspace_changes: seed_workspace(WORKSPACE, &a_cert, &[a_cert.clone()]).unwrap(),
+            workspace_changes: seed_workspace(WORKSPACE, &a_cert, std::slice::from_ref(&a_cert))
+                .unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
                 record_id: RECORD.into(),
@@ -266,38 +273,10 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
         "from a"
     );
 
-    // What B writes reaches A.
-    let mut edit = AutoCommit::load(&b.read(|b| b.document(APP, RECORD)).unwrap()).unwrap();
-    edit.set_actor(automerge::ActorId::from(
-        b_key.verifying_key().to_bytes().to_vec(),
-    ));
-    let heads = edit.get_heads();
-    edit.put(ROOT, "value", "from b").unwrap();
-    edit.commit_edit("fixture", "value");
-    let change = edit.save_after(&heads);
-    b.publish(|b, key, now| {
-        b.publication_mut()
-            .publish_incremental(APP, RECORD, change, key, now)
-    })
-    .unwrap();
-    let edited = b.read(|b| b.document_heads(APP, RECORD));
+    // What B writes reaches A, and A's next write reaches B.
+    let edited = edit(&b, &b_key, "from b");
     until(&a, |a| a.document_heads(APP, RECORD) == edited).await;
-
-    // And A's next write reaches B.
-    let mut edit = AutoCommit::load(&a.read(|a| a.document(APP, RECORD)).unwrap()).unwrap();
-    edit.set_actor(automerge::ActorId::from(
-        a_key.verifying_key().to_bytes().to_vec(),
-    ));
-    let heads = edit.get_heads();
-    edit.put(ROOT, "value", "from a again").unwrap();
-    edit.commit_edit("fixture", "value");
-    let change = edit.save_after(&heads);
-    a.publish(|a, key, now| {
-        a.publication_mut()
-            .publish_incremental(APP, RECORD, change, key, now)
-    })
-    .unwrap();
-    let edited = a.read(|a| a.document_heads(APP, RECORD));
+    let edited = edit(&a, &a_key, "from a again");
     until(&b, |b| b.document_heads(APP, RECORD) == edited).await;
 
     link.abort();

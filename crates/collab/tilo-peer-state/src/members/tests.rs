@@ -13,6 +13,8 @@ use super::op::tests_support::device;
 use super::*;
 
 const WORKSPACE: &str = "5f0e5f1e-6a6c-4f2a-9f9e-2b0a2d5f4c31";
+/// The bot the Lounge-shaped fixture installs.
+const LOUNGE_BOT: &str = "0f5a2c1e-6a4b-4c2d-9d8f-0a1b2c3d4e5f";
 
 fn person(cert: &DeviceCert) -> String {
     hex::encode(cert.user_public_key)
@@ -196,24 +198,24 @@ fn every_device_reaches_the_same_membership_from_the_same_operations() {
         vec![admin_grant(&owner, &admin)],
     );
     let genesis = genesis(&owner, &owner_key, &mut doc);
-    let start = holding(&doc, &[genesis.clone()]);
+    let start = holding(&doc, std::slice::from_ref(&genesis));
     let id = genesis.id().unwrap();
     let base = replay(&start, WORKSPACE);
 
     // The administrator admits the guest; the owner, who has not seen that,
     // removes the administrator. Both name the genesis as their parent.
-    let admit = project(
+    let admits_guest = project(
         &admin,
         &admin_key,
         vec![id],
         &with_role(&base, &guest, Role::Viewer),
     );
-    let mut without_admin = base.clone();
+    let mut without_admin = base;
     without_admin.members.remove(&person(&admin));
     let remove = project(&owner, &owner_key, vec![id], &without_admin);
 
-    let forwards = holding(&start, &[admit.clone(), remove.clone()]);
-    let backwards = holding(&start, &[remove.clone(), admit.clone()]);
+    let forwards = holding(&start, &[admits_guest.clone(), remove.clone()]);
+    let backwards = holding(&start, &[remove, admits_guest]);
     assert_eq!(replay(&forwards, WORKSPACE), replay(&backwards, WORKSPACE));
     // The owner's change is applied first, so the administrator's admission of
     // the guest names a membership reached after it — which the administrator
@@ -238,22 +240,22 @@ fn an_operation_written_after_its_author_lost_the_grant_has_no_effect() {
         vec![admin_grant(&owner, &admin)],
     );
     let genesis = genesis(&owner, &owner_key, &mut doc);
-    let start = holding(&doc, &[genesis.clone()]);
+    let start = holding(&doc, std::slice::from_ref(&genesis));
     let genesis_id = genesis.id().unwrap();
     let base = replay(&start, WORKSPACE);
 
-    let admit = project(
+    let admits_guest = project(
         &admin,
         &admin_key,
         vec![genesis_id],
         &with_role(&base, &guest, Role::Viewer),
     );
     let remove = project(&owner, &owner_key, vec![genesis_id], &{
-        let mut next = base.clone();
+        let mut next = base;
         next.members.remove(&person(&admin));
         next
     });
-    let held = holding(&start, &[admit.clone(), remove]);
+    let held = holding(&start, &[admits_guest.clone(), remove]);
     let reached = replay(&held, WORKSPACE);
     assert!(!reached.members.contains_key(&person(&guest)));
 
@@ -262,7 +264,7 @@ fn an_operation_written_after_its_author_lost_the_grant_has_no_effect() {
     let later = project(
         &admin,
         &admin_key,
-        vec![admit.id().unwrap()],
+        vec![admits_guest.id().unwrap()],
         &with_role(&reached, &guest, Role::Editor),
     );
     let held = holding(&held, &[later]);
@@ -278,7 +280,7 @@ fn a_projection_its_author_could_not_make_changes_nothing() {
     let (viewer_key, viewer) = device(2);
     let mut doc = rows(&owner, &[(&viewer, Role::Viewer)], Vec::new());
     let genesis = genesis(&owner, &owner_key, &mut doc);
-    let start = holding(&doc, &[genesis.clone()]);
+    let start = holding(&doc, std::slice::from_ref(&genesis));
     let base = replay(&start, WORKSPACE);
     assert_eq!(base.members.get(&person(&viewer)), Some(&Role::Viewer));
 
@@ -314,7 +316,7 @@ fn grants_are_the_operations_they_name() {
     let (member_key, member) = device(2);
     let mut doc = rows(&owner, &[(&member, Role::Editor)], Vec::new());
     let genesis = genesis(&owner, &owner_key, &mut doc);
-    let start = holding(&doc, &[genesis.clone()]);
+    let start = holding(&doc, std::slice::from_ref(&genesis));
     let base = replay(&start, WORKSPACE);
     let grant = Grant::new(
         "app",
@@ -325,7 +327,7 @@ fn grants_are_the_operations_they_name() {
         Subject::Person(person(&owner)),
     );
     let mut granted = base.clone();
-    granted.grants.push(grant.clone());
+    granted.grants.push(grant);
     let op = project(&member, &member_key, vec![genesis.id().unwrap()], &granted);
     let held = holding(&start, &[op]);
     // The member may not give itself a grant: only the owner and those the
@@ -345,11 +347,11 @@ fn settling_projects_the_operations_into_the_rows() {
     let (_, member) = device(2);
     let mut doc = rows(&owner, &[(&member, Role::Editor)], Vec::new());
     let genesis = genesis(&owner, &owner_key, &mut doc);
-    let start = holding(&doc, &[genesis.clone()]);
+    let start = holding(&doc, std::slice::from_ref(&genesis));
     let base = replay(&start, WORKSPACE);
 
     // A last-writer-wins row change that no operation makes.
-    let mut mutated = start.clone();
+    let mut mutated = start;
     let members = map(&mutated, "members");
     crate::state::put_member(
         &mut mutated,
@@ -377,7 +379,7 @@ fn held_operations_are_kept_and_new_ones_prove_their_writer() {
     let (owner_key, owner) = device(1);
     let mut doc = rows(&owner, &[], Vec::new());
     let genesis = genesis(&owner, &owner_key, &mut doc);
-    let start = holding(&doc, &[genesis.clone()]);
+    let start = holding(&doc, std::slice::from_ref(&genesis));
     assert_eq!(growth(Some(&doc), &start).unwrap(), 1);
     assert_eq!(growth(Some(&start), &start).unwrap(), 0);
 
@@ -467,7 +469,7 @@ fn settling_leaves_everything_that_is_not_membership_alone() {
     doc.commit();
 
     let genesis = genesis(&owner, &owner_key, &mut doc);
-    let mut held = holding(&doc, &[genesis.clone()]);
+    let mut held = holding(&doc, std::slice::from_ref(&genesis));
     settle(&mut held, WORKSPACE).unwrap();
     assert_eq!(
         held.get(ROOT, "name").unwrap(),
@@ -497,71 +499,22 @@ fn settling_leaves_everything_that_is_not_membership_alone() {
 /// the shape the relay's own document has, and the only thing the log adds is
 /// the genesis: the membership comes out exactly as the rows held it, the bot
 /// with its delegation and the serving device untouched.
-#[test]
-fn a_lounge_shaped_workspace_starts_from_its_rows_unchanged() {
-    use tilo_action_policy::{bot, roles};
+/// The bot the Lounge installed, its delegation and the device that serves the
+/// room: rows the membership projection leaves alone.
+fn lounge_bot_and_host(
+    doc: &mut AutoCommit,
+    co_owner: &DeviceCert,
+    bot_device: &DeviceCert,
+    relay: &DeviceCert,
+) {
     use tilo_workspace_join::delegation::{Delegate, DelegateScope, Delegation};
 
-    let (owner_key, relay) = device(1);
-    let (_, co_owner) = device(2);
-    let (_, moderator) = device(3);
-    let (_, member) = device(4);
-    let (_, banned) = device(5);
-    let (_, bot_device) = device(6);
-    let mut doc = AutoCommit::new();
-    for change in crate::state::workspace_seed(
-        WORKSPACE,
-        &relay,
-        &[
-            relay.clone(),
-            co_owner.clone(),
-            moderator.clone(),
-            member.clone(),
-        ],
-        "Lounge",
-    )
-    .unwrap()
-    .workspace_changes
-    {
-        let change = automerge::Change::from_bytes(change).unwrap();
-        tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, [change]).unwrap();
-    }
-    let members = map(&doc, "members");
-    for (who, role) in [
-        (&co_owner, Role::Owner),
-        (&moderator, Role::Moderator),
-        (&member, Role::Editor),
-    ] {
-        crate::state::put_member(&mut doc, &members, who.user_public_key, role).unwrap();
-        crate::state::put_member_joined_once(&mut doc, who.user_public_key, 1_700_000_000_000)
-            .unwrap();
-    }
-    let installation = "0f5a2c1e-6a4b-4c2d-9d8f-0a1b2c3d4e5f";
-    let rules = [tilo_action_policy::roles::Rule::new(
-        TreePath::workspace(WORKSPACE)
-            .app("chat")
-            .resource("message"),
-        KindSet::READ_UNDOABLE,
-        Answer::Allow,
-    )];
-    put_grants(
-        &mut doc,
-        bot::grants(WORKSPACE, installation, &person(&co_owner), &rules)
-            .unwrap()
-            .into_iter()
-            .chain([roles::block_grant(
-                WORKSPACE,
-                &person(&banned),
-                Subject::Person(person(&relay)),
-            )])
-            .collect(),
-    );
-    let identities = map(&doc, "peer_identities_v1");
+    let identities = map(doc, "peer_identities_v1");
     let delegation = Delegation {
         user_public_key: co_owner.user_public_key,
         device_public_key: bot_device.device_public_key,
         delegate: Delegate::Bot {
-            installation: installation.to_owned(),
+            installation: LOUNGE_BOT.to_owned(),
         },
         label: "Bridge".to_owned(),
         color: [1, 2, 3],
@@ -605,6 +558,65 @@ fn a_lounge_shaped_workspace_starts_from_its_rows_unchanged() {
         serde_json::to_string(&hint).unwrap().as_str(),
     )
     .unwrap();
+}
+
+fn lounge() -> (ed25519_dalek::SigningKey, DeviceCert, AutoCommit) {
+    use tilo_action_policy::{bot, roles};
+
+    let (owner_key, relay) = device(1);
+    let (_, co_owner) = device(2);
+    let (_, moderator) = device(3);
+    let (_, member) = device(4);
+    let (_, banned) = device(5);
+    let (_, bot_device) = device(6);
+    let mut doc = AutoCommit::new();
+    for change in crate::state::workspace_seed(
+        WORKSPACE,
+        &relay,
+        &[
+            relay.clone(),
+            co_owner.clone(),
+            moderator.clone(),
+            member.clone(),
+        ],
+        "Lounge",
+    )
+    .unwrap()
+    .workspace_changes
+    {
+        let change = automerge::Change::from_bytes(change).unwrap();
+        tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, [change]).unwrap();
+    }
+    let members = map(&doc, "members");
+    for (who, role) in [
+        (&co_owner, Role::Owner),
+        (&moderator, Role::Moderator),
+        (&member, Role::Editor),
+    ] {
+        crate::state::put_member(&mut doc, &members, who.user_public_key, role).unwrap();
+        crate::state::put_member_joined_once(&mut doc, who.user_public_key, 1_700_000_000_000)
+            .unwrap();
+    }
+    let rules = [tilo_action_policy::roles::Rule::new(
+        TreePath::workspace(WORKSPACE)
+            .app("chat")
+            .resource("message"),
+        KindSet::READ_UNDOABLE,
+        Answer::Allow,
+    )];
+    put_grants(
+        &mut doc,
+        bot::grants(WORKSPACE, LOUNGE_BOT, &person(&co_owner), &rules)
+            .unwrap()
+            .into_iter()
+            .chain([roles::block_grant(
+                WORKSPACE,
+                &person(&banned),
+                Subject::Person(person(&relay)),
+            )])
+            .collect(),
+    );
+    lounge_bot_and_host(&mut doc, &co_owner, &bot_device, &relay);
     doc.commit();
 
     let legacy = policy(&doc);
@@ -616,9 +628,16 @@ fn a_lounge_shaped_workspace_starts_from_its_rows_unchanged() {
         grant
             .id
             .as_str()
-            .starts_with(&bot::grant_prefix(installation))
+            .starts_with(&bot::grant_prefix(LOUNGE_BOT))
     }));
     assert!(legacy.is_banned(&person(&banned)));
+    (owner_key, relay, doc)
+}
+
+#[test]
+fn a_lounge_shaped_workspace_starts_from_its_rows_unchanged() {
+    let (owner_key, relay, mut doc) = lounge();
+    let legacy = policy(&doc);
     let genesis = genesis(&relay, &owner_key, &mut doc);
     assert_eq!(genesis.person(), person(&relay));
     let mut started = holding(&doc, &[genesis]);
