@@ -755,6 +755,59 @@ pub fn control(session: &mut Session, socket: &Path, request: &Value) -> Value {
     })
 }
 
+/// Show `preset` ("Strips", "Frames", "Spaces", "Desktop") the way a person does: the bar's own
+/// preset switch for the three the switch stays on, and the shell's layout for the traditional
+/// desktop, which takes the switch off its bar (`bar_is_traditional`: its bar is the focused
+/// window's commands). The layout is the setting the settings page's own card runs
+/// (`shell.apply(shell.shell, to: shell.Layout.windows_desktop)`), and the same one acceptance
+/// step 8 drives, so the desktop a test draws is the desktop a person gets.
+///
+/// # Panics
+/// The switch or the layout refuses: the preset it names is not one this shell knows.
+#[track_caller]
+pub fn show_preset_by_name(session: &mut Session, preset: &str) {
+    if preset.eq_ignore_ascii_case("desktop") {
+        session
+            .run_shell_setting("apply", vec![Value::from("windows_desktop")])
+            .unwrap_or_else(|why| panic!("the desk shows {preset}: {why}"));
+        return;
+    }
+    show_preset(session, preset);
+}
+
+/// The surface the desk shows over its windows now, as its own reading names it: `none` at rest,
+/// `centre` for the notification centre, `quick-settings`, `launcher` and the rest.
+#[must_use]
+pub fn desk_here(session: &Session) -> String {
+    let reading: Value = serde_json::from_value(
+        session
+            .read("session:desk")
+            .expect("the session publishes its desk"),
+    )
+    .expect("the desk reads as its JSON");
+    reading
+        .get("here")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// The name the shell shows the place `record` is on: the window's own name, resolved once by the
+/// session for the bar, the chips, the switcher and the overview, and its app's name beside it.
+///
+/// # Panics
+/// The desk holds no place for `record`.
+#[track_caller]
+pub fn window_name_of(session: &Session, record: &str) -> String {
+    places(session)
+        .into_iter()
+        .find(|place| place.record == record)
+        .map_or_else(
+            || panic!("the desk holds a place for {record}"),
+            |place| place.name,
+        )
+}
+
 /// Place what "Inbox" finds on the canvas through the door, as the REPL's program does, and
 /// wait until the place shows the seeded conversation.
 pub fn place_the_inbox(session: &mut Session, root: &Path) {

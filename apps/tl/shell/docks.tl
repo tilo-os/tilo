@@ -18,6 +18,43 @@ view dock(s: Shell, d: Desk) {
     }
 }
 
+/// The apps running on this device, one item an app: the window of it the person was in last,
+/// named and drawn as that window is. A window of another of the person's devices is not a
+/// window of this desk's dock. A window is left out when a window nearer the front of the walk
+/// shows the same app (`recency` 1 is the window in front), so each app stands once, where the
+/// person last was in it.
+fn running_items(d: Desk) -> List<DockItem> {
+    let windows = d.windows.filter(w -> w.local).sort_by(w -> w.recency)
+    let _ = d
+    return windows.map(w -> stub_item(w))
+}
+
+fn stub_item(w: Win) -> DockItem {
+    return DockItem(
+        key: w.app_key,
+        title: "Running",
+        icon: "file-text",
+        pinned: false,
+        running: true,
+        badge: 0,
+        attention: false,
+    )
+}
+
+/// The dock's item for the running window `w`: the window's app, by its `app_key`, named as the
+/// window names it, with the window's own glyph.
+fn running_item(w: Win) -> DockItem {
+    return DockItem(
+        key: w.app_key,
+        title: w.origin_app,
+        icon: w.icon,
+        pinned: false,
+        running: true,
+        badge: 0,
+        attention: false,
+    )
+}
+
 /// The dock's items in a run the person rearranges by dragging one onto another place.
 /// Letting go runs `place_item`, the one action the gesture commits; a press on an item opens
 /// what it stands for. A floating dock is one compact group centred on its edge; a dock that
@@ -28,6 +65,7 @@ view dock(s: Shell, d: Desk) {
 view dock_run(s: Shell, d: Desk) {
     let standing = s.dock_edge == .left or s.dock_edge == .right
     let across = s.dock_fit == .full
+    let running = running_items(d)
     if standing {
         ui.DragRun(axis: .vertical, distribute: .center) {
             on drop(moved: DockItem, at: Int): place_item(s, moved, at)
@@ -41,6 +79,11 @@ view dock_run(s: Shell, d: Desk) {
                         }
                         dock_tile(s, d, item)
                     }
+                }
+            }
+            for item in running {
+                ui.DragItem(item, title: item.title) {
+                    dock_tile(s, d, item)
                 }
             }
         }
@@ -64,6 +107,11 @@ view dock_run(s: Shell, d: Desk) {
                         }
                     }
                 }
+                for item in running {
+                    ui.DragItem(item, title: item.title) {
+                        dock_tile(s, d, item)
+                    }
+                }
             }
         }
     } else {
@@ -82,9 +130,21 @@ view dock_run(s: Shell, d: Desk) {
                         }
                     }
                 }
+                for item in running {
+                    ui.DragItem(item, title: item.title) {
+                        dock_tile(s, d, item)
+                    }
+                }
             }
         }
     }
+}
+
+/// A press on a running item: its window comes to the front, so the desk says which window the
+/// person is in, and the top bar's commands are its own. The window is the one the item was
+/// drawn for, by its key (`session.focus(window(w))`), so a press never opens a second copy.
+flow focus_running(d: Desk, item: DockItem) {
+    if let w = d.windows.find(w -> w.app_key == item.key) { session.focus(window: window(w)) }
 }
 
 /// One dock item: its glyph, with its badge on the glyph's top trailing corner (the count of what

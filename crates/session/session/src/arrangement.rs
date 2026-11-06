@@ -31,8 +31,8 @@ use tilo_actions::{
     OperationKind, ParamType, ResourceSpec, ResultSpec,
 };
 use tilo_desktop_model::{
-    ArrangementKind, CanvasPlace, DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent,
-    WindowGroup, WindowWidth, WorkspaceSlot,
+    ArrangementKind, DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
+    WindowWidth, WorkspaceSlot,
 };
 use tilo_desktop_surface::DesktopHandle;
 use tilo_surface_host::Published;
@@ -1144,16 +1144,20 @@ fn place_at(
         focus_history: Vec::new(),
     });
     // It stands on the canvas, so the workspace shows its canvas: the person
-    // sees what they placed.
-    workspace.arrangement.places.insert(
-        asked.strip,
-        CanvasPlace {
-            x: clamp_coord(asked.x),
-            y: clamp_coord(asked.y),
-            width: clamp_side(asked.width),
-            height: clamp_side(asked.height),
-        },
+    // sees what they placed. A place never covers one already there: it takes
+    // the free space nearest the point it was asked for (`canvas.md` §6,
+    // `Arrangement::free_place_near`), so two places at one point, or two
+    // closer together than a frame is wide, stand clear of each other. The
+    // frame it stands in is the size it asks for, so the free space is that
+    // size.
+    let (width, height) = (clamp_side(asked.width), clamp_side(asked.height));
+    let place = workspace.arrangement.free_place_near(
+        (clamp_coord(asked.x), clamp_coord(asked.y)),
+        width,
+        height,
+        None,
     );
+    workspace.arrangement.places.insert(asked.strip, place);
     workspace.arrangement.kind = ArrangementKind::Canvas;
     Ok(true)
 }
