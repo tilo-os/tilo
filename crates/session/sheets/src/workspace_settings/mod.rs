@@ -104,9 +104,12 @@ pub enum WorkspaceSettingsEffect {
     /// Look at what was done in the workspace
     #[effect(own_device, kind = "read")]
     ReviewActivity,
-    /// Admit an agent to the workspace
+    /// Make an agent called what the person named
     #[effect(own_device, kind = "read")]
-    AddAgent,
+    AddAgent {
+        #[param("The new agent's name, as people read it")]
+        name: String,
+    },
     /// Show what an agent may do in the workspace, app by app
     #[effect(own_device, kind = "read")]
     ReviewAgent {
@@ -431,6 +434,7 @@ impl ResourceApp for WorkspaceSettingsApp {
                 .unwrap_or_default(),
         };
         let name = cx.local(initial.name.clone());
+        let new_agent = cx.local(String::new());
         let shown = cx.local(initial);
         let staged = cx.fixture::<Local>().map(|local| (*local).clone());
         let local = cx.local(staged.unwrap_or_default());
@@ -451,6 +455,7 @@ impl ResourceApp for WorkspaceSettingsApp {
             dispatch: cx.dispatcher(),
             shown: shown.clone(),
             name,
+            new_agent,
             local: local.clone(),
             seat,
         };
@@ -636,6 +641,8 @@ struct Parts {
     shown: LocalState<Settings>,
     /// The name as typed.
     name: LocalState<String>,
+    /// The name a new agent is given as typed.
+    new_agent: LocalState<String>,
     /// What the sheet keeps to itself while it is up.
     local: LocalState<Local>,
     seat: Option<WorkspaceSettingsSeat>,
@@ -646,6 +653,14 @@ impl Parts {
     /// decision, as a key is; anyone acting for them goes through the
     /// door, which asks first where the effect says so.
     fn ask(&self, effect: WorkspaceSettingsEffect) {
+        // A new agent is named by what the field held: the press takes it,
+        // and a press with no name asks nothing.
+        if let WorkspaceSettingsEffect::AddAgent { name } = &effect {
+            self.new_agent.set(String::new());
+            if name.trim().is_empty() {
+                return;
+            }
+        }
         if matches!(
             effect,
             WorkspaceSettingsEffect::ReviewAgent { .. } | WorkspaceSettingsEffect::EndReview
@@ -681,6 +696,13 @@ impl Parts {
         self.commit_name();
         self.ask(WorkspaceSettingsEffect::ShowTab {
             tab: tab.key().to_owned(),
+        });
+    }
+
+    /// Ask for an agent called what the name field says.
+    fn add_agent(&self) {
+        self.ask(WorkspaceSettingsEffect::AddAgent {
+            name: self.new_agent.get(),
         });
     }
 

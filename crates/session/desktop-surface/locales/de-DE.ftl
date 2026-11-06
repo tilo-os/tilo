@@ -852,6 +852,13 @@ workspace-settings-agent-detail = { $count ->
    *[other] { $admission } · { $profile }, { $count } Berechtigungen
 }
 workspace-settings-admitted = Zugelassen
+workspace-settings-agent-kept-by = Betreut von { $name }
+workspace-settings-agent-kept-by-you = Von dir betreut
+workspace-settings-retire-agent = Zurückziehen
+workspace-settings-agent-name = Sein Name
+workspace-settings-agent-detail-none = Noch kein Zugriff in diesem Arbeitsbereich
+workspace-settings-agents-unavailable = Die Agenten des Workspace lassen sich auf diesem Gerät nicht lesen
+workspace-settings-agent-name-needed = Benenne den Agenten zuerst
 workspace-settings-review-access = Zugriff prüfen
 workspace-settings-agent-access-back = Alle Agenten
 workspace-settings-agent-access-note = Lege fest, was dieser Agent in jeder App tun darf. Senden, Veröffentlichen und endgültiges Löschen fragen dich trotzdem zuerst, außer du hast für diese Aktion „Immer erlauben“ gewählt.
@@ -873,6 +880,8 @@ workspace-settings-agent-model-none = Kein Modell in den Einstellungen gewählt
 workspace-settings-agent-model-use = Verwenden
 workspace-settings-agent-model-option = { $model } von { $provider }
 workspace-settings-agent-model-in-use = In Verwendung
+workspace-settings-agent-model-keeper = Nur { $name } wählt das Modell, mit dem es läuft
+workspace-settings-agent-model-keeper-you = Du wählst das Modell, mit dem es läuft
 workspace-settings-agent-access-empty = Noch keine Apps in diesem Arbeitsbereich.
 workspace-settings-answer-allow = Erlauben
 workspace-settings-answer-ask = Erst fragen

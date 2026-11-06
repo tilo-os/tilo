@@ -1477,7 +1477,8 @@ mod tests {
             ),
         );
         let mut app = settings_sheet(&mut desk);
-        the_sheet_lists_bot(&mut desk, entry, true);
+        // The bots a member asks for are listed on the Agents tab, beside the
+        // agents themselves.
         app.effect(
             &tilo_sheets::workspace_settings::WorkspaceSettingsEffect::ShowTab {
                 tab: "agents".to_owned(),
@@ -1486,6 +1487,7 @@ mod tests {
         .expect("show the agents");
         desk.frames();
         app.settle();
+        the_sheet_lists_bot(&mut desk, entry, true);
         press(&mut app, &format!("ws-bots-remove-{entry}"));
         desk.frames();
         the_sheet_lists_bot(&mut desk, entry, false);

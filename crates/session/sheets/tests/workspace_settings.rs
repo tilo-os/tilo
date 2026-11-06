@@ -299,7 +299,15 @@ fn switching_tabs_asks_the_shell() {
 #[test]
 fn the_agents_tab_lists_agents_and_bots_apart() {
     let mut app = staged("agents");
-    for text in ["2 agents", "claude", "Encrypted backup", "Bots", "Standup"] {
+    for text in [
+        "3 agents",
+        "Claude",
+        "Kept by you",
+        "Reviewer",
+        "Encrypted backup",
+        "Bots",
+        "Standup",
+    ] {
         assert!(says(&mut app, text), "{text:?} is shown");
     }
     let mut empty = staged("agents-empty");
@@ -310,15 +318,30 @@ fn the_agents_tab_lists_agents_and_bots_apart() {
 fn agent_and_bot_controls_name_what_they_act_on() {
     let (mut app, seat) = seated("agents");
     press(&mut app, "ws-agents-review-claude");
+    // A press with no name asks nothing: there is no agent to make.
+    press(&mut app, "ws-agents-add");
+    assert_eq!(
+        seat.take_asked(),
+        [WorkspaceSettingsEffect::ReviewAgent {
+            agent: "claude".to_owned()
+        }],
+        "only the review was asked"
+    );
+    app.harness()
+        .perform_named(
+            "ws-agents-name",
+            &A11yAction::SetValue("Analyst".to_owned()),
+        )
+        .unwrap();
+    app.settle();
     press(&mut app, "ws-agents-add");
     press(&mut app, "ws-bots-add");
     assert_eq!(
         seat.take_asked(),
         [
-            WorkspaceSettingsEffect::ReviewAgent {
-                agent: "claude".to_owned()
+            WorkspaceSettingsEffect::AddAgent {
+                name: "Analyst".to_owned()
             },
-            WorkspaceSettingsEffect::AddAgent,
             WorkspaceSettingsEffect::AddBot,
         ]
     );
@@ -352,7 +375,7 @@ fn an_agent_review_shows_its_answers_model_and_exceptions() {
         "Notes",
         "Calendar",
         "Ask first",
-        "Sonnet (Anthropic)",
+        "Sonnet from Anthropic",
         "Notes: Delete for good",
     ] {
         assert!(says(&mut app, text), "{text:?} is shown");
@@ -418,6 +441,43 @@ fn a_review_asks_for_answers_models_and_resets_by_key() {
             },
         ]
     );
+}
+
+/// The model an agent plans with is its keeper's to choose: a review someone
+/// else opens says who chooses and offers no Use.
+#[test]
+fn a_review_offers_the_model_to_the_agents_keeper_alone() {
+    let mut settings = staged_settings("agent-review");
+    let models = settings
+        .agents
+        .review
+        .as_mut()
+        .expect("a review")
+        .models
+        .as_mut()
+        .expect("the agent's models");
+    models.can_choose = false;
+    models.note = Some("Only Ada chooses the model it runs on".to_owned());
+    let seat = WorkspaceSettingsSeat::default();
+    seat.show(settings);
+    seat.presentation().open(false);
+    let mut app =
+        HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", seat).unwrap();
+    app.harness().resize(VIEWPORT).unwrap();
+    app.settle();
+
+    press(&mut app, "ws-agent-models");
+    assert!(
+        says(&mut app, "Only Ada chooses the model it runs on"),
+        "the review says who chooses"
+    );
+    let uses = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .filter(|(_, node)| node.label() == Some("Use"))
+        .count();
+    assert_eq!(uses, 0, "no model is offered to someone who is not keeper");
 }
 
 #[test]

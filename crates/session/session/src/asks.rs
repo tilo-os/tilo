@@ -512,7 +512,7 @@ impl Shared {
             &self.person,
             &self.search,
             &self.ws_settings_fed,
-            &self.workspace_emoji,
+            &self.workspace_tabs,
             self.file_picker.as_ref(),
             self.personal.as_ref(),
             self.engine.as_deref(),

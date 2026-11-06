@@ -37,6 +37,19 @@ fn sheet(session: &Session) -> HeadlessApp<WorkspaceSettingsApp> {
     app
 }
 
+/// Write what the sheet shows where a person can look at it, when the run
+/// asked for shots: `TILO_SURFACE_SHOTS` names where they go.
+fn capture(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) {
+    let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(std::path::PathBuf::from)
+    else {
+        return;
+    };
+    app.settle();
+    std::fs::create_dir_all(&directory).expect("the directory for shots");
+    app.harness()
+        .render_png(&directory.join(format!("{name}.png")));
+}
+
 /// Press the control `id` of `app`, as a person's own gesture.
 fn press(app: &mut HeadlessApp<WorkspaceSettingsApp>, id: &str) {
     app.harness()
@@ -348,9 +361,20 @@ fn workspace_settings_gives_and_revokes_a_permission() {
 
 /// Admit `agent` to the workspace in front, with the grants of `preset`.
 fn admit_agent(session: &Session, agent: &str, preset: tilo_action_policy::roles::AgentPreset) {
+    admit(session, PERSON, agent, preset);
+}
+
+/// Have `person` admit `agent` to the workspace: an admission made before
+/// Chat kept a record of the workspace's agents, as any member's is.
+fn admit(
+    session: &Session,
+    person: &str,
+    agent: &str,
+    preset: tilo_action_policy::roles::AgentPreset,
+) {
     let mut tree = session.handle().read(Clone::clone);
     let workspace = tree.active_workspace_mut().expect("a workspace in front");
-    tilo_desktop::workspace_settings::admit_agent(workspace, &PERSON.to_owned(), agent, preset);
+    tilo_desktop::workspace_settings::admit_agent(workspace, &person.to_owned(), agent, preset);
     session.handle().replace_tree(tree);
 }
 
@@ -425,6 +449,7 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     press(&mut app, "ws-agents-review-helper");
     session.step(Duration::from_millis(1)).unwrap();
     app.settle();
+    capture(&mut app, "workspace-settings-agent-review");
     let review = session
         .workspace_settings()
         .expect("workspace settings")
@@ -473,7 +498,7 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     press(&mut app, "ws-agent-back");
     session.step(Duration::from_millis(1)).unwrap();
     app.settle();
-    activate(&mut app, "Revoke");
+    activate(&mut app, "Retire");
     session.step(Duration::from_millis(1)).unwrap();
     app.settle();
     assert!(
@@ -862,5 +887,274 @@ fn workspace_settings_general_leaves_the_workspace() {
         session.handle().read(|tree| tree.workspaces.len()),
         1,
         "the workspace left this device's desk"
+    );
+}
+
+/// One agent as Chat's record of `workspace` holds it: its id, its name, the
+/// model it plans with and whether it still works here.
+type StoredAgent = (String, String, Option<String>, bool);
+
+/// What Chat's record of `workspace`'s agents holds, as the device's store
+/// keeps it: read without taking its writer (Chat owns the record), the
+/// changes a window made committed as the store writes them.
+fn chat_agents(home: &tilo_test_env::TestHome, workspace: &str) -> Option<Vec<StoredAgent>> {
+    let data = home.data().to_path_buf();
+    let workspace = workspace.to_owned();
+    std::thread::spawn(move || read_chat_agents(&data, &workspace))
+        .join()
+        .ok()
+        .flatten()
+}
+
+fn read_chat_agents(data: &std::path::Path, workspace: &str) -> Option<Vec<StoredAgent>> {
+    let record = ui::record::RecordId::parse(&collab_types::workspace_record_id(
+        tilo_app::tilo_workspace_agent::KIND,
+    ))?
+    .storage_key();
+    let store = app_state::FsStore::new(data.to_path_buf());
+    let stored = durable_store::DurableStore::read(
+        &store,
+        &durable_store::StorageKey::record(
+            tilo_app::tilo_workspace_agent::OWNER,
+            workspace,
+            record,
+        ),
+    )
+    .ok()
+    .flatten()?;
+    let options = automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore);
+    let doc = automerge::AutoCommit::load_with_options(&stored.bytes, options).ok()?;
+    let state =
+        tilo_app::tilo_resource::Reader::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::read(
+            &doc,
+        )
+        .ok()?;
+    Some(
+        state
+            .state()
+            .agents
+            .iter()
+            .map(|agent| {
+                (
+                    agent.id.0.clone(),
+                    agent.name.clone(),
+                    agent.model.clone(),
+                    agent.is_active(),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// What Chat's record of `workspace` holds once `done` says it does, stepping
+/// the session meanwhile: the store commits a window's change after a
+/// debounce.
+fn held_agents(
+    session: &mut Session,
+    home: &tilo_test_env::TestHome,
+    workspace: &str,
+    mut done: impl FnMut(Option<&[StoredAgent]>) -> bool,
+) -> Option<Vec<StoredAgent>> {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let held = chat_agents(home, workspace);
+        if done(held.as_deref()) || std::time::Instant::now() >= deadline {
+            return held;
+        }
+        session.step(Duration::from_millis(100)).expect("step");
+    }
+}
+
+/// The Agents tab makes an agent named in its field, where Chat's record
+/// keeps it, admits it to the workspace, and retires it: the record keeps it
+/// retired, and the workspace holds nothing of it any more.
+#[test]
+fn workspace_settings_makes_and_retires_the_workspaces_agents() {
+    let _settled = ui::motion::testing::settled();
+    let home = tilo_test_env::TestHome::new().expect("a home of its own");
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    own_workspace(&session, &[]);
+    let workspace = session.handle().read(|tree| {
+        tree.active_workspace()
+            .expect("a workspace in front")
+            .id()
+            .to_string()
+    });
+    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
+    session.step(Duration::from_millis(1)).unwrap();
+    let mut app = sheet(&session);
+    show_tab(
+        &mut session,
+        &mut app,
+        &WorkspaceSettingsEffect::ShowTab {
+            tab: "agents".to_owned(),
+        },
+    );
+
+    // The name typed in the field makes the agent, kept by the person here
+    // and named as it is everywhere.
+    app.harness()
+        .perform_named(
+            "ws-agents-name",
+            &ui::a11y::Action::SetValue("Analyst".to_owned()),
+        )
+        .expect("name the agent");
+    app.settle();
+    press(&mut app, "ws-agents-add");
+    session.step(Duration::from_millis(1)).unwrap();
+    pump(&mut session, &mut [], |_, _| {
+        app.settle();
+        app.harness().a11y_node_named("Analyst").is_some()
+    });
+    let row = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .settings()
+        .agents
+        .agents
+        .into_iter()
+        .find(|agent| agent.key == "analyst")
+        .expect("the sheet lists the agent it made");
+    assert_eq!(row.name, "Analyst");
+    assert_eq!(
+        row.keeper.as_deref(),
+        Some("Kept by you"),
+        "the person who made it keeps it"
+    );
+    assert!(row.admitted.is_some(), "the workspace admitted it");
+    capture(&mut app, "workspace-settings-agents");
+    let admitted = session.handle().read(|tree| {
+        tilo_desktop::workspace_settings::agent_summaries(tree.active_workspace().unwrap())
+            .into_iter()
+            .any(|summary| summary.agent == "analyst")
+    });
+    assert!(admitted, "the workspace holds the agent's admission");
+
+    let held = held_agents(&mut session, &home, &workspace, |held| {
+        held.is_some_and(|agents| {
+            agents
+                .iter()
+                .any(|(id, name, _, active)| id == "analyst" && name == "Analyst" && *active)
+        })
+    });
+    assert!(
+        held.as_deref().is_some_and(|agents| agents
+            .iter()
+            .any(|(id, name, _, active)| id == "analyst" && name == "Analyst" && *active)),
+        "Chat's record holds the agent the tab made: {held:?}"
+    );
+
+    // Retire takes it out of the roster and out of the workspace's grants,
+    // and the record keeps it, retired, with its name.
+    press(&mut app, "ws-agents-remove-analyst");
+    session.step(Duration::from_millis(1)).unwrap();
+    pump(&mut session, &mut [], |_, _| {
+        app.settle();
+        app.harness().a11y_node_named("Analyst").is_none()
+    });
+    let held = held_agents(&mut session, &home, &workspace, |held| {
+        held.is_some_and(|agents| {
+            agents
+                .iter()
+                .any(|(id, name, _, active)| id == "analyst" && name == "Analyst" && !active)
+        })
+    });
+    assert!(
+        held.as_deref().is_some_and(|agents| agents
+            .iter()
+            .any(|(id, name, _, active)| id == "analyst" && name == "Analyst" && !active)),
+        "Chat's record keeps the retired agent and its name: {held:?}"
+    );
+    let admitted = session.handle().read(|tree| {
+        tilo_desktop::workspace_settings::agent_summaries(tree.active_workspace().unwrap()).len()
+    });
+    assert_eq!(
+        admitted, 0,
+        "the workspace holds nothing of the agent again"
+    );
+}
+
+/// An agent the workspace admitted before Chat kept records of them is made
+/// one of the record when the tab opens it: under the id its grants carry,
+/// named as people read it, and kept by whoever admitted it.
+#[test]
+fn workspace_settings_reads_an_agents_admission_into_chats_record() {
+    use tilo_action_policy::roles::AgentPreset;
+    let _settled = ui::motion::testing::settled();
+    let home = tilo_test_env::TestHome::new().expect("a home of its own");
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    own_workspace(&session, &["ada"]);
+    let workspace = session.handle().read(|tree| {
+        tree.active_workspace()
+            .expect("a workspace in front")
+            .id()
+            .to_string()
+    });
+    admit(&session, PERSON, "helper", AgentPreset::Observer);
+    // Hand the admission to a teammate, as the grants a replica carries do:
+    // they admitted the agent, so they keep it.
+    let mut tree = session.handle().read(Clone::clone);
+    for grant in &mut tree
+        .active_workspace_mut()
+        .expect("a workspace in front")
+        .policy
+        .grants
+    {
+        if grant.id.as_str().starts_with("agent-member:helper:") {
+            grant.granted_by = tilo_action_policy::Subject::Person("ada".to_owned());
+        }
+    }
+    session.handle().replace_tree(tree);
+    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
+    session.step(Duration::from_millis(1)).unwrap();
+    let mut app = sheet(&session);
+    show_tab(
+        &mut session,
+        &mut app,
+        &WorkspaceSettingsEffect::ShowTab {
+            tab: "agents".to_owned(),
+        },
+    );
+
+    let admitted = session.handle().read(|tree| {
+        tilo_desktop::workspace_settings::agent_summaries(
+            tree.active_workspace().expect("a workspace in front"),
+        )
+    });
+    assert_eq!(
+        admitted.len(),
+        1,
+        "the workspace holds its admission: {admitted:?}"
+    );
+    let held = held_agents(&mut session, &home, &workspace, |held| {
+        held.is_some_and(|agents| {
+            agents
+                .iter()
+                .any(|(id, name, _, active)| id == "helper" && name == "helper" && *active)
+        })
+    });
+    assert!(
+        held.as_deref().is_some_and(|agents| agents
+            .iter()
+            .any(|(id, name, _, active)| id == "helper" && name == "helper" && *active)),
+        "Chat's record names the agent its admission made: {held:?}"
+    );
+
+    let row = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .settings()
+        .agents
+        .agents
+        .into_iter()
+        .find(|agent| agent.key == "helper")
+        .expect("the sheet lists the admitted agent");
+    assert!(row.admitted.is_some(), "the workspace admitted it");
+    let keeper = row.keeper.expect("an agent's row says who keeps it");
+    assert!(
+        keeper.to_lowercase().contains("ada") && keeper != "Kept by you",
+        "the row says the teammate who admitted it keeps it: {keeper}"
     );
 }

@@ -386,9 +386,9 @@ struct Shared {
     /// What publishes the person's file access list to the Files daemon
     /// while the session runs; `None` where no Files workspace serves.
     fs_authority: Option<fs_authority::Publisher>,
-    /// The workspace's emoji, which workspace settings shows and changes
-    /// through Chat's record of the workspace.
-    workspace_emoji: workspace_settings::EmojiTab,
+    /// The workspace's agents and emoji, which workspace settings shows and
+    /// changes through Chat's record of the workspace.
+    workspace_tabs: workspace_settings::WorkspaceTabs,
     portal: Option<PortalSeat>,
     file_picker: Option<FilePickerSeat>,
     /// The question about a display change, which stands on every display
@@ -1882,8 +1882,8 @@ impl Session {
             file_picker.clone(),
             Rc::clone(&services),
         );
-        let workspace_emoji =
-            workspace_settings::EmojiTab::new(cli::data_home(), options.wake.handle());
+        let workspace_tabs =
+            workspace_settings::WorkspaceTabs::new(cli::data_home(), options.wake.handle());
         let directory_store = directory::Store::default();
         let boot_join = boot_join::BootJoin::at_boot(&directory_store, &handle);
         let community = community::Community::for_site(directory::community_site());
@@ -1931,7 +1931,7 @@ impl Session {
             ws_settings_fed: Cell::new(None),
             capabilities_fed: Cell::new(None),
             fs_authority: fs_authority::Publisher::for_session(),
-            workspace_emoji,
+            workspace_tabs,
             directory,
             invite,
             invite_made: RefCell::default(),

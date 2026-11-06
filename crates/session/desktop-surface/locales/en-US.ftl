@@ -833,6 +833,13 @@ workspace-settings-agent-detail = { $count ->
    *[other] { $admission } · { $profile }, { $count } permissions
 }
 workspace-settings-admitted = Admitted
+workspace-settings-agent-kept-by = Kept by { $name }
+workspace-settings-agent-kept-by-you = Kept by you
+workspace-settings-retire-agent = Retire
+workspace-settings-agent-name = Its name
+workspace-settings-agent-detail-none = No access in this workspace yet
+workspace-settings-agents-unavailable = The workspace's agents cannot be read on this device
+workspace-settings-agent-name-needed = Name the agent first
 workspace-settings-review-access = Review access
 workspace-settings-agent-access-back = All agents
 workspace-settings-agent-access-note = Choose what this agent may do in each app. Sending, publishing and deleting for good still ask you first, unless you chose Always allow for that action.
@@ -854,6 +861,8 @@ workspace-settings-agent-model-none = No model chosen in Settings
 workspace-settings-agent-model-use = Use
 workspace-settings-agent-model-option = { $model } from { $provider }
 workspace-settings-agent-model-in-use = In use
+workspace-settings-agent-model-keeper = Only { $name } chooses the model it runs on their devices
+workspace-settings-agent-model-keeper-you = You choose the model it runs on your devices
 workspace-settings-agent-access-empty = No apps in this workspace yet.
 workspace-settings-answer-allow = Allow
 workspace-settings-answer-ask = Ask first

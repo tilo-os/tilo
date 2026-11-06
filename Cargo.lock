@@ -17288,6 +17288,7 @@ dependencies = [
  "tilo-search",
  "tilo-test-env",
  "tilo-ui",
+ "tilo-workspace-agent",
  "tilo-workspace-emoji",
  "tracing",
  "workspace-hack",
@@ -22617,6 +22618,20 @@ name = "tilo-winit-x11"
 version = "0.1.0"
 dependencies = [
  "tilo-winit",
+]
+
+[[package]]
+name = "tilo-workspace-agent"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "serde",
+ "serde_json",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-resource",
+ "workspace-hack",
 ]
 
 [[package]]

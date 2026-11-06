@@ -8,6 +8,7 @@
 //! something changed.
 
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 
 use collab_types::caps::{Effect, Expiry};
 use tilo_action_policy::agent_answers::AnswerScope;
@@ -28,12 +29,32 @@ use crate::lists::AppLists;
 use crate::search::SessionSearch;
 use crate::workspaces::{DeviceChoice, Personal};
 
+mod agents;
 mod emoji;
 
+pub(crate) use agents::Agents as AgentsTab;
 pub(crate) use emoji::Emoji as EmojiTab;
 
+/// The workspace's own records the sheet reads: its agents and its emoji,
+/// both kept by Chat for every app of the workspace.
+pub(crate) struct WorkspaceTabs {
+    pub(crate) agents: AgentsTab,
+    pub(crate) emoji: EmojiTab,
+}
+
+impl WorkspaceTabs {
+    /// The two records over the store at `root`, waking the session's loop
+    /// through `wake` when a change lands.
+    pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
+        Self {
+            agents: AgentsTab::new(root.clone(), wake.clone()),
+            emoji: EmojiTab::new(root, wake),
+        }
+    }
+}
+
 /// What the sheet is fed from: the desk in front, the lists its tabs offer,
-/// and the workspace's own emoji.
+/// and the workspace's own records its tabs read.
 pub(crate) struct Feeding<'a> {
     handle: &'a DesktopHandle,
     person: &'a UserId,
@@ -42,8 +63,9 @@ pub(crate) struct Feeding<'a> {
     search: &'a SessionSearch,
     /// The desk revision the panes were last fed at.
     fed: &'a Cell<Option<u64>>,
-    /// The workspace's emoji, read and changed through Chat's record.
-    emoji: &'a EmojiTab,
+    /// The workspace's agents and emoji, read and changed through Chat's
+    /// records.
+    tabs: &'a WorkspaceTabs,
     /// The session's file chooser, where a picture to add is chosen.
     picker: Option<&'a FilePickerSeat>,
     personal: Option<&'a RefCell<Personal>>,
@@ -59,7 +81,7 @@ impl<'a> Feeding<'a> {
         person: &'a UserId,
         search: &'a SessionSearch,
         fed: &'a Cell<Option<u64>>,
-        emoji: &'a EmojiTab,
+        tabs: &'a WorkspaceTabs,
         picker: Option<&'a FilePickerSeat>,
         personal: Option<&'a RefCell<Personal>>,
         engine: Option<&'a Engine>,
@@ -69,7 +91,7 @@ impl<'a> Feeding<'a> {
             person,
             search,
             fed,
-            emoji,
+            tabs,
             picker,
             personal,
             engine,
@@ -136,9 +158,15 @@ pub(crate) fn refresh(seat: Option<&sheet::WorkspaceSettingsSeat>, fed: &Feeding
         return;
     }
     let shown = seat.settings();
-    let emoji_moved =
-        shown.tab == sheet::Tab::Emoji && fed.handle.read(|tree| fed.emoji.moved(tree, fed.person));
-    if !emoji_moved && fed.fed.get() == Some(fed.handle.revision()) {
+    let emoji_moved = shown.tab == sheet::Tab::Emoji
+        && fed
+            .handle
+            .read(|tree| fed.tabs.emoji.moved(tree, fed.person));
+    let agents_moved = shown.tab == sheet::Tab::Agents
+        && fed
+            .handle
+            .read(|tree| fed.tabs.agents.moved(tree, fed.person));
+    if !emoji_moved && !agents_moved && fed.fed.get() == Some(fed.handle.revision()) {
         return;
     }
     let review = shown
@@ -163,7 +191,7 @@ fn show(
         tab,
         review,
         fed.personal,
-        fed.emoji,
+        fed.tabs,
         fed.engine,
     );
     shown.notice = seat.notice();
@@ -215,8 +243,10 @@ pub(crate) fn follow(
     let handle = fed.handle;
     let person = fed.person;
     // What came of the chooser and of the pictures waiting for the image
-    // tools, before what the person asks now.
-    handle.read(|tree| fed.emoji.settle(tree, person, fed.picker));
+    // tools, and what the agents' record owes this device, before what the
+    // person asks now.
+    handle.read(|tree| fed.tabs.emoji.settle(tree, person, fed.picker));
+    handle.read(|tree| fed.tabs.agents.settle(tree, person));
     for effect in seat.take_asked() {
         ask(seat, fed, intents, effect);
     }
@@ -243,10 +273,9 @@ fn ask(
             let review = shown.agents.review.as_ref().map(|row| row.agent.clone());
             show(seat, fed, shown.tab, review.as_deref());
         }
-        // Closing is the sheet's own; admitting an agent names the one to
-        // admit, which a chat in the workspace keeps as its own agent
-        // record, so the control stays until that record can name one.
-        sheet::WorkspaceSettingsEffect::Close | sheet::WorkspaceSettingsEffect::AddAgent => {}
+        // Closing is the sheet's own.
+        sheet::WorkspaceSettingsEffect::Close => {}
+        sheet::WorkspaceSettingsEffect::AddAgent { name } => add_agent(seat, fed, &name),
         sheet::WorkspaceSettingsEffect::ToggleDevice { device } => {
             toggle_workspace_device(seat, fed, &device);
         }
@@ -306,7 +335,7 @@ fn ask(
         sheet::WorkspaceSettingsEffect::AddEmoji
         | sheet::WorkspaceSettingsEffect::RemoveEmoji { .. }
         | sheet::WorkspaceSettingsEffect::DismissEmojiNotice => {
-            handle.read(|tree| fed.emoji.asked(&effect, tree, person, fed.picker));
+            handle.read(|tree| fed.tabs.emoji.asked(&effect, tree, person, fed.picker));
         }
         sheet::WorkspaceSettingsEffect::ReviewAgent { agent } => {
             show_review(seat, fed, Some(&agent));
@@ -322,9 +351,7 @@ fn ask(
             reset_agent_app(handle, person, &agent, &scope);
         }
         sheet::WorkspaceSettingsEffect::RemoveAgent { agent } => {
-            edit(handle, person, |ws, actor| {
-                domain::remove_agent(ws, actor, &agent)
-            });
+            retire_agent(seat, fed, &agent);
         }
         sheet::WorkspaceSettingsEffect::SetAgentModel { agent, model } => {
             set_agent_model(seat, fed, &agent, &model);
@@ -576,40 +603,67 @@ fn reset_agent_app(handle: &DesktopHandle, person: &UserId, agent: &str, scope: 
     });
 }
 
-/// Choose the model an agent plans with when `person` launches it, in the
-/// person's own Settings.
+/// The workspace in front, as the record of its agents is opened against.
+fn workspace_in_front(fed: &Feeding<'_>) -> Option<Workspace> {
+    fed.handle.read(|tree| tree.active_workspace().cloned())
+}
+
+/// Make an agent called `name` where the workspace keeps its agents, and
+/// admit it with the grants it works with here: the name and the record are
+/// Chat's, the grants are the workspace's own governance, and both are
+/// decided again on their own paths.
+fn add_agent(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, name: &str) {
+    let workspace = workspace_in_front(fed);
+    let id = match fed.tabs.agents.create(workspace.as_ref(), fed.person, name) {
+        Ok(id) => id,
+        Err(reason) => return refuse(seat, fed, &reason),
+    };
+    govern(seat, fed, |ws, actor| {
+        Ok(domain::admit_agent(
+            ws,
+            actor,
+            &id,
+            domain::AgentPreset::Contributor,
+        ))
+    });
+}
+
+/// Retire the agent `agent`, and take back what the workspace admitted it
+/// with: it takes no new work here, on any device.
+fn retire_agent(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, agent: &str) {
+    let workspace = workspace_in_front(fed);
+    if let Err(reason) = fed
+        .tabs
+        .agents
+        .retire(workspace.as_ref(), fed.person, agent)
+    {
+        return refuse(seat, fed, &reason);
+    }
+    edit(fed.handle, fed.person, |ws, actor| {
+        domain::remove_agent(ws, actor, agent)
+    });
+}
+
+/// Choose the model an agent plans with, as its keeper: the record holds the
+/// choice, and the session applies it to this device's Settings on its next
+/// pass over the tab, which is where the agent runner reads it.
 fn set_agent_model(
     seat: &sheet::WorkspaceSettingsSeat,
     fed: &Feeding<'_>,
     agent: &str,
     model: &str,
 ) {
-    let Some(models) =
-        agent_access::agent_models(&agent_provider_config::ProviderConfig::load(), agent)
-    else {
-        tracing::debug!(%agent, "Settings names no model: nothing changed");
-        return;
-    };
-    let chosen = if model.is_empty() {
-        None
-    } else {
-        let Some(option) = models
-            .offered
-            .into_iter()
-            .find(|option| option.key() == model)
-        else {
-            tracing::debug!(%model, "no such model: nothing changed");
-            return;
-        };
-        Some(option)
-    };
-    match agent_access::choose_agent_model(agent, chosen) {
-        Ok(_) => {
+    let workspace = workspace_in_front(fed);
+    match fed
+        .tabs
+        .agents
+        .set_model(workspace.as_ref(), fed.person, agent, model)
+    {
+        Ok(()) => {
             let shown = seat.settings();
-            let review = shown.agents.review.as_ref().map(|row| row.agent.clone());
-            show(seat, fed, shown.tab, review.as_deref());
+            show(seat, fed, shown.tab, Some(agent));
         }
-        Err(error) => refuse(seat, fed, &error),
+        Err(reason) => refuse(seat, fed, &reason),
     }
 }
 
@@ -645,9 +699,10 @@ fn settings(
     tab: sheet::Tab,
     review: Option<&str>,
     personal: Option<&RefCell<Personal>>,
-    emoji: &EmojiTab,
+    records: &WorkspaceTabs,
     engine: Option<&Engine>,
 ) -> sheet::Settings {
+    let (agents, emoji) = (&records.agents, &records.emoji);
     let workspace = tree.active_workspace();
     let names = PeopleNames::of(tree, person, own_name().as_deref());
     let apps = Directory;
@@ -668,9 +723,13 @@ fn settings(
         permissions: workspace.map_or_else(sheet::Permissions::default, |ws| {
             permissions(ws, person, &apps)
         }),
-        agents: workspace.map_or_else(sheet::Agents::default, |ws| {
-            agents_pane(ws, person, &apps, review)
-        }),
+        // The workspace's agents are Chat's record, opened when the tab is
+        // first shown.
+        agents: if tab == sheet::Tab::Agents {
+            agents.pane(tree, person, &names, &apps, review)
+        } else {
+            sheet::Agents::default()
+        },
         apps: workspace.map_or_else(sheet::Apps::default, |ws| apps_pane(ws, person, lists)),
         // The workspace's emoji are Chat's record, opened when the tab is
         // first shown and nowhere else: no other tab reads it.
@@ -1029,178 +1088,6 @@ fn permissions(
             confirm: t("workspace-settings-revoke-permission"),
         },
     }
-}
-
-/// The Agents tab: the agents admitted here, each with what it may do, and
-/// what one of them may do app by app while it is reviewed.
-fn agents_pane(
-    ws: &Workspace,
-    person: &UserId,
-    apps: &dyn domain::AppDirectory,
-    review: Option<&str>,
-) -> sheet::Agents {
-    let summaries = domain::agent_summaries(ws);
-    let manage = ws.may_administer(person);
-    sheet::Agents {
-        intro: sheet::Intro {
-            title: t_args(
-                "workspace-settings-agents-count",
-                &[("count", summaries.len().into())],
-            ),
-            help: t("workspace-settings-agents-help"),
-            authority: if manage {
-                t("workspace-settings-you-manage")
-            } else {
-                t("workspace-settings-view-only")
-            },
-        },
-        add: t("workspace-settings-add-agent"),
-        manage,
-        header: t("workspace-settings-agents-header"),
-        agents: summaries
-            .iter()
-            .map(|row| sheet::Agent {
-                key: row.agent.clone(),
-                name: row.name.clone(),
-                badge: row.badge.clone(),
-                detail: row.detail.clone(),
-                admitted: t("workspace-settings-admitted"),
-            })
-            .collect(),
-        review_label: t("workspace-settings-review-access"),
-        remove_label: t("workspace-settings-revoke"),
-        empty: (
-            t("workspace-settings-agents-empty-title"),
-            t("workspace-settings-agents-empty-detail"),
-        ),
-        bots_header: t("workspace-settings-bots-header"),
-        add_bot: t("workspace-settings-add-bot"),
-        bot_tag: t("workspace-settings-bot-tag"),
-        remove_bot: t("workspace-settings-remove-bot"),
-        bots: ws
-            .bots
-            .iter()
-            .map(|bot| sheet::Bot {
-                name: bot.name.clone(),
-                entry: bot.requested.then(|| bot.entry.clone()).flatten(),
-                detail: domain::bot_detail(bot),
-            })
-            .collect(),
-        bots_empty: t("workspace-settings-bots-empty"),
-        footnote: (!manage).then(|| t("workspace-settings-owner-only")),
-        review: review.and_then(|agent| reviewed(ws, agent, manage, apps)),
-    }
-}
-
-/// Which model the agent plans with by default, as the review's models row
-/// reads it.
-fn model_summary(models: Option<&agent_access::AgentModels>) -> String {
-    let model = models
-        .and_then(|models| models.default.clone())
-        .unwrap_or_else(|| t("workspace-settings-agent-model-none"));
-    t_args(
-        "workspace-settings-agent-model-default",
-        &[("model", model.into())],
-    )
-}
-
-/// One agent's review: what it may do in each app, the model it plans with
-/// and the actions it may always take. `None` once it is no longer admitted
-/// here, where the tab shows the roster again.
-fn reviewed(
-    ws: &Workspace,
-    agent: &str,
-    editable: bool,
-    apps: &dyn domain::AppDirectory,
-) -> Option<sheet::AgentReview> {
-    let summary = domain::agent_summaries(ws)
-        .into_iter()
-        .find(|row| row.agent == agent)?;
-    let domain::AgentSummary {
-        agent: key,
-        name,
-        badge,
-        ..
-    } = summary;
-    let answer_index = |answer: Answer| {
-        agent_access::ANSWERS
-            .iter()
-            .position(|candidate| *candidate == answer)
-            .unwrap_or_default()
-    };
-    let rows = agent_access::agent_access_rows(ws, agent, apps);
-    let models = agent_access::agent_models(&agent_provider_config::ProviderConfig::load(), agent);
-    let exceptions = agent_access::agent_exceptions(ws, agent, apps);
-    let summary_label = model_summary(models.as_ref());
-    Some(sheet::AgentReview {
-        agent: key,
-        name,
-        badge,
-        back: t("workspace-settings-agent-access-back"),
-        note: t("workspace-settings-agent-access-note"),
-        editable,
-        answers: [
-            t("workspace-settings-answer-allow"),
-            t("workspace-settings-answer-ask"),
-            t("workspace-settings-answer-deny"),
-        ],
-        reset: t("workspace-settings-agent-access-reset"),
-        custom: t("workspace-settings-agent-access-custom"),
-        apps: rows
-            .iter()
-            .map(|row| sheet::AccessApp {
-                scope: row.scope.key(),
-                label: row.label.clone(),
-                customised: row.customised(),
-                detail: t("workspace-settings-agent-access-custom-detail"),
-                kinds: row
-                    .cells
-                    .iter()
-                    .map(|cell| sheet::KindLine {
-                        kind: agent_access::kind_key(cell.kind).to_owned(),
-                        label: agent_access::kind_label(cell.kind),
-                        origin: t(if cell.explicit {
-                            "workspace-settings-agent-access-set-here"
-                        } else {
-                            "workspace-settings-agent-access-inherited"
-                        }),
-                        answer: answer_index(cell.answer),
-                    })
-                    .collect(),
-            })
-            .collect(),
-        empty: t("workspace-settings-agent-access-empty"),
-        models: models.map(|models| sheet::Models {
-            title: t("workspace-settings-agent-model"),
-            summary: summary_label.clone(),
-            choices: std::iter::once(sheet::ModelChoice {
-                key: String::new(),
-                label: t("workspace-settings-agent-model-none"),
-                in_use: models.chosen.is_none(),
-            })
-            .chain(models.offered.iter().map(|option| sheet::ModelChoice {
-                key: option.key(),
-                label: option.label.clone(),
-                in_use: models.chosen.as_ref() == Some(option),
-            }))
-            .collect(),
-        }),
-        use_model: t("workspace-settings-agent-model-use"),
-        in_use: t("workspace-settings-agent-model-in-use"),
-        exceptions_title: t_args(
-            "workspace-settings-agent-access-always",
-            &[("count", exceptions.len().into())],
-        ),
-        exceptions: exceptions
-            .into_iter()
-            .map(|exception| sheet::Exception {
-                scope: exception.scope.key(),
-                kind: agent_access::kind_key(exception.kind).to_owned(),
-                label: exception.label,
-            })
-            .collect(),
-        stop: t("workspace-settings-agent-access-stop"),
-    })
 }
 
 /// The Apps & Files tab: which app opens each kind of file and link here,
