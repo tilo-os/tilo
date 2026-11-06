@@ -1986,8 +1986,10 @@ fn menu_command(node: &UiNode) -> Command {
 }
 
 /// The commands a task's menus offer, in the order a person reads them: every command, and of
-/// the two moves only the one this task's place allows. This is a task with nothing over it in
-/// its group standing at the top level: neither move has a place, so neither is offered.
+/// the commands that need something the task may not have, the ones this task has. This is a
+/// task in the inbox, with nothing standing over it and nothing under it: it is on no board to be
+/// placed on, so it offers none of that, and it can still be moved under another task and its
+/// steps, none though it has, copied under one.
 fn spec_commands() -> Vec<&'static str> {
     vec![
         "Complete",
@@ -2006,8 +2008,10 @@ fn spec_commands() -> Vec<&'static str> {
         "Project…",
         "Inbox",
         "Assign…",
+        "Move to…",
         "Duplicate",
         "Delete",
+        "Copy below…",
     ]
 }
 
@@ -2105,8 +2109,8 @@ pub(crate) fn page_commands(view: &ViewInstance) -> Vec<Command> {
 }
 
 /// A task's row menu is every command a person can run on that task, worded once, in one order:
-/// it takes something away before it adds, dates before priorities, and nothing a gesture alone
-/// runs.
+/// it takes something away before it adds, dates before priorities, and a move a gesture also
+/// runs among the commands like any other.
 #[test]
 fn a_tasks_row_menu_offers_every_command_in_one_order() {
     let (mut ada, root) = workspace();
@@ -2142,16 +2146,63 @@ fn a_tasks_row_menu_offers_every_command_in_one_order() {
         commands[7]
     );
     assert_eq!(
-        commands[15].key.as_deref(),
+        commands[16].key.as_deref(),
         Some("Ctrl+Shift+d"),
         "Duplicate"
     );
-    let delete = commands.last().unwrap();
+    let delete = commands
+        .iter()
+        .find(|command| command.label == "Delete")
+        .expect("the menu offers deleting the task");
     assert!(
         delete.destructive,
         "delete is drawn as taking something away"
     );
     assert_eq!(delete.key.as_deref(), Some("delete"));
+}
+
+/// Every command is offered once, in the order the app declares it, and the ones that need
+/// something of the task stand in that same order among the rest: a task of a project is placed
+/// on its board where it is declared, a task with steps under it is copied under another task
+/// last, and the move that needs nothing of the task stands where it is declared.
+#[test]
+fn the_commands_a_task_takes_beside_every_other_stand_in_the_one_order() {
+    let (mut ada, root) = workspace();
+    let flat = call(&ada, "new_project", vec![root.clone()]);
+    let booked = call(&ada, "new_task", create(&root, "Book a haircut"));
+    call(
+        &ada,
+        "add_subtask",
+        vec![root, booked.clone(), Value::text("Find the number")],
+    );
+    call(&ada, "file", vec![booked.clone(), flat]);
+    ada.commit();
+    let mut home = ada.view(APP);
+    go_to(&mut home, "New project");
+    let commands = row_commands(&mut home, &booked);
+    let row = labels(&commands);
+    let at = |label: &str| {
+        row.iter()
+            .position(|shown| *shown == label)
+            .unwrap_or_else(|| panic!("the menu offers {label}: {row:?}"))
+    };
+    assert_eq!(
+        row[at("Move to…") - 1],
+        "Assign…",
+        "the move stands where the app declares it: {row:?}"
+    );
+    assert_eq!(
+        row[at("Place in board…") - 1],
+        "Delete",
+        "the board's place follows what takes a task away, as it is declared: {row:?}"
+    );
+    assert_eq!(
+        row.last().copied(),
+        Some("Copy below…"),
+        "and the copy under another task is declared last: {row:?}"
+    );
+    let page = page_commands(&task_page(&ada, &booked));
+    assert_eq!(labels(&page), row, "the row and the page offer one menu");
 }
 
 /// A window whose type declares more than one view offers them as one labeled switch, in the

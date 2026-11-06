@@ -411,8 +411,11 @@ primary action add_to(p: Project, title: Text, s: Option<Section> = .none) -> Ta
 
 /// Puts a task into a lane of its project's board, `s` (none for the first lane), at the place
 /// `at` among the tasks already there. It is what a card's drag names, and a person or an agent
-/// may name the lane and the place itself.
+/// may name the lane and the place itself. A task in the inbox stands on no board, so it is not
+/// among the commands that task offers.
 action place(t: Task, s: Option<Section>, at: Int) (label: "Place in board") {
+    require s == .none or s?.project == t.project "That lane belongs to another project"
+    applies t.project != .none "It is in no project's board"
     t.section = s
     tasks.items.move(
         t,
@@ -457,7 +460,7 @@ fn last_below(items: List<Task>, t: Task) -> Option<Task> {
 
 /// Copies the tasks under `t` under `copy`, each in its place, so a copy reads as the task it
 /// copies did; answers the last task the copies end with. Duplicate runs it for every branch
-/// under what it copies.
+/// under what it copies, and a person may copy the steps of one task under another with it.
 action copy_below(tasks: Tasks, t: Task, copy: Task) -> Task {
     for k in tasks.items.filter(x -> x.parent == .some(t)) {
         // Where the copy of this one goes: after the run the copies under `copy` make so far,
