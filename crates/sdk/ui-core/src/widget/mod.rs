@@ -3174,7 +3174,7 @@ pub use relative_time::{RelativeTime, TimeProps, next_change, relative_text};
 mod spacer;
 pub use spacer::Spacer;
 mod when;
-pub use when::{Absent, When, optional};
+pub use when::{Absent, Fitted, When, optional};
 mod slot;
 pub use slot::{Slot, SlotHandle, Switch};
 mod columns;

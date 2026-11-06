@@ -109,11 +109,18 @@ impl Slot {
         self.element
     }
 
+    /// The child in a slot of its own: sized as the view asked, when a host wrapped it in a
+    /// [`Fitted`](crate::widget::Fitted) carrying the fit its node wrote, and hugging its
+    /// content otherwise.
     #[must_use]
     pub fn new(element: Element) -> Self {
+        let fit = element
+            .as_any()
+            .and_then(|any| any.downcast_ref::<crate::widget::Fitted>())
+            .map_or_else(Fit::hug, crate::widget::Fitted::fit);
         Self {
             element,
-            fit: Fit::hug(),
+            fit,
             span: 1,
             at: None,
             wrapper: None,
