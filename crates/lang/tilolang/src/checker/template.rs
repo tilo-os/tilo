@@ -118,7 +118,8 @@ fn kind_of(te: &TypeExpr) -> Kind<'_> {
 /// Whether a view declared with these type parameters and parameters is a template.
 #[must_use]
 pub fn is_template(view: &ast::ViewDecl) -> bool {
-    !view.type_params.is_empty()
+    view.template
+        || !view.type_params.is_empty()
         || view
             .params
             .iter()
@@ -184,7 +185,7 @@ impl Checker<'_> {
 
     /// Whether the code being checked is the standard library's.
     pub(crate) fn in_std(&self) -> bool {
-        self.st.ns.as_deref() == Some(crate::stdlib::NS)
+        self.st.ns.as_deref() == Some(crate::stdlib::APP)
     }
 
     /// The module's own callable `name`, when the code being checked sees the module's names.

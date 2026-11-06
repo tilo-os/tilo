@@ -227,7 +227,7 @@ const TYPE_ARGS: &[&str] = &[
     "Result",
     "State",
 ];
-const ITEM_EXPECTED: &str = "`use`, `type`, `enum`, `root`, `default view`, `row view`, `action`, `flow`, `view`, `fn` or `scenario`";
+const ITEM_EXPECTED: &str = "`use`, `type`, `enum`, `root`, `default view`, `row view`, `action`, `flow`, `view`, `template view`, `fn` or `scenario`";
 
 impl<'a> Parser<'a> {
     fn new(toks: Vec<Token>, src: &'a str) -> Self {
@@ -556,6 +556,7 @@ impl<'a> Parser<'a> {
             || self.at_root_decl()
             || self.at_default_view()
             || self.at_row_view()
+            || self.at_template_view()
             || self.at_scenario()
             || self.at_action_role().is_some()
     }
@@ -563,6 +564,13 @@ impl<'a> Parser<'a> {
     /// `row view v for T` at the start of an item.
     fn at_row_view(&self) -> bool {
         matches!(self.peek(), Tok::Ident(n) if n == "row")
+            && matches!(self.peek_at(1), Tok::Kw("view"))
+    }
+
+    /// `template view v(...) { ... }` at the start of an item: a view that expands where it is
+    /// called whatever its parameters are.
+    fn at_template_view(&self) -> bool {
+        matches!(self.peek(), Tok::Ident(n) if n == "template")
             && matches!(self.peek_at(1), Tok::Kw("view"))
     }
 
@@ -851,6 +859,12 @@ impl<'a> Parser<'a> {
                 body,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }));
+        }
+        if self.at_template_view() {
+            self.bump();
+            let mut view = self.view(doc, start)?;
+            view.template = true;
+            return Ok(Item::View(view));
         }
         let mut role = None;
         while let Some(r) = self.at_action_role() {
@@ -1609,6 +1623,7 @@ impl<'a> Parser<'a> {
             node,
             doc,
             name,
+            template: false,
             type_params,
             params,
             body,

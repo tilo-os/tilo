@@ -133,7 +133,8 @@ pub struct PackageMeta {
     #[serde(default)]
     pub roots: Vec<String>,
     /// The packages it uses (`use app.id`), by their app ids now (a `use` of an id one had
-    /// before names it by its current one).
+    /// before names it by its current one), and the standard library every module compiles
+    /// with (`tilo.std`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uses: Vec<String>,
     /// The named roots (`root notes: Notes`): what other packages reach as `alias.notes`.

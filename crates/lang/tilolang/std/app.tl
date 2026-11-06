@@ -1,3 +1,5 @@
+app tilo.std "Standard library"
+
 /// The window frames every tilolang app gets: a list of resources, a document, a page and a
 /// transcript, each the native one. They are written over the toolkit's components with the
 /// same language any app has (lenses, resource metadata, enum cases and events that carry
@@ -238,7 +240,7 @@ view rows<T, K>(
 /// other parameters take — the entry makes nothing: Enter does nothing and leaves the text
 /// there, and Escape leaves none. The host gives it the window's primary action's key, so the
 /// key and the bar's button come here.
-view add_entry(placeholder: Text, create: Action) {
+template view add_entry(placeholder: Text, create: Action) {
     lens typed: Text = ""
     let parts = entry_parts(create, typed)
     stack(gap: .tight) {
@@ -416,7 +418,7 @@ view document<R>(of: R, content: View) {
 /// heading's control leads to, so a task's notes, subtasks and facts stand in the column its
 /// title's text does, and the box that says the item is done stands in the gutter to their
 /// left. A document whose heading opens with its title alone has no lead to make.
-view body(content: View) {
+template view body(content: View) {
     stack(lead: 1) {
         content
     }
@@ -673,7 +675,7 @@ view history<R>(of: R) {
 /// beside each change (`said`, `shows`). The words come from the fields the change wrote and
 /// what they held before and after ("moved this to", then the day as a day), or from what the
 /// action declares (`did:`); a version that says neither says what its action does.
-view version_sentence(v: host.Version) {
+template view version_sentence(v: host.Version) {
     stack(gap: .tight) {
         if v.did != "" {
             ui.Text("{v.actor} {v.did}", role: .label)
@@ -710,7 +712,7 @@ view version_sentence(v: host.Version) {
 
 /// What a version did to each field it changed: the field's name, what it held before and what
 /// it holds after, each as the field's type shows it; or that it made or removed the resource.
-view version_changes(v: host.Version) {
+template view version_changes(v: host.Version) {
     if v.kind == "created" {
         ui.Text(phrase("tilolang-history-made"), role: .caption, secondary: true)
     } else if v.kind == "removed" {

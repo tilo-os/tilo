@@ -309,10 +309,10 @@ fn assembled(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<A
     for (index, package) in built.iter().enumerate() {
         let meta = &package.compiled.meta;
         let used = &meta.uses;
-        let imports = built
-            .iter()
-            .take(index)
-            .map(|earlier| &earlier.compiled)
+        // The standard library first: every module's code may call into it, and it is compiled
+        // with Tilo rather than with the packages of this build.
+        let imports = std::iter::once(tilolang::stdlib::compiled())
+            .chain(built.iter().take(index).map(|earlier| &earlier.compiled))
             .filter(|earlier| used.contains(&earlier.meta.app));
         let bundle = Bundle::new(&package.compiled, imports);
         let manifest = manifest_text(meta, options, &publisher);

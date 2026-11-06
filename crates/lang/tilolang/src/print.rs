@@ -1143,7 +1143,11 @@ impl Printer<'_> {
                     let names: Vec<&str> = v.type_params.iter().map(|t| t.name.as_str()).collect();
                     format!("<{}>", names.join(", "))
                 };
-                let lead = format!("view {}{types}", v.name.name);
+                let lead = format!(
+                    "{}view {}{types}",
+                    if v.template { "template " } else { "" },
+                    v.name.name
+                );
                 self.head(&lead, &v.params, "", &[], " {", param_text);
                 self.ui_body(&v.body);
                 self.line("}");

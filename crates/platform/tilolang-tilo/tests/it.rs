@@ -31,6 +31,7 @@ mod items;
 mod lanes;
 mod legacy;
 mod legibility;
+mod library;
 mod links;
 mod make_from;
 mod marks;

@@ -522,6 +522,10 @@ pub struct ViewDecl {
     pub node: NodeId,
     pub doc: Vec<String>,
     pub name: Ident,
+    /// `template view body(content: View)`: a view that expands where it is called, its nodes
+    /// the caller's, whatever its parameters are. A view whose parameters are written over types,
+    /// state, functions or views is one anyway.
+    pub template: bool,
     /// `view list<T>(...)`: the types its parameters are written over, each taken from what a
     /// call passes.
     pub type_params: Vec<Ident>,

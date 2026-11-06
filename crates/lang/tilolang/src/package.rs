@@ -486,6 +486,11 @@ fn build_meta(
             _ => None,
         })
         .collect();
+    // Every module is compiled with the standard library, so its code may call into it: a
+    // bundle is handed the library as the package it uses, like any it `use`s.
+    if env.app != crate::stdlib::APP {
+        meta.uses.push(crate::stdlib::APP.to_string());
+    }
     meta.named_roots = env
         .named_roots
         .iter()

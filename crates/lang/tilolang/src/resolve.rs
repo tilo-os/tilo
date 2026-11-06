@@ -127,18 +127,25 @@ impl Env {
             .find(|t| t.ns.as_deref() == ns && t.decl.name.name == name)
     }
 
-    /// Adds the standard library, `std`: its views, expanded where a package calls them.
+    /// Adds the standard library, `std`, as the package it is: the declarations its own module
+    /// makes, and its views, expanded where a package calls them.
+    ///
+    /// The library's own module is not an import of itself: it calls its views by its own name.
     pub fn add_std(&mut self) {
-        self.imports.push(Import {
-            alias: crate::stdlib::NS.to_string(),
-            app: crate::stdlib::NS.to_string(),
-            roots: Vec::new(),
-            named_roots: Vec::new(),
-            previously: Vec::new(),
-        });
+        if self.app == crate::stdlib::APP {
+            self.imports.push(Import {
+                alias: crate::stdlib::NS.to_string(),
+                app: self.app.clone(),
+                roots: Vec::new(),
+                named_roots: Vec::new(),
+                previously: Vec::new(),
+            });
+            return;
+        }
+        self.add_import(crate::stdlib::NS, crate::stdlib::meta());
         self.templates
-            .extend(crate::stdlib::views().iter().map(|decl| Template {
-                ns: Some(crate::stdlib::NS.to_string()),
+            .extend(crate::stdlib::templates().iter().map(|decl| Template {
+                ns: Some(crate::stdlib::APP.to_string()),
                 decl: decl.clone(),
             }));
     }
@@ -2197,7 +2204,7 @@ impl Resolver<'_> {
     }
 
     /// A view of the module expanded where it is called: its name taken, its body checked at
-    /// each call.
+    /// each call, its `window` and `lens` declarations the state of the view it expands in.
     fn template(&mut self, v: &ast::ViewDecl) {
         if self.env.own_callable(&v.name.name).is_some()
             || self.env.template(None, &v.name.name).is_some()
@@ -2211,11 +2218,6 @@ impl Resolver<'_> {
                 ),
             );
             return;
-        }
-        for s in &v.body {
-            if let ast::UiKind::State(d) = &s.kind {
-                self.err("E066", d.span, format!("`{}` is expanded where it is called, so it keeps no `{}` state of its own; take the caller's as a `State<T>` parameter", v.name.name, d.layer.word()));
-            }
         }
         self.env.templates.push(Template {
             ns: None,
