@@ -136,7 +136,7 @@ d-ifftrju4 = Its project, as a project's list is of one
 d-ymvliuk3 = Adopt steps
     .doc = Gives each step of a task from before steps were tasks a task of its own, under the task it was a step of, in the order it was in.
 
-d-u7a3fue4 = Quick add
+d-u7a3fue4 = Add a task
     .doc = Adds what was typed in the entry at the end of a list as a task, to the inbox or to `p`, in the lane `s` of its board.
 
 d-rs3ubifz = New task
