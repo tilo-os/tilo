@@ -77,6 +77,27 @@ pub enum InvokeOutcome {
 enum Step {
     Replay(Value),
     Live(ExecCtx),
+    /// Live, and decided already: a scenario's invocation is the host's own seed.
+    Seed(ExecCtx),
+}
+
+/// What a scenario's `invoke` runs: its own seed, as its own actions are, so another app's
+/// action runs as the person, at the moment and from the resource the invocation names.
+fn scenario_step(state: &ActionState, aref: &ActionRef) -> Step {
+    let invocation = state.invocations.last();
+    let mut chain = Vec::new();
+    push_chain(&mut chain, aref.author.as_ref());
+    Step::Seed(ExecCtx {
+        invoker: invocation.map_or_else(|| state.invoker.clone(), |named| named.who.clone()),
+        chain,
+        approved_by: None,
+        suggested_by: state.suggested_by.clone(),
+        origin: None,
+        from: invocation
+            .and_then(|named| named.from.clone())
+            .or_else(|| state.note.from.clone()),
+        at: invocation.and_then(|named| named.at.clone()),
+    })
 }
 
 /// A scalar result as the guest receives it: boxed like `some_i`, so it unwraps with
@@ -1157,60 +1178,43 @@ impl Core {
             .map_err(|e| HostFail::Trap(e.to_string()))
     }
 
+    /// What invoking `aref` runs where the invocation stands in a flow: the journal's answer
+    /// where it holds one, else a live context with the flow's person and what it was made from.
+    fn flow_step(fs: &mut FlowState, aref: &ActionRef) -> HResult<Step> {
+        if let Some(entry) = fs.journal.entries.get(fs.cursor) {
+            let v = replay_value(entry, &aref.action)?;
+            fs.cursor = fs.cursor.saturating_add(1);
+            return Ok(Step::Replay(v));
+        }
+        let mut chain = fs.journal.chain.clone();
+        push_chain(&mut chain, aref.author.as_ref());
+        Ok(Step::Live(ExecCtx {
+            invoker: fs.invoker.clone(),
+            chain,
+            approved_by: None,
+            suggested_by: fs.suggested_by.clone(),
+            origin: None,
+            from: fs.journal.from.clone(),
+            at: None,
+        }))
+    }
+
     fn flow_invoke(&self, h: i32) -> HResult<Option<Wasm>> {
         let Value::Action(aref) = self.val(h)? else {
             return trap("expected an action reference");
         };
-        // A scenario's own seed is the host's making, as its own actions are: another app's
-        // action it invokes runs as the person, at the moment and from the resource the
-        // invocation names.
-        let mut seeded = false;
         let step = {
             let mut frames = self.frames.borrow_mut();
             match &mut frames.top_mut()?.kind {
-                FrameKind::Flow(fs) => {
-                    if let Some(entry) = fs.journal.entries.get(fs.cursor) {
-                        let v = replay_value(entry, &aref.action)?;
-                        fs.cursor = fs.cursor.saturating_add(1);
-                        Step::Replay(v)
-                    } else {
-                        let mut chain = fs.journal.chain.clone();
-                        push_chain(&mut chain, aref.author.as_ref());
-                        Step::Live(ExecCtx {
-                            invoker: fs.invoker.clone(),
-                            chain,
-                            approved_by: None,
-                            suggested_by: fs.suggested_by.clone(),
-                            origin: None,
-                            from: fs.journal.from.clone(),
-                            at: None,
-                        })
-                    }
-                }
-                FrameKind::Action(state) if state.scenario => {
-                    seeded = true;
-                    let invocation = state.invocations.last();
-                    let mut chain = Vec::new();
-                    push_chain(&mut chain, aref.author.as_ref());
-                    Step::Live(ExecCtx {
-                        invoker: invocation
-                            .map_or_else(|| state.invoker.clone(), |named| named.who.clone()),
-                        chain,
-                        approved_by: None,
-                        suggested_by: state.suggested_by.clone(),
-                        origin: None,
-                        from: invocation
-                            .and_then(|named| named.from.clone())
-                            .or_else(|| state.note.from.clone()),
-                        at: invocation.and_then(|named| named.at.clone()),
-                    })
-                }
+                FrameKind::Flow(fs) => Self::flow_step(fs, &aref)?,
+                FrameKind::Action(state) if state.scenario => scenario_step(state, &aref),
                 _ => return trap("invoke is only available in flows and scenarios"),
             }
         };
+        let seeded = matches!(step, Step::Seed(_));
         let ctx = match step {
             Step::Replay(v) => return self.ret_h(boxed(v)),
-            Step::Live(ctx) => ctx,
+            Step::Live(ctx) | Step::Seed(ctx) => ctx,
         };
         let aref = self
             .completed(&aref)
@@ -1878,7 +1882,7 @@ impl Core {
                     note.from = inv.from.clone().or_else(|| state.note.from.clone());
                 }
                 // At the moment the invocation named, when it named one; else now.
-                None => note.at = note.at.clone().or_else(|| Some(at)),
+                None => note.at = note.at.clone().or(Some(at)),
             }
             note.touched = std::mem::take(&mut state.touched).into_iter().collect();
             (state.txn, note)
