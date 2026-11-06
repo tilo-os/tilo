@@ -20,7 +20,7 @@
 )]
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -41,6 +41,7 @@ use tilolang_tilo::instance::record::InstanceRecord;
 use ui::headless::FrameHarness;
 use ui::widget::Widget;
 
+#[path = "hosted/cost.rs"]
 mod cost;
 
 const NOTES: &str = "so.tilo.lang.notes";
@@ -48,6 +49,8 @@ const NOTES: &str = "so.tilo.lang.notes";
 const RICHBODY: &str = "so.tilo.lang.richbody";
 /// The task list the person keeps.
 const TASKS: &str = "so.tilo.lang.tasks";
+/// The notebook whose notes are signed: what a workspace of a person's own looks like.
+const SIGNED: &str = "so.tilo.lang.signed";
 const VIEWPORT: (u32, u32) = (1280, 800);
 
 type Sent = Rc<RefCell<Vec<CollabRequest>>>;
@@ -139,6 +142,18 @@ fn package(dir: &str) -> Bundle {
         .expect("the packages compile");
     let (package, used) = built.split_last().expect("the package is built last");
     Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled))
+}
+
+/// Where the package of the app `app` is, from this crate's: the apps the tests open are
+/// shipped with it, and the rich body is their `tests/` one.
+fn package_of(app: &str) -> &'static str {
+    match app {
+        NOTES => "../tl/notes",
+        RICHBODY => "tests/richbody",
+        SIGNED => "tests/signed",
+        TASKS => "../tl/tasks",
+        other => panic!("no test package is {other}"),
+    }
 }
 
 /// A window-sized region of a host's scene, as a window process's surface is.
@@ -339,17 +354,17 @@ struct Session {
 impl Session {
     /// A person at a Tasks window in the frame harness.
     fn tasks() -> Self {
-        Self::new(TASKS, "../tl/tasks", "ada", |_| {})
+        Self::new(TASKS, "ada", |_| {})
     }
 
     /// A person at a Notes window in the frame harness.
     fn notes() -> Self {
-        Self::new(NOTES, "../tl/notes", "ada", |_| {})
+        Self::new(NOTES, "ada", |_| {})
     }
 
     /// A person at a Tasks window the live `App` runs.
     fn live_tasks() -> Self {
-        Self::open(TASKS, "../tl/tasks", "ada", |hosted| {
+        Self::open(TASKS, "ada", |hosted| {
             let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
             app.init_layout();
             Window::Live(Box::new(app))
@@ -358,7 +373,7 @@ impl Session {
 
     /// A person at a Notes window the live `App` runs.
     fn live_notes() -> Self {
-        Self::open(NOTES, "../tl/notes", "ada", |hosted| {
+        Self::open(NOTES, "ada", |hosted| {
             let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
             app.init_layout();
             Window::Live(Box::new(app))
@@ -368,13 +383,13 @@ impl Session {
     /// A person at a Notebook window whose notes' bodies are rich text (`tests/richbody`), the
     /// frame harness making it.
     fn rich() -> Self {
-        Self::new(RICHBODY, "tests/richbody", "ada", |_| {})
+        Self::new(RICHBODY, "ada", |_| {})
     }
 
     /// A person at a Notebook window whose notes' bodies are rich text (`tests/richbody`), the
     /// live `App` running it: the same bar, fields and list as Notes, with a rich body.
     fn live_rich() -> Self {
-        Self::open(RICHBODY, "tests/richbody", "ada", |hosted| {
+        Self::open(RICHBODY, "ada", |hosted| {
             let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
             app.init_layout();
             Window::Live(Box::new(app))
@@ -395,7 +410,6 @@ impl Session {
             manager,
             &route,
             NOTES,
-            "../tl/notes",
             "ada",
             automerge::AutoCommit::new(),
             None,
@@ -408,15 +422,9 @@ impl Session {
         )
     }
 
-    /// `person` at a harness window of the package `app` in `dir`, whose presence `present`
-    /// sets up.
-    fn new(
-        app: &str,
-        dir: &str,
-        person: &str,
-        present: impl FnOnce(&mut ui::presence::PresenceCtx),
-    ) -> Self {
-        Self::open(app, dir, person, |hosted| {
+    /// `person` at a harness window of the app `app`, whose presence `present` sets up.
+    fn new(app: &str, person: &str, present: impl FnOnce(&mut ui::presence::PresenceCtx)) -> Self {
+        Self::open(app, person, |hosted| {
             let mut window = FrameHarness::new(ui::State::new(), Box::new(hosted), VIEWPORT);
             window.update_presence(|presence| {
                 present(presence);
@@ -426,14 +434,9 @@ impl Session {
         })
     }
 
-    /// `person` at the window `window` makes of the hosted window of the package `app` in
-    /// `dir`.
-    fn open(
-        app: &str,
-        dir: &str,
-        person: &str,
-        window: impl FnOnce(HostedWindow) -> Window,
-    ) -> Self {
+    /// `person` at the window `window` makes of the hosted window of the app `app`, whose
+    /// package [`package_of`] names.
+    fn open(app: &str, person: &str, window: impl FnOnce(HostedWindow) -> Window) -> Self {
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
         let manager = CollaborationManager::with_peer_transport(Broker {
@@ -446,7 +449,6 @@ impl Session {
             manager,
             &route,
             app,
-            dir,
             person,
             automerge::AutoCommit::new(),
             None,
@@ -474,7 +476,6 @@ impl Session {
             manager,
             route,
             TASKS,
-            "../tl/tasks",
             "ada",
             doc,
             storage,
@@ -507,7 +508,6 @@ impl Session {
             manager,
             route,
             TASKS,
-            "../tl/tasks",
             "ada",
             doc,
             storage,
@@ -522,25 +522,22 @@ impl Session {
         )
     }
 
-    /// `person` at the window `window` makes of the hosted window of the package `app` in
-    /// `dir`, whose instance's connection is `manager`, on `route`; `broker` is what the broker's
-    /// end holds, `doc` the workspace record the instance runs over, and `storage` where the
-    /// package keeps what it keeps (nothing: in memory). The window settles before it is handed
-    /// over.
+    /// `person` at the window `window` makes of the hosted window of the app `app`, whose
+    /// package [`package_of`] names, whose instance's connection is `manager`, on `route`;
+    /// `broker` is what the broker's end holds, `doc` the workspace record the instance runs
+    /// over, and `storage` where the package keeps what it keeps (nothing: in memory). The window
+    /// settles before it is handed over.
     fn over(
         manager: CollaborationManager,
         route: &RouteSpec,
         app: &str,
-        dir: &str,
         person: &str,
         doc: ui::tilo_resource::Doc,
         storage: Option<std::path::PathBuf>,
         broker: Box<dyn std::any::Any>,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
-        let mut session = Self::launch(
-            manager, route, app, dir, person, doc, storage, broker, window,
-        );
+        let mut session = Self::launch(manager, route, app, person, doc, storage, broker, window);
         session.settle();
         session
     }
@@ -550,7 +547,6 @@ impl Session {
         mut manager: CollaborationManager,
         route: &RouteSpec,
         app: &str,
-        dir: &str,
         person: &str,
         doc: ui::tilo_resource::Doc,
         storage: Option<std::path::PathBuf>,
@@ -579,7 +575,7 @@ impl Session {
                 person: person.to_owned(),
             },
             record,
-            Arc::new(package(dir)),
+            Arc::new(package(package_of(app))),
             &kept,
             Box::new(ChannelTransport::new(ours).unwrap()),
             &Phrases::new("en-US"),
@@ -622,6 +618,28 @@ impl Session {
             .next()
             .and_then(|hosted| hosted.instance().host())
             .is_some_and(|host| host.index_ready())
+    }
+
+    /// The window's frames until its instance reads the workspace's indexes: what its load
+    /// does before it opens the root, over the indexes it found.
+    fn wait_index(&mut self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while !self.index_ready() && std::time::Instant::now() < deadline {
+            let changed = self.host.turn();
+            self.window.frame();
+            if !changed {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+        assert!(self.index_ready(), "the window reads the workspace's index");
+    }
+
+    /// How many indexes the window's instance built from its record: none when it opens over
+    /// the ones an earlier run of the app kept.
+    fn builds(&self) -> u64 {
+        let hosted = self.host.instances().next().expect("the window's instance");
+        let host = hosted.instance().host().expect("the instance's store");
+        host.store().stats().builds
     }
 
     fn hosted(&mut self) -> &HostedWindow {
@@ -982,7 +1000,7 @@ fn clicking_a_notes_title_takes_the_keyboard_from_its_body_in_the_live_window() 
 fn who_edited_a_page_reads_as_the_name_the_window_knows_them_by_never_their_key() {
     // The person's id is their key, as a real workspace's ids are.
     let ada = "95522b97c3d1e0f4a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4";
-    let mut session = Session::new("so.tilo.lang.signed", "tests/signed", ada, |presence| {
+    let mut session = Session::new("so.tilo.lang.signed", ada, |presence| {
         presence.set_self_participant(ui::permissions::UserId(ada.to_owned()), "Ada");
     });
     let root = session
@@ -1654,7 +1672,7 @@ fn a_task_checked_off_through_the_host_fills_its_box_over_frames() {
     use ui::time::testing::with_monotonic_time;
     use ui::winit::keyboard::NamedKey;
 
-    let mut session = Session::new(TASKS, "../tl/tasks", "ada", |_| {});
+    let mut session = Session::new(TASKS, "ada", |_| {});
     // A task, added through the entry the window shows.
     let mut entries = Vec::new();
     named(session.window.root(), "New task", &mut entries);

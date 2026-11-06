@@ -459,6 +459,37 @@ fn a_store_without_the_record_opens_over_the_index_and_takes_the_record_later() 
 }
 
 #[test]
+fn a_window_opens_over_the_index_an_earlier_window_kept() {
+    // The window that closed wrote its index to the disk as it ended: the next window of the
+    // workspace opens over it, which is read, and nothing is derived from the record again.
+    let (ada, root, lock) = workspace();
+    let dir = TempDir::new("kept-open");
+    let first = kept_in(dir.path(), &ada.doc, &lock);
+    drop(first);
+    let second = Host::open(
+        Opening {
+            record: Some(&ada.doc),
+            index_dir: Some(dir.path().to_owned()),
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    second.load_builtin(TODO, &lock).unwrap();
+    assert!(
+        second.index_ready(),
+        "the second window reads the kept index"
+    );
+    assert_eq!(second.store().stats().builds, 0, "nothing is built anew");
+    assert_eq!(
+        second.store().index_contents(APP).unwrap(),
+        anew(&ada, &lock)
+    );
+    let _ = root;
+}
+
+#[test]
 fn a_window_whose_index_is_not_kept_builds_it_off_the_frame() {
     // A window with no storage, or one whose index file another window holds, opens over an
     // index built in memory: the open does not wait for it, the frame after it is built shows
