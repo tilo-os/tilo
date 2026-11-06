@@ -651,6 +651,7 @@ impl Answers<'_> {
             // window is on the desk.
             FloatingSurfaceClientMessage::Present { request } => {
                 if let Err(reason) = self.cards.present(&app, connection, &request) {
+                    tracing::warn!(%app, %reason, "card refused");
                     refuse(&reply, &app, &name, &reason);
                 }
             }
