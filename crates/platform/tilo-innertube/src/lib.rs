@@ -27,6 +27,10 @@ use rustypipe::model::{
 use rustypipe::param::Country;
 use rustypipe::param::search_filter::SearchFilter;
 
+/// The instant type rustypipe sends a video's publish date as, re-exported so a crate that
+/// reads one through [`tilo_innertube::search`]'s models need not depend on `time` itself.
+pub use time;
+
 /// One query in flight: it borrows the query handle and its arguments.
 pub type Query<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + 'a>>;
 

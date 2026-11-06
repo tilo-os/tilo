@@ -21,6 +21,9 @@ path = "src/lib.rs"
 # The features Music, Tube and the engine build it with: one rustypipe in the
 # thin graph.
 rustypipe = { workspace = true, features = ["rustls-no-provider"] }
+# A video's publish instant arrives as `time::OffsetDateTime` in rustypipe's models: every crate
+# that reads one shares this exact version, so no query instantiates a second one.
+time = { version = "0.3.47", features = ["formatting"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

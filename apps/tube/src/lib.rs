@@ -56,6 +56,7 @@ pub mod search_type;
 pub mod suggest;
 pub mod sync;
 pub mod util;
+pub mod views;
 pub mod widgets;
 
 pub use app::TubeApp;

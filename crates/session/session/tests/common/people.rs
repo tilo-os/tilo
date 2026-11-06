@@ -509,6 +509,14 @@ fn door_responder(
                             .header("content-type", "application/json")
                             .body(json!({ "error": refusal.to_string() }).to_string()),
                     ),
+                    Err(tilo_relay::workspaces::DoorRefusal::InvitationOnly) => Some(
+                        Reply::status(403)
+                            .header("content-type", "application/json")
+                            .body(
+                                json!({ "error": "this workspace is joined by invitation" })
+                                    .to_string(),
+                            ),
+                    ),
                 }
             }
             _ => Some(Reply::status(404)),

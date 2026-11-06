@@ -28,6 +28,9 @@ pub enum Effect {
         target: ResourceRef,
         view: Option<String>,
     },
+    /// Show the resource the event carries (`open(x)` on a list's `select(x)`): the row that was
+    /// pressed, whatever it shows.
+    OpenEvent { view: Option<String> },
     /// Set the view's own state `name` to the event's value.
     State { name: String },
     /// Both: run the action, and set the state (a compose box cleared after it sends).
@@ -146,6 +149,20 @@ impl ViewCx {
         )
     }
 
+    /// The event of `node` named `event` that shows the resource the event carries, as a
+    /// virtual list's `activate` does (`open(x)` on `activate(x)`): the row that was pressed,
+    /// whatever it shows, is placed.
+    #[must_use]
+    pub fn open_event(&self, node: &Node, event: &str, view: Option<&str>) -> Event {
+        self.attach(
+            node,
+            event,
+            Effect::OpenEvent {
+                view: view.map(str::to_owned),
+            },
+        )
+    }
+
     /// The event of `node` named `event` that sets the view's state `name` to the event's value
     /// (a disclosure's open, a checked box).
     #[must_use]
@@ -167,7 +184,10 @@ impl ViewCx {
                 toggles: None,
                 invokes: Some((target.id_string(), action.clone())),
             },
-            Effect::Open { .. } | Effect::State { .. } | Effect::None => Event::default(),
+            Effect::Open { .. }
+            | Effect::OpenEvent { .. }
+            | Effect::State { .. }
+            | Effect::None => Event::default(),
         };
         self.events
             .borrow_mut()
