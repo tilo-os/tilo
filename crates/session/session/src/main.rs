@@ -893,7 +893,8 @@ fn device_options(
         // The lock screen, the on-screen keyboard and quick settings are the
         // session's own apps: the screen is started when the session locks,
         // the keyboard whenever the person may want it, under the hands they
-        // type with, and quick settings while the stack has its popover up.
+        // type with, and quick settings for the session's life, shown while
+        // the stack has its popover up.
         surfaces: surfaces(),
         user: tilo_session::unlock::login_user(),
         verifier: tilo_session::unlock::installed(),
@@ -909,7 +910,7 @@ fn device_options(
 }
 
 /// The surface apps the session starts itself: its lock screen, its on-screen
-/// keyboard, and, on a machine of its own, quick settings. Each runs when what
+/// keyboard, and quick settings. Each runs when what
 /// it shows is wanted; a machine without one loses that surface, never the
 /// session.
 #[cfg(target_os = "linux")]
