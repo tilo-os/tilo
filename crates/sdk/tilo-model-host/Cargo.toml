@@ -42,7 +42,6 @@ tilo-service = { path = "../../session/service" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 # The ABI the module calls, and the model side's request and answer types.
 tilo-model-abi = { version = "0.1.0", path = "../tilo-model-abi" }
-tilo-model-guest = { version = "0.1.0", path = "../tilo-model-guest" }
 # The entropy a module never has of its own: a record's actor id is drawn here.
 getrandom.workspace = true
 

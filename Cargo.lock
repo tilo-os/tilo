@@ -19731,7 +19731,6 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-model-abi",
- "tilo-model-guest",
  "tilo-resource",
  "tilo-service",
  "tilolang-runtime",

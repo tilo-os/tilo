@@ -14,10 +14,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_model_guest::{Answer, Refused, Request};
+use tilo_model_abi::{Answer, IMPORTS, MODULE, Refusal, Request, export};
 use tilolang_runtime::engine::{Engine, GuestAnswer, Host as WasmHost, HostFail, Wasm};
-
-use tilo_model_abi::{IMPORTS, MODULE, export};
 
 /// Why a module could not be loaded or its call did not answer.
 #[derive(Debug, thiserror::Error)]
@@ -48,14 +46,12 @@ pub struct Module {
     hash: tilolang_runtime::ids::ModuleHash,
     /// The engine, which the host keeps for every module it runs.
     engine: Rc<Engine>,
-    /// What the last call answered, while the imports may still write it.
-    answering: RefCell<Option<Answered>>,
 }
 
 /// What a call answered, between the module's `answer` import and the host reading it.
 enum Answered {
     Success(Answer),
-    Refused(Refused),
+    Refused(Refusal),
     /// The module failed without saying why (a trap before it refused).
     Nothing,
 }
@@ -78,7 +74,6 @@ impl Module {
             app: app.to_owned(),
             hash,
             engine,
-            answering: RefCell::new(None),
         })
     }
 
@@ -118,17 +113,19 @@ impl Module {
         }
         let asked = serde_json::to_vec(request)
             .map_err(|error| ModuleError::Malformed(self.app.clone(), error.to_string()))?;
+        // The engine keeps its host for the call's whole length, so the call owns
+        // everything it answers with; what it publishes is read back afterwards.
+        let answered = Rc::new(RefCell::new(Some(Answered::Nothing)));
         let host = Call {
             app: self.app.clone(),
             request: asked,
-            answered: &self.answering,
+            answered: Rc::clone(&answered),
         };
-        *self.answering.borrow_mut() = Some(Answered::Nothing);
         let outcome = self.engine.call(&self.hash, &symbol, &[], Rc::new(host));
         // The call's answer is what its imports published, whether or not the trap that ends a
         // refusal reached the host first.
-        let answered = self.answering.borrow_mut().take();
-        match answered {
+        let published = answered.borrow_mut().take();
+        match published {
             Some(Answered::Success(answer)) => Ok(answer),
             Some(Answered::Refused(refused)) => Err(ModuleError::Refused(refused.message)),
             Some(Answered::Nothing) | None => match outcome {
@@ -143,13 +140,13 @@ impl Module {
 }
 
 /// One call into a module: the request to hand it, and where its answer is kept.
-struct Call<'a> {
+struct Call {
     app: String,
     request: Vec<u8>,
-    answered: &'a RefCell<Option<Answered>>,
+    answered: Rc<RefCell<Option<Answered>>>,
 }
 
-impl WasmHost for Call<'_> {
+impl WasmHost for Call {
     fn import(&self, id: usize, _memory: &[u8], _args: &[Wasm]) -> Result<Option<Wasm>, HostFail> {
         Err(HostFail::Trap(format!(
             "{}'s model called the package import {id}, which this host does not answer",
@@ -175,7 +172,7 @@ impl WasmHost for Call<'_> {
             )));
         }
         match name {
-            "request" => answer_bytes(memory, args, &self.request),
+            "request" => answer_bytes(args, &self.request),
             "entropy" => entropy(memory, usize_of(args.first())?, usize_of(args.get(1))?),
             "answer" => {
                 let bytes = read(memory, args)?;
@@ -190,7 +187,7 @@ impl WasmHost for Call<'_> {
             }
             "fail" => {
                 let bytes = read(memory, args)?;
-                let refused: Refused = serde_json::from_slice(&bytes).map_err(|error| {
+                let refused: Refusal = serde_json::from_slice(&bytes).map_err(|error| {
                     HostFail::Trap(format!(
                         "{}'s model refused in what is not one: {error}",
                         self.app
@@ -213,7 +210,7 @@ impl WasmHost for Call<'_> {
 
 /// `bytes` written into the module's buffer at the pointer it gave, or the negated size it
 /// needs when the buffer is too small.
-fn answer_bytes(memory: &[u8], args: &[Wasm], bytes: &[u8]) -> Result<GuestAnswer, HostFail> {
+fn answer_bytes(args: &[Wasm], bytes: &[u8]) -> Result<GuestAnswer, HostFail> {
     let pointer = usize_of(args.first())?;
     let capacity = usize_of(args.get(1))?;
     if bytes.len() > capacity {
