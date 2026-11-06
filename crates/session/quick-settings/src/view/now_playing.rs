@@ -198,18 +198,22 @@ fn song(cx: &ViewCx<QuickSettings>, choices: &Choices) -> Row {
         .with_intrinsic_height()
         .with_rhythm(Rhythm::Tight);
     match &choices.app {
-        Some(app) => lines = lines.push(Box::new(cx.actions().bind_effect_invocation(
-            // The song's own name is the button's name, so the row reads as
-            // the song it steers; the tooltip says where the press goes.
-            Button::new("qs-now-playing-open", &choices.title)
-                .role(ButtonRole::Plain)
-                .with_accessible_name(&choices.title)
-                .tooltip(t_args(
-                    "qs-now-playing-open",
-                    &[("app", choices.source.clone().into())],
-                )),
-            &QsEffect::OpenPlaying { app: app.clone() },
-        ))),
+        Some(app) => {
+            lines = lines.push(Box::new(
+                cx.actions().bind_effect_invocation(
+                    // The song's own name is the button's name, so the row reads as
+                    // the song it steers; the tooltip says where the press goes.
+                    Button::new("qs-now-playing-open", &choices.title)
+                        .role(ButtonRole::Plain)
+                        .with_accessible_name(&choices.title)
+                        .tooltip(t_args(
+                            "qs-now-playing-open",
+                            &[("app", choices.source.clone().into())],
+                        )),
+                    &QsEffect::OpenPlaying { app: app.clone() },
+                ),
+            ));
+        }
         None => {
             lines = lines.push(Box::new(
                 Text::new(&choices.title)
@@ -329,7 +333,15 @@ fn cover(art: &ui::widget::TransportArt) -> Element {
                 .with_corner_radius(COVER_RADIUS)
                 .filling(),
         ),
-        _ => Box::new(IconWidget::new(Icon::Music).dim()),
+        ui::widget::TransportArt::Image(image) => Box::new(
+            Image::from_rgba(image.data.data().to_vec().into(), image.width, image.height)
+                .with_fit(ImageFit::Cover)
+                .with_corner_radius(COVER_RADIUS)
+                .filling(),
+        ),
+        ui::widget::TransportArt::None | ui::widget::TransportArt::Placeholder => {
+            Box::new(IconWidget::new(Icon::Music).dim())
+        }
     };
     Box::new(
         Container::new()

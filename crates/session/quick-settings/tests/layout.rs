@@ -386,6 +386,69 @@ fn what_plays_is_steered_from_the_panel_through_its_effects() {
     );
 }
 
+/// The song stands in the panel as a row a person reads: the cover it came
+/// with at the leading edge, the song and who it is by beside it, and the
+/// transport named by what each button does. A reading that lands while the
+/// panel is open is what the row shows next.
+#[test]
+fn the_song_stands_in_the_row_with_its_cover_and_named_transport() {
+    let _settled = ui::motion::testing::settled();
+    let (mut app, host) = hosted("now-playing");
+    assert!(
+        has(&mut app, "qs-now-playing"),
+        "the song stands in the panel"
+    );
+    let cover = target(&mut app, "qs-now-playing-cover");
+    assert!(
+        (cover.width() - 40.0).abs() < 0.5 && (cover.height() - 40.0).abs() < 0.5,
+        "the cover takes its square at the row's leading edge: {cover:?}"
+    );
+    let name = target(&mut app, "qs-now-playing-open");
+    assert!(
+        name.x0 > cover.x0 + cover.width() / 2.0 && name.y0 < cover.y1 && name.y1 > cover.y0,
+        "the song's name stands in the row beside the cover: {name:?} against {cover:?}"
+    );
+    let said_by = |app: &mut HeadlessApp<QuickSettingsApp>| {
+        ui::headless::test_support::semantic_nodes(app.harness())
+            .into_iter()
+            .filter_map(|(_, node)| node.name)
+            .collect::<Vec<_>>()
+    };
+    let names = said_by(&mut app);
+    for said in [
+        "Clair de lune",
+        "Claude Debussy",
+        "Pause",
+        "Previous song",
+        "Next song",
+    ] {
+        assert!(
+            names.iter().any(|name| name == said),
+            "the row says {said:?}: {names:?}"
+        );
+    }
+
+    // The player pauses while the panel stands: the middle control now says
+    // what a press would do.
+    host.update(|state| {
+        state
+            .now_playing
+            .as_mut()
+            .expect("the fixture plays a song")
+            .playing = false;
+    });
+    app.settle();
+    let names = said_by(&mut app);
+    assert!(
+        names.iter().any(|name| name == "Play"),
+        "a paused song's middle control offers to play: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|name| name == "Pause"),
+        "and no longer offers to pause: {names:?}"
+    );
+}
+
 #[test]
 fn the_effects_are_published_for_the_palette_scripts_and_agents() {
     let (mut app, host) = hosted("controls");

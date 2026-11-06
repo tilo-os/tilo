@@ -580,6 +580,32 @@ fn the_field_holds_the_keyboard_as_the_screen_comes_up() {
     );
 }
 
+/// The screen reads in the language the person chose: the field asks for the
+/// password in German, and in nothing of the source language.
+#[test]
+fn the_screen_reads_in_the_persons_language() {
+    settings_store::appearance::LANGUAGE
+        .set(Some("de-DE".to_owned()))
+        .expect("the person's language is saved");
+    let (mut app, _seat, _asked) = locked(screen());
+    let said = labels(&mut app);
+    let field = holds_keyboard(&mut app);
+    settings_store::appearance::LANGUAGE
+        .set(None)
+        .expect("the language is the system's again");
+    assert_eq!(
+        field.as_deref(),
+        Some("Passwort"),
+        "the field asks for the password in German: {said:?}"
+    );
+    for english in ["Password", "Show password", "Unlock", "On-screen keyboard"] {
+        assert!(
+            !said.iter().any(|label| label == english),
+            "nothing on the screen says {english:?}: {said:?}"
+        );
+    }
+}
+
 #[test]
 fn enter_unlocks_and_so_does_the_arrow_inside_the_field() {
     let (mut app, seat, asked) = locked(screen());

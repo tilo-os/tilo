@@ -52,7 +52,7 @@ pub const DEFAULT_VIEWPORT: (u32, u32) = (1280, 800);
 
 /// A small `data:` picture, for a capture or a test that shows one: a
 /// 64-by-64 image in two colours, small enough to travel in its own address.
-pub const FIXTURE_PICTURE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAChElEQVR42uXPeU8IABjA4fdvN3MzN3MmJd2lg+5L57rv+9Sh+9DdSjqRM62EFBKJlRxjZsbMmJkxM2NmzMyY+fkg7/MNHrEw6MRyazvWhm3YbmvFzqgFe+ODOJo0s3vHAZxNm3A1a8TNvAEPy3q8rOrwsa7F16YGP9tqAuyqCLKvJNhhPyGO5YTtKiPCqZQo5xJiXIqJdS0i3q2QRPcCkj3zSfXKI807lwyfHLL2ZJPtt5cc/yzyAjLJD8ygMCid4uBUSkJSKAtNpiIsicrwRKojE6iJiqcuOo6GmFgaY6NpiouiOSGSlsQI2pLC6UgOozMllMNpIXSlB3MsI4gTmYGczAqgO9ufnhw/enN96cvbQ/8+H84VeCOa8wOFnojm/GCRB6I5P1TsjmjOXypxQzTnh0tdEc35kXIXRHP+WoUzojk/ut8J0Zwfq9yNaM7frHJENOfHaxwQzfmJWntEc36yzg7RnL9TvxPRnL/XYItozt9vtEE05x80WSOa8w8PWCGa84+aLRDN+ccHzRHN+SetZojm/NM2U0Rz/ln7DkRz/nmHCaI5/6JzO6I5//KQMaI5/+qIEaI5/7rLENGcf3N0K6I5//aYAaI5/+74FkRz/v3JzYjm/IdTmxDN+Y/dGxHN+U+nNyCa85961iKa81961yGa81/71iKa89/OrEE057/3r0Y053+cXYVozv88vxLRnP81sALRnP99YTmiOf9ncBmiOf93aCmiOf/v4hJEc57LixHNeYYXIZrzXFmIaM4zsgDRnOfqfERzntF5iOY81+cimvOMzUE057kxG9Gc5+YsRHOe8ZmI5jwTMxDNeW5NRzTnmZyGaM5zeyqiOc/dKfwHQFYO+LCVe6AAAAAASUVORK5CYII=";
+pub const FIXTURE_PICTURE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABAAQMAAACQp+OdAAAABlBMVEXyyHpLP7ovf/CwAAAAf0lEQVR42j3RsRHAMAhDUcj+QzEKI1BScJAi+nHjdyp0NvjZdx7dBxYMaFAgQbh6XMlRuGBAgwIJwtTjSo6HLRjQoECCMPW4kuODCwY0KJAgTD2u5BjUggENCiQIU48rOQa+YECDAglCgz329WPBgAYFEgR7Zu8/FgxoUCABNS8YGz171qSmDgAAAABJRU5ErkJggg==";
 
 pub use tilo_headless_schema::{
     Action, Capture, Invocation, SemanticAction, SemanticExpectation, Spec,
