@@ -132,6 +132,9 @@ pub(crate) enum Hit {
     CallScreen,
     CallExpand,
     CallLeave,
+    /// Take the call back into the window that draws it, from the card the
+    /// shell places.
+    CallOpenWindow,
     /// Someone else in the call, by person id: opens how loud they play
     /// here.
     CallParticipant(String),
@@ -219,6 +222,7 @@ impl Hit {
             Self::CallParticipantsToggle => "chat.call-participants".into(),
             Self::CallExpand => "chat.call-expand".into(),
             Self::CallLeave => "chat.call-leave".into(),
+            Self::CallOpenWindow => "chat.call-open-window".into(),
             Self::CallParticipant(id) => format!("chat.call-participant:{id}"),
             other => format!("chat.control:{other:?}"),
         }
@@ -629,8 +633,10 @@ impl ChatApp {
                     Hit::CallMute => (
                         copy(if self.microphone_missing() {
                             "chat-call-no-microphone"
+                        } else if self.call.muted || self.call.deafened {
+                            "chat-call-unmute"
                         } else {
-                            "chat-call-mute-action"
+                            "chat-call-mute"
                         }),
                         Role::ToggleButton,
                         self.call.muted,
@@ -661,6 +667,7 @@ impl ChatApp {
                         self.call.expanded,
                     ),
                     Hit::CallLeave => (copy("chat-call-leave-action"), Role::Button, false),
+                    Hit::CallOpenWindow => (copy("chat-call-open-window"), Role::Button, false),
                     Hit::CallParticipant(id) => (
                         content(crate::i18n::t_args(
                             "chat-call-participant",
@@ -735,6 +742,11 @@ impl ChatApp {
                         | Hit::TogglePins
                         | Hit::CallMute
                         | Hit::CallDeafen
+                        | Hit::CallCamera
+                        | Hit::CallLeave
+                        | Hit::CallScreen
+                        | Hit::CallExpand
+                        | Hit::CallParticipantsToggle
                         | Hit::Attach
                         | Hit::Send
                         | Hit::AddReaction { .. }

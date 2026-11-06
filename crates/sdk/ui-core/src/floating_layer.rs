@@ -231,14 +231,17 @@ pub fn card_size(work: Rect, summary: &Summary) -> Size {
     Size::new(width, height)
 }
 
-/// How big `card` stands on `work`: a card its app draws keeps the size its
-/// app asked for, and every other card the size its summary's rows take.
+/// How big `card` stands on `work`: every card in a column is as wide as the
+/// layer's one column, so the cards share a width and an edge, and the layer's
+/// place wins over what its app asked for. A card its app draws keeps the
+/// height its app asked for; every other card the height its summary's rows
+/// take. The app lays its body out at the width the layer's place gives it.
 #[must_use]
 pub fn card_extent(work: Rect, card: &Card) -> Size {
-    let widest = (work.width() - 2.0 * EDGE_INSET).max(0.0);
+    let column = card_size(work, &card.summary);
     match card.size {
-        Some(size) => Size::new(size.width.min(widest).max(1.0), size.height.max(1.0)),
-        None => card_size(work, &card.summary),
+        Some(size) => Size::new(column.width, size.height.max(1.0)),
+        None => column,
     }
 }
 

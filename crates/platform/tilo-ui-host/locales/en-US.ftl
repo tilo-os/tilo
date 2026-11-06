@@ -25,16 +25,10 @@ tilolang-embed-source = Block
 # What a change reads as in history, worked out from the field it wrote and what it held before
 # and after: a sentence goes on with it after who made it ("You moved this to Friday"). `$field`
 # is the field's name in a sentence ("due", "priority").
-tilolang-did-renamed = renamed this to
-tilolang-did-edited = edited the { $field }
 tilolang-did-changed = changed { $field }
-tilolang-did-completed = completed this
-tilolang-did-reopened = reopened this
 tilolang-did-created = created this
 tilolang-did-removed = removed this
 tilolang-did-moved = moved this to
-tilolang-did-moved-under = moved this under
-tilolang-did-moved-top = moved this to the top level
 tilolang-did-taken-out = moved this out of
 tilolang-did-assigned = assigned this to
 tilolang-did-unassigned = unassigned this

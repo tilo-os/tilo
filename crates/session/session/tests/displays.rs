@@ -313,7 +313,7 @@ fn focus_display(session: &mut Session, client: &mut TestClient, index: usize) {
 }
 
 /// The strip each display shows, by display id.
-fn shown_strips(session: &mut Session) -> Vec<(u32, String)> {
+fn shown_strips(session: &Session) -> Vec<(u32, String)> {
     session.desktop().with_policy(|policy| {
         policy.handle().read(|tree| {
             tree.outputs
@@ -331,7 +331,7 @@ fn shown_strips(session: &mut Session) -> Vec<(u32, String)> {
 /// Each strip group's width as the model holds it, with the display it lives
 /// on and the window it shows: a display's windows keep their width whatever
 /// opens on another.
-fn widths(session: &mut Session) -> Vec<(u32, WindowWidth, Option<String>)> {
+fn widths(session: &Session) -> Vec<(u32, WindowWidth, Option<String>)> {
     session.desktop().with_policy(|policy| {
         policy.handle().read(|tree| {
             tree.workspaces
@@ -399,7 +399,7 @@ fn each_display_keeps_the_strip_it_shows() {
         client.exchange();
         session.step(Duration::from_millis(16)).unwrap();
     }
-    let shown = shown_strips(&mut session);
+    let shown = shown_strips(&session);
     assert_ne!(
         shown[0].1, shown[1].1,
         "the left display took the new strip and the right kept its own: {shown:?}"
@@ -461,7 +461,7 @@ fn a_window_opening_beside_one_display_leaves_the_other_alone() {
         display_of(session, "org.example.Left") == Some(0)
     });
     let alone = rect(&mut session, "org.example.Left");
-    let width = widths(&mut session);
+    let width = widths(&session);
     assert!(
         painted(&mut session, "HEADLESS-1") > 0,
         "the left display shows its window"
@@ -473,7 +473,7 @@ fn a_window_opening_beside_one_display_leaves_the_other_alone() {
         display_of(session, "org.example.Right") == Some(1)
     });
     assert_eq!(
-        widths(&mut session).first(),
+        widths(&session).first(),
         width.first(),
         "the left display's window keeps the width it is given"
     );

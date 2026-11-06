@@ -30,8 +30,8 @@ macro_rules! app {
 const JOURNAL: &str = r#"app so.test.journal "Journal"
 
 type Entry {
-    title: Text (title)
-    body: Text (body)
+    title: Text
+    body: Text
 }
 
 type Journal {
@@ -165,8 +165,8 @@ fn grep_knows_block_kinds_groups_times_and_writers() {
     assert!(all.ends_with("\n3"), "{all}");
     let unquoted = printed(&w.run(r"grep(/\bTide\b/, in: journal, not: .quote).map(.anchor)"));
     assert!(
-        unquoted.ends_with("\n¶2\n¶3.1"),
-        "a list prints a line per item: {unquoted}"
+        unquoted.ends_with("\nbody ¶2\nbody ¶3.1"),
+        "a list prints a line per item, cited by the field that holds it: {unquoted}"
     );
 
     let tasks = printed(
@@ -301,7 +301,7 @@ fn describe_gives_declarations_of_apps_types_actions_fields_and_resources() {
     let ty = printed(&w.run("describe(Task)"));
     assert!(ty.contains("type tasks.Task {"), "{ty}");
     assert!(
-        ty.contains("    done: Bool (done)\n"),
+        ty.contains("    done: Bool\n"),
         "the declaration says the field is the one that is finished: {ty}"
     );
     assert!(

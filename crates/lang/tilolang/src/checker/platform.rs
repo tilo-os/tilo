@@ -192,17 +192,6 @@ impl Checker<'_> {
             );
             return Ex::error();
         };
-        if held.derived.is_some() {
-            self.err(
-                "E020",
-                field.span,
-                format!(
-                    "`changed` reads a stored field; `{}` is computed from others, which carry their own versions",
-                    field.name
-                ),
-            );
-            return Ex::error();
-        }
         let id = held.id.clone();
         Ex::host(
             Imp::FieldChanged,

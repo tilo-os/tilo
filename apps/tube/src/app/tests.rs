@@ -1238,17 +1238,6 @@ fn youtube_answers_the_platform_search_as_it_is_typed_and_stale_answers_drop() {
 /// Rust row exactly as it matches a tilolang item.
 #[test]
 fn a_catalogue_rows_type_is_its_declarations() {
-    // The app names itself where its definition is made, as a host opening it
-    // does.
-    let _ = crate::definition();
-    let app = TubeApp::sample();
-    let resources: Vec<_> = {
-        let tube = app.tube();
-        crate::rows::live_rows(&tube.model, tube.device_sync_view())
-            .into_iter()
-            .map(ui::framework::LiveRow::into_resource)
-            .collect()
-    };
     fn find<'a>(
         resources: &'a [ui::tilo_actions::ResourceSpec],
         prefix: &str,
@@ -1261,6 +1250,17 @@ fn a_catalogue_rows_type_is_its_declarations() {
             }
         })
     }
+    // The app names itself where its definition is made, as a host opening it
+    // does.
+    let _ = crate::definition();
+    let app = TubeApp::sample();
+    let resources: Vec<_> = {
+        let tube = app.tube();
+        crate::rows::live_rows(&tube.model, tube.device_sync_view())
+            .into_iter()
+            .map(ui::framework::LiveRow::into_resource)
+            .collect()
+    };
     let words = |prefix: &str| {
         find(&resources, prefix)
             .unwrap_or_else(|| panic!("a {prefix} row is published"))

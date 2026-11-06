@@ -122,12 +122,8 @@ impl Resolver<'_> {
                     );
                     continue;
                 }
-                let mut info = self.field(&t.name.name, f, lock);
-                info.role = None;
-                fields.push(info);
+                fields.push(self.field(&t.name.name, f, lock));
             }
-            self.roles(&t.name.name, t, &mut fields);
-            self.derived_keys(&t.name.name, t, &mut fields, lock);
             self.env.types.push(TypeInfo {
                 key: TypeKey {
                     app: self.env.app.clone(),

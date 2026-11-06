@@ -30,7 +30,7 @@
 //! collaboration broker and the shell-ui socket as itself, so what it asks is
 //! answered for its own tab.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufReader, Write};
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -44,7 +44,7 @@ use serde::Deserialize;
 use tilo_app_launch::routing;
 use tilo_app_launch::{Connects, Launch, Open, WindowConnections};
 use tilo_compositor::{Compositor, ReadableWatch};
-use tilo_desktop_policy::DesktopPolicy;
+use tilo_desktop_policy::{DesktopPolicy, app_ids_match};
 use tilo_surface_host::DesktopHost;
 use ui::Theme;
 use ui::WindowAppearance;
@@ -173,6 +173,9 @@ pub struct AppTabs {
     links: BTreeMap<u64, Link>,
     /// The cards the apps draw themselves, and where the layer gives them.
     cards: crate::cards::Cards,
+    /// The apps this session started, whose launches name each app window:
+    /// what tells a window of an app from another window of the same app.
+    launches: Arc<Launches>,
     /// The questions the person is answering for Terminal's own shell.
     host_shell: HostShellAsks,
     /// The listener the apps connect to, taken off on the session's own pass,
@@ -180,10 +183,15 @@ pub struct AppTabs {
     socket: Socket,
 }
 
-/// An open shell-ui connection: the app it vouches for, whether its launch
-/// let the app know the network's state, and what its window was last told.
+/// An open shell-ui connection: the app it vouches for, the launch whose
+/// window it is, whether that launch let the app know the network's state,
+/// and what its window was last told.
 struct Link {
     app: String,
+    /// The launch the window that speaks on this connection belongs to: what
+    /// tells it apart from another window of the same app, and so whether the
+    /// very window that draws an activity is on the desk.
+    launch: u32,
     /// Whether this app's launch let it know the network's state; a window
     /// never widens that for itself.
     network_allowed: bool,
@@ -222,6 +230,8 @@ struct Request {
     app: String,
     /// The workspace its launch runs it in.
     workspace: String,
+    /// The launch the window that speaks on this connection belongs to.
+    launch: u32,
     /// The connection the ask came in on, which its answer goes back on and
     /// which its capture protection lasts as long as.
     connection: u64,
@@ -251,12 +261,13 @@ impl AppTabs {
         let listener = tilo_files::native::socket::bind(&path)
             .map_err(|error| format!("bind the shell-ui socket {}: {error}", path.display()))?;
         let (requests, answers) = mpsc::channel();
-        let socket = Socket::serve(listener, path, launches, requests, wake)?;
+        let socket = Socket::serve(listener, path, Arc::clone(&launches), requests, wake)?;
         Ok(Self {
             requests: answers,
             withheld: BTreeMap::new(),
             links: BTreeMap::new(),
             cards,
+            launches,
             host_shell: HostShellAsks::default(),
             socket,
         })
@@ -296,6 +307,7 @@ impl AppTabs {
                 withheld: &mut self.withheld,
                 links: &mut self.links,
                 cards: &self.cards,
+                launches: &self.launches,
             };
             for request in self.requests.try_iter() {
                 answered.answer(&mut self.host_shell, request);
@@ -316,16 +328,42 @@ impl AppTabs {
     }
 
     /// Stand each app's own card where the floating layer put it this pass,
-    /// and stand it down while the app's own window is on the desk: there the
-    /// app draws the activity itself, and its card waits out of sight.
+    /// and stand it down while the window that draws it is on the desk: there
+    /// the app draws the activity itself, and its card waits out of sight.
     ///
     /// The layer decides the place; the app's own geometry is a request it
     /// made when presenting, and its window is laid out by what this says.
     fn follow_cards(&self, desktop: &DesktopHost, compositor: &mut Compositor) {
         let placements = self.cards.placements();
+        // The windows on the desk this pass, and the launch each belongs to:
+        // what tells whether the very window that draws an activity is on
+        // screen, rather than another window of the same app.
+        let shown: BTreeSet<u64> = desktop.with_policy(|policy| {
+            policy
+                .layout()
+                .shown
+                .into_iter()
+                .map(|(window, _)| window)
+                .collect()
+        });
+        let windows = compositor.windows();
+        let shown_launches: BTreeSet<u32> = windows
+            .iter()
+            .filter(|(window, _)| shown.contains(&window.id))
+            .filter_map(|(window, _)| window.pid)
+            .filter_map(|pid| self.launches.launch_of(pid))
+            .collect();
         let mut moved = false;
         for card in self.cards.presented() {
-            let in_view = desktop.with_policy(|policy| policy.shows(&card.app));
+            let in_view = match self.links.get(&card.connection) {
+                // The launch that draws the activity has a window on the desk:
+                // the app draws it there, and another window of the same app
+                // elsewhere leaves the card to this one.
+                Some(link) => shown_launches.contains(&link.launch),
+                // A connection that has not said whose launch it is is no
+                // window of its own yet: the app's windows stand for it.
+                None => desktop.with_policy(|policy| policy.shows(&card.app)),
+            };
             self.cards.see(&card.app, &card.activity, in_view);
             let wanted = if in_view || card.stood_down {
                 None
@@ -390,9 +428,18 @@ impl AppTabs {
                 );
             }
         }
-        // A card's window that went away leaves the app drawing it on the
-        // desk with nothing to draw it in: send it home, and it presents the
-        // card again.
+        moved |= self.home_lost_cards();
+        if moved {
+            compositor.rearrange();
+        }
+    }
+
+    /// A card's window that went away leaves the app drawing it on the desk
+    /// with nothing to draw it in: send it home, and it presents the card
+    /// again. Says whether the desk's cards changed.
+    fn home_lost_cards(&self) -> bool {
+        let placements = self.cards.placements();
+        let mut moved = false;
         for token in self.cards.lost() {
             let Some(card) = self.cards.by_token(&token) else {
                 continue;
@@ -410,9 +457,7 @@ impl AppTabs {
             }
             moved = true;
         }
-        if moved {
-            compositor.rearrange();
-        }
+        moved
     }
 
     /// Give every open window the appearance of the desk it stands on: the
@@ -482,11 +527,14 @@ struct Answers<'a> {
     withheld: &'a mut BTreeMap<u64, String>,
     links: &'a mut BTreeMap<u64, Link>,
     cards: &'a crate::cards::Cards,
+    launches: &'a Launches,
 }
 
 impl Answers<'_> {
     /// The app draws its activity in its own window again: the desk hides
-    /// the card's window, and the app is told it stands down.
+    /// the card's window, the app is told it stands down, and the window
+    /// that draws it comes forward — the person asked for the activity
+    /// where it lives, not for a card that vanishes.
     fn stand_down(&mut self, card: &crate::cards::Presented, reply: &Arc<Mutex<UnixStream>>) {
         self.cards.told(&card.app, &card.activity, None);
         self.cards.placements().suspend(&card.token);
@@ -498,6 +546,24 @@ impl Answers<'_> {
             },
             &card.app,
         );
+        let Some(launch) = self.links.get(&card.connection).map(|link| link.launch) else {
+            return;
+        };
+        let window = self
+            .compositor
+            .windows()
+            .into_iter()
+            .find(|(window, _)| {
+                window.pid.and_then(|pid| self.launches.launch_of(pid)) == Some(launch)
+                    && window
+                        .app_id
+                        .as_deref()
+                        .is_some_and(|app_id| app_ids_match(app_id, &card.app))
+            })
+            .map(|(window, _)| window.id);
+        if let Some(window) = window {
+            self.desktop.with_policy(|policy| policy.focus(window));
+        }
     }
 
     /// Answer one ask of the app it came from: an ask never changes another
@@ -511,6 +577,7 @@ impl Answers<'_> {
         let Request {
             app,
             workspace,
+            launch,
             connection,
             reply,
             ask,
@@ -548,6 +615,7 @@ impl Answers<'_> {
                     connection,
                     Link {
                         app,
+                        launch,
                         network_allowed,
                         writer: reply,
                         told: None,
@@ -1149,10 +1217,13 @@ fn serve_connection(
         return;
     }
     let app = handshake.app_id;
-    let Some(workspace) = launched_workspace(launches, peer, &app) else {
+    let Some((workspace, pid)) = launched(launches, peer, &app) else {
         tracing::info!(%app, "a shell-ui connection names no app this session started");
         return;
     };
+    // The launch the window belongs to: an app runs one process per window
+    // tree, and a window that connects from below it names that tree.
+    let launch = launches.launch_of(pid).unwrap_or(pid);
     let reply = Arc::new(Mutex::new(writer));
     // From here the window is told the appearance of the desk it stands on,
     // and it is told once more whenever that changes.
@@ -1160,6 +1231,7 @@ fn serve_connection(
         .send(Request {
             app: app.clone(),
             workspace: workspace.clone(),
+            launch,
             connection,
             reply: Arc::clone(&reply),
             ask: Ask::Connected {
@@ -1191,6 +1263,7 @@ fn serve_connection(
             .send(Request {
                 app: app.clone(),
                 workspace: workspace.clone(),
+                launch,
                 connection,
                 reply: Arc::clone(&reply),
                 ask: Ask::Message(Box::new(message)),
@@ -1205,6 +1278,7 @@ fn serve_connection(
     let _ = requests.send(Request {
         app: app.clone(),
         workspace,
+        launch,
         connection,
         reply,
         ask: Ask::Closed,
@@ -1239,16 +1313,20 @@ fn peer_pid(stream: &UnixStream) -> Option<u32> {
     u32::try_from(credentials.pid).ok().filter(|pid| *pid > 0)
 }
 
-/// The workspace the app the connection names runs in, when this session
-/// started it: the launch the peer's process belongs to.
-fn launched_workspace(launches: &Launches, peer: Option<u32>, app: &str) -> Option<String> {
+/// The workspace the app the connection names runs in and the process the
+/// window that speaks for it runs in, when this session started it: the
+/// launch the peer's process belongs to, which is the process the window's
+/// activity draws in.
+fn launched(launches: &Launches, peer: Option<u32>, app: &str) -> Option<(String, u32)> {
     let pid = match peer {
         // The session connects a window it opens in an app's running process
         // itself: what it recorded for that connection names the launch.
         Some(pid) if pid == std::process::id() => launches.take_window_shell_ui(app)?,
         peer => peer?,
     };
-    launches.workspace_of(pid, app)
+    launches
+        .workspace_of(pid, app)
+        .map(|workspace| (workspace, pid))
 }
 
 /// Tell an app speaking another shell-ui version which one this session

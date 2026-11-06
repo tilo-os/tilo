@@ -4,7 +4,9 @@
 //! that reads as "there are no apps".
 
 use super::super::{AppBrokerState, BrokerChannels, FanoutState, PeerPublisher};
-use crate::test_support::{Grants as _, KindSet, Subject, Workspace, WorkspaceSlot, WorkspaceTree};
+use crate::test_support::{
+    Grants as _, KindSet, Subject, TreePath, Workspace, WorkspaceSlot, WorkspaceTree,
+};
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND, ActionHostError, Caller, CataloguePage,
@@ -44,13 +46,28 @@ impl crate::services::LauncherServices for Installed {
     }
 }
 
-/// A workspace owned by a person, with agent `scribe` admitted as an
-/// observer (it reads the workspace) and let use Notes.
+/// An agent inside a turn: `person`'s message in a conversation it takes part
+/// in caused what it asks, in `workspace`. Nothing an agent does stands
+/// outside one.
+fn turn_caller(agent: &str, person: &str, workspace: &str) -> Caller {
+    Caller::agent_turn(
+        agent,
+        person,
+        tilo_action_policy::turn::Turn::new("chat/workspace/channels/1", "m1"),
+    )
+    .in_workspace(workspace.to_owned())
+}
+
+/// A workspace owned by a person, whose agent `scribe` may not open Sheets:
+/// the bound its record keeps, as the document holds it.
 fn workspace() -> Workspace {
     let mut workspace = Workspace::new(WorkspaceSlot(14), "Home");
     workspace.set_owner("owner");
-    workspace.admit_agent("scribe", KindSet::READ);
-    workspace.allow_app(Subject::agent("scribe"), NOTES, KindSet::ALL);
+    workspace.deny(
+        Subject::agent("scribe"),
+        &TreePath::root().app(SHEETS),
+        KindSet::ALL,
+    );
     workspace
 }
 
@@ -126,7 +143,7 @@ fn an_agent_is_told_every_installed_app_and_which_it_may_open() {
     let workspace = workspace();
     let workspace_id = workspace.id().to_string();
     let state = broker(vec![workspace], vec![NOTES, SHEETS], true);
-    let agent = Caller::local_agent("scribe").in_workspace(&workspace_id);
+    let agent = turn_caller("scribe", "owner", &workspace_id);
 
     let page = installed(&state, &agent, &workspace_id).expect("the workspace is reachable");
     let listed: Vec<(String, Option<String>)> = page
@@ -150,7 +167,7 @@ fn an_agent_is_told_every_installed_app_and_which_it_may_open() {
             ),
             (format!("app.{SHEETS}"), None),
         ],
-        "Notes, which it may use, opens; Sheets is named without the action"
+        "Notes, which its person may open, opens; Sheets, which its record          does not let it open, is named without the action"
     );
 
     // The person is offered both to open, as before.
@@ -169,7 +186,7 @@ fn an_agent_in_a_workspace_with_nothing_reads_an_empty_list() {
     let workspace = workspace();
     let workspace_id = workspace.id().to_string();
     let state = broker(vec![workspace], Vec::new(), true);
-    let agent = Caller::local_agent("scribe").in_workspace(&workspace_id);
+    let agent = turn_caller("scribe", "owner", &workspace_id);
 
     let page = publishers(&state, &agent).expect("reachable, with nothing running");
     assert!(page.providers.is_empty() && page.rows.is_empty());
@@ -189,10 +206,10 @@ fn an_agent_that_cannot_reach_its_workspace_is_told_why() {
 
     // Not a member: the person removed it, or never admitted it here.
     let state = broker(vec![workspace.clone()], vec![NOTES], true);
-    let stranger = Caller::local_agent("intruder").in_workspace(&workspace_id);
+    let stranger = turn_caller("scribe", "outsider", &workspace_id);
     let why = reason(publishers(&state, &stranger));
     assert!(
-        why.contains("intruder") && why.contains("no longer a member of workspace Home"),
+        why.contains("scribe") && why.contains("no longer a member of workspace Home"),
         "{why}"
     );
     let why = reason(installed(&state, &stranger, &workspace_id));
@@ -200,7 +217,7 @@ fn an_agent_that_cannot_reach_its_workspace_is_told_why() {
 
     // The workspace it was admitted to is gone from this device.
     let elsewhere = Workspace::new(WorkspaceSlot(15), "Elsewhere");
-    let gone = Caller::local_agent("scribe").in_workspace(elsewhere.id().to_string());
+    let gone = turn_caller("scribe", "owner", &elsewhere.id().to_string());
     let why = reason(publishers(&state, &gone));
     assert!(why.contains("no longer on this device"), "{why}");
 
@@ -212,7 +229,7 @@ fn an_agent_that_cannot_reach_its_workspace_is_told_why() {
 
     // The session's workspaces never reached the broker.
     let detached = broker(vec![workspace], vec![NOTES], false);
-    let agent = Caller::local_agent("scribe").in_workspace(&workspace_id);
+    let agent = turn_caller("scribe", "owner", &workspace_id);
     let why = reason(publishers(&detached, &agent));
     drop(detached);
     assert!(why.contains("not attached"), "{why}");

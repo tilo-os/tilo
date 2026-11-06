@@ -10,11 +10,11 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
     RemoteActionTarget,
 };
+use tilo_app::feedback::Destination;
 use tilo_app::feedback::{Error, Submission};
 use tilo_app::feedback::{MaskedScreenshot, ReviewText};
 use tilo_browser_peer::{PeerEvent, PeerEvents, PeerHandle};
-use tilo_desktop::feedback::Destination;
-use tilo_desktop::feedback::transport::{
+use tilo_feedback_transport::{
     Capture, Enrollment, Identity, NoCapture, SignedReceipt, Startup, Transport,
 };
 use tilo_user_identity::DeviceCert;

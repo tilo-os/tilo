@@ -59,7 +59,7 @@ pub struct QuickSettings {
     pub editing: bool,
 }
 
-#[resource(kind = "quick-settings.panel", label = "Quick Settings")]
+#[resource(kind = "quick-settings.panel", label = "Quick Settings", answer = answer)]
 impl QuickSettings {
     /// Show the controls, with nothing open: how the panel opens.
     #[action(housekeeping)]
@@ -137,7 +137,11 @@ impl QuickSettings {
     }
 
     /// Go back: finish arranging, leave a page, or close the open section.
-    #[action(housekeeping)]
+    ///
+    /// It answers whether it had anywhere to go back to
+    /// ([`answer`]): the session that shows the panel closes it only from
+    /// the panel's main page, and asks it to go back everywhere else.
+    #[action(housekeeping, answers)]
     pub fn back(&mut self) {
         if self.editing {
             self.editing = false;
@@ -149,6 +153,18 @@ impl QuickSettings {
             self.section = None;
         }
     }
+}
+
+/// What [`QuickSettings::back`] answers its caller: whether it had anywhere
+/// to go back to, which is exactly whether it changed anything. A panel on
+/// its main page changes nothing, and its caller closes it.
+fn answer(
+    _doc: &ui::tilo_resource::Doc,
+    action: &str,
+    changes: &[ui::tilo_resource::Patch],
+) -> Option<ui::serde_json::Value> {
+    (action == QuickSettings::BACK.id)
+        .then(|| ui::serde_json::json!({ "handled": !changes.is_empty() }))
 }
 
 impl QuickSettings {
@@ -179,13 +195,11 @@ impl QuickSettings {
 /// The app.
 pub struct QuickSettingsApp;
 
-/// The width of the panel, as the desktop places it.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "a panel's width is a small positive whole number of pixels"
-)]
-pub const PANEL_WIDTH: u32 = ui::tokens::Metrics::BASE.panel_width_list as u32;
+/// The panel's footprint, as the desk sizes a popover and the window the
+/// card fills: the desk's `POPOVER_WIDTH` and `POPOVER_HEIGHT` place the
+/// window, so what the panel shows never changes where it stands.
+pub const PANEL_WIDTH: u32 = 380;
+pub const PANEL_HEIGHT: u32 = 640;
 
 impl ResourceApp for QuickSettingsApp {
     type Resource = QuickSettings;
@@ -215,16 +229,11 @@ impl ResourceApp for QuickSettingsApp {
         crate::view::panel(cx)
     }
 
-    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
-        // The height the panel has on an 800 px laptop output: the bar's 32
-        // and the popover margin's 8 off the bottom. A shot taller than this
-        // shows a panel no screen has room for.
-        let height = match scenario {
-            Some("paste") => 420,
-            Some("short") => 480,
-            _ => 760,
-        };
-        (PANEL_WIDTH, height)
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        // The panel's footprint, which the desk gives its window: the shot is
+        // the surface, so it is the size the surface stands at whatever it
+        // shows.
+        (PANEL_WIDTH, PANEL_HEIGHT)
     }
 
     fn scenarios() -> &'static [&'static str] {

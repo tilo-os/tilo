@@ -23,7 +23,7 @@ use crate::core::{Args, Core, HResult, trap};
 use crate::engine::{HostFail, Wasm};
 use crate::host_ui::THEN_ACTION;
 use crate::ids::Principal;
-use crate::meta::{ActionMeta, FieldKind, FieldRole, TypeKey, element_record, parse_ty};
+use crate::meta::{ActionMeta, FieldKind, TypeKey, element_record, parse_ty};
 use crate::store::{FieldSpec, FieldValue};
 use crate::value::{ActionRef, RefValue, ResourceRef, Value};
 
@@ -292,11 +292,7 @@ impl Look for Workspace<'_> {
         let Ok((_, element_ty)) = self.core.type_of_ref(&element) else {
             return Vec::new();
         };
-        let Some(title) = element_ty
-            .fields
-            .iter()
-            .find(|f| matches!(f.role, Some(FieldRole::Title)))
-        else {
+        let Some(title) = element_ty.name_field() else {
             return Vec::new();
         };
         let mut out = Vec::new();

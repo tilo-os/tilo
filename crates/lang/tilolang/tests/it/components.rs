@@ -20,8 +20,8 @@ fn one_error(body: &str) -> (String, String) {
 }
 
 const NOTE: &str = r"type Note {
-    title: Text (title)
-    body: Text (body)
+    title: Text
+    body: Text
     pinned: Bool = false
     done: Bool = false
 }
@@ -308,12 +308,12 @@ fn slots_and_events_print_back_as_written() {
 }
 
 const CHAT: &str = r#"type Message {
-    text: Text (title)
+    text: Text
     reactions: Map<List<Principal>>
 }
 
 type Conversation {
-    title: Text (title)
+    title: Text
     messages: Collection<Message>
 }
 
@@ -349,7 +349,7 @@ fn the_older_reactions_form_still_compiles() {
 }
 
 const REACTED: &str = r"type Post {
-    text: Text (title)
+    text: Text
     reactions: Map<Set<Principal>>
 }
 ";
@@ -446,9 +446,9 @@ fn a_collection_is_no_component_prop_and_goes_to_a_view_instead() {
 
 #[test]
 fn an_events_value_reaches_every_step_of_a_then_chain_that_uses_it() {
-    let body = "type Note {\n    title: Text (title)\n    read: Bool = false\n}\ntype Notebook {\n    notes: Collection<Note>\n}\naction read(n: Note) {\n    n.read = true\n}\nview notebook(nb: Notebook) {\n    ui.VirtualList {\n        on select(n: Note): open(n, front: false).then(read(n))\n    }\n}";
+    let body = "type Note {\n    title: Text\n    read: Bool = false\n}\ntype Notebook {\n    notes: Collection<Note>\n}\naction read(n: Note) {\n    n.read = true\n}\nview notebook(nb: Notebook) {\n    ui.VirtualList {\n        on select(n: Note): open(n, front: false).then(read(n))\n    }\n}";
     assert!(errors(body).is_empty(), "{:#?}", errors(body));
-    let reads_other = "type Note {\n    title: Text (title)\n}\ntype Notebook {\n    notes: Collection<Note>\n}\naction keep(nb: Notebook, title: Text) {\n    nb.notes.insert(Note(title: title))\n}\nview notebook(nb: Notebook) {\n    ui.VirtualList {\n        on select(n: Note): open(n).then(keep(nb, n.title))\n    }\n}";
+    let reads_other = "type Note {\n    title: Text\n}\ntype Notebook {\n    notes: Collection<Note>\n}\naction keep(nb: Notebook, title: Text) {\n    nb.notes.insert(Note(title: title))\n}\nview notebook(nb: Notebook) {\n    ui.VirtualList {\n        on select(n: Note): open(n).then(keep(nb, n.title))\n    }\n}";
     assert_eq!(one_error(reads_other).0, "E063");
 }
 

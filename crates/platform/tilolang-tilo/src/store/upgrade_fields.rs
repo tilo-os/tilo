@@ -55,11 +55,10 @@ impl Inner {
         let Some(schema) = lookup(ty) else {
             return false;
         };
-        let Some(root) = self
-            .mirror()
-            .ok()
-            .and_then(|mirror| crate::reads::resource_obj(mirror, app, doc))
-        else {
+        let Ok(mirror) = self.held_doc(doc) else {
+            return false;
+        };
+        let Some(root) = crate::reads::resource_obj(mirror, app, doc) else {
             return false;
         };
         // The record, and every item of it whose own type keeps a field as rich text.
@@ -72,9 +71,6 @@ impl Inner {
                 own,
             ));
         }
-        let Ok(mirror) = self.mirror() else {
-            return false;
-        };
         let items = Items::scan(mirror, &root, schema);
         for (id, found) in &items.found {
             let Some(obj) = found.obj.clone() else {
@@ -94,16 +90,27 @@ impl Inner {
                 rich,
             ));
         }
+        // What each record and item of it holds as plain text, read before any of it is written.
+        let plans: Vec<(ResourceRef, Vec<(String, String)>)> = targets
+            .into_iter()
+            .map(|(at, obj, fields)| {
+                let plain = fields
+                    .into_iter()
+                    .filter_map(|field| {
+                        let plain = plain_text_at(Some(mirror), &obj, &field)?;
+                        Some((field, plain))
+                    })
+                    .collect();
+                (at, plain)
+            })
+            .collect();
         let mut edits: Vec<DynEdit> = Vec::new();
         let mut args = serde_json::Map::new();
-        for (at, obj, fields) in targets {
+        for (at, plain) in plans {
             let Ok(prefix) = self.prefix_of(&at) else {
                 continue;
             };
-            for field in fields {
-                let Some(plain) = plain_text_at(self.mirror().ok(), &obj, &field) else {
-                    continue;
-                };
+            for (field, plain) in plain {
                 let mut path = prefix.clone();
                 path.push(tilo_resource::Segment::Field(field.clone()));
                 let seed = format!("upgrade:{doc}:{field}").into_bytes();

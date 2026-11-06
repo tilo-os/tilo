@@ -73,7 +73,7 @@ fn a_pin_moved_by_the_person_glides_to_its_new_place_and_then_rests() {
     let mut map = map_of(&[("one", 100.0)], viewport);
     draw(&mut map);
     let now = crate::motion::frame_now();
-    assert!(map.placed.get("one").is_some(), "the pin is drawn");
+    assert!(map.placed.contains_key("one"), "the pin is drawn");
 
     // The person moves the pin: the map lays it out at its new point and draws again.
     crate::motion::note_source(crate::tokens::MotionSource::Pointer);

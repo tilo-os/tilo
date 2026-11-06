@@ -298,7 +298,7 @@ type Board {
 }
 
 type Note {
-    title: Text (title)
+    title: Text
 }
 
 root Board

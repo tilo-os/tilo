@@ -60,12 +60,19 @@ impl AppLists {
             tracing::warn!(%error, "the installed apps are not read");
             Vec::new()
         });
+        // The person's interface language, as every name read here is in it.
+        let locales = crate::app_names::entry_locales();
         let applications = installed
             .iter()
             .filter(|app| app.has_gui)
             .map(|app| AppEntry {
                 id: app.package_id.clone(),
-                title: app.display_name.clone(),
+                // The name the person's interface language gives the app: a
+                // German machine lists the app whose manifest says
+                // `[package.names] de = "Notizen"` as Notizen, and every
+                // surface that names it — a tab, a start card, search —
+                // reads that name from here.
+                title: app.name_in(&locales).to_owned(),
                 category: app.category.clone(),
                 description: None,
             })
@@ -79,7 +86,7 @@ impl AppLists {
         // starts on the lists' worker: a later ask for an entry's icon or
         // name (`crate::app_icons::entry_icon`) finds it read, or meets the
         // read already under way rather than starting one.
-        let scan = desktop_entry::cache::cached_scan(&crate::app_names::entry_locales());
+        let scan = desktop_entry::cache::cached_scan(&locales);
         // An installed Tilo app may keep a desktop entry of its own, as its
         // bundle does: that entry is the same app, listed once.
         let tilo_apps =

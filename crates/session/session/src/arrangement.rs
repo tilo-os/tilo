@@ -1220,18 +1220,7 @@ fn place_at(
             .then_some(at)
     });
     if let Some(at) = held_elsewhere {
-        let Some(strip) = workspace.strips.get_mut(at) else {
-            return Err(taken.into());
-        };
-        let Some(held) = strip
-            .window_groups
-            .iter_mut()
-            .find(|group| group.id == asked.strip)
-        else {
-            return Err(taken.into());
-        };
-        held.tabs.push(window);
-        held.activate_tab(id);
+        join_strip(workspace, at, asked.strip, window, taken)?;
         return Ok(true);
     }
     let row = if let Some(row) = workspace
@@ -1272,6 +1261,27 @@ fn place_at(
     workspace.arrangement.places.insert(asked.strip, place);
     workspace.arrangement.kind = ArrangementKind::Canvas;
     Ok(true)
+}
+
+/// Take `window` into the group `group` already on the workspace's desk, as its tab in front:
+/// a place of this workspace's, whichever row it stands in.
+fn join_strip(
+    workspace: &mut tilo_desktop_model::Workspace,
+    row: usize,
+    group: GroupId,
+    window: Tab,
+    taken: &str,
+) -> Result<(), String> {
+    let Some(strip) = workspace.strips.get_mut(row) else {
+        return Err(taken.to_owned());
+    };
+    let Some(held) = strip.window_groups.iter_mut().find(|held| held.id == group) else {
+        return Err(taken.to_owned());
+    };
+    let id = window.id;
+    held.tabs.push(window);
+    held.activate_tab(id);
+    Ok(())
 }
 
 /// A canvas coordinate as a place keeps it.

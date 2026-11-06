@@ -5,7 +5,7 @@
 //! is no build step and no runtime file I/O — a `--shots` render and a unit test
 //! resolve the same strings a live session does.
 
-ui::embedded_catalog!(pub fn, ["en-US"]);
+ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
 /// Load the catalogue on this thread if it is not loaded yet.
 pub fn ensure() {
@@ -47,10 +47,14 @@ mod tests {
         "chat-call-open",
         "chat-call-join",
         "chat-call-leave-action",
-        "chat-call-mute-action",
-        "chat-call-unmute-action",
         "chat-call-status",
-        "chat-call-count",
+        "chat-call-people-two",
+        "chat-call-people-many",
+        "chat-call-only-you",
+        "chat-call-open-window",
+        "chat-call-untitled",
+        "chat-call-camera-on",
+        "chat-call-camera-off",
         "chat-call-select-input",
         "chat-call-input",
         "chat-call-input-hint",

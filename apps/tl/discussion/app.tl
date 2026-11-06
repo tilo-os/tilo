@@ -10,7 +10,7 @@ app so.tilo.lang.discussion "Discussion" (icon: .message_square, category: .offi
 /// the thread under a resource draws what is about it there, and leaves it out of `std.linked`
 /// (`said_about`).
 type Comment {
-    text: RichText (body)
+    text: RichText
 }
 
 /// Every comment of the workspace, in the order they were made.

@@ -101,16 +101,10 @@ struct ChannelAuthorizationPayload<'a> {
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SnapshotError {
-    /// The snapshot is at another package format than the one this build
-    /// reads. Nothing in it can be verified, so no install or update from
-    /// the registry can proceed until one side catches up.
-    #[error(
-        "the registry publishes its catalogue in package format {served}, and this device reads \
-         only format {expected}, so nothing can be installed or updated from it. One side is out \
-         of date: the registry has to publish its catalogue at format {expected}, or Tilo has to \
-         be updated to a release that reads format {served}",
-        expected = PACKAGE_FORMAT_VERSION
-    )]
+    /// The snapshot is at a package format this build does not read. Nothing
+    /// in it can be verified, so no install or update from the registry can
+    /// proceed until one side catches up.
+    #[error("{}", crate::unreadable_catalogue_format(*.served))]
     Protocol {
         /// The format the registry's snapshot says it is in.
         served: u32,
@@ -294,7 +288,7 @@ pub fn verify_snapshot(
     pinned_owner_pubkey_hex: &str,
     now_unix: u64,
 ) -> Result<(), SnapshotError> {
-    if snapshot.protocol != PACKAGE_FORMAT_VERSION {
+    if !crate::READABLE_CATALOGUE_FORMATS.contains(&snapshot.protocol) {
         return Err(SnapshotError::Protocol {
             served: snapshot.protocol,
         });
@@ -462,7 +456,7 @@ fn verify_channel_authorization_scope(
     owner: &VerifyingKey,
     snapshot: &Scope<'_>,
 ) -> Result<(), SnapshotError> {
-    if authorization.protocol != PACKAGE_FORMAT_VERSION
+    if !crate::READABLE_CATALOGUE_FORMATS.contains(&authorization.protocol)
         || authorization.generation == 0
         || !valid_hex(&authorization.channel_pubkey_hex, 32)
         || authorization.not_before_unix >= authorization.expires_at_unix
@@ -750,11 +744,22 @@ mod tests {
                 // do about it, not a bare "proof failed".
                 let message = refused.unwrap_err().to_string();
                 assert!(
-                    message.contains(&format!("package format {other}"))
-                        && message.contains(&format!("reads only format {PACKAGE_FORMAT_VERSION}"))
-                        && message.contains("Tilo has to be updated"),
+                    message.contains(&format!("package format {other}")),
                     "{message}"
                 );
+                if other > PACKAGE_FORMAT_VERSION {
+                    assert!(
+                        message.contains("update Tilo to read this catalogue"),
+                        "{message}"
+                    );
+                } else {
+                    assert!(
+                        message.contains(&format!(
+                            "publish its catalogue at format {PACKAGE_FORMAT_VERSION}"
+                        )),
+                        "{message}"
+                    );
+                }
             }
             // phase: the_format_this_build_reads_is_accepted
             snapshot.protocol = PACKAGE_FORMAT_VERSION;

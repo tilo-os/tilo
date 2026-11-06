@@ -1,7 +1,7 @@
 /// The data views: a table of columns and rows, a tree of nodes, a conversation, a grid of cards
 /// and the history of a document, each reading a collection of the app's own.
 type Data {
-    title: Text (title)
+    title: Text
     /// The rows of the table: each an item with what its columns read.
     rows: Collection<Row>
     /// The files of the tree, each naming its parent by its key.
@@ -16,23 +16,23 @@ type Data {
 
 /// One row of the table: what its columns read.
 type Row {
-    title: Text (title)
+    title: Text
     state: Text
     size: Int
 }
 
 /// One file of the tree: where it stands, and what it is.
 type File {
-    title: Text (title)
+    title: Text
     /// The file it stands under; none at the top of the tree.
-    parent: Option<File> (parent) = .none
+    parent: Option<File> = .none
     folder: Bool
     size: Int
 }
 
 /// One message of the conversation: who said it, when, and what.
 type Message {
-    title: Text (title)
+    title: Text
     from: Text
     body: Text
     at: Time
@@ -41,13 +41,13 @@ type Message {
 
 /// One card of the grid: what it stands for and how many things it holds.
 type Card {
-    title: Text (title)
+    title: Text
     count: Int
 }
 
 /// One change of the document: who made it, when, and what it did.
 type Change {
-    title: Text (title)
+    title: Text
     who: Text
     summary: Text
     at: Time

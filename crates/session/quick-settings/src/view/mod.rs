@@ -163,18 +163,21 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
         .with_no_padding()
         .with_inset(Rhythm::Related)
         .with_child(page);
-    // The panel is the floating card every surface of its kind stands on,
-    // sized to what it shows: the window around it is the desktop, not the
-    // panel, so the card never trails an empty band under the last row.
-    let card = FloatingPanel::new(Box::new(body))
-        .footer(root::footer(cx))
-        .fill_width();
-    Box::new(
+    // The panel is the floating card every surface of its kind stands on, and
+    // its footprint is the surface's: the window it stands in is the size the
+    // desk gives a popover, so the card keeps its edges whichever page it
+    // shows — a page with more on it scrolls inside the body, and one with
+    // less leaves the footer where it was.
+    let card = FloatingPanel::new(Box::new(
         Scrollable::new_vertical()
             .fill_parent_height()
             .with_label(crate::i18n::t("qs-title"))
-            .with_child(Box::new(card)),
-    ) as Element
+            .with_child(Box::new(body)),
+    ))
+    .footer(root::footer(cx))
+    .fill_width()
+    .fill_height();
+    Box::new(card) as Element
 }
 
 /// `page`, told why the last press did not reach the device when it did not:

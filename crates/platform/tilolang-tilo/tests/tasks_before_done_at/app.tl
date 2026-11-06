@@ -20,14 +20,14 @@ enum Priority {
 
 /// Something to do: what, by when, by whom, and in which project.
 type Task {
-    title: Text (title)
+    title: Text
     done: Bool = false
     /// The day it is due by, if any.
     due: Option<Date> = .none
     /// The moment on that day it is due at, if it has one.
     at: Option<Time> = .none
     /// Anything worth remembering about it.
-    notes: RichText (body)
+    notes: RichText
     /// Who is doing it.
     assignee: Option<Principal> = .none
     /// The project it belongs to; none while it waits in the inbox.
@@ -50,18 +50,26 @@ type Task {
     }
 }
 
+/// One step of a task: a line of its checklist.
+type Step {
+    title: Text
+    done: Bool = false
+    /// The task it is a step of.
+    task: Task
+}
+
 /// A project: tasks that work towards one outcome.
 type Project {
-    name: Text (title)
+    name: Text
     /// What it is for, and anything worth remembering about it.
-    notes: RichText (body)
+    notes: RichText
     /// Whether its window shows its tasks as a board, a lane per section, or as a list.
     board: Bool = false
 }
 
 /// A section of a project: one lane of its board, such as "Doing".
 type Section {
-    name: Text (title)
+    name: Text
     /// The project it is a section of.
     project: Project
 }

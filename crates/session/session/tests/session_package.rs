@@ -132,6 +132,8 @@ fn a_record_parameter_is_declared_as_its_fields_and_nested_back_on_the_wire() {
             ("strip", false, Some("to")),
             ("workspace", false, Some("to")),
             ("display", false, Some("to")),
+            ("before", false, Some("to")),
+            ("group", false, Some("to")),
         ]
     );
     let wire = tilo_actions::surface::nest_arguments(

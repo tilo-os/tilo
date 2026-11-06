@@ -261,6 +261,10 @@ impl Widget for ChatWindow {
         self.chat.borrow().next_wake_deadline()
     }
 
+    fn serve_deadline(&mut self, now: ui::time::Instant) -> bool {
+        self.state().serve_deadline(now)
+    }
+
     fn needs_idle_sync(&self) -> bool {
         #[cfg(feature = "samples")]
         if self.staged.borrow().is_some() {

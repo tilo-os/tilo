@@ -14,7 +14,7 @@ mod cases {
     const SOURCE: &str = r#"app so.tilo.clock "Clock"
 
 type Task {
-    title: Text (title)
+    title: Text
     due: Time = Time("1970-01-01T00:00:00Z")
 }
 

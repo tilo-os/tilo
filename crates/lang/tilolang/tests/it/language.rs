@@ -437,7 +437,7 @@ fn an_action_label_reads_its_arguments_where_it_is_applied() {
 
 #[test]
 fn a_slot_of_a_component_takes_a_view_that_is_that_component() {
-    let base = "type Card {\n    title: Text (title)\n}\ntype B {\n    cards: Collection<Card>\n}\nview line(c: Card) {\n    row(c.title)\n}\n";
+    let base = "type Card {\n    title: Text\n}\ntype B {\n    cards: Collection<Card>\n}\nview line(c: Card) {\n    row(c.title)\n}\n";
     let good = format!(
         "{base}view tile(c: Card) {{\n    ui.BoardCard(c) {{\n        line(c)\n    }}\n}}\nview board(b: B) {{\n    ui.Board {{\n        ui.BoardLane(b, title: \"All\") {{\n            for c in b.cards {{\n                tile(c)\n            }}\n        }}\n    }}\n}}"
     );

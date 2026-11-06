@@ -131,7 +131,40 @@ pub use verify::{VerifyError, verify_change_request, verify_entry_signature};
 /// the manifest it signs, its signed root and chunk list, and the registry's
 /// catalogue as a device reads it (full and compact snapshots, version
 /// indexes and channel authorizations). Every one of them carries this
-/// number in its `format` or `protocol` field, and a reader accepts exactly
-/// this number and nothing older (docs/architecture/compatibility.md);
+/// number in its `format` or `protocol` field. It is the newest format this
+/// build writes and the last of [`READABLE_CATALOGUE_FORMATS`];
 /// `crates/packaging/tilo-app-package/interface.toml` holds the schema.
 pub const PACKAGE_FORMAT_VERSION: u32 = 2;
+
+/// Every package format a catalogue's `protocol` field may name and this
+/// build verify: a full snapshot, a compact one, a version index and a
+/// channel authorization alike, oldest first, the newest being
+/// [`PACKAGE_FORMAT_VERSION`]. A reader keeps every format it understands, so
+/// raising [`PACKAGE_FORMAT_VERSION`] leaves catalogues at these numbers
+/// readable until a format that changes their shape ships and this list drops
+/// the ones nothing decodes any more.
+///
+/// Format 2 renumbered the catalogue's protocols 2, 3 and 4 into this one
+/// number and widened it in the canonical signing form, so a catalogue
+/// written before it fails every signature at format 2: the format-2 shape is
+/// the only one this build understands.
+pub const READABLE_CATALOGUE_FORMATS: [u32; 1] = [PACKAGE_FORMAT_VERSION];
+
+/// What a catalogue at `protocol`, which this build does not read, means for
+/// the person holding it, and what to do.
+#[must_use]
+pub fn unreadable_catalogue_format(protocol: u32) -> String {
+    let newest = PACKAGE_FORMAT_VERSION;
+    if protocol > newest {
+        format!(
+            "this catalogue is published in package format {protocol}, which is newer than this \
+             Tilo reads (up to {newest}): update Tilo to read this catalogue"
+        )
+    } else {
+        format!(
+            "this catalogue is published in package format {protocol}, which no Tilo reads any \
+             more (this one reads {newest}): the registry has to publish its catalogue at format \
+             {newest}"
+        )
+    }
+}

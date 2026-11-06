@@ -26,6 +26,13 @@ pub const WORKSPACE_RECORDS: &[WorkspaceRecord] = &[
         app: "so.tilo.chat",
         kind: "tilo.workspace.emoji",
     },
+    // The workspace's agents: their names, colours, keepers and models,
+    // which the workspace settings sheet, the apps and their devices all
+    // read (`tilo-workspace-agent`).
+    WorkspaceRecord {
+        app: "so.tilo.chat",
+        kind: "chat.agent",
+    },
     // Each person's place in the workspace's tilolang apps: their windows' and
     // lenses' state and what they have seen, kept once for every package of the
     // language rather than per package (`tilolang-tilo::personal`).
@@ -67,6 +74,13 @@ mod tests {
             "another app's record of the kind"
         );
         assert!(workspace_record("so.tilo.chat", &workspace_record_id("chat.workspace")).is_none());
+        let agents = workspace_record_id("chat.agent");
+        assert_eq!(
+            workspace_record("so.tilo.chat", &agents).map(|record| record.kind),
+            Some("chat.agent"),
+            "Chat keeps the workspace's agents for every app of the workspace"
+        );
+        assert!(workspace_record("so.tilo.notes", &agents).is_none());
         assert!(workspace_record("so.tilo.chat", "tab:0000000000000000").is_none());
         let personal = workspace_record_id("tilolang.personal");
         assert_eq!(

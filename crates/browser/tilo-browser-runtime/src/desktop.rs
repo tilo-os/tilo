@@ -126,7 +126,7 @@ pub(crate) fn catalogue() -> Vec<Application> {
 
 /// Everything a tab's component is prepared with.
 pub(crate) struct Inputs {
-    pub feedback: Option<tilo_desktop::feedback::transport::Startup>,
+    pub feedback: Option<tilo_feedback_transport::Startup>,
     pub owners: RecordOwners,
     /// The store [`Self::owners`] keep records in: the profile's, where the
     /// person's own records are kept too ([`crate::person_records`]).
@@ -239,7 +239,7 @@ impl LateFeedback {
     fn install(
         &self,
         shared: &Shared,
-        startup: tilo_desktop::feedback::transport::Startup,
+        startup: tilo_feedback_transport::Startup,
     ) -> Result<(), String> {
         if startup.reporter().principal()
             != &tilo_actions::remote::CallerPrincipal::Person(self.author.clone())
@@ -301,7 +301,7 @@ impl Shared {
     fn settle_feedback(
         &self,
         mut late: LateFeedback,
-        startup: tilo_desktop::feedback::transport::Startup,
+        startup: tilo_feedback_transport::Startup,
     ) -> bool {
         let Err(error) = late.install(self, startup) else {
             return true;

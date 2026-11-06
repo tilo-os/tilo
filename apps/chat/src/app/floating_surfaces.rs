@@ -128,6 +128,10 @@ impl FloatingSurfaceProvider for ChatApp {
         }
         if !self.call.active
             || self.call.expanded
+            // The card's own window draws the call once it is up: this
+            // window keeps its copy only for the transfer and the way back.
+            || (self.call.placement.is_desktop_adopted()
+                && !self.call.placement.is_return_pending())
             || (!self.call.placement.is_return_pending()
                 && !matches!(
                     self.call.placement.attachment(),
@@ -198,13 +202,14 @@ impl FloatingSurfaceProvider for ChatApp {
                 },
             );
         }
-        let call_id = format!("chat-call:{}", self.call.channel);
-        if id != call_id || !self.call.active {
+        if id != crate::live::activity(&self.call.channel) || !self.call.active {
             return false;
         }
+        // The card is a window of its own, so its frame keeps its own hits:
+        // the window's list describes the window's last frame, not this one.
         let mut hits = Vec::new();
         self.draw_live_huddle(scene, transform, text_renderer, theme, presence, &mut hits);
-        self.hits.extend(hits);
+        self.card_hits = hits;
         true
     }
 
@@ -227,11 +232,25 @@ impl FloatingSurfaceProvider for ChatApp {
         {
             return presentations;
         }
+        // Over the desk the card draws the call in the place the layer gives
+        // it, inside its own shadow margin; in its window the huddle keeps
+        // its title bar, chips and controls around the video.
+        let card = !returning_to_app
+            && matches!(
+                self.call.placement.attachment(),
+                ui::floating_surface::Attachment::Desktop { .. }
+            );
+        let content = self.call_video_rect();
+        let window_rect = if card {
+            content.inflate(8.0, 8.0)
+        } else {
+            self.huddle_panel().inflate(8.0, 8.0)
+        };
         presentations.push(ui::floating_surface::FloatingSurfacePresentation {
             id: format!("chat-call:{}", self.call.channel),
-            content_rect: self.call_video_rect(),
-            window_rect: self.huddle_panel().inflate(8.0, 8.0),
-            input_rect: Some(self.huddle_panel()),
+            content_rect: content,
+            window_rect,
+            input_rect: Some(content),
             returning_to_app,
         });
         presentations

@@ -1070,10 +1070,24 @@ impl ToolbarRow {
             items.push(MenuItem::separator());
             entries.push(None);
         }
+        let mut host_section = true;
         for i in hidden {
             let Some(action) = toolbar.actions.get(i) else {
                 continue;
             };
+            // The desktop's own items are a section of their own, after the
+            // app's commands.
+            if host_section
+                && action
+                    .id
+                    .starts_with(crate::window_slots::HOST_ACTION_PREFIX)
+            {
+                host_section = false;
+                if !items.is_empty() {
+                    items.push(MenuItem::separator());
+                    entries.push(None);
+                }
+            }
             if action.items.is_empty() {
                 items.push(menu_item(action));
                 entries.push(Some(MenuEntry::Action(i)));

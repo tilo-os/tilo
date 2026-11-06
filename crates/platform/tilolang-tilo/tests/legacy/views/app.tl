@@ -10,7 +10,7 @@ use so.tilo.lang.notes as notes
 /// first unless they trust its author. An agent's task answers with one; the person keeps it
 /// here or discards it.
 type Answer {
-    title: Text (title)
+    title: Text
     /// What was asked, when an agent answered with it.
     question: Text
     /// The view block, as its author wrote it.

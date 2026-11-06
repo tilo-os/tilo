@@ -350,8 +350,8 @@ mod cases {
         const QUIET: &str = r#"
 app so.tilo.test.quiet "Quiet"
 type Quiet {
-    title: Text (title)
-    notes: Text (body)
+    title: Text
+    notes: Text
 }
 type Quiets {
     items: Collection<Quiet>

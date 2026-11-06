@@ -1277,6 +1277,12 @@ impl Host {
         self.inner.store.sync_from(record)
     }
 
+    /// Bring the runtime's view of the chunk `chunk` of the workspace record up to date; see
+    /// [`TiloStore::sync_chunk`].
+    pub fn sync_chunk(&self, chunk: crate::chunk::ChunkNo, doc: &tilo_resource::Doc) -> bool {
+        self.inner.store.sync_chunk(chunk, doc)
+    }
+
     /// Whether the runtime reads exactly what the workspace record `record` holds; see
     /// [`TiloStore::is_at`].
     #[must_use]
@@ -1368,10 +1374,9 @@ impl Host {
             .ok_or_else(|| HostError::NotFound(format!("a root type with a default view in {app}")))
     }
 
-    /// Run each loaded package's migrations (`migration action`) on the resources an earlier
-    /// version of it wrote: once on each resource of the migration's subject type that holds
-    /// something in a field the type now keeps `(previously)` (or, for a type without such a
-    /// field, that the migration has not run on), as an action of the package version
+    /// Run each loaded package's migrations (`migration action`): once on each resource of the
+    /// migration's subject type that the migration has not run on, whether an earlier version
+    /// of the package wrote the resource or this one, as an action of the package version
     /// ([`crate::authority::migration_principal`]), which records in the same change that it
     /// ran. A field the new build keeps as `RichText` where the old one kept `Text` has its
     /// text carried into rich text first, the same words ([`crate::store`]'s
@@ -1400,23 +1405,12 @@ impl Host {
                 else {
                     continue;
                 };
-                let previously: Vec<&str> = ty
-                    .fields
-                    .iter()
-                    .filter(|f| {
-                        f.role
-                            .as_ref()
-                            .is_some_and(tilolang_runtime::meta::FieldRole::is_previously)
-                    })
-                    .map(|f| f.id.as_str())
-                    .collect();
                 for doc in self.inner.store.resources_of(&package.meta.app, &ty.id) {
                     if self
                         .inner
                         .store
                         .migrated(&doc, &migration.id)
                         .unwrap_or(true)
-                        || !self.holds_previously(&doc, &previously)
                     {
                         continue;
                     }
@@ -1466,14 +1460,6 @@ impl Host {
     #[must_use]
     pub fn next_trigger(&self, now: i64) -> Option<i64> {
         crate::triggers::next(self, now)
-    }
-
-    /// Whether the resource `doc` holds anything in the fields `previously` (none: whether it
-    /// may hold what an earlier version wrote, which only the migration can tell).
-    fn holds_previously(&self, doc: &str, previously: &[&str]) -> bool {
-        // Read from the record's own map: a record of ten thousand items is not built to
-        // learn whether one field a migration replaces was ever written.
-        self.inner.store.holds_any(doc, previously)
     }
 
     /// Open the window of `app`'s root resource, through the default view of its type: its

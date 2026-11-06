@@ -5,9 +5,6 @@ use std::rc::Rc;
 
 use serde_json::Value as Json;
 
-use tilolang::derived::Derived;
-use tilolang::types::FieldRole;
-
 use crate::ids::{ActionId, ModuleHash, TypeId, ViewId};
 use crate::meta::{
     ActionMeta, EnumMeta, FieldKind, FnMeta, Meta, StateMeta, Ty, TypeKey, TypeMeta, ViewMeta,
@@ -22,13 +19,7 @@ pub struct FieldInfo {
     pub name: String,
     pub ty: Ty,
     pub kind: FieldKind,
-    /// What the field is of its type, where it declares it (`(title)`, `(done)`, `(time of:
-    /// due)`): what a sentence about a change to it reads with ([`crate::did`]).
-    pub role: Option<FieldRole>,
     pub default: Option<Json>,
-    /// What a store works it out from, for a `derive` key: a value no record holds
-    /// ([`crate::derived`]).
-    pub derived: Option<Derived<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -36,12 +27,20 @@ pub struct TypeInfo {
     pub id: TypeId,
     pub name: String,
     pub fields: Vec<FieldInfo>,
-    /// The field holding the item a record stands under (`(parent)`): the one its derived
-    /// keys read the items above and under it through.
-    pub parent: Option<String>,
 }
 
 impl TypeInfo {
+    /// The field a record of the type is named by: its first text field, as a row, a menu, a
+    /// link and a history entry show it. A register of text is a code or a label, never what
+    /// the record is called. A type with no such field names its records by the type's name
+    /// and the record's `created`.
+    #[must_use]
+    pub fn name_field(&self) -> Option<&FieldInfo> {
+        self.fields
+            .iter()
+            .find(|f| matches!(f.kind, FieldKind::Text | FieldKind::RichText))
+    }
+
     pub fn field(&self, id: &str) -> Option<&FieldInfo> {
         self.fields.iter().find(|f| f.id == id)
     }
@@ -184,36 +183,19 @@ fn type_info(t: &TypeMeta, app: &str) -> Result<TypeInfo, String> {
         .map(|f| {
             let ty = parse_ty(&f.ty, app).map_err(|e| format!("{}.{}: {e}", t.name, f.name))?;
             let kind = field_kind(f, &ty);
-            // A key's expression names the type's fields; a record holds them under their ids.
-            let derived = f.derived.as_ref().map(|expr| {
-                expr.map(&|name| {
-                    t.fields
-                        .iter()
-                        .find(|field| field.name == *name)
-                        .map_or_else(|| name.to_owned(), |field| field.id.clone())
-                })
-            });
             Ok(FieldInfo {
                 id: f.id.clone(),
                 name: f.name.clone(),
                 ty,
                 kind,
-                role: f.role.clone(),
                 default: f.default.clone(),
-                derived,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let parent = t
-        .fields
-        .iter()
-        .find(|f| matches!(f.role, Some(FieldRole::Parent)))
-        .map(|f| f.id.clone());
     Ok(TypeInfo {
         id: t.id.clone(),
         name: t.name.clone(),
         fields,
-        parent,
     })
 }
 
@@ -377,8 +359,7 @@ impl Registry {
         self.types.get(ty)
     }
 
-    /// Every type every loaded package declares, for a store that works a derived key out as
-    /// it reads it ([`crate::derived`]).
+    /// Every type every loaded package declares, as the runtime loads and reloads them.
     pub fn loaded_types(&self) -> Vec<Rc<TypeInfo>> {
         self.packages
             .values()

@@ -6,14 +6,13 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::feedback::{FeedbackAnswer, FeedbackDestination};
 use tilo_actions::remote::{Caller, CallerPrincipal};
-use tilo_app::feedback::{
-    Error, FeedbackHost, MaskedScreenshot, Receipt, Recorded, RecordingScope, ReviewText, Subject,
-    Submission, destination,
-};
 use ui::permissions::{ActionKind, Actor, Answer, PermissionContext, Standing, TreePath};
 use ui::record::{RecordId, RecordStore};
 
-use super::{Destination, DurableStore, PrivateFeedback, StorageKey};
+use tilo_feedback::{
+    Destination, DurableStore, Error, FeedbackHost, MaskedScreenshot, Receipt, Recorded,
+    RecordingScope, ReviewText, StorageKey, Subject, Submission, destination,
+};
 
 const DOMAIN: &[u8] = b"tilo-feedback-canonical-receipt-v1\0";
 
@@ -680,21 +679,17 @@ impl Startup {
         })
     }
 
-    /// Install into the desktop's actual profile slot; replacement is refused.
+    /// The destination this startup files reports to.
+    pub fn destination(&self) -> &Destination {
+        &self.enrollment.destination
+    }
+
+    /// The host this startup opens over `store`, bound to the profile's
+    /// durable feedback authority: the custody a desktop installs.
     /// # Errors
-    /// Refuses replacement, changed authority and undurable/unrecoverable storage.
-    pub fn install(
-        self,
-        store: Rc<dyn DurableStore>,
-        slot: &mut Option<PrivateFeedback>,
-    ) -> Result<(), Error> {
-        if slot.is_some() {
-            return Err(Error::Conflict);
-        }
-        let destination = self.enrollment.destination.clone();
-        let host = Host::open(store.clone(), self)?;
-        *slot = Some(PrivateFeedback::new(store, destination, Box::new(host))?);
-        Ok(())
+    /// Refuses changed authority and undurable/unrecoverable storage.
+    pub fn host(self, store: Rc<dyn DurableStore>) -> Result<Box<dyn FeedbackHost>, Error> {
+        Ok(Box::new(Host::open(store, self)?))
     }
 }
 

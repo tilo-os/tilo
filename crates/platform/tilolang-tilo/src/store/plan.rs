@@ -7,9 +7,10 @@ use tilolang_runtime::place::{Place, Placement};
 use tilolang_runtime::store::{ANY_FIELD, FieldKey, Mutation, StoreError};
 use tilolang_runtime::value::ResourceRef;
 
+use super::reading::{json_of_scalar, path_to};
 use super::{
-    DynEdit, DynRecord, Inner, ItemAt, Planned, backend, idx, invalid, json_of_scalar, lookup,
-    not_found, path_to, sanitize_key,
+    DynEdit, DynRecord, Inner, ItemAt, Planned, backend, idx, invalid, lookup, not_found,
+    sanitize_key,
 };
 use crate::items::Items;
 use crate::store::{AppId, DocReads};
@@ -186,7 +187,7 @@ impl Inner {
         at: &ResourceRef,
     ) -> Result<(AppId, automerge::ObjId, &'static crate::schema::TypeSchema), StoreError> {
         let (app, ty) = self.locate(at)?;
-        let mirror = self.mirror()?;
+        let mirror = self.held_doc(&at.doc)?;
         let root = crate::reads::resource_obj(mirror, &app, &at.doc)
             .ok_or_else(|| not_found(format!("resource {}", at.doc)))?;
         let schema = lookup(&ty).ok_or_else(|| not_found(format!("type {ty}")))?;
@@ -201,9 +202,13 @@ impl Inner {
             return Ok(Vec::new());
         };
         let (_, root, schema) = self.record_root(at)?;
-        let found =
-            crate::items::find(self.mirror()?, (&at.doc, &root, schema), &self.nested, item)
-                .ok_or_else(|| not_found(format!("item `{item}`")))?;
+        let found = crate::items::find(
+            self.held_doc(&at.doc)?,
+            (&at.doc, &root, schema),
+            &self.nested,
+            item,
+        )
+        .ok_or_else(|| not_found(format!("item `{item}`")))?;
         if found.nesting.is_empty() {
             return Ok(vec![Segment::Item(Id::from_raw(item.clone()))]);
         }
@@ -223,8 +228,13 @@ impl Inner {
     fn item_at(&self, doc: &str, item: &str) -> Result<ItemAt, StoreError> {
         let at = ResourceRef::root(doc, String::new()).item(item, String::new());
         let (_, root, schema) = self.record_root(&at)?;
-        let found = crate::items::find(self.mirror()?, (doc, &root, schema), &self.nested, item)
-            .ok_or_else(|| not_found(format!("item `{item}`")))?;
+        let found = crate::items::find(
+            self.held_doc(doc)?,
+            (doc, &root, schema),
+            &self.nested,
+            item,
+        )
+        .ok_or_else(|| not_found(format!("item `{item}`")))?;
         let (holder, field) = self
             .container(&at)?
             .map(|(holder, field)| (holder.id_string(), field))
@@ -263,7 +273,7 @@ impl Inner {
         at: &ResourceRef,
     ) -> Result<(Items, tilolang_runtime::place::Resolved), StoreError> {
         let (_, root, schema) = self.record_root(at)?;
-        let items = Items::scan(self.mirror()?, &root, schema);
+        let items = Items::scan(self.held_doc(&at.doc)?, &root, schema);
         self.count(DocReads {
             located: 1,
             fields: 0,

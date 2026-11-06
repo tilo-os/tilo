@@ -140,6 +140,7 @@ fn admit(f: &Fixture) -> DoorAgent {
         subject: None,
         model: None,
         directions: Vec::new(),
+        turn: None,
         question: None,
         delegation: Some(Ok(agent.delegation.encode())),
     });

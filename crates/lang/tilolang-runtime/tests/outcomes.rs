@@ -15,7 +15,7 @@ mod cases {
     const SOURCE: &str = r#"app so.tilo.checks "Checks"
 
 type Todo {
-    title: Text (title)
+    title: Text
     done: Bool = false
 }
 

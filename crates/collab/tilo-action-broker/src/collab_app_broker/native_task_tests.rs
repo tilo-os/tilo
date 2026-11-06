@@ -479,6 +479,7 @@ impl Fixture {
                 subject: None,
                 model: None,
                 directions: Vec::new(),
+                turn: None,
                 question: None,
                 delegation: None,
             });

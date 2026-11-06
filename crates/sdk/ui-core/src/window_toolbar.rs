@@ -615,6 +615,14 @@ impl ToolbarAction {
         self
     }
 
+    /// It ends, removes or discards something, when `when`
+    /// ([`Self::destructive`]).
+    #[must_use]
+    pub fn destructive_if(mut self, when: bool) -> Self {
+        self.destructive = when;
+        self
+    }
+
     /// A menu button listing `items`.
     #[must_use]
     pub fn with_items(mut self, items: Vec<ToolbarAction>) -> Self {

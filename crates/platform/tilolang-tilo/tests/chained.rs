@@ -12,7 +12,7 @@ const CHAIN: &str = r#"app so.tilo.chain "Chain"
 
 type Item {
   group: Text merge register
-  title: Text merge register (title)
+  title: Text merge register
   rank: Int
 }
 

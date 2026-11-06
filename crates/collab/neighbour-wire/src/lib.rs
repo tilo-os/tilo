@@ -23,7 +23,7 @@ pub mod record_sync;
 pub mod retention;
 pub mod unit_chain;
 
-pub use record_sync::{RecordSync, on_demand_record, record_part, record_sync};
+pub use record_sync::{RecordSync, on_demand_record, record_chunk, record_part, record_sync};
 pub use retention::{Retention, app_document_channel, audience, retention, standalone};
 
 use serde::{Deserialize, Serialize};

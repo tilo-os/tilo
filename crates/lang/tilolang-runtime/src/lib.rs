@@ -19,7 +19,6 @@ mod colls;
 mod core;
 pub mod cost;
 pub mod delegate;
-pub mod derived;
 pub mod did;
 mod embed;
 pub mod engine;

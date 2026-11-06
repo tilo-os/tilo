@@ -214,6 +214,12 @@ ACTION_BUTTON_METHOD = re.compile(
     r"(?<!\.)\.\s*(" + "|".join(sorted(ACTION_BUTTON_BUILDERS)) + r")\s*\("
 )
 ACTION_BUTTON_CALL = ACTION_BUTTON_METHOD
+# The names a file binds as a tilo-view context. Its `action(node, event, name)`
+# binds the node's event to a published action — the shared route the ratchet
+# asks for, with the same name and arity as a composite's closure-run button.
+VIEW_CONTEXT_BINDING = re.compile(
+    r"\b([a-z_][A-Za-z0-9_]*)\s*:\s*&\s*(?:mut\s+)?(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*ViewCx\b"
+)
 # Closure-taking toolkit builders named `*action*` that are neither counted
 # above nor controls: why.
 NOT_ACTION_BUTTONS = {
@@ -364,9 +370,14 @@ def call_arguments(code: str, raw: str, open_paren: int) -> int:
 
 def closure_action_buttons(code: str, raw: str, matches: list[re.Match]) -> list[re.Match]:
     """The closure-run buttons among `matches`: a builder method passed its
-    toolkit arity."""
+    toolkit arity, on anything but a view context, whose `action` of the same
+    name and arity is the published action route."""
+    contexts = set(VIEW_CONTEXT_BINDING.findall(code))
     kept = []
     for match in closure_controls(code, raw, matches):
+        receiver = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*$", code[: match.start()])
+        if receiver and receiver.group(1) in contexts:
+            continue
         method = ACTION_BUTTON_METHOD.match(code, match.start())
         if method and call_arguments(code, raw, match.end() - 1) != ACTION_BUTTON_BUILDERS[method.group(1)]:
             continue

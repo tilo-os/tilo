@@ -2,12 +2,12 @@ app so.tilo.lang.layoutboard "Board layouts" (icon: .layout_grid, category: .uti
 
 /// A card on the board.
 type Card {
-    title: Text (title)
+    title: Text
 }
 
 /// One lane of the board: its heading and its cards, in order.
 type Column {
-    title: Text (title)
+    title: Text
     cards: Collection<Card>
 }
 

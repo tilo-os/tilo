@@ -650,6 +650,22 @@ impl App {
         ))
     }
 
+    /// The node the app's own widget stands at in the presented layout:
+    /// inside History's composition while the app is live beside it, else
+    /// the presented root. Every input path dispatches the app's widget at
+    /// this node — never at the composition root, which also holds History's
+    /// own chrome.
+    pub(super) fn live_app_node(&self) -> Option<taffy::NodeId> {
+        let live = self
+            .history
+            .as_ref()
+            .is_none_or(|history| history.live_interactive());
+        if live && let Some(node) = self.history.as_ref().and_then(|h| h.live_layout_node()) {
+            return Some(node);
+        }
+        self.layout.root_node
+    }
+
     pub(super) fn presentation_handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -671,11 +687,7 @@ impl App {
                 .history
                 .as_ref()
                 .is_none_or(|history| history.live_interactive())
-            && let Some(root) = self
-                .history
-                .as_ref()
-                .and_then(|history| history.live_layout_node())
-                .or(self.layout.root_node)
+            && let Some(root) = self.live_app_node()
         {
             self.root_widget.handle_event(
                 event,
