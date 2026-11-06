@@ -617,3 +617,76 @@ fn a_work_area_shorter_than_a_card_still_places_it() {
         }
     }
 }
+
+/// A screenshot heads its card with the shot itself, at the shape a
+/// screenshot has: nine sixteenths of the card's width, with the title under
+/// it on a heading's line rather than a reading's.
+#[test]
+fn a_shot_heads_its_card_with_the_picture_itself() {
+    let tile = Summary::new(Kind::Other, "Screenshot", "")
+        .with_id("shot-1")
+        .with_artwork("data:image/jpeg;base64,AA");
+    let hero = Summary::new(Kind::Other, "Screenshot", "")
+        .with_id("shot-1")
+        .with_hero_artwork("data:image/jpeg;base64,AA");
+    let work = work(1280.0, 800.0);
+    let size = card_size(work, &hero);
+    let rect = Rect::from_origin_size((100.0, 100.0), size);
+    let inside = rect.inflate(-CARD_PADDING, -CARD_PADDING);
+    let parts = card_parts(rect, &hero);
+    let picture = parts.artwork.expect("the picture heads the card");
+    assert!(
+        (picture.width() - inside.width()).abs() <= 0.5,
+        "the picture is as wide as the card: {picture:?} in {inside:?}"
+    );
+    assert!(
+        (picture.height() - picture.width() * 9.0 / 16.0).abs() <= 0.5,
+        "the picture keeps a screenshot's shape: {picture:?}"
+    );
+    assert!(
+        parts.hero.y0 >= picture.y1,
+        "the title stands under the picture: {:?} under {picture:?}",
+        parts.hero
+    );
+    assert!(
+        size.height > card_size(work, &tile).height,
+        "a card headed with a picture makes room for it"
+    );
+}
+
+/// Each control of a screenshot's card says what it does in its own slot: a
+/// glyph alone leaves the person guessing which one shows the file and which
+/// one copies it.
+#[test]
+fn a_screenshots_controls_are_labelled_in_their_slots() {
+    use crate::text_render::TextRenderer;
+    use crate::theme::Theme;
+    use crate::tokens::TextRole;
+
+    let summary = Summary::new(Kind::Other, "Screenshot", "")
+        .with_id("shot-1")
+        .with_subtitle("Screenshot 2026-07-30 12.00.05.png")
+        .with_hero_artwork("data:image/jpeg;base64,AA")
+        .with_control(Control::new("copy-shot", "Copy", ControlKind::Primary).with_icon("copy"))
+        .with_control(Control::new("open-shot", "Open", ControlKind::Secondary).with_icon("image"))
+        .with_control(
+            Control::new("reveal-shot", "Show in folder", ControlKind::Secondary)
+                .with_icon("folder"),
+        );
+    let rect = Rect::from_origin_size((100.0, 100.0), card_size(work(1280.0, 800.0), &summary));
+    let style = Theme::dark().text(TextRole::Label);
+    let mut text = TextRenderer::new();
+    for (id, slot) in card_parts(rect, &summary).controls {
+        let control = summary
+            .action_controls()
+            .into_iter()
+            .find(|control| control.id == id)
+            .expect("every slot stands for a control it offers");
+        let measured = f64::from(text.measure_style(&control.label, None, &style).0);
+        assert!(
+            measured + 24.0 <= slot.width(),
+            "{} ({measured} wide) fits its slot {slot:?}",
+            control.label
+        );
+    }
+}

@@ -22,11 +22,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
+use tilo_capture_studio::WriteCause;
 use tilo_compositor::Compositor;
 use tilo_portal::{Capture, CaptureError, CaptureTarget, Pending};
 use tilo_service::Wake;
 
-use crate::capture_io::{CaptureIo, NO_WORKER, Written};
+use crate::capture_io::{CaptureIo, NO_WORKER, WriteFailed, Written};
 use crate::capture_studio::CaptureStudio;
 
 /// What the portal asks for: what to capture, where its answer goes, and
@@ -69,7 +70,7 @@ pub struct Captures {
     selector: Arc<AtomicBool>,
     /// The screenshots being written off the loop, in the order they were
     /// asked for, each with the app waiting for its file.
-    writes: VecDeque<(Receiver<Result<Written, String>>, Reply)>,
+    writes: VecDeque<(Receiver<Result<Written, WriteFailed>>, Reply)>,
 }
 
 /// A portal side and the session side that answers it, the screenshots
@@ -247,7 +248,7 @@ impl Captures {
                 return;
             }
         };
-        let write = io.write(picture, self.directory.clone(), false);
+        let write = io.write(Arc::new(picture), self.directory.clone(), false);
         self.writes.push_back((write, reply));
     }
 
@@ -263,7 +264,14 @@ impl Captures {
                 // Not written yet: it and every ask behind it wait for their
                 // turn on the one worker.
                 Err(TryRecvError::Empty) => return,
-                Err(TryRecvError::Disconnected) => Err(NO_WORKER.to_owned()),
+                // The folder the file was to go in, without work to write
+                // it: the app is told, and the person is not, who never saw
+                // this capture.
+                Err(TryRecvError::Disconnected) => Err(WriteFailed {
+                    folder: self.directory.clone(),
+                    cause: WriteCause::Other,
+                    reason: NO_WORKER.to_owned(),
+                }),
             };
             let Some((_, reply)) = self.writes.pop_front() else {
                 return;
@@ -271,7 +279,7 @@ impl Captures {
             let _ = reply.send(
                 answer
                     .map(|written| written.path)
-                    .map_err(CaptureError::Failed),
+                    .map_err(|error| CaptureError::Failed(error.to_string())),
             );
         }
     }

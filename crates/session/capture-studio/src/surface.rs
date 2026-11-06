@@ -776,34 +776,50 @@ mod tests {
     /// bar itself, not only in a log.
     #[test]
     fn a_capture_that_did_not_come_out_is_said_on_the_bar() {
-        use crate::link::{Failed, Failure};
+        use std::path::PathBuf;
+
+        use crate::link::{Failed, Failure, WriteCause};
+        // The person's own folder, named the way they read it: the system's
+        // error is never what the bar says.
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let (folder, named) = home.map_or_else(
+            || (PathBuf::from("/pictures"), String::from("/pictures")),
+            |home| {
+                (
+                    home.join("Pictures/Screenshots"),
+                    String::from("~/Pictures/Screenshots"),
+                )
+            },
+        );
+        let said = format!("Couldn't save the screenshot: Tilo can't write to {named}");
+        let failure = Failure::NotWritten {
+            folder,
+            cause: WriteCause::Permission,
+        };
         let studio = Studio::new();
         let mut surface = StudioSurface::new(Some(studio.clone()));
         studio.link().publish(Scene {
             failed: Some(Failed {
                 number: 1,
-                failure: Failure::NotWritten("no space left on device".to_owned()),
+                failure: failure.clone(),
             }),
             ..Scene::default()
         });
         surface.catch_up();
         assert_eq!(
             surface.saying.as_ref().map(|(said, _)| said.as_str()),
-            Some("A screenshot was not written: no space left on device")
+            Some(said.as_str())
         );
         // The same capture taken again is news again, not a repeat the bar
         // keeps quiet about.
         studio.link().publish(Scene {
-            failed: Some(Failed {
-                number: 2,
-                failure: Failure::NotWritten("no space left on device".to_owned()),
-            }),
+            failed: Some(Failed { number: 2, failure }),
             ..surface.scene.clone()
         });
         surface.catch_up();
         assert_eq!(
             surface.saying.as_ref().map(|(said, _)| said.as_str()),
-            Some("A screenshot was not written: no space left on device"),
+            Some(said.as_str()),
             "a second attempt that failed the same way is said again"
         );
     }

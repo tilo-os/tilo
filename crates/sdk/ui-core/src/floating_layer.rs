@@ -12,7 +12,7 @@
 
 use vello::kurbo::{Point, Rect, Size};
 
-use crate::live_activity::Summary;
+use crate::live_activity::{Art, Summary};
 use crate::tokens::Metrics;
 
 /// How far a card rests from the work area's edges.
@@ -46,6 +46,13 @@ const CARD_LINE_GAP: f64 = 2.0;
 /// The artwork that heads a song's card, square: as tall as its title and
 /// artist together, so the song reads as one block.
 const CARD_ART: f64 = 56.0;
+/// The shape of a picture that heads its card over the lines: the card's
+/// whole width at nine sixteenths, as a screenshot's own frame is.
+const CARD_HERO_ART: f64 = 9.0 / 16.0;
+/// How wide a card headed with a picture stands: wide enough for its three
+/// controls to say what each one does beside its glyph ("Copy", "Open", "Show
+/// in folder"), and for the picture to be worth looking at.
+const CARD_HERO_WIDTH: f64 = 380.0;
 /// Between a song's artwork and its title.
 const CARD_ART_GAP: f64 = 12.0;
 /// A progress bar's time label, one at each end of it.
@@ -198,7 +205,12 @@ pub struct Layer {
 #[must_use]
 pub fn card_size(work: Rect, summary: &Summary) -> Size {
     let widest = (work.width() - 2.0 * EDGE_INSET).max(0.0);
-    let width = f64::from(Metrics::BASE.panel_width_utility).min(widest);
+    let width = if summary.art == Art::Hero && !summary.artwork.is_empty() {
+        CARD_HERO_WIDTH
+    } else {
+        f64::from(Metrics::BASE.panel_width_utility)
+    }
+    .min(widest);
     let lines = CARD_HERO
         + if summary.subtitle.is_empty() {
             0.0
@@ -206,9 +218,12 @@ pub fn card_size(work: Rect, summary: &Summary) -> Size {
             CARD_LINE_GAP + CARD_SUBTITLE
         };
     let mut height = 2.0 * CARD_PADDING + CARD_HEADER + CARD_ROW_GAP;
-    // A song heads its card with artwork as tall as its title and artist.
+    // A song heads its card with artwork as tall as its title and artist; a
+    // picture the activity made heads it over the lines, at its own shape.
     height += if summary.artwork.is_empty() {
         lines
+    } else if summary.art == Art::Hero {
+        (width - 2.0 * CARD_PADDING).max(0.0) * CARD_HERO_ART + CARD_ROW_GAP + lines
     } else {
         CARD_ART.max(lines)
     };
@@ -266,7 +281,8 @@ pub struct Parts {
     pub hero: Rect,
     /// The line under the hero, where the summary has one.
     pub subtitle: Option<Rect>,
-    /// The artwork beside the song's lines, where the summary has any.
+    /// The artwork: beside the song's lines, or over them at nine sixteenths
+    /// of the card's width when the summary says it heads the card.
     pub artwork: Option<Rect>,
     /// Where it is in the song, and what is left of it, at the ends of the
     /// progress bar, where the summary has a length.
@@ -338,6 +354,11 @@ pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
         };
     let (artwork, lines_x0, lines_top) = if summary.artwork.is_empty() {
         (None, inside.x0, None)
+    } else if summary.art == Art::Hero {
+        // The picture stands over the lines, the card's whole width at nine
+        // sixteenths: what it shows is the card's point.
+        let side = (inside.width().max(0.0) * CARD_HERO_ART).max(0.0);
+        (Some(row(side, CARD_ROW_GAP)), inside.x0, None)
     } else {
         let block = row(CARD_ART.max(lines), CARD_ROW_GAP);
         let art = Rect::from_origin_size(block.origin(), Size::new(CARD_ART, CARD_ART));

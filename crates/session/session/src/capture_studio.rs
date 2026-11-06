@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use tilo_capture_studio::audio::{Availability, Track as AudioTrack};
 use tilo_capture_studio::{
     Ask, Failed, Failure, Finished, Frame, Kept, REPLAY_FPS, Recording, Refusal, Scene, Selection,
-    Sent, Studio, Take,
+    Sent, Studio, Take, WriteCause,
 };
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, Screenshot};
@@ -48,7 +48,7 @@ use ui::widget::{
 };
 
 use crate::Options;
-use crate::capture_io::{CaptureIo, NO_WORKER, Note, Sound, Written};
+use crate::capture_io::{CaptureIo, NO_WORKER, Note, Sound, WriteFailed, Written};
 use crate::capture_send::Sends;
 use crate::nearby_transfer::NearbyTransfer;
 use crate::panels::Held;
@@ -65,14 +65,19 @@ const FALLING_BEHIND: u64 = 30;
 /// The columns and rows of a receipt's thumbnail.
 const PREVIEW: (u8, u8) = (12, 8);
 
-/// The side of the thumbnail the floating layer's card shows, in pixels: a
-/// card's picture is half as wide, so this stays crisp on a high-density
-/// display.
-const THUMBNAIL: u32 = 112;
+/// How wide the shot's picture is on the floating layer's card, in pixels: the
+/// card heads itself with it at nine sixteenths of its width, so this stays
+/// crisp on a high-density display.
+const CARD_PICTURE: u32 = 640;
 
 /// How long the last screenshot stays on the floating layer: as long as the
 /// studio's own receipt stays up on its bar.
 const SHOT_SHOWN: Duration = Duration::from_millis(5_500);
+
+/// How long a capture that could not be saved stays on the floating layer:
+/// longer than a receipt, because it asks the person to read why and choose
+/// what to do with the picture instead.
+const FAILED_SHOWN: Duration = Duration::from_millis(12_000);
 
 /// The capture studio as the session runs it, and what it is doing.
 pub(crate) struct CaptureStudio {
@@ -144,17 +149,26 @@ pub(crate) struct CaptureStudio {
     shown_shot: Option<ShownShot>,
     /// How many screenshots were shown there.
     shots_shown: u64,
+    /// The shot from the desk that could not be saved, while its card says so
+    /// and offers to copy what it caught.
+    failed_shot: Option<FailedShot>,
 }
 
 /// A screenshot being written off the loop.
 struct Shot {
+    /// Where its file was to go: what a failure names as the folder it could
+    /// not be saved in.
+    folder: PathBuf,
+    /// The picture itself, when it may be copied instead: a shot taken from
+    /// the desk, whose card offers that once its file could not be written.
+    picture: Option<Arc<image::RgbaImage>>,
     /// What its receipt shows, when the person took it.
     receipt: Option<Receipt>,
     /// The app waiting for the file, when it asked for a picture of what
     /// only the person can name.
     reply: Option<tokio::sync::oneshot::Sender<Result<PathBuf, CaptureError>>>,
     /// What the worker wrote, taken up on a later pass.
-    answer: Receiver<Result<Written, String>>,
+    answer: Receiver<Result<Written, WriteFailed>>,
 }
 
 /// What the receipt of a screenshot shows once its file is written.
@@ -180,6 +194,23 @@ struct ShownShot {
     path: PathBuf,
     thumb: String,
     number: u64,
+    at: Instant,
+}
+
+/// A screenshot the person took from the desk that could not be saved: the
+/// card says it in their words, with what they can do instead, while the
+/// picture is still here to do it with.
+struct FailedShot {
+    /// What the person tried to keep.
+    picture: Arc<image::RgbaImage>,
+    /// The card's picture, a `data:` URL.
+    thumb: String,
+    /// Why it was not saved, in their words.
+    words: String,
+    /// How many shots have shown, so putting this one away does not put away
+    /// the next.
+    number: u64,
+    /// When it was taken: the card goes away once it has been up long enough.
     at: Instant,
 }
 
@@ -272,6 +303,7 @@ pub(crate) fn mount(
                 activity: None,
                 shown_shot: None,
                 shots_shown: 0,
+                failed_shot: None,
             })
         }
         Err(error) => {
@@ -414,7 +446,11 @@ impl CaptureStudio {
                 // Not written yet: it and every shot after it wait for
                 // their turn on the one worker.
                 Err(TryRecvError::Empty) => return,
-                Err(TryRecvError::Disconnected) => Err(NO_WORKER.to_owned()),
+                Err(TryRecvError::Disconnected) => Err(WriteFailed {
+                    folder: shot.folder.clone(),
+                    cause: WriteCause::Other,
+                    reason: NO_WORKER.to_owned(),
+                }),
             };
             let Some(shot) = self.shots.pop_front() else {
                 return;
@@ -451,6 +487,9 @@ impl CaptureStudio {
                         height: receipt.height,
                         preview: receipt.preview,
                     });
+                    // A shot that came out supersedes the one whose card says
+                    // it could not be saved.
+                    self.failed_shot = None;
                     // The person took it from outside the studio: its card
                     // says so, with what it caught.
                     if receipt.floating {
@@ -470,9 +509,9 @@ impl CaptureStudio {
                         // An app asked for this one: it is answered, not the
                         // person, who never saw the capture.
                         Some(reply) => {
-                            let _ = reply.send(Err(CaptureError::Failed(error)));
+                            let _ = reply.send(Err(CaptureError::Failed(error.to_string())));
                         }
-                        None => self.failed(Failure::NotWritten(error)),
+                        None => self.shot_not_saved(shot, &error),
                     }
                 }
             }
@@ -535,6 +574,32 @@ impl CaptureStudio {
         self.failed = Some(Failed {
             number: self.failures,
             failure,
+        });
+    }
+
+    /// Say that a screenshot the person took was not saved: the bar says it in
+    /// their words where they touched it, and a shot taken from the desk —
+    /// whose bar is down — is said on the floating layer's card, which offers
+    /// to copy the picture instead.
+    fn shot_not_saved(&mut self, shot: Shot, why: &WriteFailed) {
+        self.failed(Failure::NotWritten {
+            folder: why.folder.clone(),
+            cause: why.cause,
+        });
+        let (Some(receipt), Some(picture)) = (shot.receipt, shot.picture) else {
+            return;
+        };
+        if !receipt.floating {
+            return;
+        }
+        self.shots_shown = self.shots_shown.wrapping_add(1);
+        self.shown_shot = None;
+        self.failed_shot = Some(FailedShot {
+            picture,
+            thumb: receipt.thumb,
+            words: failed_words(why),
+            number: self.shots_shown,
+            at: Instant::now(),
         });
     }
 
@@ -801,7 +866,13 @@ impl CaptureStudio {
             .shown_shot
             .as_ref()
             .and_then(|shot| shot.at.checked_add(SHOT_SHOWN));
-        feeding.into_iter().chain(shot).min()
+        // So does a card that says a shot could not be saved, which the
+        // person may never touch.
+        let failed = self
+            .failed_shot
+            .as_ref()
+            .and_then(|shot| shot.at.checked_add(FAILED_SHOWN));
+        feeding.into_iter().chain(shot).chain(failed).min()
     }
 
     /// Take one frame into the recorder when it is due: read back here, and
@@ -883,8 +954,12 @@ impl CaptureStudio {
                     return;
                 }
             };
-            let answer = self.io.write(picture, asked.directory, false);
+            let answer = self
+                .io
+                .write(Arc::new(picture), asked.directory.clone(), false);
             self.shots.push_back(Shot {
+                folder: asked.directory,
+                picture: None,
                 receipt: None,
                 reply: Some(asked.reply),
                 answer,
@@ -924,11 +999,17 @@ impl CaptureStudio {
             thumb: if self.presentation().is_drawn() {
                 String::new()
             } else {
-                ui::held_images::thumbnail(&picture, THUMBNAIL)
+                ui::held_images::hero(&picture, CARD_PICTURE)
             },
         };
+        // A shot taken from the desk keeps its picture until its card is
+        // gone: a file that could not be written can still be copied.
+        let picture = Arc::new(picture);
+        let keep = receipt.floating.then(|| Arc::clone(&picture));
         let answer = self.io.write(picture, self.directory.clone(), receipt.copy);
         self.shots.push_back(Shot {
+            folder: self.directory.clone(),
+            picture: keep,
             receipt: Some(receipt),
             reply: None,
             answer,
@@ -1041,6 +1122,15 @@ impl CaptureStudio {
                 }
             }
             "dismiss-shot" => self.shown_shot = None,
+            // The card of a shot that could not be saved: its picture is
+            // copied instead, without a file of its own.
+            "copy-failed-shot" => {
+                if let Some(failed) = self.failed_shot.as_ref() {
+                    let encode = self.io.encode(Arc::clone(&failed.picture));
+                    self.copies.push_back(encode);
+                }
+            }
+            "dismiss-failed-shot" => self.failed_shot = None,
             // A recording's card, and the buffer's.
             "stop" => {
                 if self
@@ -1079,6 +1169,7 @@ impl CaptureStudio {
         // would only say the same thing twice.
         let summary = if self.presentation().is_drawn() {
             self.shown_shot = None;
+            self.failed_shot = None;
             None
         } else if self
             .feeding
@@ -1100,7 +1191,17 @@ impl CaptureStudio {
             if expired {
                 self.shown_shot = None;
             }
-            self.shot_summary()
+            if self
+                .failed_shot
+                .as_ref()
+                .is_some_and(|shot| shot.at.elapsed() >= FAILED_SHOWN)
+            {
+                self.failed_shot = None;
+            }
+            // What could not be saved is said before what was: a card asking
+            // the person to choose something comes before one that only
+            // shows a shot.
+            self.failed_shot_summary().or_else(|| self.shot_summary())
         };
         let summary = summary?;
         let published = ui::live_activity::Published {
@@ -1142,7 +1243,7 @@ impl CaptureStudio {
             Control::new(
                 "stop",
                 crate::i18n::t("capture-recording-stop"),
-                ControlKind::Primary,
+                ControlKind::Destructive,
             )
             .with_icon("square"),
         )
@@ -1197,6 +1298,34 @@ impl CaptureStudio {
         ))
     }
 
+    /// A shot from the desk that could not be saved, as its card says it: why
+    /// in the person's words, and the one action that keeps what they caught.
+    fn failed_shot_summary(&self) -> Option<ui::live_activity::Summary> {
+        use ui::live_activity::{Control, ControlKind, Kind, Summary};
+        let failed = self.failed_shot.as_ref()?;
+        Some(
+            Summary::new(Kind::Other, crate::i18n::t("capture-failed-not-saved"), "")
+                .with_id(format!("failed-shot-{}", failed.number))
+                .with_icon("camera")
+                .with_subtitle(failed.words.clone())
+                .with_tone(ui::live_activity::Tone::Alert)
+                .with_hero_artwork(failed.thumb.clone())
+                .with_control(
+                    Control::new(
+                        "copy-failed-shot",
+                        crate::i18n::t("capture-failed-copy-instead"),
+                        ControlKind::Primary,
+                    )
+                    .with_icon("copy"),
+                )
+                .with_control(Control::new(
+                    "dismiss-failed-shot",
+                    crate::i18n::t("capture-failed-dismiss"),
+                    ControlKind::Close,
+                )),
+        )
+    }
+
     /// The shot just taken, as the card says it, while it stays up.
     fn shot_summary(&self) -> Option<ui::live_activity::Summary> {
         use ui::live_activity::{Control, ControlKind, Kind, Summary};
@@ -1210,7 +1339,7 @@ impl CaptureStudio {
                 .with_id(format!("shot-{}", shot.number))
                 .with_icon("camera")
                 .with_subtitle(name)
-                .with_artwork(shot.thumb.clone())
+                .with_hero_artwork(shot.thumb.clone())
                 .with_control(
                     Control::new(
                         "copy-shot",
@@ -1255,6 +1384,19 @@ impl CaptureStudio {
             SourceMode::Region => "capture-target-region",
         })
     }
+}
+
+/// Why a screenshot's file was not written, in the person's words: the card
+/// says it under the title that says what happened.
+fn failed_words(why: &WriteFailed) -> String {
+    let key = format!("capture-failed-not-saved-{}", why.cause.words());
+    crate::i18n::t_args(
+        &key,
+        &[(
+            "folder",
+            tilo_capture_studio::folder_words(&why.folder).into(),
+        )],
+    )
 }
 
 /// Minutes and seconds, as a card counts them.
@@ -1789,6 +1931,109 @@ mod tests {
         assert!(
             studio.board.activity(tilo_capture_studio::APP_ID).is_none(),
             "and the card goes with it"
+        );
+    }
+
+    /// A shot from the desk whose file could not be written is said in the
+    /// person's words, never the system's, and the card offers to copy what
+    /// it caught while the picture is still here.
+    #[test]
+    fn a_shot_from_the_desk_that_could_not_be_saved_offers_to_copy_it() {
+        let pictures = tempfile::tempdir().expect("a folder");
+        let (mut studio, mut compositor, _said) = studio(pictures.path());
+        let folder = pictures.path().join("Screenshots");
+        // Nothing writes it: the worker is gone, which is a folder that took
+        // no file as far as the person reads it.
+        let (writer, answer) = std::sync::mpsc::channel();
+        drop(writer);
+        studio.shots.push_back(Shot {
+            folder: folder.clone(),
+            picture: Some(Arc::new(image::RgbaImage::new(4, 2))),
+            receipt: Some(Receipt {
+                width: 4,
+                height: 2,
+                preview: CapturePreview {
+                    columns: 1,
+                    rows: 1,
+                    pixels: vec![[0, 0, 0, 255]],
+                },
+                copy: false,
+                floating: true,
+                thumb: String::from("data:image/jpeg;base64,AA=="),
+            }),
+            reply: None,
+            answer,
+        });
+        studio.serve(&mut compositor);
+
+        // The bar says it in the person's words.
+        let failed = studio
+            .seat
+            .link()
+            .scene()
+            .failed
+            .expect("the failure is said");
+        assert!(matches!(
+            failed.failure,
+            Failure::NotWritten {
+                cause: WriteCause::Other,
+                ..
+            }
+        ));
+        let words = tilo_capture_studio::failure_words(&failed.failure);
+        assert!(
+            words.starts_with("Couldn't save the screenshot") && !words.contains("os error"),
+            "the bar says what it means for the person, not what the system said: {words}"
+        );
+
+        // Its card says the same, heads itself with the picture, and offers
+        // the one thing that keeps it.
+        let summary = shown(&studio).summary.expect("the failure's card");
+        assert_eq!(summary.title, "Couldn't save the screenshot");
+        assert_eq!(summary.art, ui::live_activity::Art::Hero);
+        assert_eq!(summary.artwork, "data:image/jpeg;base64,AA==");
+        assert!(
+            summary.subtitle.contains(&folder.display().to_string()),
+            "the card names the folder: {}",
+            summary.subtitle
+        );
+        let controls: Vec<&str> = summary
+            .controls
+            .iter()
+            .map(|control| control.id.as_str())
+            .collect();
+        assert_eq!(controls, ["copy-failed-shot", "dismiss-failed-shot"]);
+
+        // Copying it instead puts the picture on its way to the clipboard
+        // without a file of its own.
+        studio.board.press(
+            tilo_capture_studio::APP_ID,
+            serde_json::json!({"command": "copy-failed-shot"}),
+        );
+        studio.take_presses(&mut compositor);
+        assert_eq!(
+            studio.copies.len(),
+            1,
+            "the picture is encoded to be copied"
+        );
+
+        // The card goes away by itself once it has been up long enough, and
+        // the session comes back for it rather than leaving it over the desk.
+        let due = studio.next_deadline().expect("the card is due to go");
+        let now = Instant::now();
+        assert!(
+            due <= now + FAILED_SHOWN && due + Duration::from_millis(100) >= now + FAILED_SHOWN,
+            "the pass that takes it down is due when it has been up long enough"
+        );
+        studio.board.press(
+            tilo_capture_studio::APP_ID,
+            serde_json::json!({"command": "dismiss-failed-shot"}),
+        );
+        studio.serve(&mut compositor);
+        assert!(studio.failed_shot.is_none(), "the person put the card away");
+        assert!(
+            studio.board.activity(tilo_capture_studio::APP_ID).is_none(),
+            "and nothing is shown any more"
         );
     }
 }

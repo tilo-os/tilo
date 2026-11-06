@@ -95,6 +95,19 @@ pub enum Tone {
     Alert,
 }
 
+/// How an activity's artwork heads its card.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Art {
+    /// A square tile beside the lines, as a song's cover stands beside its
+    /// title and artist.
+    #[default]
+    Square,
+    /// The card's whole width at nine sixteenths above the lines: a picture
+    /// the activity made, such as a screenshot, shown as its own hero.
+    Hero,
+}
+
 /// What pressing a control does, as the card draws it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -106,6 +119,9 @@ pub enum ControlKind {
     Secondary,
     /// Ends the activity: the card's close, or the pill's dismiss.
     Close,
+    /// Ends what runs, in the colour that warns: a recording's stop. It comes
+    /// after the rest because a compact encoding names a variant by its place.
+    Destructive,
 }
 
 /// One control the activity offers.
@@ -206,6 +222,9 @@ pub struct Summary {
     /// picture): a card shows it beside the title, the pill's a thumbnail.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub artwork: String,
+    /// How the artwork heads the card: beside the lines, or over them.
+    #[serde(default)]
+    pub art: Art,
     #[serde(default)]
     pub tone: Tone,
     #[serde(default)]
@@ -228,6 +247,7 @@ impl Summary {
             progress: None,
             length: None,
             artwork: String::new(),
+            art: Art::Square,
             tone: Tone::Neutral,
             controls: Vec::new(),
         }
@@ -296,6 +316,16 @@ impl Summary {
     #[must_use]
     pub fn with_artwork(mut self, artwork: impl Into<String>) -> Self {
         self.artwork = artwork.into();
+        self
+    }
+
+    /// The artwork heads the card over its lines, at nine sixteenths of the
+    /// card's width: a picture the activity made is shown whole, not as a
+    /// tile beside a title.
+    #[must_use]
+    pub fn with_hero_artwork(mut self, artwork: impl Into<String>) -> Self {
+        self.artwork = artwork.into();
+        self.art = Art::Hero;
         self
     }
 

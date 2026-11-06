@@ -13,7 +13,7 @@ use vello::peniko::Color;
 
 use crate::floating_layer::{Parts, card_parts};
 use crate::icons::Icon;
-use crate::live_activity::{ControlKind, Summary, Tone};
+use crate::live_activity::{Art, ControlKind, Summary, Tone};
 use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
 use crate::pictures::Pictures;
@@ -94,7 +94,13 @@ impl ActivityCardFace<'_> {
         // The hero: the countdown or reading, large and in tabular figures so
         // a ticking number keeps its width; a card with no reading leads with
         // its title instead.
-        let hero = theme.text(TextRole::LargeTitle).numeric();
+        let hero = if summary.art == Art::Hero {
+            // The picture is what the card is for: its title stands under it,
+            // the size of a heading rather than of a reading.
+            theme.text(TextRole::Heading)
+        } else {
+            theme.text(TextRole::LargeTitle).numeric()
+        };
         let reading = if summary.value.is_empty() {
             &summary.title
         } else {
@@ -200,17 +206,24 @@ impl ActivityCardFace<'_> {
             let role = match control.kind {
                 ControlKind::Primary => ButtonRole::Primary,
                 ControlKind::Secondary | ControlKind::Close => ButtonRole::Secondary,
+                ControlKind::Destructive => ButtonRole::Destructive,
             };
             let held = self.held == Some(id.as_str());
             if let Some(icon) = Icon::from_name(&control.icon) {
-                // A media control is its glyph; its label is still what it is
+                // A glyph leads its label where the slot is wide enough for
+                // both, so a row of three says what each one does; a narrower
+                // slot keeps the glyph, and its label is still what it is
                 // called out loud.
+                let style = theme.text(TextRole::Label);
+                let fits = f64::from(text.measure_style(&control.label, None, &style).0) + 24.0
+                    <= rect.width();
+                let label = if fits { control.label.as_str() } else { "" };
                 Button::paint(
                     scene,
                     transform,
                     text,
                     theme,
-                    &ButtonFace::new(*rect, "")
+                    &ButtonFace::new(*rect, label)
                         .icon(icon)
                         .accessible_name(&control.label)
                         .role(role)

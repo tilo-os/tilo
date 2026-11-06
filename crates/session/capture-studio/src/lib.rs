@@ -37,10 +37,23 @@ pub mod surface;
 
 pub use link::{
     Ask, Failed, Failure, Finished, Kept, Link, Recording, Refusal, Scene, Selection, Sent, Studio,
-    Take,
+    Take, WriteCause,
 };
 pub use resource::{Capture, CaptureEffect, CaptureStudioApp};
 pub use surface::StudioSurface;
+
+/// What the person reads of a capture that did not come out, in the desktop's
+/// language: the bar says it where they touched the capture.
+#[must_use]
+pub fn failure_words(failure: &Failure) -> String {
+    i18n::failed(failure)
+}
+
+/// The folder a file goes in, as a person names it: their home is `~`.
+#[must_use]
+pub fn folder_words(folder: &std::path::Path) -> String {
+    i18n::folder_words(folder)
+}
 
 /// The studio's package id.
 pub const APP_ID: &str = "so.tilo.capture-studio";
