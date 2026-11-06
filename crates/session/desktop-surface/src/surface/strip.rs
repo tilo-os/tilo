@@ -2,7 +2,13 @@
 //! which keep its windows' borders and corners showing, and the gutter that
 //! stands before its first window.
 
-use super::{GroupRow, STRIP_EDGE_GUTTER_PX, Style, WindowGroup};
+use tilo_sort::CompactSort as _;
+
+use super::tile_content::{build_tile, descriptor, placeholder};
+use super::{
+    GroupId, GroupRow, HashMap, STRIP_EDGE_GUTTER_PX, Style, TabId, TileHost, TileSource,
+    WindowGroup, Workspace,
+};
 use ui::widget::{STRIP_BOTTOM_GUTTER_PX, STRIP_TOP_GAP_PX};
 
 /// The strip's node style over the row's `own`: every strip stands on the
@@ -42,4 +48,82 @@ pub(super) fn strip_style(row: &GroupRow, own: Style) -> Style {
 /// native desktop keeps it.
 pub(super) fn strip_row(groups: Vec<WindowGroup>) -> GroupRow {
     GroupRow::new(groups).with_leading_inset(STRIP_EDGE_GUTTER_PX)
+}
+
+/// A strip's row with only the focused window's active tab built; the
+/// other tabs are placeholders, returned in the order to build them: each
+/// group's active tab by distance from the focused window, then the
+/// inactive tabs.
+pub(super) fn build_row_lazily(
+    tiles: &mut dyn TileSource,
+    controls: Option<&ui::ControlDomain>,
+    workspace: &Workspace,
+    strip: &tilo_desktop_model::Strip,
+    focused: Option<GroupId>,
+) -> (GroupRow, Vec<TabId>) {
+    let focus = focused
+        .and_then(|id| strip.window_groups.iter().position(|g| g.id == id))
+        .unwrap_or(0);
+    let mut deferred: Vec<(bool, usize, TabId)> = Vec::new();
+    let groups = strip
+        .window_groups
+        .iter()
+        .enumerate()
+        .map(|(index, group)| {
+            let tabs = group
+                .tabs
+                .iter()
+                .map(|tab| (descriptor(tab), placeholder()))
+                .collect();
+            let mut built = WindowGroup::new(group.id, tabs, group.active_tab, group.width)
+                .with_maximized(group.maximized);
+            for tab in &group.tabs {
+                let active = tab.id == group.active_tab;
+                if active && index == focus {
+                    if let Some(host) = built.host_for_tab_mut(tab.id) {
+                        *host = build_tile(tiles, controls, workspace, tab);
+                    }
+                } else {
+                    deferred.push((!active, index.abs_diff(focus), tab.id));
+                }
+            }
+            built
+        })
+        .collect();
+    deferred.compact_sort_by_key(|&(inactive, distance, _)| (inactive, distance));
+    let order = deferred.into_iter().map(|(_, _, tab)| tab).collect();
+    (strip_row(groups), order)
+}
+
+/// A strip's row as the tree describes it. Each tab takes its content from
+/// `live` when present there, else from `tiles`.
+pub(super) fn build_row(
+    tiles: &mut dyn TileSource,
+    controls: Option<&ui::ControlDomain>,
+    workspace: &Workspace,
+    strip: &tilo_desktop_model::Strip,
+    live: &mut HashMap<TabId, TileHost>,
+) -> GroupRow {
+    let groups = strip
+        .window_groups
+        .iter()
+        .map(|group| {
+            let tabs = group
+                .tabs
+                .iter()
+                .map(|tab| (descriptor(tab), placeholder()))
+                .collect();
+            let mut built = WindowGroup::new(group.id, tabs, group.active_tab, group.width)
+                .with_maximized(group.maximized);
+            for tab in &group.tabs {
+                if let Some(host) = built.host_for_tab_mut(tab.id) {
+                    *host = live
+                        .remove(&tab.id)
+                        .unwrap_or_else(|| build_tile(tiles, controls, workspace, tab));
+                }
+            }
+            built
+        })
+        .collect();
+    strip_row(groups)
 }

@@ -24,7 +24,8 @@ use ui::widget::{EventCtx, GroupRow, STRIP_EDGE_GUTTER_PX, StripLane, Widget as 
 use ui::winit::event::WindowEvent;
 use ui::{TextRenderer, Theme};
 
-use super::{DesktopHandle, DesktopSurface, Shared, build_row_lazily};
+use super::strip::build_row_lazily;
+use super::{DesktopHandle, DesktopSurface, Shared};
 use crate::navigation::{self, Admitted, RouteIds};
 
 /// Where stepping focus along a strip spread over several displays goes.

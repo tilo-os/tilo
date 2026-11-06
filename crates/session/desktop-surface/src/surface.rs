@@ -18,7 +18,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use tilo_sort::CompactSort as _;
 
 use shown::ShownTabs;
 
@@ -47,7 +46,7 @@ use crate::navigation::{
 use crate::session::{ActivityAsk, ActivityReads, ActivityRequests};
 
 use paging::{Sideways, can_pan, pan_row, panned_to, sideways, vertical};
-use strip::{strip_row, strip_style};
+use strip::{build_row, build_row_lazily, strip_style};
 
 mod arrivals;
 mod artwork;
@@ -923,8 +922,21 @@ impl DesktopSurface {
             tiles,
             Rc::clone(&shared.borrow().peers),
         )) as Box<dyn TileSource>;
-        let mut surface = Self {
-            shared: Rc::clone(&shared),
+        let mut surface = Self::standing(Rc::clone(&shared), tiles, &search, acknowledger);
+        surface.show_active_strip();
+        (surface, DesktopHandle { shared })
+    }
+
+    /// The surface's own state, standing on the `shared` desk `new` made and
+    /// drawing with `tiles`, after its search `search`.
+    fn standing(
+        shared: Rc<RefCell<Shared>>,
+        tiles: Box<dyn TileSource>,
+        search: &Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,
+        acknowledger: ui::widget::acknowledgement::Acknowledger,
+    ) -> Self {
+        Self {
+            shared,
             tiles,
             rows: HashMap::new(),
             window_slots: ui::window_slots::WindowSlots::default(),
@@ -939,7 +951,7 @@ impl DesktopSurface {
             swipe: None,
             pan_follow: None,
             settle: None,
-            search: Rc::clone(&search),
+            search: Rc::clone(search),
             seen_search: 0,
             new_tab_into: None,
             search_window: None,
@@ -963,9 +975,7 @@ impl DesktopSurface {
             slides: std::cell::RefCell::new(slide::Slides::default()),
             motion: ui::tokens::EffectiveMotion::default(),
             navigation_source: None,
-        };
-        surface.show_active_strip();
-        (surface, DesktopHandle { shared })
+        }
     }
 
     /// Give every live window the holders the host named
@@ -2258,51 +2268,6 @@ fn observe_ids(minter: &mut IdMinter, tree: &DesktopTree) {
     }
 }
 
-/// A strip's row with only the focused window's active tab built; the
-/// other tabs are placeholders, returned in the order to build them: each
-/// group's active tab by distance from the focused window, then the
-/// inactive tabs.
-fn build_row_lazily(
-    tiles: &mut dyn TileSource,
-    controls: Option<&ui::ControlDomain>,
-    workspace: &Workspace,
-    strip: &tilo_desktop_model::Strip,
-    focused: Option<GroupId>,
-) -> (GroupRow, Vec<TabId>) {
-    let focus = focused
-        .and_then(|id| strip.window_groups.iter().position(|g| g.id == id))
-        .unwrap_or(0);
-    let mut deferred: Vec<(bool, usize, TabId)> = Vec::new();
-    let groups = strip
-        .window_groups
-        .iter()
-        .enumerate()
-        .map(|(index, group)| {
-            let tabs = group
-                .tabs
-                .iter()
-                .map(|tab| (descriptor(tab), placeholder()))
-                .collect();
-            let mut built = WindowGroup::new(group.id, tabs, group.active_tab, group.width)
-                .with_maximized(group.maximized);
-            for tab in &group.tabs {
-                let active = tab.id == group.active_tab;
-                if active && index == focus {
-                    if let Some(host) = built.host_for_tab_mut(tab.id) {
-                        *host = build_tile(tiles, controls, workspace, tab);
-                    }
-                } else {
-                    deferred.push((!active, index.abs_diff(focus), tab.id));
-                }
-            }
-            built
-        })
-        .collect();
-    deferred.compact_sort_by_key(|&(inactive, distance, _)| (inactive, distance));
-    let order = deferred.into_iter().map(|(_, _, tab)| tab).collect();
-    (strip_row(groups), order)
-}
-
 fn find_tab(tree: &DesktopTree, strip: StripId, tab: TabId) -> Option<(&Workspace, &Tab)> {
     tree.workspaces.iter().find_map(|workspace| {
         let strip = workspace.strips.iter().find(|s| s.id == strip)?;
@@ -2313,39 +2278,6 @@ fn find_tab(tree: &DesktopTree, strip: StripId, tab: TabId) -> Option<(&Workspac
             .find(|t| t.id == tab)
             .map(|tab| (workspace, tab))
     })
-}
-
-/// A strip's row as the tree describes it. Each tab takes its content from
-/// `live` when present there, else from `tiles`.
-fn build_row(
-    tiles: &mut dyn TileSource,
-    controls: Option<&ui::ControlDomain>,
-    workspace: &Workspace,
-    strip: &tilo_desktop_model::Strip,
-    live: &mut HashMap<TabId, TileHost>,
-) -> GroupRow {
-    let groups = strip
-        .window_groups
-        .iter()
-        .map(|group| {
-            let tabs = group
-                .tabs
-                .iter()
-                .map(|tab| (descriptor(tab), placeholder()))
-                .collect();
-            let mut built = WindowGroup::new(group.id, tabs, group.active_tab, group.width)
-                .with_maximized(group.maximized);
-            for tab in &group.tabs {
-                if let Some(host) = built.host_for_tab_mut(tab.id) {
-                    *host = live
-                        .remove(&tab.id)
-                        .unwrap_or_else(|| build_tile(tiles, controls, workspace, tab));
-                }
-            }
-            built
-        })
-        .collect();
-    strip_row(groups)
 }
 
 fn find_group(
