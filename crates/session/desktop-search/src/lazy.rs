@@ -26,6 +26,7 @@ pub trait DesktopSearchApi {
     fn take_choice(&mut self) -> Option<Target>;
     fn take_scope_widened(&mut self) -> bool;
     fn refuse(&mut self, target: Target, why: String);
+    fn refusal_for(&self, target: &Target) -> Option<&str>;
     fn scope(&self) -> ui::search::Scope;
     fn results(&self) -> &[Hit];
     fn query(&self) -> &str;
@@ -82,6 +83,9 @@ impl DesktopSearchApi for DesktopSearch {
     }
     fn refuse(&mut self, target: Target, why: String) {
         Self::refuse(self, target, why);
+    }
+    fn refusal_for(&self, target: &Target) -> Option<&str> {
+        Self::refusal_for(self, target)
     }
     fn scope(&self) -> ui::search::Scope {
         Self::scope(self)
@@ -296,6 +300,14 @@ impl LazyDesktopSearch {
         if let Some(search) = self.search.as_mut() {
             search.refuse(target, why);
         }
+    }
+
+    /// Why the row `target` names could not be carried out, while it still
+    /// stands under that row; nothing while the code is on its way.
+    pub fn refusal_for(&self, target: &crate::Target) -> Option<&str> {
+        self.search
+            .as_ref()
+            .and_then(|search| search.refusal_for(target))
     }
 
     /// Where the open search stands, for asking it again where it was.

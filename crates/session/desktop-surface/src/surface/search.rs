@@ -1139,7 +1139,13 @@ impl DesktopSurface {
                 .iter()
                 .map(|hit| SearchRow {
                     title: hit.title.clone(),
-                    subtitle: hit.subtitle.clone(),
+                    // The reason the host could not carry the row out stands
+                    // on it, as the palette draws it, rather than the row
+                    // reading as if nothing happened.
+                    subtitle: search
+                        .refusal_for(&hit.target)
+                        .map(str::to_owned)
+                        .or_else(|| hit.subtitle.clone()),
                     kind: hit.kind.label().to_owned(),
                     facts: hit.facts.clone(),
                 })

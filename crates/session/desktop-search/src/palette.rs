@@ -384,6 +384,14 @@ impl DesktopSearch {
         self.refusal = Some((target, why));
     }
 
+    /// Why the row `target` names could not be carried out, while it still
+    /// stands under that row: the line the palette draws there.
+    #[must_use]
+    pub fn refusal_for(&self, target: &Target) -> Option<&str> {
+        let (refused, why) = self.refusal.as_ref()?;
+        (refused == target).then_some(why.as_str())
+    }
+
     /// Where this search stands, for asking it again where it was.
     #[must_use]
     pub fn scope(&self) -> Scope {
@@ -2133,12 +2141,17 @@ mod tests {
             .clone();
 
         search.open(data());
-        search.refuse(target, "its app is gone".to_owned());
+        search.refuse(target.clone(), "its app is gone".to_owned());
         search.set_query("notes");
         settled(&mut search);
 
         assert!(search.is_open(), "search stays open on the reason");
         assert_eq!(search.query(), "notes", "over the query it stood at");
+        assert_eq!(
+            search.refusal_for(&target),
+            Some("its app is gone"),
+            "the row that did not happen is the one that says why"
+        );
         let entries = search.palette().visible_entries();
         assert!(
             entries
