@@ -1090,6 +1090,21 @@ impl Printer<'_> {
                 self.block_body(&sc.body);
                 self.line("}");
             }
+            Item::Trigger(t) => {
+                let params = t.param.as_ref().map_or_else(String::new, |p| {
+                    format!("({}: {})", p.name.name, print_type(&p.ty))
+                });
+                let when = match &t.when {
+                    crate::ast::TriggerWhen::Every { amount, unit, .. } => {
+                        format!("every {amount}{unit}")
+                    }
+                    crate::ast::TriggerWhen::At { expr, .. } => {
+                        format!("at {}", self.ex(expr))
+                    }
+                };
+                let call = self.ex(&t.call);
+                self.line(&format!("trigger {}{params} {when}: {call}", t.name.name));
+            }
             Item::Action(a) => {
                 let role = a
                     .role

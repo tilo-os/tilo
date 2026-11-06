@@ -18,11 +18,9 @@ use crate::types::MergeKind;
 /// Whether call arguments name only a filter's options: `(icon: .circle)`.
 fn only_opts(args: &[Arg]) -> bool {
     !args.is_empty()
-        && args.iter().all(|a| {
-            a.name
-                .as_ref()
-                .is_some_and(|n| n.name == "icon")
-        })
+        && args
+            .iter()
+            .all(|a| a.name.as_ref().is_some_and(|n| n.name == "icon"))
 }
 
 /// The arguments as a filter's options.
@@ -228,7 +226,7 @@ const TYPE_ARGS: &[&str] = &[
     "Result",
     "State",
 ];
-const ITEM_EXPECTED: &str = "`use`, `type`, `enum`, `root`, `default view`, `row view`, `action`, `flow`, `view`, `template view`, `fn` or `scenario`";
+const ITEM_EXPECTED: &str = "`use`, `type`, `enum`, `root`, `default view`, `row view`, `action`, `flow`, `view`, `template view`, `fn`, `scenario` or `trigger`";
 
 impl<'a> Parser<'a> {
     fn new(toks: Vec<Token>, src: &'a str) -> Self {
@@ -622,6 +620,60 @@ impl<'a> Parser<'a> {
             && matches!(self.peek_at(1), Tok::Str(_))
     }
 
+    /// `trigger name(r: T) every 30m: act(r)` at the start of an item.
+    fn at_trigger(&self) -> bool {
+        matches!(self.peek(), Tok::Ident(n) if n == "trigger")
+            && matches!(self.peek_at(1), Tok::Ident(_))
+    }
+
+    /// `trigger name(r: T) every 30m: act(r)`, or `... at r.at: act(r)`.
+    fn trigger_decl(&mut self, doc: Vec<String>, start: Span) -> PResult<crate::ast::TriggerDecl> {
+        use crate::ast::{TriggerDecl, TriggerWhen};
+        self.bump();
+        let node = self.node();
+        let name = self.ident("the trigger's name")?;
+        let mut params = if self.is(&Tok::LParen) {
+            self.params()?
+        } else {
+            Vec::new()
+        };
+        let param = params.first().cloned();
+        for extra in params.drain(1..) {
+            self.diags.push(Diagnostic::new(
+                "E003",
+                extra.name.span,
+                "a trigger runs for one record: `trigger remind(t: Task) ...` walks the resources of Task. Declare another trigger for another type",
+            ));
+        }
+        let when = if matches!(self.peek(), Tok::Ident(n) if n == "every") {
+            let span = self.bump().span;
+            let (amount, unit) = match self.peek() {
+                Tok::Duration(amount, unit) => (*amount, *unit),
+                _ => return self.unexpected("a length of time, such as `30m`"),
+            };
+            self.bump();
+            TriggerWhen::Every { amount, unit, span }
+        } else if matches!(self.peek(), Tok::Ident(n) if n == "at") {
+            let span = self.bump().span;
+            let expr = self.expr()?;
+            TriggerWhen::At { expr, span }
+        } else {
+            return self
+                .unexpected("`every` and a length of time, or `at` and a time the record holds");
+        };
+        self.expect(&Tok::Colon)?;
+        let call = self.expr()?;
+        Ok(TriggerDecl {
+            node,
+            doc,
+            name,
+            param,
+            when,
+            call,
+            span: start.to(Span::new(self.prev_end(), self.prev_end())),
+        })
+    }
+
     /// `primary` or `destructive` before an action, or before another such word.
     fn at_action_role(&self) -> Option<ActionRole> {
         let role = match self.peek() {
@@ -902,6 +954,9 @@ impl<'a> Parser<'a> {
             let mut view = self.view(doc, start)?;
             view.template = true;
             return Ok(Item::View(view));
+        }
+        if self.at_trigger() {
+            return Ok(Item::Trigger(self.trigger_decl(doc, start)?));
         }
         let mut role = None;
         while let Some(r) = self.at_action_role() {

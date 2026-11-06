@@ -1378,6 +1378,23 @@ impl Host {
         ran
     }
 
+    /// Run what the packages declare comes due at `now` (seconds since the epoch): each
+    /// trigger, for each record of its type, as the app's own invocation
+    /// ([`crate::authority::trigger_principal`]), whose change records in the same edit what
+    /// the trigger last did for the record. Only the workspace's origin calls it
+    /// (`Instance::sync`), so a trigger runs once across the workspace's devices; a run the
+    /// devices missed while all were off runs once when one comes up. Returns how many ran.
+    pub fn run_triggers(&self, now: i64) -> usize {
+        crate::triggers::run(self, now)
+    }
+
+    /// The next instant strictly after `now` at which a trigger has something to run: what the
+    /// host waits for, so nothing polls for it. `None` when no trigger will come due again.
+    #[must_use]
+    pub fn next_trigger(&self, now: i64) -> Option<i64> {
+        crate::triggers::next(self, now)
+    }
+
     /// Whether the resource `doc` holds anything in the fields `previously` (none: whether it
     /// may hold what an earlier version wrote, which only the migration can tell).
     fn holds_previously(&self, doc: &str, previously: &[&str]) -> bool {

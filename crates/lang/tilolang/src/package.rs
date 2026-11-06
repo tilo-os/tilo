@@ -515,6 +515,35 @@ fn build_meta(
     };
     meta.default_views = views_meta(&env.default_views);
     meta.row_views = views_meta(&env.row_views);
+    meta.triggers = env
+        .triggers
+        .iter()
+        .map(|t| crate::meta::TriggerMeta {
+            id: t.id.clone(),
+            name: t.name.clone(),
+            doc: t.doc.clone(),
+            action: t.action.clone(),
+            ty: t.ty.clone(),
+            args: t
+                .args
+                .iter()
+                .map(|arg| match arg {
+                    crate::resolve::TriggerArg::Subject => crate::meta::TriggerArgMeta::Subject,
+                    crate::resolve::TriggerArg::Root(ty) => {
+                        crate::meta::TriggerArgMeta::Root(ty.clone())
+                    }
+                })
+                .collect(),
+            when: match &t.when {
+                crate::resolve::TriggerWhen::Every(secs) => {
+                    crate::meta::TriggerWhenMeta::Every(*secs)
+                }
+                crate::resolve::TriggerWhen::At(field) => {
+                    crate::meta::TriggerWhenMeta::At(field.clone())
+                }
+            },
+        })
+        .collect();
     meta.views_of = env
         .views_of
         .iter()
@@ -552,7 +581,8 @@ fn build_meta(
             | Item::Root(_)
             | Item::DefaultView(_)
             | Item::RowView(_)
-            | Item::Views(_) => {}
+            | Item::Views(_)
+            | Item::Trigger(_) => {}
             Item::Alias(a) => {
                 let key = crate::types::TypeKey {
                     app: app.to_string(),

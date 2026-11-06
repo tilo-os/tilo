@@ -314,6 +314,8 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             Item::Scenario(s) => c.run_body(&callable, FuncKind::Action, Ctx::Action, &s.body),
             Item::View(v) if is_template(v) => continue,
             Item::View(v) => c.run_view(&callable, v),
+            // A trigger declares no body: what it runs is the action it names.
+            Item::Trigger(_) => continue,
             Item::Use(_)
             | Item::Type(_)
             | Item::Alias(_)

@@ -161,6 +161,9 @@ pub struct PackageMeta {
     /// Named seed data (`scenario "name" { ... }`), each run by its hidden action.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scenarios: Vec<ScenarioMeta>,
+    /// The actions the package runs by itself (`trigger due(t: Task) at t.at: notify_due(t)`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<TriggerMeta>,
     /// The arguments of actions views apply that compute from view state (`set(open, not
     /// open)`): functions the runtime runs when the control's event fires, on the view state
     /// as it is then. Each is exported as `e_<id>`.
@@ -223,6 +226,44 @@ pub struct ScenarioMeta {
     pub name: String,
     /// The id of the scenario's action.
     pub action: String,
+}
+
+/// A `trigger`: when a package's action runs by itself, for the resources of one type.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TriggerMeta {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub doc: String,
+    /// The id of the action it runs.
+    pub action: String,
+    /// The id of the type of the resources it runs for.
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// The action's arguments, in the order the call passes them.
+    pub args: Vec<TriggerArgMeta>,
+    /// When it runs.
+    pub when: TriggerWhenMeta,
+}
+
+/// What a trigger passes its action: the record it runs for, or a root of the package.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerArgMeta {
+    /// The resource the trigger runs for.
+    Subject,
+    /// A root record, by its type's id (the records the platform keeps as `root-<type id>`).
+    Root(String),
+}
+
+/// When a trigger runs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerWhenMeta {
+    /// At each multiple of these seconds, counted from the epoch.
+    Every(i64),
+    /// At the instant the field (by id) of the resource holds.
+    At(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

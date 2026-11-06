@@ -60,6 +60,8 @@ pub enum Item {
     Views(ViewsDecl),
     /// `scenario "name" { ... }`: named seed data, run as a hidden action.
     Scenario(ScenarioDecl),
+    /// `trigger due(t: Task) at t.at: notify_due(t)`: when an action runs by itself.
+    Trigger(TriggerDecl),
     Action(ActionDecl),
     Flow(FlowDecl),
     View(ViewDecl),
@@ -75,6 +77,7 @@ impl Item {
             Self::Alias(d) => &d.doc,
             Self::Enum(d) => &d.doc,
             Self::Scenario(d) => &d.doc,
+            Self::Trigger(d) => &d.doc,
             Self::Action(d) => &d.doc,
             Self::Flow(d) => &d.doc,
             Self::View(d) => &d.doc,
@@ -95,6 +98,7 @@ impl Item {
             Self::DefaultView(d) | Self::RowView(d) => d.span,
             Self::Views(d) => d.span,
             Self::Scenario(d) => d.span,
+            Self::Trigger(d) => d.span,
             Self::Action(d) => d.span,
             Self::Flow(d) => d.span,
             Self::View(d) => d.span,
@@ -268,6 +272,36 @@ pub struct ScenarioDecl {
     pub result: Option<TypeExpr>,
     pub body: Block,
     pub span: Span,
+}
+
+/// `trigger due(t: Task) at t.at: notify_due(t)`: when one of the package's actions runs by
+/// itself. The host runs it for each resource of the parameter's type, as the app's own
+/// invocation: once at the instant the resource's field holds, or at each period.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TriggerDecl {
+    pub node: NodeId,
+    pub doc: Vec<String>,
+    pub name: Ident,
+    /// The record the trigger runs for: the resources of its type are the ones it runs on.
+    pub param: Option<Param>,
+    pub when: TriggerWhen,
+    /// The action it runs: the subject, and any roots it passes.
+    pub call: Expr,
+    pub span: Span,
+}
+
+/// When a trigger runs.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TriggerWhen {
+    /// `every 30m`: at each multiple of the length, counted from the epoch, so every device
+    /// agrees on when one comes.
+    Every {
+        amount: i64,
+        unit: &'static str,
+        span: Span,
+    },
+    /// `at t.at`: once at the instant the resource's field holds, and again when it changes.
+    At { expr: Expr, span: Span },
 }
 
 #[derive(Clone, Debug, PartialEq)]

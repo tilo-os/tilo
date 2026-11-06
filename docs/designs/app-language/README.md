@@ -124,6 +124,33 @@ cryptographic random source, and the numbers it drew are kept in the invocation'
 flow resumed after waiting for a person, and any run replayed, reads the numbers it drew the
 first time.
 
+## Triggers
+
+An action that runs without anyone pressing anything is a `trigger`: the package says when it
+runs, and the host invokes it as the app's own action, with the app's authority and its declared
+effects, as undoable and as visible in history as any other.
+
+```
+/// A board's own clock: it recounts its columns every half hour.
+trigger recount(b: Board) every 30m: recount_columns(b)
+
+/// A reminder rings once, at the time it holds; move that time and it rings again there.
+trigger due(r: Reminder) at r.at: ring(r)
+```
+
+A trigger names one type and runs for each of the package's records of it. `every` takes a
+length of time and runs at the start of each period on the clock (`every 30m` is on the half
+hour); `at` reads a `Time` or `Option<Time>` field of the record and runs once when that instant
+has come. An `every` period that passed while every device was off runs once when one comes up,
+and so does an `at` time that passed; a record whose time moves to a later instant rings again
+there. The action takes the record (`ring(r)`) or a root (`root Board`) as its arguments.
+
+The host that runs a trigger is the workspace's origin, the device that governs the workspace,
+and it records in the same change what the trigger last did for the record: the period it ran
+in, or the instant it fired at. A second run of the same period or instant is refused there, so
+a trigger runs once across the workspace's devices however they sync. Nothing polls: the host
+wakes at the next instant a trigger is due, and only while the app is open.
+
 ## Packages and libraries
 
 A package is a directory of `.tl` files with one `app` header and its `app.ids`, the ids every

@@ -15,7 +15,7 @@ app_opt    = ( "icon" | "category" ) ":" "." ident
 app_id     = ident { "." ident } ;
 
 item       = { doc } ( use | type_decl | alias | enum_decl | root | default_view | row_view
-                     | views | [ role ] action | flow | view | fn | scenario ) ;
+                     | views | [ role ] action | flow | view | fn | scenario | trigger ) ;
 use        = "use" app_id [ "as" ident ] ;
 root       = "root" [ ident ":" ] type ;                      (* `root notes: Notes` *)
 alias      = "type" Ident "=" type ;                          (* a container named so is a resource *)
@@ -58,6 +58,8 @@ effect     = "web" | "random" | "time" ;
 fn         = "fn" ident params "->" type block ;
 view       = [ "template" ] "view" ident [ "<" Ident { "," Ident } ">" ] params ui_block ;
 scenario   = "scenario" string [ "->" type ] block ;
+trigger    = "trigger" Ident params ( "every" duration
+                                   | "at" ident "." ident ) ":" expr ;   (* the action it runs *)
 params     = "(" [ param { "," param } ] ")" ;
 param      = ident ":" type [ "=" expr ] ;                         (* defaults: action parameters only *)
 opts       = "(" ident ":" expr { "," ident ":" expr } ")" ;       (* icon:, label:, on:, key:, did: *)

@@ -817,3 +817,42 @@ what came back and a rule for when it is sent.
 - **Limits are fixed, not negotiated.** One request waits at most 30 seconds and answers at most
   2 MiB; a longer body is refused with a status-0 `Response` naming the limit. Streaming and
   redirect policy beyond the transport's own are not part of this effect.
+
+## Triggers
+
+An action the app runs by itself is declared with `trigger` (README.md, "Triggers"). The
+language only describes it; the host runs it, so the choices are about what the declaration
+holds and what the host reads from it.
+
+- **`trigger name(r: T) every <duration>: action(r)`, or `at r.field`.** A trigger names exactly
+  one record type — the records it runs for — and exactly one action of its own package. The
+  action's arguments are the record it runs for (`r`) or a root (`root Board`); anything else
+  would have the host compute a value without running the package. An action parameter the
+  trigger does not give must have a default.
+- **`every` is pinned to the epoch, not to when the app started.** `every 30m` runs at the start
+  of each half hour on the wall clock, so every device that runs a trigger agrees on its
+  periods, and the period a run belongs to is the same everywhere it is later read.
+- **`at` reads a `Time` or `Option<Time>` field of the record, and the record is the mark.** The
+  trigger fires once when the stored instant has come; the host records the instant it fired at,
+  so the same instant does not fire again, and a changed instant (a later one, or an earlier one
+  that has already passed) fires once more. The field is read by the host, never by the package,
+  so a time in a field of some other shape is refused by the compiler (E133).
+- **The run is recorded in the change it makes, in the same edit.** The host writes what the
+  trigger last did for the record (the period it ran in, or the instant it fired at) into the
+  record's `$triggers` map, in the same change as the action's own writes (`DynEdit::TriggerRan`),
+  and the change is committed under the app's own principal, `trigger:<app>`. A second run of the
+  same period or instant is refused where changes are applied in order, so two devices cannot
+  both count a run.
+- **One device runs them: the workspace's origin.** Only the replica that governs the workspace
+  (the same one that runs migrations) invokes triggers, so nothing has to be elected and no
+  device depends on being asked. A device that opens the app later reads the marks and finds
+  nothing due.
+- **Runs missed while every device was off happen once, at the next turn.** `every` compares the
+  period `now` is in against the mark, not the number of periods that passed; `at` compares the
+  instant the field holds against the mark. Five hours off is one run, not ten.
+- **Nothing polls.** The host waits until the next instant a trigger is due (the next period's
+  start, or a record's time still to come) and wakes then; it never returns an instant already
+  passed, so a refused run is not retried in a loop.
+- **A trigger runs for the package's records, as the platform stores them:** the resources of
+  the trigger's type at the top of the app's tree (what migrations and publication see), not
+  items inside a collection.

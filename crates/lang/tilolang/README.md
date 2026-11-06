@@ -351,6 +351,21 @@ flow cleanup(list: todo.TodoList) -> Text {
 }
 ```
 
+**Triggers.** An action that runs by itself is a `trigger`: the package says when it runs, and
+the host invokes it as the app's own action (DECISIONS.md, "Triggers"):
+
+```
+trigger recount(b: Board) every 30m: recount_columns(b)
+trigger due(r: Reminder) at r.at: ring(r)
+```
+
+A trigger runs for each of the package's records of the type it names. `every` takes a length of
+time and runs at the start of each period on the clock; `at` reads a `Time` or `Option<Time>`
+field of the record and runs once when that instant has come, and again if the field moves to
+another time. Its action takes the record (`ring(r)`) or a root (`root Board`) and nothing else.
+The workspace's origin runs them: once per period or instant across the workspace's devices, once
+for a period or time that passed while every device was off, and never by polling.
+
 **Effects.** An action or flow whose body reads what a replay cannot compute again says so:
 `uses time` after its parameters, comma-separated when it reads more (`uses web, random`).
 Reading the clock or the person's zone anywhere in the body — `now`, `today`, a time of no

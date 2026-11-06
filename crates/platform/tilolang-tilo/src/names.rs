@@ -31,6 +31,16 @@ pub fn unnamed(id: &str) -> String {
         let version: String = module.chars().take(KEPT).collect();
         return format!("{app}, updating to version {version}");
     }
+    // An app running one of its own actions: "Board, on its own".
+    if let Some(app) = crate::authority::trigger_of(id) {
+        let app = app.rsplit('.').next().unwrap_or(app);
+        let mut chars = app.chars();
+        let app: String = chars
+            .next()
+            .map(|first| first.to_uppercase().chain(chars).collect())
+            .unwrap_or_default();
+        return format!("{app}, on its own");
+    }
     if let Some(kind) = id.strip_prefix("agent:") {
         let mut chars = kind.chars();
         let kind: String = chars

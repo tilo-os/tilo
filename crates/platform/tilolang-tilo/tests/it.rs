@@ -58,6 +58,7 @@ mod task;
 mod task_door;
 mod tasks;
 mod tasks_today;
+mod triggers;
 #[cfg(feature = "record")]
 mod undo_own;
 mod unions;
