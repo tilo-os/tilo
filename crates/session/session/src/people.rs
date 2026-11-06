@@ -75,6 +75,26 @@ pub(crate) fn own_rgb(identity: &str) -> (u8, u8, u8) {
     ui::presence::identity_rgb(hue)
 }
 
+/// This person as their own surfaces show them: the name they go by here, and
+/// the identity their face's letters and colour come from — the root key they
+/// are here by, else the id this device sits as. The bar's own avatar and
+/// their own card both read it here, so one person wears one initial and one
+/// colour wherever they see themselves.
+pub(crate) fn own_face(own: &crate::sync::OwnPresence, seated: &str) -> (String, String) {
+    let identity = own
+        .user
+        .as_deref()
+        .map(str::trim)
+        .filter(|user| !user.is_empty())
+        .unwrap_or(seated)
+        .to_owned();
+    let name = crate::directory::desk_person_name(
+        ui::local_identity::load().map(|identity| identity.display_name),
+        &own.label,
+    );
+    (name, identity)
+}
+
 /// The card of this person themselves, where the roster lists someone else's:
 /// marked in [`Shown::card_open`] while it stands there.
 const SELF_CARD: &str = "";
@@ -383,6 +403,7 @@ pub(crate) fn mount(
         open: Rc::clone(&open),
         handle: handle.clone(),
         drawn: Cell::new(0),
+        seated: options.person.clone(),
         sync,
         intents,
         invitable,
@@ -550,6 +571,9 @@ struct Panel {
     /// moving, arriving or leaving moves it, and a desk where nothing moved
     /// asks for no frame.
     drawn: Cell<u64>,
+    /// The id this device sits as, which the person's own face falls back to
+    /// before their presence names the root key they are here by.
+    seated: String,
     sync: Option<Rc<crate::sync::Client>>,
     /// Where the bar's intents go: inviting from the roster's footer is the
     /// bar's own invite, raised here.
@@ -684,11 +708,7 @@ impl Panel {
             .sync
             .as_ref()
             .map_or_else(crate::sync::OwnPresence::default, |sync| sync.own());
-        let identity = own.user.clone().unwrap_or_default();
-        let name = crate::directory::desk_person_name(
-            ui::local_identity::load().map(|identity| identity.display_name),
-            &own.label,
-        );
+        let (name, identity) = own_face(&own, &self.seated);
         let devices = self.sync.as_ref().map_or_else(Vec::new, |sync| {
             let here = sync.here();
             let here = here.borrow();

@@ -832,14 +832,24 @@ fn your_own_avatar_opens_your_card() {
         .input(InputEvent::PointerMotion { x: 1100.0, y: 16.0 })
         .expect("the pointer");
     let mut avatar = None;
+    let mut named = None;
     until(&mut session, "the bar shows whose it is", |session| {
-        avatar = session
+        let found = session
             .controls()
             .into_iter()
-            .find(|(name, _)| name.ends_with("(you): your profile"))
-            .map(|(_, rect)| rect);
+            .find(|(name, _)| name.ends_with("(you): your profile"));
+        named = found.as_ref().map(|(name, _)| name.clone());
+        avatar = found.map(|(_, rect)| rect);
         avatar.is_some()
     });
+    // The bar's face and the card's are one: the name they gave, not the
+    // account they happen to log in with, and one initial drawn in one
+    // colour.
+    assert_eq!(
+        named.as_deref(),
+        Some("Quinten (you): your profile"),
+        "the bar names the person as they gave themselves"
+    );
     press(&mut session, avatar.expect("the bar's own avatar"));
     until(&mut session, "your card opens", |session| {
         control(session, &["profile-name", "Your name"]).is_some()
@@ -850,6 +860,11 @@ fn your_own_avatar_opens_your_card() {
         "Your identities",
         "Back up your identity",
         "Pair another device",
+        // The device the card is drawn on is named by which one it is, and
+        // its key is kept for the copy affordance beside it.
+        "This computer",
+        "this device",
+        "Copy this device’s key",
     ] {
         assert!(
             labels.iter().any(|label| label == said),
@@ -859,6 +874,18 @@ fn your_own_avatar_opens_your_card() {
     assert!(
         !labels.iter().any(|label| label == "Message"),
         "your own card has nothing to message: {labels:?}"
+    );
+    // Their id says who they are, so it sits quiet under their identity; the
+    // card opens on what they came to change.
+    let at = |said: &str| labels.iter().position(|label| label == said);
+    let (identity, key, devices) = (
+        at("Your identities").expect("the identity actions"),
+        at("Person ID").expect("the person's own id"),
+        at("Devices").expect("the devices they are here on"),
+    );
+    assert!(
+        identity < key && key < devices,
+        "the id sits under your identity, not at the top of the card: {labels:?}"
     );
     capture(&mut session, "own-card");
 

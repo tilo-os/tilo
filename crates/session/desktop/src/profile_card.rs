@@ -421,8 +421,14 @@ impl ProfileCard {
     }
 
     /// The person's stable id, short, with a button that copies it whole.
-    fn key_row(key: &str) -> Box<dyn Widget> {
+    /// Their own card keeps it quiet, under their identity: it says who they
+    /// are, it is not what they came to change.
+    fn key_row(key: &str, quiet: bool) -> Box<dyn Widget> {
         let copy = key.to_owned();
+        let shown = Text::new(&short_key(key))
+            .with_id("profile-key")
+            .with_role(TextRole::Code);
+        let shown = if quiet { shown.dimmed() } else { shown };
         Box::new(
             Row::new()
                 .no_wrap()
@@ -437,11 +443,7 @@ impl ProfileCard {
                                 .with_role(TextRole::Caption)
                                 .dimmed(),
                         ))
-                        .push(Box::new(
-                            Text::new(&short_key(key))
-                                .with_id("profile-key")
-                                .with_role(TextRole::Code),
-                        )),
+                        .push(Box::new(shown)),
                 ))
                 .push(Box::new(
                     Button::icon_only("profile-copy-key", Icon::Copy, &t("profile-copy-id"))
@@ -525,7 +527,7 @@ impl ProfileCard {
         if let Some(key) = &model.key {
             body = body
                 .push(Box::new(Divider::horizontal()))
-                .push(Self::key_row(key));
+                .push(Self::key_row(key, false));
         }
         let mut actions = Row::new()
             .no_wrap()
@@ -589,16 +591,48 @@ impl ProfileCard {
         column
     }
 
-    /// One row per device: what it calls itself, and how available its
-    /// person is there.
+    /// One row per device: what it calls itself (or, on a device that named
+    /// itself nothing, which one it is) and how available its person is
+    /// there. Its key is kept for a copy affordance, never shown as its name.
     fn device_rows(devices: &[crate::here::PersonDevice]) -> Vec<Box<dyn Widget>> {
         devices
             .iter()
-            .map(|device| {
-                Box::new(Facts::new(vec![
-                    Fact::text(device.label.clone()),
-                    Fact::text(t(availability_key(device.availability))),
-                ])) as Box<dyn Widget>
+            .enumerate()
+            .map(|(index, device)| {
+                let named = device.label.trim();
+                let name = if named.is_empty() {
+                    t(if device.this {
+                        "profile-device-this"
+                    } else {
+                        "profile-device-another"
+                    })
+                } else {
+                    named.to_owned()
+                };
+                let mut facts = vec![Fact::text(name)];
+                if device.this {
+                    facts.push(Fact::text(t("profile-device-mark")));
+                }
+                facts.push(Fact::text(t(availability_key(device.availability))));
+                let key = device.id.clone();
+                Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .with_align_items(taffy::AlignItems::Center)
+                        .with_justify(taffy::JustifyContent::SpaceBetween)
+                        .push(Box::new(Facts::new(facts)))
+                        .push(Box::new(
+                            Button::icon_only(
+                                &format!("profile-device-key-{index}"),
+                                Icon::Copy,
+                                &t("profile-copy-device-key"),
+                            )
+                            .role(ButtonRole::Plain)
+                            .on_own_device_effect(move || {
+                                ui::text_selection::clipboard_copy(&key);
+                            }),
+                        )),
+                ) as Box<dyn Widget>
             })
             .collect()
     }
@@ -697,9 +731,6 @@ impl ProfileCard {
         if let Some(photo) = self.photo_buttons(model) {
             body = body.push(photo);
         }
-        if let Some(key) = &model.key {
-            body = body.push(Self::key_row(key));
-        }
         if model.offers_presence {
             body = self.presence_sections(body, model);
         } else if model.sharing.is_some() {
@@ -729,7 +760,12 @@ impl ProfileCard {
             // the heading their pairing action shares.
             let devices = (group == ProfileGroup::Devices && !model.devices.is_empty())
                 .then_some(model.devices.as_slice());
-            if actions.is_empty() && devices.is_none() {
+            // Their own id, kept quiet under their identity: it says who they
+            // are, not what they came here to change.
+            let key = (group == ProfileGroup::Identity)
+                .then_some(model.key.as_deref())
+                .flatten();
+            if actions.is_empty() && devices.is_none() && key.is_none() {
                 continue;
             }
             body = body.push(Box::new(Divider::horizontal()));
@@ -752,6 +788,9 @@ impl ProfileCard {
                             *chosen.borrow_mut() = Some(ProfileChoice::Action(id.clone()));
                         }),
                 ));
+            }
+            if let Some(key) = key {
+                body = body.push(Self::key_row(key, true));
             }
         }
         if !model.linked.is_empty() {
@@ -907,14 +946,14 @@ impl ProfileCard {
                 *chosen.borrow_mut() = Some(ProfileChoice::Colour(hue.id().to_owned()));
             }
         });
-        if let Some(index) = model
+        // The colour they chose, or, until they choose one, the colour their
+        // identity wears: the card marks the one their face is drawn in.
+        let worn = model
             .colour_id
             .as_deref()
             .and_then(ui::tokens::PresenceHue::from_id)
-            .map(ui::tokens::PresenceHue::slot)
-        {
-            colours = colours.with_selected(index);
-        }
+            .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(&model.identity));
+        colours = colours.with_selected(worn.slot());
         body = body
             .push(Box::new(Divider::horizontal()))
             .push(heading("profile-section-colour"))

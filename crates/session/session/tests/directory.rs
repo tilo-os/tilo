@@ -206,6 +206,13 @@ fn capture(session: &mut Session, name: &str) {
     else {
         return;
     };
+    // Draw what the sheet holds now: a site's listings arrive after the
+    // sheet opens, and the frame on screen may still be the one before them.
+    for _ in 0..3 {
+        session
+            .step(std::time::Duration::from_millis(1))
+            .expect("step");
+    }
     let frame = session
         .compositor()
         .screenshot("HEADLESS-1")
