@@ -381,7 +381,7 @@ impl HostApps {
 }
 
 impl AppActions for HostApps {
-    fn published(&self) -> Vec<PublishedActions> {
+    fn published(&self, _: &str) -> Vec<PublishedActions> {
         Vec::new()
     }
 
