@@ -1967,10 +1967,11 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
     let _settled = ui::motion::testing::settled();
     let mut session = Session::tasks();
     // What the app publishes for this window is what the window offers: the labels people
-    // read, and the keys the app gives its actions.
+    // read, and the keys the app gives its actions. A task is made by one action, which the
+    // list's entry fills: it asks nothing else, so its label stands without an ellipsis.
     let actions = offered(&mut session);
     let labels: Vec<&str> = actions.iter().map(|(label, _)| label.as_str()).collect();
-    assert!(labels.contains(&"New task…"), "{labels:?}");
+    assert!(labels.contains(&"New task"), "{labels:?}");
     let key = |label: &str| {
         actions
             .iter()
@@ -1979,7 +1980,7 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
             .1
             .clone()
     };
-    assert_eq!(key("New task…").as_deref(), Some("Ctrl+n"));
+    assert_eq!(key("New task").as_deref(), Some("Ctrl+n"));
     assert_eq!(key("Delete…").as_deref(), Some("delete"));
 
     // The window's own palette lists them, as a native app window's does.
@@ -1993,7 +1994,7 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
         .map(|action| (action.label.clone(), action.state.shortcut.clone()))
         .collect();
     assert!(
-        listed.contains(&("New task…".to_owned(), Some("Ctrl+n".to_owned()))),
+        listed.contains(&("New task".to_owned(), Some("Ctrl+n".to_owned()))),
         "{listed:?}"
     );
     // A session's palette builds each action row from that same published state, and paints a
@@ -2022,7 +2023,7 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
             depth: 0,
         })
     };
-    let new_task = row("New task…");
+    let new_task = row("New task");
     assert_eq!(
         new_task.keybinding_label(platform).as_deref(),
         Some("Ctrl+N")
@@ -2189,7 +2190,8 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
     // person can take now, drawn from what the action declares. An action that
     // asks for a pick a row cannot collect (Open, Remove, Move to, Delete
     // project outside a project) is not a row, and neither is one the app keeps
-    // for agents.
+    // for agents: a task is made by one action, whose title the list's entry
+    // takes, so the window offers it once.
     let undo = Some(
         ui::HostShortcut::Undo
             .shortcut(conventions)
@@ -2207,7 +2209,7 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
         vec![
             ("Tasks".to_owned(), Some(ui::icons::Icon::Layers), None),
             (
-                "New task…".to_owned(),
+                "New task".to_owned(),
                 Some(ui::icons::Icon::Plus),
                 Some(vec![command, "N".to_owned()]),
             ),
@@ -2216,9 +2218,6 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
                 Some(ui::icons::Icon::FolderPlus),
                 None,
             ),
-            // What an action's entry parameter lets a person start here: they
-            // type the task and the window adds it.
-            ("Add a task".to_owned(), Some(ui::icons::Icon::Plus), None,),
             ("Undo".to_owned(), Some(ui::icons::Icon::Undo2), undo),
             ("Redo".to_owned(), Some(ui::icons::Icon::Redo2), redo),
             (
@@ -2257,7 +2256,7 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
         .collect();
     assert_eq!(
         new,
-        ["New task…", "New project"],
+        ["New task", "New project"],
         "the query narrows the list to what it names"
     );
 }
@@ -2291,17 +2290,17 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "Tasks",
             "Water the plants",
             "Open",
-            "New task…",
+            "New task",
             "New project",
-            "Add a task",
             "Task summary",
             "Complete",
-            "Pick for today",
             "Today",
             "Tomorrow",
             "Next week",
             "Pick date…",
             "Low",
+            "Medium",
+            "High",
         ],
         "the window's palette"
     );
@@ -2345,18 +2344,8 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "{not_now} cannot run now, so it is no row: {asked:?}"
         );
     }
-    // What a person can do stands below the window's height, and a name finds it: the page
-    // draws the rows that fit.
-    for below in ["Medium", "High"] {
-        let asked: Vec<String> = palette_rows(session, below)
-            .into_iter()
-            .map(|(title, ..)| title)
-            .collect();
-        assert!(
-            asked.iter().any(|title| title == below),
-            "{below} can run now, so it is a row: {asked:?}"
-        );
-    }
+    // A task is made by one action, whose title the list's entry takes, so the window offers it
+    // once, and the task's own picks fill the room the app's two rows leave.
     // The commands a task opens with run in the task's own window, which the
     // live session covers; this window offers the ones above.
     session
