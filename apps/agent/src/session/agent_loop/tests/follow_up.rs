@@ -63,7 +63,7 @@ impl TurnTransport for ReadsTheConversation {
 }
 
 /// The second run of a chat is told the first one's conversation in its
-/// instruction (as the tracker writes it) and the person's new message as
+/// instruction (as the conversation keeps it) and the person's new message as
 /// its direction: "now do the same for the other two" reviews the two the
 /// first run did not.
 #[test]
@@ -80,14 +80,14 @@ fn a_poll_answered_after_the_message_was_taken_in_does_not_end_the_run() {
     let mut f = fixture("Review the applications", World::default(), Vec::new());
     f.session.native_task = Some(crate::session::native_task::NativeTaskState {
         run_id: f.run.run_id,
-        task_id: "tasks.tracker/issues/loop".into(),
+        task_id: "chat.workspace/channels/loop/messages/asked".into(),
         base: "native:run".into(),
         revision: 1,
         ..Default::default()
     });
     let late = runtime_collab::TaskRunControl {
         version: 1,
-        task_id: "tasks.tracker/issues/loop".into(),
+        task_id: "chat.workspace/channels/loop/messages/asked".into(),
         run_epoch: 2,
         from_revision: 0,
         applied_revision: 0,
@@ -115,7 +115,7 @@ fn a_poll_answered_after_the_message_was_taken_in_does_not_end_the_run() {
 fn follows_up(world: World) {
     let control = runtime_collab::TaskRunControl {
         version: 1,
-        task_id: "tasks.tracker/issues/loop".into(),
+        task_id: "chat.workspace/channels/loop/messages/asked".into(),
         run_epoch: 2,
         from_revision: 0,
         applied_revision: 0,

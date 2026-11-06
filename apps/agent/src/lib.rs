@@ -1,9 +1,9 @@
 //! `tilo-agent` — a participant without a window.
 //!
-//! The agent connects to the compositor's collaboration broker and carries
-//! out the runs of issues assigned to it (`--task-runs`) under its own actor, so every
-//! change is attributed to it. It never sees a pixel and never touches a
-//! pointer.
+//! The agent connects to the compositor's collaboration broker and answers
+//! the turns a person's messages in its conversations start, under its own
+//! actor, so every change is attributed to it. It never sees a pixel and
+//! never touches a pointer.
 //!
 //! *Which* published operations answer a request is decided by a model
 //! (`model`) that discovers, invokes and observes the live, permission-filtered
@@ -11,9 +11,13 @@
 //! the palette — through a handful of generic tools (`tools`). There are no
 //! agent-only recipes: every id it names is checked against what a tool
 //! showed it and against the catalogue again at dispatch, and the broker
-//! authorizes each step. Model tasks run that as a step-by-step loop
+//! authorizes each step. Model turns run that as a step-by-step loop
 //! (`session::agent_loop`). Without a model, a deterministic word match over
 //! the same live catalogue decides, and which path ran is recorded.
+//!
+//! What the turn does, and what it says, is written in the conversation that
+//! asked (`session::conversation`): the reply to the person's message is
+//! told the run's state, its steps, and — when the turn ends — its words.
 //!
 //! The point is the shape, not the vocabulary: anything that can speak an
 //! app's actions can drive that app, in the background, without competing

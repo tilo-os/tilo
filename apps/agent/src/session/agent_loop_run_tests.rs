@@ -35,7 +35,7 @@ fn each_issue_run_ends_on_its_own() {
         .enumerate()
     {
         let mut task = f.run.clone();
-        task.task_id = format!("tasks.tracker/issues/{index}");
+        task.task_id = format!("chat.workspace/channels/c{index}/messages/asked");
         task.title = title.into();
         task.run_id = 100 + u64::try_from(index).unwrap();
         bind_context(&mut task);
