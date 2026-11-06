@@ -601,17 +601,9 @@ fn the_stamp_changes_with_a_source_file_and_not_with_the_ids_lock() {
     assert_ne!(Stamp::of(&dirs), before);
 }
 
-/// A library package's declarations are as much a package's as any other's: a type, an enum, an
-/// action, a function and a resource type, all of them under the library's app id, and a package
-/// that uses it reaches them as `marks.*`.
-#[test]
-fn a_library_package_declares_types_fns_and_a_resource_of_its_own() {
-    let scratch = Scratch::new("library");
-    let library = scratch.package(
-        "marks",
-        &[(
-            "app.tl",
-            r#"app test.marks "Marks"
+/// A library: a record type of its own, an enum, a function over its resource type, the action
+/// that writes its records, and the view of its root.
+const LIBRARY_PACKAGE: &str = r#"app test.marks "Marks"
 
 /// How much a mark matters.
 enum Importance {
@@ -654,14 +646,11 @@ view board(m: Marks) {
         }
     }
 }
-"#,
-        )],
-    );
-    let notes = scratch.package(
-        "notes",
-        &[(
-            "app.tl",
-            r#"app test.notes "Notes"
+"#;
+
+/// The package that uses it: its own root and its own view, the library's action applied from a
+/// flow and its function called from the view.
+const LIBRARY_USER: &str = r#"app test.notes "Notes"
 
 use test.marks as marks
 
@@ -692,47 +681,47 @@ view main(n: Notes) {
         button("Add high", on: add_high())
     }
 }
-"#,
-        )],
-    );
+"#;
+
+/// Names of the declarations of `meta`'s kind, in order.
+fn names<'a>(items: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
+    items.collect()
+}
+
+/// A library package's declarations are as much a package's as any other's: a type, an enum, an
+/// action, a function and a resource type, all of them under the library's app id, and a package
+/// that uses it reaches them as `marks.*`.
+#[test]
+fn a_library_package_declares_types_fns_and_a_resource_of_its_own() {
+    let scratch = Scratch::new("library");
+    let library = scratch.package("marks", &[("app.tl", LIBRARY_PACKAGE)]);
+    let notes = scratch.package("notes", &[("app.tl", LIBRARY_USER)]);
     let order = dependency_order(&notes, &[]).unwrap();
-    assert_eq!(order, vec![library, notes.clone()]);
+    assert_eq!(order, vec![library, notes]);
     let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
     let (lib, user) = (&built[0].compiled, &built[1].compiled);
 
     // The library is a package: its declarations are its own, with ids locked in its `app.ids`.
     assert_eq!(lib.meta.app, "test.marks");
     assert_eq!(
-        lib.meta
-            .types
-            .iter()
-            .map(|t| &t.name[..])
-            .collect::<Vec<_>>(),
+        names(lib.meta.types.iter().map(|t| t.name.as_str())),
         ["Mark", "Marks"]
     );
     assert_eq!(
-        lib.meta
-            .enums
-            .iter()
-            .map(|e| &e.name[..])
-            .collect::<Vec<_>>(),
+        names(lib.meta.enums.iter().map(|e| e.name.as_str())),
         ["Importance"]
     );
     assert_eq!(
-        lib.meta
-            .actions
-            .iter()
-            .map(|a| &a.name[..])
-            .collect::<Vec<_>>(),
+        names(lib.meta.actions.iter().map(|a| a.name.as_str())),
         ["add"]
     );
     assert_eq!(
-        lib.meta.fns.iter().map(|f| &f.name[..]).collect::<Vec<_>>(),
+        names(lib.meta.fns.iter().map(|f| f.name.as_str())),
         ["count"]
     );
     assert_eq!(lib.meta.roots.len(), 1, "a resource of the library's own");
     for name in ["Mark", "Marks", "Importance", "add", "count"] {
-        assert!(lib.ids.get(name).is_some(), "`{name}` is locked: {name}");
+        assert!(lib.ids.get(name).is_some(), "`{name}` is locked");
     }
     assert!(lib.ids.get("Mark.title").is_some());
     assert!(lib.ids.get("Importance.high").is_some());
@@ -753,18 +742,11 @@ view main(n: Notes) {
     }
     // Its own view and flow compile against the library's names.
     assert_eq!(
-        user.meta
-            .offered_views()
-            .map(|v| &v.name[..])
-            .collect::<Vec<_>>(),
+        names(user.meta.offered_views().map(|v| v.name.as_str())),
         ["main"]
     );
     assert_eq!(
-        user.meta
-            .flows
-            .iter()
-            .map(|f| &f.name[..])
-            .collect::<Vec<_>>(),
+        names(user.meta.flows.iter().map(|f| f.name.as_str())),
         ["add_high"]
     );
 }

@@ -33,6 +33,10 @@ pub const IDS: &str = include_str!("../std/app.ids");
 ///
 /// # Panics
 /// Never for the shipped library, which its tests parse.
+#[expect(
+    clippy::panic,
+    reason = "the library ships with the compiler: a build that cannot parse it has no packages to serve, and its tests prove it parses"
+)]
 fn module() -> &'static Module {
     static MODULE: OnceLock<Module> = OnceLock::new();
     MODULE.get_or_init(|| {
@@ -58,6 +62,10 @@ impl Library {
     /// # Panics
     /// Never for the shipped library: its tests prove that it compiles and that the ids in
     /// `std/app.ids` are the ones its declarations take.
+    #[expect(
+        clippy::panic,
+        reason = "the library ships with the compiler: a build that cannot compile it has no packages to serve, and its tests prove it compiles"
+    )]
     fn compiled() -> Self {
         let ids = IdsLock::parse(IDS).unwrap_or_else(|error| {
             panic!("the standard library's ids are readable: {error}");
@@ -143,6 +151,13 @@ mod tests {
             super::library().compiled.ids.to_text(),
             IDS,
             "write the ids the library takes back to `std/app.ids`"
+        );
+        // Every bundle carries the library's module: it holds no view code, since its views
+        // expand into their callers, so it stays small.
+        assert!(
+            super::compiled().wasm.len() < 1024,
+            "the library's module is {} bytes",
+            super::compiled().wasm.len()
         );
         assert!(
             super::library().compiled.meta.app == APP,
