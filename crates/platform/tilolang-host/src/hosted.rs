@@ -535,6 +535,11 @@ impl Hosted {
             return;
         };
         host.sync_from(self.record.doc());
+        // An index still being built off the frame holds nothing yet: the frame that takes it
+        // in publishes what it holds, which is why nothing is marked as sent here.
+        if !host.index_ready() {
+            return;
+        }
         let entries = tilolang_tilo::search::index_entries(&host);
         self.search_index_build = self.search_index_build.saturating_add(1);
         let state = tilo_resource::search_index::IndexState {

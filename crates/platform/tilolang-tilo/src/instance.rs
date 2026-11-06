@@ -780,6 +780,11 @@ impl Instance {
                 rest: sink,
             });
         }
+        if self.mode != Mode::Past {
+            // The app's index is owed a frame as soon as it is built: the window shows what it
+            // can until the package's load has it, which builds it off the frame.
+            host.set_index_waker(self.platform.waker());
+        }
         self.generation = self.platform.load(&host);
         if self.platform.follows_updates() && self.mode != Mode::Past && !self.follows {
             self.follows = true;
@@ -788,7 +793,6 @@ impl Instance {
         if self.mode != Mode::Past {
             // What is published and found of the workspace is read off the frame the first time;
             // the instance takes it in when it is ready.
-            host.set_index_waker(self.platform.waker());
             self.publication = self.platform.publish(&host, self.platform.waker());
         }
         *self.host.borrow_mut() = Some(host.clone());
