@@ -375,7 +375,17 @@ fn turns(
                             // A reply without work is a plain answer; one
                             // that keeps work is going until its work ends.
                             .is_none_or(|reply| {
-                                reply.work.as_ref().is_some_and(|work| !work.finished())
+                                reply.work.as_ref().is_some_and(|work| {
+                                    let streamed = work
+                                        .stream
+                                        .as_ref()
+                                        .is_some_and(|stream| stream.finish.is_some());
+                                    !streamed
+                                        && work
+                                            .state
+                                            .as_ref()
+                                            .is_none_or(|transition| !transition.state.finished())
+                                })
                             })
                 })
                 .max_by_key(|(message_id, message)| (message.ts, message_id.as_str()));
