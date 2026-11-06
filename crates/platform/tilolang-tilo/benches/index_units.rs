@@ -68,9 +68,9 @@ fn open(path: &Path) -> Index {
 fn write_record(index: &Index, n: usize) {
     index
         .write(|writer| {
-            writer.put_doc(&record(n), TYPE)?;
+            writer.put_doc(&record(n), TYPE, 0)?;
             writer.put_text(&record(n), "title", &format!("record {n}"))?;
-            writer.set_heads(&[head(n)])
+            writer.set_heads(&std::iter::once((0, vec![head(n)])).collect())
         })
         .expect("a record");
 }

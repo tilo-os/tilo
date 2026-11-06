@@ -2,6 +2,7 @@
 //! an index built from it whole.
 
 use super::*;
+use crate::chunk::{Chunks, Stamps};
 
 /// Every resource of `doc`, with its app and type id.
 pub(super) fn scan(doc: &Doc) -> BTreeMap<DocId, (AppId, TypeId)> {
@@ -84,13 +85,6 @@ pub(super) fn mirror_of(record: &Doc) -> Doc {
     mirror
 }
 
-/// Whether `doc` holds every change of `heads`.
-pub(super) fn holds_heads(doc: &Doc, heads: &[ChangeHash]) -> bool {
-    heads
-        .iter()
-        .all(|head| doc.committed_document().get_change_by_hash(head).is_some())
-}
-
 /// Name each resource in `ends` as changed in its versions: the record's changes made them,
 /// which marks and history read, and a change reaches the views of a resource even when the
 /// values it writes read as the ones the store already held, as they do when the steps were
@@ -155,22 +149,29 @@ pub(super) fn everything(
     reached
 }
 
-/// Build the index of `app` from `doc` whole, stamped `heads`.
+/// Build the index of `app` from the documents `chunks` whole, stamped `heads`.
 pub(super) fn build(
     index: &Index,
-    doc: &Doc,
+    chunks: &Chunks,
     docs: &BTreeMap<DocId, (AppId, TypeId)>,
     app: &str,
-    heads: &[ChangeHash],
+    heads: &Stamps,
     schemas: &Arc<crate::schema::Schemas>,
 ) -> Result<DocReads, IndexError> {
     // This build may run on a thread of its own, where no store installed its table: the
     // record's types resolve by the store's package versions, never by another store's.
     let _scope = schemas.enter();
-    let ends = idx::reflect::ends_of(&doc.committed_document().get_changes(&[]), doc, docs);
+    let mut ends = Ends::new();
+    for (_, doc) in chunks.docs() {
+        ends.extend(idx::reflect::ends_of(
+            &doc.committed_document().get_changes(&[]),
+            doc,
+            docs,
+        ));
+    }
     let nested = Nested::default();
     index.write(|writer| {
-        let mut derive = Derive::new(doc, docs, &nested);
+        let mut derive = Derive::new(chunks, docs, &nested);
         derive.all_with_versions(writer, app, &ends)?;
         writer.set_heads(heads)?;
         Ok(derive.reads)

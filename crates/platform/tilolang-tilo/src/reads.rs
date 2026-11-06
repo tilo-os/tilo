@@ -370,6 +370,30 @@ pub struct Changed {
 /// Per document, the items whose placement changes wrote, each with whether they made it.
 pub type Placed = BTreeMap<DocId, BTreeMap<String, bool>>;
 
+impl Changed {
+    /// What `other` changed as well: the changes of another document of the record, read on
+    /// that document.
+    pub fn take_in(&mut self, other: Self) {
+        for (doc, fields) in other.docs {
+            match self.docs.get_mut(&doc) {
+                // A document as a whole stays whole.
+                Some(held) if held.is_empty() => {}
+                Some(held) => held.extend(fields),
+                None => {
+                    self.docs.insert(doc, fields);
+                }
+            }
+        }
+        self.structure = self.structure || other.structure;
+        self.unplaced = self.unplaced || other.unplaced;
+        self.layout = self.layout || other.layout;
+        for (doc, items) in other.placed {
+            self.placed.entry(doc).or_default().extend(items);
+        }
+        self.nested.extend(other.nested);
+    }
+}
+
 /// Name the (resource, field) pairs `changes` wrote, once `doc` holds them, and the items they
 /// placed. `index` gives each document's app and type, so the walk knows which fields are
 /// collections whose items are resources of their own.

@@ -1277,6 +1277,12 @@ impl Host {
         self.inner.store.sync_from(record)
     }
 
+    /// Bring the runtime's view of the chunk `chunk` of the workspace record up to date; see
+    /// [`TiloStore::sync_chunk`].
+    pub fn sync_chunk(&self, chunk: crate::chunk::ChunkNo, doc: &tilo_resource::Doc) -> bool {
+        self.inner.store.sync_chunk(chunk, doc)
+    }
+
     /// Whether the runtime reads exactly what the workspace record `record` holds; see
     /// [`TiloStore::is_at`].
     #[must_use]

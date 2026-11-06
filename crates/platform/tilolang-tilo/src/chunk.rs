@@ -34,7 +34,15 @@
 //! them. A split moves items from a full run to the next chunk as an action of its own; their
 //! ids stay, and their history is the workspace's action log, which names resources, never
 //! documents.
+//!
+//! **[`Chunks`]** is the set a store holds: the record and the chunks above it it was sent, each
+//! a document of its own, and the heads it has applied of each. A read or a write of a resource
+//! is routed by the record's manifest to the chunk that holds it.
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use automerge::ChangeHash;
 use automerge::transaction::Transactable as _;
 use automerge::{ObjType, ReadDoc, Value as AmValue};
 
@@ -209,6 +217,155 @@ impl Placement {
             .iter()
             .find(|(_, run)| run.last == last)
             .map(|(chunk, _)| *chunk)
+    }
+}
+
+/// The heads a reader has applied of each chunk it holds, by chunk: what an index stamped with
+/// them reflects.
+pub type Stamps = BTreeMap<ChunkNo, Vec<ChangeHash>>;
+
+/// The documents a store holds: chunk [`FIRST`], the record itself, and the chunks above it the
+/// store was sent, each a copy of what its holder has with the store's own writes as its open
+/// transaction. Every resource is read and written in the chunk the record's manifest places it
+/// in ([`Placement`]); a chunk the store was not sent is not held, and nothing is read of it
+/// until it arrives.
+#[derive(Clone, Default)]
+pub struct Chunks {
+    first: Option<Arc<Doc>>,
+    more: BTreeMap<ChunkNo, Arc<Doc>>,
+    /// Where the record's manifest places its resources, as of its last change.
+    placement: Placement,
+    /// The heads the store has applied of each chunk it holds.
+    seen: Stamps,
+}
+
+impl Chunks {
+    /// Whether the store holds the record (chunk [`FIRST`]).
+    #[must_use]
+    pub fn has_record(&self) -> bool {
+        self.first.is_some()
+    }
+
+    /// Chunk [`FIRST`], the record, when the store holds it.
+    #[must_use]
+    pub fn first(&self) -> Option<&Doc> {
+        self.first.as_deref()
+    }
+
+    /// Chunk [`FIRST`], to change: a copy of it when a reader still holds it.
+    pub fn first_mut(&mut self) -> Option<&mut Doc> {
+        self.first.as_mut().map(Arc::make_mut)
+    }
+
+    /// The chunk `chunk`, when the store holds it.
+    #[must_use]
+    pub fn mirror(&self, chunk: ChunkNo) -> Option<&Doc> {
+        if chunk == FIRST {
+            self.first()
+        } else {
+            self.more.get(&chunk).map(AsRef::as_ref)
+        }
+    }
+
+    /// The chunk `chunk`, to change: a copy of it when a reader still holds it.
+    pub fn mirror_mut(&mut self, chunk: ChunkNo) -> Option<&mut Doc> {
+        if chunk == FIRST {
+            self.first_mut()
+        } else {
+            self.more.get_mut(&chunk).map(Arc::make_mut)
+        }
+    }
+
+    /// Hold `doc` as chunk `chunk`, in place of what was held of it.
+    pub fn insert(&mut self, chunk: ChunkNo, doc: Doc) {
+        if chunk == FIRST {
+            self.first = Some(Arc::new(doc));
+        } else {
+            self.more.insert(chunk, Arc::new(doc));
+        }
+    }
+
+    /// The number of the chunk the resource `id` is stored in, as the record's manifest places
+    /// it: [`FIRST`] for a resource the manifest does not name.
+    #[must_use]
+    pub fn chunk(&self, id: &str) -> ChunkNo {
+        self.placement.chunk(id)
+    }
+
+    /// The document the resource `id` is stored in, when the store holds its chunk.
+    #[must_use]
+    pub fn doc(&self, id: &str) -> Option<&Doc> {
+        self.mirror(self.chunk(id))
+    }
+
+    /// The document the resource `id` is stored in, to change, when the store holds its chunk.
+    pub fn doc_mut(&mut self, id: &str) -> Option<&mut Doc> {
+        let chunk = self.chunk(id);
+        self.mirror_mut(chunk)
+    }
+
+    /// The chunks the store holds, the record first and the rest by number.
+    pub fn docs(&self) -> impl Iterator<Item = (ChunkNo, &Doc)> {
+        let first = self.first.as_deref().map(|doc| (FIRST, doc));
+        first
+            .into_iter()
+            .chain(self.more.iter().map(|(chunk, doc)| (*chunk, doc.as_ref())))
+    }
+
+    /// Where the record's manifest places its resources, as of its last change.
+    #[must_use]
+    pub fn placement(&self) -> &Placement {
+        &self.placement
+    }
+
+    /// Read the record's manifest again: after the record's changes reached it.
+    pub fn reread_placement(&mut self) {
+        self.placement = self
+            .first
+            .as_deref()
+            .map_or_else(Placement::default, Placement::read);
+    }
+
+    /// The heads the store has applied of `chunk`.
+    #[must_use]
+    pub fn seen(&self, chunk: ChunkNo) -> &[ChangeHash] {
+        self.seen.get(&chunk).map_or(&[], Vec::as_slice)
+    }
+
+    /// Note that the store applied `heads` of `chunk`.
+    pub fn set_seen(&mut self, chunk: ChunkNo, heads: Vec<ChangeHash>) {
+        self.seen.insert(chunk, heads);
+    }
+
+    /// The heads the store has applied of each chunk it holds: what an index stamped with them
+    /// reflects.
+    #[must_use]
+    pub fn heads(&self) -> Stamps {
+        self.docs()
+            .map(|(chunk, doc)| (chunk, doc.committed_document().get_heads()))
+            .collect()
+    }
+
+    /// Whether the store holds every change of `heads`, in one chunk or another.
+    #[must_use]
+    pub fn holds_heads(&self, heads: &[ChangeHash]) -> bool {
+        heads.iter().all(|head| {
+            self.docs()
+                .any(|(_, doc)| doc.committed_document().get_change_by_hash(head).is_some())
+        })
+    }
+
+    /// Whether the store holds every change the stamps name, in the chunk each is stamped for:
+    /// whether an index stamped with them reflects what the store holds.
+    #[must_use]
+    pub fn holds(&self, stamps: &Stamps) -> bool {
+        stamps.iter().all(|(chunk, heads)| {
+            self.mirror(*chunk).is_some_and(|doc| {
+                heads
+                    .iter()
+                    .all(|head| doc.committed_document().get_change_by_hash(head).is_some())
+            })
+        })
     }
 }
 

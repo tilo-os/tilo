@@ -17,6 +17,7 @@ use super::columns::{
 use super::lists::Entry;
 use super::reflect::{self, CREATED, Ends, Stamp, UPDATED};
 use super::{CYCLES, IN, IndexError, KEY, TYPE, Writer};
+use crate::chunk::{ChunkNo, Chunks};
 use crate::items::{Items, Nested, fits};
 use crate::reads::{Placed, default_value, field_of_slot, type_at};
 use crate::schema::{FieldSchema, MergeKind, TypeSchema, lookup};
@@ -217,11 +218,12 @@ pub trait Sink {
         Ok(())
     }
 
-    /// That the package's record `doc` is of the type `ty`, or (`None`) is gone.
+    /// That the package's record `doc` is of the type `ty` (else `None`) and stored in the chunk
+    /// `chunk`.
     ///
     /// # Errors
     /// It cannot be written.
-    fn doc(&mut self, doc: &str, ty: Option<&str>) -> Result<(), IndexError>;
+    fn doc(&mut self, doc: &str, ty: Option<&str>, chunk: ChunkNo) -> Result<(), IndexError>;
 
     /// # Errors
     /// It cannot be written.
@@ -364,9 +366,9 @@ impl Sink for Writer<'_> {
         Ok(())
     }
 
-    fn doc(&mut self, doc: &str, ty: Option<&str>) -> Result<(), IndexError> {
+    fn doc(&mut self, doc: &str, ty: Option<&str>, chunk: ChunkNo) -> Result<(), IndexError> {
         match ty {
-            Some(ty) => self.put_doc(doc, ty),
+            Some(ty) => self.put_doc(doc, ty, chunk),
             None => self.remove_doc(doc),
         }
     }
@@ -429,7 +431,9 @@ impl DocReads {
 
 /// Derivation over one record.
 pub struct Derive<'d> {
-    doc: &'d Doc,
+    /// The documents the store holds: a resource is read in the chunk the record's manifest
+    /// places it in.
+    chunks: &'d Chunks,
     /// Every record of the workspace: its app and type.
     docs: &'d BTreeMap<DocId, (AppId, TypeId)>,
     /// Where the items of records written before items were flat are.
@@ -506,12 +510,12 @@ pub(super) fn field_value(
 
 impl<'d> Derive<'d> {
     pub fn new(
-        doc: &'d Doc,
+        chunks: &'d Chunks,
         docs: &'d BTreeMap<DocId, (AppId, TypeId)>,
         nested: &'d Nested,
     ) -> Self {
         Self {
-            doc,
+            chunks,
             docs,
             nested,
             reads: DocReads::default(),
@@ -521,6 +525,11 @@ impl<'d> Derive<'d> {
             wholes: BTreeSet::new(),
             notified: BTreeMap::new(),
         }
+    }
+
+    /// The document the resource `id` is stored in, when the store holds its chunk.
+    fn source(&self, id: &str) -> Option<&'d Doc> {
+        self.chunks.doc(id)
     }
 
     /// Derive every record of `app` into `sink`, which holds none of them.
@@ -674,13 +683,17 @@ impl<'d> Derive<'d> {
         doc: &str,
         ty: &str,
     ) -> Result<(), IndexError> {
+        // A record of a chunk the store was not sent is derived when that chunk arrives.
+        let (Some(source), chunk) = (self.chunks.doc(doc), self.chunks.chunk(doc)) else {
+            return Ok(());
+        };
         sink.clear(doc)?;
-        let obj = crate::reads::resource_obj(self.doc, app, doc);
+        let obj = crate::reads::resource_obj(source, app, doc);
         self.reads.located = self.reads.located.saturating_add(1);
         match (obj, lookup(ty)) {
             (Some(obj), Some(schema)) => {
-                sink.doc(doc, Some(ty))?;
-                let items = Items::scan(self.doc, &obj, schema);
+                sink.doc(doc, Some(ty), chunk)?;
+                let items = Items::scan(source, &obj, schema);
                 self.reads.listings = self.reads.listings.saturating_add(1);
                 self.reads.entries = self
                     .reads
@@ -698,7 +711,7 @@ impl<'d> Derive<'d> {
                 self.tree(sink, doc, Some(&obj), schema, (&whole, None))?;
                 sink.prune(doc)?;
             }
-            _ => sink.doc(doc, None)?,
+            _ => sink.doc(doc, None, chunk)?,
         }
         self.done.insert(doc.to_owned());
         Ok(())
@@ -735,8 +748,9 @@ impl<'d> Derive<'d> {
         obj: Option<&ObjId>,
         schema: &'static TypeSchema,
     ) -> Result<&'static TypeSchema, IndexError> {
+        let source = self.source(doc_of(path));
         let ty = obj
-            .and_then(|obj| type_at(self.doc, obj))
+            .and_then(|obj| source.and_then(|source| type_at(source, obj)))
             .unwrap_or_else(|| schema.id.clone());
         sink.put_text(path, TYPE, &ty)?;
         // An item of a collection of several types is its stored type's.
@@ -745,7 +759,7 @@ impl<'d> Derive<'d> {
             if matches!(field.kind, MergeKind::Collection | MergeKind::Record) {
                 continue;
             }
-            let value = self.value(obj, field);
+            let value = self.value(source, obj, field);
             sink.put_field(path, &field.id, &value)?;
         }
         // What it links to, once its fields are as they are now.
@@ -917,18 +931,22 @@ impl<'d> Derive<'d> {
 
     /// The value of `field` in the resource map `obj`, as the store reads it; its default
     /// when the map holds none, or one of the wrong shape.
-    fn value(&mut self, obj: Option<&ObjId>, field: &FieldSchema) -> FieldValue {
-        let Some(obj) = obj else {
+    fn value(
+        &mut self,
+        source: Option<&'d Doc>,
+        obj: Option<&ObjId>,
+        field: &FieldSchema,
+    ) -> FieldValue {
+        let (Some(source), Some(obj)) = (source, obj) else {
             return default_value(field);
         };
         self.reads.fields = self.reads.fields.saturating_add(1);
-        let slot = self
-            .doc
+        let slot = source
             .get(obj, field.id.as_str())
             .ok()
             .flatten()
             .map(|(value, id)| (value.into_owned(), id));
-        field_of_slot(self.doc, slot, field).unwrap_or_else(|_| default_value(field))
+        field_of_slot(source, slot, field).unwrap_or_else(|_| default_value(field))
     }
 
     /// Derive the collection `field` of the resource at `path` (the item `holder`, or the
@@ -1001,7 +1019,7 @@ impl<'d> Derive<'d> {
     fn record_of(&mut self, doc: &str) -> Option<(ObjId, &'static TypeSchema)> {
         let (app, ty) = self.docs.get(doc)?;
         self.reads.located = self.reads.located.saturating_add(1);
-        let obj = crate::reads::resource_obj(self.doc, app, doc)?;
+        let obj = crate::reads::resource_obj(self.source(doc)?, app, doc)?;
         Some((obj, lookup(ty)?))
     }
 
@@ -1009,11 +1027,12 @@ impl<'d> Derive<'d> {
     /// there.
     fn locate(&mut self, path: &str) -> Option<(Option<ObjId>, &'static TypeSchema)> {
         let doc = doc_of(path);
+        let source = self.source(doc)?;
         let (root, schema) = self.record_of(doc)?;
         let Some(item) = id_of(path) else {
             return Some((Some(root), schema));
         };
-        let found = crate::items::find(self.doc, (doc, &root, schema), self.nested, item)?;
+        let found = crate::items::find(source, (doc, &root, schema), self.nested, item)?;
         Some((found.obj, found.ty.as_deref().and_then(lookup)?))
     }
 
@@ -1045,7 +1064,7 @@ impl<'d> Derive<'d> {
                 // goes.
                 None if sink.text(doc, TYPE)?.is_some() => {
                     sink.remove(doc)?;
-                    sink.doc(doc, None)?;
+                    sink.doc(doc, None, self.chunks.chunk(doc))?;
                     self.done.insert(doc.clone());
                 }
                 _ => {}
@@ -1087,10 +1106,12 @@ impl<'d> Derive<'d> {
         };
         // An item back in a collection was dropped with its versions when it left: they are
         // read again from the whole log, as a derivation anew reads them.
-        if sink.keeps_columns() {
+        if sink.keeps_columns()
+            && let Some(source) = self.source(doc)
+        {
             let ends = reflect::ends_of(
-                &self.doc.committed_document().get_changes(&[]),
-                self.doc,
+                &source.committed_document().get_changes(&[]),
+                source,
                 self.docs,
             );
             for (resource, end) in &ends {
@@ -1122,6 +1143,9 @@ impl<'d> Derive<'d> {
         let Some((root, schema)) = self.record_of(doc) else {
             return Ok(());
         };
+        let Some(source) = self.source(doc) else {
+            return Ok(());
+        };
         let mut pending: Vec<(String, bool)> =
             items.iter().map(|(id, made)| (id.clone(), *made)).collect();
         while !pending.is_empty() {
@@ -1135,7 +1159,7 @@ impl<'d> Derive<'d> {
                     continue;
                 }
                 self.reads.located = self.reads.located.saturating_add(1);
-                let found = crate::items::find(self.doc, (doc, &root, schema), self.nested, &id);
+                let found = crate::items::find(source, (doc, &root, schema), self.nested, &id);
                 let item_schema = found
                     .as_ref()
                     .and_then(|found| found.ty.as_deref())
@@ -1484,7 +1508,7 @@ impl<'d> Derive<'d> {
             // A collection is its items' placements, which are derived as they are written.
             return Ok(());
         }
-        let now = self.value(obj.as_ref(), spec);
+        let now = self.value(self.source(doc_of(path)), obj.as_ref(), spec);
         let before = sink.field(path, field)?;
         if before.as_ref() == Some(&now) {
             return Ok(());

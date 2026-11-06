@@ -562,7 +562,7 @@ pub fn splices(
 /// The index cannot be read or is corrupt.
 pub fn resources(snapshot: &Snapshot) -> Result<BTreeMap<String, String>, IndexError> {
     let mut out = BTreeMap::new();
-    for (doc, ty) in snapshot.docs()? {
+    for (doc, ty, _chunk) in snapshot.docs()? {
         for path in snapshot.inside(&doc)? {
             if let Some(ty) = snapshot.text(&path, TYPE)? {
                 out.insert(path, ty);

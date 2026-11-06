@@ -11,6 +11,7 @@ use tilolang_runtime::store::FieldValue;
 use super::derive::Sink;
 use super::lists::Entry;
 use super::{IndexError, Snapshot};
+use crate::chunk::ChunkNo;
 
 /// What one list became: entries added to and removed from the index's, or (a list the
 /// writes made anew) all of them.
@@ -232,7 +233,7 @@ impl Sink for OverlaySink<'_> {
         Ok(())
     }
 
-    fn doc(&mut self, _doc: &str, _ty: Option<&str>) -> Result<(), IndexError> {
+    fn doc(&mut self, _doc: &str, _ty: Option<&str>, _chunk: ChunkNo) -> Result<(), IndexError> {
         // The store keeps which records there are.
         Ok(())
     }
