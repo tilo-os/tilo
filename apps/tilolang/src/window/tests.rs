@@ -437,8 +437,8 @@ impl Workspace {
     /// The list of the overview column.
     fn list(&mut self) -> &mut DescribedList {
         let shell = self.window.shell_mut().expect("the window shows the shell");
-        if shell.overview_mut::<DescribedList>().is_some() {
-            return shell.overview_mut::<DescribedList>().unwrap();
+        if shell.overview_list_mut().is_some() {
+            return shell.overview_list_mut().unwrap();
         }
         shell.content_mut::<DescribedList>().expect("a list column")
     }
