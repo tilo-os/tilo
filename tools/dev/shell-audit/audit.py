@@ -96,7 +96,9 @@ def menu_frame(before: Path, shot: Path, pressed, rows_min: int = MENU_ROWS_MIN)
     came up, the rows of text standing in it, and whether a person reading the
     screen would find a menu there, at the point they pressed.
 
-    The rows are the bright text bands the frame did not have before, and a
+    The panel is the wide band of changed pixels that repeats down many rows: a
+    window repainting a line of its own text changes a few pixels, a panel
+    changes a row across. The rows are the bright text bands inside it, and a
     menu's rows start at one inset: their left edges line up in a column."""
     found: dict = {"ok": False, "why": None}
     if before is None or shot is None or not (Path(before).exists() and Path(shot).exists()):
@@ -112,8 +114,7 @@ def menu_frame(before: Path, shot: Path, pressed, rows_min: int = MENU_ROWS_MIN)
     if not box:
         found["why"] = "nothing drew where the story pressed"
         return found
-    found["box"] = list(box)
-    found["width"], found["height"] = box[2] - box[0], box[3] - box[1]
+    found["changed"] = list(box)
     mask = difference.load()
     frame = second.load()
 
@@ -121,9 +122,64 @@ def menu_frame(before: Path, shot: Path, pressed, rows_min: int = MENU_ROWS_MIN)
         red, green, blue = frame[x, y]
         return mask[x, y] > 6 and 0.299 * red + 0.587 * green + 0.114 * blue > 90
 
-    bands: list[list[int]] = []
+    # What the panel is made of: the colour most of the newly changed pixels
+    # wear. The window's own backgrounds did not change; a panel that came up
+    # did, and its body is the largest thing of one colour the story painted.
+    painted: dict[tuple[int, int, int], int] = {}
     for y in range(box[1], box[3]):
-        xs = [x for x in range(box[0], box[2]) if lit(x, y)]
+        for x in range(box[0], box[2]):
+            if mask[x, y] > 6:
+                colour = frame[x, y]
+                painted[colour] = painted.get(colour, 0) + 1
+    if not painted:
+        found["why"] = "nothing drew where the story pressed"
+        return found
+    body = max(painted, key=lambda colour: painted[colour])
+
+    def is_body(x: int, y: int) -> bool:
+        red, green, blue = frame[x, y]
+        return (abs(red - body[0]) <= 1 and abs(green - body[1]) <= 1
+                and abs(blue - body[2]) <= 1)
+
+    # The widest run of the panel's body on each row.
+    runs: list[tuple[int, int, int]] = []
+    for y in range(box[1], box[3]):
+        start, last, best = None, None, None
+        for x in range(box[0], box[2]):
+            if is_body(x, y):
+                if start is None:
+                    start = x
+                last = x
+            elif start is not None and x - last > 2:
+                if best is None or last - start > best[1] - best[0]:
+                    best = (start, last)
+                start = None
+        if start is not None and (best is None or last - start > best[1] - best[0]):
+            best = (start, last)
+        if best is not None and best[1] - best[0] >= 120:
+            runs.append((y, best[0], best[1]))
+    if not runs:
+        found["why"] = ("nothing the size of a panel drew: no row filled with one "
+                        "colour across")
+        return found
+    # The panel's rows share their two edges; a strip of the window beside it
+    # does not.
+    edges: dict[tuple[int, int], int] = {}
+    for _, start, end in runs:
+        key = (round(start, -1), round(end, -1))
+        edges[key] = edges.get(key, 0) + 1
+    (start, end) = max(edges, key=lambda key: edges[key])
+    rows = [run for run in runs
+            if abs(run[1] - start) <= 15 and abs(run[2] - end) <= 15]
+    left = min(run[1] for run in rows)
+    right = max(run[2] for run in rows)
+    top, bottom = rows[0][0], rows[-1][0]
+    found["box"] = [left, top, right, bottom]
+    found["width"], found["height"] = right - left + 1, bottom - top + 1
+
+    bands: list[list[int]] = []
+    for y in range(top, bottom + 1):
+        xs = [x for x in range(left, right + 1) if lit(x, y)]
         # A window edge lighting one column of every row is not a row of text:
         # a line of words has several lit pixels across it.
         if len(xs) < 6:
@@ -138,16 +194,16 @@ def menu_frame(before: Path, shot: Path, pressed, rows_min: int = MENU_ROWS_MIN)
     if len(bands) >= rows_min:
         lefts = [band[2] for band in bands]
         common = max(set(lefts), key=lefts.count)
-        aligned = sum(1 for left in lefts if abs(left - common) <= 3)
+        aligned = sum(1 for left_edge in lefts if abs(left_edge - common) <= 3)
         found["label_x"] = common
         found["aligned"] = aligned
     if pressed is not None:
         x, y = pressed
-        inside = box[0] - 8 <= x <= box[2] + 8 and box[1] - 8 <= y <= box[3] + 8
+        inside = (left - 40 <= x <= right + 40 and top - 40 <= y <= bottom + 40)
         found["at_pointer"] = inside
         if not inside:
-            found["why"] = (f"the panel ({box}) does not stand at the press "
-                            f"({x:.0f}, {y:.0f})")
+            found["why"] = (f"the panel ({left}, {top}, {right}, {bottom}) does not "
+                            f"stand at the press ({x:.0f}, {y:.0f})")
             return found
     if len(bands) < rows_min:
         found["why"] = f"{len(bands)} row(s) of text came up where a menu's list belongs"
@@ -460,23 +516,36 @@ class Run:
                 # The surface answered before it drew. Look for the whole window
                 # and keep the frame that drew the most: the first seconds can
                 # hold a press highlight or a hover, and stopping at the first
-                # change would judge that instead of the surface.
+                # change would judge that instead of the surface. A story about
+                # a menu looks for the menu itself: the app's own content
+                # arriving changes more pixels than the early frame and would
+                # otherwise end the wait before the panel paints.
                 late = pair / f"{self.side.name}-late.png"
-                late_px, late_s = 0, 0
+                desk = row.get("mid", {}).get("menu-before")
+                desk = Path(desk) if desk else before
+                wanted = scenario.get("see") == "menu"
+                late_px, late_s, seen = 0, 0, False
                 for waited in range(1, LATE + 1):
                     time.sleep(1.0)
                     frame = self.capture(f"_{name}-late", settle=0.2)
                     drawn = changed_pixels(before, frame)
+                    if wanted and menu_frame(
+                            desk, frame, self.doors.pressed,
+                            int(scenario.get("menu_rows", MENU_ROWS_MIN)))["ok"]:
+                        late_px, late_s, seen = drawn, waited, True
+                        shutil.copy2(frame, late)
+                        break
                     if drawn > late_px:
                         late_px, late_s = drawn, waited
                         shutil.copy2(frame, late)
-                    if late_px > (row.get("changed_px") or 0) + QUIET and drawn <= late_px:
+                    if not wanted and late_px > (row.get("changed_px") or 0) + QUIET \
+                            and drawn <= late_px:
                         # Something drew and the frame now stands still: this
                         # is the picture the person is left looking at.
                         break
                 row["late_px"] = late_px
                 row["late_s"] = late_s
-                if late_px > (row.get("changed_px") or 0) + QUIET:
+                if seen or late_px > (row.get("changed_px") or 0) + QUIET:
                     # What the story drew is this frame, not the empty desk the
                     # action answered on: it is the picture the pair is judged
                     # on, and the early one is kept beside it.

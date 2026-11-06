@@ -183,12 +183,19 @@ impl WindowMenuSurface {
         let asking = Arc::clone(&self.asking);
         std::thread::spawn(move || {
             if let Ok(reached) = SessionResource::open(WINDOW_MENU) {
-                reached.attach(wake);
+                reached.attach(wake.clone());
                 if let Ok(mut slot) = opened.lock() {
                     *slot = Some(reached);
                 }
             }
             asking.store(false, Ordering::Relaxed);
+            // The reading the worker opened is one the session published
+            // before this view existed — the menu a press opened a moment
+            // ago — and a reading that arrived before the attach wakes
+            // nobody. The view asks for its own frame so the menu it was
+            // started for stands on screen instead of waiting for a press
+            // that may never come.
+            wake.wake();
         });
     }
 
@@ -481,6 +488,28 @@ mod tests {
             "in the order the session lists them"
         );
         assert_eq!(surface.ids, ["window-normal", "window-move-workspace"]);
+    }
+
+    /// The view starts after the session published the menu, so its first
+    /// frame has nothing to draw and the worker that opens the reading lands
+    /// afterwards; a reading published before the attach wakes no view, and
+    /// nothing else asks the menu for a frame. A view that does not wake
+    /// itself is a menu nobody sees until some later press moves the desk.
+    #[test]
+    fn the_view_asks_for_a_frame_once_its_worker_lands() {
+        let mut scope = ui::WakeScope::new();
+        let (woken, woken_at) = std::sync::mpsc::channel();
+        scope
+            .bind(move |_| {
+                let _ = woken.send(());
+            })
+            .expect("the view's wake is bound");
+        let mut surface = WindowMenuSurface::new();
+        surface.wake = Some(scope.handle());
+        surface.ask();
+        woken_at
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the view is woken once its worker lands, and draws its reading");
     }
 
     /// A menu where one row has a shortcut and the other has none.
