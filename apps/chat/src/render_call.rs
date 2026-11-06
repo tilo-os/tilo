@@ -38,7 +38,7 @@ use crate::paint::{elide, line_in, line_of, text, width_of};
     clippy::struct_excessive_bools,
     reason = "independent facts about one participant (talking, muted, deafened, audio only, sharing), each read on its own"
 )]
-struct Participant {
+pub(crate) struct Participant {
     user: String,
     /// The call hears them now: their face rings.
     talking: bool,
@@ -250,7 +250,7 @@ impl ChatApp {
 
     /// The local listening panel followed by authenticated remote audio streams.
     /// This is not a complete participant or listener roster.
-    fn call_participants(&self) -> Vec<Participant> {
+    pub(crate) fn call_participants(&self) -> Vec<Participant> {
         let members: &[VoiceMember] = self.voice_in(&self.call.channel);
         let mut out: Vec<Participant> = Vec::new();
         // Host = this peer.
@@ -593,14 +593,34 @@ impl ChatApp {
         Rect::new(v.x0 - left, v.y0 - top, v.x1 + right, v.y1 + bottom)
     }
 
-    /// How many are in the call, as its panel says it ("2 in call"). A call
-    /// that ended for a reason counts only who is still in it.
-    pub(crate) fn call_count_label(&self) -> String {
-        let n = self
+    /// Who the call is with, as the bar's pill, the panel's title bar and the
+    /// call's own accessibility reading name them: the other people in it,
+    /// never the channel's slug and never this person's own name alone.
+    pub(crate) fn call_people_label(&self) -> String {
+        let names: Vec<String> = self
             .call_participants()
-            .len()
-            .saturating_sub(usize::from(!self.in_call()));
-        crate::i18n::t_args("chat-call-count", &[("count", n.into())])
+            .iter()
+            .filter(|p| !self.is_me(&p.user))
+            .map(|p| self.user_name(&p.user))
+            .collect();
+        match names.as_slice() {
+            [] => crate::i18n::t("chat-call-untitled"),
+            [only] => only.clone(),
+            [first, second] => crate::i18n::t_args(
+                "chat-call-people-two",
+                &[
+                    ("first", first.clone().into()),
+                    ("second", second.clone().into()),
+                ],
+            ),
+            [first, others @ ..] => crate::i18n::t_args(
+                "chat-call-people-many",
+                &[
+                    ("first", first.clone().into()),
+                    ("count", others.len().into()),
+                ],
+            ),
+        }
     }
 
     /// How the call is connected, as its status line says it.
@@ -650,19 +670,19 @@ impl ChatApp {
             .map_or_else(|| crate::i18n::t("chat-call-untitled"), |c| c.name.clone());
         ui::surface::floating_drag_grip(scene, tf, panel, local.text_dim);
         let sp = &theme.tokens.spacing;
-        let count = self.call_count_label();
-        let count_style = local.text(TextRole::Caption).numeric();
-        let count_w = width_of(tr, &count, &count_style);
+        let people = self.call_people_label();
+        let people_style = local.text(TextRole::Caption).numeric();
+        let people_w = width_of(tr, &people, &people_style);
         let inset = f64::from(sp.s4);
         let mut ctx = PaintCtx::new(scene, tf, tr, &local);
         line_in(
             &mut ctx,
-            &count,
-            &count_style,
+            &people,
+            &people_style,
             local.text_dim,
-            title_bar.x1 - inset - count_w,
+            title_bar.x1 - inset - people_w,
             title_bar,
-            count_w + 1.0,
+            people_w + 1.0,
         );
         line_in(
             &mut ctx,
@@ -671,7 +691,7 @@ impl ChatApp {
             local.text_primary,
             title_bar.x0 + inset,
             title_bar,
-            title_bar.width() - 3.0 * inset - count_w,
+            title_bar.width() - 3.0 * inset - people_w,
         );
         ChatApp::push_hit(hits, title_bar, Hit::CallDragHandle);
     }
@@ -959,6 +979,311 @@ impl ChatApp {
                     .role(role)
                     .control_size(ControlSize::Small)
                     .hovered(hovered),
+            );
+            ChatApp::push_hit(hits, r, hit);
+            x = r.x1 + gap;
+        }
+    }
+
+    /// The call as the shell's floating layer places it, over the desk: the
+    /// card's body at the width the layer's column gives it. Who is in the
+    /// call leads — a face and a name each, stacked, with the run time beside
+    /// them — then how the call is connected, then what the person does from
+    /// here: mute, camera, leave. The header takes the call back into the
+    /// window that draws it.
+    pub(crate) fn draw_call_card(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let c = &self.chrome;
+        let pad = c.call_inset;
+        let panel = self.call_video_rect();
+        let local = theme.on_ground(ui::chrome::panel_ground(theme));
+        // A floating Panel: its shadow, material and edge.
+        ui::widget::floating_surface::paint(scene, tf, panel, theme);
+        let head = Rect::new(
+            panel.x0 + pad,
+            panel.y0 + pad,
+            panel.x1 - pad,
+            panel.y0 + pad + c.call_title_h,
+        );
+        self.draw_call_card_head(scene, tf, tr, theme, &local, head, hits);
+        let people = self.call_participants().len();
+        let rows = people.clamp(1, crate::geometry::CALL_CARD_ROWS);
+        let row_h = c.call_card_face_h(people);
+        let hero = Rect::new(
+            head.x0,
+            head.y1 + c.call_gap,
+            head.x1,
+            head.y1
+                + c.call_gap
+                + ui::num::f64_of_usize(rows) * row_h
+                + ui::num::f64_of_usize(rows - 1) * c.call_gap,
+        );
+        self.draw_call_card_people(scene, tf, tr, &local, hero, row_h, hits);
+        let status = Rect::new(
+            hero.x0,
+            hero.y1 + c.call_gap,
+            hero.x1,
+            hero.y1 + c.call_gap + c.call_status_h,
+        );
+        self.draw_call_card_status(scene, tf, tr, theme, &local, status);
+        self.draw_call_card_footer(scene, tf, tr, theme, panel, hits);
+    }
+
+    /// The card's header: what it is, and the way back into the window that
+    /// draws the call as a call.
+    fn draw_call_card_head(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        local: &Theme,
+        head: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let sp = &theme.tokens.spacing;
+        let icon = f64::from(theme.tokens.metrics.icon_lg);
+        let open_label = crate::i18n::t("chat-call-open-window");
+        let open = Rect::from_center_size(
+            Point::new(head.x1 - icon / 2.0, head.center().y),
+            (icon + 2.0 * f64::from(sp.s2), self.chrome.call_title_h),
+        );
+        let head_room = open.x0 - head.x0 - f64::from(sp.s2);
+        line_in(
+            &mut PaintCtx::new(scene, tf, tr, local),
+            &crate::i18n::t("chat-call-untitled"),
+            &local.text(TextRole::Label).strong(),
+            local.text_primary,
+            head.x0,
+            head,
+            head_room,
+        );
+        let face = ButtonFace::icon_only(open, Icon::Maximize2, &open_label)
+            .hovered(self.call_control_is_hovered(&Hit::CallOpenWindow));
+        Button::paint(scene, tf, tr, theme, &face);
+        ChatApp::push_hit(hits, head, Hit::CallOpenWindow);
+        ChatApp::push_hit(hits, open, Hit::CallOpenWindow);
+    }
+
+    /// Who is in the call, a face and a name a row, with how long it runs
+    /// beside them. Beyond the rows the card has, the last row counts the
+    /// rest rather than dropping them.
+    fn draw_call_card_people(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        local: &Theme,
+        hero: Rect,
+        row_h: f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let sp = &local.tokens.spacing;
+        let small_icon = f64::from(local.tokens.metrics.icon_sm);
+        // The face fills its row: a hero tile for one person, a list face
+        // each when the card names more.
+        let face_side = row_h;
+        let label_style = local.text(TextRole::Label);
+        let run = crate::live::elapsed(&self.call, ui::time::now());
+        let run_style = local.text(TextRole::Heading).numeric();
+        let run_w = width_of(tr, &run, &run_style);
+        line_in(
+            &mut PaintCtx::new(scene, tf, tr, local),
+            &run,
+            &run_style,
+            local.text_primary,
+            hero.x1 - run_w,
+            hero,
+            run_w + 1.0,
+        );
+        let names_right = hero.x1 - run_w - f64::from(sp.s3);
+        let name_x = hero.x0 + face_side + f64::from(sp.s2);
+        let people = self.call_participants();
+        let named = if people.len() > crate::geometry::CALL_CARD_ROWS {
+            crate::geometry::CALL_CARD_ROWS - 1
+        } else {
+            people.len()
+        };
+        for (index, p) in people.iter().take(named).enumerate() {
+            let top = hero.y0 + ui::num::f64_of_usize(index) * (row_h + self.chrome.call_gap);
+            let cy = top + row_h / 2.0;
+            let row = Rect::new(hero.x0, top, names_right, top + row_h);
+            self.paint_call_face(
+                &mut PaintCtx::new(scene, tf, tr, local),
+                Rect::from_center_size(
+                    Point::new(hero.x0 + face_side / 2.0, cy),
+                    (face_side, face_side),
+                ),
+                &p.user,
+            );
+            let muted = if p.mark().is_some() {
+                f64::from(sp.s1) + small_icon
+            } else {
+                0.0
+            };
+            let room = (names_right - name_x - muted).max(0.0);
+            let name = elide(tr, &self.user_name(&p.user), &label_style, room);
+            let name_w = width_of(tr, &name, &label_style);
+            line_in(
+                &mut PaintCtx::new(scene, tf, tr, local),
+                &name,
+                &label_style,
+                local.text_primary,
+                name_x,
+                Rect::new(name_x, top, name_x + room, top + row_h),
+                room + 1.0,
+            );
+            // Their muted microphone, after the name.
+            if let Some(mark) = p.mark() {
+                let ix = name_x + name_w + f64::from(sp.s1);
+                mark.draw(
+                    scene,
+                    tf,
+                    Rect::new(
+                        ix,
+                        cy - small_icon / 2.0,
+                        ix + small_icon,
+                        cy + small_icon / 2.0,
+                    ),
+                    local.text_dim,
+                );
+            }
+            ChatApp::push_hit(hits, row, Hit::CallParticipant(p.user.clone()));
+        }
+        if people.len() > crate::geometry::CALL_CARD_ROWS {
+            let top = hero.y0 + ui::num::f64_of_usize(named) * (row_h + self.chrome.call_gap);
+            let cy = top + row_h / 2.0;
+            Icon::Users.draw(
+                scene,
+                tf,
+                Rect::from_center_size(
+                    Point::new(hero.x0 + face_side / 2.0, cy),
+                    (face_side, face_side),
+                ),
+                local.text_dim,
+            );
+            let more = crate::i18n::t_args(
+                "chat-call-people-more",
+                &[("count", (people.len() - named).into())],
+            );
+            let room = (names_right - name_x).max(0.0);
+            line_in(
+                &mut PaintCtx::new(scene, tf, tr, local),
+                &more,
+                &label_style,
+                local.text_dim,
+                name_x,
+                Rect::new(name_x, top, name_x + room, top + row_h),
+                room + 1.0,
+            );
+        }
+    }
+
+    /// How the call is connected, or what stands in its way.
+    fn draw_call_card_status(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        local: &Theme,
+        status: Rect,
+    ) {
+        let (status_text, status_ink) = match self
+            .media_error
+            .as_ref()
+            .filter(|_| !self.native_voice.ended_for_a_reason())
+        {
+            Some(error) => (error.clone(), theme.tokens.colors.media.ink),
+            None => (self.call_connection_label(), local.text_dim),
+        };
+        line_in(
+            &mut PaintCtx::new(scene, tf, tr, local),
+            &status_text,
+            &local.text(TextRole::Caption),
+            status_ink,
+            status.x0,
+            status,
+            status.width(),
+        );
+    }
+
+    /// The row the person acts in: mute, camera, leave.
+    fn draw_call_card_footer(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let muted = self.call.muted || self.call.deafened;
+        let controls: Vec<(String, Icon, ButtonRole, Hit)> = vec![
+            (
+                crate::i18n::t(if muted {
+                    "chat-call-unmute"
+                } else {
+                    "chat-call-mute"
+                }),
+                if muted { Icon::MicOff } else { Icon::Mic },
+                ButtonRole::Secondary,
+                Hit::CallMute,
+            ),
+            (
+                crate::i18n::t(if self.call.audio_only {
+                    "chat-call-camera-on"
+                } else {
+                    "chat-call-camera-off"
+                }),
+                Icon::Video,
+                ButtonRole::Secondary,
+                Hit::CallCamera,
+            ),
+            (
+                crate::i18n::t("chat-call-leave"),
+                Icon::PhoneOff,
+                ButtonRole::Destructive,
+                Hit::CallLeave,
+            ),
+        ];
+        let sp = &theme.tokens.spacing;
+        let bh = self.chrome.call_controls_h;
+        let gap = f64::from(sp.s2);
+        let count = ui::num::f64_of_usize(controls.len());
+        let cw =
+            ((panel.width() - 2.0 * self.chrome.call_inset - (count - 1.0) * gap) / count).max(0.0);
+        let fits = controls.iter().all(|(label, icon, ..)| {
+            ButtonFace::new(Rect::ZERO, label)
+                .icon(*icon)
+                .control_size(ControlSize::Small)
+                .intrinsic_width(tr, theme)
+                <= cw
+        });
+        let cy = panel.y1 - self.chrome.call_inset - bh;
+        let mut x = panel.x0 + self.chrome.call_inset;
+        for (label, icon, role, hit) in controls {
+            let r = Rect::new(x, cy, x + cw, cy + bh);
+            let button = if fits {
+                ButtonFace::new(r, &label).icon(icon)
+            } else {
+                ButtonFace::icon_only(r, icon, &label)
+            };
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &button
+                    .role(role)
+                    .control_size(ControlSize::Small)
+                    .hovered(self.call_control_is_hovered(&hit)),
             );
             ChatApp::push_hit(hits, r, hit);
             x = r.x1 + gap;

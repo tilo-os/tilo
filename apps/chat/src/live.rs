@@ -56,7 +56,7 @@ fn summary(call: &CallState, title: &str, subtitle: &str, now: Instant) -> Summa
 }
 
 /// How long the call has run, as a card reads it.
-fn elapsed(call: &CallState, now: Instant) -> String {
+pub(crate) fn elapsed(call: &CallState, now: Instant) -> String {
     let Some(started) = call.started else {
         return String::new();
     };

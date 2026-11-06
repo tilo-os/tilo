@@ -246,6 +246,7 @@ impl ChatApp {
             }
             "floating-call-attached"
             | "floating-call"
+            | "floating-call-crowd"
             | "floating-call-hover"
             | "floating-call-returning"
             | "floating-call-returned" => {
@@ -257,6 +258,19 @@ impl ChatApp {
                 self.call.join("c_huddle");
                 self.call.expanded = false;
                 self.stage_connected_call();
+                if scenario == "floating-call-crowd" {
+                    // A call with two people beside this one, one of them
+                    // muted, as the workspace reports them: the card's hero
+                    // stacks three people above its controls.
+                    let me = self.me.id.clone();
+                    self.native_voice.snapshot.rosters = vec![ui::native_media::Roster {
+                        channel_id: self.call.channel.clone(),
+                        people: vec![me, "u_aria".to_owned(), "u_milo".to_owned()],
+                        muted: vec!["u_milo".to_owned()],
+                        ..Default::default()
+                    }];
+                    self.refresh_native_streams();
+                }
             }
             "share" => {
                 // The expanded call while screen-sharing: the featured screen
@@ -453,7 +467,8 @@ impl ChatApp {
         );
         self.call.placement.detach_to_desktop(detached);
         self.call.placement.set_desktop_transfer_covered(true);
-        self.call.placement.confirm_desktop_adoption();
+        // A capture is the app's own frame, and the shell's card window is
+        // not in it: the app keeps painting the card itself.
 
         if scenario == "floating-call-hover" {
             self.call_hovered = Some(Hit::CallCamera);

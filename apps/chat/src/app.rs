@@ -313,8 +313,9 @@ pub struct ChatApp {
     pub(crate) huddle_chip_rows: usize,
     pub(crate) pending_floating: Option<ui::floating_surface::FloatingSurfaceRequest>,
     /// The channel whose call this app already asked the shell to draw as a
-    /// card: presenting is the app's request, the place is the shell's.
-    presented_call: Option<String>,
+    /// card, and the height it asked for: presenting is the app's request,
+    /// the place is the shell's.
+    presented_call: Option<(String, f64)>,
     /// Authoritative combined-output bounds supplied by the shell. Standalone
     /// app/test hosts leave this empty and fall back to the app rect.
     pub(crate) floating_surface_bounds: Rect,
@@ -502,6 +503,9 @@ pub struct ChatApp {
     /// When the next attachment on its way steps its placeholder on, as the
     /// last frame painted them.
     pub(crate) arriving_wake: std::cell::Cell<Option<ui::time::Instant>>,
+    /// When the card and the panel next read a new whole second of the
+    /// running call: the call it belongs to, and that second's instant.
+    call_tick: std::cell::Cell<Option<(ui::time::Instant, ui::time::Instant)>>,
 
     // Layout + render caches.
     pub(crate) rect: Rect,
@@ -514,6 +518,10 @@ pub struct ChatApp {
     /// a scroll or a keystroke re-solves no layout.
     laid_video: Option<(bool, Rect)>,
     pub(crate) hits: Vec<(Rect, Hit)>,
+    /// The call card's frame of clickable areas. The card is a window of its
+    /// own, drawn by its own paint pass, so what it shows is what its presses
+    /// resolve against — never the window's last frame.
+    pub(crate) card_hits: Vec<(Rect, Hit)>,
     /// Ordinal in `keyboard_targets()`. Derived from the current hit inventory
     /// so Tab and assistive focus traverse the same controls a pointer can use.
     pub(crate) keyboard_target: Option<usize>,
@@ -814,6 +822,7 @@ impl ChatApp {
             images: ui::ImageStore::new(&crate::images::fetcher(content.clone())),
             content_reads: ui::collaboration::record_content::ContentReads::new(content.clone()),
             arriving_wake: std::cell::Cell::new(None),
+            call_tick: std::cell::Cell::new(None),
             content,
             rect: Rect::ZERO,
             root_node: None,
@@ -821,6 +830,7 @@ impl ChatApp {
             video,
             laid_video: None,
             hits: Vec::new(),
+            card_hits: Vec::new(),
             keyboard_target: None,
             last_mouse: Point::ZERO,
             call_hovered: None,
@@ -846,23 +856,57 @@ impl ChatApp {
         }
     }
 
+    /// When the card and the panel next read a new whole second of the
+    /// running call, while one is live.
+    ///
+    /// A deadline a widget returns is one the loop can find due: it is the
+    /// boundary the reading was last stepped to, not one recomputed from the
+    /// clock on every read, which would always lie a second ahead and never
+    /// waken anything.
+    fn call_tick(&self) -> Option<ui::time::Instant> {
+        let started = self.call.started?;
+        match self.call_tick.get() {
+            Some((for_call, due)) if for_call == started => Some(due),
+            _ => {
+                let due = started + ui::time::Duration::from_secs(1);
+                self.call_tick.set(Some((started, due)));
+                Some(due)
+            }
+        }
+    }
+
+    /// Step the card's reading on after the second it showed: the next whole
+    /// second of the call, so the frame this wake presents draws it.
+    fn serve_call_tick(&self, now: ui::time::Instant) -> bool {
+        let Some((started, due)) = self.call_tick.get() else {
+            return false;
+        };
+        if due > now {
+            return false;
+        }
+        let next = started
+            + ui::time::Duration::from_secs(now.saturating_duration_since(started).as_secs() + 1);
+        self.call_tick.set(Some((started, next)));
+        true
+    }
+
     /// Show the running call as the shell's live activity, and ask it once
     /// per call to draw the call as a card of the app's own: the activity is
     /// what the bar's pill reads, and the card's body is the live call while
     /// the shell shows it over the desk.
     fn publish_call(&mut self) {
-        let title = self
-            .channel(&self.call.channel)
-            .map_or_else(|| crate::i18n::t("chat-call-untitled"), |c| c.name.clone());
-        let subtitle = self.call_count_label();
+        // Who the call is with leads, never the channel's slug, and the run
+        // time is the value beside it.
+        let title = self.call_people_label();
+        let subtitle = self.call_status_label();
         let published = crate::live::published(&self.call, &title, &subtitle, ui::time::now());
         crate::live::publish(&published);
         self.present_call_card();
     }
 
-    /// Ask the shell for the call's card, once per call: whether it stands,
-    /// and where, is the shell's to decide — while Chat's own window shows
-    /// the call, Chat draws it there.
+    /// Ask the shell for the call's card, once per call and per headcount:
+    /// whether it stands, and where, is the shell's to decide — while Chat's
+    /// own window shows the call, Chat draws it there.
     fn present_call_card(&mut self) {
         if !self.call.active || self.call.channel.is_empty() {
             // A call that ended asks for its card again when the next one
@@ -870,20 +914,39 @@ impl ChatApp {
             self.presented_call = None;
             return;
         }
-        if self.presented_call.as_deref() == Some(self.call.channel.as_str()) {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        let video = self.call_video_rect();
-        if video.width() <= 0.0 || video.height() <= 0.0 {
-            return;
-        }
-        let panel = self.huddle_panel().inflate(8.0, 8.0);
-        let Some(mut request) = self.call.floating_request(panel, video) else {
+        let Some(request) = self.call_card_request() else {
             return;
         };
-        request.presentation_rect = Some(panel);
+        // One request per call and headcount: the card's height follows the
+        // people it names, and the layer keeps the column's width.
+        let presented = (self.call.channel.clone(), request.preferred_size.height);
+        if self.presented_call.as_ref() == Some(&presented) {
+            return;
+        }
         self.pending_floating = Some(request);
-        self.presented_call = Some(self.call.channel.clone());
+        self.presented_call = Some(presented);
+    }
+
+    /// The card the call asks the shell for: the body it draws at, inside the
+    /// shadow margin the window carries around it, flying out of the place
+    /// the call stands now.
+    pub(crate) fn call_card_request(&self) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        // The width of the column the floating layer keeps for cards: the card
+        // asks for the width it is placed at, so what it draws and what the
+        // layer hands it are one number.
+        let width = f64::from(ui::tokens::Metrics::BASE.panel_width_utility);
+        let body = Rect::new(
+            0.0,
+            0.0,
+            width,
+            self.chrome.call_card_height(self.call_participants().len()),
+        );
+        let mut request = self.call.floating_request(self.call_video_rect(), body)?;
+        request.presentation_rect = Some(body.inflate(8.0, 8.0));
+        Some(request)
     }
 
     /// Whether a call action is permitted, routed through the real OS
@@ -2224,8 +2287,8 @@ impl Widget for ChatApp {
             children.push(heading);
         }
         children.push(conversation);
-        // The call panel's count is painted in its title bar: read where it
-        // is drawn, and no stop for the keyboard. Its status (what is
+        // The call panel's reading is painted in its title bar: read where
+        // it is drawn, and no stop for the keyboard. Its status (what is
         // wrong, else how it is connected) is read with it.
         if self.call.active
             && let Some((title_bar, _)) = self
@@ -2235,7 +2298,7 @@ impl Widget for ChatApp {
         {
             children.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name(self.call_count_label())
+                    .with_name(self.call_people_label())
                     .with_description(self.call_status_label())
                     .with_bounds(*title_bar)
                     .with_hashed_key(("call-count", &self.call.channel)),
@@ -2427,23 +2490,28 @@ impl Widget for ChatApp {
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         let now = ui::time::now();
-        // A call's card reads the time it has run, which changes each
-        // second: the window wakes once a second while the call is live,
-        // and never otherwise.
-        let call_tick = self.call.started.map(|started| {
-            started
-                + ui::time::Duration::from_secs(
-                    now.saturating_duration_since(started).as_secs() + 1,
-                )
-        });
         // An attachment on its way steps its placeholder on at its
         // deadline; its bytes arriving wake the window themselves.
         self.native_voice
             .next_deadline(now)
             .into_iter()
-            .chain(call_tick)
+            .chain(self.call_tick())
             .chain(self.arriving_wake.get())
             .min()
+    }
+
+    // A call's card and its panel read the time the call has run, which
+    // changes each second: the window wakes once a second while the call is
+    // live, and serving that wake steps the reading on to the next second.
+    fn serve_deadline(&mut self, now: ui::time::Instant) -> bool {
+        let ticked = self.serve_call_tick(now);
+        ticked
+            | self
+                .native_voice
+                .next_deadline(now)
+                .into_iter()
+                .chain(self.arriving_wake.get())
+                .any(|due| due <= now)
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -2671,15 +2739,30 @@ impl ChatApp {
         presence: &PresenceCtx,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        // Over the desk the shell places the card, so the call is drawn as
+        // one: who is in it and for how long, how it is connected, and what
+        // the person does from there. In its own window it stays the huddle.
+        let card = matches!(
+            self.call.placement.attachment(),
+            ui::floating_surface::Attachment::Desktop { .. }
+        ) && !self.call.placement.is_return_pending();
+        let panel = if card {
+            self.call_video_rect()
+        } else {
+            self.huddle_panel()
+        };
         // The app copy, transfer proxy and native shell surface all pass
         // through this one presentation transform. Applying the handoff
         // flourish in an ownership-specific caller made the first app-owned
         // frame lose its soft deformation even though its geometry matched.
-        let transform = self.call.placement.presentation_transform(
-            transform,
-            self.huddle_panel(),
-            theme.reduce_motion,
-        );
+        let transform =
+            self.call
+                .placement
+                .presentation_transform(transform, panel, theme.reduce_motion);
+        if card {
+            self.draw_call_card(scene, transform, text_renderer, theme, hits);
+            return;
+        }
         self.draw_huddle_bg(scene, transform, text_renderer, theme, hits);
         // The large tile shows someone else once anyone is; this person's
         // own camera only while alone in the call.

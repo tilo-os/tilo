@@ -12,6 +12,9 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{AvatarSize, ButtonFace, ChipFace, ControlSize};
 
+/// The people the call card names before its last row summarises the rest.
+pub(crate) const CALL_CARD_ROWS: usize = 3;
+
 /// The chat window's chrome metrics in one theme: the header row, the
 /// content gutter, the message column and the composer's height range. The
 /// paint pass refreshes it from the theme it draws with; event handling and
@@ -49,6 +52,10 @@ pub(crate) struct Chrome {
     pub call_status_h: f64,
     pub call_chip_h: f64,
     pub call_controls_h: f64,
+    /// One person's row in the call card: their face, their name beside it.
+    pub call_card_row_h: f64,
+    /// The card's hero face when the call is with one person.
+    pub call_card_hero_h: f64,
 }
 
 impl Chrome {
@@ -80,7 +87,38 @@ impl Chrome {
                 .max(f64::from(metrics.icon_sm)),
             call_chip_h: ChipFace::height(theme),
             call_controls_h: ButtonFace::height(ControlSize::Small, theme),
+            call_card_row_h: AvatarSize::Regular
+                .side(theme)
+                .max(f64::from(theme.text(TextRole::Label).line_height_px())),
+            call_card_hero_h: AvatarSize::Hero
+                .side(theme)
+                .max(f64::from(theme.text(TextRole::Heading).line_height_px())),
         }
+    }
+
+    /// How tall one person's row is: the card leads with a hero tile when the
+    /// call is with one person, and a list face each when there are more.
+    pub(crate) fn call_card_face_h(&self, people: usize) -> f64 {
+        if people <= 1 {
+            self.call_card_hero_h
+        } else {
+            self.call_card_row_h
+        }
+    }
+
+    /// The call card's body around `people` rows: its header row, one line
+    /// per person with the run time beside them, its status line and its
+    /// controls. The shell's floating layer gives the card the column's
+    /// width; this is the height it asks for.
+    pub(crate) fn call_card_height(&self, people: usize) -> f64 {
+        let rows = people.clamp(1, CALL_CARD_ROWS) as f64;
+        2.0 * self.call_inset
+            + self.call_title_h
+            + 3.0 * self.call_gap
+            + rows * self.call_card_face_h(people)
+            + (rows - 1.0) * self.call_gap
+            + self.call_status_h
+            + self.call_controls_h
     }
 
     /// Where a message's text column starts, from the conversation's leading

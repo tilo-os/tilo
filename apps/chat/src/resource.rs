@@ -137,6 +137,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "share",
     "floating-call-attached",
     "floating-call",
+    "floating-call-crowd",
     "floating-call-hover",
     "floating-call-returning",
     "floating-call-returned",
