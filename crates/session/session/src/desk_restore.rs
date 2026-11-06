@@ -143,6 +143,15 @@ impl Restore {
             let Some(saved) = self.waiting.pop_front() else {
                 return;
             };
+            // The person may have opened the app while its saved window was
+            // still waiting: its window comes into that tab now, or came, and
+            // asking for it again would start the app a second time.
+            let coming = desktop.with_policy(|policy| {
+                policy.on_its_way(saved.tab) || !policy.waits_for_window(saved.tab)
+            });
+            if coming {
+                continue;
+            }
             if self.open(desktop, apps, saved) {
                 return;
             }
