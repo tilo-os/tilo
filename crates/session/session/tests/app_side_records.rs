@@ -1,45 +1,37 @@
-//! A ratchet on what a Rust app still does for itself, which the document
-//! host now does (`docs/architecture/apps.md` §8).
+//! A ratchet on what a Rust app still does for itself, which the document host now does
+//! (`docs/architecture/apps.md` §8).
 //!
-//! Today every native app under `apps/` that uses the SDK runner loads the
-//! identity broker the launcher passed it, obtains a signed join proof, asks
-//! for content keys, and opens, signs and syncs its records in its own
-//! process. All of that moves to the session's document host: an app's process
-//! holds no identity, keys or transport, gets readings over the one
+//! Every native app under `apps/` that the SDK runner starts today loads the identity broker
+//! the launcher passed it, obtains a signed join proof, asks for content keys, and opens, signs
+//! and syncs its records in its own process. All of that moves to the session's document host:
+//! an app's process holds no identity, keys or transport, gets readings over the one
 //! launcher-made connection, and submits actions over it.
 //!
-//! The migration is once, across every app, and it lands in slices, so this
-//! test lists the apps that still carry app-side storage, identity or sync and
-//! **fails if the list grows**. The list shrinks as slices land, and is empty
-//! when the migration is done: a new app, or an added use, that has any of it
-//! fails here rather than arriving unnoticed.
+//! Two things make that true for an app, and this test counts both:
 //!
-//! What it counts, per app, from that app's own sources (never the SDK's):
+//! - **Its own code stops doing it.** What an app does in its own sources is counted here
+//!   ([`Binges`]): the broker it loads, the keys it asks for, the store it opens.
+//! - **The SDK runner stops doing it for it.** About sixty apps never name the broker, the join
+//!   or the keys themselves: the runner they share (`ui::main!`, `ui::framework::run`) does it
+//!   on their behalf, before any of the app's code runs. An app the session's document host
+//!   serves declares `ResourceApp::ATTACHES_RUNTIME = false` — the one flag the runner already
+//!   reads — and joins no workspace of its own. So every app the runner starts and that still
+//!   attaches is on the list as `runner`, beside whatever its own sources carry.
 //!
-//! - `broker`: the app loads the identity broker or a collaboration client
-//!   itself — `CollaborationManager`, `join_native`, `sdk_join_identity`,
-//!   `NativeJoin`, `CollaborationManager::for_record` — including through
-//!   `ui::collaboration::`.
-//! - `keys`: the app asks for content keys or holds the device's channel-key
-//!   service: `channel_keys`, `ChannelKeyProvider`, `install_channel_keys`.
-//!   An app that provisions identity for a *system* (Imager enrolling a
-//!   device, Settings publishing an identity) is not an app keeping its own
-//!   records and is not counted.
-//! - `storage`: the app opens, keeps or syncs its own records rather than a
-//!   reading: `DocStore`, `DocOwner`, `app_state::`,
-//!   `open_workspace_record`.
+//! The migration is once, across every app, and it lands in slices, so this test lists the apps
+//! that still carry app-side storage, identity or sync and **fails if the list grows**. The list
+//! shrinks as slices land, and is empty when the migration is done: a new app, or an added use,
+//! that has any of it fails here rather than arriving unnoticed.
 //!
-//! `RecordStore` is deliberately not a marker: it names the SDK's read-only
-//! handle to a record *another* process keeps, which is how a client of the
-//! document host reads; what is counted is opening a store (`DocStore`) or
-//! acquiring a document (`DocOwner`), which only the host may do.
+//! `RecordStore` is deliberately not a marker: it names the SDK's read-only handle to a record
+//! *another* process keeps, which is how a client of the document host reads; what is counted
+//! is opening a store (`DocStore`) or acquiring a document (`DocOwner`), which only the host may
+//! do.
 //!
-//! The ratchet is a plain list read from `tests/baselines/app-side-records.txt`
-//! beside this test, so a reviewer reads what remains rather than a count. It
-//! may only lose lines: running the test with `UPDATE_APP_SIDE_RECORDS=1`
-//! rewrites the list, refusing to add a line unless
-//! `ALLOW_APP_SIDE_RECORDS_GROWTH=1` is set, the way the UI ratchets refuse a
-//! raised count.
+//! The ratchet is a plain list read from `tests/baselines/app-side-records.txt` beside this
+//! test, so a reviewer reads what remains rather than a count. It may only lose lines: running
+//! the test with `UPDATE_APP_SIDE_RECORDS=1` rewrites the list, refusing to add a line unless
+//! `ALLOW_APP_SIDE_RECORDS_GROWTH=1` is set, the way the UI ratchets refuse a raised count.
 
 #![cfg(target_os = "linux")]
 
@@ -49,8 +41,7 @@ use std::path::{Path, PathBuf};
 /// Where the list of apps still on the old way is kept.
 const BASELINE: &str = "tests/baselines/app-side-records.txt";
 
-/// Set to rewrite the list from the tree; refuses to grow it without
-/// [`GROWTH_VAR`].
+/// Set to rewrite the list from the tree; refuses to grow it without [`GROWTH_VAR`].
 const UPDATE_VAR: &str = "UPDATE_APP_SIDE_RECORDS";
 /// Set with [`UPDATE_VAR`] to let a rewrite add a line. Review the diff first.
 const GROWTH_VAR: &str = "ALLOW_APP_SIDE_RECORDS_GROWTH";
@@ -64,6 +55,9 @@ enum Binges {
     Keys,
     /// It opens, keeps or syncs its own records.
     Storage,
+    /// The SDK runner it starts in does it for it: the app says nothing itself, but it still
+    /// attaches to a runtime of its own, so the runner joins a workspace as the app.
+    Runner,
 }
 
 impl Binges {
@@ -73,6 +67,7 @@ impl Binges {
             Self::Broker => "broker",
             Self::Keys => "keys",
             Self::Storage => "storage",
+            Self::Runner => "runner",
         }
     }
 
@@ -93,6 +88,9 @@ impl Binges {
                 "app_state::",
                 "open_workspace_record",
             ],
+            // The runner's own code is not an app's sources: it is counted from the app's
+            // entry point ([`on_runner`]), not from a marker.
+            Self::Runner => &[],
         }
     }
 }
@@ -110,8 +108,8 @@ fn root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Every app under `apps/`, by its directory name, whether or not it has a
-/// manifest of its own (a model crate beside its app has one).
+/// Every app under `apps/`, by its directory name, whether or not it has a manifest of its own
+/// (a model crate beside its app has one).
 fn apps(root: &Path) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(root.join("apps")) else {
@@ -158,9 +156,8 @@ fn sources(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// What `app` still does for itself, as the slices name it.
-fn carries(app: &Path) -> BTreeSet<Binges> {
-    let mut found = BTreeSet::new();
+/// Every source of `app` as one text.
+fn text_of(app: &Path) -> String {
     let mut text = String::new();
     for file in sources(app) {
         let Ok(read) = std::fs::read_to_string(&file) else {
@@ -169,10 +166,40 @@ fn carries(app: &Path) -> BTreeSet<Binges> {
         text.push_str(&read);
         text.push('\n');
     }
+    text
+}
+
+/// Whether `app` starts through the SDK runner: `ui::main!` or `ui::framework::run` in its
+/// entry point, which is where the runner joins the workspace on the app's behalf.
+fn on_runner(app: &Path) -> bool {
+    let main = app.join("src").join("main.rs");
+    let Ok(text) = std::fs::read_to_string(main) else {
+        return false;
+    };
+    text.contains("ui::main!") || text.contains("ui::framework::run")
+}
+
+/// Whether `app` declares that it joins no runtime of its own, because the session's document
+/// host keeps its records: `ResourceApp::ATTACHES_RUNTIME = false`, the one flag the runner
+/// already reads (`framework/app.rs`'s `launch_spec`), which disables its collaboration
+/// manager — no join proof, no content keys, no sync.
+fn hosted(app: &Path) -> bool {
+    text_of(app).contains("ATTACHES_RUNTIME = false")
+        || text_of(app).contains("ATTACHES_RUNTIME = false;")
+}
+
+/// What `app` still does for itself, as the slices name it.
+fn carries(app: &Path) -> BTreeSet<Binges> {
+    let text = text_of(app);
+    let mut found = BTreeSet::new();
     for what in [Binges::Broker, Binges::Keys, Binges::Storage] {
         if what.markers().iter().any(|marker| text.contains(marker)) {
             found.insert(what);
         }
+    }
+    // The runner does it for every app it starts that the host does not serve.
+    if on_runner(app) && !hosted(app) {
+        found.insert(Binges::Runner);
     }
     found
 }
@@ -208,6 +235,17 @@ fn app_of(line: &str) -> &str {
     line.split_once(':').map_or(line, |(app, _)| app).trim()
 }
 
+/// What a line says the app carries.
+fn what_of(line: &str) -> BTreeSet<&str> {
+    line.split_once(':')
+        .map(|(_, what)| what)
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|what| !what.is_empty())
+        .collect()
+}
+
 #[test]
 fn apps_using_app_side_storage_identity_or_sync_do_not_grow() {
     let root = root();
@@ -227,8 +265,10 @@ fn apps_using_app_side_storage_identity_or_sync_do_not_grow() {
         let body = format!(
             "# Apps still doing for themselves what the document host now does\n\
              # (docs/architecture/apps.md §8). One line per app, as `app: what`.\n\
-             # This list may only shrink: a slice that migrates an app deletes its\n\
-             # line, and a new app, or an added use, fails the ratchet.\n\n{}\n",
+             # `runner` is the SDK runner joining a workspace on the app's behalf; the\n\
+             # rest is the app's own code. This list may only shrink: a slice that\n\
+             # migrates an app deletes its line, and a new app, or an added use, fails\n\
+             # the ratchet.\n\n{}\n",
             now.join("\n")
         );
         std::fs::write(&baseline, body).expect("the baseline writes");
@@ -236,31 +276,16 @@ fn apps_using_app_side_storage_identity_or_sync_do_not_grow() {
         return;
     }
 
-    // Growth: an app present now, or a use now, that the baseline does not
-    // name. Judged per app, so a migrated app whose line lost a use is a
-    // drop, never a growth.
+    // Growth: an app present now, or a use now, that the baseline does not name. Judged per
+    // app, so a migrated app whose line lost a use is a drop, never a growth.
     let mut growth = Vec::new();
     for line in &now {
         match before.iter().find(|kept| app_of(kept) == app_of(line)) {
             None => growth.push(line.clone()),
             Some(kept_line) => {
-                let was: BTreeSet<&str> = kept_line
-                    .split_once(':')
-                    .map(|(_, what)| what)
-                    .unwrap_or_default()
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|what| !what.is_empty())
-                    .collect();
-                let is: BTreeSet<&str> = line
-                    .split_once(':')
-                    .map(|(_, what)| what)
-                    .unwrap_or_default()
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|what| !what.is_empty())
-                    .collect();
-                let added: Vec<&&str> = is.difference(&was).collect();
+                let now_what = what_of(line);
+                let was_what = what_of(kept_line);
+                let added: Vec<&&str> = now_what.difference(&was_what).collect();
                 if !added.is_empty() {
                     growth.push(format!("{}: {added:?} added", app_of(line)));
                 }
@@ -273,7 +298,9 @@ fn apps_using_app_side_storage_identity_or_sync_do_not_grow() {
          (docs/architecture/apps.md §8): {growth:#?}\n\
          An app holds no identity, keys or transport: it is handed readings and submits \
          actions over its one launcher-made connection. The host runs its model and verbs \
-         (tilo-model-host), so an app's process needs none of what this lists."
+         (tilo-model-host), so an app's process needs none of what this lists — and an app the \
+         host serves declares `ATTACHES_RUNTIME = false`, so the runner joins no workspace for \
+         it."
     );
 
     // A drop is not a failure: it only means the baseline can lose the line.
