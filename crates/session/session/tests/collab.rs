@@ -225,7 +225,7 @@ struct Host {
 }
 
 impl AppActions for Host {
-    fn published(&self) -> Vec<PublishedActions> {
+    fn published(&self, _: &str) -> Vec<PublishedActions> {
         Vec::new()
     }
 

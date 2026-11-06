@@ -56,8 +56,13 @@ struct Host {
 }
 
 impl AppActions for Host {
-    fn published(&self) -> Vec<PublishedActions> {
-        self.publishing.borrow().clone()
+    fn published(&self, workspace: &str) -> Vec<PublishedActions> {
+        self.publishing
+            .borrow()
+            .iter()
+            .filter(|published| workspace.is_empty() || published.workspace == workspace)
+            .cloned()
+            .collect()
     }
 
     fn jobs(&self) -> Vec<JobEntry> {
