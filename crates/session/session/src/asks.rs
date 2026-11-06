@@ -148,6 +148,13 @@ impl Shared {
             self.host_action(&choice);
         }
         self.follow_sheets(look);
+        self.follow_search_choices(look);
+    }
+
+    /// Carry out the rows the person chose in search, and follow a row that
+    /// asked the session for something of its own: that is another round of
+    /// asks.
+    fn follow_search_choices(&self, look: &mut tilo_surface_host::Look<'_>) {
         let choices = self.handle.take_search_choices();
         if choices.is_empty() {
             return;
@@ -174,7 +181,6 @@ impl Shared {
                 }
             }
         }
-        // What the session's own actions asked of it.
         self.follow_asks(look);
     }
 
