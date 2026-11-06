@@ -84,6 +84,7 @@ pub(crate) struct Seams {
     pub(crate) audio_output: Seam<Arc<dyn AudioOutputServices>>,
     pub(crate) workspace_memberships: Seam<Arc<dyn WorkspaceMemberships>>,
     pub(crate) tracker_runs: Seam<Arc<dyn TrackerRuns>>,
+    pub(crate) agents: Seam<Arc<dyn tilo_action_broker::services::AgentRoster>>,
     pub(crate) native_certificates:
         Seam<Arc<dyn tilo_action_broker::certificate_authority::CertificateAuthority>>,
     pub(crate) local_person: Seam<Arc<dyn LocalPersonServices>>,
@@ -132,6 +133,7 @@ impl Seams {
             audio_output: self.audio_output.into_option(),
             workspace_memberships: self.workspace_memberships.into_option(),
             tracker_runs: self.tracker_runs.into_option(),
+            agents: self.agents.into_option(),
             native_certificates: self.native_certificates.into_option(),
             local_person: self.local_person.into_option(),
             record_changes: self.record_changes.into_option(),
@@ -184,6 +186,7 @@ impl Seams {
                 self.workspace_memberships.decision(),
             ),
             ("tracker_runs", self.tracker_runs.decision()),
+            ("agents", self.agents.decision()),
             ("native_certificates", self.native_certificates.decision()),
             ("local_person", self.local_person.decision()),
             ("record_changes", self.record_changes.decision()),

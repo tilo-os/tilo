@@ -250,16 +250,29 @@ fn acting_fabric(
 /// The broker it serves on is `collaboration`'s, which the session's channel
 /// service gates a workspace's sealed records with, and whose keys an
 /// endpoint asks a record's keys from.
+/// What the plane takes from the session besides its broker: the turns its
+/// agents answer, who keeps those agents, and the tools service apps reach
+/// their lists' changes through.
+pub(crate) struct Knitted {
+    pub(crate) turns: Option<std::sync::Arc<crate::conversations::Runs>>,
+    pub(crate) agents: Option<std::sync::Arc<dyn tilo_action_broker::services::AgentRoster>>,
+    pub(crate) tools: Option<crate::mount::tools::Handle>,
+}
+
 pub(crate) fn start_action_plane(
     options: &Options,
     live_activities: &std::sync::Arc<runtime_collab::LiveActivities>,
     handle: &DesktopHandle,
     shortcuts: std::sync::Arc<ShortcutLibrary>,
     activity: &activity::Activity,
-    turns: Option<std::sync::Arc<crate::conversations::Runs>>,
-    tools: Option<crate::mount::tools::Handle>,
+    seams: Knitted,
     collaboration: Collaboration<'_>,
 ) -> Result<Option<Plane>, Error> {
+    let Knitted {
+        turns,
+        agents,
+        tools,
+    } = seams;
     let Collaboration {
         revocations,
         sync,
@@ -326,6 +339,7 @@ pub(crate) fn start_action_plane(
             // The turns the broker delivers to the agents admitted here, and
             // hears back what they report of them.
             turns,
+            agents,
             sealed,
             own_device,
             record_content: content,

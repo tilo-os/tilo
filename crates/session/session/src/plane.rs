@@ -323,6 +323,9 @@ pub struct Hosted {
     /// The turns this session's agents answer, which the broker delivers
     /// as runs.
     pub turns: Option<std::sync::Arc<crate::conversations::Runs>>,
+    /// Who keeps each workspace's agents, as its record of them names them:
+    /// what the broker admits an agent's session on.
+    pub agents: Option<std::sync::Arc<dyn tilo_action_broker::services::AgentRoster>>,
     /// The workspaces' sealed records: what the broker gates, and where an
     /// endpoint follows a route's keys.
     pub sealed: Sealed,
@@ -733,6 +736,7 @@ fn seams(
         shortcuts,
         activity,
         turns,
+        agents,
         sealed,
         own_device,
         engine,
@@ -824,6 +828,9 @@ fn seams(
         // message in a conversation started. A run is the broker's to
         // deliver, and its reports come back to the turn.
         tracker_runs: Seam::when(turns.map(|turns| turns as std::sync::Arc<dyn TrackerRuns>)),
+        // Which agents each workspace keeps, and whose session runs each: the
+        // record the broker admits an agent's join on.
+        agents: Seam::when(agents),
         // Which devices this person's identity certifies now: what the broker
         // admits a join with, and what it decides a retained action against.
         native_certificates: Seam::served(certificates),
@@ -1247,6 +1254,7 @@ mod tests {
             shortcuts: library(),
             activity: crate::activity_provider::wire(requests()),
             turns: None,
+            agents: None,
             native_media: None,
             sealed: Sealed {
                 broker: std::sync::Arc::new(Mutex::new(BrokerChannels::default())),

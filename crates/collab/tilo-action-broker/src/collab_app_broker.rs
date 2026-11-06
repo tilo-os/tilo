@@ -277,7 +277,9 @@ pub(crate) struct AdmittedJoinIdentity {
 
 use tilo_peer_state::join::task_delegation::TaskDelegation;
 mod task_agents;
-use task_agents::{admit_task_delegation, verify_task_agent_join, verify_task_delegation};
+use task_agents::{
+    admit_kept_agent, admit_task_delegation, verify_task_agent_join, verify_task_delegation,
+};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct BrokerActor {
@@ -987,50 +989,6 @@ fn admit_verified_join_at(
         session_delegated: false,
         task: None,
     })
-}
-
-#[cfg(test)]
-fn admit_agent_delegation(
-    tree: &DesktopTree,
-    route: &CrdtRoute,
-    admitted: &mut AdmittedJoinIdentity,
-    agent_id: &str,
-) -> Result<(), String> {
-    admit_agent_delegation_at(
-        crate::services::workspace_in(tree, &route.cluster_id),
-        admitted,
-        agent_id,
-        tilo_clock::try_unix_now().ok_or("legacy clock unavailable")?,
-    )
-}
-/// Delegate an admitted administrator's session to `agent_id`. `workspace`
-/// is the committed workspace of exactly `route.cluster_id` from the same
-/// authority sample that admitted the person.
-fn admit_agent_delegation_at(
-    workspace: Option<&tilo_desktop_model::Workspace>,
-    admitted: &mut AdmittedJoinIdentity,
-    agent_id: &str,
-    now: u64,
-) -> Result<(), String> {
-    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
-        agent: agent_id.to_owned(),
-    }
-    .validate()?;
-    let workspace =
-        workspace.ok_or_else(|| "agent delegation names an unavailable workspace".to_string())?;
-    if admitted.verified.capped
-        || !workspace.may_govern_at(&admitted.principal_id, roles::governance::GRANT, now)
-    {
-        return Err("only a workspace administrator may launch a delegated agent session".into());
-    }
-    // The agent takes part with its person's authority, capped
-    // ([`roles::agent_policy::ROLE_CAP`]): it is not a member and holds nothing
-    // of its own, so what ends it here is the person's session, which every
-    // revalidation of it asks again.
-    admitted.role = roles::agent_policy::role(admitted.role, roles::agent_policy::ROLE_CAP);
-    admitted.agent_id = Some(agent_id.to_string());
-    admitted.display_handle = Some(agent_id.to_string());
-    Ok(())
 }
 
 /// Whether the launched app `app` may join `route` in its person's own
@@ -7262,6 +7220,7 @@ impl AppBrokerState {
             Some(cert) => VerifiedJoinIdentity::of(cert, self.capped_in(&route.cluster_id, cert)),
             None => admitted.verified.clone(),
         };
+        let agents = self.services.agents.as_deref();
         // The person and any delegated agent are revalidated on one sample.
         membership
             .decide_in_workspace(&route.cluster_id, |workspace| {
@@ -7288,15 +7247,10 @@ impl AppBrokerState {
                     verify_task_delegation(task, cert, &route.cluster_id, now)?;
                     admit_task_delegation(&mut current, (**task).clone());
                 } else if let Some(agent_id) = &admitted.agent_id {
-                    admit_agent_delegation_at(
-                        workspace,
-                        &mut current,
-                        agent_id,
-                        now / 1_000_000_000,
-                    )
-                    .map_err(|error| {
-                        format!("certified agent session is no longer admitted: {error}")
-                    })?;
+                    let roster = agents.ok_or("this host reads no workspace's agents")?;
+                    admit_kept_agent(roster, &route.cluster_id, &mut current, agent_id).map_err(
+                        |error| format!("certified agent session is no longer admitted: {error}"),
+                    )?;
                 } else {
                     current.display_handle.clone_from(&admitted.display_handle);
                 }
@@ -13650,12 +13604,22 @@ pub mod tests {
             ..verified_device(&root)
         };
 
+        let workspace_id = tree.workspaces[0].id().to_string();
+        let kept = crate::test_support::KeptAgents::default().keeping(
+            &workspace_id,
+            "scribe",
+            &principal_id_for_root(root.verifying_key().to_bytes()),
+        );
+
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
         assert_eq!(admitted.role, CapRole::Owner);
-        admit_agent_delegation(&tree, &route, &mut admitted, "scribe").unwrap();
+        admit_kept_agent(&kept, &workspace_id, &mut admitted, "scribe").unwrap();
 
         let mut admitted = admit_verified_join(&tree, &route, foreign.clone()).unwrap();
-        assert!(admit_agent_delegation(&tree, &route, &mut admitted, "scribe").is_err());
+        assert!(
+            admit_kept_agent(&kept, &workspace_id, &mut admitted, "scribe").is_err(),
+            "an agent joins on its keeper's session, not on a device the workspace caps"
+        );
         let changes = |admitted: &AdmittedJoinIdentity, tree: &WorkspaceTree| {
             admitted
                 .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
@@ -13712,10 +13676,16 @@ pub mod tests {
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
 
+        let workspace_id = tree.workspaces[0].id().to_string();
+        let kept = crate::test_support::KeptAgents::default().keeping(
+            &workspace_id,
+            "scribe",
+            &principal_id_for_root(root.verifying_key().to_bytes()),
+        );
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&root))
-            .expect("the owner is admitted before delegation");
-        admit_agent_delegation(&tree, &route, &mut admitted, "scribe")
-            .expect("the owner may operate an admitted agent");
+            .expect("the keeper is admitted before their agent is");
+        admit_kept_agent(&kept, &workspace_id, &mut admitted, "scribe")
+            .expect("the record names the keeper of the agent it runs");
         assert_eq!(admitted.broker_actor().id, "agent:scribe");
         assert!(admitted.broker_actor().is_agent);
         let answer = |kind| {
@@ -13734,18 +13704,28 @@ pub mod tests {
         assert_eq!(answer(ActionKind::Read), Answer::Allow, "the agent reads");
         assert_eq!(
             answer(ActionKind::Undoable),
-            Answer::Deny,
-            "and does only what its own bound allows, whoever launched it"
+            Answer::Allow,
+            "and changes what its person's turn allows it"
+        );
+        assert_ne!(
+            answer(roles::GOVERNANCE_KIND),
+            Answer::Allow,
+            "never the workspace's governance"
         );
 
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = AppBrokerState::new(
+        let (state, _bridge_rx) = AppBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::disabled(),
-            Some(membership.clone()),
+            Some(membership.authority()),
             None,
+            None,
+            crate::services::HostServices {
+                agents: Some(Arc::new(kept.clone())),
+                ..membership.services()
+            },
         );
         assert!(
             state.revalidate_admission(&route, &admitted).is_ok(),
@@ -13797,9 +13777,26 @@ pub mod tests {
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
 
+        let workspace_id = tree.workspaces[0].id().to_string();
+        let kept = crate::test_support::KeptAgents::default()
+            .keeping(
+                &workspace_id,
+                "scribe",
+                &principal_id_for_root(owner_root.verifying_key().to_bytes()),
+            )
+            .keeping(
+                &workspace_id,
+                "reader",
+                &principal_id_for_root(bob_root.verifying_key().to_bytes()),
+            )
+            .keeping(
+                &workspace_id,
+                "bobs-scribe",
+                &principal_id_for_root(bob_root.verifying_key().to_bytes()),
+            );
         let delegate = |root: &SigningKey, agent: &str, tree: &WorkspaceTree| {
             let mut admitted = admit_verified_join(tree, &route, verified_device(root)).unwrap();
-            admit_agent_delegation(tree, &route, &mut admitted, agent).map(|()| admitted)
+            admit_kept_agent(&kept, &workspace_id, &mut admitted, agent).map(|()| admitted)
         };
         let answer = |admitted: &AdmittedJoinIdentity,
                       tree: &WorkspaceTree,
@@ -13841,7 +13838,7 @@ pub mod tests {
             Answer::Deny,
             "a commenter's agent changes nothing"
         );
-        let bobs = delegate(&bob_root, "scribe", &tree).unwrap();
+        let bobs = delegate(&bob_root, "bobs-scribe", &tree).unwrap();
         assert_eq!(bobs.role, Role::Commenter, "capped by its person's role");
         assert!(!workspace_control_role_allowed(bobs.role));
         assert_eq!(
@@ -13852,12 +13849,17 @@ pub mod tests {
 
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = AppBrokerState::new(
+        let (state, _bridge_rx) = AppBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::disabled(),
-            Some(membership.clone()),
+            Some(membership.authority()),
             None,
+            None,
+            crate::services::HostServices {
+                agents: Some(Arc::new(kept.clone())),
+                ..membership.services()
+            },
         );
         assert_eq!(
             state.revalidate_admission(&route, &bobs).unwrap().role,
@@ -14201,9 +14203,19 @@ pub mod tests {
         workspace.admit_agent("operator", crate::test_support::KindSet::READ);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
+        let workspace_id = tree.workspaces[0].id().to_string();
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&member))
             .expect("the person is a member");
-        assert!(admit_agent_delegation(&tree, &route, &mut admitted, "operator").is_err());
+        assert!(
+            admit_kept_agent(
+                &crate::test_support::KeptAgents::default(),
+                &workspace_id,
+                &mut admitted,
+                "operator"
+            )
+            .is_err(),
+            "the workspace keeps no agent of that id"
+        );
     }
 
     #[test]
