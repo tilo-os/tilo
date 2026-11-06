@@ -34,6 +34,13 @@ pub trait Authority {
     /// `chain` is the authorship chain, outermost first: each code author between the
     /// invoker and the action. It is empty for a call made straight by a principal.
     fn decide(&self, invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision;
+
+    /// Whether the workspace still lets `app`'s code reach `host` with `uses web`. What the
+    /// package declares is checked before this ([`crate::web::granted`]); a workspace that
+    /// revoked a host refuses it here, and the request answers as a value.
+    fn may_fetch(&self, _app: &str, _host: &str) -> bool {
+        true
+    }
 }
 
 #[derive(Default)]

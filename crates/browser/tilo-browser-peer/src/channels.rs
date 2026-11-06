@@ -271,19 +271,32 @@ impl Channels {
     /// The content keys this device holds for `channel`, once its access is
     /// ready: what a call on the channel's record is sealed and opened with.
     ///
-    /// A channel this device is a member of speaks for itself; otherwise the
-    /// keys are the ones a host device handed over for its record.
+    /// Keys a host device handed over for the record are the workspace's own
+    /// and speak first; a channel this device is a member of itself speaks
+    /// when no such keys arrived.
     pub(crate) fn content_keys(&self, channel: ChannelId) -> Option<ChannelContentKeys> {
-        self.routes
-            .get(&channel)
-            .and_then(|route| route.peer.content_keys())
-            .or_else(|| self.handed.get(&channel).cloned())
+        self.handed.get(&channel).cloned().or_else(|| {
+            self.routes
+                .get(&channel)
+                .and_then(|route| route.peer.content_keys())
+        })
     }
 
-    /// Hold `keys` for `route`'s channel, as a host device hands them over:
-    /// a member's own channel state, once it has some, speaks for it instead.
+    /// Hold `keys` for `route`'s channel, as a host device hands them over.
+    /// A group of this page's own that never became a member is dropped: the
+    /// host's keys are the record's, and a second group of the record would
+    /// seal content the workspace's readers do not open.
     pub(crate) fn install_handed(&mut self, route: &DocumentRoute, keys: ChannelContentKeys) {
-        self.handed.insert(Self::channel(route), keys);
+        let channel = Self::channel(route);
+        if self
+            .routes
+            .get(&channel)
+            .is_some_and(|own| !matches!(own.peer.access(), Access::Ready { .. }))
+        {
+            self.routes.remove(&channel);
+            self.dirty = true;
+        }
+        self.handed.insert(channel, keys);
     }
 
     /// The verdict on an op for `route` from this page's state for its
@@ -333,7 +346,8 @@ impl Channels {
     ) -> Changes {
         let mut changes = Changes::default();
         let channel = Self::channel(route);
-        if self.routes.contains_key(&channel) {
+        // A record whose keys a host handed over needs no group of its own.
+        if self.routes.contains_key(&channel) || self.handed.contains_key(&channel) {
             return changes;
         }
         let Ok(workspace_id) = route.workspace_id() else {
@@ -513,7 +527,8 @@ impl Channels {
             route.next_request_ms = now_ms;
             route.request_delay_ms = REQUEST_FIRST_MS;
         }
-        if let Some(keys) = route.peer.content_keys()
+        if !self.handed.contains_key(&channel)
+            && let Some(keys) = route.peer.content_keys()
             && route.installed_epoch != Some(keys.epoch())
         {
             route.installed_epoch = Some(keys.epoch());

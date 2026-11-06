@@ -11,6 +11,8 @@ use tilolang_runtime::{InvokeOutcome, Principal, ResourceRef, Store as _, Value}
 
 use crate::fixtures::Replica;
 
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
 const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
 const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
@@ -94,7 +96,11 @@ pub(crate) fn a_run_in_notes_and_tasks() -> Tidied {
     let (mut ada, _) = Replica::new(
         "ada",
         AutoCommit::new(),
-        &[(NOTES, NOTES_IDS), (TASKS, TASKS_IDS)],
+        &[
+            (DISCUSSION, DISCUSSION_IDS),
+            (NOTES, NOTES_IDS),
+            (TASKS, TASKS_IDS),
+        ],
     );
     ada.host
         .runtime()
@@ -119,14 +125,14 @@ pub(crate) fn a_run_in_notes_and_tasks() -> Tidied {
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text("Call the landlord")],
+        crate::tasks::create(&tasks, "Call the landlord"),
     );
     let stale = call(
         &ada,
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text("Stale")],
+        crate::tasks::create(&tasks, "Stale"),
     );
     ada.commit();
     let (groceries, old, landlord, stale) = (
@@ -165,7 +171,7 @@ pub(crate) fn a_run_in_notes_and_tasks() -> Tidied {
         AGENT,
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text("Book the dentist")],
+        crate::tasks::create(&tasks, "Book the dentist"),
     );
     call(
         &ada,
@@ -230,15 +236,12 @@ fn a_runs_versions_in_two_apps_name_the_run_and_what_it_did_removals_included() 
         [VersionKind::Created]
     );
     let checked = store.versions(&landlord).unwrap();
-    // Checking writes what the person changed — the box, and the moment it was checked, which
-    // Done stands the task under — and only that: whether it folds is worked out from what is
-    // under and above it, not written with it.
+    // Checking writes what the person changed — the box, and only that: whether it folds is
+    // worked out from what is under and above it, not written with it, and when it changed and
+    // who changed it are the log's version, never a field.
     assert_eq!(
         checked.last().unwrap().fields,
-        [
-            field(&ada, TASKS_APP, "Task", "done"),
-            field(&ada, TASKS_APP, "Task", "done_at"),
-        ]
+        [field(&ada, TASKS_APP, "Task", "done")]
     );
     // A removed record stays answerable: who removed it, in which run.
     for removed in [&old, &stale] {
@@ -339,7 +342,11 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
     let (mut other, _) = Replica::new(
         "ada",
         ada.doc.fork(),
-        &[(NOTES, NOTES_IDS), (TASKS, TASKS_IDS)],
+        &[
+            (DISCUSSION, DISCUSSION_IDS),
+            (NOTES, NOTES_IDS),
+            (TASKS, TASKS_IDS),
+        ],
     );
     other.host.sync_from(&other.doc);
     let elsewhere = other.host.runtime();

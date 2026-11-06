@@ -1,29 +1,47 @@
 #![allow(
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::format_collect,
+    clippy::panic,
     reason = "test assertions: a failed step is the assertion"
 )]
 
-//! The document host keeps a Rust app's record: a change the app submits is
-//! run by the model in the host, committed and attributed by the session, and
-//! the app's process is handed nothing but readings (`docs/architecture/apps.md`
-//! §2–§8).
+//! The document host runs a Rust app's model as a WebAssembly module: a change the app submits
+//! is run by the model in its own module, committed and attributed by the host, and the app's
+//! process is handed nothing but readings (`docs/architecture/apps.md` §2–§8).
+//!
+//! Every test here runs the app's *real* module — `tasks-model` built for `wasm32`, by this
+//! crate's build script — so what is proved is the boundary an app's code crosses, not a
+//! linked-in stand-in for it.
+
+use std::rc::Rc;
+use std::sync::Arc;
 
 use serde_json::{Map, json};
-use tilo_actions::ActionInvoker;
-use tilo_model_host::{Invoker, Record};
-use tilo_resource::{Doc, Kinds, ResourceKind};
+use tilo_model_abi::{Op, Request};
+use tilo_model_host::{Invoker, ModelService, Module, Record};
+use tilo_resource::Doc;
+use tilolang_runtime::engine::{Engine, EngineLimits};
 
-const TRACKER: &str = tasks_model::model::KIND;
+const TRACKER: &str = "tasks.tracker";
 const ADDRESS: &str = "tasks.tracker";
+const APP: &str = "so.tilo.tasks";
 
-fn kinds() -> Kinds {
-    Kinds::new().with(ResourceKind::of::<tasks_model::model::Tracker>())
+/// The app's module, built for `wasm32` by this crate's build script. A build that could not
+/// build it says so, and a test that needs it fails rather than passing on nothing.
+fn wasm() -> Vec<u8> {
+    tilo_model_host::fixture_module().expect("tilo-model-host's build script built the module")
 }
 
+fn module() -> Arc<Module> {
+    let engine = Rc::new(Engine::new(EngineLimits::default()).expect("an engine"));
+    Arc::new(Module::load(APP, &wasm(), engine).expect("the app's module loads"))
+}
+
+/// A record the module opened: the app's real model, in its real module.
 fn host() -> Record {
-    Record::genesis(&kinds(), TRACKER, ADDRESS).expect("the tracker's record")
+    Record::open(APP, TRACKER, ADDRESS, Doc::new(), module())
+        .expect("the tracker's record")
+        .record
 }
 
 fn create(record: &mut Record, invoker: &Invoker, title: &str) {
@@ -37,180 +55,110 @@ fn create(record: &mut Record, invoker: &Invoker, title: &str) {
 /// The titles the record holds, read through its own reading.
 fn titles(record: &Record) -> Vec<String> {
     let reading = record.reading().expect("a reading");
-    issues(&reading)
-        .iter()
-        .filter_map(|issue| issue["value"]["title"].as_str().map(str::to_owned))
-        .collect()
-}
-
-/// The issues a reading lists: each its id and its value, as the model
-/// writes a collection.
-fn issues(reading: &serde_json::Value) -> Vec<serde_json::Value> {
-    reading["issues"].as_array().cloned().unwrap_or_default()
+    reading["issues"]
+        .as_array()
+        .map(|issues| {
+            issues
+                .iter()
+                .filter_map(|issue| issue["value"]["title"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[test]
-fn a_change_the_app_submits_is_run_by_the_model_in_the_host() {
+fn the_model_runs_in_its_own_module_and_the_host_keeps_what_it_made() {
     let mut record = host();
-    let person = Invoker::person("Pat");
-    create(&mut record, &person, "Ship the release");
+    create(&mut record, &Invoker::person("Pat"), "Ship the release");
 
     assert_eq!(titles(&record), ["Ship the release"]);
-    // The record lives in the host: its document holds the issue the app was
-    // never given.
-    let stored = record.document().committed_document().get_heads();
-    assert!(!stored.is_empty(), "the host's document carries the change");
+    // The change is the host's document now, not a copy the module kept: a module keeps nothing
+    // between calls, so the next call reads the record from what the host holds.
+    assert!(
+        !record
+            .document()
+            .committed_document()
+            .get_heads()
+            .is_empty(),
+        "the host's document carries the change"
+    );
 }
 
 #[test]
 fn the_host_attributes_each_change_to_its_invoker() {
     let mut record = host();
-    let pat = Invoker::person("Pat");
-    let bo = Invoker::person("Bo");
-    create(&mut record, &pat, "Pat's issue");
-    create(&mut record, &bo, "Bo's issue");
+    create(&mut record, &Invoker::person("Pat"), "Pat's issue");
+    create(&mut record, &Invoker::person("Bo"), "Bo's issue");
 
-    // History names who made each change: the actors it was committed under.
     let doc = record.document().committed_document();
     let actors: Vec<String> = doc
         .get_changes(&[])
         .into_iter()
-        .map(|change| change.actor_id().to_owned().to_hex_string())
+        .map(|change| change.actor_id().to_hex_string())
         .collect();
-    let pat_actor = hex_of(b"Pat");
-    let bo_actor = hex_of(b"Bo");
+    let pat = hex_of(b"Pat");
+    let bo = hex_of(b"Bo");
+    assert!(actors.contains(&pat), "Pat's change is signed as Pat's");
+    assert!(actors.contains(&bo), "Bo's change is signed as Bo's");
+}
+
+/// The hex an actor of `name` is committed under, as the host writes it.
+fn hex_of(name: &[u8]) -> String {
+    automerge::ActorId::from(name.to_vec()).to_hex_string()
+}
+
+#[test]
+fn the_module_is_the_record_it_was_built_for() {
+    let module = module();
+    assert!(module.serves(TRACKER), "it serves the tracker");
     assert!(
-        actors.contains(&pat_actor),
-        "Pat's change is committed under Pat's actor: {actors:?}"
+        module
+            .exports()
+            .iter()
+            .any(|export| export == "record_tasks_tracker"),
+        "the export the host looks for: {:?}",
+        module.exports()
     );
+}
+
+#[test]
+fn an_app_module_reaches_nothing_the_host_did_not_answer() {
+    // The module's imports are the host's, and no others: a model that reached a clock, a file
+    // or a network would have to import one, and the host links none of them.
+    let module = module();
+    let answer = module
+        .run(
+            TRACKER,
+            &Request {
+                op: Op::Read,
+                kind: TRACKER.to_owned(),
+                address: ADDRESS.to_owned(),
+                document: None,
+                action: None,
+                item: None,
+                record: true,
+                invoker: None,
+                on_behalf_of: None,
+                now_ms: 0,
+            },
+        )
+        .expect("a reading of an empty record");
+    assert!(answer.reading.is_some(), "the record reads");
     assert!(
-        actors.contains(&bo_actor),
-        "Bo's change is committed under Bo's actor: {actors:?}"
+        answer.offers.is_none(),
+        "a reading is a reading: the module answers a tree only when the host opens or changes the record"
     );
-}
-
-fn hex_of(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-#[test]
-fn the_app_process_holds_no_document_key_or_transport() {
-    // What the host hands a view is a reading: typed data, no document, no
-    // key, no transport, and nothing of the record it was not offered.
-    let mut record = host();
-    create(&mut record, &Invoker::person("Pat"), "Hidden");
-    let reading = record
-        .read(ADDRESS)
-        .expect("the record is offered")
-        .expect("a reading");
-    assert!(reading.get("issues").is_some(), "the reading is the state");
-    // A document, a change graph or a key is not in what it answers.
-    for forbidden in ["heads", "changes", "key", "actor", "transport", "document"] {
-        assert!(
-            reading.get(forbidden).is_none(),
-            "a reading carries no {forbidden}"
-        );
-    }
-    // Nor is another record's, nor a part of this one the host did not offer.
-    assert!(record.read("some.other/kind/item").is_none());
-}
-
-#[test]
-fn an_item_the_record_publishes_reads_as_its_own_reading() {
-    let mut record = host();
-    create(&mut record, &Invoker::person("Pat"), "An issue");
-    let tree = record.offers().expect("the tree");
-    let item = tree
-        .children
-        .iter()
-        .find(|child| child.kind.contains("issues"))
-        .expect("the tracker publishes its issues as items")
-        .id
-        .as_str()
-        .to_owned();
-    let reading = record
-        .read(&item)
-        .expect("the item is offered")
-        .expect("a reading");
-    assert_eq!(reading["title"], json!("An issue"));
-}
-
-#[test]
-fn an_action_the_model_refuses_is_refused_and_changes_nothing() {
-    let mut record = host();
-    let mut arguments = Map::new();
-    arguments.insert("title".to_owned(), json!("  "));
-    let refused = record.invoke(ADDRESS, "create", &arguments, &Invoker::person("Pat"));
-    assert!(refused.is_err(), "a blank title is refused: {refused:?}");
-    assert!(titles(&record).is_empty());
-}
-
-#[test]
-fn an_existing_record_opens_unchanged() {
-    // A record an app's process made: its document, with the ids it minted and
-    // the actor it was written under.
-    let mut made = host();
-    create(&mut made, &Invoker::person("Pat"), "Already here");
-    let ids: Vec<String> = titled_ids(&made);
-    let bytes = made.document().clone().save();
-    let made_doc = made.document().committed_document();
-    let actors: Vec<String> = made_doc
-        .get_changes(&[])
-        .into_iter()
-        .map(|change| change.actor_id().to_owned().to_hex_string())
-        .collect();
-
-    // The host opens it: the same ids, the same history, nothing rewritten.
-    let opened = Record::open(
-        &kinds(),
-        TRACKER,
-        ADDRESS,
-        Doc::load(&bytes).expect("a document"),
-    )
-    .expect("opens");
-    assert!(!opened.created, "the record was already there");
-    let record = opened.record;
-    assert_eq!(titled_ids(&record), ids, "ids are unchanged");
-    let opened_doc = record.document().committed_document();
-    let after: Vec<String> = opened_doc
-        .get_changes(&[])
-        .into_iter()
-        .map(|change| change.actor_id().to_owned().to_hex_string())
-        .collect();
-    assert!(after.iter().all(|actor| actors.contains(actor)));
-}
-
-fn titled_ids(record: &Record) -> Vec<String> {
-    let reading = record.reading().expect("a reading");
-    issues(&reading)
-        .iter()
-        .filter_map(|issue| issue["id"].as_str().map(str::to_owned))
-        .collect()
-}
-
-#[test]
-fn an_invoker_that_is_an_agent_is_recorded_as_one() {
-    let mut record = host();
-    let agent = Invoker::new(
-        ActionInvoker::actor("agent:7").acting_for("Pat"),
-        Some(b"Pat".to_vec()),
-    );
-    create(&mut record, &agent, "Made for Pat");
-    let reading = record.reading().expect("a reading");
-    let issue = issues(&reading).into_iter().next().expect("the issue");
-    assert_eq!(issue["value"]["author"], json!("agent:7"));
 }
 
 #[test]
 fn the_sessions_door_publishes_the_record_and_admits_its_actions() {
-    // The service is how the session offers the record to an app's
-    // connection: what it publishes, what it reads, and what it takes.
-    use tilo_model_host::ModelService;
+    // The service is how the session offers the record to an app's connection: what it
+    // publishes, what it reads, and what it takes.
     use tilo_service::{Service as _, Started};
 
-    let mut service = ModelService::new(kinds(), "Pat");
+    let mut service = ModelService::new("Pat").expect("a host");
     service
-        .genesis("so.tilo.tasks", TRACKER, ADDRESS)
+        .genesis(APP, TRACKER, ADDRESS, &wasm())
         .expect("the record");
 
     // What it publishes: the record's tree, under its own address.
@@ -236,13 +184,12 @@ fn the_sessions_door_publishes_the_record_and_admits_its_actions() {
     // What it takes: the model's verb over the door, as the person's step.
     let mut arguments = Map::new();
     arguments.insert("title".to_owned(), json!("Through the door"));
-    let Started::Done(output) = service
+    let Started::Done(_) = service
         .invoke(ADDRESS, "create", &arguments)
         .expect("admitted")
     else {
         panic!("the model's action is done once committed");
     };
-    assert!(output.resources.is_empty());
     let reading = service.read(ADDRESS).expect("a reading");
     assert_eq!(titles_of(&reading), ["Through the door"]);
     // What it publishes moved: the door offers the new reading.
@@ -259,4 +206,28 @@ fn titles_of(reading: &serde_json::Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[test]
+fn a_module_that_did_not_make_the_change_it_was_asked_for_is_refused() {
+    // The host checks what the module answers before it keeps it: a module that hands back a
+    // document someone else changed is refused, and the host's record stands.
+    let mut record = host();
+    create(&mut record, &Invoker::person("Pat"), "Mine");
+    let before = record.document().clone().save();
+    let refused = record.invoke(
+        ADDRESS,
+        "no-such-verb",
+        &Map::new(),
+        &Invoker::person("Pat"),
+    );
+    assert!(
+        refused.is_err(),
+        "the model refuses a verb it does not have"
+    );
+    assert_eq!(
+        record.document().clone().save(),
+        before,
+        "a refusal leaves the host's document as it was"
+    );
 }

@@ -556,6 +556,7 @@ impl Reader<'_> {
                     search: SearchMeta::default(),
                     holder: false,
                     origin: None,
+                    attached: false,
                 });
             }
         }
@@ -590,6 +591,7 @@ impl Reader<'_> {
             search: SearchMeta::default(),
             holder: false,
             origin: None,
+            attached: false,
         });
     }
 
@@ -660,6 +662,7 @@ impl Reader<'_> {
             frequent: false,
             guard: false,
             applies: false,
+            uses: Vec::new(),
         });
     }
 
@@ -695,6 +698,7 @@ impl Reader<'_> {
             doc: field.title.clone(),
             default: None,
             role: None,
+            personal: false,
             derived: None,
         })
     }

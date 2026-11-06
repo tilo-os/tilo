@@ -578,6 +578,60 @@ impl ExactAdmissions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_files::native::migration::assert_golden_bytes;
+
+    fn admission(author: u8, sequence: u64, id: u8) -> DocumentAdmission {
+        DocumentAdmission {
+            key: AdmissionKey {
+                workspace: "room".into(),
+                app: "so.tilo.chat".into(),
+                record: "lounge".into(),
+                author: [author; 32],
+                sequence,
+            },
+            operation_id: [id; 32],
+        }
+    }
+
+    /// The index this build writes: one admission it settled, one it saw
+    /// recently, and how far it has read one writer. Kept in hex so the layout
+    /// stays the one devices already hold; a field added, removed or reordered
+    /// changes these bytes.
+    const KEPT: &str = "0104726f6f6d0c736f2e74696c6f2e63686174066c6f756e676501010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010104726f6f6d0c736f2e74696c6f2e63686174066c6f756e676502020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020104726f6f6d0c736f2e74696c6f2e63686174066c6f756e6765090909090909090909090909090909090909090909090909090909090909090905";
+
+    fn kept_index() -> ExactAdmissions {
+        let mut index = ExactAdmissions::default();
+        index.settled_mut().insert(admission(1, 1, 1).key, [1; 32]);
+        index.recent.insert(admission(2, 2, 2).key, [2; 32]);
+        std::sync::Arc::make_mut(&mut index.marks).insert(
+            WriterKey {
+                workspace: "room".into(),
+                app: "so.tilo.chat".into(),
+                record: "lounge".into(),
+                author: [9; 32],
+            },
+            5,
+        );
+        index
+    }
+
+    #[test]
+    fn the_admission_index_kept_here_reads_and_writes_as_it_is() {
+        assert_golden_bytes(
+            "a peer's admission index",
+            &hex::decode(KEPT).unwrap(),
+            |bytes| {
+                let index = ExactAdmissions::decode(bytes).unwrap();
+                assert_eq!(index.len(), 2);
+                assert_eq!(index.get(&admission(1, 1, 1).key), Some(&[1; 32]));
+                assert_eq!(index.get(&admission(2, 2, 2).key), Some(&[2; 32]));
+                assert!(index.covers(&admission(9, 5, 3).key));
+                assert!(!index.covers(&admission(9, 6, 4).key));
+            },
+            || kept_index().encode().unwrap(),
+        );
+    }
+
     #[test]
     fn delivery_admission_index_bounds_and_duplicate_decode_are_fail_closed() {
         let fact = DocumentAdmission {

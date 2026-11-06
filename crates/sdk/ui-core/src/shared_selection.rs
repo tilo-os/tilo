@@ -125,6 +125,77 @@ impl SharedSelection {
             .map(crate::floating_surface::protocol_rect_array)
     }
 
+    /// This selection as a thing to send: the record it is in, with the item
+    /// or the run of characters it names, or — when the app publishes no
+    /// resource to go with the words — the words quoted.
+    ///
+    /// `app` and `record` are the app the person is in and its record of the
+    /// workspace (`None`: its own), which is where what they selected lives.
+    /// A selection of several items travels as those items; a range inside
+    /// one travels as that item and its character span, in the app's own
+    /// unit, so the app can address the run again when the chip is opened.
+    /// `None` when the person selected nothing worth sending.
+    #[must_use]
+    pub fn to_attached(&self, app: &str, record: Option<&str>) -> Option<tilo_reference::Attached> {
+        use tilo_reference::{Anchor, Attached, ResourceAt, ResourceRef, Span};
+
+        let excerpt = self
+            .anchor
+            .excerpt
+            .as_deref()
+            .map(str::trim)
+            .filter(|excerpt| !excerpt.is_empty());
+        let place = self.anchor.place.as_ref();
+        let ids: Vec<String> = self
+            .anchor
+            .items
+            .iter()
+            .map(|item| item.item.clone())
+            .collect();
+        let Some(resource) = self.resource.as_ref() else {
+            // Nothing but the words: worth reading, opening nothing.
+            return excerpt.map(|text| Attached::Text {
+                text: text.to_owned(),
+                from: None,
+            });
+        };
+        let span = place
+            .and_then(|place| Some(Span::chars(place.start?, place.end?)))
+            .filter(|span| !span.is_empty());
+        let anchor = if ids.is_empty() {
+            place.map(|place| Anchor::item(place.item.clone()))
+        } else {
+            Some(Anchor::items(ids))
+        };
+        let at = ResourceAt {
+            app: app.to_owned(),
+            record: record.map(str::to_owned),
+            reference: ResourceRef {
+                kind: resource.kind.clone(),
+                id: resource.id.clone(),
+                label: resource.label.clone(),
+                span,
+            },
+        };
+        if anchor.is_none() && excerpt.is_some() {
+            // A selection the app reports only as words: quote them, and say
+            // which record they came from so the chip can open it.
+            return Some(Attached::Text {
+                text: excerpt.unwrap_or_default().to_owned(),
+                from: Some(at),
+            });
+        }
+        let label = (!resource.label.trim().is_empty())
+            .then(|| resource.label.clone())
+            .or_else(|| excerpt.map(str::to_owned))
+            .or_else(|| match &anchor {
+                Some(Anchor::Item { id }) => Some(id.clone()),
+                Some(Anchor::Items { ids }) => ids.first().cloned(),
+                Some(Anchor::Text { .. }) | None => None,
+            })?;
+        Some(Attached::Resource { at, anchor, label })
+    }
+
     /// Whether there is nothing to ask about.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -437,6 +508,98 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_selection_becomes_the_record_and_part_it_names() {
+        use tilo_reference::{Anchor, Attached, ResourceAt, ResourceRef, Span};
+
+        let page = ActionResource {
+            id: "notes.page:1".into(),
+            kind: "notes.page".into(),
+            label: "Plan".into(),
+        };
+        // A run inside one item travels as that item and the characters, in
+        // the app's own unit, so the app can address the run again.
+        let run = SharedSelection::of_text("late results")
+            .at(SelectionPlace::range("block-2", 4, 16))
+            .in_resource(page.clone());
+        let at = ResourceAt {
+            app: "so.tilo.notes".into(),
+            record: Some("uuid:7".into()),
+            reference: ResourceRef::whole("notes.page", "notes.page:1", "Plan"),
+        };
+        let sent = run.to_attached("so.tilo.notes", Some("uuid:7"));
+        let run_at = ResourceAt {
+            reference: ResourceRef::ranged(
+                "notes.page",
+                "notes.page:1",
+                "Plan",
+                Span::chars(4, 16),
+            ),
+            ..at.clone()
+        };
+        assert_eq!(
+            sent,
+            Some(Attached::resource(
+                run_at,
+                Some(Anchor::item("block-2")),
+                "Plan"
+            ))
+        );
+        let Some(Attached::Resource { at, anchor, .. }) = &sent else {
+            panic!("a resource attachment: {sent:?}");
+        };
+        assert_eq!(
+            at.reference.span,
+            Some(Span::chars(4, 16)),
+            "the run inside the item, in the app's own unit"
+        );
+        assert_eq!(anchor, &Some(Anchor::item("block-2")));
+
+        // Several items travel as those items.
+        let rows = SharedSelection::of_items([("row-1", "One"), ("row-2", "Two")])
+            .in_resource(page.clone());
+        assert_eq!(
+            rows.to_attached("so.tilo.tasks", None),
+            Some(Attached::resource(
+                ResourceAt {
+                    app: "so.tilo.tasks".into(),
+                    record: None,
+                    reference: ResourceRef::whole("notes.page", "notes.page:1", "Plan"),
+                },
+                Some(Anchor::items(["row-1", "row-2"])),
+                "Plan"
+            ))
+        );
+
+        // Words the app reports no resource for are quoted, alone.
+        let words = SharedSelection::of_text("ship on Friday");
+        assert_eq!(
+            words.to_attached("so.tilo.terminal", None),
+            Some(Attached::Text {
+                text: "ship on Friday".into(),
+                from: None,
+            })
+        );
+
+        // Words in a record the app does not place travel with that record,
+        // so a chip can still open it.
+        let unplaced = SharedSelection::of_text("ship on Friday").in_resource(page);
+        assert_eq!(
+            unplaced.to_attached("so.tilo.notes", Some("uuid:7")),
+            Some(Attached::Text {
+                text: "ship on Friday".into(),
+                from: Some(ResourceAt {
+                    app: "so.tilo.notes".into(),
+                    record: Some("uuid:7".into()),
+                    reference: ResourceRef::whole("notes.page", "notes.page:1", "Plan"),
+                }),
+            })
+        );
+
+        // Nothing selected, nothing to send.
+        assert_eq!(SharedSelection::default().to_attached("a.b", None), None);
     }
 
     #[test]

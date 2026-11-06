@@ -377,10 +377,6 @@ widget-block-outdent = Outdent block and children
 widget-maximized-restore = Restore
 widget-maximized-fullscreen = Full screen
 tree-rename-field = Rename
-tree-move-up = Move up
-tree-move-down = Move down
-tree-move-indent = Move into the item above
-tree-move-outdent = Move out of the parent item
 
 # The show/hide control inside every password field.
 text-input-show-password = Show password

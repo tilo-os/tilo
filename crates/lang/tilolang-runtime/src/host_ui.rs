@@ -9,7 +9,7 @@ use crate::engine::Wasm;
 use crate::handles::{FrameKind, ViewState};
 use crate::space::Space;
 use crate::value::{ActionRef, Value};
-use crate::view::{BindTarget, Binding, NodeBuild};
+use crate::view::{BindTarget, Binding, NodeBuild, UiNode};
 use crate::view_state::{StateKey, StateLayer};
 
 /// The action id of `set(name, value)`: changes a view state slot. Its arguments are the
@@ -246,6 +246,21 @@ impl Core {
         }))
     }
 
+    /// `a.made_from(r)`: the action `a`, invoked made from the resource `r`: what the resources
+    /// it makes record as what they were made from (`created(r)?.from`), as a block a scenario
+    /// runs `made from r { ... }` says of its changes.
+    fn act_made_from(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let action = self.val(a.h(0)?)?;
+        let Value::Action(action) = action else {
+            return trap(format!(
+                "`made_from` takes an action, not {}",
+                action.kind_name()
+            ));
+        };
+        let from = self.ref_arg(a.h(1)?)?;
+        self.ret_h(Value::Action(action.made_from(Some(&from.target))))
+    }
+
     fn act_open(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         // The resource, or the place of the one an event carries.
         let target = match self.val(a.h(0)?)? {
@@ -330,7 +345,7 @@ impl Core {
         };
         let phrase = |id: &str| self.words.borrow().word(id, &[], id);
         let root = self.with_view(|vs| {
-            let root = shown_nodes(vs, &key, &shown, &phrase);
+            let root = push_tree(vs, shown_node(&key, &shown, &phrase));
             // What a field held before reads quieter than what it holds now. A rich text
             // cannot take it (its component declares no such prop): its before side says
             // what the change took away by striking those runs.
@@ -446,6 +461,7 @@ impl Core {
             Imp::UiBindState => self.bind_state(a),
             Imp::ActSet => self.act_set(a),
             Imp::ActThen => self.act_then(a),
+            Imp::ActMadeFrom => self.act_made_from(a),
             Imp::ActOpen => self.act_open(a),
             Imp::ActUndo => self.act_undo(a),
             Imp::ChangeView => self.change_view(a),
@@ -531,99 +547,88 @@ fn offered_action(action: &Value, event: &str) -> HResult<(Value, Value)> {
     ))
 }
 
-/// A node `shown_nodes` makes: its kind, key, props and children.
-struct Made<'a> {
-    kind: &'a str,
-    key: String,
-    props: Vec<(&'a str, Value)>,
-    children: Vec<usize>,
-}
-
-fn push_node(vs: &mut ViewState, made: Made<'_>) -> usize {
+/// Put a node a change shows in the arena `vs` builds, its children first: the index of the
+/// node. A node a change shows carries no events of its own.
+fn push_tree(vs: &mut ViewState, node: UiNode) -> usize {
+    let UiNode {
+        kind,
+        key,
+        props,
+        binding,
+        events: _,
+        anchor,
+        children,
+    } = node;
+    let children = children
+        .into_iter()
+        .map(|child| push_tree(vs, child))
+        .collect();
     vs.nodes.push(NodeBuild {
-        kind: made.kind.to_owned(),
-        key: made.key,
-        props: made
-            .props
-            .into_iter()
-            .map(|(name, value)| (name.to_owned(), value))
-            .collect(),
-        children: made.children,
-        binding: None,
-        events: BTreeMap::default(),
-        anchor: None,
+        kind,
+        key,
+        props,
+        children,
+        binding,
+        events: BTreeMap::new(),
+        anchor,
     });
     vs.nodes.len().saturating_sub(1)
 }
 
+/// A node showing something a change holds, keyed `key`.
+fn shown_node_of(
+    kind: &str,
+    key: &str,
+    props: Vec<(&str, Value)>,
+    children: Vec<UiNode>,
+) -> UiNode {
+    UiNode {
+        kind: kind.to_owned(),
+        key: key.to_owned(),
+        props: props
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect(),
+        binding: None,
+        events: BTreeMap::default(),
+        anchor: None,
+        children,
+    }
+}
+
 /// A text node saying `value`, quietly (in secondary ink) when `quiet`.
-fn text_node(vs: &mut ViewState, key: &str, value: Value, quiet: bool) -> usize {
+fn shown_text(key: &str, value: Value, quiet: bool) -> UiNode {
     let mut props = vec![("value", value)];
     if quiet {
         props.push(("secondary", Value::Bool(true)));
     }
-    push_node(
-        vs,
-        Made {
-            kind: "ui.Text",
-            key: key.to_owned(),
-            props,
-            children: Vec::new(),
-        },
-    )
+    shown_node_of("ui.Text", key, props, Vec::new())
 }
 
 /// A chip naming `label`, with `icon` before it when there is one.
-fn chip_node(vs: &mut ViewState, key: String, label: Value, icon: Option<Value>) -> usize {
+fn shown_chip(key: &str, label: Value, icon: Option<Value>) -> UiNode {
     let mut props = vec![("label", label)];
     if let Some(icon) = icon {
         props.push(("icon", icon));
     }
-    push_node(
-        vs,
-        Made {
-            kind: "ui.Chip",
-            key,
-            props,
-            children: Vec::new(),
-        },
-    )
+    shown_node_of("ui.Chip", key, props, Vec::new())
 }
 
-/// The node of `vs` showing `shown` (`Core::shown`): a day as a day and a moment as a moment
-/// in the person's format, a person as their avatar and name, a case of an enum as its label
-/// and icon, a resource as its title, a flag as yes or no, nothing as a quiet "None", and the
-/// elements of a set side by side. Returns its index.
 /// A day or a time of day, as the text component shows it (`value:as`); a day the change moved
 /// with the time of day it holds reads as one fact, and carries it beside it (`value:time`).
-fn shown_moment(
-    vs: &mut ViewState,
-    key: &str,
-    kind: &str,
-    value: Value,
-    extra: Option<Value>,
-) -> usize {
+fn shown_moment(key: &str, kind: &str, value: Value, extra: Option<Value>) -> UiNode {
     let mut props = vec![("value", value), ("value:as", Value::Text(kind.to_owned()))];
     if let (Some(Value::Text(at)), "date") = (extra, kind) {
         props.push(("value:time", Value::Text(at)));
     }
-    push_node(
-        vs,
-        Made {
-            kind: "ui.Text",
-            key: key.to_owned(),
-            props,
-            children: Vec::new(),
-        },
-    )
+    shown_node_of("ui.Text", key, props, Vec::new())
 }
 
-fn shown_nodes(
-    vs: &mut ViewState,
-    key: &str,
-    shown: &Value,
-    phrase: &dyn Fn(&str) -> String,
-) -> usize {
+/// The node showing `shown` (`Core::shown`): a day as a day and a moment as a moment in the
+/// person's format, a person as their avatar and name, a case of an enum as its label and icon,
+/// a resource as its title, a flag as yes or no, nothing as a quiet "None", and the elements of
+/// a set side by side. Keyed `key`.
+pub(crate) fn shown_node(key: &str, shown: &Value, phrase: &dyn Fn(&str) -> String) -> UiNode {
     let parts = match shown {
         Value::List(items) if !items.is_empty() => {
             let children = items
@@ -640,22 +645,14 @@ fn shown_nodes(
                         ),
                         other => (other.clone(), None),
                     };
-                    chip_node(vs, format!("{key}/{index}"), label, icon)
+                    shown_chip(&format!("{key}/{index}"), label, icon)
                 })
                 .collect();
-            return push_node(
-                vs,
-                Made {
-                    kind: "row",
-                    key: key.to_owned(),
-                    props: vec![("wrap", Value::Bool(true))],
-                    children,
-                },
-            );
+            return shown_node_of("row", key, vec![("wrap", Value::Bool(true))], children);
         }
         Value::Tuple(parts) => parts,
         _ => {
-            return text_node(vs, key, Value::Text(phrase("tilolang-none-value")), true);
+            return shown_text(key, Value::Text(phrase("tilolang-none-value")), true);
         }
     };
     let kind = parts.first().and_then(Value::as_text).unwrap_or("text");
@@ -665,33 +662,17 @@ fn shown_nodes(
         _ => None,
     };
     match kind {
-        "none" => text_node(vs, key, Value::Text(phrase("tilolang-none-value")), true),
-        "date" | "time" => shown_moment(vs, key, kind, value, extra),
+        "none" => shown_text(key, Value::Text(phrase("tilolang-none-value")), true),
+        "date" | "time" => shown_moment(key, kind, value, extra),
         "principal" => {
-            let avatar = push_node(
-                vs,
-                Made {
-                    kind: "ui.Avatar",
-                    key: format!("{key}/who"),
-                    props: vec![("who", value)],
-                    children: Vec::new(),
-                },
+            let avatar = shown_node_of(
+                "ui.Avatar",
+                &format!("{key}/who"),
+                vec![("who", value)],
+                Vec::new(),
             );
-            let name = text_node(
-                vs,
-                &format!("{key}/name"),
-                extra.unwrap_or(Value::Unit),
-                false,
-            );
-            push_node(
-                vs,
-                Made {
-                    kind: "row",
-                    key: key.to_owned(),
-                    props: Vec::new(),
-                    children: vec![avatar, name],
-                },
-            )
+            let name = shown_text(&format!("{key}/name"), extra.unwrap_or(Value::Unit), false);
+            shown_node_of("row", key, Vec::new(), vec![avatar, name])
         }
         "bool" => {
             let id = if matches!(value, Value::Bool(true)) {
@@ -699,23 +680,15 @@ fn shown_nodes(
             } else {
                 "tilolang-no"
             };
-            text_node(vs, key, Value::Text(phrase(id)), false)
+            shown_text(key, Value::Text(phrase(id)), false)
         }
-        "case" => chip_node(vs, key.to_owned(), value, extra),
+        "case" => shown_chip(key, value, extra),
         // A rich text a change made: its paragraphs, drawn by the shared rich text
         // component, the runs it inserted marked and the runs it deleted struck.
-        "rich" => push_node(
-            vs,
-            Made {
-                kind: "ui.BlockEditor",
-                key: key.to_owned(),
-                props: vec![("value", value)],
-                children: Vec::new(),
-            },
-        ),
+        "rich" => shown_node_of("ui.BlockEditor", key, vec![("value", value)], Vec::new()),
         "text" if value.as_text().is_some_and(str::is_empty) => {
-            text_node(vs, key, Value::Text(phrase("tilolang-empty-value")), true)
+            shown_text(key, Value::Text(phrase("tilolang-empty-value")), true)
         }
-        _ => text_node(vs, key, value, false),
+        _ => shown_text(key, value, false),
     }
 }

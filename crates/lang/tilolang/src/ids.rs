@@ -266,6 +266,12 @@ pub fn scenario_key(name: &str) -> String {
     format!("scenario \"{name}\"")
 }
 
+/// The ids-lock name of the trigger `name`: a trigger's id names what it last ran, so it is the
+/// lock's like any declaration's, and apart from the action it runs.
+pub fn trigger_key(name: &str) -> String {
+    format!("trigger {name}")
+}
+
 /// The ids-lock name (and the view name) of the hidden view that presents the action
 /// `action`'s state: a name source cannot write.
 pub fn present_key(action: &str) -> String {
@@ -289,6 +295,7 @@ pub fn declared_names(m: &Module) -> Vec<String> {
             | Item::RowView(_)
             | Item::Views(_) => {}
             Item::Scenario(s) => out.push(scenario_key(&s.name)),
+            Item::Trigger(t) => out.push(trigger_key(&t.name.name)),
             Item::Alias(a) => {
                 out.push(a.name.name.clone());
                 let container = matches!(&a.ty.kind, crate::ast::TypeExprKind::Generic(g, _) if matches!(g.name.as_str(), "Collection" | "Set" | "Map"));

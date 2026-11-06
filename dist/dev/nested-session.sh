@@ -183,6 +183,15 @@ for name in tilo-session tilo-launcher tilo-install tilo-app-package tilo-runtim
     [[ -f $bin/$name ]] || die "missing $bin/$name (run without --no-build)"
     chmod +x "$bin/$name"
 done
+# The session starts its own surfaces as programs beside it, and its audio
+# service the same way: without one, the dev session is a desktop with no lock
+# screen, no quick settings, no on-screen keyboard or no sound, which is a
+# broken session rather than a smaller one.
+for name in tilo-lock-screen tilo-quick-settings tilo-osk tilo-audio; do
+    [[ -f $bin/$name ]] \
+        || die "missing $bin/$name: the session would start without it (run without --no-build)"
+    chmod +x "$bin/$name"
+done
 # A builder of another architecture builds programs this machine cannot run.
 case $(uname -m) in
     x86_64) machine='X86-64' ;;
@@ -664,10 +673,34 @@ env "${ush_env[@]}" setsid "${ush_command[@]}" > "$logs/ush.log" 2>&1 &
 children+=("$!")
 wait_for_socket "$ush_socket" "$!" || die "the ush supervisor did not start (see $logs/ush.log)"
 
-# Audio reaches apps through the host's sound server.
-for name in pipewire-0 pulse; do
-    [[ -e $host_runtime/$name ]] && ln -s "$host_runtime/$name" "$runtime/$name"
+# The session's sound: pipewire with wireplumber over it and the pulse socket
+# apps speak to, as a Tilo device runs it, owned by this session. The session's
+# own, not the host's, so its volume and its silence are the session's and
+# nothing it plays is heard on the machine running it. A headless session has
+# no speakers, so it gets one null sink: an output with a name and a level to
+# show and change.
+for tool in pipewire pipewire-pulse wireplumber pw-cli; do
+    command -v "$tool" >/dev/null \
+        || die "$tool is required on PATH: the session would start with no sound"
 done
+setsid pipewire > "$logs/pipewire.log" 2>&1 &
+children+=("$!")
+wait_for_socket "$runtime/pipewire-0" "$!" \
+    || die "the session's pipewire did not start (see $logs/pipewire.log)"
+setsid pipewire-pulse > "$logs/pipewire-pulse.log" 2>&1 &
+children+=("$!")
+wait_for_socket "$runtime/pulse/native" "$!" \
+    || die "the session's pulse socket did not start (see $logs/pipewire-pulse.log)"
+setsid wireplumber > "$logs/wireplumber.log" 2>&1 &
+children+=("$!")
+for ((try = 0; try < 100; try++)); do
+    wpctl status >/dev/null 2>&1 && break
+    sleep 0.05
+done
+pw-cli create-node adapter '{ factory.name=support.null-audio-sink node.name=tilo-sink
+    node.description="Session output" media.class=Audio/Sink object.linger=true
+    audio.position=[ FL FR ] }' > "$logs/pipewire-null-sink.log" 2>&1 \
+    || say "the session's sound has no output to show (see $logs/pipewire-null-sink.log)"
 
 # The default window is 1600x900 physical pixels, which a 2x host shows as
 # 800x450: too small for the task centre, which drops a card that does not
@@ -733,6 +766,20 @@ confirm_ready() {
     return 1
 }
 TILO_TEST_CONTROL=$control confirm_ready > "$logs/ready.log" 2>&1 &
+# The session logs the surface it could not start; a desktop it starts without
+# one is a broken session, so say which piece is missing and where to read why.
+missing_surfaces() {
+    local tries=300 line
+    while ((tries--)) && [[ ! -f $ready_marker ]]; do
+        kill -0 "$session_pid" 2>/dev/null || break
+        sleep 0.2
+    done
+    while IFS= read -r line; do
+        say "!! this session started without part of its desktop: $line"
+    done < <(grep -E 'no quick settings app is installed|no on-screen keyboard is installed|no lock screen|the audio service (is not installed|did not start)' \
+                 "$logs/session.log" 2>/dev/null || true)
+}
+missing_surfaces &
 # Where this session is, for tools that attach to it by its runtime directory
 # or control socket (`tilolang dev --session`): the same JSON as --ready.
 jq -n --arg control "$control" --arg runtime "$runtime" --arg state "$state" \

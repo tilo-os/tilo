@@ -50,18 +50,14 @@ enum Editable {
     Answered(bool),
 }
 
-/// The node of the workspace's tree that `reference`, which `provider`
-/// (`record:<app>:<record>`) keeps, stands at: an item of the record
+/// The node of the workspace's tree that `shared`'s resource, in the record
+/// `shared` names, stands at: an item of the record
 /// (`<kind>/<field>/<item>`), or the whole record. `None` for what names
 /// neither.
-pub(crate) fn share_node(
-    workspace: &str,
-    provider: &str,
-    reference: &tilo_reference::ResourceRef,
-) -> Option<TreePath> {
-    let (app, record) = crate::live_share::app_and_record(provider)?;
-    let id = reference.id.as_str();
-    let at = |kind: &str| TreePath::workspace(workspace).app(app).kind(kind);
+pub(crate) fn share_node(workspace: &str, shared: &tilo_reference::ResourceAt) -> Option<TreePath> {
+    let record = shared.record.as_deref().unwrap_or_default();
+    let id = shared.reference.id.as_str();
+    let at = |kind: &str| TreePath::workspace(workspace).app(&shared.app).kind(kind);
     if let Some((collection, item)) = id.rsplit_once('/')
         && let Some((kind, field)) = collection.split_once('/')
         && !field.contains('/')
@@ -75,7 +71,7 @@ pub(crate) fn share_node(
         };
         return Some(resource.item(item));
     }
-    (!record.is_empty() && id == record).then(|| at(&reference.kind).resource(record))
+    (!record.is_empty() && id == record).then(|| at(&shared.reference.kind).resource(record))
 }
 
 impl ShareGrants {
@@ -158,11 +154,7 @@ impl ChatApp {
             .iter()
             .filter_map(|m: &Message| {
                 let share = m.share.as_ref()?;
-                let node = share_node(
-                    &workspace,
-                    m.source_provider.as_deref()?,
-                    m.reference.as_ref()?,
-                );
+                let node = share_node(&workspace, m.resource()?);
                 Some((
                     m.id.clone(),
                     self.is_me(&m.author),
@@ -249,30 +241,54 @@ impl ChatApp {
 mod tests {
     use super::share_node;
 
-    fn reference(kind: &str, id: &str) -> tilo_reference::ResourceRef {
-        tilo_reference::ResourceRef::whole(kind, id, "Plan")
+    fn shared(app: &str, record: &str, kind: &str, id: &str) -> tilo_reference::ResourceAt {
+        tilo_reference::ResourceAt {
+            app: app.into(),
+            record: (!record.is_empty()).then(|| record.to_owned()),
+            reference: tilo_reference::ResourceRef::whole(kind, id, "Plan"),
+        }
     }
 
     #[test]
     fn a_share_stands_at_the_item_or_the_record_it_shares() {
         let workspace = "00000000-0000-0000-0000-000000000001";
-        let note = reference("notes.notebook.pages", "notes.notebook/pages/p1");
         assert_eq!(
-            share_node(workspace, "record:so.tilo.notes:", &note).map(|node| node.to_string()),
+            share_node(
+                workspace,
+                &shared(
+                    "so.tilo.notes",
+                    "",
+                    "notes.notebook.pages",
+                    "notes.notebook/pages/p1"
+                )
+            )
+            .map(|node| node.to_string()),
             Some(format!(
                 "room:{workspace}/app:so.tilo.notes/kind:notes.notebook/resource:*/item:p1"
             )),
             "a note of the workspace's notebook"
         );
         assert_eq!(
-            share_node(workspace, "record:so.tilo.notes:r1", &note).map(|node| node.to_string()),
+            share_node(
+                workspace,
+                &shared(
+                    "so.tilo.notes",
+                    "r1",
+                    "notes.notebook.pages",
+                    "notes.notebook/pages/p1"
+                )
+            )
+            .map(|node| node.to_string()),
             Some(format!(
                 "room:{workspace}/app:so.tilo.notes/kind:notes.notebook/resource:r1/item:p1"
             ))
         );
-        let deck = reference("slides.deck", "d1");
         assert_eq!(
-            share_node(workspace, "record:so.tilo.slides:d1", &deck).map(|node| node.to_string()),
+            share_node(
+                workspace,
+                &shared("so.tilo.slides", "d1", "slides.deck", "d1")
+            )
+            .map(|node| node.to_string()),
             Some(format!(
                 "room:{workspace}/app:so.tilo.slides/kind:slides.deck/resource:d1"
             )),
@@ -281,8 +297,7 @@ mod tests {
         assert_eq!(
             share_node(
                 workspace,
-                "record:so.tilo.notes:",
-                &reference("notes.notebook", "notes.notebook")
+                &shared("so.tilo.notes", "", "notes.notebook", "notes.notebook")
             ),
             None,
             "the workspace's whole notebook stands at no node a share may name"

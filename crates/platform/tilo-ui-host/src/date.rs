@@ -61,6 +61,24 @@ fn done_day(node: &UiNode, name: &str) -> bool {
     crate::reconcile::flag(node, &format!("{name}_done"))
 }
 
+/// How the stored `value` of a day or a time of day (`kind` is `date` or `time`) reads in a
+/// sentence where no view can stand beside it: a day as the day fact (`Today`, `Friday`,
+/// `Jun 29`), a time of day as a list shows when something came. Anything else, and text that
+/// is not a day or an instant, stays as it is stored.
+#[must_use]
+pub fn shown_text(kind: &str, value: &str) -> String {
+    match kind {
+        "date" => day_of(value).map_or_else(
+            || value.to_owned(),
+            |day| ui::format::day_fact_today(day, None).text,
+        ),
+        "time" => {
+            moment_of(value).map_or_else(|| value.to_owned(), |at| ui::format::list_date(&at))
+        }
+        _ => value.to_owned(),
+    }
+}
+
 /// The tone the prop `name` of `node` reads in, when it reads in one: a day gone by is overdue
 /// ([`Tone::Danger`]). `None` for anything else, and for a day that is not gone by.
 #[must_use]

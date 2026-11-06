@@ -66,8 +66,15 @@ fn shared(id: &str, text: &str, share: &Value) -> Value {
         "u_ada",
         text,
         &json!({
-            "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Launch *plan*"},
-            "source_provider": "record:so.tilo.notes:notes:plan",
+            "attachments": [{
+                "$variant": "resource",
+                "label": "Launch *plan*",
+                "at": {
+                    "app": "so.tilo.notes",
+                    "record": "notes:plan",
+                    "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Launch *plan*"},
+                },
+            }],
             "share": share,
         }),
     )
@@ -130,10 +137,7 @@ fn a_live_share_links_to_where_it_opens_on_the_web() {
         .reference
         .unwrap();
     assert_eq!(
-        linked()
-            .links
-            .unwrap()
-            .resource("record:so.tilo.notes:notes:plan", &reference),
+        linked().links.unwrap().resource(&reference),
         Ok(url.clone())
     );
     let one = &plan_post(&guild(), &chat, "m1", &linked()).sends[0].op;
@@ -213,8 +217,15 @@ fn a_shared_resource_links_to_it() {
         "u_ada",
         "Discuss",
         &json!({
-            "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Plan"},
-            "source_provider": "record:so.tilo.notes:notes:plan",
+            "attachments": [{
+                "$variant": "resource",
+                "label": "Plan",
+                "at": {
+                    "app": "so.tilo.notes",
+                    "record": "notes:plan",
+                    "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Plan"},
+                },
+            }],
         }),
     )]);
     let send = &plan_post(&guild(), &chat, "m1", &linked()).sends[0].op;
@@ -320,11 +331,11 @@ fn a_reply_starts_the_thread_first_then_posts_into_it() {
 
 #[test]
 fn a_large_file_becomes_a_line() {
-    let small = "{\"File\":{\"name\":\"a.txt\",\"blob\":\"ff\",\"size\":5}}";
-    let big = "{\"File\":{\"name\":\"film.mkv\",\"blob\":\"ee\",\"size\":20971520}}";
+    let small = json!({"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5});
+    let big = json!({"$variant": "file", "name": "film.mkv", "blob": "ee", "size": 20_971_520});
     let chat = chat(&[
-        msg("m1", "u_ada", "", &json!({"attachment": small})),
-        msg("m2", "u_ada", "watch", &json!({"attachment": big})),
+        msg("m1", "u_ada", "", &json!({"attachments": [small]})),
+        msg("m2", "u_ada", "watch", &json!({"attachments": [big]})),
     ]);
     let one = &plan_post(&guild(), &chat, "m1", &context()).sends[0].op;
     assert_eq!(
@@ -388,9 +399,9 @@ fn clearing_an_attachment_caption_queues_an_empty_discord_edit() {
     ] {
         bot.apply(action).unwrap();
     }
-    let attachment = json!({"attachment": {"File": {
-        "name": "notes.txt", "blob": "ff", "size": 5
-    }}});
+    let attachment = json!({"attachments": [
+        {"$variant": "file", "name": "notes.txt", "blob": "ff", "size": 5}
+    ]});
     let before = chat(&[msg("m1", "u_ada", "old caption", &attachment)]);
     let post = plan_post(&bot.state().unwrap(), &before, "m1", &context());
     assert_eq!(post.sends.len(), 1);

@@ -560,10 +560,8 @@ async fn directory_door(
     let door_refused = |error: crate::workspaces::DoorRefusal| {
         let full = match &error {
             crate::workspaces::DoorRefusal::Full { .. } => StatusCode::SERVICE_UNAVAILABLE,
-            // A workspace joined by invitation refuses everyone else: the request is not
-            // allowed, and a non-member learns nothing of why.
-            crate::workspaces::DoorRefusal::InvitationOnly
-            | crate::workspaces::DoorRefusal::Refused(_) => StatusCode::FORBIDDEN,
+            crate::workspaces::DoorRefusal::Refused(_)
+            | crate::workspaces::DoorRefusal::InvitationOnly => StatusCode::FORBIDDEN,
         };
         let mut response = json_status(full, &serde_json::json!({ "error": error.to_string() }));
         if let crate::workspaces::DoorRefusal::Full { retry_after_secs } = error

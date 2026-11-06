@@ -119,6 +119,19 @@ impl BrokerChannels {
         self.gates.insert(channel, gate);
     }
 
+    /// The gate governing `channel`, one of `workspace`'s channels: the
+    /// unit's own when it has a group of its own (a record whose readers the
+    /// policy narrows, or one whose group was made before key scopes), and
+    /// the workspace's key scope's otherwise, since a unit seals under its
+    /// scope's keys while naming its own channel.
+    fn gate_for(&self, workspace: &str, channel: ChannelId) -> Option<channel_crypto::ChannelGate> {
+        self.gates.get(&channel).copied().or_else(|| {
+            self.gates
+                .get(&collab_types::workspace_scope(workspace))
+                .copied()
+        })
+    }
+
     /// A route with no gate has not been opened encrypted on this device
     /// yet. Once its gate closes plaintext, no plaintext envelope can pass
     /// either ingress path, including after a restart. Content sealed under
@@ -126,24 +139,25 @@ impl BrokerChannels {
     /// device after the channel's next membership change.
     pub fn document_encryption_allowed(
         &self,
+        workspace: &str,
         channel: ChannelId,
         encryption: Option<&EncryptionMetadata>,
     ) -> bool {
-        self.gates
-            .get(&channel)
+        self.gate_for(workspace, channel)
             .is_none_or(|gate| gate.accepts(encryption, channel))
     }
 
-    /// The verdict on an op for `channel` from its registered gate
+    /// The verdict on an op for `channel` from the gate governing it
     /// ([`channel_crypto::admission`]). This broker holds every channel's
     /// whole governance state, so a channel with no gate is one that is not
     /// encrypted.
     pub fn document_admission(
         &self,
+        workspace: &str,
         channel: ChannelId,
         encryption: Option<&EncryptionMetadata>,
     ) -> collab_types::inbound::OpAdmission {
-        channel_crypto::admission(self.gates.get(&channel).copied(), true, channel, encryption)
+        channel_crypto::admission(self.gate_for(workspace, channel), true, channel, encryption)
     }
 
     /// Append an op validated on `route` to durable history when it belongs

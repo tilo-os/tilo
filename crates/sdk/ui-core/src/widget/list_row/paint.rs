@@ -333,8 +333,8 @@ impl ListRowFace<'_> {
                 crate::widget::paint_find_match(ctx.scene, ctx.transform, mark, false, theme);
             }
             // A removed item's title is struck through, in the weaker ink, as an item nobody
-            // has named yet shows its placeholder.
-            let ink = if self.struck || self.untitled() {
+            // has named yet shows its placeholder; a quiet row reads in the weaker ink alone.
+            let ink = if self.struck || self.quiet || self.untitled() {
                 theme.text_dim
             } else {
                 theme.text_primary
@@ -648,9 +648,33 @@ impl ListRowFace<'_> {
                     f64::from(theme.tokens.radii.detail),
                 );
             }
-            RowLeading::Checkbox { checked } => {
-                let r = Rect::from_center_size(slot.center(), (m.icon, m.icon));
-                let mut face = crate::widget::checkbox::CheckboxFace::new(r, checked);
+            RowLeading::Checkbox { checked, icon } => {
+                // The box stands first in the slot, a glyph after it where the row says what
+                // kind of thing it is.
+                let boxed = match icon {
+                    Some(_) => Rect::new(
+                        slot.x0,
+                        slot.center().y - m.icon / 2.0,
+                        slot.x0 + m.icon,
+                        slot.center().y + m.icon / 2.0,
+                    ),
+                    None => Rect::from_center_size(slot.center(), (m.icon, m.icon)),
+                };
+                if let Some(icon) = icon {
+                    let at = slot.x0 + m.icon + m.column_gap + m.icon / 2.0;
+                    icon.draw(
+                        ctx.scene,
+                        ctx.transform,
+                        Rect::new(
+                            at - m.icon / 2.0,
+                            slot.center().y - m.icon / 2.0,
+                            at + m.icon / 2.0,
+                            slot.center().y + m.icon / 2.0,
+                        ),
+                        theme.text_primary,
+                    );
+                }
+                let mut face = crate::widget::checkbox::CheckboxFace::new(boxed, checked);
                 if self.mark_tone != Tone::Neutral {
                     face = face.ring(theme.tokens.colors.ink_on_any(
                         &[under],

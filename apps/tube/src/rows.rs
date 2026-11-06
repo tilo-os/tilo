@@ -10,6 +10,7 @@
 //! naming the entity by the id after the row id's `tube.<kind>:` prefix.
 
 use ui::framework::{EffectStatus, LiveRow};
+use ui::tilo_resource::words::RowType;
 
 use crate::action::SettingFlag;
 use crate::actions::{TubeEffect, comment_key, next_quality, resource_label};
@@ -19,10 +20,30 @@ use crate::sync::{PeerRecord, SyncStatus, SyncView};
 const MAX_ROWS: usize = 100;
 const MAX_COMMENTS: usize = 50;
 
+/// The catalogue types Tube's rows are resources of: a channel, a video, a
+/// playlist, each declared by its kind and its name in words, so a row says
+/// what it is (search finds "youtube videos of <channel>") as a tilolang
+/// item does, with nothing the row writes.
+const CHANNEL_KIND: &str = "tube.channel";
+const VIDEO_KIND: &str = "tube.video";
+const PLAYLIST_KIND: &str = "tube.playlist";
+
+macro_rules! catalogue_type {
+    ($ty:ty, $kind:expr, $label:expr) => {
+        impl RowType for $ty {
+            const KIND: &'static str = $kind;
+            const LABEL: &'static str = $label;
+        }
+    };
+}
+catalogue_type!(crate::model::Channel, CHANNEL_KIND, "Channel");
+catalogue_type!(crate::model::Video, VIDEO_KIND, "Video");
+catalogue_type!(crate::model::Playlist, PLAYLIST_KIND, "Playlist");
+
 fn video_row(model: &TubeModel, id: String, video_id: &str) -> Option<LiveRow> {
     let video = model.video(video_id)?;
     Some(
-        LiveRow::new(id, "tube.video", resource_label(&video.title))
+        LiveRow::typed::<crate::model::Video>(id, resource_label(&video.title))
             .effect(&TubeEffect::OpenVideo {
                 video: video_id.to_owned(),
             })
@@ -38,7 +59,7 @@ fn video_row(model: &TubeModel, id: String, video_id: &str) -> Option<LiveRow> {
 fn creator_row(model: &TubeModel, id: String, channel_id: &str) -> Option<LiveRow> {
     let channel = model.channel(channel_id)?;
     Some(
-        LiveRow::new(id, "tube.channel", resource_label(&channel.name)).effect(
+        LiveRow::typed::<crate::model::Channel>(id, resource_label(&channel.name)).effect(
             &TubeEffect::OpenCreator {
                 creator: channel_id.to_owned(),
             },
@@ -49,7 +70,7 @@ fn creator_row(model: &TubeModel, id: String, channel_id: &str) -> Option<LiveRo
 fn playlist_row(model: &TubeModel, id: String, playlist_id: &str) -> Option<LiveRow> {
     let playlist = model.playlist(playlist_id)?;
     Some(
-        LiveRow::new(id, "tube.playlist", resource_label(&playlist.title)).effect(
+        LiveRow::typed::<crate::model::Playlist>(id, resource_label(&playlist.title)).effect(
             &TubeEffect::OpenPlaylist {
                 playlist: playlist_id.to_owned(),
             },

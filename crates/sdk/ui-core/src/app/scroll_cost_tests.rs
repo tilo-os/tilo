@@ -28,10 +28,11 @@ use crate::app::{AppSurface, SurfaceDamage};
 use crate::time::testing::with_monotonic_time;
 use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use crate::widget::{
-    CodeEditor, Column, ScrollRegion, Scrollable, Text, TreeNode, TreeView, VecListModel,
+    CodeEditor, Column, ListRow, ScrollRegion, Scrollable, Text, TreeMarks, VecListModel,
     VirtualList,
 };
 use std::collections::HashMap;
+use std::rc::Rc;
 use vello::kurbo::Rect;
 use winit::event::{MouseScrollDelta, TouchPhase};
 
@@ -411,26 +412,28 @@ fn data_table(rows: usize) -> Box<dyn Widget> {
 /// A `TreeView` of `branches` folders of `leaves` files each, every folder
 /// open, filling the window.
 fn tree_view(branches: u64, leaves: u64) -> Box<dyn Widget> {
-    let folders = (0..branches)
-        .map(|folder| {
-            let id = 1 + folder * (leaves + 1);
-            TreeNode::branch(
-                id,
-                format!("Folder {folder}"),
-                (),
-                (1..=leaves)
-                    .map(|leaf| TreeNode::leaf(id + leaf, sentence(leaf as usize), ()))
-                    .collect(),
-            )
-        })
-        .collect();
-    let ids: Vec<u64> = (0..branches)
-        .map(|folder| 1 + folder * (leaves + 1))
-        .collect();
+    // The tree's own name, a row per folder and its files under it.
+    let mut items: Vec<(u64, String, Option<u64>, bool)> = vec![(0, "Root".to_owned(), None, true)];
+    for folder in 0..branches {
+        let id = 1 + folder * (leaves + 1);
+        items.push((id, format!("Folder {folder}"), Some(0), true));
+        for leaf in 1..=leaves {
+            items.push((id + leaf, sentence(leaf as usize), Some(id), false));
+        }
+    }
+    let model = VecListModel::new(items, |item| item.0)
+        .expect("every row has its own key")
+        .with_parents(|item| item.2)
+        .with_branches(|item| item.3);
+    let marks = Rc::new(TreeMarks::<u64>::default());
+    let rows = Rc::clone(&marks);
     Box::new(
-        TreeView::new(TreeNode::branch(0, "Root", (), folders))
-            .with_expanded(std::iter::once(0).chain(ids))
-            .fill(),
+        VirtualList::with_selection_delegate(model, 24.0, move |model, index, key, _| {
+            let label = model.item(index).map_or("", |item| item.1.as_str());
+            Box::new(ListRow::new(key.to_string(), label).depth(rows.depth(key)))
+        })
+        .with_tree(marks)
+        .filling(),
     )
 }
 

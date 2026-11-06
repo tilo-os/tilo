@@ -258,4 +258,29 @@ mod cases {
         );
         assert_eq!(l.links_of(&source), vec!["created_from B".to_owned()]);
     }
+
+    /// A page applies its action from the resource it shows: the button it draws carries the
+    /// `.made_from(n)` the view wrote, so what a press makes is made from `n` — the same record
+    /// a scenario's `made from` leaves, and the same thread a comment on a task joins.
+    #[test]
+    fn an_action_a_page_applies_from_its_resource_is_made_from_it() {
+        let l = Links::new();
+        let page = l.add_note("A");
+        let view =
+            l.rt.open_view(
+                &me(),
+                &l.app.view("note_page"),
+                vec![Value::resource(&page)],
+            )
+            .unwrap();
+        let buttons = of_kind(view.tree(), "ui.Button");
+        let button = buttons.first().expect("the page draws its button");
+        assert!(matches!(
+            view.press(&button.key).unwrap(),
+            InvokeOutcome::Done(_)
+        ));
+        let made = l.titled("under");
+        assert_eq!(l.made_from(&made), "A");
+        assert_eq!(l.links_of(&page), vec!["created_from under".to_owned()]);
+    }
 }

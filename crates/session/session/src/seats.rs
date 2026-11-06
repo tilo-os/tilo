@@ -7,6 +7,7 @@
 use tilo_sheets::directory::DirectorySeat;
 use tilo_sheets::display_confirm::ConfirmSeat;
 use tilo_sheets::file_picker::FilePickerSeat;
+use tilo_sheets::invite::InviteSeat;
 use tilo_sheets::portal::PortalSeat;
 use tilo_sheets::power::PowerSeat;
 use tilo_sheets::shortcut_guide::GuideSeat;
@@ -47,6 +48,13 @@ impl Session {
     #[must_use]
     pub fn workspace_settings(&self) -> Option<&WorkspaceSettingsSeat> {
         self.shared.workspace_settings.as_ref()
+    }
+
+    /// The invite sheet's seat: the link into the workspace in front, kept
+    /// current while it is up.
+    #[must_use]
+    pub fn invite_sheet(&self) -> Option<&InviteSeat> {
+        self.shared.invite.as_ref()
     }
 
     /// The workspace directory's seat: the workspaces this computer may

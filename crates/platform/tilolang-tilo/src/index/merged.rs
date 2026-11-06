@@ -470,7 +470,7 @@ impl Filtered {
 }
 
 /// The entries one read of a [`Filtered`] checks at a time.
-const PAGE: usize = 64;
+pub(super) const PAGE: usize = 64;
 
 impl PagedItems for Filtered {
     fn len(&self) -> usize {

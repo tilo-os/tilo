@@ -39,6 +39,8 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 libc.workspace = true
 tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 uuid.workspace = true
+# The device's network, which an app's `web.get` and `web.post` reach once per request.
+tilo-net = { version = "0.1.0", path = "../tilo-net", default-features = false, features = ["blocking"] }
 # The mail origin, reaching the connector process the system runs for the app.
 tilolang-mail = { path = "../tilolang-mail", default-features = false }
 

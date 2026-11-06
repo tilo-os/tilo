@@ -855,7 +855,7 @@ fn a_change_within_an_item_republishes_only_the_resources_it_reached() {
         &meta,
         ("Inbox", "start"),
         &root,
-        &json!({ "title": "" }),
+        &json!({ "title": "inbox" }),
     );
     let thread_id = match ada.host.store().record(&root).unwrap().get(&threads) {
         Some(DynValue::Collection(items)) => items.iter().next().unwrap().0.as_str().to_owned(),

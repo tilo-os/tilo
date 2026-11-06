@@ -66,10 +66,12 @@ mod workspace_membership;
 mod workspace_refusals;
 mod workspace_shortcuts;
 pub use local_outbox::Reseal;
+mod governed_coverage;
 mod held;
 mod joined;
 mod media_governance;
 mod native_publication;
+mod publication;
 mod workspace_hosts;
 pub use workspace_hosts::{WORKSPACE_HOSTS_KEY, workspace_hosts_of};
 mod personal;
@@ -1930,40 +1932,6 @@ impl StatePeer {
         report.settled = settled;
         Ok(report)
     }
-    /// True only when governance covers this exact route with a checkpoint by
-    /// the same author at a strictly greater sequence than `sequence`. Any other
-    /// coverage relation is not a supersession and keeps its normal handling.
-    fn superseded_checkpoint(
-        &self,
-        route: &Route,
-        source: &[u8; 32],
-        sequence: u64,
-    ) -> Result<bool, AdmissionError> {
-        let Some(workspace) = self.core.workspace_doc.as_deref() else {
-            return Ok(false);
-        };
-        let entries = crate::coverage::entries(workspace)?;
-        Ok(entries
-            .get(&crate::coverage::route_key(&route.app, &route.record))
-            .is_some_and(|coverage| {
-                coverage.workspace == self.core.workspace
-                    && coverage.app == route.app
-                    && coverage.record == route.record
-                    && coverage.author == *source
-                    && coverage.sequence > sequence
-            }))
-    }
-    /// A superseded checkpoint is settled without being applied, so the
-    /// delivery cursor can move past it; nothing from it enters state.
-    fn superseded_checkpoint_report() -> AdmissionReport {
-        AdmissionReport::new(
-            InputDisposition::MetadataOnly,
-            ReceiveOutcome {
-                duplicate: true,
-                ..Default::default()
-            },
-        )
-    }
     fn receive_document(
         &mut self,
         source: [u8; 32],
@@ -2362,22 +2330,24 @@ impl StatePeer {
         // holds it, which is its own change and merges like one: a document
         // is merged into what a device holds, never put in its place, so
         // nothing of the record is lost by taking it.
-        let governed_checkpoint = matches!(&mutation, DocumentMutation::Snapshot(_))
+        // One checkpoint governs a route: the one its coverage row names,
+        // which is the first of the owner's devices to cover it. Another of
+        // their devices publishing the record as it holds it carries no row
+        // of its own, and is taken in as that device's own change rather
+        // than held to a coverage that is not about it.
+        let coverage = self.governed_coverage(&route)?;
+        let covered_by = coverage.as_ref().map(|row| row.author);
+        let owner_snapshot = matches!(&mutation, DocumentMutation::Snapshot(_))
             && !local_app
             && !genesis
             && self.signed_by_owner(&source);
+        let governed_checkpoint =
+            owner_snapshot && covered_by.is_none_or(|author| author == source);
         if governed_checkpoint {
             let DocumentMutation::Snapshot(bytes) = &mutation else {
                 return Err("only a whole document is a checkpoint".into());
             };
-            let entries = crate::coverage::entries(
-                self.core
-                    .workspace_doc
-                    .as_deref()
-                    .ok_or("missing workspace")?,
-            )?;
-            let coverage = entries.get(&crate::coverage::route_key(&route.app, &route.record));
-            let Some(coverage) = coverage else {
+            let Some(coverage) = coverage.as_ref() else {
                 return self.defer(
                     source,
                     NeighbourMsg::AppDocument {
@@ -2464,7 +2434,7 @@ impl StatePeer {
                     .or_default();
                 *floor = (*floor).max(*sequence);
             }
-        } else if !route_existed && !genesis {
+        } else if !route_existed && !genesis && !owner_snapshot {
             return self.defer(
                 source,
                 NeighbourMsg::AppDocument {
@@ -2817,6 +2787,16 @@ impl StatePeer {
             if !self.signed_by_owner(author.as_bytes()) {
                 return Ok((message, None));
             }
+            // And of a route, the workspace governs the one its coverage row
+            // names: the first of the owner's devices to cover it. Another of
+            // their devices publishing the record as it holds it is that
+            // device's own change too, so the row stays one writer's.
+            if self
+                .governed_coverage(&route)?
+                .is_some_and(|row| row.author != *author.as_bytes())
+            {
+                return Ok((message, None));
+            }
             let snapshot = AutoCommit::load(bytes).map_err(err)?;
             let mut watermarks = self
                 .core
@@ -2973,94 +2953,6 @@ impl StatePeer {
             None if !coverages.is_empty() => crate::coverage::put_all(workspace, coverages)?,
             None => {}
         }
-        for message in &messages {
-            self.receive(key.verifying_key().to_bytes(), message.clone(), now)?;
-        }
-        Ok(messages)
-    }
-    /// Publish exact checkpoints of the `dirty` routes and, in the same workspace
-    /// change, their coverage plus the complete durable receipt set
-    /// (`receipts` updated for each dirty route at `generation`). Equivalent
-    /// to one `publish_document` per route followed by a receipt write, but
-    /// one workspace change per durable commit and no interim receipt state.
-    fn publish_snapshots_with_receipts(
-        &mut self,
-        dirty: &[(Route, Vec<u8>)],
-        mut receipts: BTreeMap<String, crate::durability::DurableReceipt>,
-        generation: u64,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<Vec<NeighbourMsg>, String> {
-        self.validate_present_media_policy()?;
-        let mut messages = Vec::with_capacity(dirty.len());
-        let mut coverages = Vec::with_capacity(dirty.len());
-        let mut sealed = Vec::new();
-        for (route, bytes) in dirty {
-            if self.sealed_route(route) {
-                sealed.push(route.clone());
-                continue;
-            }
-            let (message, coverage) = self.prepare_signed_mutation(
-                &route.app,
-                &route.record,
-                DocumentMutation::Snapshot(bytes.clone()),
-                key,
-                now,
-            )?;
-            if self.core.admission_v5 {
-                let NeighbourMsg::AppDocument { envelope, .. } = &message else {
-                    return Err("prepared mutation is not an app document".into());
-                };
-                let admitted = DocumentAdmission::from_op(
-                    &self.core.workspace,
-                    &route.app,
-                    &route.record,
-                    envelope,
-                )
-                .map_err(err)?;
-                // Reserve admission capacity before publishing coverage.
-                self.core.exact_admissions.check(&admitted).map_err(err)?;
-            }
-            coverages.push(coverage.ok_or("missing published coverage")?);
-            messages.push(message);
-        }
-        let covered = crate::coverage::entries(
-            self.core
-                .workspace_doc
-                .as_deref()
-                .ok_or("missing workspace governance")?,
-        )?;
-        let mut sealed_receipts = BTreeMap::new();
-        for route in &sealed {
-            if let Some(receipt) = self.sealed_receipt(route, &covered, generation)? {
-                sealed_receipts.insert(
-                    crate::coverage::route_key(&route.app, &route.record),
-                    receipt,
-                );
-            }
-        }
-        crate::coverage::put_all_with_receipts(
-            self.core
-                .workspace_doc
-                .as_deref_mut()
-                .ok_or("missing workspace governance")?,
-            coverages,
-            |rows| {
-                receipts.extend(sealed_receipts);
-                for (route, _) in dirty {
-                    let route_key = crate::coverage::route_key(&route.app, &route.record);
-                    if sealed.contains(route) {
-                        continue;
-                    }
-                    let covered = rows.get(&route_key).ok_or("missing published coverage")?;
-                    receipts.insert(
-                        route_key,
-                        crate::durability::DurableReceipt::new(covered.clone(), generation)?,
-                    );
-                }
-                Ok(receipts)
-            },
-        )?;
         for message in &messages {
             self.receive(key.verifying_key().to_bytes(), message.clone(), now)?;
         }

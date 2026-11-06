@@ -59,6 +59,7 @@ pub mod handoff;
 pub mod history;
 pub mod identity;
 pub mod inbound;
+pub mod key_scope;
 pub mod mls_governance;
 pub mod op;
 pub mod peer;
@@ -116,6 +117,7 @@ pub use document_transfer::{
 };
 pub use event::{ChannelEvent, RoleAttestation};
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
+pub use key_scope::{WORKSPACE_READERS, workspace_scope};
 pub use mls_governance::{
     ChannelRoute, JoinMaterial, Joining, MAX_CHANNEL_ROUTE_ID_BYTES, MAX_COMMIT_DEVICES,
     MLS_ACCESS_VERSION, MLS_GOVERNANCE_VERSION, MlsAccessRequestV1, MlsGovernanceAction,

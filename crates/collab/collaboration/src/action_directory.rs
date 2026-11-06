@@ -332,13 +332,30 @@ impl PublishedDirectory {
     /// Answer `request`. A host that publishes this way pins no revision
     /// for local input, so there is no local mutation for it to explain.
     pub fn answer(&self, request: crate::ActionDirectoryRequest) {
+        self.answer_refreshed(request, |_| {});
+    }
+
+    /// [`PublishedDirectory::answer`], after `refresh` has said of each row
+    /// about to answer what only the app knows now: whether an action can
+    /// run. A snapshot is built when the surface does and answered from
+    /// until it moves, so an answer's state is read here, for the rows the
+    /// caller asked about, and never for the surface whole.
+    pub fn answer_refreshed(
+        &self,
+        request: crate::ActionDirectoryRequest,
+        mut refresh: impl FnMut(&mut ActionDirectoryRow),
+    ) {
         match request {
             crate::ActionDirectoryRequest::ResolveLocalDocumentAction { reply, .. } => {
                 let _ = reply.send(ActionDirectoryResolution::StaleRevision);
             }
             crate::ActionDirectoryRequest::Query { query, reply } => {
                 if !reply.is_closed() {
-                    let _ = reply.send(self.page(&query));
+                    let mut page = self.page(&query);
+                    for row in &mut page.rows {
+                        refresh(row);
+                    }
+                    let _ = reply.send(page);
                 }
             }
             crate::ActionDirectoryRequest::Resolve {
@@ -347,7 +364,11 @@ impl PublishedDirectory {
                 action,
                 reply,
             } => {
-                let _ = reply.send(self.resolve(&revision, &resource, &action));
+                let mut resolution = self.resolve(&revision, &resource, &action);
+                if let ActionDirectoryResolution::Found { row, .. } = &mut resolution {
+                    refresh(row);
+                }
+                let _ = reply.send(resolution);
             }
         }
     }

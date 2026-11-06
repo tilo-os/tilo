@@ -217,6 +217,13 @@ pub enum Ty {
     /// task), held as tilo-doc's rich text, the one rich-text model of the platform. A field of
     /// it merges by splices and marks.
     RichText,
+    /// `Bytes`: the answer of a service, as it came; `.text()` reads it as text. A value code
+    /// holds while an invocation runs, not a stored field's type.
+    Bytes,
+    /// `Response`: what `web.get` and `web.post` answer: `ok`, `status`, `status_text`,
+    /// `headers`, `body: Bytes`, and `.text()`. A value code holds while an invocation runs,
+    /// not a stored field's type.
+    Response,
     /// No value.
     #[default]
     Unit,
@@ -376,6 +383,8 @@ impl Ty {
             Self::Repeat => "std.Repeat".into(),
             Self::Reminder => "std.Reminder".into(),
             Self::RichText => "RichText".into(),
+            Self::Bytes => "Bytes".into(),
+            Self::Response => "Response".into(),
             Self::Unit => "()".into(),
             Self::Action => "Action".into(),
             Self::View => "View".into(),
@@ -664,6 +673,8 @@ impl MetaTy<'_> {
             "std.Repeat" => Some(Ty::Repeat),
             "std.Reminder" => Some(Ty::Reminder),
             "RichText" | "std.RichText" => Some(Ty::RichText),
+            "Bytes" => Some(Ty::Bytes),
+            "Response" => Some(Ty::Response),
             "Action" => Some(Ty::Action),
             "View" => Some(Ty::View),
             "Result" => {

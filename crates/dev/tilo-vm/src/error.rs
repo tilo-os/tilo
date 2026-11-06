@@ -268,6 +268,8 @@ pub enum CliError {
     Busy { what: String },
     #[error("{0}")]
     InvalidInput(String),
+    #[error("source file '{path}' is not what the swap snapshotted")]
+    SourceChanged { path: String },
     #[error("no app set named '{set}'")]
     UnknownAppSet { set: String, known: Vec<String> },
     #[error("installing the {set} apps into VM '{vm}' failed")]
@@ -529,6 +531,9 @@ impl CliError {
             Self::PackagesFailed { .. } => {
                 "the package manager's output above names the cause; the VM needs network access to the distribution's mirrors (tilo-vm vm ssh -- dnf repolist checks it), then rerun the install".into()
             }
+            Self::SourceChanged { .. } => {
+                "the worktree changed while the build ran: commit or stash the edit and rerun (nothing was applied)".into()
+            }
             Self::InvalidInput(_) => {
                 "e.g. tilo-vm input key ctrl+alt+t   |   input type 'hello'   |   input click left --at 400 300   |   input touch tap 400 300   |   input gamepad press a   (each device: tilo-vm input <key|touch|pen|gamepad> --help; text beyond a US layout: tilo-vm control type '<text>')".into()
             }
@@ -598,9 +603,10 @@ impl CliError {
             | Self::MissingInImage { .. } => "swapping",
             Self::LowDisk { .. } | Self::NoSpace { .. } => "storage",
             Self::ImageRefused { .. } | Self::BaseOlder { .. } | Self::NotBootc { .. } => "images",
-            Self::InvalidInput(_) | Self::UnknownAppSet { .. } | Self::PackagesFailed { .. } => {
-                "driving"
-            }
+            Self::InvalidInput(_)
+            | Self::SourceChanged { .. }
+            | Self::UnknownAppSet { .. }
+            | Self::PackagesFailed { .. } => "driving",
             Self::KernelBuild { .. } | Self::KernelNotRunning { .. } => "kernel",
             Self::ScenarioMedium { .. } | Self::Scenario { .. } | Self::NeedsWorktree { .. } => {
                 "scenarios"
@@ -1026,6 +1032,7 @@ mod tests {
                 | CliError::MissingInImage { .. }
                 | CliError::Busy { .. }
                 | CliError::InvalidInput(_)
+                | CliError::SourceChanged { .. }
                 | CliError::UnknownAppSet { .. }
                 | CliError::PackagesFailed { .. }
                 | CliError::ImageRefused { .. }

@@ -127,13 +127,6 @@ impl<'a> NativeOutgoingEntry<'a> {
         }
     }
 }
-impl StoredPublication {
-    /// Drop the recovery projections an earlier build signed: this build
-    /// re-sends the signed originals instead.
-    pub(crate) fn clear_projection(&mut self) {
-        self.projection.clear();
-    }
-}
 fn read_entries<'de, D: serde::Deserializer<'de>>(
     input: D,
 ) -> Result<Vec<StoredOutgoing>, D::Error> {
@@ -1258,7 +1251,8 @@ mod encoding_tests {
         stored["projection"] = serde_json::to_value([&projected]).unwrap();
         let mut read: StoredPublication = serde_json::from_value(stored).unwrap();
         assert_eq!(read.projection, vec![projected]);
-        read.clear_projection();
+        // What a record read from disk does with one (`file_store`).
+        read.projection.clear();
         let written = serde_json::to_value(&read).unwrap();
         assert!(
             written.get("projection").is_none(),

@@ -414,6 +414,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Bool",
                 "Whether its type declares a row view, the one a list of its type draws each item through.",
             ),
+            (
+                "attached",
+                "Bool",
+                "Whether its type is `(attached)`: its records are about what they were made from, a comment on a task, rather than work made from it.",
+            ),
         ],
     },
     ValueType {
@@ -437,12 +442,6 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "toggle",
                 "Bool",
                 "Whether it is on or off: a place of a list, a chip of search.",
-            ),
-            (
-                "counts",
-                "Bool",
-                "Whether the place it makes shows how many items it holds: whether it declares \
-                 `count: true`.",
             ),
         ],
     },
@@ -534,6 +533,7 @@ fn field(name: &str, ty: &str, doc: &str) -> FieldMeta {
         ty: ty.to_string(),
         merge: MergeKind::Register,
         doc: doc.to_string(),
+        personal: false,
         default: None,
         role: None,
         derived: None,
@@ -580,6 +580,7 @@ pub fn host_meta() -> PackageMeta {
             search: crate::meta::SearchMeta::default(),
             holder: false,
             origin: None,
+            attached: false,
         })
         .chain(std::iter::once(TypeMeta {
             id: format!("host-{}", RESOURCE_TYPE_NAME.to_lowercase()),
@@ -589,6 +590,7 @@ pub fn host_meta() -> PackageMeta {
             search: crate::meta::SearchMeta::default(),
             holder: false,
             origin: None,
+            attached: false,
         }))
         .chain(VALUE_TYPES.iter().map(|value| {
             TypeMeta {
@@ -604,6 +606,7 @@ pub fn host_meta() -> PackageMeta {
                         ty: (*ty).to_string(),
                         merge: MergeKind::Register,
                         doc: (*doc).to_string(),
+                        personal: false,
                         default: None,
                         role: None,
                         derived: None,
@@ -612,6 +615,7 @@ pub fn host_meta() -> PackageMeta {
                 search: crate::meta::SearchMeta::default(),
                 holder: false,
                 origin: None,
+                attached: false,
             }
         }))
         .collect(),

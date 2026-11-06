@@ -37,6 +37,7 @@
 )]
 
 pub mod abi;
+pub mod agent;
 pub mod ast;
 pub mod calendar;
 mod checker;
@@ -60,6 +61,7 @@ pub mod natural;
 pub mod origin;
 mod package;
 pub mod parser;
+pub mod personal;
 pub mod pred;
 mod prims;
 pub mod print;

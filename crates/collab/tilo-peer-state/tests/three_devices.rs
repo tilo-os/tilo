@@ -445,6 +445,14 @@ fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
         [11; 32],
         now,
     );
+    // A Moderator moderates; inviting is governance B is given as an
+    // administrator of the workspace.
+    governor
+        .allow_governance(
+            &hex::encode(cert_b.user_public_key),
+            tilo_action_policy::roles::governance::INVITE,
+        )
+        .unwrap();
     let b = open_file(&directory.path().join("b.json")).unwrap();
     enroll(
         &b,

@@ -941,10 +941,13 @@ fn a_scenario_stages_exactly_its_data_however_many_frames_run() {
 fn every_package_opens_into_its_shell() {
     for built in crate::app::builtin::compiled() {
         let meta = &built.compiled.meta;
+        // A package with no scenario has nothing to open with: its records are made from the
+        // resources they are about, not by the person in its own window.
         if meta
             .roots
             .first()
             .is_none_or(|root| meta.default_view(root).is_none())
+            || meta.scenarios.is_empty()
         {
             continue;
         }

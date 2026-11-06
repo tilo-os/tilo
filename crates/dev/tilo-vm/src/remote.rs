@@ -748,6 +748,7 @@ for line in sys.stdin:
             component: "vmd".into(),
             layer: hash.clone(),
             info: Some(ComponentInfo::new(Scope::Vm, vec![])),
+            partner: None,
         };
         let error = old_remote.call(swap()).unwrap_err();
         assert!(error.to_string().contains("Invalid argument"));

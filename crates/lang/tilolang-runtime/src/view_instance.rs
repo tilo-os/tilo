@@ -350,7 +350,7 @@ impl ViewInstance {
             RuntimeError::BadArgs(format!("event `{event}` of `{key}` carries no value"))
         })?;
         self.read_states(&mut aref)?;
-        // What an entry sends with its `submit` fills the `(entry)` parameter of the action it
+        // What an entry sends with its `submit` fills the `Text` parameter of the action it
         // commits, and the parameters the words say: the text is the one typed at the press. An
         // entry whose text is nothing but space and what other parameters take ("fri 10am
         // @bo") makes nothing: it does not fire, and leaves what is typed where it is.
@@ -822,6 +822,7 @@ impl ViewInstance {
             group: None,
             from: None,
             suggested_by: None,
+            effects: Vec::new(),
         };
         let mut store = self.core.store.borrow_mut();
         let txn = store.begin()?;

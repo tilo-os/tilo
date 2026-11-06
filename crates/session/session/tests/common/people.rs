@@ -501,10 +501,13 @@ fn door_responder(
                     Err(tilo_relay::workspaces::DoorRefusal::Full { retry_after_secs }) => Some(
                         Reply::status(503).header("retry-after", &retry_after_secs.to_string()),
                     ),
-                    Err(tilo_relay::workspaces::DoorRefusal::Refused(reason)) => Some(
+                    Err(
+                        refusal @ (tilo_relay::workspaces::DoorRefusal::Refused(_)
+                        | tilo_relay::workspaces::DoorRefusal::InvitationOnly),
+                    ) => Some(
                         Reply::status(403)
                             .header("content-type", "application/json")
-                            .body(json!({ "error": reason }).to_string()),
+                            .body(json!({ "error": refusal.to_string() }).to_string()),
                     ),
                     Err(tilo_relay::workspaces::DoorRefusal::InvitationOnly) => Some(
                         Reply::status(403)
@@ -955,9 +958,18 @@ impl Device {
             .write_all(format!("{request}\n").as_bytes())
             .expect("the socket reads");
         let mut line = String::new();
-        BufReader::new(stream)
-            .read_line(&mut line)
-            .expect("an answer");
+        if let Err(error) = BufReader::new(stream).read_line(&mut line) {
+            let log = self.log();
+            let last = log
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or_default();
+            panic!(
+                "{} did not answer {request}: {error}; its session last said: {last}",
+                self.label,
+            );
+        }
         serde_json::from_str(&line).unwrap_or_else(|error| {
             panic!(
                 "{}'s answer {line:?}: {error}\n{}",

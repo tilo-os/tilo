@@ -244,7 +244,7 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
         ..
     } = fixture();
     let now_ns = ns(now);
-    let messages = || vec![b"governance".to_vec()];
+    let messages = || Ok(vec![b"governance".to_vec()]);
     let mut ledger = JoinLedger::default();
     let challenge = {
         let host_cert = peer.owner_certificates()[0].clone();

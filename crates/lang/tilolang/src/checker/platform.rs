@@ -4,7 +4,7 @@
 
 use super::{CKind, Checker, Ctx, Ex};
 use crate::abi::Imp;
-use crate::ast;
+use crate::ast::{self, ExprKind};
 use crate::diag::Span;
 use crate::ir::{Ek, Stmt};
 use crate::types::{Ty, TypeKey};
@@ -130,6 +130,87 @@ impl Checker<'_> {
         }
     }
 
+    /// `changed(r, .field)`: the version that last changed the field `field` of `r` (who made
+    /// it, when, by which action), the one that made `r` when none after it changed that
+    /// field. A store with an index keeps the last change of each field, so a list groups or
+    /// sorts by when a field last changed without reading the history of any row; `.none`
+    /// while the log of `r` is not at hand.
+    pub(super) fn builtin_changed(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [r, f] = args else {
+            self.err(
+                "E022",
+                span,
+                "`changed` takes a resource and one of its fields: `changed(r, .field)`",
+            );
+            return Ex::error();
+        };
+        if r.name.is_some() || f.name.is_some() {
+            self.err(
+                "E022",
+                span,
+                "`changed` takes its arguments by position: `changed(r, .field)`",
+            );
+        }
+        let r = self.expr(&r.value, None);
+        let field = match &f.value.kind {
+            ExprKind::Variant { name, args: None } => name.clone(),
+            _ => {
+                self.err(
+                    "E022",
+                    f.value.span,
+                    "`changed` reads a field, written `.field`: `changed(r, .done)`",
+                );
+                return Ex::error();
+            }
+        };
+        if r.ty.is_error() {
+            return Ex::error();
+        }
+        let Ty::Record(key) = &r.ty else {
+            let t = self.show(&r.ty);
+            self.err(
+                "E020",
+                f.value.span,
+                format!("`changed` takes a resource, a value of a record type; this is {t}"),
+            );
+            return Ex::error();
+        };
+        let env = self.env;
+        let Some(info) = env.type_info(key) else {
+            return Ex::error();
+        };
+        let Some(held) = info.field(&field.name) else {
+            self.err(
+                "E021",
+                field.span,
+                format!(
+                    "`{}` has no field `{}`; fields are: {}",
+                    key.name,
+                    field.name,
+                    info.field_names()
+                ),
+            );
+            return Ex::error();
+        };
+        if held.derived.is_some() {
+            self.err(
+                "E020",
+                field.span,
+                format!(
+                    "`changed` reads a stored field; `{}` is computed from others, which carry their own versions",
+                    field.name
+                ),
+            );
+            return Ex::error();
+        }
+        let id = held.id.clone();
+        Ex::host(
+            Imp::FieldChanged,
+            vec![r, Ex::str(&id)],
+            Ty::Option(Box::new(host_ty("Version"))),
+        )
+    }
+
     /// `linked(r)`: the resources linked to `r`, each a `host.Link` of the resource and how it
     /// links, a `host.LinkHow`: made from it (`.created_from`), naming it in a field
     /// (`.field`), or mentioning it in its rich text (`.mention`). One definition for views,
@@ -165,6 +246,80 @@ impl Checker<'_> {
     /// task run or an agent made after the person's seen mark of `r` and after their own last
     /// change of it (task-legibility.md §2, §4). A view that reads it runs again when either
     /// moves.
+    /// `others(task.today)`: the other people who have a value of their own for a personal
+    /// field (`personal today: Bool = false`), as `List<Principal>`: who picked the task for
+    /// their Today, whose order a place is. What each of them has stays their own.
+    pub(super) fn builtin_others(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [a] = args else {
+            self.err(
+                "E022",
+                span,
+                "`others` takes one field of a resource: `others(task.today)`",
+            );
+            return Ex::error();
+        };
+        if a.name.is_some() {
+            self.err(
+                "E022",
+                a.value.span,
+                "`others` takes the field by position: `others(task.today)`",
+            );
+        }
+        let read = self.expr(&a.value, None);
+        // A field's read is a host call, a `Bool` one converted from the store's number.
+        let read = match &read.kind {
+            crate::ir::Ek::Conv(_, inner) => inner.as_ref(),
+            _ => &read,
+        };
+        let (base, field) = match &read.kind {
+            crate::ir::Ek::Host(
+                crate::abi::Imp::ResGetH | crate::abi::Imp::ResGetI | crate::abi::Imp::ResGetF,
+                args,
+            ) => match args.as_slice() {
+                [base, field] => (base.clone(), field.clone()),
+                _ => (Ex::error(), Ex::error()),
+            },
+            _ => {
+                self.err(
+                    "E022",
+                    a.value.span,
+                    "`others` reads a field of a resource: `others(task.today)`",
+                );
+                return Ex::error();
+            }
+        };
+        let crate::ir::Ek::Str(id) = &field.kind else {
+            return Ex::error();
+        };
+        let Ty::Record(key) = &base.ty else {
+            return Ex::error();
+        };
+        let env = self.env;
+        let Some(info) = env.type_info(key) else {
+            return Ex::error();
+        };
+        match info.fields.iter().find(|f| &f.id == id) {
+            Some(f) if f.personal => {}
+            Some(f) => {
+                self.err(
+                    "E022",
+                    a.value.span,
+                    format!(
+                        "`{}` is the record's one value, not one each person has; `others` reads a field declared `personal`, such as `personal today: Bool = false`",
+                        f.name
+                    ),
+                );
+                return Ex::error();
+            }
+            None => return Ex::error(),
+        }
+        Ex::host(
+            crate::abi::Imp::Others,
+            vec![base, field],
+            Ty::List(Box::new(Ty::Principal)),
+        )
+    }
+
     pub(super) fn builtin_unseen(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("unseen", args, span) else {
             return Ex::error();
@@ -524,7 +679,7 @@ impl Checker<'_> {
     }
 
     /// The action and the text of `entry_parts(action, text)`: the action a call left its
-    /// `(entry)` parameter of, and what is typed in the entry.
+    /// one `Text` parameter of, and what is typed in the entry.
     fn entry_args(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Option<(Ex, Ex)> {
         let [action, text] = args else {
             self.err(

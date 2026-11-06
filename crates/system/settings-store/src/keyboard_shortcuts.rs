@@ -28,6 +28,15 @@ pub enum ShortcutCategory {
     Accessibility,
 }
 
+/// Who carries out a shortcut: the desktop's own windows, strips and
+/// windows' places, or the session under them (the device, the surfaces over
+/// the desk, the people and agents here).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ShortcutHome {
+    Desk,
+    Session,
+}
+
 impl ShortcutCategory {
     /// Every category, in the order Settings shows them.
     pub const ALL: [Self; 6] = [
@@ -258,6 +267,82 @@ impl ShortcutAction {
             Self::NextInputSource => Some(("actions", "input.source.next")),
             Self::ReportProblem => Some(("actions", "feedback.point")),
             _ => None,
+        }
+    }
+
+    /// Which side of the desktop carries this shortcut out
+    /// ([`ShortcutHome`]): its own windows and strips, or the session under
+    /// them the device, its surfaces and its people.
+    ///
+    /// Every shortcut has exactly one home: one the table gains without one
+    /// does not build.
+    #[must_use]
+    pub const fn home(self) -> ShortcutHome {
+        match self {
+            Self::Search
+            | Self::Lock
+            | Self::QuickSettings
+            | Self::ShortcutHelp
+            | Self::TabMenu
+            | Self::ClipboardHistory
+            | Self::Notifications
+            | Self::PowerMenu
+            | Self::NextInputSource
+            | Self::ToggleMagnifier
+            | Self::MagnifierZoomIn
+            | Self::MagnifierZoomOut
+            | Self::AskAgent
+            | Self::SaySomething
+            | Self::ReportProblem
+            | Self::DictationToggle
+            | Self::DictationFinish
+            | Self::DictationCancel => ShortcutHome::Session,
+            Self::WorkspaceOverview
+            | Self::EmojiPicker
+            | Self::FocusPreviousWindow
+            | Self::FocusNextWindow
+            | Self::PreviousTab
+            | Self::NextTab
+            | Self::PreviousStrip
+            | Self::NextStrip
+            | Self::PreviousWorkspace
+            | Self::NextWorkspace
+            | Self::ToggleMaximize
+            | Self::MaximizeWindow
+            | Self::RestoreWindow
+            | Self::ToggleFullscreen
+            | Self::DetachTab
+            | Self::AttachTabLeft
+            | Self::AttachTabRight
+            | Self::MoveGroupLeft
+            | Self::MoveGroupRight
+            | Self::MoveGroupToPreviousStrip
+            | Self::MoveGroupToNextStrip
+            | Self::MoveGroupToPreviousDisplay
+            | Self::MoveGroupToNextDisplay
+            | Self::ResizeNarrower
+            | Self::ResizeWider
+            | Self::ReopenClosedTab
+            | Self::FocusGroup1
+            | Self::FocusGroup2
+            | Self::FocusGroup3
+            | Self::FocusGroup4
+            | Self::FocusGroup5
+            | Self::FocusGroup6
+            | Self::FocusGroup7
+            | Self::FocusGroup8
+            | Self::FocusGroup9
+            | Self::FocusStrip1
+            | Self::FocusStrip2
+            | Self::FocusStrip3
+            | Self::FocusStrip4
+            | Self::FocusStrip5
+            | Self::FocusStrip6
+            | Self::FocusStrip7
+            | Self::FocusStrip8
+            | Self::FocusStrip9
+            | Self::OpenFiles
+            | Self::OpenTerminal => ShortcutHome::Desk,
         }
     }
 

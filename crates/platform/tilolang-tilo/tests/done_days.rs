@@ -5,8 +5,10 @@ use automerge::AutoCommit;
 use tilolang_runtime::{Value, ViewInstance};
 
 use crate::fixtures::Replica;
-use crate::tasks::{all, call, go_to, home_list_titles, read, workspace};
+use crate::tasks::{all, call, go_to, home_list_titles, workspace};
 
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const APP: &str = "so.tilo.lang.tasks";
@@ -55,14 +57,14 @@ fn done_stands_what_was_finished_under_the_day_it_was_finished() {
     let finish = |ada: &mut Replica, title: &str, at: &str| {
         let at = at.to_owned();
         ada.host.runtime().set_clock(move || at.clone());
-        let made = call(ada, "new_task", vec![root.clone(), Value::text(title)]);
+        let made = call(ada, "new_task", crate::tasks::create(&root, title));
         call(ada, "check", vec![made.clone()]);
         ada.commit();
         made
     };
     // Two finished on Monday, one on Wednesday, and one of them due on a day of its own.
-    let bill = finish(&mut ada, "Pay the electricity bill", "2026-10-26T09:00:00Z");
-    let haircut = finish(&mut ada, "Book a haircut", "2026-10-26T15:00:00Z");
+    finish(&mut ada, "Pay the electricity bill", "2026-10-26T09:00:00Z");
+    finish(&mut ada, "Book a haircut", "2026-10-26T15:00:00Z");
     let milk = finish(&mut ada, "Buy oat milk", "2026-10-28T18:00:00Z");
     call(
         &ada,
@@ -91,14 +93,10 @@ fn done_stands_what_was_finished_under_the_day_it_was_finished() {
         "each run of a day finished under that day, never under the day it is due"
     );
 
-    // A task opened again is not done, and keeps no day Done could group it by.
+    // A task opened again is not done, and keeps no day Done could group it by: the version
+    // that last changed its box is the one that opened it.
     call(&ada, "check", vec![milk, Value::Bool(false)]);
     ada.commit();
-    assert_eq!(
-        read(&ada, &haircut, "done_at"),
-        Value::some(Value::text("2026-10-26T15:00:00Z")),
-        "the moment it was finished is part of the record"
-    );
     let mut view = ada.view(APP);
     go_to(&mut view, "Done");
     assert_eq!(
@@ -106,18 +104,21 @@ fn done_stands_what_was_finished_under_the_day_it_was_finished() {
         ["Book a haircut", "Pay the electricity bill"]
     );
     assert_eq!(
-        read(&ada, &bill, "done_at"),
-        Value::some(Value::text("2026-10-26T09:00:00Z")),
-        "and stays with it"
+        home_row_groups(&mut view),
+        [
+            ("2026-10-26".to_owned(), true),
+            ("2026-10-26".to_owned(), true),
+        ],
+        "the tasks still finished keep the days they were finished on"
     );
 }
 
-/// A task finished before the app kept the moment it was finished stands under the day of the
-/// change that finished it, read from the log, rather than under no day at all.
+/// A task finished by a version that kept no moment of it stands under the day of the change
+/// that finished it, read from the log, rather than under no day at all.
 #[test]
 fn a_task_finished_before_the_app_kept_its_moment_keeps_its_day() {
-    const BEFORE: &str = include_str!("tasks_before_subtasks/app.tl");
-    const BEFORE_IDS: &str = include_str!("tasks_before_subtasks/app.ids");
+    const BEFORE: &str = include_str!("tasks_before_done_at/app.tl");
+    const BEFORE_IDS: &str = include_str!("tasks_before_done_at/app.ids");
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(BEFORE, BEFORE_IDS)]);
     ada.host
         .runtime()
@@ -126,11 +127,15 @@ fn a_task_finished_before_the_app_kept_its_moment_keeps_its_day() {
     ada.commit();
     let old = call(&ada, "add", vec![all, Value::text("Send the invoice")]);
     ada.commit();
-    call(&ada, "check", vec![old.clone()]);
+    call(&ada, "check", vec![old]);
     ada.commit();
 
-    // The same workspace, opened by the version that keeps the moment it was finished.
-    let (mut later, _) = Replica::new("ada", ada.doc.fork(), &[(TASKS, TASKS_IDS)]);
+    // The same workspace, opened by the version that keeps nothing of it but the box.
+    let (mut later, _) = Replica::new(
+        "ada",
+        ada.doc.fork(),
+        &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)],
+    );
     later.host.sync_from(&later.doc);
     later.host.migrate();
     for done in later.host.take_committed() {
@@ -140,11 +145,6 @@ fn a_task_finished_before_the_app_kept_its_moment_keeps_its_day() {
         .host
         .runtime()
         .set_clock(|| "2026-10-29T10:00:00Z".to_owned());
-    assert_eq!(
-        read(&later, &old, "done_at"),
-        Value::none(),
-        "the record kept no moment"
-    );
     let mut view = later.view(APP);
     go_to(&mut view, "Done");
     assert_eq!(

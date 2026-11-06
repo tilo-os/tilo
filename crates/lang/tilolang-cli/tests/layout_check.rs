@@ -219,6 +219,31 @@ fn the_apps_show_no_layout_problem_their_allow_list_does_not_name() {
 }
 
 #[test]
+fn a_state_the_run_stages_lays_the_window_out_there() {
+    // Which place a window stands on is the run's, not the app's: `--state place=Task.today`
+    // lays out the place a person has not picked, and a value the app declares no filter for
+    // is refused before anything is laid out.
+    let tasks = manifest().join("../../../apps/tl/tasks");
+    let report = layout_check::check(&Options {
+        dirs: vec![tasks.clone()],
+        states: vec!["place=Task.today".to_owned()],
+        ..Options::default()
+    })
+    .expect("the app lays out at the place the run stages");
+    assert!(report.layouts > 0, "the app is laid out");
+    let refused = layout_check::check(&Options {
+        dirs: vec![tasks],
+        states: vec!["place=Task.nonsense".to_owned()],
+        ..Options::default()
+    })
+    .expect_err("a state takes a value the app's code names");
+    assert!(
+        refused.contains("declares no filter `nonsense`"),
+        "the run says what it could not stage: {refused}"
+    );
+}
+
+#[test]
 fn the_gallery_shows_every_component_of_the_toolkit_and_each_builds() {
     let dir = manifest().join("../../../apps/tl/gallery");
     let mut source = String::new();

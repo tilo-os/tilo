@@ -234,11 +234,19 @@ pub async fn run() {
     let part = chat::parts::part(0);
     let messages_route = part_route(&workspace.workspace, &part);
     let provider = record_provider(&messages_route);
+    let attached = serde_json::json!({
+        "app": messages_route.app_id,
+        "record": messages_route.record,
+        "kind": reference["kind"],
+        "id": reference["id"],
+        "label": reference["label"],
+        "span": reference["span"],
+    });
     let shared = on_messages(
         &mut source,
         "share-resource",
-        &serde_json::json!({"channel": channel.id, "reference": reference,
-            "source_provider": provider, "text": "Discuss this mounted resource"}),
+        &serde_json::json!({"channel": channel.id, "attached": attached,
+            "text": "Discuss this mounted resource"}),
     );
     let (shared, _) = published_message(&source, &shared);
     if voice_journey {

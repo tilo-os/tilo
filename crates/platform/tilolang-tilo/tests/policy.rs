@@ -11,6 +11,8 @@ use tilolang_tilo::publish::{Caller, PlanRequest};
 
 use crate::fixtures::Replica;
 
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const TODO: &str = include_str!("../../../../apps/tl/tasks/app.tl");
 const TODO_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const LETTERS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.tl");
@@ -40,7 +42,7 @@ fn standing(answers: Vec<tilo_action_policy::Grant>) -> Standing {
 fn add_block(replica: &Replica, title: &str) -> String {
     let list = replica.host.root_of(APP).unwrap();
     format!(
-        "tasks.new_task(@tasks.Tasks:{}, \"{title}\")",
+        "tasks.new_task(@tasks.Tasks:{}, title: \"{title}\")",
         list.id_string()
     )
 }
@@ -64,10 +66,10 @@ fn an_agent_the_person_denied_the_app_is_denied() {
     let (mut ada, packages) = Replica::standing(
         "ada",
         AutoCommit::new(),
-        &[(TODO, TODO_IDS)],
+        &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
         Some(standing(vec![answer])),
     );
-    let meta = &packages[0].meta;
+    let meta = &packages.last().unwrap().meta;
     let list = ada.host.root_of(APP).unwrap();
     ada.commit();
     let add = meta.actions.iter().find(|a| a.name == "new_task").unwrap();
@@ -103,7 +105,7 @@ fn untrusted_code_asks_and_the_persons_agents_code_runs() {
     let (mut ada, _) = Replica::standing(
         "ada",
         AutoCommit::new(),
-        &[(TODO, TODO_IDS)],
+        &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
         Some(standing(Vec::new())),
     );
     ada.host.root_of(APP).unwrap();
@@ -139,7 +141,7 @@ fn reaching_outside_from_untrusted_or_an_agents_code_asks() {
         &[(LETTERS, LETTERS_IDS)],
         Some(standing(Vec::new())),
     );
-    let meta = &packages[0].meta;
+    let meta = &packages.last().unwrap().meta;
     let desk = ada.host.root_of("test.letters").unwrap();
     ada.commit();
     let new_draft = meta.actions.iter().find(|a| a.name == "new_draft").unwrap();

@@ -14,8 +14,9 @@ tilolang-ask-confirm = Allow
 tilolang-ask-decline = Decline
 tilolang-suggestion-accept = Accept
 tilolang-suggestion-dismiss = Dismiss
-# What waits to be proposed of an item, said in a line ("Suggested: set the due date to Sat").
-tilolang-suggested = Suggested
+# Who proposes what waits on an item, said in the line that carries what it would do
+# ("Scout suggests: set the due date to Sat").
+tilolang-suggestion-says = { $name } suggests:
 tilolang-suggested-by = suggested by { $name }
 tilolang-ask-always = Always allow
 tilolang-ask-denied = That change is not allowed here.
@@ -49,7 +50,6 @@ tilolang-did-and = and
 tilolang-invocation-pending = Waiting
 tilolang-invocation-done = Done
 tilolang-invocation-suggested = Waiting for approval
-tilolang-invocation-proposed = Suggested
 tilolang-invocation-declined = Declined
 tilolang-invocation-failed = Failed
 tilolang-invocation-denied = Not allowed
@@ -172,6 +172,3 @@ tilolang-remind-weeks-after = { $count ->
     [one] 1 week after
    *[other] { $count } weeks after
 }
-
-tilolang-reminder-late = Late
-tilolang-reminder-open = Open

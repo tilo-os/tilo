@@ -5,6 +5,7 @@
 use crate::ast::{Expr, StateLayer};
 use crate::resolve::plain_text;
 use crate::types::{EffectClass, MergeKind, Ty, TypeKey};
+use std::collections::BTreeSet;
 
 #[derive(Clone, Debug)]
 pub struct FieldInfo {
@@ -13,6 +14,9 @@ pub struct FieldInfo {
     pub ty: Ty,
     pub merge: MergeKind,
     pub doc: String,
+    /// `personal today: Bool = false`: one value per person, in a record everyone shares
+    /// ([`crate::personal`]).
+    pub personal: bool,
     pub default: Option<serde_json::Value>,
     /// What the field is to the platform, from its marker (`(title)`, `(repeats: due)`).
     pub role: Option<crate::types::FieldRole>,
@@ -146,8 +150,9 @@ pub struct ParamInfo {
     /// Whether the view offering the action supplies it (`above: Option<Task> (above)`): the
     /// place the item stands in, as a row of a list gives the row above it.
     pub place: bool,
-    /// Whether the text of an entry fills it (`title: Text (entry)`): what the words left after
-    /// the other parameters take theirs title the item with (`crate::entry`).
+    /// Whether the text of an entry fills it: an action's one `Text` parameter is what the
+    /// words left after the other parameters take theirs title the item with
+    /// (`crate::entry`).
     pub entry: bool,
 }
 
@@ -219,6 +224,9 @@ pub struct Callable {
     pub result: Ty,
     /// The class recorded in foreign metadata.
     pub class: Option<EffectClass>,
+    /// `uses web, time`: the effects its body has, as the declaration says them. An action
+    /// reads nothing else that a replay would compute differently ([`crate::effects::Effect`]).
+    pub uses: BTreeSet<crate::effects::Effect>,
     /// How the platform presents an action or flow: its label, icon and role.
     pub present: Presentation,
     /// The hidden action of a `scenario`; its name is the scenario's, which source cannot call.

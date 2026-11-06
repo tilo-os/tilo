@@ -67,14 +67,17 @@ pub struct Links {
 }
 
 impl Links {
-    /// The link that opens `reference` in the record `provider`
-    /// (`record:<app>:<record>`) on the web: the URL `share-link` mints for
-    /// it on the workspace's host.
+    /// The link that opens `reference` in its record on the web: the URL
+    /// `share-link` mints for it on the workspace's host.
     ///
     /// # Errors
-    /// Why there is no such link: `provider` names no record, or the link
+    /// Why there is no such link: the message names no record, or the link
     /// grammar refuses one of its parts.
-    pub fn resource(&self, provider: &str, reference: &tilo::Reference) -> Result<String, String> {
+    pub fn resource(&self, reference: &tilo::Reference) -> Result<String, String> {
+        let provider = reference
+            .provider
+            .as_deref()
+            .ok_or_else(|| format!("{} names no record", reference.id))?;
         let (app, record) = provider
             .strip_prefix("record:")
             .and_then(|rest| rest.split_once(':'))
@@ -120,11 +123,10 @@ fn plain(text: &str) -> String {
 fn shared_line(message: &Message, context: &Context) -> Option<String> {
     let reference = message.reference.as_ref()?;
     let label = plain(&reference.label);
-    let url = message
-        .source_provider
-        .as_deref()
-        .zip(context.links.as_ref())
-        .and_then(|(provider, links)| links.resource(provider, reference).ok());
+    let url = context
+        .links
+        .as_ref()
+        .and_then(|links| links.resource(reference).ok());
     Some(match (&message.share, url) {
         (Some(share), _) if share.ended => format!("**{label}** is no longer shared"),
         (Some(share), Some(url)) if !share.open => {
@@ -305,7 +307,7 @@ fn body(guild: &Guild, message: &Message, context: &Context) -> (String, Vec<Out
         }
         extra.push(line);
     }
-    if let Some(file) = &message.attachment {
+    for file in &message.attachments {
         match file.size {
             Some(size) if size > MAX_UPLOAD_BYTES => {
                 extra.push(

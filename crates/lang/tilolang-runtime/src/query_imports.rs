@@ -77,12 +77,13 @@ fn excerpt(line: &str, text: &str) -> String {
 }
 
 impl Core {
-    /// The inputs of the program running now.
-    fn inputs(&self) -> HResult<ProgramInputs> {
-        match self.program.borrow().as_ref() {
-            Some(io) => Ok(io.inputs.clone()),
-            None => trap("only a program reads across apps"),
-        }
+    /// The inputs of the code running now: a session's program's, or those of an app's own
+    /// code, which reads the apps this runtime holds and acts for no person of its own.
+    fn inputs(&self) -> ProgramInputs {
+        self.program
+            .borrow()
+            .as_ref()
+            .map_or_else(ProgramInputs::default, |io| io.inputs.clone())
     }
 
     /// Whether this runtime holds the records of `app`.
@@ -260,15 +261,17 @@ impl Core {
                 let items = self.items_of(self.val(a.h(0)?)?, "single")?;
                 self.ret_h(self.single(items)?)
             }
-            Imp::Me => match self.inputs()?.me {
+            Imp::Me => match self.inputs().me {
                 Some(me) => self.ret_h(Value::Principal(me)),
-                None => trap("`me` is the person a task acts for; this program acts for no one"),
+                None => trap(
+                    "`me` is the person a session acts for; code that acts for no one has none",
+                ),
             },
             Imp::ForeignRef => {
                 let app = self.text(a.h(0)?)?;
                 let ty = self.text(a.h(1)?)?;
                 let id = self.text(a.h(2)?)?;
-                let inputs = self.inputs()?;
+                let inputs = self.inputs();
                 let shown = Shown {
                     literal: format!("@{}.{ty}:{id}", app_name(&app, &inputs)),
                     app: app.clone(),
@@ -291,7 +294,7 @@ impl Core {
     fn grep(&self, pattern: &str, options: &str, scope: &Value) -> HResult<Value> {
         let options: GrepOptions =
             serde_json::from_str(options).map_err(|e| format!("grep: {e}"))?;
-        let inputs = self.inputs()?;
+        let inputs = self.inputs();
         let mentions = match options.mentions.as_deref() {
             Some("me") => Some(
                 inputs
@@ -437,7 +440,7 @@ impl Core {
     /// `find("words")` with no type: the resources of every app the program may read whose
     /// text holds the words, each app's best first.
     pub(crate) fn find_everywhere(&self, words: &str) -> HResult<Value> {
-        let inputs = self.inputs()?;
+        let inputs = self.inputs();
         let mut out = Vec::new();
         let mut unsearched = Vec::new();
         for app in self.every_app(&inputs) {
@@ -473,7 +476,7 @@ impl Core {
         if !is_foreign(target) {
             return Ok(Some(self.read_local(target)?));
         }
-        let inputs = self.inputs()?;
+        let inputs = self.inputs();
         let (app, ty) = target.ty.split_once('#').unwrap_or((&target.ty, ""));
         let req = ReadRequest::Read {
             app: app.to_owned(),
@@ -609,7 +612,7 @@ impl Core {
                 field.as_deref(),
             )?));
         }
-        let inputs = self.inputs()?;
+        let inputs = self.inputs();
         let req = ReadRequest::Describe { app, name, field };
         match self.answered(&req, &inputs)? {
             Answered::Here(Json::String(text)) => Ok(Value::Text(text)),

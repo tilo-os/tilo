@@ -186,6 +186,29 @@ impl Foreign {
         std::mem::take(&mut self.wanted).into_values().collect()
     }
 
+    /// The reading of `target` whole, as JSON, with the generation it was read at, when one
+    /// arrived: what a Rust app's view is handed of the resource it shows (its own model type
+    /// reads its fields from it).
+    ///
+    /// The caller records the generation against [`reading_key`] as what the boundary read, so a
+    /// boundary that built a Rust view runs again when a newer reading comes in, as one that
+    /// read a field of it does.
+    pub(crate) fn whole(&mut self, target: &ResourceRef) -> Option<(Json, u64)> {
+        let key = Self::key(target);
+        if !self.readings.contains_key(&key) {
+            // The host is asked for the resource's reading, as a field read of one yet to arrive
+            // asks for it; the boundary runs again when it comes.
+            if self.asked.insert(key.clone()) {
+                self.wanted
+                    .insert(key, (target.id_string(), target.ty.clone()));
+            }
+            return None;
+        }
+        let generation = self.generation(target);
+        self.source(&key)
+            .map(|(json, _)| (json.clone(), generation))
+    }
+
     /// Forget every reading of the app `app`'s resources, and what was asked of them: nothing
     /// here shows that app any more.
     pub(crate) fn forget_app(&mut self, app: &str) {
@@ -607,10 +630,12 @@ impl Decoder<'_> {
                 encoded => crate::value::from_json(encoded),
             },
             Ty::Result(..) | Ty::RichText | Ty::Map(_) => crate::value::from_json(json),
-            Ty::Action | Ty::View | Ty::Choice(_) | Ty::Error => Err(format!(
-                "a value of type `{}` is not read from another app's reading",
-                ty.meta_text("")
-            )),
+            Ty::Action | Ty::View | Ty::Choice(_) | Ty::Bytes | Ty::Response | Ty::Error => {
+                Err(format!(
+                    "a value of type `{}` is not read from another app's reading",
+                    ty.meta_text("")
+                ))
+            }
         }
     }
 

@@ -175,7 +175,7 @@ action address(d: Draft, to: Text) (icon: .user) {
     d.to = to
 }
 
-primary action send(d: Draft) (icon: .send) {
+primary action send(d: Draft) uses time (icon: .send) {
     d.sent = true
     outside("post", (d.to,), at: now + 10s)
 }

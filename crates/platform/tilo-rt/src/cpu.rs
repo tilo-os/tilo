@@ -39,6 +39,29 @@ pub fn cpu_pool() -> &'static rayon::ThreadPool {
     })
 }
 
+/// The most workers a library's own parallel work gets in this process.
+const LIBRARY_THREADS: usize = 16;
+
+/// Build rayon's process-wide pool before a library builds it, so its size is
+/// [`LIBRARY_THREADS`] rather than one worker per logical CPU: a library that
+/// first calls `par_iter` (a message layer's group tree, a renderer, a text
+/// layout) builds that pool itself, and on a machine with hundreds of CPUs it
+/// then holds hundreds of idle threads for work that is a handful of items.
+/// Bulk work a person waits for goes through [`cpu_pool`], which is sized per
+/// core on purpose.
+pub fn bound_parallel_pool() {
+    static POOL: std::sync::Once = std::sync::Once::new();
+    POOL.call_once(|| {
+        let threads = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZero::get)
+            .min(LIBRARY_THREADS);
+        let _ = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .thread_name(|index| format!("tilo-parallel-{index}"))
+            .build_global();
+    });
+}
+
 /// Run `work` on the [`cpu_pool`] and await its result.
 ///
 /// Hashing, chunking, compression, image decoding and index building belong

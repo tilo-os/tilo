@@ -10,7 +10,7 @@ use ui::tilo_actions::DoorError;
 use ui::tilo_resource::{Atom, Id, Invoke, ModelError, Replica};
 
 use crate::messages::{Messages, chat_part};
-use crate::model::{Attachment, ChannelKind, EditRecord, Presence};
+use crate::model::{ChannelKind, EditRecord, Presence};
 use crate::parts::ChatPart;
 use crate::record::{Category, Chat, Conversation, Message, Person, Revision, chat};
 
@@ -46,7 +46,7 @@ struct NewMessage {
     text: String,
     parent: Option<String>,
     reactions: Vec<(String, Vec<String>)>,
-    attachment: Option<Attachment>,
+    attachments: Vec<tilo_reference::Attached>,
     history: Vec<EditRecord>,
     edited: bool,
 }
@@ -187,12 +187,13 @@ impl Demo {
                     author: "u_aria".into(),
                     ts: m(95),
                     text: "Here's the frame — the host tile keeps the live camera, everyone else collapses to chips when they're audio-only.".into(),
-                    attachment: Some(Attachment::Image {
-                        name: "call-overlay-v3.png".into(),
-                        blob: crate::images::DEMO_CALL_GRID.into(),
-                        w: 640,
-                        h: 360,
-                    }),
+                    attachments: vec![tilo_reference::Attached::Image {
+                            name: "call-overlay-v3.png".into(),
+                            blob: crate::images::DEMO_CALL_GRID.into(),
+                            w: 640,
+                            h: 360,
+                        },
+                    ],
                     reactions: vec![
                         (named("red heart"), vec!["u_me".into(), "u_sora".into(), "u_milo".into()]),
                         (named("fire"), vec!["u_devon".into()]),
@@ -231,11 +232,12 @@ impl Demo {
                     author: "u_devon".into(),
                     ts: m(70),
                     text: "Dropping the transport notes here so they don't get lost.".into(),
-                    attachment: Some(Attachment::File {
-                        name: "transport-notes.md".into(),
-                        blob: crate::images::DEMO_NOTES.into(),
-                        size: 18_944,
-                    }),
+                    attachments: vec![tilo_reference::Attached::File {
+                            name: "transport-notes.md".into(),
+                            blob: crate::images::DEMO_NOTES.into(),
+                            size: 18_944,
+                        },
+                    ],
                     ..Default::default()
                 },
             ),
@@ -245,13 +247,14 @@ impl Demo {
                     author: "u_sora".into(),
                     ts: m(64),
                     text: "Screen recording of the tile-promotion motion — this is the feel I'm after:".into(),
-                    attachment: Some(Attachment::Video {
-                        name: "tile-promotion.webm".into(),
-                        blob: crate::images::DEMO_CLIP.into(),
-                        w: 1280,
-                        h: 720,
-                        size: 6_815_744,
-                    }),
+                    attachments: vec![tilo_reference::Attached::Video {
+                            name: "tile-promotion.webm".into(),
+                            blob: crate::images::DEMO_CLIP.into(),
+                            w: 1280,
+                            h: 720,
+                            size: 6_815_744,
+                        },
+                    ],
                     reactions: vec![(named("fire"), vec!["u_me".into(), "u_aria".into()])],
                     ..Default::default()
                 },
@@ -432,7 +435,7 @@ pub fn demo_part(me: &str) -> ChatPart {
                     .collect(),
                 parent: message.parent.map(Id::from_raw),
                 reactions,
-                attachment: message.attachment,
+                attachments: message.attachments,
                 ..Message::default()
             },
         );
@@ -853,7 +856,7 @@ pub fn post(channel: &str, text: &str, parent: Option<&str>) -> Invoke<ChatPart>
             text: text.into(),
             parent: parent.map(Id::from_raw),
             body: None,
-            attachment: None,
+            attachments: Vec::new(),
             mentions: None,
             written: None,
         },

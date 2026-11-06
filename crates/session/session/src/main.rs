@@ -85,6 +85,10 @@ fn main() -> std::process::ExitCode {
     // through the one log from here on — including the render service, which
     // is this binary in its own mode.
     tilo_session_logging::install();
+    // Libraries that parallelise on their own (message groups, text layout,
+    // rendering) build rayon's process-wide pool on first use: build it here,
+    // bounded, before a session thread reaches one.
+    tilo_rt::bound_parallel_pool();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     // An app's workspace render service is this binary in its own mode: it

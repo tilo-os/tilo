@@ -11,7 +11,7 @@ use ui::{ActionPalette, CommandEntry};
 
 use crate::model::{Hit, SearchStream, Source, Target};
 use crate::providers::{
-    Actions, Answers, AppEntry, Applications, CommandSpec, Commands, Content, Published,
+    Actions, Answers, AppEntry, Applications, Captures, CommandSpec, Commands, Content, Published,
     PublishedActions, Recents, Switches, WebSearch, WindowEntry, Windows,
 };
 use crate::window::WindowSearch;
@@ -84,6 +84,7 @@ struct Sources {
     commands: Arc<Commands>,
     actions: Arc<Actions>,
     published: Arc<Published>,
+    captures: Arc<Captures>,
     content: Content,
     answers: Option<(Arc<Answers>, Arc<WebSearch>)>,
     /// The one window searched, when the search is a window's.
@@ -110,6 +111,7 @@ impl Sources {
                 content: Content::new(Vec::new(), Vec::new()),
                 actions: Arc::new(Actions(Vec::new())),
                 published: Arc::new(Published(Vec::new())),
+                captures: Arc::new(Captures(Vec::new())),
                 answers: None,
                 window: Some(WindowSearch::new(data.resources, data.providers).within(anchor)),
                 host: Vec::new(),
@@ -123,7 +125,8 @@ impl Sources {
             commands: Arc::new(Commands(data.commands)),
             content: Content::new(data.providers, data.resources.clone()).within(anchor),
             actions: Arc::new(Actions(data.resources)),
-            published: Arc::new(Published(data.published)),
+            published: Arc::new(Published(data.published.clone())),
+            captures: Arc::new(Captures(data.published)),
             answers: matches!(data.scope, Scope::Workspace | Scope::Everywhere).then(|| {
                 (
                     Arc::new(Answers {
@@ -1045,7 +1048,19 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
         }
         Target::Invoke(invoke) => (
             match &invoke.descriptor {
-                Some(descriptor) => CommandEntry::from_descriptor(id, descriptor),
+                Some(descriptor) => {
+                    let mut entry = CommandEntry::from_descriptor(id, descriptor);
+                    // A row whose one line is already decided — a capture,
+                    // typed as the search itself — runs on Enter instead of
+                    // asking for the line again.
+                    if descriptor
+                        .prompt_param()
+                        .is_some_and(|param| invoke.arguments.contains_key(param))
+                    {
+                        entry = entry.with_preset();
+                    }
+                    entry
+                }
                 None => CommandEntry::new(id, hit.title.clone()),
             },
             hit.icon
@@ -1113,6 +1128,7 @@ fn everywhere<'a>(
         &sources.windows,
         &sources.content,
         &sources.actions,
+        &sources.captures,
         &sources.published,
         &sources.commands,
     ];
@@ -1281,6 +1297,77 @@ mod tests {
         };
         assert_eq!(invoke.app, "so.tilo.chat");
         assert_eq!(invoke.address.action.as_str(), "join-call");
+    }
+
+    /// Tasks' one-line "New task", as the session publishes the app's actions: `title` is the
+    /// entry parameter the typed line fills.
+    fn captures() -> Vec<PublishedActions> {
+        let capture = tilo_actions::ActionSpec::prompted_param(
+            "new_task",
+            "New task",
+            tilo_actions::ActionParam::required(
+                "title",
+                tilo_actions::ParamType::Text,
+                "What to do",
+            )
+            .taking_entry(),
+            "Call the landlord fri 10am",
+            tilo_actions::ExecutionLocus::ClientLocal,
+            |text| tilo_actions::EncodedAction {
+                type_id: "test.action".into(),
+                payload: text.as_bytes().to_vec(),
+            },
+        );
+        let resource =
+            tilo_actions::ResourceSpec::new("tasks", "tl.Tasks.task", "Tasks").with_action(capture);
+        vec![PublishedActions::of("so.tilo.lang.tasks", "", &[resource])]
+    }
+
+    /// A person presses the palette key, types what they want done, and Enter: the row is the
+    /// way to write it down, and choosing it runs it with their words — no action opened, no
+    /// field to fill in again.
+    #[test]
+    fn a_capture_chosen_from_the_palette_runs_with_the_line_typed() {
+        let mut search = DesktopSearch::new();
+        search.open(SearchData {
+            published: captures(),
+            scope: Scope::Workspace,
+            ..data()
+        });
+        settled(&mut search);
+        let line = "Call the landlord fri 10am";
+        search.set_query(line);
+        settled(&mut search);
+        let at = {
+            let entries = search.palette().visible_entries();
+            let at = entries
+                .iter()
+                .position(|entry| entry.label == "New task")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the capture answers the sentence: {:?}",
+                        entries.iter().map(|entry| &entry.label).collect::<Vec<_>>()
+                    )
+                });
+            assert!(
+                entries[at].argument.is_none(),
+                "the row carries the line, so Enter runs it"
+            );
+            at
+        };
+        search.palette_mut().set_cursor(at);
+        search.palette_mut().activate_selected();
+        assert!(search.observe(), "choosing a capture closes search");
+        let Some(Target::Invoke(invoke)) = search.take_choice() else {
+            panic!("the capture runs the app's own action");
+        };
+        assert_eq!(invoke.app, "so.tilo.lang.tasks");
+        assert_eq!(invoke.address.action.as_str(), "new_task");
+        assert_eq!(
+            invoke.arguments.get("title"),
+            Some(&serde_json::Value::String(line.to_owned())),
+            "the task is made from the words the person typed"
+        );
     }
 
     /// With nothing typed the palette lists what is useful now, in that

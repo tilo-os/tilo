@@ -1,6 +1,6 @@
 //! Expressions: literals, operators, fields, strings and coercions.
 
-use super::{Checker, Ctx, Ex, Written, conv, load_op, store_op};
+use super::{Checker, Ctx, Ex, conv, load_op, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, BinOp, ExprKind, StrPart, UnOp};
 use crate::diag::Span;
@@ -120,7 +120,10 @@ impl Checker<'_> {
                 // A time of no zone is the person's own time of day: the instant it names is
                 // read in their zone where the value is built, so seed data says 09:00 and
                 // shows 09:00 wherever it runs.
-                19 => Ex::host(crate::abi::Imp::WallClock, vec![Ex::str(text)], Ty::Time),
+                19 => {
+                    self.reads(crate::effects::Effect::Time, e.span, "a time of no zone");
+                    Ex::host(crate::abi::Imp::WallClock, vec![Ex::str(text)], Ty::Time)
+                }
                 _ => {
                     self.err("E105", e.span, format!("a month is the value of a filter (`query(T, due: {text})`); a day is written `{text}-01`"));
                     Ex::error()
@@ -143,7 +146,6 @@ impl Checker<'_> {
                 self.if_value(cond, then, els.as_deref(), exp, e.span)
             }
             ExprKind::Block(b) => self.block_value(b, exp),
-            ExprKind::MadeFrom { of, body } => self.made_from(of, body, e.span, exp),
             ExprKind::Match { scrutinee, arms } => self.match_value(scrutinee, arms, exp, e.span),
             ExprKind::Variant { name, args } => self.variant(name, args.as_deref(), exp, e.span),
             ExprKind::Lambda { .. } => {
@@ -188,6 +190,10 @@ impl Checker<'_> {
                         .find(|t| t.key.app == import.app && t.id == *ty_id)
                 {
                     return Self::root_ref(&info.key.app, &info.id, &info.key);
+                }
+                // `agent.me`: the person the session acts for, where a package names it.
+                if let Some(ex) = self.agent_me_field(base, &name.name) {
+                    return ex;
                 }
                 if self.names_import(base) {
                     let alias = dotted(base).unwrap_or_default().join(".");
@@ -310,13 +316,14 @@ impl Checker<'_> {
             return Ex::error();
         }
         if name == "now" {
-            if self.st.ctx == Ctx::Action {
+            if matches!(self.st.ctx, Ctx::Action | Ctx::Flow) {
+                self.reads(crate::effects::Effect::Time, span, "`now`");
                 return Ex::host(Imp::Now, vec![], Ty::Time);
             }
             self.err(
                 "E049",
                 span,
-                "`now` is the time of this invocation, which only an action has; pass a Time to anything else",
+                "`now` is the time of this invocation, which only an action or a flow has; pass a Time to anything else",
             );
             return Ex::error();
         }
@@ -324,6 +331,7 @@ impl Checker<'_> {
         // filter's `today` reads it.
         if name == "today" {
             if self.st.ctx == Ctx::Action {
+                self.reads(crate::effects::Effect::Time, span, "`today`");
                 return Ex::host(Imp::Today, vec![], Ty::Date);
             }
             self.err(
@@ -333,9 +341,10 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
-        // `me`: the person a program's task acts for (agents.md, "What the agent knows").
-        if name == "me" && self.st.written == Written::Program {
-            return Ex::host(Imp::Me, vec![], Ty::Principal);
+        // `me`: the person the session acts for, the agent library's word for them, in scope as
+        // a session's default import (agents.md, "What the agent knows").
+        if name == crate::agent::ME && self.env.session {
+            return Self::agent_me();
         }
         // A named root of this package: `notes`.
         if let Some(key) = self
@@ -901,6 +910,26 @@ impl Checker<'_> {
     pub(super) fn field_read(&mut self, b: Ex, name: &ast::Ident) -> Ex {
         match b.ty.clone() {
             Ty::Error => Ex::error(),
+            Ty::Response => {
+                let (imp, ty) = match name.name.as_str() {
+                    "ok" => (Imp::WebOk, Ty::Bool),
+                    "status" => (Imp::WebStatus, Ty::Int),
+                    "status_text" => (Imp::WebStatusText, Ty::Text),
+                    "headers" => (Imp::WebHeaders, Ty::List(Box::new(Ty::Text))),
+                    "body" => (Imp::WebBody, Ty::Bytes),
+                    other => {
+                        self.err(
+                            "E021",
+                            name.span,
+                            format!(
+                                "a Response has no field `{other}`; its fields are ok, status, status_text, headers and body, and `.text()` reads the body as text"
+                            ),
+                        );
+                        return Ex::error();
+                    }
+                };
+                Ex::host(imp, vec![b], ty)
+            }
             Ty::Identifier => self.identifier_part(b, name),
             Ty::RichText => self.rich_part(b, name),
             // A filter's fields: what a query names it by, what a control shows, what it asks.

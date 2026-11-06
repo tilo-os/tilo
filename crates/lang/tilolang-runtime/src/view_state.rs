@@ -120,9 +120,9 @@ impl StateKey {
 #[derive(Default)]
 pub struct ViewStates {
     slots: HashMap<StateKey, (Value, u64)>,
-    /// The value a scenario stages a declaration at (`window place = Task.done`), by the layer
-    /// it is declared in and the declaration's id: what a window that reads it shows until its
-    /// person sets the slot, where the scenario staged a window the capture lays out.
+    /// The value a run stages a declaration at (`layout-check --state place=Task.today`), by
+    /// the layer it is declared in and the declaration's id: what a window that reads it shows
+    /// until its person sets the slot.
     seeds: HashMap<StateLayer, HashMap<String, (Value, u64)>>,
     clock: u64,
     /// What the person changed here since the host last took it
@@ -147,9 +147,9 @@ impl ViewStates {
         slot.max(seed)
     }
 
-    /// Stage the value the declaration `state` starts from in `layer`, as a scenario does: a
-    /// window that reads it shows it until the person sets the slot, and it is no one's change
-    /// to keep.
+    /// Stage the value the declaration `state` starts from in `layer`, as a check or a capture
+    /// does: a window that reads it shows it until the person sets the slot, and it is no
+    /// one's change to keep.
     pub fn seed(&mut self, layer: StateLayer, state: &str, value: Value) {
         self.clock = self.clock.saturating_add(1);
         self.seeds
@@ -158,8 +158,8 @@ impl ViewStates {
             .insert(state.to_owned(), (value, self.clock));
     }
 
-    /// The value a scenario staged the declaration `key` names at, when it staged one: what a
-    /// window shows where the person has set nothing.
+    /// The value a run staged the declaration `key` names at, when it staged one: what a window
+    /// shows where the person has set nothing.
     pub fn seeded(&self, key: &StateKey) -> Option<&Value> {
         self.seeds.get(&key.layer?)?.get(&key.state).map(|(v, _)| v)
     }

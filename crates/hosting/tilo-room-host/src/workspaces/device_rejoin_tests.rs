@@ -54,14 +54,14 @@ async fn pre_admitted_join(
         .await
 }
 
-/// A browser that lost the certificate its device key was admitted under
-/// certifies that key anew: the workspace, which keeps every device's
-/// certificate, refuses the fresh pre-admission naming the conflict, and
-/// admits the same person on a new device key. The browser relies on both
+/// A browser whose person issues its device key a certificate again joins on
+/// it: a later certificate that grants no more than the one the workspace
+/// holds is the same device and replaces it. One that would grant it more, or
+/// one issued before the held one, is refused as a conflict, and the same
+/// person on a new device key is admitted. The browser relies on it
 /// (`workspaces.mjs` `joinViaHost`).
 #[tokio::test]
-async fn a_device_known_under_another_certificate_is_refused_and_a_new_device_of_the_person_admitted()
- {
+async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_one_is_refused() {
     use tilo_relay_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -69,12 +69,12 @@ async fn a_device_known_under_another_certificate_is_refused_and_a_new_device_of
     let workspaces = relay.workspaces();
     let created = workspaces.create("Lounge").await.unwrap();
     let root = SigningKey::from_bytes(&rand::random());
-    let certify = |device: &SigningKey, issued_at_ns: u64| {
+    let certify = |device: &SigningKey, issued_at_ns: u64, capabilities: DeviceCapabilities| {
         let mut device_cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: device.verifying_key().to_bytes(),
             device_label: "Browser".into(),
-            capabilities: DeviceCapabilities::member(),
+            capabilities,
             issued_at_ns,
             expires_at_ns: None,
             signature: [0; 64],
@@ -88,23 +88,49 @@ async fn a_device_known_under_another_certificate_is_refused_and_a_new_device_of
         &cert,
         &created.workspace,
         &device,
-        certify(&device, 1),
+        certify(&device, 1, DeviceCapabilities::member()),
     )
     .await;
     assert!(matches!(first, JoinReply::Admitted { .. }), "{first:?}");
 
-    // The same key, certified again by the same person.
+    // The same key certified later with more than the workspace holds: the
+    // device would become more than it was admitted as.
+    let escalated = pre_admitted_join(
+        workspaces,
+        &cert,
+        &created.workspace,
+        &device,
+        certify(&device, 2, DeviceCapabilities::primary()),
+    )
+    .await;
+    assert!(
+        matches!(&escalated, JoinReply::Refused(reason) if reason.contains("certificate conflict")),
+        "{escalated:?}"
+    );
+
+    // The same key certified again by the same person, granting no more.
     let again = pre_admitted_join(
         workspaces,
         &cert,
         &created.workspace,
         &device,
-        certify(&device, 2),
+        certify(&device, 3, DeviceCapabilities::member()),
+    )
+    .await;
+    assert!(matches!(again, JoinReply::Admitted { .. }), "{again:?}");
+
+    // A certificate older than the one the workspace now holds.
+    let older = pre_admitted_join(
+        workspaces,
+        &cert,
+        &created.workspace,
+        &device,
+        certify(&device, 2, DeviceCapabilities::member()),
     )
     .await;
     assert!(
-        matches!(&again, JoinReply::Refused(reason) if reason.contains("certificate conflict")),
-        "{again:?}"
+        matches!(&older, JoinReply::Refused(reason) if reason.contains("certificate conflict")),
+        "{older:?}"
     );
 
     let renewed = SigningKey::from_bytes(&rand::random());
@@ -113,7 +139,7 @@ async fn a_device_known_under_another_certificate_is_refused_and_a_new_device_of
         &cert,
         &created.workspace,
         &renewed,
-        certify(&renewed, 3),
+        certify(&renewed, 4, DeviceCapabilities::member()),
     )
     .await;
     assert!(matches!(fresh, JoinReply::Admitted { .. }), "{fresh:?}");

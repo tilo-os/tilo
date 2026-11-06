@@ -321,6 +321,13 @@ impl FloatingSurfaceProvider for ChatApp {
             let app = self.rect;
             let desktop = self.desktop_floating_bounds();
             self.call.placement.reattach_to_app(app, desktop);
+            // The card's window went away: the call asks for it again.
+            if matches!(
+                message,
+                ui::floating_surface::FloatingSurfaceHostMessage::Reattach { .. }
+            ) {
+                self.presented_call = None;
+            }
             return;
         }
         if matches!(

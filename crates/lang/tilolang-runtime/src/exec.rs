@@ -25,14 +25,13 @@ use crate::core::{Args, Core, HResult, ret_i32, ret_void, trap};
 use crate::engine::{CallError, Host, HostFail, Wasm};
 use crate::error::RuntimeError;
 use crate::flow::{FlowOutcome, Journal, JournalEntry, Resolution, Suggestion};
-use crate::handles::{ActionState, FlowState, FrameKind, QueuedBlock};
+use crate::handles::{ActionState, FlowState, FrameKind, Invocation, QueuedBlock};
 use crate::host_res::unboxed;
 use crate::ids::{ModuleHash, Principal, RunId};
 use crate::meta::{EffectClass, ParamMeta, Repr, Ty, parse_ty, repr};
 use crate::registry::Package;
 use crate::store::{ChangeNote, Mutation};
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
-use crate::view_state::StateLayer;
 
 /// Calls into other packages' `fn`s deeper than this are refused: each one is a fresh instance
 /// of the callee's module, running on the host's stack, so recursion across packages would
@@ -218,8 +217,21 @@ impl Core {
             .marshal(pkg, params, args)
             .map_err(RuntimeError::BadArgs)?;
         let host: std::rc::Rc<dyn Host> = self.rc().map_err(RuntimeError::Package)?;
-        let out = self.engine.call(&pkg.hash, export, &wasm_args, host)?;
-        self.unmarshal(&pkg.meta.app, result, out)
+        // What the call costs is charged to the unit that makes it, from here to its end: a
+        // function called while it runs is a unit of its own, and the call it costs counts in
+        // this one too.
+        let measured = self.costs.on();
+        if measured {
+            let unit = pkg.unit(export).unwrap_or_else(|| {
+                std::rc::Rc::new(crate::cost::Unit::unnamed(export, &pkg.meta.app))
+            });
+            self.costs.enter(unit, self.store.borrow().reads());
+        }
+        let out = self.engine.call(&pkg.hash, export, &wasm_args, host);
+        if measured {
+            self.costs.leave(self.store.borrow().reads());
+        }
+        self.unmarshal(&pkg.meta.app, result, out?)
             .map_err(RuntimeError::Package)
     }
 
@@ -517,10 +529,10 @@ impl Core {
                 suggestions: Vec::new(),
                 queued: Vec::new(),
                 scenario: meta.scenario,
-                acting_as: Vec::new(),
-                made_from: Vec::new(),
+                invocations: Vec::new(),
                 note: Box::new(note),
                 touched: std::collections::BTreeSet::new(),
+                effects: crate::handles::EffectLog::default(),
             }),
         );
         let result = self.call_in_frame(
@@ -530,13 +542,17 @@ impl Core {
             &aref.args,
             meta.result.as_deref(),
         );
-        let at = self.invocation_time();
+        let at = self.change_time();
         let frame = self.frames.borrow_mut().pop();
         let (queued, proposed, txn, note) = match frame.map(|f| f.kind) {
             Some(FrameKind::Action(a)) => {
                 let mut note = *a.note;
                 note.at = Some(at);
                 note.touched = a.touched.into_iter().collect();
+                // What the action read on its way, beside the change it made: the moment and
+                // the zone it read, and what later effects fetched or drew (convergence.md,
+                // "Actions").
+                note.effects = a.effects.entries;
                 (a.queued, a.suggestions, a.txn, note)
             }
             _ => (Vec::new(), Vec::new(), txn, Self::note(ctx, &pkg, aref)),
@@ -772,6 +788,7 @@ impl Core {
                 suggested_by: journal.suggested_by.clone().map(Principal),
                 journal,
                 cursor: 0,
+                clock: None,
             })),
         );
         let result = self.call_in_frame(
@@ -1474,8 +1491,82 @@ impl Core {
         ret_void()
     }
 
-    /// `now`: the invocation's time, read from the host's clock once per outermost invocation;
-    /// in a scenario's `as who at time` block, that time.
+    /// The clock and the person's zone, as the invocation running reads them: what it read the
+    /// first time, from its journal when it recorded one then, else from the host, which it
+    /// records. An action's entry is kept beside its change; a flow's is saved in its journal,
+    /// so a run resumed tomorrow reads the moment it started. Code that journals nothing (a
+    /// view's) reads the host live.
+    pub(crate) fn clock(&self) -> HResult<crate::flow::Clock> {
+        {
+            let mut frames = self.frames.borrow_mut();
+            let Some(mut effects) = frames.effects() else {
+                return Ok(self.host_clock());
+            };
+            if let Some(clock) = effects.pinned_clock() {
+                return Ok(clock);
+            }
+            match effects.next_entry() {
+                Some(crate::flow::JournalEntry::Clock(clock)) => {
+                    effects.pin(clock.clone());
+                    return Ok(clock);
+                }
+                Some(_) => {
+                    return trap(
+                        "the invocation diverged from its journal: expected the clock's entry",
+                    );
+                }
+                None => {}
+            }
+        }
+        let clock = self.host_clock();
+        {
+            let mut frames = self.frames.borrow_mut();
+            if let Some(mut effects) = frames.effects() {
+                effects.pin_clock(clock.clone());
+            }
+        }
+        self.save_flow_journal()?;
+        Ok(clock)
+    }
+
+    /// What the host says now: its clock, and the person's zone.
+    fn host_clock(&self) -> crate::flow::Clock {
+        crate::flow::Clock {
+            now: self.invocation_time(),
+            zone: self.zone_name.borrow().as_ref().and_then(|name| name()),
+            offset: self.zone.borrow().as_ref().map_or(0, |zone| zone()),
+        }
+    }
+
+    /// The clock and zone the invocation running pinned, when it read time.
+    pub(crate) fn pinned_clock(&self) -> Option<crate::flow::Clock> {
+        self.frames
+            .borrow_mut()
+            .effects()
+            .and_then(|effects| effects.pinned_clock())
+    }
+
+    /// The moment the change being made is recorded at: the one the action read, when it read
+    /// the clock, else the host's, which nothing replays.
+    fn change_time(&self) -> String {
+        self.invocation_time()
+    }
+
+    /// Saves the flow's journal when a flow is the invocation running: what it read so far,
+    /// kept for a run that resumes.
+    pub(crate) fn save_flow_journal(&self) -> HResult<()> {
+        let saved = {
+            let frames = self.frames.borrow();
+            frames.flow().map(|fs| (fs.run.clone(), fs.journal.clone()))
+        };
+        let Some((run, journal)) = saved else {
+            return Ok(());
+        };
+        self.store
+            .borrow_mut()
+            .save_journal(&run, &journal)
+            .map_err(|e| HostFail::Trap(e.to_string()))
+    }
     /// A moment moved by some seconds, backwards when `back` says.
     fn time_shift(&self, at_h: i32, secs: i64, back_h: i32) -> HResult<Option<Wasm>> {
         let at = self.text(at_h)?;
@@ -1500,43 +1591,41 @@ impl Core {
         self.ret_h(Value::Text(time))
     }
 
-    /// What this invocation reads as `now`: the moment a scenario acts at, else the host
-    /// clock's, read once and kept until the invocation returns. `today` is the day it falls
-    /// on, so the two never disagree.
+    /// What this invocation reads as `now`: the moment a scenario acts at, else the moment it
+    /// first read the clock, which a resumed run answers from its journal. `today` is the day it
+    /// falls on, so the two never disagree.
     pub(crate) fn now_text(&self) -> HResult<String> {
         {
             let frames = self.frames.borrow();
-            let FrameKind::Action(state) = &frames.top()?.kind else {
-                return trap("now is only available in actions");
-            };
-            if let Some(time) = state.acting_as.last().and_then(|(_, at)| at.clone()) {
+            if let FrameKind::Action(state) = &frames.top()?.kind
+                && let Some(time) = state.invocations.last().and_then(|i| i.at.clone())
+            {
                 return Ok(time);
             }
         }
-        Ok(self.invocation_time())
+        Ok(self.clock()?.now)
     }
 
-    /// The time of the outermost invocation running: read from the host's clock at its first
-    /// use and kept until it returns.
+    /// The time of the outermost invocation running: the moment it recorded, else the host's
+    /// clock at its first use, kept until it returns.
     fn invocation_time(&self) -> String {
+        if let Some(clock) = self.pinned_clock() {
+            return clock.now;
+        }
         if let Some(time) = self.frames.borrow().now.clone() {
             return time;
         }
-        let time = self
-            .clock
-            .borrow()
-            .as_ref()
-            .map_or_else(|| crate::core::EPOCH.to_owned(), |clock| clock());
+        let time = self.clock_now();
         self.frames.borrow_mut().now = Some(time.clone());
         time
     }
 
     /// In a scenario, commit what the running transaction did so far as one change, made by
-    /// whoever the scenario acts as now and at the time it acts at, and go on in a new one: each
-    /// `as who at time` block is a change of its own, which history and reflection show as
-    /// that person's at that time.
+    /// whoever the scenario runs as now and at the time it runs at, and go on in a new one: each
+    /// `invoke` is a change of its own, which history and reflection show as that person's at
+    /// that time.
     fn scenario_segment(&self) -> HResult<()> {
-        let at = self.invocation_time();
+        let at = self.change_time();
         let (txn, note) = {
             let mut frames = self.frames.borrow_mut();
             let FrameKind::Action(state) = &mut frames.top_mut()?.kind else {
@@ -1546,19 +1635,14 @@ impl Core {
                 return trap("only a scenario names people and acts as them");
             }
             let mut note = (*state.note).clone();
-            if let Some((who, time)) = state.acting_as.last() {
-                note.invoker.clone_from(&who.0);
-                note.at = Some(time.clone().unwrap_or(at));
-            } else {
-                note.at = Some(at);
+            match state.invocations.last() {
+                Some(inv) => {
+                    note.invoker.clone_from(&inv.who.0);
+                    note.at = Some(inv.at.clone().unwrap_or(at));
+                    note.from = inv.from.clone().or_else(|| state.note.from.clone());
+                }
+                None => note.at = Some(at),
             }
-            // What the change's resources were made from, when the block it commits is one
-            // (`from r { ... }`).
-            note.from = state
-                .made_from
-                .last()
-                .cloned()
-                .or_else(|| state.note.from.clone());
             note.touched = std::mem::take(&mut state.touched).into_iter().collect();
             (state.txn, note)
         };
@@ -1590,9 +1674,9 @@ impl Core {
             match &mut frames.top_mut()?.kind {
                 FrameKind::Action(state) => {
                     let who = state
-                        .acting_as
+                        .invocations
                         .last()
-                        .map_or_else(|| state.invoker.clone(), |(who, _)| who.clone());
+                        .map_or_else(|| state.invoker.clone(), |inv| inv.who.clone());
                     state.suggestions.push((who, aref.clone()));
                 }
                 FrameKind::Flow(_) => recorded = true,
@@ -1623,16 +1707,209 @@ impl Core {
         }
     }
 
-    /// `seed_state`: the view state a scenario stages a window at, before any window reads it.
-    fn seed_state(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
-        let code = a.h(0)?;
-        let layer = StateLayer::from_code(code)
-            .map_or_else(|| trap(format!("unknown view state layer {code}")), Ok)?;
-        let state = self.text(a.h(1)?)?;
-        let value = self.val_whole(a.h(2)?)?;
-        self.scenario_state(|_| ())?;
-        self.view_states.borrow_mut().seed(layer, &state, value);
-        ret_void()
+    /// `web.get`, `web.post` and what a reply is asked: its status, headers and body.
+    pub(crate) fn web_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
+            Imp::WebGet => {
+                let url = self.text(a.h(0)?)?;
+                let headers = self.web_headers(a.h(1)?)?;
+                let if_none_match = match self.val(a.h(2)?)? {
+                    Value::Opt(Some(tag)) => Some(match *tag {
+                        Value::Text(tag) => tag,
+                        other => {
+                            return trap(format!(
+                                "if_none_match takes text, got {}",
+                                other.kind_name()
+                            ));
+                        }
+                    }),
+                    Value::Opt(None) => None,
+                    other => {
+                        return trap(format!(
+                            "if_none_match takes text, got {}",
+                            other.kind_name()
+                        ));
+                    }
+                };
+                let request = crate::flow::WebRequest {
+                    method: "GET".to_owned(),
+                    url,
+                    headers,
+                    body: None,
+                    if_none_match,
+                };
+                let response = self.web(request)?;
+                self.ret_h(Value::Response(Rc::new(response)))
+            }
+            Imp::WebPost => {
+                let url = self.text(a.h(0)?)?;
+                let body = self.text(a.h(1)?)?;
+                let headers = self.web_headers(a.h(2)?)?;
+                let request = crate::flow::WebRequest {
+                    method: "POST".to_owned(),
+                    url,
+                    headers,
+                    body: Some(body),
+                    if_none_match: None,
+                };
+                let response = self.web(request)?;
+                self.ret_h(Value::Response(Rc::new(response)))
+            }
+            Imp::WebOk => {
+                let response = self.response_arg(a.h(0)?)?;
+                ret_i32(i32::from(response.ok()))
+            }
+            Imp::WebStatus => {
+                let response = self.response_arg(a.h(0)?)?;
+                crate::core::ret_i64(i64::from(response.status))
+            }
+            Imp::WebStatusText => {
+                let response = self.response_arg(a.h(0)?)?;
+                self.ret_h(Value::text(response.status_text.clone()))
+            }
+            Imp::WebHeaders => {
+                let response = self.response_arg(a.h(0)?)?;
+                let headers = response
+                    .headers
+                    .iter()
+                    .map(|line| Value::text(line.clone()))
+                    .collect();
+                self.ret_h(Value::List(headers))
+            }
+            Imp::WebBody => {
+                let response = self.response_arg(a.h(0)?)?;
+                let bytes = Rc::new(response.bytes());
+                self.ret_h(Value::Bytes(bytes))
+            }
+            Imp::WebText => {
+                let text = match self.val(a.h(0)?)? {
+                    Value::Response(response) => {
+                        String::from_utf8_lossy(&response.bytes()).into_owned()
+                    }
+                    Value::Bytes(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                    other => {
+                        return trap(format!("expected bytes, got {}", other.kind_name()));
+                    }
+                };
+                self.ret_h(Value::Text(text))
+            }
+            Imp::BytesLength => {
+                let n = match self.val(a.h(0)?)? {
+                    Value::Bytes(bytes) => bytes.len(),
+                    other => {
+                        return trap(format!("expected bytes, got {}", other.kind_name()));
+                    }
+                };
+                crate::core::ret_i64(i64::try_from(n).unwrap_or(i64::MAX))
+            }
+            _ => trap("not a web import"),
+        }
+    }
+
+    /// The headers a call was given: each `Name: value`.
+    fn web_headers(&self, h: i32) -> HResult<Vec<String>> {
+        match self.val(h)? {
+            Value::List(items) => items
+                .iter()
+                .map(|item| match item {
+                    Value::Text(line) => Ok(line.clone()),
+                    other => trap(format!(
+                        "headers take text like `Name: value`, got {}",
+                        other.kind_name()
+                    )),
+                })
+                .collect(),
+            other => trap(format!("headers take a list, got {}", other.kind_name())),
+        }
+    }
+
+    fn response_arg(&self, h: i32) -> HResult<Rc<crate::flow::WebResponse>> {
+        self.with_val(h, |v| match v {
+            Value::Response(response) => Ok(Rc::clone(response)),
+            other => trap(format!("expected a response, got {}", other.kind_name())),
+        })
+    }
+
+    /// Fetch `request` for the invocation running, once: its journal's next entry answers it
+    /// when it made the request before, else the transport does and the answer is recorded. A
+    /// host the package did not declare, one the workspace revoked, and any network failure are
+    /// values: the invocation carries on and sees why.
+    fn web(&self, request: crate::flow::WebRequest) -> HResult<crate::flow::WebResponse> {
+        {
+            let mut frames = self.frames.borrow_mut();
+            if let Some(mut effects) = frames.effects() {
+                match effects.next_entry() {
+                    Some(JournalEntry::Web {
+                        request: before,
+                        response,
+                    }) => {
+                        if before != request {
+                            return trap(format!(
+                                "the invocation diverged from its journal: it now asks for {} {}, not {} {}",
+                                request.method, request.url, before.method, before.url
+                            ));
+                        }
+                        return Ok(response);
+                    }
+                    Some(_) => {
+                        return trap(
+                            "the invocation diverged from its journal: expected a web request's entry",
+                        );
+                    }
+                    None => {}
+                }
+            }
+        }
+        let response = self.web_response(&request);
+        {
+            let mut frames = self.frames.borrow_mut();
+            if let Some(mut effects) = frames.effects() {
+                effects.push(JournalEntry::Web {
+                    request,
+                    response: response.clone(),
+                });
+            }
+        }
+        self.save_flow_journal()?;
+        Ok(response)
+    }
+
+    /// The answer `request` gets now: the transport's, or why it was not made.
+    fn web_response(&self, request: &crate::flow::WebRequest) -> crate::flow::WebResponse {
+        let Ok(module) = self.module_of_frame() else {
+            return crate::flow::WebResponse::of(crate::web::WebReply::failed(
+                "web is only available in actions and flows",
+            ));
+        };
+        let package = self.registry.borrow().package(&module);
+        let Some(package) = package else {
+            return crate::flow::WebResponse::of(crate::web::WebReply::failed(format!(
+                "no package wrote the code at {}",
+                module.0
+            )));
+        };
+        let app = package.meta.app.clone();
+        let Some(host) = crate::web::host_of(&request.url) else {
+            return crate::flow::WebResponse::of(crate::web::WebReply::failed(
+                "only http and https requests are made",
+            ));
+        };
+        if !crate::web::granted(&package.meta.web, &host) {
+            return crate::flow::WebResponse::of(crate::web::WebReply::failed(format!(
+                "`{app}` may not reach `{host}`: it declares web: [{}]",
+                package.meta.web.join(", ")
+            )));
+        }
+        if !self.authority.may_fetch(&app, &host) {
+            return crate::flow::WebResponse::of(crate::web::WebReply::failed(format!(
+                "the workspace revoked `{host}` for `{app}`"
+            )));
+        }
+        let reply = self.web.borrow().as_ref().map_or_else(
+            || crate::web::WebReply::failed("this host reaches no services"),
+            |transport| transport.fetch(request),
+        );
+        crate::flow::WebResponse::of(reply)
     }
 
     pub(crate) fn effect_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
@@ -1658,9 +1935,9 @@ impl Core {
                 let frames = self.frames.borrow();
                 let who = match &frames.top()?.kind {
                     FrameKind::Action(state) => state
-                        .acting_as
+                        .invocations
                         .last()
-                        .map_or(&state.invoker, |(who, _)| who),
+                        .map_or(&state.invoker, |inv| &inv.who),
                     // An action's requirement read where it is presented: the person looking,
                     // who would invoke it.
                     FrameKind::View(view) => &view.viewer,
@@ -1681,43 +1958,44 @@ impl Core {
                 }
                 self.ret_h(Value::Principal(who))
             }
-            Imp::InvokerPush => {
+            Imp::InvocationPush => {
                 let who = self.principal_arg(a.h(0)?)?;
-                let at = match self.val(a.h(1)?)? {
+                let at = match self.val_whole(a.h(1)?)? {
                     Value::Opt(Some(time)) => match *time {
                         Value::Text(t) => Some(t),
                         other => {
                             return trap(format!("expected a Time, got {}", other.kind_name()));
                         }
                     },
-                    _ => None,
+                    Value::Opt(None) => None,
+                    other => {
+                        return trap(format!("expected a Time, got {}", other.kind_name()));
+                    }
+                };
+                let from = match self.val_whole(a.h(2)?)? {
+                    Value::Opt(Some(source)) => match *source {
+                        Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
+                        other => {
+                            return trap(format!("expected a resource, got {}", other.kind_name()));
+                        }
+                    },
+                    Value::Opt(None) => None,
+                    other => {
+                        return trap(format!("expected a resource, got {}", other.kind_name()));
+                    }
                 };
                 self.scenario_segment()?;
-                self.scenario_state(|state| state.acting_as.push((who, at)))?;
+                let invocation = Invocation { who, at, from };
+                self.scenario_state(|state| state.invocations.push(invocation))?;
                 ret_void()
             }
-            Imp::InvokerPop => {
+            Imp::InvocationPop => {
                 self.scenario_segment()?;
                 self.scenario_state(|state| {
-                    state.acting_as.pop();
+                    state.invocations.pop();
                 })?;
                 ret_void()
             }
-            Imp::FromPush => {
-                let from = self.ref_arg(a.h(0)?)?;
-                let from = ResourceRef::clone(&from.target);
-                self.scenario_segment()?;
-                self.scenario_state(|state| state.made_from.push(from))?;
-                ret_void()
-            }
-            Imp::FromPop => {
-                self.scenario_segment()?;
-                self.scenario_state(|state| {
-                    state.made_from.pop();
-                })?;
-                ret_void()
-            }
-            Imp::SeedState => self.seed_state(a),
             Imp::PrincipalEq => {
                 let (x, y) = (self.principal_arg(a.h(0)?)?, self.principal_arg(a.h(1)?)?);
                 ret_i32(i32::from(x == y))
@@ -1765,6 +2043,11 @@ fn entry_value(entry: &JournalEntry) -> Value {
         JournalEntry::Read { value } => value.clone(),
         JournalEntry::Denied { reason, .. } | JournalEntry::Failed { reason, .. } => {
             Value::Error(reason.clone())
+        }
+        // A read of the clock, a draw and a fetch answer the code that made them where they
+        // are answered; none of them is a step's value.
+        JournalEntry::Clock(_) | JournalEntry::Random { .. } | JournalEntry::Web { .. } => {
+            Value::Unit
         }
     }
 }

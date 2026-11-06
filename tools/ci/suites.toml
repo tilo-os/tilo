@@ -799,13 +799,16 @@ inputs = [
   "apps/settings/surface.toml",
 ]
 readers = [
+  "crates/platform/tilolang-tilo/src/bench.rs",
   "crates/platform/tilolang-tilo/src/native.rs",
   "crates/platform/tilolang-tilo/src/platform_apps.rs",
   "crates/platform/tilolang-tilo/src/task.rs",
   "crates/platform/tilolang-tilo/tests/agent_queries.rs",
   "crates/platform/tilolang-tilo/tests/budgets.rs",
   "crates/platform/tilolang-tilo/tests/bundle.rs",
+  "crates/platform/tilolang-tilo/tests/capture.rs",
   "crates/platform/tilolang-tilo/tests/chat.rs",
+  "crates/platform/tilolang-tilo/tests/discussion.rs",
   "crates/platform/tilolang-tilo/tests/done_days.rs",
   "crates/platform/tilolang-tilo/tests/fixtures.rs",
   "crates/platform/tilolang-tilo/tests/history_views.rs",

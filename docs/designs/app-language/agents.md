@@ -5,9 +5,10 @@ ten minutes. A tilolang program on the door must be at least as terse, and bette
 the shell guesses, with authorship, history, permissions and undo. Today's `tilo_*` tools already
 work even with cheap models; tilolang has to beat them, measured (§9).
 
-Everything here is ordinary tilolang, not an agent dialect: `grep`, the chaining functions,
-assignments that compile to actions, and the typed decisions in §5 are available to every
-program (apps, shortcuts, flows, views). Agents just use them most. Calls that use a model
+Everything here is ordinary tilolang, not an agent dialect: `grep` and the words beside it are
+the agent library (`tilo.agent`), which a session has in scope and any package `use`s like a
+library; the chaining functions are methods of any list; assignments compile to actions; the
+typed decisions in §5 are ordinary declarations. Agents just use them most. Calls that use a model
 declare it like any effect (`uses model`, like `uses web`), and their answers are recorded.
 
 ## 1. One tool, programs, sessions
@@ -18,6 +19,10 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
   is allowed. Anything else is a compile error that names what is allowed, so nothing denied is
   ever attempted.
 - A session keeps its `let` values between calls.
+- A session's words come from the agent library (`tilo.agent`): `grep`, `find`, `read`,
+  `describe`, `print` and `me`, typed tilolang declarations whose implementations are host
+  imports. A session has them in scope with no `use`; a package writes `use tilo.agent as
+  agent` and calls `agent.grep(...)`.
 - A program runs sandboxed as the task, in a tilolang host whose author is that task.
 - **A task is many programs.** Exploring, dead ends, failures, asks, intermediate results: each
   call is one step; the task is the session of steps, with its trail and pending asks. You can
@@ -127,8 +132,8 @@ opens them. The task host is not an app, so it gets its own admission instead of
 
 The session's first message says where it is: the workspace, who it acts for, the task's limits,
 and what the person was pointing at if they pointed (canvas.md). There is no `look` call. Words
-for the obvious things: `me`, `this` (what the person pointed at), `here` (what `this` is in),
-and times like `today`, `-7d`.
+for the obvious things: `me` (the agent library's, the person the session acts for), `this`
+(what the person pointed at), `here` (what `this` is in), and times like `today`, `-7d`.
 
 It also lists one line per app the task can use; `describe` gives the detail on demand.
 
@@ -146,8 +151,10 @@ Three familiar shapes:
 - **Chaining with key paths** for everything after: `filter`, `map`, `sort_by`, `count_by`,
   `group`, `take`, `each`, `single` (exactly one, or an error listing the candidates).
 
-Sources are values: other apps' roots combine (`chat.messages + mail.messages + notes`), and
-relationships are system fields (`replies`, backlinks, `created.by`, `written_by`).
+`grep` and `find` are the agent library's (§1); a package reads through `agent.grep(...)` and
+`agent.find(...)` the same way. Sources are values: other apps' roots combine (`chat.messages +
+mail.messages + notes`), and relationships are system fields (`replies`, backlinks, `created.by`,
+`written_by`).
 
 Every result says what it couldn't cover: "38 match; 54 have no place; 12 have unnamed faces".
 An agent can see when an answer is incomplete and widen the search in the same program.
@@ -192,6 +199,8 @@ asks.where("asks me to do something", above: 0.8)
 stays reproducible and undoable.
 
 ## 6. Reading and describing
+
+`read`, `describe` and `print` are the agent library's words, as `grep` and `find` are (§1).
 
 - `read(r, matching:, around:)` returns text with anchors; big content is paged and states its
   size first. Reading never marks anything read for the person.

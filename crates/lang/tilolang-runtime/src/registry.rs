@@ -22,6 +22,9 @@ pub struct FieldInfo {
     pub name: String,
     pub ty: Ty,
     pub kind: FieldKind,
+    /// `personal today: Bool = false`: one value per person, in a record everyone shares
+    /// ([`tilolang::personal`]).
+    pub personal: bool,
     /// What the field is of its type, where it declares it (`(title)`, `(done)`, `(time of:
     /// due)`): what a sentence about a change to it reads with ([`crate::did`]).
     pub role: Option<FieldRole>,
@@ -78,6 +81,9 @@ pub struct Package {
     pub hash: ModuleHash,
     pub meta: Meta,
     pub types: Vec<Rc<TypeInfo>>,
+    /// Each function the module exports, as a profile names it: from the metadata the package
+    /// was loaded with, and the lines its module says its declarations are written on.
+    units: std::collections::BTreeMap<String, Rc<crate::cost::Unit>>,
     /// A package of an app this runtime does not run: its records are that app's, read from the
     /// readings it publishes, and its actions are invoked at its own door (`crate::delegate`).
     pub foreign: bool,
@@ -91,18 +97,40 @@ impl Package {
     ///
     /// A message naming the field whose type or merge kind is not understood.
     pub fn new(hash: ModuleHash, meta: Meta) -> Result<Self, String> {
+        Self::with_lines(hash, meta, &[])
+    }
+
+    /// [`Package::new`], with the lines the module says its declarations are written on
+    /// (`tilolang.lines`): what a profile names a unit's place by.
+    ///
+    /// # Errors
+    ///
+    /// As [`Package::new`].
+    pub fn with_lines(
+        hash: ModuleHash,
+        meta: Meta,
+        lines: &[tilolang::meta::Line],
+    ) -> Result<Self, String> {
         let types = meta
             .types
             .iter()
             .map(|t| type_info(t, &meta.app).map(Rc::new))
             .collect::<Result<Vec<_>, _>>()?;
+        let units = crate::cost::units_of(&meta, lines);
         Ok(Self {
             hash,
             meta,
             types,
+            units,
             foreign: false,
             code: true,
         })
+    }
+
+    /// The unit `export` names; one no declaration names (an agent block) has none.
+    #[must_use]
+    pub fn unit(&self, export: &str) -> Option<Rc<crate::cost::Unit>> {
+        self.units.get(export).map(Rc::clone)
     }
 
     /// The description of an app this runtime does not run: its types, actions and views, and
@@ -180,6 +208,7 @@ fn type_info(t: &TypeMeta, app: &str) -> Result<TypeInfo, String> {
                 name: f.name.clone(),
                 ty,
                 kind,
+                personal: f.personal,
                 role: f.role.clone(),
                 default: f.default.clone(),
                 derived,

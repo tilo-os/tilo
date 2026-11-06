@@ -25,6 +25,12 @@ aspect ratio and text size. Getting it wrong should take effort. The engine unde
   gap and every padding, `fr` for shares of space.
 - Per axis: `hug` (default), `fill` or `fill(2)`, `min:` and `max:`, and `aspect:` (e.g. `16/9`).
   No absolute positions; overlays use `layers`.
+- The fit is the view's, wherever it is put: a view that says `fill` fills the slot it is in,
+  for a component with a body slot as for a `stack`, `row`, `grid` or `page`. A card's body, a
+  window's content and a nav shell's column hold their child at the fit its node wrote, so a
+  mailbox or a note placed in a place is the height of the window, never one line. The host
+  carries that fit into the component (`ui.widget::Fitted`); the component's slot takes it, so
+  no app or shell writes a height to make it so.
 
 ## 3. Primitives
 

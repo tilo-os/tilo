@@ -12,13 +12,11 @@ use crate::record::ShareAccess;
 use crate::resource::ChatShell;
 use crate::testing::{chain, message_item, mounted_rows};
 
-const PLAN: &str = "record:so.tilo.notes:plan";
-
 fn share(app: &mut TestApp<ChatShell>, access: Option<&str>) -> crate::model::Message {
     let mut arguments = json!({
         "channel": "c_chat",
-        "reference": {"kind": "notes.workspace", "id": "plan", "label": "Plan"},
-        "source_provider": PLAN,
+        "attached": {"app": "so.tilo.notes", "record": "plan",
+            "kind": "notes.workspace", "id": "plan", "label": "Plan"},
     });
     if let Some(access) = access {
         arguments["access"] = json!(access);
@@ -68,8 +66,12 @@ fn a_shared_window_is_a_live_message_only_its_sharer_ends() {
         shared.text, "",
         "the card says what it is; no text is made up"
     );
-    assert_eq!(shared.source_provider.as_deref(), Some(PLAN));
-    assert_eq!(shared.reference.as_ref().unwrap().label, "Plan");
+    let at = shared.resource().expect("it names its record");
+    assert_eq!(
+        (at.app.as_str(), at.record.as_deref()),
+        ("so.tilo.notes", Some("plan"))
+    );
+    assert_eq!(at.reference.label, "Plan");
     let read = app
         .call_on(&message_item(&shared.id), "read-message", json!({}))
         .unwrap()
@@ -166,14 +168,17 @@ fn a_window_is_shared_whole_from_its_record_into_a_channel_that_takes_posts() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
     for arguments in [
         // A part of a resource is a reference, not a window.
-        json!({"channel": "c_chat", "source_provider": PLAN,
-            "reference": {"kind": "notes.workspace", "id": "plan", "label": "Plan",
+        json!({"channel": "c_chat",
+            "attached": {"app": "so.tilo.notes", "record": "plan",
+                "kind": "notes.workspace", "id": "plan", "label": "Plan",
                 "span": {"start": 1, "end": 4, "unit": "Chars"}}}),
         // A window lives in a record; a path or a link is not one.
-        json!({"channel": "c_chat", "source_provider": "/home/ada/plan.md",
-            "reference": {"kind": "notes.workspace", "id": "plan", "label": "Plan"}}),
-        json!({"channel": "c_voice", "source_provider": PLAN,
-            "reference": {"kind": "notes.workspace", "id": "plan", "label": "Plan"}}),
+        json!({"channel": "c_chat",
+            "attached": {"app": "/home/ada/plan.md", "record": "plan",
+                "kind": "notes.workspace", "id": "plan", "label": "Plan"}}),
+        json!({"channel": "c_voice",
+            "attached": {"app": "so.tilo.notes", "record": "plan",
+                "kind": "notes.workspace", "id": "plan", "label": "Plan"}}),
     ] {
         assert!(app.call_on(&chain(), "share-window", arguments).is_err());
     }
@@ -182,8 +187,9 @@ fn a_window_is_shared_whole_from_its_record_into_a_channel_that_takes_posts() {
         app.call_on(
             &chain(),
             "share-window",
-            json!({"channel": "c_chat", "source_provider": PLAN,
-                "reference": {"kind": "notes.workspace", "id": "plan", "label": "Plan"}})
+            json!({"channel": "c_chat",
+                "attached": {"app": "so.tilo.notes", "record": "plan",
+                    "kind": "notes.workspace", "id": "plan", "label": "Plan"}})
         )
         .is_err(),
         "who may not post may not share"
@@ -267,7 +273,10 @@ fn the_card_embeds_the_resource_its_desktop_draws_and_ends_as_a_neutral_card() {
     app.harness().click_at(middle.x, middle.y);
     app.settle();
     assert!(
-        app.chat().resource_navigation.status(&shared.id).is_some(),
+        app.chat()
+            .resource_navigation
+            .status(&shared.id, 0)
+            .is_some(),
         "the press reached the card"
     );
 
@@ -322,8 +331,12 @@ fn the_desktop_shares_and_stops_through_chat_and_hears_what_is_shared() {
         .rfind(|m| m.share.is_some())
         .expect("shared from the panel");
     assert_eq!(shared.share.as_ref().unwrap().access, ShareAccess::Edit);
-    assert_eq!(shared.source_provider.as_deref(), Some(PLAN));
-    let reference = shared.reference.as_ref().unwrap();
+    let at = shared.resource().expect("it names its record");
+    assert_eq!(
+        (at.app.as_str(), at.record.as_deref()),
+        ("so.tilo.notes", Some("plan"))
+    );
+    let reference = &at.reference;
     assert_eq!(
         (reference.id.as_str(), reference.kind.as_str()),
         ("notes.workspace/pages/p1", "notes.workspace.pages"),

@@ -131,6 +131,11 @@ pub struct Facts {
     pub invokes: BTreeSet<ActionRef>,
     pub action_values: BTreeSet<ActionRef>,
     pub views: BTreeSet<usize>,
+    /// The effects the body's own code reads; what it reaches through a call is
+    /// [`crate::effects::reached`]'s.
+    pub effects: BTreeSet<crate::effects::Effect>,
+    /// The module's own functions and actions this one calls.
+    pub calls: BTreeSet<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -145,6 +150,10 @@ pub struct Func {
     pub locals: Vec<Ty>,
     pub body: Vec<Stmt>,
     pub facts: Facts,
+    /// Where the declaration it was lowered from starts, in the package source's span space
+    /// (see [`crate::diag::Placed`]): the line a profile names it by. None for a function no
+    /// declaration is written for, and for a block.
+    pub at: Option<usize>,
 }
 
 #[derive(Clone, Debug, Default)]

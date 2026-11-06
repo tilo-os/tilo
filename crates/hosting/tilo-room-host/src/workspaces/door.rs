@@ -176,6 +176,36 @@ impl super::Workspaces {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_files::native::migration::assert_golden_bytes;
+
+    /// The door file this build writes: one person kept out, when they were
+    /// removed. Kept so a workspace's door goes on reading the same way; a
+    /// field added, removed or reordered changes these bytes.
+    const KEPT: &str =
+        "010107070707070707070707070707070707070707070707070707070707070707078080a8b1e39fe7cb17";
+
+    #[test]
+    fn the_door_file_kept_here_reads_and_writes_as_it_is() {
+        assert_golden_bytes(
+            "a workspace's door",
+            &hex::decode(KEPT).unwrap(),
+            |bytes| {
+                let stored: Stored = postcard::from_bytes(bytes).unwrap();
+                assert_eq!(stored.version, FORMAT.version);
+                assert_eq!(stored.removed, BTreeMap::from([([7; 32], KEPT_REMOVED_AT)]));
+            },
+            || postcard::to_stdvec(&kept()).unwrap(),
+        );
+    }
+
+    const KEPT_REMOVED_AT: u64 = 1_700_000_000_000_000_000;
+
+    fn kept() -> Stored {
+        Stored {
+            version: FORMAT.version,
+            removed: BTreeMap::from([([7; 32], KEPT_REMOVED_AT)]),
+        }
+    }
 
     #[test]
     fn a_removed_person_is_refused_for_the_day_and_survives_a_restart() {

@@ -204,7 +204,7 @@ bins = ["tilo-control"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-control", to = "/usr/libexec/tilo/tilo-control", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-control" },
+  { link = "../libexec/tilo/tilo-control", to = "/usr/bin/tilo-control" },
 ]
 
 # The runtime host a login runs: an app started in a Tilo login outside the
@@ -219,7 +219,7 @@ dev_features = ["tilo-runtime/dev-overrides"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-runtime-mcp", to = "/usr/libexec/tilo/tilo-runtime-mcp", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-runtime-mcp" },
+  { link = "../libexec/tilo/tilo-runtime-mcp", to = "/usr/bin/tilo-runtime-mcp" },
 ]
 
 [[component]]
@@ -231,7 +231,7 @@ bins = ["tilo-launcher"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-launcher", to = "/usr/libexec/tilo/tilo-launcher", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-launcher" },
+  { link = "../libexec/tilo/tilo-launcher", to = "/usr/bin/tilo-launcher" },
 ]
 
 [[component]]
@@ -294,7 +294,7 @@ bins = ["tilo-install"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-install", to = "/usr/libexec/tilo/tilo-install", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-install" },
+  { link = "../libexec/tilo/tilo-install", to = "/usr/bin/tilo-install" },
 ]
 
 [[component]]
@@ -306,7 +306,7 @@ bins = ["tilo-app-package"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-app-package", to = "/usr/libexec/tilo/tilo-app-package", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-app-package" },
+  { link = "../libexec/tilo/tilo-app-package", to = "/usr/bin/tilo-app-package" },
 ]
 
 [[component]]
@@ -348,7 +348,7 @@ bins = ["tilo-runtime-bundle"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-runtime-bundle", to = "/usr/libexec/tilo/tilo-runtime-bundle", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-runtime-bundle" },
+  { link = "../libexec/tilo/tilo-runtime-bundle", to = "/usr/bin/tilo-runtime-bundle" },
 ]
 
 [[component]]
@@ -378,7 +378,7 @@ files = [
   { from = "@manifest/usr/lib/systemd/user/tilo-ush.service", to = "/usr/lib/systemd/user/tilo-ush.service", mode = "0644" },
   # The legacy VM service a guest's app shims reach through the broker.
   { from = "tilo-legacy", to = "/usr/libexec/tilo/tilo-legacy", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-legacy" },
+  { link = "../libexec/tilo/tilo-legacy", to = "/usr/bin/tilo-legacy" },
 ]
 
 [[component]]
@@ -391,9 +391,9 @@ user_units = ["tilo-models.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-model-manager", to = "/usr/libexec/tilo/tilo-model-manager", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-model-manager" },
+  { link = "../libexec/tilo/tilo-model-manager", to = "/usr/bin/tilo-model-manager" },
   { from = "tilo-speech-worker", to = "/usr/libexec/tilo/tilo-speech-worker", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-speech-worker" },
+  { link = "../libexec/tilo/tilo-speech-worker", to = "/usr/bin/tilo-speech-worker" },
   { from = "@manifest/usr/share/licenses/tilo-speech-worker/LICENSE", to = "/usr/share/licenses/tilo-speech-worker/LICENSE", mode = "0644" },
 ]
 
@@ -408,9 +408,9 @@ user_units = ["tilo-model-gateway.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-model-gateway", to = "/usr/libexec/tilo/tilo-model-gateway", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-model-gateway" },
+  { link = "../libexec/tilo/tilo-model-gateway", to = "/usr/bin/tilo-model-gateway" },
   { from = "tilo-model-http", to = "/usr/libexec/tilo/tilo-model-http", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-model-http" },
+  { link = "../libexec/tilo/tilo-model-http", to = "/usr/bin/tilo-model-http" },
 ]
 
 [[component]]
@@ -423,7 +423,7 @@ user_units = ["tilo-secret-service.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-secret-service", to = "/usr/libexec/tilo/tilo-secret-service", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-secret-service" },
+  { link = "../libexec/tilo/tilo-secret-service", to = "/usr/bin/tilo-secret-service" },
 ]
 
 # The shared runtime and every packaged thin app. One component because Rust
@@ -596,7 +596,7 @@ bins = ["tilo-identity"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-identity", to = "/usr/libexec/tilo/tilo-identity", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-identity" },
+  { link = "../libexec/tilo/tilo-identity", to = "/usr/bin/tilo-identity" },
 ]
 
 [[component]]
@@ -980,7 +980,7 @@ bins = ["tilo-test-registry"]
 layer = "dev-tools"
 files = [
   { from = "tilo-test-registry", to = "/usr/libexec/tilo/tilo-test-registry", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-test-registry" },
+  { link = "../libexec/tilo/tilo-test-registry", to = "/usr/bin/tilo-test-registry" },
 ]
 
 # ---- Boot: effective only after a cold boot ---------------------------------

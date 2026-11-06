@@ -1518,6 +1518,10 @@ build_us = 20000
 steady.p95_us = 1500
 steady.draw_p95_us = 1200
 steady.allocs_per_frame = 400
+# A frame while three fingers carry the strip takes the same path as a steady
+# one; the budget is the display's own 60 Hz frame, so a pan past it is one a
+# person feels.
+pan.p95_us = 16700
 # A settled desk finds no work in the frames it is offered: a frame that
 # draws nothing is a frame nobody asked for. Measured 10 µs a frame.
 idle_working_frames = 0
@@ -1534,6 +1538,9 @@ build_us = 40000
 steady.p95_us = 5000
 steady.draw_p95_us = 4000
 steady.allocs_per_frame = 10500
+# A strip carried while the apps paint inside its windows; the budget is the
+# display's own 60 Hz frame, so a pan past it is one a person feels.
+pan.p95_us = 16700
 # Measured: 1.3 ms for the frame a keystroke takes.
 typing.p95_us = 5000
 # A settled desk finds no work in the frames it is offered here either: an

@@ -17,7 +17,7 @@ use super::columns::{
 };
 use super::derived;
 use super::lists::Entry;
-use super::reflect::{self, CREATED, Stamp, UPDATED};
+use super::reflect::{self, CREATED, Ends, Stamp, UPDATED};
 use super::{CYCLES, IN, IndexError, KEY, TYPE, Writer};
 use crate::items::{Items, Nested, fits};
 use crate::reads::{Placed, default_value, field_of_slot, type_at};
@@ -509,6 +509,17 @@ struct Whole<'a> {
     resolved: &'a Resolved,
 }
 
+/// Write what `end` holds of the resource's versions into an empty sink: the first and the
+/// last version, and when each field last changed ([`reflect::Ends`]).
+fn write_ends(sink: &mut impl Sink, resource: &str, end: &Ends) -> Result<(), IndexError> {
+    sink.put_field(resource, CREATED, &end.first.value())?;
+    sink.put_field(resource, UPDATED, &end.last.value())?;
+    for (field, stamp) in &end.fields {
+        sink.put_field(resource, &reflect::changed_field(field), &stamp.value())?;
+    }
+    Ok(())
+}
+
 /// The value of `field` of the resource at `path` as the sink holds it, its default when it
 /// holds none; a collection as the [`FieldValue::Counter`] of its items.
 pub(super) fn field_value(
@@ -569,8 +580,8 @@ impl<'d> Derive<'d> {
     }
 
     /// Derive every record of `app` into `sink`, which holds none of them, with the versions
-    /// `ends` holds of its resources: the first and last of the record's whole log
-    /// ([`reflect::ends_of`]).
+    /// `ends` holds of its resources: the first and last of the record's whole log and the
+    /// last change of each field ([`reflect::ends_of`]).
     ///
     /// # Errors
     /// The sink cannot be written.
@@ -578,17 +589,16 @@ impl<'d> Derive<'d> {
         &mut self,
         sink: &mut impl Sink,
         app: &str,
-        ends: &BTreeMap<String, (Stamp, Stamp)>,
+        ends: &BTreeMap<String, Ends>,
     ) -> Result<(), IndexError> {
         // Written first, so the columns of each resource are derived with its versions; those
         // of resources the record no longer holds go again once the records are derived.
-        let of_app: Vec<(&String, &(Stamp, Stamp))> = ends
+        let of_app: Vec<(&String, &Ends)> = ends
             .iter()
             .filter(|(resource, _)| self.of_app(resource, app))
             .collect();
-        for (resource, (first, last)) in &of_app {
-            sink.put_field(resource, CREATED, &first.value())?;
-            sink.put_field(resource, UPDATED, &last.value())?;
+        for (resource, end) in &of_app {
+            write_ends(sink, resource, end)?;
         }
         self.all(sink, app)?;
         for (resource, _) in of_app {
@@ -603,7 +613,6 @@ impl<'d> Derive<'d> {
     fn of_app(&self, path: &str, app: &str) -> bool {
         self.docs.get(doc_of(path)).is_some_and(|(a, _)| a == app)
     }
-
     /// Take in the versions `ends` holds (the first and last versions of the resources new
     /// changes changed, [`reflect::ends_of`]) of the resources of `app` the sink holds, after
     /// the changes themselves were derived: each resource's first version stays unless one
@@ -616,28 +625,58 @@ impl<'d> Derive<'d> {
         &mut self,
         sink: &mut impl Sink,
         app: &str,
-        ends: &BTreeMap<String, (Stamp, Stamp)>,
+        ends: &BTreeMap<String, Ends>,
     ) -> Result<(), IndexError> {
-        for (resource, (first, last)) in ends {
+        for (resource, end) in ends {
             if !self.of_app(resource, app) {
                 continue;
             }
             let Some(schema) = sink.text(resource, TYPE)?.and_then(|ty| lookup(&ty)) else {
                 continue;
             };
-            let held = |sink: &mut _, field| -> Result<Option<Stamp>, IndexError> {
+            let held = |sink: &mut _, field: &str| -> Result<Option<Stamp>, IndexError> {
                 Ok(Sink::field(sink, resource, field)?
                     .as_ref()
                     .and_then(Stamp::of_value))
             };
+            // A step took a change to it back: its versions are its whole log read anew, so
+            // they replace what the index holds, and each field it was made with says so.
+            if end.restored {
+                let mut end = end.clone();
+                let made = end.first.clone();
+                for field in &schema.fields {
+                    end.fields
+                        .entry(field.id.clone())
+                        .or_insert_with(|| made.clone());
+                }
+                write_ends(sink, resource, &end)?;
+                self.links(sink, resource, schema)?;
+                if sink.keeps_columns() {
+                    let placed = placed_in(sink, resource)?;
+                    let scope = placed
+                        .as_ref()
+                        .map(|(holder, coll, key)| (holder.as_str(), coll.as_str(), key.as_str()));
+                    for field in [CREATED, UPDATED] {
+                        self.index_columns(sink, resource, schema, scope, Some(field))?;
+                    }
+                }
+                continue;
+            }
             let mut moved = Vec::new();
-            if held(sink, CREATED)?.is_none_or(|held| first.before(&held)) {
-                sink.put_field(resource, CREATED, &first.value())?;
+            if held(sink, CREATED)?.is_none_or(|held| end.first.before(&held)) {
+                sink.put_field(resource, CREATED, &end.first.value())?;
                 moved.push(CREATED);
             }
-            if held(sink, UPDATED)?.is_none_or(|held| held.before(last)) {
-                sink.put_field(resource, UPDATED, &last.value())?;
+            if held(sink, UPDATED)?.is_none_or(|held| held.before(&end.last)) {
+                sink.put_field(resource, UPDATED, &end.last.value())?;
                 moved.push(UPDATED);
+            }
+            // When each field last changed, which a list groups or sorts by.
+            for (field, stamp) in &end.fields {
+                let id = reflect::changed_field(field);
+                if held(sink, &id)?.is_none_or(|held| held.before(stamp)) {
+                    sink.put_field(resource, &id, &stamp.value())?;
+                }
             }
             if moved.is_empty() {
                 continue;
@@ -783,90 +822,131 @@ impl<'d> Derive<'d> {
             {
                 continue;
             }
-            let now = columns::values(column, schema, &mut |field| field_value(sink, path, field))?;
-            let held = sink
-                .text(path, &column_field(&column.name))?
-                .map(|h| split_values(&h));
-            if held.as_ref() != Some(&now) {
-                let before = held.unwrap_or_default();
-                if column.filter {
-                    let ty = &schema.id;
-                    for value in before.iter().filter(|v| !now.contains(v)) {
-                        sink.remove_entry(&type_list(ty, &column.name), &type_entry(value, path))?;
-                        if column.kind == crate::schema::ColumnKind::Ident {
-                            sink.remove_entry(
-                                &columns::reversed_list(ty, &column.name),
-                                &type_entry(&reversed(value), path),
-                            )?;
-                        }
-                    }
-                    for value in now.iter().filter(|v| !before.contains(v)) {
-                        self.add(sink, type_list(ty, &column.name), type_entry(value, path))?;
-                        if column.kind == crate::schema::ColumnKind::Ident {
-                            self.add(
-                                sink,
-                                columns::reversed_list(ty, &column.name),
-                                type_entry(&reversed(value), path),
-                            )?;
-                        }
-                    }
-                }
-                if let Some((parent, coll, key)) = scope
-                    && let Some(id) = id_of(path)
-                {
-                    let list = scope_list(parent, coll, &column.name);
-                    let counted = columns::counted(column);
-                    for value in before.iter().filter(|v| !now.contains(v)) {
-                        sink.remove_entry(&list, &scope_entry(value, key, id))?;
-                        if counted {
-                            sink.count(&list, value, -1)?;
-                        }
-                    }
-                    for value in now.iter().filter(|v| !before.contains(v)) {
-                        sink.insert(&list, scope_entry(value, key, id))?;
-                        if counted {
-                            sink.count(&list, value, 1)?;
-                        }
-                    }
-                }
-                sink.put_text(path, &column_field(&column.name), &join_values(&now))?;
+            // A personal field holds a value per person: one column per person of the record,
+            // each named for theirs (`id@person`), so what a filter, an order or a count reads
+            // is the value of whoever asks, from the index.
+            let each: Vec<crate::schema::ColumnSchema> = match column
+                .field
+                .as_deref()
+                .and_then(|id| schema.field(id))
+                .filter(|field| field.personal)
+            {
+                Some(field) => match field_value(sink, path, field)? {
+                    FieldValue::Entries(entries) => entries
+                        .into_iter()
+                        .map(|(person, _)| {
+                            let mut each = column.clone();
+                            each.name = tilolang::personal::id(&field.id, &person);
+                            each
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                },
+                None => vec![column.clone()],
+            };
+            for each in &each {
+                let now =
+                    columns::values(each, schema, &mut |field| field_value(sink, path, field))?;
+                self.column(sink, path, schema, (each, split), (scope, &mut open), &now)?;
+                out.push((each.name.clone(), now));
             }
-            // The item's values as they count for a place: its own while it is open, none once
-            // it is finished. The counts keep them apart from the finished items', so a place's
-            // count reads how many it holds without reading the run.
-            if split {
-                let open = if let Some(open) = open {
-                    open
-                } else {
-                    let held = open_of(sink, path, schema)?;
-                    open = Some(held);
-                    held
-                };
-                let counted = if open { now.clone() } else { Vec::new() };
-                let was = sink
-                    .text(path, &open_field(&column.name))?
-                    .map(|h| split_values(&h));
-                if was.as_ref() != Some(&counted) {
-                    let before = was.unwrap_or_default();
-                    let list = scope.map(|(parent, coll, _)| {
-                        columns::open_list(&scope_list(parent, coll, &column.name))
-                    });
-                    for value in before.iter().filter(|v| !counted.contains(v)) {
-                        if let Some(list) = &list {
-                            sink.count(list, value, -1)?;
-                        }
-                    }
-                    for value in counted.iter().filter(|v| !before.contains(v)) {
-                        if let Some(list) = &list {
-                            sink.count(list, value, 1)?;
-                        }
-                    }
-                    sink.put_text(path, &open_field(&column.name), &join_values(&counted))?;
-                }
-            }
-            out.push((column.name.clone(), now));
         }
         Ok(out)
+    }
+
+    /// Bring the entries of one column of the resource at `path` (of the type `schema`) in line
+    /// with the values `now` it holds: the column's across the workspace, the collection's, the
+    /// open counts a place reads, and what it held.
+    fn column(
+        &mut self,
+        sink: &mut impl Sink,
+        path: &str,
+        schema: &TypeSchema,
+        (column, split): (&crate::schema::ColumnSchema, bool),
+        (scope, open): (Option<Scope<'_>>, &mut Option<bool>),
+        now: &[String],
+    ) -> Result<(), IndexError> {
+        let held = sink
+            .text(path, &column_field(&column.name))?
+            .map(|h| split_values(&h));
+        if held.as_deref() != Some(now) {
+            let before = held.unwrap_or_default();
+            if column.filter {
+                let ty = &schema.id;
+                for value in before.iter().filter(|v| !now.contains(v)) {
+                    sink.remove_entry(&type_list(ty, &column.name), &type_entry(value, path))?;
+                    if column.kind == crate::schema::ColumnKind::Ident {
+                        sink.remove_entry(
+                            &columns::reversed_list(ty, &column.name),
+                            &type_entry(&reversed(value), path),
+                        )?;
+                    }
+                }
+                for value in now.iter().filter(|v| !before.contains(v)) {
+                    self.add(sink, type_list(ty, &column.name), type_entry(value, path))?;
+                    if column.kind == crate::schema::ColumnKind::Ident {
+                        self.add(
+                            sink,
+                            columns::reversed_list(ty, &column.name),
+                            type_entry(&reversed(value), path),
+                        )?;
+                    }
+                }
+            }
+            if let Some((parent, coll, key)) = scope
+                && let Some(id) = id_of(path)
+            {
+                let list = scope_list(parent, coll, &column.name);
+                let counted = columns::counted(column);
+                for value in before.iter().filter(|v| !now.contains(v)) {
+                    sink.remove_entry(&list, &scope_entry(value, key, id))?;
+                    if counted {
+                        sink.count(&list, value, -1)?;
+                    }
+                }
+                for value in now.iter().filter(|v| !before.contains(v)) {
+                    sink.insert(&list, scope_entry(value, key, id))?;
+                    if counted {
+                        sink.count(&list, value, 1)?;
+                    }
+                }
+            }
+            sink.put_text(path, &column_field(&column.name), &join_values(now))?;
+        }
+        // The item's values as they count for a place: its own while it is open, none once it
+        // is finished. The counts keep them apart from the finished items', so a place's count
+        // reads how many it holds without reading the run.
+        if split {
+            let is_open = if let Some(is_open) = *open {
+                is_open
+            } else {
+                let held = open_of(sink, path, schema)?;
+                *open = Some(held);
+                held
+            };
+            let counted: Vec<String> = if is_open { now.to_vec() } else { Vec::new() };
+            let was = sink
+                .text(path, &open_field(&column.name))?
+                .map(|h| split_values(&h));
+            if was.as_ref() != Some(&counted) {
+                let before = was.unwrap_or_default();
+                let list = scope.map(|(parent, coll, _)| {
+                    columns::open_list(&scope_list(parent, coll, &column.name))
+                });
+                for value in before.iter().filter(|v| !counted.contains(v)) {
+                    if let Some(list) = &list {
+                        sink.count(list, value, -1)?;
+                    }
+                }
+                for value in counted.iter().filter(|v| !before.contains(v)) {
+                    if let Some(list) = &list {
+                        sink.count(list, value, 1)?;
+                    }
+                }
+                sink.put_text(path, &open_field(&column.name), &join_values(&counted))?;
+            }
+        }
+        Ok(())
     }
 
     /// Put `entry` in `list`: now, or with the rest of a whole derivation's.
@@ -1011,9 +1091,11 @@ impl<'d> Derive<'d> {
                     .as_ref(),
             );
             for (column, values) in values {
-                let schema = item_schema.column(&column);
-                let counted = schema.is_some_and(columns::counted);
-                let split = schema.is_some_and(|c| columns::open_split(c, item_schema.done()));
+                let schema = item_schema.column_for(&column);
+                let counted = schema.as_ref().is_some_and(columns::counted);
+                let split = schema
+                    .as_ref()
+                    .is_some_and(|c| columns::open_split(c, item_schema.done()));
                 let name = scope_list(path, &field.id, &column);
                 for value in values {
                     if counted {
@@ -1135,11 +1217,14 @@ impl<'d> Derive<'d> {
         // An item back in a collection was dropped with its versions when it left: they are
         // read again from the whole log, as a derivation anew reads them.
         if sink.keeps_columns() {
-            let ends = reflect::ends_of(&self.doc.committed_document().get_changes(&[]));
-            for (resource, (first, last)) in &ends {
+            let ends = reflect::ends_of(
+                &self.doc.committed_document().get_changes(&[]),
+                self.doc,
+                self.docs,
+            );
+            for (resource, end) in &ends {
                 if doc_of(resource) == doc {
-                    sink.put_field(resource, CREATED, &first.value())?;
-                    sink.put_field(resource, UPDATED, &last.value())?;
+                    write_ends(sink, resource, end)?;
                 }
             }
         }

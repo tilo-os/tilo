@@ -529,7 +529,11 @@ harness does — because a builder runs with its environment, not this machine's
 
 `--start` starts `dist/dev/nested-session.sh` headless on lavapipe alone
 (`--software`: it never opens this machine's GPU and never touches a live
-desktop) on a private runtime directory and a throwaway identity. The apps it
+desktop) on a private runtime directory and a throwaway identity. The session
+also starts its own surfaces — the lock screen, the quick settings panel and the
+on-screen keyboard, beside its executable — and its own sound server: `pipewire`,
+`pipewire-pulse`, `wireplumber` and `pw-cli` must be on `PATH`, and it refuses to
+start without them rather than start as half a desktop. The apps it
 installs are `--apps` (default: Notes, Files, Chat, Settings, Terminal), signed
 with the session's own key and installed through `tilo-install` into the
 session's store — the same path the image's `/usr/share/tilo-apps` is built

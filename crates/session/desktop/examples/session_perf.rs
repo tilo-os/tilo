@@ -360,6 +360,51 @@ fn measure_frames(harness: &mut FrameHarness, name: &str, frames: usize) -> Phas
     }
 }
 
+/// Frames while three fingers carry the strip: each frame takes the hand's
+/// next report and draws the strip where it has carried it, back and forth
+/// across the windows.
+fn measure_pan(harness: &mut FrameHarness, name: &str, frames: usize, extent: f64) -> Phase {
+    /// Nine pixels of finger travel a frame, the pace of a brisk pan.
+    const STEP: f64 = 9.0;
+    /// The hand's report as this frame starts, and the frame that draws it.
+    fn report_frame(harness: &mut FrameHarness, travel: f64, began: bool) {
+        harness
+            .root_mut::<DesktopSurface>()
+            .carry_strip(travel, began);
+        harness.profile_frame();
+    }
+
+    let mut travel = 0.0;
+    let mut forward = true;
+    harness.begin_profiling();
+    for frame in 0..3 {
+        report_frame(harness, travel, frame == 0);
+        travel += 1.0;
+    }
+    harness.clear_profile_samples();
+    start_allocations();
+    let start = Instant::now();
+    travel = 0.0;
+    for frame in 0..frames {
+        travel += if forward { STEP } else { -STEP };
+        if !(0.0..=extent).contains(&travel) {
+            forward = !forward;
+            travel = travel.clamp(0.0, extent);
+        }
+        report_frame(harness, travel, frame == 0);
+    }
+    let wall_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let (allocs, bytes) = stop_allocations();
+    let samples = harness.take_profile_samples();
+    Phase {
+        wall_us,
+        allocs,
+        bytes,
+        frames,
+        report: Some(report_of(name, samples)),
+    }
+}
+
 fn stat(summary: &StatSummary) -> String {
     format!(
         "p50 {:>7.2} ms  p95 {:>7.2} ms  max {:>7.2} ms",
@@ -711,7 +756,10 @@ fn run() -> Result<(), String> {
     let (build_allocs, build_bytes) = stop_allocations();
 
     // Startup: the first drawn frame.
-    let mut harness = FrameHarness::new(State::new(), Box::new(surface), (1600, 1000));
+    // Mounted as its own type so a phase can hand it a frame's worth of
+    // input between frames, as a host does.
+    let mut harness =
+        FrameHarness::for_root(State::new(), surface, (1600, 1000), ui::Theme::dark());
     start_allocations();
     let start = Instant::now();
     harness.begin_profiling();
@@ -722,6 +770,14 @@ fn run() -> Result<(), String> {
 
     // Steady: forced frames with nothing changed (the animation frame).
     let steady = measure_frames(&mut harness, "steady", 120);
+
+    // A strip under three fingers: a report a frame, and the frame drawing
+    // where it carried the strip.
+    let extent = handle
+        .snapshot("g", vec![])
+        .desktop_pan
+        .map_or(600.0, |pan| pan.max.min(1_000.0));
+    let pan = measure_pan(&mut harness, "pan", 120, extent);
 
     // Interactive: typing into the focused document, where the profile mounts
     // apps at all.
@@ -807,6 +863,12 @@ fn run() -> Result<(), String> {
         steady.allocs_per_frame(),
         steady.bytes as f64 / 1024.0 / steady.frames as f64
     );
+    if let Some(report) = &pan.report {
+        println!("pan (120 frames, three fingers on the strip)");
+        println!("  total         {}", stat(&report.total));
+        println!("  draw          {}", stat(&report.draw));
+        println!("  allocations  {:.1} per frame", pan.allocs_per_frame());
+    }
     if let Some(report) = &typing.report {
         println!("typing (60 keys)");
         println!("  total         {}", stat(&report.total));
@@ -838,6 +900,7 @@ fn run() -> Result<(), String> {
             "first_frame_layout_us": first.map_or(0, |f| f.build_layout_us + f.apply_layout_us),
             "first_frame_draw_us": first.map_or(0, |f| f.draw_us),
             "steady": phase_json(&steady),
+            "pan": phase_json(&pan),
             "typing": phase_json(&typing),
             "idle_offered_frames": idle_frames,
             "idle_working_frames": idle_worked,

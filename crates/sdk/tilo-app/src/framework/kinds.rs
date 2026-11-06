@@ -40,6 +40,11 @@ pub(crate) fn register<A: ResourceApp>() {
     A::records(&mut declared);
     // A runtime that runs a package hosts the kinds under the package's app.
     let app = super::app::hooks::<A>();
+    // What the app is called, for every resource its types publish: its
+    // title as people read it, matched to the kinds its first part names. A
+    // published resource then says "Tube" and "tubes" the way a tilolang
+    // package's does, with nothing the app or its types write for it.
+    tilo_resource::words::name_app(app.title(), <A::Resource as Resource>::KIND);
     let mut hosted = HOSTED.lock_recover();
     hosted.0.insert(
         ResourceKind::of::<A::Resource>()

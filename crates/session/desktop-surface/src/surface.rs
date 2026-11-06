@@ -763,6 +763,14 @@ const SEARCH_ANSWER_POLL: Duration = Duration::from_millis(50);
 /// two.
 const STEP_TRAVEL_PX: f64 = 640.0;
 
+/// What asked for the strip to bring a window into view now: the input the
+/// person just made, so a key's move slides within `fast` and a click glides,
+/// or nothing, which means the change came from another device or a sync and
+/// slides the same way a shortcut's does.
+fn reveal_source() -> ui::tokens::MotionSource {
+    ui::motion::recent_input(ui::motion::frame_now()).unwrap_or(ui::tokens::MotionSource::Action)
+}
+
 use row_op::RowOp;
 
 pub struct DesktopSurface {
@@ -786,6 +794,11 @@ pub struct DesktopSurface {
     unbuilt: Vec<(StripId, TabId)>,
     /// The sideways swipe in progress, if any.
     swipe: Option<Swipe>,
+    /// The strip a pan ended on, whose focus is to follow it once the strip
+    /// rests where the pan left it: a thrown strip coasts past the window
+    /// the fingers let go of, so focus lands on what the person is left
+    /// looking at.
+    pan_follow: Option<StripId>,
     /// The window a pan ended on. Focus goes to it where the strip is,
     /// without panning it into view: the strip stays where the person left
     /// it, however little a lone wheel notch moved it.
@@ -859,25 +872,29 @@ pub struct DesktopSurface {
     navigation_source: Option<ui::tokens::MotionSource>,
 }
 
-/// One horizontally dominant wheel gesture, from its first event until
-/// wheel input pauses for [`SWIPE_GAP`]: a trackpad swipe and its momentum,
-/// or a spin of a mouse's sideways wheel.
+/// One horizontally dominant gesture, from its first event until it ends:
+/// a trackpad swipe and its momentum, a spin of a mouse's sideways wheel, or
+/// three fingers carrying the strip.
 #[derive(Clone, Copy)]
 struct Swipe {
     /// Who took the gesture's first sideways event: the content under the
     /// pointer, or the strip, and so the rest of it, ends included.
     owner: Sideways,
+    /// Which hand moves it, and so what its release coasts with.
+    hand: paging::Hand,
     /// Travel since the last step, toward the next one, while the strip
     /// cannot pan the way the gesture goes.
     travel: f64,
-    /// The gesture panned the strip, so its end focuses the window it was
-    /// panned to.
+    /// The gesture panned the strip, so its end leaves focus to follow it
+    /// once the strip rests where they let go of it.
     panned: bool,
-    /// Where the gesture has asked the strip to be since it took hold of
-    /// it ([`GroupRow::hold_strip_pull`]), past either end included, so
-    /// there it pulls against the rubber band and its end lets the strip
-    /// settle.
+    /// How far the gesture has carried the strip since it took hold of it,
+    /// past either end included, so there it pulls against the rubber band
+    /// and its end lets the strip settle.
     pan: Option<f64>,
+    /// How far three fingers have carried the strip since they landed: each
+    /// report is their total, and the strip takes what is new of it.
+    carried: f64,
     last: Instant,
 }
 
@@ -955,6 +972,7 @@ impl DesktopSurface {
             reveal: None,
             unbuilt: Vec::new(),
             swipe: None,
+            pan_follow: None,
             settle: None,
             search: Rc::clone(&search),
             seen_search: 0,
@@ -1780,7 +1798,16 @@ impl DesktopSurface {
                     if let Some(row) = self.rows.get_mut(&strip) {
                         row.set_group_active_tab(group, tab);
                         if self.settle.take() != Some(group) {
-                            row.scroll_group_into_view(group);
+                            // A window focused off screen slides into frame:
+                            // a key's move says where it went and is over at
+                            // once within `fast`, a click glides, so focus
+                            // never cuts the view.
+                            let source = reveal_source();
+                            row.scroll_group_into_view_animated(
+                                group,
+                                ui::motion::frame_now(),
+                                source,
+                            );
                         }
                     }
                 }
@@ -2064,59 +2091,101 @@ impl DesktopSurface {
         }
     }
 
-    /// End the swipe once wheel input has paused for [`SWIPE_GAP`]. When it
-    /// panned the strip, focus goes to the window the person panned to, so
-    /// the keyboard and Super+Left/Right carry on from what they look at.
-    /// The strip stays put: framing that window would undo a short pan,
-    /// such as a single notch's.
+    /// End the swipe once wheel input has paused for [`SWIPE_GAP`]. Fingers
+    /// the desk claims report their own end, so this only ends a wheel's.
     fn end_idle_swipe(&mut self, now: Instant) {
         let Some(swipe) = self.swipe else {
             return;
         };
-        if now.saturating_duration_since(swipe.last) < SWIPE_GAP {
+        if swipe.hand == paging::Hand::Fingers
+            || now.saturating_duration_since(swipe.last) < SWIPE_GAP
+        {
             return;
         }
         self.swipe = None;
+        self.finish_swipe(swipe, now, false);
+    }
+
+    /// The gesture `swipe` is over `cancelled` at `now`: a strip it panned
+    /// settles, the hand's velocity carried on where the hand throws it, and
+    /// focus follows the pan to the window the person is left looking at, so
+    /// the keyboard and Super+Left/Right carry on from it.
+    fn finish_swipe(&mut self, swipe: Swipe, now: Instant, cancelled: bool) {
         if swipe.pan.is_some()
             && let Some(row) = self.shown_row()
         {
-            // The platform already coasted the gesture (a trackpad's
+            // A trackpad and a wheel already coasted the gesture (their
             // momentum, a spun wheel's notches), so the strip is thrown
             // nowhere: a pull past an end springs back, and a strip left
             // within its range stays there through later geometry changes.
-            if !row.cancel_strip_pan(now) {
+            // Three fingers carry no momentum of their own, so the strip
+            // coasts with the velocity they let go at, unless the hand was
+            // taken back.
+            let settling = match (swipe.hand, cancelled) {
+                (paging::Hand::Wheel, _) | (paging::Hand::Fingers, true) => {
+                    row.cancel_strip_pan(now)
+                }
+                (paging::Hand::Fingers, false) => row.end_strip_pan(now),
+            };
+            if !settling {
                 row.hold_strip_pan();
             }
         }
-        if !swipe.panned {
-            return;
+        if swipe.panned {
+            self.pan_follow = self.shown;
         }
-        let mut shared = self.shared.borrow_mut();
-        let Some(current) = navigation::active_route(&shared.tree) else {
+    }
+
+    /// Focus the window the strip has come to rest on, once the pan that
+    /// moved it is over: a thrown strip coasts past the window the fingers
+    /// let go of, and a pull past an end springs back, so focus waits for
+    /// where the strip ends. The strip itself stays where the person left it
+    /// ([`Self::settle`]).
+    fn settle_pan_focus(&mut self) {
+        let Some(panned) = self.pan_follow else {
             return;
         };
-        let Some((group, tab)) = self
-            .shown
-            .zip(self.shown_row_ref())
-            .and_then(|(strip, row)| {
-                if strip != current.strip {
-                    return None;
-                }
-                let group = panned_to(row, Some(current.group))?;
-                let tab = row.groups.iter().find(|g| g.id == group)?.active_tab_id();
-                Some((group, tab))
-            })
+        if self.shown != Some(panned) {
+            self.pan_follow = None;
+            return;
+        }
+        if self
+            .shown_row_ref()
+            .is_some_and(ui::widget::GroupRow::direct_pan_in_progress)
+        {
+            return;
+        }
+        self.pan_follow = None;
+        let Some((current, group, tab)) =
+            self.shown
+                .zip(self.shown_row_ref())
+                .and_then(|(strip, row)| {
+                    let current = navigation::active_route(&self.shared.borrow().tree)?;
+                    if strip != current.strip {
+                        return None;
+                    }
+                    let group = panned_to(row, Some(current.group))?;
+                    let tab = row
+                        .groups
+                        .iter()
+                        .find(|g| g.id == group)
+                        .map(ui::widget::WindowGroup::active_tab_id)?;
+                    Some((current, group, tab))
+                })
         else {
             return;
         };
         if group == current.group {
             return;
         }
-        shared.queue.push(Admitted::Select(RouteIds {
-            group,
-            tab,
-            ..current
-        }));
+        self.shared
+            .borrow_mut()
+            .queue
+            .push(Admitted::Select(RouteIds {
+                group,
+                tab,
+                ..current
+            }));
         self.settle = Some(group);
     }
 
@@ -2487,20 +2556,24 @@ impl Widget for DesktopSurface {
         let mut pending = None;
         if let (Some(row), Some(child)) = (self.shown_row(), child) {
             row.apply_layout(taffy, child, inner);
-            // The launch frame itself shows the new window: pan, then place
-            // the groups again at the new offset.
+            // The launch frame itself shows the new window: move the strip
+            // to it, then place the groups again where the move has them.
             if let Some((strip, group)) = reveal
                 && shown == Some(strip)
             {
                 if !row.group_is_laid_out(group) {
                     pending = reveal;
                 } else if row.scroll_group_into_view(group) {
+                    // The window is on screen in the frame that opens it,
+                    // not sliding in after it: the frame the person sees
+                    // their new window must show it.
                     row.apply_layout(taffy, child, inner);
                 }
             }
         }
         self.reveal = pending;
         self.note_laid_strip();
+        self.settle_pan_focus();
         if self.slides.borrow().is_moving(ui::motion::frame_now()) {
             // A slide moves drawings, not places: the next frame lays out
             // again to draw what it left behind at its pose.
@@ -2774,7 +2847,9 @@ impl Widget for DesktopSurface {
     fn next_wake_deadline(&self) -> Option<Instant> {
         let ends = self
             .swipe
-            .filter(|swipe| swipe.panned || swipe.pan.is_some())
+            .filter(|swipe| {
+                swipe.hand == paging::Hand::Wheel && (swipe.panned || swipe.pan.is_some())
+            })
             .and_then(|swipe| swipe.last.checked_add(SWIPE_GAP));
         // An app's answer to the search query is still coming: look again
         // shortly, as its rows show once it is in.

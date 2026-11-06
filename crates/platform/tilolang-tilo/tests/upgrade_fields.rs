@@ -12,6 +12,8 @@ use tilolang_runtime::value::ResourceRef;
 
 use crate::fixtures::Replica;
 
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const APP: &str = "so.tilo.lang.notes";
 /// The Notes package, its note's body kept as rich text: the build the fixture's records are
 /// opened by, and the one the upgrade brings them to.
@@ -155,7 +157,12 @@ fn rich_body(replica: &Replica, id: &str) -> (FieldValue, ResourceRef) {
 /// notes: nothing is written yet, the notes still hold the plain text the old build wrote.
 fn workspace() -> (Replica, Vec<String>) {
     let workspace = saved(include_str!("legacy/notes.hex"));
-    let replica = Replica::new("ada", workspace, &[(SOURCE, IDS)]).0;
+    let replica = Replica::new(
+        "ada",
+        workspace,
+        &[(DISCUSSION, DISCUSSION_IDS), (SOURCE, IDS)],
+    )
+    .0;
     assert!(
         replica.host.take_committed().is_empty(),
         "opening the workspace wrote nothing"

@@ -12,6 +12,8 @@ use tilolang_tilo::publish::Caller;
 
 use crate::fixtures::Replica;
 
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const APP: &str = "so.tilo.lang.tasks";
@@ -38,12 +40,16 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
 
 /// Ada's replica with a task and a project she filed it under, and the task.
 fn workspace() -> (Replica, Value) {
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(TASKS, TASKS_IDS)]);
+    let (mut ada, _) = Replica::new(
+        "ada",
+        AutoCommit::new(),
+        &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)],
+    );
     ada.host
         .runtime()
         .set_clock(|| "2026-10-29T10:00:00Z".to_owned());
     let root = Value::resource(&ada.host.root_of(APP).unwrap());
-    let task = call(&ada, "new_task", vec![root.clone(), Value::text("van")]);
+    let task = call(&ada, "new_task", crate::tasks::create(&root, "van"));
     let project = call(&ada, "new_project", vec![root]);
     call(
         &ada,
@@ -260,22 +266,32 @@ fn the_task_shows_what_waits_on_it_and_who_proposed_it() {
     // window's accept and dismiss buttons answer with.
     assert_eq!(card.props.get("invocation"), Some(&Value::resource(&inv)));
     assert_eq!(card.props.get("can_resolve"), Some(&Value::Bool(true)));
-    // The card says what the change would be, and who proposed it.
+    // The card says what the change would be, and who proposed it: the words a change to the
+    // field reads with, the value as its type shows it, and the proposer the host draws the
+    // face and the name from.
     let said = texts(page.tree());
     assert!(
-        said.iter()
-            .any(|text| text == "set the due date to 2026-10-31"),
+        said.iter().any(|text| text == "set the due date to"),
         "what it would do: {said:?}"
     );
     assert!(
-        said.iter()
-            .any(|text| text.contains("suggested by agent:scout")),
-        "who proposed it: {said:?}"
+        said.iter().any(|text| text == "2026-10-31"),
+        "the day it would set: {said:?}"
     );
-    // The row of the task says it quietly, on a line of its own.
+    assert_eq!(
+        card.props.get("author"),
+        Some(&Value::Principal(Principal::new("agent:scout"))),
+        "who proposes it"
+    );
+    // The row of the task says it quietly, on a line of its own, in the same sentence.
     let rows = rows_with_note(card_view(&ada, &task).tree());
     assert_eq!(rows.len(), 1, "{:?}", texts(card_view(&ada, &task).tree()));
-    assert!(rows[0].contains("2026-10-31"), "{}", rows[0]);
+    assert!(
+        rows[0].contains("suggests: set the due date to"),
+        "{}",
+        rows[0]
+    );
+    assert!(!rows[0].contains("schedule"), "{}", rows[0]);
     // Decided, the card and the row's line go away.
     ada.host
         .runtime()

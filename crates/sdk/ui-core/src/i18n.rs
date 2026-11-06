@@ -618,6 +618,15 @@ fn resource_label(key: &str) -> Option<String> {
     (said != key).then_some(said)
 }
 
+/// [`resource_label`] of a kind's noun, formatted with the count `1` (one of
+/// it) or `2` (several): the catalogue's Fluent selector picks the singular
+/// or the plural in the reader's language.
+fn resource_noun(key: &str, count: u32) -> Option<String> {
+    manager_id()?;
+    let said = I18nManager::format(key, &[("count", ArgValue::from(count))]);
+    (said != key).then_some(said)
+}
+
 impl I18nManager {
     /// Register shared widget labels in every bundled language without
     /// replacing an application's catalogs or its selected language. A host
@@ -661,8 +670,11 @@ impl I18nManager {
         });
         WIDGET_CATALOG.ensure();
         // From here on every resource this thread publishes is named in the
-        // language it just selected, and named again when that moves.
+        // language it just selected, and named again when that moves; so are
+        // the nouns search names it by.
         tilo_resource::label::install(resource_label);
+        tilo_resource::label::install_noun(resource_noun);
+        tilo_resource::label::install_noun(resource_noun);
     }
 
     /// Whether a catalogue was added for `locale`, parsed or not.
