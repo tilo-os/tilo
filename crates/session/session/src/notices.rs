@@ -800,6 +800,24 @@ pub(crate) fn desk_not_shared_notice(workspace: &str, reason: &str) -> Notice {
     }
 }
 
+/// Tell the person what the workspace did not take of their shared desk: it
+/// is on the desk they used, once, naming the workspace and why.
+pub(crate) fn tell_desk_not_taken(
+    notifications: &std::cell::RefCell<crate::notifications::SessionNotifications>,
+    tree: &tilo_desktop_model::DesktopTree,
+    (room, why): (tilo_desktop_model::WorkspaceId, String),
+) {
+    let workspace = tree
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id() == room)
+        .map_or_else(String::new, |workspace| workspace.name.clone());
+    let reason = neighbour_wire::RefusalReason::of(&why).describe();
+    notifications
+        .borrow()
+        .tell(desk_not_shared_notice(&workspace, reason));
+}
+
 /// Tell the person what the crash records in `dir` say happened before this
 /// start: a session that stopped responding, one that panicked, a computer
 /// that stopped. The records decide it, so nothing is said twice.
