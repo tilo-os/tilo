@@ -154,10 +154,13 @@ mod tests {
     /// The elapsed time reads as a clock past the hour.
     #[test]
     fn a_long_call_reads_in_hours() {
+        let long_ago = started()
+            .checked_sub(ui::time::Duration::from_secs(3725))
+            .expect("a platform clock that has run for an hour");
         let call = CallState {
             active: true,
             channel: "voice".into(),
-            started: Some(started() - ui::time::Duration::from_secs(3725)),
+            started: Some(long_ago),
             ..CallState::default()
         };
         let summary = published(&call, "Ada", "", started())

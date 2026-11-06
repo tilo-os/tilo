@@ -110,7 +110,8 @@ impl Placements {
         self.shared.borrow().cards.contains_key(token)
     }
 
-    /// Whether `window` is a card at all, drawn or suspended.
+    /// Whether `window` is a card at all: drawn, suspended, or one its app
+    /// has ended — a card's window is never a window of the desk.
     #[must_use]
     pub fn draws(&self, window: u64) -> bool {
         self.shared.borrow().tokens.contains_key(&window)
@@ -183,7 +184,11 @@ mod tests {
         assert!(cards.draws(7), "the window is still the card's");
 
         cards.withdraw("t0k3n");
-        assert!(!cards.draws(7), "the app ended the card");
+        assert_eq!(cards.card_of(7), None, "the app ended the card");
+        assert!(
+            cards.draws(7),
+            "its window is still the card's, and stays hidden rather than becoming one"
+        );
     }
 
     #[test]

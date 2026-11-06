@@ -286,26 +286,27 @@ impl AppTabs {
         // they write is answered on this pass and no thread of the session's
         // waits on a client.
         self.socket.take();
-        let mut answered = Answers {
-            desktop,
-            apps,
-            compositor,
-            services,
-            studio,
-            withheld: &mut self.withheld,
-            links: &mut self.links,
-            cards: &self.cards,
-        };
-        for request in self.requests.try_iter() {
-            answered.answer(&mut self.host_shell, request);
+        {
+            let mut answered = Answers {
+                desktop,
+                apps,
+                compositor,
+                services,
+                studio,
+                withheld: &mut self.withheld,
+                links: &mut self.links,
+                cards: &self.cards,
+            };
+            for request in self.requests.try_iter() {
+                answered.answer(&mut self.host_shell, request);
+            }
+            // What the person did in the windows' bars goes back to the app whose
+            // connection declared the slots there.
+            answered.deliver_bar_events();
+            // A control of a window's own content, pressed where the desk lists
+            // it, goes to the app drawing that window.
+            answered.deliver_target_presses();
         }
-        // What the person did in the windows' bars goes back to the app whose
-        // connection declared the slots there.
-        answered.deliver_bar_events();
-        // A control of a window's own content, pressed where the desk lists
-        // it, goes to the app drawing that window.
-        answered.deliver_target_presses();
-        drop(answered);
         // Where each app's own card stands this pass: the floating layer's
         // place, which the desk lays the app's window out by.
         self.follow_cards(desktop, compositor);
@@ -320,7 +321,7 @@ impl AppTabs {
     ///
     /// The layer decides the place; the app's own geometry is a request it
     /// made when presenting, and its window is laid out by what this says.
-    fn follow_cards(&mut self, desktop: &DesktopHost, compositor: &mut Compositor) {
+    fn follow_cards(&self, desktop: &DesktopHost, compositor: &mut Compositor) {
         let placements = self.cards.placements();
         let mut moved = false;
         for card in self.cards.presented() {
@@ -639,8 +640,11 @@ impl Answers<'_> {
             // A window paints its own action markers, at the control an agent
             // would press, so nothing here draws a second one; and the session
             // names none of them to assistive technology or opens what one
-            // points at, so the inventory is read and adds nothing.
-            FloatingSurfaceClientMessage::ActionMarkers { .. } => {}
+            // points at, so the inventory is read and adds nothing. A surface
+            // cleared or a destination presented is the app's own business.
+            FloatingSurfaceClientMessage::ActionMarkers { .. }
+            | FloatingSurfaceClientMessage::SourceCleared { .. }
+            | FloatingSurfaceClientMessage::DestinationPresented { .. } => {}
             // An app's own card — a call, a route — is a window of its own:
             // the app presents it, the floating layer decides where it
             // stands, and the app draws the activity inline whenever its own
@@ -656,8 +660,6 @@ impl Answers<'_> {
             FloatingSurfaceClientMessage::SurfaceGeometry { id, .. } => {
                 self.cards.presented_again(&app, connection, &id);
             }
-            FloatingSurfaceClientMessage::SourceCleared { .. }
-            | FloatingSurfaceClientMessage::DestinationPresented { .. } => {}
             // The app draws the activity in its own window again: its card
             // stands down until it presents one again.
             FloatingSurfaceClientMessage::Suspend { id, .. } => {

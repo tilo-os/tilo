@@ -471,9 +471,7 @@ impl FloatingLayer {
     /// by the activity's title, with its reading and its controls.
     #[must_use]
     pub fn accessibility(&self) -> Option<AccessNode> {
-        if self.drawn().next().is_none() {
-            return None;
-        }
+        self.drawn().next()?;
         let groups = self
             .drawn()
             .map(|card| {

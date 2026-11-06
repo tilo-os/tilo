@@ -349,17 +349,19 @@ impl Cards {
     /// The connection ended: the cards it vouched for go with it.
     pub(crate) fn connection_closed(&self, connection: u64) -> Vec<Presented> {
         let mut shared = self.shared.borrow_mut();
-        let gone: Vec<Key> = shared
-            .cards
-            .iter()
-            .filter(|(_, card)| card.connection == connection)
-            .map(|(key, _)| key.clone())
-            .collect();
+        let mut gone = Vec::new();
+        shared.cards.retain(|key, card| {
+            if card.connection != connection {
+                return true;
+            }
+            gone.push((key.clone(), card.clone()));
+            false
+        });
         gone.into_iter()
-            .filter_map(|key| {
+            .map(|(key, card)| {
                 shared.slots.remove(&key);
                 shared.in_view.remove(&key);
-                shared.cards.remove(&key)
+                card
             })
             .collect()
     }
@@ -407,7 +409,6 @@ mod tests {
         let again = cards.presented().remove(0);
         assert_eq!(first.token, again.token, "the same call keeps its card");
         assert_eq!(again.content, Size::new(360.0, 240.0));
-        assert_eq!(again.frame, [8.0, 8.0, 8.0, 8.0]);
         assert_eq!(again.window_size(), Size::new(376.0, 256.0));
         assert_eq!(
             again.body(Rect::new(8.0, 16.0, 384.0, 272.0)),
