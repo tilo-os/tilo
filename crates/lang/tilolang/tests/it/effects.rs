@@ -134,3 +134,95 @@ fn the_clause_keeps_its_place_in_the_canonical_form() {
     let module = parse(src).unwrap_or_else(|d| panic!("{d:#?}"));
     assert_eq!(print_module(&module), src);
 }
+
+/// A type whose fields take every draw: a number, a text, and a choice's option.
+const DRAWER: &str = "type Drawer {\n    n: Int\n    mark: Text\n    ask: Option<Int>\n}\n";
+
+fn with_drawer(rest: &str) -> String {
+    format!("{DRAWER}{rest}")
+}
+
+#[test]
+fn every_draw_is_the_effect_an_action_declares() {
+    let bodies = [
+        "action draw(d: Drawer) {\n    d.n = random.int(1, 6)\n}\n",
+        "action draw(d: Drawer) {\n    d.n = random.float().to_int()\n}\n",
+        "action draw(d: Drawer) {\n    d.ask = random.choice([1, 2, 3])\n}\n",
+        "action draw(d: Drawer) {\n    d.n = random.shuffle([1, 2, 3]).len()\n}\n",
+        "action draw(d: Drawer) {\n    d.mark = random.id()\n}\n",
+    ];
+    for body in bodies {
+        assert_eq!(codes(&with_drawer(body)), ["E121"], "{body}");
+        let declared = body.replacen(
+            "action draw(d: Drawer) {",
+            "action draw(d: Drawer) uses random {",
+            1,
+        );
+        assert_eq!(
+            codes(&with_drawer(&declared)),
+            Vec::<String>::new(),
+            "{declared}"
+        );
+    }
+}
+
+#[test]
+fn a_draw_says_which_one_and_what_to_declare() {
+    let src = format!(
+        "app t.x \"X\"\n{}",
+        with_drawer("action draw(d: Drawer) {\n    d.n = random.int(1, 6)\n}\n")
+    );
+    let errs = compile_with(&src, &[]).expect_err("`uses random` is missing");
+    let message = errs.first().map(|d| d.message.clone()).unwrap_or_default();
+    assert!(
+        message.contains("`random.int`")
+            && message.contains("a draw")
+            && message.contains("uses random")
+            && message.contains("`draw`"),
+        "the message names the draw, what it reads and where to declare it: {message}"
+    );
+}
+
+#[test]
+fn a_flow_that_draws_declares_uses_random() {
+    let draw = "flow tick() -> Int {\n    return random.int(1, 6)\n}\n";
+    assert_eq!(codes(draw), ["E121"]);
+    let declared = "flow tick() -> Int uses random {\n    return random.int(1, 6)\n}\n";
+    assert_eq!(codes(declared), Vec::<String>::new());
+}
+
+#[test]
+fn a_view_does_not_draw() {
+    // A view is drawn again from what it is shown: a draw there would make two draws of the
+    // same thing on two runnings, and nothing records either.
+    let view = "view look(d: Drawer) {\n    text(\"{random.int(1, 6)}\")\n}\n";
+    let found = codes(&with_drawer(view));
+    assert_eq!(found, ["E121"], "a view's draw is refused");
+    let src = format!(
+        "app t.x \"X\"\n{}",
+        with_drawer("view look(d: Drawer) {\n    text(\"{random.id()}\")\n}\n")
+    );
+    let errs = compile_with(&src, &[]).expect_err("a view cannot draw");
+    let message = errs.first().map(|d| d.message.clone()).unwrap_or_default();
+    assert!(
+        message.contains("a view cannot"),
+        "the message says a view cannot draw: {message}"
+    );
+}
+
+#[test]
+fn a_fn_does_not_draw_so_a_view_calling_it_cannot() {
+    // A `fn` computes from the values it is given; a draw is written where the invocation is.
+    let via_fn = "fn roll() -> Int {\n    return random.int(1, 6)\n}\n\
+                  action draw(d: Drawer) {\n    d.n = roll()\n}\n";
+    assert_eq!(codes(&with_drawer(via_fn)), ["E121"]);
+}
+
+#[test]
+fn random_is_a_module_of_draws_and_nothing_else() {
+    let unknown = "action draw(d: Drawer) uses random {\n    d.n = random.dice(6)\n}\n";
+    assert_eq!(codes(&with_drawer(unknown)), ["E014"]);
+    // Its list draws take a list, and a collection or a set is read as one.
+    let not_a_list = "action draw(d: Drawer) uses random {\n    d.ask = random.choice(d.n)\n}\n";
+    assert_eq!(codes(&with_drawer(not_a_list)), ["E020"]);
+}

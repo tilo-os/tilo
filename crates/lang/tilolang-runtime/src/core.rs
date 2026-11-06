@@ -350,20 +350,21 @@ impl Core {
             ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH,
             ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MapGetH, MapKeys, MapPut,
             MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf,
-            ModelCall, NoneV, Now, OfType, Others, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind,
-            PrincipalName, PrincipalNamed, PrincipalRole, Print, PrintRows, ProposalNote, Query,
-            QueueBlock, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs,
-            RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt, ResAddF,
-            ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef,
-            RichEmpty, RichNew, RichPart, RichTime, RunChanges, SeedState, SetAdd, SetRemove,
-            Single, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps,
-            StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit,
-            StrLower, StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim,
-            StrUpper, Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today,
-            TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
-            UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
-            UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
-            Versions, Viewer, WallClock, Withdraw, Word, WorkspaceMembers,
+            ModelCall, NoneV, Now, OfType, Others, Outside, OutsideAt, Phrase, PrincipalEq,
+            PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Print, PrintRows,
+            ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt,
+            RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
+            RefIs, RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt,
+            ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
+            ResourceRef, RichEmpty, RichNew, RichPart, RichTime, RunChanges, SeedState, SetAdd,
+            SetRemove, Single, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet,
+            Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen,
+            StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt,
+            StrTrim, StrUpper, Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan,
+            Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
+            TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn,
+            UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+            VersionEnd, Versions, Viewer, WallClock, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
@@ -379,32 +380,23 @@ impl Core {
             | ListPrevious | TupleNew | TupleSetI | TupleSetF | TupleSetH | TupleGetI
             | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV | IsSome | UnwrapI
             | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
-            CollWhere => {
-                let found = self.coll_where(a.h(0)?, a.h(1)?)?;
-                self.ret_h(found)
-            }
-            CollWhereWith => {
-                let found = self.coll_where_with(a.h(0)?, a.h(1)?, a.h(2)?)?;
-                self.ret_h(found)
-            }
-            CollOrdered => {
-                let found = self.coll_ordered(a.h(0)?, a.h(1)?)?;
-                self.ret_h(found)
-            }
+            CollWhere => self.ret_h(self.coll_where(a.h(0)?, a.h(1)?)?),
+            CollWhereWith => self.ret_h(self.coll_where_with(a.h(0)?, a.h(1)?, a.h(2)?)?),
+            CollOrdered => self.ret_h(self.coll_ordered(a.h(0)?, a.h(1)?)?),
             Query => {
                 let found = self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?;
                 self.ret_h(found)
             }
             Filters | FilterLit => self.catalogue_import(imp, a),
-            IdentPart => {
-                let part = self.ident_part(a.h(0)?, a.h(1)?)?;
-                self.ret_h(part)
-            }
+            IdentPart => self.ret_h(self.ident_part(a.h(0)?, a.h(1)?)?),
             RepeatNext | RepeatNextAt | RepeatLabel | ReminderAt | ReminderLabel | WallClock => {
                 self.recurrence_import(imp, a)
             }
             Today | TimeDay | TimeOfDay | TimeSpan | DayShift | DayPart | DayWeekday
             | DayStartOfWeek | DayParse | TimeParse => self.time_import(imp, a),
+            RandomInt | RandomFloat | RandomChoice | RandomShuffle | RandomId => {
+                self.random_import(imp, a)
+            }
             RichNew | RichPart | RichEmpty | RichTime => self.rich_import(imp, a),
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
@@ -423,8 +415,8 @@ impl Core {
                 self.ui_import(imp, a)
             }
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
-            | RunChanges | Unseen | FirstUnseen | Mentions | Others | Steps | VersionEnd | Phrase | Word
-            | EntryParts | Viewer => self.platform_import(imp, a),
+            | RunChanges | Unseen | FirstUnseen | Mentions | Others | Steps | VersionEnd
+            | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }

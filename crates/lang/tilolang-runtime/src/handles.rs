@@ -154,8 +154,12 @@ impl Effects<'_> {
     /// Pins the clock and zone the invocation read, and records the read where a replay finds
     /// it.
     pub fn pin_clock(&mut self, clock: crate::flow::Clock) {
-        let entry = crate::flow::JournalEntry::Clock(clock.clone());
-        self.pin(clock);
+        self.pin(clock.clone());
+        self.push(crate::flow::JournalEntry::Clock(clock));
+    }
+
+    /// Records the entry this invocation made for a read, where a replay answers from it.
+    pub fn push(&mut self, entry: crate::flow::JournalEntry) {
         match self {
             Self::Action(a) => a.effects.push(entry),
             Self::Flow(f) => {

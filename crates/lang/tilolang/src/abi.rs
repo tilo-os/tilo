@@ -266,6 +266,13 @@ imports! {
     DayStartOfWeek = "day_start_of_week" ([H] -> [H]);
     DayParse = "day_parse" ([H, H] -> [H]);
     TimeParse = "time_parse" ([H, H] -> [H]);
+    // A draw (`uses random`): a number in `0..upto`, one call per number, which the invocation
+    // records so a replay reads the same value.
+    RandomInt = "random_int" ([I64, I64] -> [I64]);
+    RandomFloat = "random_float" ([] -> [F64]);
+    RandomChoice = "random_choice" ([H] -> [H]);
+    RandomShuffle = "random_shuffle" ([H] -> [H]);
+    RandomId = "random_id" ([] -> [H]);
     EventPart = "event_part" ([I32] -> [H]);
     CollMoveAmong = "coll_move_among" ([H, H, H, I64, H] -> []);
     UiActions = "ui_actions" ([H, H, H] -> []);

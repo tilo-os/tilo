@@ -588,31 +588,41 @@ impl Checker<'_> {
     }
 
     /// Records that the code reads `effect`, written as `what` (`now`, `day_of(t)`, a time of no
-    /// zone), and refuses it where it cannot be read: an action or flow reads only what its
-    /// `uses` clause names (convergence.md, "Actions"), a view reads none but the zone it is
-    /// drawn in, and a `fn` reads what it is given and passes its reads to its caller.
+    /// zone, `random.int`), and refuses it where it cannot be read: an action or flow reads only
+    /// what its `uses` clause names (convergence.md, "Actions"); a view, a block or a `fn` reads
+    /// none but the person's zone, which is what their device makes of a value they are shown.
     fn reads(&mut self, effect: crate::effects::Effect, span: Span, what: &str) {
-        self.st.facts.effects.insert(effect);
         let refused = match self.st.ctx {
             Ctx::Action | Ctx::Flow => !self.st.uses.contains(&effect),
-            Ctx::View => effect != crate::effects::Effect::Time,
-            _ => false,
+            _ => effect != crate::effects::Effect::Time,
         };
-        if !refused || !self.st.reported.insert(effect) {
+        if !refused {
+            // A read that is allowed is the invocation's: what a `fn` reads is its caller's too.
+            self.st.facts.effects.insert(effect);
+            return;
+        }
+        if !self.st.reported.insert(effect) {
             return;
         }
         let what_it_reads = effect.what();
-        let message = if self.st.ctx == Ctx::View {
-            format!(
+        let message = match self.st.ctx {
+            Ctx::View => format!(
                 "{what} reads {what_it_reads}, which a view cannot: a view is drawn again from what it is shown, where an action records it and is replayed from the record"
-            )
-        } else {
-            let decl = self.st.decl.clone();
-            format!(
-                "{what} reads {what_it_reads}, which a replay cannot compute again: {} `{decl}` declares it with `uses {}`",
-                self.st.ctx.word(),
-                effect.word()
-            )
+            ),
+            Ctx::Block => format!(
+                "{what} reads {what_it_reads}, which a block cannot: a block answers a question as it is asked, where an action records it and is replayed from the record"
+            ),
+            Ctx::Fn => format!(
+                "{what} reads {what_it_reads}, which a fn cannot: a fn computes from the values it is given, so the read is written in the action or flow that makes the invocation"
+            ),
+            _ => {
+                let decl = self.st.decl.clone();
+                format!(
+                    "{what} reads {what_it_reads}, which a replay cannot compute again: {} `{decl}` declares it with `uses {}`",
+                    self.st.ctx.word(),
+                    effect.word()
+                )
+            }
         };
         self.err("E121", span, message);
     }

@@ -1556,7 +1556,7 @@ impl Core {
 
     /// Saves the flow's journal when a flow is the invocation running: what it read so far,
     /// kept for a run that resumes.
-    fn save_flow_journal(&self) -> HResult<()> {
+    pub(crate) fn save_flow_journal(&self) -> HResult<()> {
         let saved = {
             let frames = self.frames.borrow();
             frames.flow().map(|fs| (fs.run.clone(), fs.journal.clone()))

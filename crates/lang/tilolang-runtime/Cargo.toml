@@ -31,6 +31,8 @@ tilo-reference = { path = "../../collab/reference" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 serde.workspace = true
 serde_json.workspace = true
+# A draw comes from the system's CSPRNG, on the device the invocation runs on.
+getrandom.workspace = true
 # `grep` and `read(matching:)` in agents' programs.
 regex.workspace = true
 thiserror.workspace = true

@@ -249,6 +249,12 @@ imports! {
     (DayStartOfWeek, "day_start_of_week", "i", "i"),
     (DayParse, "day_parse", "ii", "i"),
     (TimeParse, "time_parse", "ii", "i"),
+    // A draw (`uses random`).
+    (RandomInt, "random_int", "ll", "l"),
+    (RandomFloat, "random_float", "", "f"),
+    (RandomChoice, "random_choice", "i", "i"),
+    (RandomShuffle, "random_shuffle", "i", "i"),
+    (RandomId, "random_id", "", "i"),
     (EventPart, "event_part", "i", "i"),
     (CollMoveAmong, "coll_move_among", "iiili", ""),
     (UiActions, "ui_actions", "iii", ""),

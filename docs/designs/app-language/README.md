@@ -100,6 +100,28 @@ type. The role is published with the type, so whatever holds the record — a de
 app closed, an agent, another device — finds what repeats and when it reminds without running
 the app's code. A record naming nobody is its creator's to be reminded of.
 
+## Effects
+
+An effect is something a replay cannot compute again: a draw, the time, a service outside
+Tilo. The action or flow that uses one declares it (`uses random`, `uses time`, `uses web`) and
+the compiler refuses it anywhere else (E121); a view never reads one, since it is drawn again
+from what it is shown.
+
+```
+action roll(die: Die) uses random {
+    die.value = random.int(1, 6)
+    die.mark = random.id()
+}
+```
+
+`random.int(lo, hi)` draws a number in `lo..=hi`; `random.float()` one in `[0, 1)`;
+`random.choice(xs)` one item of a list, as an `Option` (nothing drawn from nothing);
+`random.shuffle(xs)` the same items in a drawn order; `random.id()` 128 random bits as text.
+The draw is made on the device that invokes the action or flow, from the system's
+cryptographic random source, and the numbers it drew are kept in the invocation's journal: a
+flow resumed after waiting for a person, and any run replayed, reads the numbers it drew the
+first time.
+
 ## How it runs
 
 - Code compiles to wasm and runs sandboxed. Authority follows authorship: what code may do is

@@ -10,6 +10,9 @@ use crate::prims;
 use crate::resolve::{CKind, Callable, FieldInfo, Import};
 use crate::types::{Ty, TypeKey};
 
+/// The module a draw is asked of: `random.int(lo, hi)`.
+const RANDOM: &str = "random";
+
 impl Checker<'_> {
     pub(super) fn call(&mut self, callee: &ast::Expr, args: &[ast::Arg], span: Span) -> Ex {
         match &callee.kind {
@@ -35,6 +38,13 @@ impl Checker<'_> {
                             }
                         };
                     }
+                }
+                // `random.int(lo, hi)`: a draw, which the invocation records (effects.md).
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == RANDOM)
+                    && self.lookup(RANDOM).is_none()
+                    && self.env.find_import(RANDOM).is_none()
+                {
+                    return self.builtin_random(name, args, span);
                 }
                 if let Some(key) = self.enum_path(base) {
                     let ty = Ty::Enum(key);
@@ -1866,6 +1876,113 @@ impl Checker<'_> {
         };
         let ty = Ty::Option(Box::new(value));
         Ex::host(Imp::MapGetH, vec![b, fid, key], ty)
+    }
+
+    /// The words of `random`, for a message that names them.
+    const DRAWS: &'static str = "`random.int(lo, hi)`, `random.float()`, `random.choice(xs)`, `random.shuffle(xs)` and `random.id()`";
+
+    /// `random.int(lo, hi)`, `random.float()`, `random.choice(xs)`, `random.shuffle(xs)` and
+    /// `random.id()`: a draw. Only an action or a flow makes one, declaring `uses random`, and
+    /// its invocation keeps each value drawn, so a replay reads the same values (effects.md).
+    fn builtin_random(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        let word = name.name.as_str();
+        let what = format!("`random.{word}`");
+        match word {
+            "int" => {
+                if args.len() != 2 || args.iter().any(|a| a.name.is_some()) {
+                    self.err(
+                        "E022",
+                        span,
+                        "`random.int` takes the lowest and highest number to draw, by position: `random.int(1, 6)`",
+                    );
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                }
+                let (Some(lo), Some(hi)) = (args.first(), args.get(1)) else {
+                    return Ex::error();
+                };
+                let lo = self.expr_as(&lo.value, &Ty::Int);
+                let hi = self.expr_as(&hi.value, &Ty::Int);
+                self.reads(crate::effects::Effect::Random, span, "`random.int`");
+                Ex::host(Imp::RandomInt, vec![lo, hi], Ty::Int)
+            }
+            "float" | "id" => {
+                if !args.is_empty() {
+                    self.err(
+                        "E022",
+                        span,
+                        format!("{what} takes no arguments: it draws one value"),
+                    );
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                }
+                self.reads(crate::effects::Effect::Random, span, &what);
+                if word == "float" {
+                    Ex::host(Imp::RandomFloat, vec![], Ty::Float)
+                } else {
+                    Ex::host(Imp::RandomId, vec![], Ty::Text)
+                }
+            }
+            "choice" | "shuffle" => {
+                let [xs] = args else {
+                    self.err(
+                        "E022",
+                        span,
+                        format!(
+                            "{what} takes the list to draw from, by position: `random.{word}(items)`"
+                        ),
+                    );
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                };
+                if xs.name.is_some() {
+                    self.err(
+                        "E022",
+                        xs.value.span,
+                        format!("{what} takes its list by position: `random.{word}(items)`"),
+                    );
+                }
+                let got = self.expr(&xs.value, None);
+                // A collection or a set reads as the list of what it holds.
+                let element = match &got.ty {
+                    Ty::List(t) | Ty::Collection(t) | Ty::Set(t) => (**t).clone(),
+                    Ty::Error => return Ex::error(),
+                    other => {
+                        let found = self.show(other);
+                        self.err(
+                            "E020",
+                            xs.value.span,
+                            format!("{what} draws from a list; this is {found}"),
+                        );
+                        return Ex::error();
+                    }
+                };
+                let list = self.coerce(got, &Ty::List(Box::new(element.clone())), xs.value.span);
+                self.reads(crate::effects::Effect::Random, span, &what);
+                if word == "choice" {
+                    Ex::host(Imp::RandomChoice, vec![list], Ty::Option(Box::new(element)))
+                } else {
+                    Ex::host(Imp::RandomShuffle, vec![list], Ty::List(Box::new(element)))
+                }
+            }
+            _ => {
+                self.err(
+                    "E014",
+                    name.span,
+                    format!("`random` has no `{word}`; it draws {}", Self::DRAWS),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                Ex::error()
+            }
+        }
     }
 
     /// A method that stands on a type instead of a value: `Date.parse(text, near: now)` and

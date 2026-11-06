@@ -146,6 +146,23 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   goes, so a run resumed tomorrow reads the moment it started. One entry per invocation holds
   the moment and the zone; a draw keeps its bound and its value; a fetch keeps the request and
   the answer.
+- **A draw is one primitive: a number below a bound.** `random.int(lo, hi)`, `random.float()`,
+  `random.choice(xs)`, `random.shuffle(xs)` and `random.id()` compile to imports `random_int`,
+  `random_float`, `random_choice`, `random_shuffle` and `random_id`, and each is a count of
+  draws of `0..upto` the host records: the die is one of six (the host adds `lo`), a float one
+  below `2^53` over `2^53`, a choice and each step of a shuffle one below the number of items
+  left, an id four below `2^32` written as eight hex digits each. So a draw's entry in the
+  journal is the primitive, not the number a person would name: `random.int(1, 6)` records a
+  draw of `0..6` whose value is the die minus one. A choice of an empty list draws nothing and
+  records nothing, so it returns `.none`.
+- **A draw happens where the invocation is.** Only an action or a flow draws, and only one that
+  declares `uses random`; a `fn` does not: it computes from the values it is given, and a view or
+  a block that called it would be drawing. A view or a block does not, since neither has a
+  journal. `random` is a module of draws and nothing else: an unknown member is E014, and a
+  choice or shuffle of something that is not a list of values is E020. A range is drawn uniformly
+  by drawing again at or above the largest multiple of its width, so no number comes up likelier
+  than another; `random.int` traps when its range holds more numbers than a draw's bound
+  (`hi - lo + 1` past `i64`).
 - Pinned references (`@kind:id@version`) parse but compile to E070: `ref_lit` has no version.
 - Integer division and remainder trap on zero, as in wasm.
 - `proposal view` may also be written `proposal view(a, b)`, naming action parameters.
