@@ -741,7 +741,7 @@ fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
     );
 }
 
-/// A message this session has no layer for is still said so, so nothing of an
+/// A message this session does not answer is still said so, so nothing of an
 /// app's waits on an answer that will not come.
 #[test]
 fn a_message_the_session_cannot_answer_is_said_so() {
@@ -753,20 +753,23 @@ fn a_message_the_session_cannot_answer_is_said_so() {
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
     let (pid, workspace) = probe_showing(&mut session, &apps, &started);
 
+    // An app's card is the app's own window: the session mirrors no region of
+    // a floating surface.
     let mut connection = ask(
         &launches,
         PROBE,
         &workspace,
         pid,
-        &FloatingSurfaceClientMessage::Dismiss {
+        &FloatingSurfaceClientMessage::UpdateRegion {
             id: "primary".to_owned(),
+            region: [0.0, 0.0, 320.0, 240.0],
         },
     );
     let answered = host_frames(&mut session, &mut connection, 300);
     assert!(
         answered.iter().any(|frame| matches!(
             frame,
-            FloatingSurfaceHostMessage::Unanswered { message, .. } if message == "dismiss"
+            FloatingSurfaceHostMessage::Unanswered { message, .. } if message == "update_region"
         )),
         "a message the session cannot answer is said so: {answered:?}"
     );
