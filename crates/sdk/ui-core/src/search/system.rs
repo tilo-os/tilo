@@ -438,34 +438,46 @@ pub fn type_match_score_with<'k>(
         .split_whitespace()
         .map(str::to_owned)
         .collect();
-    let mut own = Vec::new();
-    let mut by_noun = false;
-    for name in [&ty.noun.one, &ty.noun.many, &ty.app.one, &ty.app.many] {
-        if name == &ty.noun.one || name == &ty.noun.many {
-            by_noun |= named_at(&words, name, &mut own);
-        } else {
-            named_at(&words, name, &mut own);
-        }
-    }
-    for keyword in keywords {
-        named_at(&words, keyword, &mut own);
-    }
-    let mut covered = own.clone();
-    let mut kin_named = false;
-    // A type called as its app is ("Mail" in Mail) names the app, not
-    // another type of it.
+    let kin: Vec<&tilo_actions::Noun> = kin.into_iter().collect();
+    // A word that is one of the app's types' nouns names that type, not the
+    // app: the registry's "videos" for Tube is its `Video` type's plural, so
+    // "youtube videos" are the client's videos, never every thing of it.
+    let type_names: Vec<String> = std::iter::once(ty.noun.clone())
+        .chain(kin.iter().map(|noun| (*noun).clone()))
+        .flat_map(|noun| [noun.one, noun.many])
+        .map(|name| super::fold_search_text(&name))
+        .collect();
+    // The app's name: its title and the registry's other words for it, less
+    // those that name one of its types.
     let app_names: Vec<String> = [&ty.app.one, &ty.app.many]
         .into_iter()
         .map(|name| super::fold_search_text(name))
         .chain(
             keywords
                 .iter()
-                .map(|keyword| super::fold_search_text(keyword)),
+                .map(|keyword| super::fold_search_text(keyword))
+                .filter(|keyword| !type_names.contains(keyword)),
         )
+        .collect();
+    let mut own = Vec::new();
+    let mut by_noun = false;
+    for name in [&ty.noun.one, &ty.noun.many] {
+        by_noun |= named_at(&words, name, &mut own);
+    }
+    for name in &app_names {
+        named_at(&words, name, &mut own);
+    }
+    let mut covered = own.clone();
+    let mut kin_named = false;
+    // A type called as its app is ("Mail" in Mail) names the app, not
+    // another type of it.
+    let title: Vec<String> = [&ty.app.one, &ty.app.many]
+        .into_iter()
+        .map(|name| super::fold_search_text(name))
         .collect();
     for noun in kin {
         for name in [&noun.one, &noun.many] {
-            if !app_names.contains(&super::fold_search_text(name)) {
+            if !title.contains(&super::fold_search_text(name)) {
                 kin_named |= named_at(&words, name, &mut covered);
             }
         }

@@ -15,11 +15,9 @@
 //!
 //! **A noun is refined in the app's catalogue, never in code.** A type whose
 //! name English cannot derive a noun for (`Person` is a `person` and
-//! `people`, `Sheep` a `sheep` and `sheep`) writes the message
-//! `noun-<kind>` in its `locales/<lang>.ftl`, one message with `$count`, as
-//! i18n.md has a tilolang type write `<id>.noun`. The host lending its
-//! catalogue ([`refine_with`]) reads it in the reader's language; without a
-//! catalogue, or a message no catalogue holds, the derived noun stands.
+//! `people`) writes the kind's message with `$count` in its
+//! `locales/<lang>.ftl`, the same catalogue entry that names the type
+//! ([`crate::label`]); a noun no catalogue of theirs holds is the derived one.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
@@ -64,66 +62,6 @@ pub fn name_app(title: &'static str, root: &'static str) {
     );
 }
 
-/// A catalogue that refines the words a type's name derives: the message
-/// `key`, formatted with `count` (`None` for the noun itself, `Some(1)` and
-/// `Some(2)` for its singular and plural), and `None` when the catalogue does
-/// not hold it.
-pub type Refiner = std::rc::Rc<dyn Fn(&str, Option<u32>) -> Option<String>>;
-
-thread_local! {
-    /// The catalogue the reader's language resolves through, once a host has
-    /// lent one ([`refine_with`]).
-    static REFINED: std::cell::RefCell<Option<Refiner>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Resolve a type's nouns through the catalogue `refiner` names, in the
-/// reader's language: a noun the code derives is refined where the app's
-/// catalogue says otherwise (i18n.md). A host lends its own
-/// ([`refine_with`]); a thread without one keeps the derived nouns.
-pub fn refine_with(refiner: impl Fn(&str, Option<u32>) -> Option<String> + 'static) {
-    REFINED.with(|kept| *kept.borrow_mut() = Some(std::rc::Rc::new(refiner)));
-}
-
-/// Forget the catalogue [`refine_with`] lent this thread.
-pub fn forget_catalogue() {
-    REFINED.with(|kept| *kept.borrow_mut() = None);
-}
-
-/// The noun `derived` for the type of `kind`, refined by the catalogue where
-/// it holds `noun-<kind>` (one message with `$count`). The kind stands in
-/// for a tilolang type's stable id: it is what every resource of the type
-/// names itself by across apps.
-#[must_use]
-pub fn noun_of(kind: &str, derived: Noun) -> Noun {
-    let refinements = REFINED.with(|kept| kept.borrow().clone());
-    let Some(refiner) = refinements else {
-        return derived;
-    };
-    let key = noun_key(kind);
-    let one = refiner(&key, Some(1));
-    let many = refiner(&key, Some(2));
-    Noun {
-        one: one.unwrap_or(derived.one),
-        many: many.unwrap_or(derived.many),
-    }
-}
-
-/// The catalogue key of the type of `kind`'s noun: `noun-<kind>`, its dots
-/// and other punctuation read as these separators (a Fluent message id takes
-/// letters, digits, `_` and `-` only).
-#[must_use]
-pub fn noun_key(kind: &str) -> String {
-    let mut key = String::from("noun-");
-    key.extend(kind.chars().map(|c| {
-        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-            c
-        } else {
-            '-'
-        }
-    }));
-    key
-}
-
 /// The first part of a kind: the app it belongs to (`tube` in
 /// `tube.channel`).
 fn segment_of(kind: &'static str) -> Option<&'static str> {
@@ -146,7 +84,8 @@ pub fn app_words_of(kind: &str) -> (Noun, bool) {
 
 /// What a resource of `kind`, whose type is called `label` as people read it
 /// (a `#[resource]`'s `label`, e.g. `Channel`), is: the type's noun made of
-/// its name in words and refined by the app's catalogue ([`noun_of`]), its
+/// its name in words and refined by the app's catalogue
+/// ([`crate::label::localized_noun`]), its
 /// app's name, and whether it is that app's root. The app is the kind's
 /// first part, as [`app_words_of`] reads it.
 ///
@@ -157,10 +96,41 @@ pub fn app_words_of(kind: &str) -> (Noun, bool) {
 pub fn type_words(kind: &str, label: &str) -> ResourceType {
     let (app, root) = app_words_of(kind);
     ResourceType {
-        noun: noun_of(kind, Noun::of_type(label)),
+        noun: crate::label::localized_noun(kind, Noun::of_type(label)),
         app,
         root,
     }
+}
+
+/// A declared resource type whose resources a host publishes from outside a
+/// document — the rows a surface shows that live outside it (a fetched
+/// catalogue's channels and videos, a process, a container). Its words are
+/// the type's, so such a row says what it is to search exactly as a record's
+/// item does, and what a press does is one of the type's actions or `open`.
+///
+/// Every [`Resource`](crate::Resource) is one (its kind and its label are its
+/// type's); a type whose state a document does not hold — Tube's fetched
+/// `Channel` and `Video`, which live in the catalogue, not a workspace record
+/// — implements it by hand with its kind and label, which is all a row needs
+/// before any record exists.
+pub trait RowType {
+    /// [`Resource::KIND`](crate::Resource::KIND): what a row of it is.
+    const KIND: &'static str;
+    /// [`Resource::LABEL`](crate::Resource::LABEL): its name as people read
+    /// it.
+    const LABEL: &'static str;
+
+    /// What a resource of it is, as people name it.
+    fn words() -> ResourceType {
+        type_words(Self::KIND, Self::LABEL)
+    }
+}
+
+/// A `#[derive(Model)]` record's declaration is its type's: it publishes the
+/// record's words too.
+impl<T: crate::Resource> RowType for T {
+    const KIND: &'static str = T::KIND;
+    const LABEL: &'static str = T::LABEL;
 }
 
 /// What the items of the collection `field` of a resource of `kind` are: the
@@ -174,7 +144,7 @@ pub fn item_words(kind: &str, field: &str) -> ResourceType {
     let many = tilo_actions::in_words(field);
     let one = tilo_actions::singular(&many);
     ResourceType {
-        noun: noun_of(&format!("{kind}.{field}"), Noun::new(one, many)),
+        noun: crate::label::localized_noun(&format!("{kind}.{field}"), Noun::new(one, many)),
         app,
         root: false,
     }
@@ -225,24 +195,5 @@ mod tests {
         assert_eq!(words.noun, Noun::new("video", "videos"));
         assert_eq!(words.app, Noun::new("Tube", "tubes"));
         assert!(!words.root);
-    }
-
-    #[test]
-    fn the_catalogue_refines_a_noun_and_the_derived_one_stands_without_it() {
-        name_app("People", "people.library");
-        let person = || type_words("people.person", "Person").noun;
-        assert_eq!(person(), Noun::new("person", "persons"));
-        refine_with(|key, count| match (key, count) {
-            ("noun-people-person", Some(1)) => Some("person".to_owned()),
-            ("noun-people-person", Some(2)) => Some("people".to_owned()),
-            _ => None,
-        });
-        assert_eq!(
-            person(),
-            Noun::new("person", "people"),
-            "the catalogue says what several are"
-        );
-        forget_catalogue();
-        assert_eq!(person(), Noun::new("person", "persons"));
     }
 }

@@ -82,6 +82,10 @@ path = "tests/budgets.rs"
 name = "words"
 path = "tests/words.rs"
 
+[[test]]
+name = "rust_types"
+path = "tests/rust_types.rs"
+
 [lints]
 workspace = true
 

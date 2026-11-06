@@ -4,7 +4,7 @@
 //! the palette, agents and scripts.
 
 use tilo_actions::{ActionSpec, ResourcePresentation, ResourceSemanticIdentity, ResourceSpec};
-use tilo_resource::{Effect, Resource};
+use tilo_resource::Effect;
 
 /// One live external entity a surface publishes beneath its resource, with
 /// the view and effect operations it offers (inspect a process, stop a
@@ -46,12 +46,12 @@ impl LiveRow {
     /// search matches "videos of …" against. A row an app declares an item of
     /// a `#[resource]` type publishes (`Video`, `Channel`) is one of these,
     /// so what it is is the type's and the search's, nothing the app writes.
-    pub fn typed<R: Resource>(id: impl Into<String>, label: impl Into<String>) -> Self {
+    pub fn typed<R: tilo_resource::words::RowType>(
+        id: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Self {
         Self {
-            resource: std::rc::Rc::new(
-                ResourceSpec::new(id, R::KIND, label)
-                    .with_type(tilo_resource::words::type_words(R::KIND, R::LABEL)),
-            ),
+            resource: std::rc::Rc::new(ResourceSpec::new(id, R::KIND, label).with_type(R::words())),
         }
     }
 
