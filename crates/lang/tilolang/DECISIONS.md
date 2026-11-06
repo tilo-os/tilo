@@ -696,3 +696,19 @@ search.md, "What a type declares" and "Types, references and paths".
   action carries the place it was offered with, so what runs is what the person saw. Two
   actions offered on one kind of item that both ask for a value of one type and write it to the
   same field are one command under two names (E120).
+- **A field declared `personal` holds one value per person, in the record everyone shares.** Some
+  data about a shared record is a person's own: the tasks Ada picked for her Today, the order
+  she put her day in, the day she snoozed a shared mail to. Writing `personal today: Bool =
+  false` says so with one word before the field's name, rather than a `Map<Principal, Bool>` the
+  store would hold but a filter could not read for the person looking: a read, a filter, a sort
+  and a count then ask the field for whoever looks, and an action writes the value of the person
+  who runs it. The values are an ordinary register in the field's own key (a map from person to
+  value), so they merge, come back through undo and sync as any field does, and each person's
+  change stands in history as theirs; the host index keeps one entry per person, so a filter on
+  one stays answered from the index. `others(t.today)` reads the people other than the one
+  looking whose value is set — presence, not a secret — which is how a view says who else picked
+  a task. The field is a `Bool` or an `Option` because a person who never set it must read the
+  empty value, and it takes no default but the empty one, no `merge` of its own (its register
+  map is its merge) and no role marker (`(title)` and the rest read one value of the record).
+  This is not the window's state: `window` and `lens` are the person looking's arrangement of a
+  window, and a personal field is a value about a record anyone sharing it may read.

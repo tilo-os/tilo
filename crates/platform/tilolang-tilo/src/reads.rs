@@ -159,10 +159,8 @@ pub fn field_of_slot(
     let id = field.id.as_str();
     // A personal field's key holds a map from each person's id to their value.
     if field.personal {
-        return Ok(FieldValue::Entries(personal_entries(
-            load_slot::<Map<Json>>(doc, slot, id).map_err(backend)?,
-            field,
-        )));
+        let map: Map<Json> = load_slot(doc, slot, id).map_err(backend)?;
+        return Ok(FieldValue::Entries(personal_entries(&map, field)));
     }
     Ok(match field.kind {
         MergeKind::Register => {
@@ -217,7 +215,7 @@ pub fn field_of_slot(
 
 /// What the map a personal field keeps of each person's value holds, as the store reads it: one
 /// entry per person, sorted by who they are.
-fn personal_entries(map: Map<Json>, field: &FieldSchema) -> Vec<(String, Scalar)> {
+fn personal_entries(map: &Map<Json>, field: &FieldSchema) -> Vec<(String, Scalar)> {
     map.iter()
         .map(|(person, value)| (person.clone(), scalar_of_json(value, field.composite)))
         .collect()
@@ -260,7 +258,7 @@ pub fn field_of_json(json: &Json, field: &FieldSchema) -> Result<FieldValue, Sto
                 )));
             }
         };
-        return Ok(FieldValue::Entries(personal_entries(entries, field)));
+        return Ok(FieldValue::Entries(personal_entries(&entries, field)));
     }
     let shape = |what: &str| {
         StoreError::Backend(format!(

@@ -252,10 +252,12 @@ impl FieldSchema {
         self
     }
 
-    /// The field holds one value per person, in the record everyone shares.
+    /// The field holds one value per person, in the record everyone shares: stored as one map
+    /// under the field's own key, which is what an edit of one person's value writes into.
     #[must_use]
     pub const fn personal(mut self) -> Self {
         self.personal = true;
+        self.kind = MergeKind::Map;
         self
     }
 
@@ -389,28 +391,6 @@ impl TypeSchema {
         })
     }
 
-    /// The column of the field `id`, as it is named for the person `id` reads a personal field
-    /// for: the column of `today@ada` is the column of `today`, named `today@ada`. The index
-    /// holds a personal field's column once per person, each under the name a read of that
-    /// person's value has.
-    #[must_use]
-    pub fn column_of(&self, id: &str) -> Option<ColumnSchema> {
-        let column = self
-            .columns
-            .iter()
-            .find(|column| column.field.as_deref() == Some(id))
-            .or_else(|| {
-                let (base, _) = tilolang::personal::split(id)?;
-                let field = self.field(base).filter(|field| field.personal)?;
-                self.columns
-                    .iter()
-                    .find(|column| column.field.as_deref() == Some(field.id.as_str()))
-            })?;
-        let mut column = column.clone();
-        column.name = id.to_owned();
-        Some(column)
-    }
-
     /// The field saying its records are finished, by id (`done: Bool (done)`), when it declares
     /// one: what a place leaves out of its count and folds into its foot.
     #[must_use]
@@ -456,8 +436,9 @@ impl TypeSchema {
         self.columns.iter().find(|column| column.name == name)
     }
 
-    /// The column `name`, when `name` is a value of a personal field kept for one person
-    /// (`today@ada`): the field's column, named for that person.
+    /// The column named `name`: a field's, by its id, or one person's value of a personal field
+    /// (`today@ada`), the field's column named for that person. The index holds a personal
+    /// field's column once per person, each under the name a read of their value has.
     #[must_use]
     pub fn column_for(&self, name: &str) -> Option<ColumnSchema> {
         if let Some(column) = self.column(name) {
@@ -466,7 +447,7 @@ impl TypeSchema {
         let (base, _) = tilolang::personal::split(name)?;
         self.field(base).filter(|field| field.personal)?;
         let mut column = self.column(base)?.clone();
-        column.name = name.to_owned();
+        name.clone_into(&mut column.name);
         Some(column)
     }
 

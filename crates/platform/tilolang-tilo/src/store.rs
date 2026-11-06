@@ -267,14 +267,21 @@ impl ListedOnce {
     fn reached_by(&self, key: &FieldKey) -> bool {
         let item = key.resource.contains('/') && key.doc() == doc_of(&self.resource);
         let filtered_on = |field: &str| {
+            // A personal field is written whole, under the field's id: a read of it names the
+            // person it reads for (`today@ada`), and one person's value moving moves what every
+            // read of it is part of.
+            let reads = |id: &str| {
+                id == field
+                    || tilolang::personal::field_of(id) == tilolang::personal::field_of(field)
+            };
             field == ANY_FIELD
                 || self
                     .pred
                     .as_ref()
-                    .is_some_and(|pred| pred.fields().iter().any(|read| read.spec.id == field))
+                    .is_some_and(|pred| pred.fields().iter().any(|read| reads(&read.spec.id)))
                 || self.order.as_ref().is_some_and(|order| {
                     // Any change of an item is its last version.
-                    order.field == field || order.field == idx::reflect::UPDATED
+                    reads(&order.field) || order.field == idx::reflect::UPDATED
                 })
         };
         (key.resource == self.resource && (key.field == self.field || key.field == ANY_FIELD))

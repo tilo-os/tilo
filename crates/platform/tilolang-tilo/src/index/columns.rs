@@ -345,18 +345,18 @@ pub fn access<F>(
         return Some(vec![named]);
     }
     // The column of a field, or of one person's value of a personal field, named for them.
-    let column_of = |f: &F| schema.column_of(&id(f));
+    let column_for = |f: &F| schema.column_for(&id(f));
     match pred {
         Pred::Cmp(op, Operand::Field(f), Operand::Lit(v)) => {
-            comparison(&column_of(f)?, *op, v).map(|a| vec![a])
+            comparison(&column_for(f)?, *op, v).map(|a| vec![a])
         }
         Pred::Cmp(op, Operand::Lit(v), Operand::Field(f)) => {
-            comparison(&column_of(f)?, flip(*op), v).map(|a| vec![a])
+            comparison(&column_for(f)?, flip(*op), v).map(|a| vec![a])
         }
         Pred::Not(inner) => match &**inner {
             Pred::Cmp(CmpOp::Eq, Operand::Field(f), Operand::Lit(Lit::Bool(b)))
             | Pred::Cmp(CmpOp::Eq, Operand::Lit(Lit::Bool(b)), Operand::Field(f)) => {
-                let column = column_of(f).filter(|c| c.kind == ColumnKind::Bool && !c.many)?;
+                let column = column_for(f).filter(|c| c.kind == ColumnKind::Bool && !c.many)?;
                 Some(vec![run(
                     &column,
                     one_value(if *b { "0" } else { "1" }),
@@ -364,13 +364,13 @@ pub fn access<F>(
                 )])
             }
             Pred::Present(f) => {
-                let column = column_of(f)?;
+                let column = column_for(f)?;
                 Some(vec![run(&column, one_value(""), true)])
             }
             _ => None,
         },
         Pred::Present(f) => {
-            let column = column_of(f)?;
+            let column = column_for(f)?;
             Some(vec![run(
                 &column,
                 (AFTER.to_string(), LAST.to_string()),
@@ -378,12 +378,12 @@ pub fn access<F>(
             )])
         }
         Pred::Has(f, v) => {
-            let column = column_of(f)?;
+            let column = column_for(f)?;
             let w = write(column.kind, v)?;
             Some(vec![run(&column, one_value(&w), true)])
         }
         Pred::Like(f, pattern) => {
-            let column = column_of(f).filter(|c| c.kind == ColumnKind::Ident)?;
+            let column = column_for(f).filter(|c| c.kind == ColumnKind::Ident)?;
             Some(vec![pattern_run(&column, pattern, whole_type)])
         }
         Pred::Or(each) => {

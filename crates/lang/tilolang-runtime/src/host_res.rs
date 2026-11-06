@@ -47,7 +47,32 @@ fn spec(f: &FieldInfo) -> FieldSpec {
 /// A field as the record holds it whole: a personal one holds every person's value, read as
 /// [`FieldValue::Entries`] of the person to their value.
 pub(crate) fn spec_all(f: &FieldInfo) -> FieldSpec {
-    spec_for(f, None)
+    // The map under the field's own key is what holds them.
+    let kind = if f.personal {
+        crate::meta::FieldKind::Map
+    } else {
+        f.kind
+    };
+    FieldSpec {
+        id: f.id.clone(),
+        kind,
+    }
+}
+
+/// `whole`, the value of `field` as the record holds it, as it reads for `person`: their entry
+/// of a personal field, and absent when they set none. Any other field, or any other person,
+/// reads it whole.
+pub(crate) fn for_person(field: &FieldInfo, whole: FieldValue, person: Option<&str>) -> FieldValue {
+    let (Some(person), true) = (person, field.personal) else {
+        return whole;
+    };
+    match whole {
+        FieldValue::Entries(entries) => entries
+            .into_iter()
+            .find(|(of, _)| of == person)
+            .map_or(FieldValue::Absent, |(_, value)| FieldValue::Scalar(value)),
+        _ => FieldValue::Absent,
+    }
 }
 
 /// The field a personal one reads or writes for `person`: `id@person`, the id the store keeps
@@ -425,10 +450,7 @@ impl Core {
         let person = if field.personal {
             match self.looking_now() {
                 Some(person) => Some(person),
-                None => {
-                    return declared_default(&field.ty, field.default.as_ref())
-                        .map_err(|e| e.to_string());
-                }
+                None => return declared_default(&field.ty, field.default.as_ref()),
             }
         } else {
             None

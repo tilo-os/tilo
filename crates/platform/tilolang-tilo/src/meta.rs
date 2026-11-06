@@ -283,18 +283,22 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
         {
             continue;
         }
-        let columned = match schema.kind {
-            MergeKind::Register => !matches!(
-                parse_ty(&field.ty, &meta.app),
-                Ok(Ty::List(_) | Ty::Tuple(_) | Ty::Map(_) | Ty::Result(..))
-            ),
-            // A counter is a column of its value. A set's members are one run per member
-            // (`columns::values`), so membership and presence are runs of its column without
-            // any `filter` naming it: `boxes.contains("inbox")` finds the conversations in one
-            // box by one run, not one by one.
-            MergeKind::Counter | MergeKind::Set => true,
-            _ => false,
-        };
+        // A personal field holds a value of its declared type for each person, a register's
+        // value per person: its column holds one person's value, the one its name says
+        // (`columns::person_of`), and the store derives one per person who has one.
+        let columned = schema.personal
+            || match schema.kind {
+                MergeKind::Register => !matches!(
+                    parse_ty(&field.ty, &meta.app),
+                    Ok(Ty::List(_) | Ty::Tuple(_) | Ty::Map(_) | Ty::Result(..))
+                ),
+                // A counter is a column of its value. A set's members are one run per member
+                // (`columns::values`), so membership and presence are runs of its column
+                // without any `filter` naming it: `boxes.contains("inbox")` finds the
+                // conversations in one box by one run, not one by one.
+                MergeKind::Counter | MergeKind::Set => true,
+                _ => false,
+            };
         // ignored-failure: a loaded package's field types all parse (`unreadable_types`).
         let Some((kind, cases)) = parse_ty(&field.ty, &meta.app)
             .ok()

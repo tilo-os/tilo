@@ -459,8 +459,7 @@ impl Core {
         };
         people.sort_unstable();
         if let Some(view) = self.frames.borrow_mut().view_mut() {
-            view.reads
-                .push((target.target.id_string(), field.id.clone()));
+            view.reads.push((target.target.id_string(), field.id));
         }
         self.ret_h(Value::List(
             people
@@ -605,6 +604,7 @@ impl Core {
                 name: param.name.clone(),
                 ty: ty.clone(),
                 kind: crate::meta::FieldKind::Register,
+                personal: false,
                 role: None,
                 default: None,
                 derived: None,
@@ -715,7 +715,10 @@ impl Core {
             let Some(field) = info.field(&id) else {
                 continue;
             };
+            // A personal field stands as the change's own person had it: the value it wrote, not
+            // everyone's.
             let side = |held: crate::store::FieldValue| -> HResult<Value> {
+                let held = crate::host_res::for_person(field, held, Some(&v.who));
                 let value = self
                     .field_value(of, field, held, None)
                     .map_err(crate::engine::HostFail::Trap)?;

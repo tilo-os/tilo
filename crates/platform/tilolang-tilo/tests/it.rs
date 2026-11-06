@@ -55,6 +55,7 @@ mod sync;
 mod task;
 mod task_door;
 mod tasks;
+mod tasks_today;
 #[cfg(feature = "record")]
 mod undo_own;
 mod unions;

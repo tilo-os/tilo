@@ -185,8 +185,16 @@ impl Checker<'_> {
             );
         }
         let read = self.expr(&a.value, None);
+        // A field's read is a host call, a `Bool` one converted from the store's number.
+        let read = match &read.kind {
+            crate::ir::Ek::Conv(_, inner) => inner.as_ref(),
+            _ => &read,
+        };
         let (base, field) = match &read.kind {
-            crate::ir::Ek::Host(crate::abi::Imp::ResGetH, args) => match args.as_slice() {
+            crate::ir::Ek::Host(
+                crate::abi::Imp::ResGetH | crate::abi::Imp::ResGetI | crate::abi::Imp::ResGetF,
+                args,
+            ) => match args.as_slice() {
                 [base, field] => (base.clone(), field.clone()),
                 _ => (Ex::error(), Ex::error()),
             },
