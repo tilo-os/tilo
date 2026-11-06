@@ -38,9 +38,6 @@ type Task {
     due: Option<Date> = .none
     /// The moment on that day it is due at, if it has one.
     at: Option<Time> (time of: due) = .none
-    /// Whether the person looking picked it for their Today: their pick of a task everyone
-    /// shares, so the same task can stand in two people's Today for reasons of their own.
-    personal picked: Bool = false
     /// Anything worth remembering about it.
     notes: RichText (body)
     /// Who is doing it.
@@ -67,12 +64,9 @@ type Task {
 
     search {
         filter "Inbox" = project == .none and due == .none and not done (icon: .inbox)
-        // What waits for the person looking: what they picked for today, and what is due today
-        // or late and theirs to do (or nobody's yet). A task due today that someone else holds
-        // waits in their Today, not in this one.
-        filter "Today" = not done
-            and (picked
-                or due <= today and (assignee == .none or assignee == workspace.me)) (icon: .star)
+        // What waits for the person looking: what is due today or late, and what is theirs to do
+        // whenever it is due, or due at no day at all.
+        filter "Today" = not done and (assignee == workspace.me or due <= today) (icon: .star)
         filter "Upcoming" = due > today and not done (icon: .calendar)
         filter "Done" = done (icon: .circle_check)
         filter "Assigned to me" = assignee == workspace.me and not done (icon: .user)
@@ -199,20 +193,6 @@ action add_subtask(tasks: Tasks, t: Task, title: Text) -> Task uses time (
     tasks.items.move(made, after: last)
     if t.done or tasks.items.ancestors(t, .parent).any(a -> a.done) { check(t, false) }
     made
-}
-
-/// Picks a task for the person looking's Today, or lets it go. The pick is theirs alone: it
-/// stands in their Today on every device of theirs, and nobody else's, though everyone can see
-/// who picked a task they share.
-action pick(t: Task, on: Bool = not t.picked) (
-    label: if on { "Pick for today" } else { "Let go" },
-    icon: .star,
-    on: t.picked,
-    key: "Ctrl+Shift+T",
-    group: "Today",
-) {
-    require not on or not t.done "It is done already"
-    t.picked = on
 }
 
 /// Sets the day a task is due by, or clears it: the presets take the day, and one entry asks
@@ -562,10 +542,9 @@ view home(t: Tasks) {
     let finished = place == Task.done
     let folds = project != .none
     let in_today = place == Task.today
-    // What is due reads under the day it is due on, soonest first; what I picked and gave no
-    // day stands after them, under the pick it is there for. What is done reads newest first,
-    // by when it was finished; any other list by the day it is due. A project's list stands
-    // its finished branch last, under the foot that folds it away.
+    // What is due reads under the day it is due on, soonest first. What is done reads newest
+    // first, by when it was finished; any other list by the day it is due. A project's list
+    // stands its finished branch last, under the foot that folds it away.
     let ordered = found.sort_by(.due)
     let shown = if finished {
         found.sort_by(x -> finished_at(x), desc)
@@ -629,11 +608,7 @@ view home(t: Tasks) {
                 group: x -> if by_day {
                     x.due
                 } else if finished { finished_day(x) } else { .none },
-                ungrouped: if in_today {
-                    // A task I picked stands in my Today with no day of its own: it lists under
-                    // the pick it is there for, after the days it is due on.
-                    .some("Picked")
-                } else if by_day {
+                ungrouped: if by_day {
                     .some(phrase("tilolang-no-date"))
                 } else { .none },
                 group_done: finished,
@@ -843,11 +818,6 @@ view task_page(t: Task) {
                         }
                     }
                 }
-                // Who else picked this task for their own Today: their pick, not the person
-                // looking's, so everyone sees it and only the one it is of finds it in theirs.
-                for p in others(t.picked) {
-                    ui.Chip("{p.name()}'s today", icon: .star)
-                }
             }
             discussion.thread(t)
             std.history(t)
@@ -955,8 +925,8 @@ scenario "what got done this week" {
     invoke(check(notice, true), by: mia, at: 2026-06-30T07:15Z)
 }
 
-/// Today: what is due, what went by, what is done with it, and what I picked for today. Its
-/// place is Today: `layout-check --state place=Task.today` lays the window out there.
+/// Today: what is due, what went by, and what is done with it. Its place is Today:
+/// `layout-check --state place=Task.today` lays the window out there.
 scenario "today" {
     let flat = tasks.projects.insert(Project(name: "Move flat"))
     tasks.items.insert(Task(title: "Buy oat milk and eggs", due: 2026-06-30))
@@ -971,10 +941,8 @@ scenario "today" {
     tasks.items.insert(Task(title: "Book a haircut", due: 2026-06-29))
     tasks.items.insert(Task(title: "Pack the kitchen", project: flat, due: 2026-06-30))
     tasks.items.insert(Task(title: "Order boxes and tape", project: flat, due: 2026-07-02))
-    // Mine, with no day of its own: it stands in my Today because I picked it, under the pick
-    // it is there for, after the days it is due on.
-    let mail = tasks.items.insert(Task(title: "Sort the paper mail"))
-    pick(mail, true)
+    // Mine, with no day of its own: it stands in my Today because it is mine.
+    tasks.items.insert(Task(title: "Sort the paper mail", assignee: .some(invoker)))
 }
 
 /// A launch post half written: its window, with the subtasks it was broken into, one of them
