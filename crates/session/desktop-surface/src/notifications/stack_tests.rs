@@ -603,7 +603,8 @@ fn banners_that_do_not_fit_fold_into_a_more_card_and_do_not_age() {
         let ids: Vec<u64> = (0..super::super::MAX_NOTIFICATIONS)
             .map(|i| host.push(Notification::new(format!("Banner {i}"), "Body")))
             .collect();
-        let viewport = Rect::new(0.0, 0.0, 800.0, 300.0);
+        // Three stand at most, and this corner has room for two of them.
+        let viewport = Rect::new(0.0, 0.0, 800.0, 240.0);
         let mut stack = NotificationStack::new();
         stack.set_viewport(viewport);
         draw(&mut stack, &host, &theme);
@@ -634,6 +635,61 @@ fn banners_that_do_not_fit_fold_into_a_more_card_and_do_not_age() {
         assert!(act(&mut stack, &host, |s| s.click_at(more.center())));
         assert_eq!(host.centre_opened.get(), 1, "the card opens the centre");
     }
+}
+
+/// The corner stands at most three banners. Further arrivals from one app
+/// fold into the last one's caption, which opens the centre where they all
+/// are; their own choices and close still reach them.
+#[test]
+fn a_fourth_banner_folds_into_the_last_ones_caption_and_opens_the_centre() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
+    let host = TestHost::default();
+    for i in 0..5 {
+        host.push(
+            Notification::new(format!("Note {i}"), "Body")
+                .with_app_id("notes")
+                .with_app_name("Notes"),
+        );
+    }
+    let mut stack = NotificationStack::new();
+    stack.set_viewport(Rect::new(0.0, 0.0, 800.0, 900.0));
+    paint(
+        &mut stack,
+        &host,
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &Theme::dark().with_reduce_motion(true),
+    );
+    assert_eq!(stack.on_screen.len(), MOST_BANNERS, "three stand, no more");
+    assert_eq!(stack.more_rect, Rect::ZERO, "no separate card");
+    let label = t_args(
+        "notification-more-from",
+        &[("count", 2.into()), ("app", "Notes".into())],
+    );
+    let folded = stack
+        .action_buttons
+        .iter()
+        .find(|(_, name, _)| *name == label)
+        .unwrap_or_else(|| panic!("the last banner folds the rest: {label}"));
+    assert_eq!(folded.2, BannerTarget::More.key());
+    // The oldest of the three carries the fold; the others open themselves.
+    assert_eq!(stack.folded, stack.on_screen.last().copied());
+    let log = host.log();
+    for n in log.active() {
+        let standing = stack.on_screen.contains(&n.id);
+        assert_eq!(
+            n.dwell.is_running(),
+            standing,
+            "only a banner on screen ages"
+        );
+    }
+    drop(log);
+    let at = folded.0.center();
+    assert!(act(&mut stack, &host, |s| s.click_at(at)));
+    assert_eq!(host.centre_opened.get(), 1, "the caption opens the centre");
+    assert_eq!(host.log().active().len(), 5, "and nothing was dismissed");
 }
 
 /// Resting the pointer on the stack holds every banner on it: none

@@ -272,12 +272,16 @@ impl DesktopChrome {
     }
 
     /// Detach the tab in front into a window of its own, right after the one
-    /// it is in.
+    /// it is in. A window of one tab has nothing to split: the desk says why
+    /// rather than the chord doing nothing.
     fn split_focused_tab(&self) {
         let Some(route) = self.focused_route() else {
             return;
         };
-        self.dispatch(ChromeEffect::SplitRight { tab: route.tab });
+        self.report(
+            self.handle
+                .dispatch(ChromeEffect::SplitRight { tab: route.tab }),
+        );
     }
 
     /// Put the tab in front into the window `direction` places away in its

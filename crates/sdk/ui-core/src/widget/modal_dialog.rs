@@ -1847,34 +1847,17 @@ impl ModalDialog<dyn Widget> {
         if !layout.body_overflows || self.scroll > 0.0 {
             return;
         }
-        // The rows of the content: the first level with more than one child.
-        let mut level: &dyn Widget = &self.content;
-        let mut rows = level.children();
-        while rows.len() == 1 {
-            let Some(&only) = rows.first() else { break };
-            level = only;
-            rows = level.children();
-        }
         let body = layout.body;
-        let boundary = rows
-            .iter()
-            .map(|row| row.get_rect().y1)
-            .filter(|&y| y > body.y0 + 0.5 && y <= body.y1 + 0.5)
-            .fold(None, |best: Option<f64>, y| {
-                Some(best.map_or(y, |b| b.max(y)))
-            });
-        let Some(boundary) = boundary else { return };
+        let Some(boundary) = whole_row_top(&self.content, body) else {
+            return;
+        };
         let trim = body.y1 - boundary;
-        // A cut that would take more than a third of the body away is a
-        // single tall row: let it scroll instead.
-        if trim > 0.5 && trim < body.height() / 3.0 {
-            shorten(layout, trim);
-            self.trim += trim;
-            let max_scroll = (self.content_size.1 - layout.body.height()).max(0.0);
-            self.scroll = self.scroll.clamp(0.0, max_scroll);
-            for key in &mut self.keys {
-                key.rect = key.rect - Vec2::new(0.0, trim);
-            }
+        shorten(layout, trim);
+        self.trim += trim;
+        let max_scroll = (self.content_size.1 - layout.body.height()).max(0.0);
+        self.scroll = self.scroll.clamp(0.0, max_scroll);
+        for key in &mut self.keys {
+            key.rect = key.rect - Vec2::new(0.0, trim);
         }
     }
 
@@ -2046,19 +2029,6 @@ impl ModalDialog<dyn Widget> {
     /// below the sheet) is up: it gets the first claim on presses.
     fn content_overlay_open(&self) -> bool {
         self.content.wants_pointer_capture() || self.content.modal_capture().is_some()
-    }
-}
-
-/// Shorten an overflowing sheet's body by `by` from the bottom, moving the
-/// footer up with it.
-fn shorten(layout: &mut ModalLayout, by: f64) {
-    let by = by.min(layout.body.height()).max(0.0);
-    layout.card.y1 -= by;
-    layout.body.y1 -= by;
-    for action in &mut layout.actions {
-        if action.area() > 0.0 {
-            *action = *action - Vec2::new(0.0, by);
-        }
     }
 }
 
@@ -2990,8 +2960,10 @@ fn activate_focused(
 fn theme_line(theme: &Theme) -> f32 {
     theme.text(TextRole::Body).line_height_px() * 3.0
 }
+mod body;
 mod close_control;
 mod footer_key;
+use body::{shorten, whole_row_top};
 use footer_key::FooterKey;
 
 #[cfg(test)]

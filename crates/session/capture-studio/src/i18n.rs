@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crate::link::{Failure, Refusal, Sent};
+use crate::link::{Failure, Refusal, Sent, WriteCause};
 
 ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 
@@ -56,9 +56,9 @@ pub(crate) fn failed(failure: &Failure) -> String {
         Failure::NotTaken(why) => {
             t_args("capture-failed-not-taken", &[("why", why.as_str().into())])
         }
-        Failure::NotWritten(why) => t_args(
+        Failure::NotWritten { folder, cause } => t_args(
             "capture-failed-not-written",
-            &[("why", why.as_str().into())],
+            &[("why", write_cause(*cause, folder).into())],
         ),
         Failure::NotCopied(why) => {
             t_args("capture-failed-not-copied", &[("why", why.as_str().into())])
@@ -73,6 +73,27 @@ pub(crate) fn failed(failure: &Failure) -> String {
             &[("path", named(path).into()), ("why", error.as_str().into())],
         ),
     }
+}
+
+/// Why a screenshot's file was not written, in the person's words: what the
+/// system would have said as an error number is said as what it means for
+/// their folder.
+fn write_cause(cause: WriteCause, folder: &Path) -> String {
+    let key = format!("capture-failed-not-written-{}", cause.words());
+    t_args(&key, &[("folder", folder_words(folder).into())])
+}
+
+/// The folder a file goes in, as a person names it: their home is `~`.
+pub(crate) fn folder_words(folder: &Path) -> String {
+    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from)
+        && let Ok(rest) = folder.strip_prefix(&home)
+    {
+        if rest.as_os_str().is_empty() {
+            return String::from("~");
+        }
+        return format!("~/{}", rest.display());
+    }
+    folder.display().to_string()
 }
 
 /// Why a screenshot did not go where it was sent.
@@ -133,6 +154,8 @@ fn named(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
@@ -222,9 +245,21 @@ mod tests {
             failed(&Failure::NotTaken("no window".to_owned())),
             "A screenshot was not taken: no window"
         );
+        // A folder that refused the file is said as what it means for the
+        // person, never as what the system said.
         assert_eq!(
-            failed(&Failure::NotWritten("no space left on device".to_owned())),
-            "A screenshot was not written: no space left on device"
+            failed(&Failure::NotWritten {
+                folder: PathBuf::from("/pictures"),
+                cause: WriteCause::NoRoom,
+            }),
+            "Couldn't save the screenshot: there's no room left in /pictures"
+        );
+        assert_eq!(
+            failed(&Failure::NotWritten {
+                folder: PathBuf::from("/from-the-system"),
+                cause: WriteCause::ReadOnly,
+            }),
+            "Couldn't save the screenshot: /from-the-system is read-only"
         );
         assert_eq!(
             failed(&Failure::NotCopied("no clipboard".to_owned())),

@@ -348,3 +348,29 @@ profile-action-identities = Your identities
 profile-action-backup = Back up your identity
 profile-action-pair-device = Pair another device
 profile-name-not-saved = Your name was not saved
+
+## A capture, while the capture studio's bar is down: the card the floating
+## layer and the bar's pill show, and what its controls do.
+capture-recording-title = Screen recording
+capture-recording-stop = Stop
+capture-recording-pause = Pause
+capture-recording-resume = Resume
+capture-replay-title = Replay buffer
+capture-replay-save = Save
+capture-replay-stop = Stop
+capture-shot-title = Screenshot
+capture-shot-copy = Copy
+capture-shot-open = Open
+capture-shot-reveal = Show in folder
+capture-shot-dismiss = Done
+capture-failed-not-saved = Couldn't save the screenshot
+capture-failed-not-saved-permission = Tilo can't write to { $folder }
+capture-failed-not-saved-no-room = there's no room left in { $folder }
+capture-failed-not-saved-read-only = { $folder } is read-only
+capture-failed-not-saved-folder = there's no folder at { $folder }
+capture-failed-not-saved-other = the system wouldn't let Tilo write to { $folder }
+capture-failed-copy-instead = Copy instead
+capture-failed-dismiss = Done
+capture-target-display = The whole desktop
+capture-target-window = A window
+capture-target-region = An area of the desktop

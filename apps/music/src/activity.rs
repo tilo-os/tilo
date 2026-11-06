@@ -32,7 +32,7 @@ pub struct Playing {
 }
 
 /// A control pressed on the song's pill or card.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Command {
     /// The control's id, as the summary named it.
     pub command: String,
@@ -40,6 +40,9 @@ pub struct Command {
     /// changed is not this song's.
     #[serde(default)]
     pub activity_id: Option<String>,
+    /// How far into the song a seek points, from 0 to 1.
+    #[serde(default)]
+    pub fraction: Option<f64>,
 }
 
 /// The song as the shell's live activity: its title, who it is by, the cover

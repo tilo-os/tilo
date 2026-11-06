@@ -145,7 +145,22 @@ jobs:
         # its directory, and hosts two people's browsers in the shared desk —
         # chat, windows and presence — with the same programs and entry the
         # deployment uses.
-        run: bash os/containers/tilo-lounge/test-integration.sh "$OUT/lounge/image.oci.tar" "$OUT/web-desktop/bundle"
+        run: bash os/containers/tilo-lounge/test-integration.sh "$OUT/lounge/image.oci.tar" "$OUT/web-desktop/bundle" "$OUT/lounge-gate"
+
+      - name: Keep the gate's diagnostics
+        # Whatever the gate found, whether or not it passed: each page's
+        # snapshot, its console, the site's and the Lounge's logs. A gate that
+        # stopped on a page that never arrived says why here; its own failure
+        # line says which step the page was in.
+        if: always()
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: lounge-gate
+          path: |
+            out/lounge-gate/people
+            out/lounge-gate/lounge.log
+            out/lounge-gate/site.log
+          if-no-files-found: ignore
 
       - name: Publish
         env:
@@ -158,9 +173,14 @@ jobs:
           bash tools/ci/publish/oci-publish.sh dev "registry.tilo.so/tilo/lounge" "$OUT/lounge" 'dev-{commit}'
           echo "::notice::lounge: $(cat "$OUT/lounge/receipt.json")"
       - name: Keep the receipts
+        # The digests the infra repository pins, kept whether or not the job
+        # got as far as publishing: a run that failed after building says what
+        # it built.
+        if: always()
         uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: receipts
           path: |
             out/web-entry/receipt.json
             out/lounge/receipt.json
+          if-no-files-found: ignore

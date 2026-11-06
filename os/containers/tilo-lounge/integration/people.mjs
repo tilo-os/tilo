@@ -35,6 +35,14 @@ const failed = async (message, tab) => {
     await dump(page.tab, page.name).catch(() => {});
   }
   writeFileSync(`${out}/report.json`, JSON.stringify(report, null, 2));
+  // What each page's console kept, so the run's own log says why it stopped
+  // without anyone having to open the files it left behind. The page that
+  // failed is said too: one that never arrived never got as far as opening.
+  const said = [...opened.map(page => [page.name, page.tab]), ...(tab && !opened.some(page => page.tab === tab) ? [['the page', tab]] : [])];
+  for (const [name, page] of said) {
+    const lines = (page.log ?? []).slice(-40);
+    if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
+  }
   console.error(`FAIL: ${message}`);
   process.exit(1);
 };
@@ -125,8 +133,17 @@ const until = async (tab, expression, what, timeout = 90_000) => {
     const value = await tab.evaluate(expression).catch(() => false);
     if (value) return value;
     if (Date.now() > deadline) {
+      // Where the page stopped, in the failure line itself: the step it was
+      // in says more than the wait that ran out.
+      const shown = await tab.evaluate(`JSON.stringify({
+        arrival: document.documentElement.dataset.arrival ?? null,
+        door: document.documentElement.dataset.door ?? null,
+        phase: document.documentElement.dataset.phase ?? null,
+        progress: document.documentElement.dataset.arrivalProgress ?? null,
+        status: document.getElementById('status')?.textContent ?? null,
+      })`).catch(() => 'unreadable');
       await dump(tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-      failed(`${what} never appeared`);
+      await failed(`${what} never appeared: ${shown}`, tab);
     }
     await sleep(250);
   }
@@ -238,7 +255,7 @@ const open = async name => {
     door: document.documentElement.dataset.door ?? null,
     phase: document.documentElement.dataset.phase ?? null,
   })`));
-  if (arrival.arrival !== 'done') failed(`${name} did not arrive: ${JSON.stringify(arrival)}`);
+  if (arrival.arrival !== 'done') await failed(`${name} did not arrive: ${JSON.stringify(arrival)}`, tab);
   await sleep(2000);
   // What reached the page's outermost key listener, before the desktop's, and
   // what the desktop's own surface was handed.

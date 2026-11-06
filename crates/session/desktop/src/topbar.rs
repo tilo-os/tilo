@@ -196,7 +196,7 @@ struct CacheFingerprint {
 
     /// Every activity the pill names, in the bar's own order: another one
     /// appearing, changing its reading or ending repaints it.
-    activities: Vec<ui::live_activity::Summary>,
+    activities: ui::floating_layer::Pill,
     /// How far the centre's cross-fade between the time and a live activity
     /// has come, in thousandths; `None` at rest.
     center_fade: Option<u16>,
@@ -706,7 +706,7 @@ impl TopBarChrome {
                 .is_some_and(|chrome| chrome.snapshot().overlays.ws_settings),
             focused: self.focused,
             focused_control: self.focused_control.clone(),
-            activities: self.activities(),
+            activities: self.center_pill(),
             center_fade: self.center_fade_key(),
             center_width: self.center_width_key(),
             app_tray_revision: self.app_tray_revision(),

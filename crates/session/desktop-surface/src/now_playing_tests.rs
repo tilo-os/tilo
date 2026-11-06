@@ -67,6 +67,27 @@ fn a_song_says_how_far_into_it_it_is_only_when_its_length_is_known() {
     );
 }
 
+/// The labels beside the song's bar count from where it plays, and add up to
+/// how long it is.
+#[test]
+fn the_songs_times_round_to_seconds_and_add_up_to_its_length() {
+    let mut playing = NowPlaying {
+        position_ms: 72_400.0,
+        duration_ms: 300_400.0,
+        ..NowPlaying::default()
+    };
+    assert_eq!(playing.times(), Some((72, 228)));
+    playing.duration_ms = 0.0;
+    assert_eq!(playing.times(), None, "a length nobody knows");
+    playing.duration_ms = 60_000.0;
+    playing.position_ms = 90_000.0;
+    assert_eq!(
+        playing.times(),
+        Some((60, 0)),
+        "a playhead past the end stands at the end"
+    );
+}
+
 #[test]
 fn an_offered_session_names_itself_and_offers_no_control() {
     let offer = Offer {

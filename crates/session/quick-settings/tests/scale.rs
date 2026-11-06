@@ -281,13 +281,3 @@ fn back_returns_the_controls_page_at_scale_2() {
         "the controls come back where they stood"
     );
 }
-
-/// The notifications page opens at 2× and says why banners are held.
-#[test]
-fn the_notifications_page_opens_at_scale_2() {
-    let (mut app, _) = hosted("notifications");
-    app.invoke(QuickSettings::SHOW_NOTIFICATIONS.invoke())
-        .unwrap();
-    app.settle();
-    assert!(has(&mut app, "qs-notifications") || has(&mut app, "qs-back"));
-}

@@ -161,6 +161,8 @@ enum Command {
     Snapshot {
         path: String,
     },
+    /// Unlock the session from here, as an accepted password does.
+    Unlock,
     /// A touchpad swipe; the shell takes three fingers or more.
     Swipe {
         fingers: u32,
@@ -388,6 +390,7 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
                 .ok_or_else(|| ParseError::Usage("snapshot PATH requires a path".to_string()))?;
             Command::Snapshot { path: path.clone() }
         }
+        "unlock" => Command::Unlock,
         "watch" => parse_watch(iter.next())?,
         "state-dump" | "windows" => parse_state_read(op, &mut iter)?,
         "actions" => parse_actions_command(&mut iter)?,
@@ -1166,6 +1169,7 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             "logo": logo,
         }),
         Command::Snapshot { path } => json!({ "op": "snapshot", "path": path }),
+        Command::Unlock => json!({ "op": "unlock" }),
         Command::Swipe {
             fingers,
             dx,
@@ -1377,6 +1381,17 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             // The wire's `Ok { frame }` doesn't echo the path back, so print
             // it here to make `snapshot /tmp/x.png | xclip` work.
             println!("{path}");
+            if response.pointer("/ok/locked") == Some(&serde_json::Value::Bool(true)) {
+                eprintln!(
+                    "note: the session is locked, so the picture is of the lock screen, not \
+                     of the desk"
+                );
+            }
+        }
+        Command::Unlock => {
+            let was_locked =
+                response.pointer("/ok/was_locked") == Some(&serde_json::Value::Bool(true));
+            println!("{}", if was_locked { "unlocked" } else { "not locked" });
         }
         Command::ActionsList { json, .. } => return print_actions_list(response, *json),
         Command::ActionsInvoke {
@@ -1446,8 +1461,22 @@ fn print_windows(response: &serde_json::Value, json: bool) {
             } else {
                 " "
             };
+            // Where the frame draws the window, which is what a tool aiming
+            // at it aims at: `x,y wxh`, and nothing for a tab no window fills.
+            let rect = window
+                .get("rect")
+                .and_then(serde_json::Value::as_array)
+                .map(|rect| {
+                    let n = |at: usize| {
+                        rect.get(at)
+                            .and_then(serde_json::Value::as_i64)
+                            .unwrap_or_default()
+                    };
+                    format!("  at {},{} {}x{}", n(0), n(1), n(2), n(3))
+                })
+                .unwrap_or_default();
             println!(
-                "{active} {}/{}  group {}  tab {}  {}  {}",
+                "{active} {}/{}  group {}  tab {}  {}  {}{rect}",
                 field("workspace"),
                 field("strip"),
                 field("group"),
@@ -1532,7 +1561,9 @@ fn print_usage() {
          \x20 modifiers FLAGS               comma-separated subset of ctrl,shift,alt,logo\n\
          \x20                               (empty string clears all)\n\
          \x20 snapshot PATH                 write a PNG of the screen to PATH; answers once\n\
-         \x20                               the file is complete\n\
+         \x20                               the file is complete, and says on stderr when it\n\
+         \x20                               shows the lock screen\n\
+         \x20 unlock                        unlock the session, as an accepted password does\n\
          \x20 watch on|off                  headless: rasterize every frame for a viewer, or stop"
     );
 }

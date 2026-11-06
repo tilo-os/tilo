@@ -5,6 +5,7 @@
 //!
 //! Wire types ported from the qOS browser runtime (PR 541,
 //! `desktop_navigation.rs`) onto `tilo-desktop-model`.
+use crate::i18n::t;
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::{
     DesktopTree, GroupId, StripId, TabId, WindowGroup, Workspace, WorkspaceSlot,
@@ -901,6 +902,19 @@ pub fn group_route(tree: &DesktopTree, group: &str) -> Result<RouteIds, String> 
     Err("Window unavailable".into())
 }
 
+/// Whether the window at `ids` holds a tab besides `ids.tab`. A window of one
+/// tab is that tab's window already: there is nothing to split, close or group
+/// beside it, and a split asked of it is answered rather than done.
+#[must_use]
+pub fn has_a_second_tab(tree: &DesktopTree, ids: &RouteIds) -> bool {
+    tree.workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .find(|group| group.id == ids.group)
+        .is_some_and(|group| group.tabs.len() >= 2)
+}
+
 /// The window the tab `tab` is in, wherever in the tree it stands.
 ///
 /// # Errors
@@ -1042,7 +1056,13 @@ fn admit_chrome(
             admit_move(ids, to, tree)
         }
         ChromeEffect::CloseWindow { group } => group_route(tree, group).map(Admitted::CloseWindow),
-        ChromeEffect::SplitRight { tab } => tab_route(tree, tab).map(Admitted::SplitRight),
+        ChromeEffect::SplitRight { tab } => {
+            let ids = tab_route(tree, tab)?;
+            if !has_a_second_tab(tree, &ids) {
+                return Err(t("window-menu-split-one-tab"));
+            }
+            Ok(Admitted::SplitRight(ids))
+        }
         ChromeEffect::NewGroup { tab } => tab_route(tree, tab).map(Admitted::MoveToNewGroup),
         ChromeEffect::SetWidth {
             group,
@@ -1720,6 +1740,28 @@ mod tests {
                 offset: 1.5
             })
         );
+    }
+
+    #[test]
+    fn a_window_of_one_tab_has_nothing_to_split() {
+        let mut tree = tree();
+        let split = chrome("split-right", serde_json::json!({"tab":"4"}));
+        assert_eq!(
+            admit(&split, &tree).unwrap_err(),
+            t("window-menu-split-one-tab")
+        );
+        // A second tab makes the window one a split has something to take
+        // out of: the same chord is admitted, and the same rule keeps the
+        // menu's row.
+        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        group.tabs.push(Tab {
+            id: 5,
+            title: "Another".into(),
+            ..group.tabs[0].clone()
+        });
+        let ids = tab_route(&tree, "4").unwrap();
+        assert!(has_a_second_tab(&tree, &ids));
+        assert!(matches!(admit(&split, &tree), Ok(Admitted::SplitRight(_))));
     }
 
     #[test]

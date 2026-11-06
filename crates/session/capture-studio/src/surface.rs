@@ -239,7 +239,11 @@ impl StudioSurface {
         }
         if scene.kept != self.scene.kept
             && let Some(kept) = &scene.kept
+            && (self.own || self.studio.presentation().is_drawn())
         {
+            // A shot taken while the bar is down is said on the floating
+            // layer's card, which the session put up with it: nothing opens
+            // over the desk for it.
             self.widget.set_screenshot_finished(
                 kept.kept,
                 kept.width,
@@ -416,15 +420,18 @@ impl StudioSurface {
         if self.own {
             return;
         }
-        // The receipt stays up to say where the screenshot went, and what
-        // became of it.
-        if self.picked() {
+        // What the person put down stays down, whatever the bar was still
+        // saying. A bar that went down with the pick of where a screenshot
+        // goes stays up to say what became of it, until that has been up long
+        // enough to read.
+        if !self.widget.take_put_away() && self.picked() {
             return;
         }
         let presentation = self.studio.presentation();
         if !self.widget.is_open() && presentation.phase() == Phase::Open {
-            // The studio put the bar away itself: what the session says of
-            // the capture may still bring it back.
+            // The studio put the bar away itself, receipt and all: what the
+            // person put down has been read, and the session says the next
+            // capture where the bar is down.
             self.put_away = true;
             presentation.dismissed();
         }
@@ -439,6 +446,16 @@ impl StudioSurface {
             self.saying = None;
             self.dirty = true;
         }
+    }
+
+    /// The studio comes up on a screenshot choosing a window: the bar the
+    /// person picks one in, over the windows it lists.
+    fn choose_a_window(&mut self) {
+        self.studio.link().open_on(CaptureMode::Screenshot);
+        self.studio.presentation().open(false);
+        self.catch_up();
+        self.widget.set_source_mode(SourceMode::Window);
+        self.dirty = true;
     }
 
     /// The take `source` names, as an action asked for it.
@@ -512,6 +529,13 @@ fn said_chip(
         &style,
     );
     chip
+}
+
+/// Whether `take` asks for the window in front and there is none to take:
+/// the studio then comes up to choose one rather than answering with a
+/// failure the person never saw.
+fn nothing_in_front(take: &Take) -> bool {
+    take.source == SourceMode::Window && take.targets.is_empty()
 }
 
 /// The take an intent names.
@@ -707,16 +731,28 @@ impl ResourceSurface<Capture, CaptureEffect> for StudioSurface {
             }
             CaptureEffect::Screenshot { source, window } => {
                 let take = self.take_for(source.as_deref(), window.as_deref());
+                if nothing_in_front(&take) {
+                    // No window is in front to take: the person picks one in
+                    // the studio, as a shortcut that names no window does.
+                    self.choose_a_window();
+                    return Ok(Effected::done());
+                }
                 self.studio.link().ask(Ask::Screenshot(take));
             }
             CaptureEffect::Record { source, window } => {
                 let take = self.take_for(source.as_deref(), window.as_deref());
+                if nothing_in_front(&take) {
+                    self.choose_a_window();
+                    return Ok(Effected::done());
+                }
                 if take.source == SourceMode::Region && take.regions.is_empty() {
                     return Err("a region recording needs a selection made in the studio".into());
                 }
                 self.studio.link().ask(Ask::StartRecording(take));
             }
             CaptureEffect::StopRecording => self.studio.link().ask(Ask::StopRecording),
+            CaptureEffect::PauseRecording => self.studio.link().ask(Ask::PauseRecording),
+            CaptureEffect::ResumeRecording => self.studio.link().ask(Ask::ResumeRecording),
             // The last half minute when a buffer keeps one. With nothing
             // kept there is nothing to save: the person's chord starts a
             // recording instead, unless one already runs.
@@ -743,35 +779,191 @@ mod tests {
     /// bar itself, not only in a log.
     #[test]
     fn a_capture_that_did_not_come_out_is_said_on_the_bar() {
-        use crate::link::{Failed, Failure};
+        use std::path::PathBuf;
+
+        use crate::link::{Failed, Failure, WriteCause};
+        // The person's own folder, named the way they read it: the system's
+        // error is never what the bar says.
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let (folder, named) = home.map_or_else(
+            || (PathBuf::from("/pictures"), String::from("/pictures")),
+            |home| {
+                (
+                    home.join("Pictures/Screenshots"),
+                    String::from("~/Pictures/Screenshots"),
+                )
+            },
+        );
+        let said = format!("Couldn't save the screenshot: Tilo can't write to {named}");
+        let failure = Failure::NotWritten {
+            folder,
+            cause: WriteCause::Permission,
+        };
         let studio = Studio::new();
         let mut surface = StudioSurface::new(Some(studio.clone()));
         studio.link().publish(Scene {
             failed: Some(Failed {
                 number: 1,
-                failure: Failure::NotWritten("no space left on device".to_owned()),
+                failure: failure.clone(),
             }),
             ..Scene::default()
         });
         surface.catch_up();
         assert_eq!(
             surface.saying.as_ref().map(|(said, _)| said.as_str()),
-            Some("A screenshot was not written: no space left on device")
+            Some(said.as_str())
         );
         // The same capture taken again is news again, not a repeat the bar
         // keeps quiet about.
         studio.link().publish(Scene {
-            failed: Some(Failed {
-                number: 2,
-                failure: Failure::NotWritten("no space left on device".to_owned()),
-            }),
+            failed: Some(Failed { number: 2, failure }),
             ..surface.scene.clone()
         });
         surface.catch_up();
         assert_eq!(
             surface.saying.as_ref().map(|(said, _)| said.as_str()),
-            Some("A screenshot was not written: no space left on device"),
+            Some(said.as_str()),
             "a second attempt that failed the same way is said again"
+        );
+    }
+
+    /// Print with the window modifier names the window in front; with none in
+    /// front the bar comes up choosing one, rather than the capture failing
+    /// where the person never saw it.
+    #[test]
+    fn a_window_capture_with_none_in_front_comes_up_to_choose_one() {
+        let studio = Studio::new();
+        let mut surface = StudioSurface::new(Some(studio.clone()));
+        surface.catch_up();
+        let take = surface.take_for(Some("window"), None);
+        assert_eq!(take.source, SourceMode::Window);
+        assert!(nothing_in_front(&take), "no window is in front");
+        surface.choose_a_window();
+        assert!(
+            studio.presentation().is_open(),
+            "the bar comes up rather than the capture failing"
+        );
+        assert_eq!(
+            surface.widget.source_mode(),
+            SourceMode::Window,
+            "choosing the window the capture is of"
+        );
+        assert!(
+            !studio.link().has_asks(),
+            "nothing is captured behind a choice the person has not made"
+        );
+
+        // A window in front is taken at once, without the bar coming up.
+        studio.link().publish(Scene {
+            windows: vec![ui::widget::CaptureTarget {
+                id: "window-1".to_owned(),
+                title: "Notes".to_owned(),
+                app_id: "tilo-notes".to_owned(),
+                visible_rect: Rect::new(0.0, 0.0, 800.0, 600.0),
+                virtual_rect: Rect::new(0.0, 0.0, 800.0, 600.0),
+                complete_rect: None,
+                focused: true,
+                on_active_strip: true,
+            }],
+            ..Scene::default()
+        });
+        surface.catch_up();
+        let take = surface.take_for(Some("window"), None);
+        assert_eq!(take.targets, ["window-1"]);
+        assert!(!nothing_in_front(&take));
+    }
+
+    /// A shot taken at the desk once the person put the studio away says so
+    /// on the floating layer; the bar does not come back over the desk for it.
+    #[test]
+    fn a_shot_from_the_desk_does_not_bring_the_studio_back() {
+        use crate::link::Kept;
+        use ui::widget::{CapturePreview, ScreenshotKept};
+
+        let studio = Studio::new();
+        let mut surface = StudioSurface::new(Some(studio.clone()));
+        studio.presentation().open(false);
+        surface.catch_up();
+        assert!(surface.widget.is_open(), "the bar is up with the studio");
+
+        // The person puts it away with Escape: the bar closes itself and the
+        // studio goes with it.
+        surface.widget.close();
+        surface.catch_up();
+        assert!(
+            !studio.presentation().is_open(),
+            "the studio goes down with its bar"
+        );
+
+        // A shot taken from the desk answers where the bar is down: on the
+        // floating layer, with nothing opening over the desk.
+        let kept = Kept {
+            kept: ScreenshotKept::SAVED,
+            path: "/home/person/Pictures/Screenshots/shot.png".into(),
+            width: 800,
+            height: 600,
+            preview: CapturePreview {
+                columns: 1,
+                rows: 1,
+                pixels: vec![[20, 40, 60, 255]],
+            },
+        };
+        studio.link().publish(Scene {
+            kept: Some(kept),
+            ..Scene::default()
+        });
+        surface.catch_up();
+        assert!(
+            !studio.presentation().is_open(),
+            "the shot's card is the floating layer's: the bar stays down"
+        );
+        assert!(!surface.widget.is_open(), "and so does the bar window");
+    }
+
+    /// A capture that could not be written says so on the bar, and a person
+    /// who puts the bar down while that answer is still up takes the studio
+    /// with it: the next capture answers on the desk, not behind a studio the
+    /// session still thinks it has up.
+    #[test]
+    fn a_failure_put_away_takes_the_studio_down_with_it() {
+        use crate::link::{Failed, Failure, WriteCause};
+
+        let studio = Studio::new();
+        let mut surface = StudioSurface::new(Some(studio.clone()));
+        studio.presentation().open(false);
+        surface.catch_up();
+        studio.link().publish(Scene {
+            failed: Some(Failed {
+                number: 1,
+                failure: Failure::NotWritten {
+                    folder: "/home/person/Pictures/Screenshots".into(),
+                    cause: WriteCause::Permission,
+                },
+            }),
+            ..Scene::default()
+        });
+        surface.catch_up();
+        assert!(
+            studio.presentation().is_open() && surface.widget.is_open(),
+            "the bar says what became of the capture until it is read"
+        );
+
+        // Escape, with the answer still up: the bar goes down, and the studio
+        // goes with it rather than standing over a desk nobody sees it on.
+        surface.widget.close();
+        surface.catch_up();
+        assert!(
+            !studio.presentation().is_drawn(),
+            "a bar the person put down leaves nothing drawn"
+        );
+
+        // The next capture opens the bar again, and what it says is read on
+        // it as before.
+        studio.presentation().open(false);
+        surface.catch_up();
+        assert!(
+            studio.presentation().is_open() && surface.widget.is_open(),
+            "the studio comes back up on the next capture"
         );
     }
 

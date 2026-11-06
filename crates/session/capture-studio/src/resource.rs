@@ -63,6 +63,14 @@ pub enum CaptureEffect {
     /// Stop recording
     #[effect(own_device, icon = "square")]
     StopRecording,
+    /// Pause recording
+    ///
+    /// What is recorded skips the time; the file goes on from where it was.
+    #[effect(own_device, icon = "pause")]
+    PauseRecording,
+    /// Resume recording
+    #[effect(own_device, icon = "play")]
+    ResumeRecording,
     /// Save the last half minute
     #[effect(own_device, attended, icon = "history")]
     SaveReplay,
@@ -112,6 +120,8 @@ mod tests {
                 window: None,
             },
             CaptureEffect::StopRecording,
+            CaptureEffect::PauseRecording,
+            CaptureEffect::ResumeRecording,
             CaptureEffect::SaveReplay,
         ]
         .iter()
@@ -124,6 +134,8 @@ mod tests {
                 "screenshot",
                 "record",
                 "stop-recording",
+                "pause-recording",
+                "resume-recording",
                 "save-replay"
             ]
         );

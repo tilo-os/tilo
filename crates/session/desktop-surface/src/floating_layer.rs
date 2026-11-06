@@ -3,11 +3,14 @@
 //! and snapping it to an edge, and the group assistive technology reads.
 //!
 //! The layer decides nothing about the activities themselves. It shows the
-//! cards it is handed ([`floating_layer::Card`] from the session), places
-//! them with the toolkit's pure layout ([`tilo_ui::floating_layer`]) and puts
-//! what the person does as [`Ask`]s, the session's to carry out.
+//! cards it is handed ([`ui::floating_layer::Card`] from the session), places
+//! them with the toolkit's pure layout ([`ui::floating_layer`]) and puts what
+//! the person does as [`Ask`]s, the session's to carry out.
 
 use ui::a11y::{AccessNode, AccessState, Role};
+use ui::floating_layer::{
+    Card, Corner, EDGE_INSET, Layer, Placed, Placement, card_parts, keep_inside, place,
+};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::vello::Scene;
@@ -15,12 +18,6 @@ use ui::vello::kurbo::{Affine, Point, Rect, Vec2};
 use ui::widget::ActivityCardFace;
 use ui::widget::floating_surface::{
     paint_card_body, paint_card_edge, paint_card_shadow, painted_bounds,
-};
-use ui::{
-    floating_layer::{
-        Card, Corner, EDGE_INSET, FoldReason, Layer, Placed, Placement, card_parts, place,
-    },
-    live_activity::Summary,
 };
 
 /// What the person did on the layer, for the session to carry out.
@@ -42,8 +39,12 @@ pub enum Ask {
         activity: String,
         at: Option<Rect>,
     },
-    /// Keyboard focus entered the layer, or left it.
-    Focus(bool),
+    /// They dragged the song's progress bar to `fraction` of it, from 0 to 1.
+    Seek {
+        app: String,
+        activity: String,
+        fraction: f64,
+    },
 }
 
 /// Whether `card` stands on screen exactly as something in `cards` does. An
@@ -58,6 +59,12 @@ fn drawn_like(cards: &[Placed], card: &Placed) -> bool {
                 && other.rect == card.rect
         })
 }
+
+/// How far a press lands from a card's progress bar and still scrubs it: the
+/// pointer target the bar's own height makes too thin to hit.
+const SCRUB_REACH: f64 = 8.0;
+/// The least the pointer moves before a press counts as a drag.
+const DRAG_SLOP: f64 = 4.0;
 
 /// A drag in flight: which card, and where the pointer took it from.
 struct Drag {
@@ -83,9 +90,8 @@ pub struct FloatingLayer {
     press: Option<(String, String, String)>,
     /// The card the keyboard is on, by app and activity.
     focus: Option<(String, String)>,
-    /// Where the cards stand as the screen shows them: what the next frame
-    /// compares its own against.
-    painted: Vec<Drawn>,
+    /// A drag along a card's progress bar, until the pointer lifts.
+    scrub: Option<Scrub>,
     /// The cards that arrived, left, moved, changed or were pressed since the
     /// last frame: the next frame damages their ground and nothing else.
     changed: Vec<Rect>,
@@ -96,13 +102,14 @@ pub struct FloatingLayer {
     layout: Layer,
 }
 
-/// A card as the last frame drew it.
+/// A drag along a card's progress bar: where in the song the person points,
+/// before they let go and it reaches the player.
 #[derive(Clone, Debug, PartialEq)]
-struct Drawn {
+struct Scrub {
     app: String,
     activity: String,
-    summary: Summary,
-    rect: Rect,
+    /// From 0 to 1 along the bar.
+    fraction: f64,
 }
 
 impl FloatingLayer {
@@ -125,11 +132,6 @@ impl FloatingLayer {
             self.expanded = expanded;
             self.relayout();
         }
-    }
-
-    #[must_use]
-    pub fn expanded(&self) -> bool {
-        self.expanded
     }
 
     fn relayout(&mut self) {
@@ -180,14 +182,7 @@ impl FloatingLayer {
                     )
                 })
                 .collect(),
-            folded: self
-                .layout
-                .folded
-                .iter()
-                .filter(|folded| folded.reason == FoldReason::Phone)
-                .count(),
-            keyboard: self.focus.is_some(),
-            dragging: self.drag.as_ref().is_some_and(|drag| drag.moved),
+            dragging: self.drag.as_ref().is_some_and(|drag| drag.moved) || self.scrub.is_some(),
             damage: self.damage,
         }
     }
@@ -229,17 +224,6 @@ impl FloatingLayer {
             damage = Some(damage.map_or(bounds, |damage| damage.union(bounds)));
         }
         self.damage = damage.unwrap_or(Rect::ZERO);
-        self.painted = self
-            .layout
-            .cards
-            .iter()
-            .map(|card| Drawn {
-                app: card.app.clone(),
-                activity: card.summary.id.clone(),
-                summary: card.summary.clone(),
-                rect: self.dragged(card),
-            })
-            .collect();
         self.owed = false;
     }
 
@@ -259,6 +243,19 @@ impl FloatingLayer {
             .map_or(card.rect, |drag| drag.rect)
     }
 
+    /// The progress bar the card `app`/`activity` shows, when the song says
+    /// how long it is (the only thing a seek means), and where the card
+    /// stands.
+    fn seek_bar(layer: &Layer, app: &str, activity: &str) -> Option<(Rect, Rect)> {
+        let card = layer
+            .cards
+            .iter()
+            .find(|card| card.app == app && card.summary.id == activity && !card.rich)?;
+        let rows = card_parts(card.rect, &card.summary);
+        let bar = rows.progress.filter(|_| rows.elapsed.is_some())?;
+        Some((bar, card.rect))
+    }
+
     fn paint_card(
         &self,
         scene: &mut Scene,
@@ -272,7 +269,8 @@ impl FloatingLayer {
             .focus
             .as_ref()
             .is_some_and(|(app, activity)| *app == card.app && *activity == card.summary.id)
-            && self.press.is_none();
+            && self.press.is_none()
+            && self.scrub.is_none();
         let held = self
             .press
             .as_ref()
@@ -284,6 +282,11 @@ impl FloatingLayer {
             close_label: &crate::i18n::t("activity-close"),
             focused,
             held,
+            scrub: self
+                .scrub
+                .as_ref()
+                .filter(|scrub| scrub.app == card.app && scrub.activity == card.summary.id)
+                .map(|scrub| ui::num::f32_of_f64(scrub.fraction)),
         }
         .paint(scene, transform, text, theme, rect);
     }
@@ -301,13 +304,30 @@ impl FloatingLayer {
 
     /// The pointer moved to `point`.
     pub fn pointer_motion(&mut self, point: Point) -> bool {
-        let Some(drag) = &mut self.drag else {
+        if let Some(scrub) = &mut self.scrub {
+            let Some((bar, card)) = Self::seek_bar(&self.layout, &scrub.app, &scrub.activity)
+            else {
+                return false;
+            };
+            let fraction = fraction_at(bar, point);
+            if (fraction - scrub.fraction).abs() < f64::EPSILON {
+                return true;
+            }
+            scrub.fraction = fraction;
+            self.changed.push(card);
+            self.owed = true;
+            return true;
+        }
+        let Some(drag) = &self.drag else {
             return false;
         };
         let origin = Point::new(point.x - drag.offset.x, point.y - drag.offset.y);
-        if !drag.moved && origin.distance(origin_of(drag.rect)) < 4.0 {
+        if !drag.moved && origin.distance(origin_of(drag.rect)) < DRAG_SLOP {
             return false;
         }
+        let Some(drag) = self.drag.as_mut() else {
+            return false;
+        };
         drag.moved = true;
         self.changed.push(drag.rect);
         drag.rect = Rect::from_origin_size(origin, drag.rect.size());
@@ -341,6 +361,17 @@ impl FloatingLayer {
             self.owed = true;
             return Vec::new();
         }
+        if let Some(bar) = rows.progress.filter(|_| rows.elapsed.is_some())
+            && scrubbable(bar).contains(point)
+        {
+            self.scrub = Some(Scrub {
+                fraction: fraction_at(bar, point),
+                app: card.app,
+                activity: card.summary.id,
+            });
+            self.owed = true;
+            return Vec::new();
+        }
         if rows.collapse.contains(point) {
             return vec![Ask::Collapse {
                 app: card.app,
@@ -368,6 +399,19 @@ impl FloatingLayer {
     }
 
     fn release_at(&mut self, point: Point) -> Vec<Ask> {
+        if let Some(scrub) = self.scrub.take() {
+            let bar = Self::seek_bar(&self.layout, &scrub.app, &scrub.activity);
+            let fraction = bar.map_or(scrub.fraction, |(bar, _)| fraction_at(bar, point));
+            if let Some((_, card)) = bar {
+                self.changed.push(card);
+            }
+            self.owed = true;
+            return vec![Ask::Seek {
+                app: scrub.app,
+                activity: scrub.activity,
+                fraction,
+            }];
+        }
         if let Some((app, activity, control)) = self.press.take() {
             if let Some(card) = self
                 .layout
@@ -413,7 +457,7 @@ impl FloatingLayer {
         // inside the work area with a strip the person can grab again.
         let work = self.placement.work;
         let settled = ui::floating_surface::snap_to_edges(drag.rect, work, EDGE_INSET);
-        let settled = keep_inside(settled, work);
+        let settled = keep_inside(settled.size(), settled, work, EDGE_INSET, EDGE_INSET);
         self.owed = true;
         vec![Ask::Moved {
             app: drag.app,
@@ -455,7 +499,7 @@ impl FloatingLayer {
                 self.focus = None;
                 self.refocused(&[index]);
                 self.owed = true;
-                Some(Ask::Focus(false))
+                None
             }
             Key::Named(NamedKey::Enter | NamedKey::Space) => {
                 let card = self.layout.cards.get(index)?;
@@ -551,10 +595,6 @@ impl FloatingLayer {
 pub struct Shown {
     /// Each card on screen: its app, its activity and where it stands.
     pub cards: Vec<(String, String, Rect)>,
-    /// Activities on a phone waiting in the pill for the person to expand.
-    pub folded: usize,
-    /// Keyboard focus is on a card.
-    pub keyboard: bool,
     /// A card is being dragged.
     pub dragging: bool,
     /// What the last frame changed, shadows and all: the part of the surface
@@ -571,24 +611,22 @@ fn origin_of(rect: Rect) -> Point {
     rect.origin()
 }
 
-/// A settled card kept inside the work area with [`EDGE_INSET`] to spare.
-fn keep_inside(rect: Rect, work: Rect) -> Rect {
-    let x = rect.x0.clamp(
-        work.x0 + EDGE_INSET,
-        (work.x1 - EDGE_INSET - rect.width()).max(work.x0 + EDGE_INSET),
-    );
-    let y = rect.y0.clamp(
-        work.y0 + EDGE_INSET,
-        (work.y1 - EDGE_INSET - rect.height()).max(work.y0 + EDGE_INSET),
-    );
-    Rect::from_origin_size((x, y), rect.size())
+/// The room a press on a card's progress bar may land in and still scrub it:
+/// the bar's own line, reachable from either side.
+fn scrubbable(bar: Rect) -> Rect {
+    Rect::new(bar.x0, bar.y0 - SCRUB_REACH, bar.x1, bar.y1 + SCRUB_REACH)
+}
+
+/// How far into the song `point` is, from 0 to 1 along `bar`.
+fn fraction_at(bar: Rect, point: Point) -> f64 {
+    ((point.x - bar.x0) / bar.width().max(1.0)).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ui::floating_layer::card_size;
-    use ui::live_activity::{ControlKind, Kind};
+    use ui::live_activity::{ControlKind, Kind, Summary};
     use ui::widget::floating_surface::card_radius;
 
     fn placement() -> Placement {
@@ -877,6 +915,41 @@ mod tests {
         assert!(at.width() > 0.0 && at.height() > 0.0);
     }
 
+    /// Dragging a song's progress bar asks for the point the pointer left
+    /// it at, from 0 to 1 along the bar, and the bar reads that point while
+    /// the person drags.
+    #[test]
+    fn a_dragged_progress_bar_asks_for_the_point_it_is_left_at() {
+        let mut layer = FloatingLayer::default();
+        let song = Summary::new(Kind::Music, "Album", "Track 1")
+            .with_id("music")
+            .with_progress(0.25)
+            .with_length(200);
+        layer.set(
+            placement(),
+            Corner::BottomRight,
+            vec![Card::new("so.tilo.music", song.clone())],
+        );
+        let card = layer.layout().cards.first().expect("a card").rect;
+        let bar = card_parts(card, &song).progress.expect("a progress bar");
+        let press = Point::new(bar.x0 + bar.width() * 0.25, bar.center().y);
+        assert!(layer.pointer_button(press, true).is_empty());
+        let left = Point::new(bar.x0 + bar.width() * 0.75, bar.center().y);
+        assert!(layer.pointer_motion(left));
+        let asks = layer.pointer_button(left, false);
+        let Some(Ask::Seek {
+            app,
+            activity,
+            fraction,
+        }) = asks.first()
+        else {
+            panic!("a scrub asks to seek: {asks:?}");
+        };
+        assert_eq!(app, "so.tilo.music");
+        assert_eq!(activity, "music");
+        assert!((fraction - 0.75).abs() < 0.01, "{fraction}");
+    }
+
     /// Space runs the first control of the card the keyboard is on, and
     /// Escape leaves the layer.
     #[test]
@@ -886,7 +959,6 @@ mod tests {
         let card = layer.layout().cards.first().expect("a card").rect;
         layer.pointer_button(Point::new(card.x0 + 40.0, card.y0 + 2.0), true);
         layer.pointer_button(Point::new(card.x0 + 40.0, card.y0 + 2.0), false);
-        assert!(layer.shown().keyboard);
         assert_eq!(
             layer.key(&Key::Named(NamedKey::Space)),
             Some(Ask::Control {
@@ -895,11 +967,12 @@ mod tests {
                 control: "toggle".into(),
             })
         );
+        assert_eq!(layer.key(&Key::Named(NamedKey::Escape)), None);
         assert_eq!(
-            layer.key(&Key::Named(NamedKey::Escape)),
-            Some(Ask::Focus(false))
+            layer.key(&Key::Named(NamedKey::Space)),
+            None,
+            "with the keyboard gone, the cards run nothing"
         );
-        assert!(!layer.shown().keyboard);
     }
 
     /// What a screen reader reads: one group per card with its own controls.

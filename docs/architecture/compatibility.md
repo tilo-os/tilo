@@ -84,14 +84,16 @@ mounted image.
   stops, naming the update that reads it ("update Tilo to read this
   catalogue"); a reader that no longer understands an older format says the
   writer has to publish at the newest one.
-- Environment images (`env-runtime`, `tool`) are why the archive reader keeps
-  older formats. An environment
-  names its images by package id, the hash of a signed root that includes the
-  package format, so an image cannot be rewritten at a new format without
-  becoming another image. A device reads images of every package format that
-  shipped (`tilo_app_package::tapp::READABLE_FORMATS`); a format that changes
-  the archive, signed root or chunk list layout adds its reader there before
-  images at it ship. Apps are not excepted: one at an older format is behind.
+- Packages are read at every package format that shipped
+  (`tilo_app_package::tapp::READABLE_FORMATS`), apps and environment images
+  (`env-runtime`, `tool`) alike: a reader installs every package format it can
+  verify, and publishing at a new format moves the writer, not the packages
+  already published. An environment names its images by package id, the hash
+  of a signed root that includes the package format, so an image cannot be
+  rewritten at a new format without becoming another image. A format that
+  changes the archive, signed root or chunk list layout adds its reader there
+  before anything ships at it; until then it is a catalogue change and one
+  reader reads both, as format 2 was.
 - The Rust runtime a native app links has no stable ABI, so a build names the
   exact runtime build it links (`package.runtime`), and the store fetches that
   runtime with the app.
@@ -117,9 +119,9 @@ The launcher never runs a build that speaks another version than the system
 serves. The shell decides first what the person sees
 (`shell::app_versions`); a launch from a terminal (`tilo-launcher
 run-installed`, the PATH shims, `exec-installed`) does the same, saying so on
-stderr: it updates a build that is behind (or recorded at an older package
-format) and runs the new one, starts the system update for one that is
-ahead, and exits 75 when the update is not there yet:
+stderr: it updates a build that is behind (or recorded at a package format
+this build does not read) and runs the new one, starts the system update for
+one that is ahead, and exits 75 when the update is not there yet:
 
 - **The app is behind** (built for older versions): its place says "Updating
   Mail…" while its update downloads, and it opens there once it fits. After a

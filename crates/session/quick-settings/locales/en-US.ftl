@@ -172,7 +172,6 @@ status-wired-named = Wired: { $name }
 # The panel as an app: its pages, the clipboard's search, the password
 # prompt and arranging the controls.
 qs-back-to-controls = Back to Quick Settings
-qs-back-to-notifications = Back to notifications
 qs-bluetooth-accessory = Bluetooth accessory
 qs-bluetooth-disconnect = Disconnect { $accessory } without forgetting it
 qs-bluetooth-move = Move { $accessory }
@@ -209,13 +208,6 @@ qs-devices-send-here = Takes this device's sound
 qs-edit-move-down = Move down
 qs-edit-move-up = Move up
 qs-edit-required = Required
-qs-notification-dismiss = Dismiss
-qs-notification-gone = This notification is no longer kept
-qs-notification-hand-to = Hand to { $agent }
-qs-notifications-clear = Clear all
-qs-notifications-dismiss-all = Dismiss all from { $app }
-qs-notifications-empty = No recent notifications
-qs-notifications-undo = Undo
 qs-refused-dismiss = Dismiss
 qs-refused-nothing-answers = Nothing on this device answers that
 qs-wifi-password = Password
@@ -243,3 +235,4 @@ qs-now-playing-previous = Previous song
 qs-now-playing-play = Play
 qs-now-playing-pause = Pause
 qs-now-playing-next = Next song
+qs-now-playing-seek = Seek in the song

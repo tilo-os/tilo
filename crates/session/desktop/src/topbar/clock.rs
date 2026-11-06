@@ -174,18 +174,13 @@ impl TopBarChrome {
             .to_owned()
     }
 
-    /// The activities the bar's pill names, as the session published them.
-    pub(super) fn activities(&self) -> Vec<ui::live_activity::Summary> {
+    /// The pill the centre lane shows: the most urgent activity's reading,
+    /// and how many more wait behind it, as the session ordered them.
+    pub(super) fn center_pill(&self) -> ui::floating_layer::Pill {
         self.chrome
             .as_ref()
             .map(|chrome| chrome.snapshot().activities)
             .unwrap_or_default()
-    }
-
-    /// The pill the centre lane shows: the most urgent activity's reading,
-    /// and how many more wait behind it.
-    pub(super) fn center_pill(&self) -> ui::floating_layer::Pill {
-        ui::floating_layer::pill(&self.activities())
     }
 
     /// What the clock widget reads: the time, or the pill of the activity
@@ -278,7 +273,7 @@ impl TopBarChrome {
         let ink = if pill.is_empty() {
             colors.text_primary
         } else {
-            tone_ink(&pill, theme)
+            pill.ink(theme)
         };
         // Extra activities stand behind the reading as dots, so a person
         // reads at a glance that more than one is running, and a song shows
@@ -537,19 +532,6 @@ fn paint_pill_art(
         &image,
         f64::from(theme.tokens.radii.control),
     );
-}
-
-/// The ink the bar's pill reads in: its leading activity's tone.
-fn tone_ink(pill: &ui::floating_layer::Pill, theme: &Theme) -> vello::peniko::Color {
-    match pill
-        .heading
-        .as_ref()
-        .map_or(ui::live_activity::Tone::Neutral, |summary| summary.tone)
-    {
-        ui::live_activity::Tone::Neutral => theme.tokens.colors.text_primary,
-        ui::live_activity::Tone::Accent => theme.tokens.colors.intent.accent,
-        ui::live_activity::Tone::Alert => theme.tokens.colors.semantic.danger,
-    }
 }
 
 /// Seconds the centre band's time reading stays the same for: the clock

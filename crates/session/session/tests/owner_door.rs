@@ -37,7 +37,7 @@ const TITLE: &str = "Groceries";
 
 /// The ops only a development session's test-control socket answers: synthetic input, the
 /// hosted surfaces' controls, the fixtures and a picture of the screen.
-const DEV_ONLY: [&str; 16] = [
+const DEV_ONLY: [&str; 17] = [
     "click_at",
     "click_named",
     "drag",
@@ -54,6 +54,7 @@ const DEV_ONLY: [&str; 16] = [
     "snapshot",
     "swipe",
     "type",
+    "unlock",
 ];
 
 /// A directory only this user reaches, for the sockets.
@@ -347,21 +348,53 @@ fn a_locked_session_invokes_nothing_through_the_owner_door() {
         "a development socket sees the locked desk: {driven}"
     );
 
-    // Unlocked, the owner's door shows the desk and invokes again.
-    session.compositor().unlock().expect("the screen unlocks");
+    unlock_through_the_development_socket(&mut session, root.path(), &dev, &owner);
+}
+
+/// A tool that drives the display unlocks the session the one way it unlocks — and the
+/// picture it takes before that says it is of the lock, so it never reads a dark lock as
+/// the desk behind it.
+fn unlock_through_the_development_socket(
+    session: &mut Session,
+    root: &Path,
+    dev: &Path,
+    owner: &Path,
+) {
+    let shot = ask(
+        session,
+        dev,
+        &json!({"op": "snapshot", "path": root.join("locked.png").to_string_lossy()}),
+    );
+    assert_eq!(
+        shot["ok"]["locked"], true,
+        "the picture is of the lock: {shot}"
+    );
+
+    // The screen leaves and the lock comes down with it, as for an accepted password.
+    let unlocked = ask(session, dev, &json!({"op": "unlock"}));
+    assert_eq!(
+        unlocked,
+        json!({"ok": {"locked": false, "was_locked": true}}),
+        "the lock comes down"
+    );
     assert!(
-        reached(&mut session, |session| !session.compositor().locked()),
+        reached(session, |session| !session.compositor().locked()),
         "the session is unlocked"
     );
+    let again = ask(session, dev, &json!({"op": "unlock"}));
+    assert_eq!(
+        again["ok"]["was_locked"], false,
+        "a session already unlocked is left as it is: {again}"
+    );
     session.step(Duration::from_millis(1)).expect("a turn");
-    let shown = ask(&mut session, &owner, &json!({"op": "state_dump"}));
+    let shown = ask(session, owner, &json!({"op": "state_dump"}));
     assert!(
         shown["state"]["workspace_tree"].is_object(),
         "the desk is shown again once it is unlocked: {shown}"
     );
     let invoked = ask(
-        &mut session,
-        &owner,
+        session,
+        owner,
         &json!({"op": "actions_invoke", "provider": "nothing", "id": "nowhere:missing"}),
     );
     assert_eq!(

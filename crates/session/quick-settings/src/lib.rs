@@ -89,39 +89,6 @@ pub enum RowPart {
     Control,
 }
 
-/// The notifications kept since they arrived, as the panel lists them.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct NotificationsView {
-    /// Newest first.
-    pub rows: Vec<NotificationRow>,
-    /// Why fresh notifications are being held (Do Not Disturb, presenting,
-    /// a focus schedule); `None` while they show.
-    pub quiet: Option<String>,
-    /// The last Clear all can still be undone.
-    pub can_undo: bool,
-}
-
-/// One kept notification.
-#[derive(Clone, Debug, PartialEq)]
-pub struct NotificationRow {
-    pub id: u64,
-    /// The app group it is listed under, by its stable key.
-    pub group: String,
-    /// The app, as the group is named.
-    pub app: String,
-    pub title: String,
-    pub body: String,
-    /// How long ago it arrived.
-    pub age: String,
-    /// The sender's choices, as `(key, label)`.
-    pub actions: Vec<(String, String)>,
-    /// The agent it can be handed to, where one is live.
-    pub agent: Option<String>,
-    /// Choosing it opens something (its sender, or its app); otherwise it
-    /// is read in full in the panel.
-    pub opens: bool,
-}
-
 /// One of the person's devices a Bluetooth accessory can move to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HandoffTarget {
@@ -139,8 +106,6 @@ pub enum QsLevel {
     Root,
     /// One accessory's exact-device handoff to the person's other devices.
     BluetoothDetails(String),
-    /// Session-local notification history owned by shell chrome.
-    Notifications,
 }
 
 /// A part of Quick Settings whose page replaces the controls, with the

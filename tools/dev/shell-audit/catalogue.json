@@ -3444,6 +3444,31 @@
      ]
     },
     {
+     "id": "notify-centre-open-arrival",
+     "story": "a notification arrives while the centre is open",
+     "steps": [
+      {
+       "door": "desk.notifications"
+      },
+      {
+       "wait": 0.9
+      },
+      {
+       "notify": {
+        "summary": "Build finished"
+       }
+      },
+      {
+       "wait": 0.9
+      }
+     ],
+     "capture": "the centre with the arrival on its rows and no banner over them",
+     "measure": [
+      "no banner covers the centre",
+      "the centre lists it"
+     ]
+    },
+    {
      "id": "notify-centre-empty",
      "story": "the centre with nothing in it",
      "steps": [
@@ -3553,6 +3578,13 @@
      "story": "four notifications",
      "steps": [
       {
+       "door": "desk.dnd",
+       "on": false
+      },
+      {
+       "wait": 0.8
+      },
+      {
        "notify": {
         "summary": "One"
        }
@@ -3622,6 +3654,13 @@
      "id": "notify-centre-after-clear",
      "story": "the centre after clearing, with a new one",
      "steps": [
+      {
+       "door": "desk.dnd",
+       "on": false
+      },
+      {
+       "wait": 0.8
+      },
       {
        "notify": {
         "summary": "One"
@@ -4369,6 +4408,13 @@
      "story": "press the notification button",
      "steps": [
       {
+       "door": "desk.dnd",
+       "on": false
+      },
+      {
+       "wait": 0.8
+      },
+      {
        "door": "desk.notifications",
        "open": true
       },
@@ -4658,7 +4704,7 @@
     },
     {
      "id": "qs-section-notifications",
-     "story": "open the notifications section",
+     "story": "open the notifications row",
      "steps": [
       {
        "door": "desk.quick-settings",
@@ -4677,8 +4723,8 @@
      ],
      "capture": "the notifications section",
      "measure": [
-      "a section opened",
-      "what it holds"
+      "the one list it opens",
+      "where it opens"
      ]
     },
     {
@@ -4879,23 +4925,6 @@
      "capture": "the desk in dark",
      "measure": [
       "changed pixels"
-     ]
-    },
-    {
-     "id": "settings-quick-notifications",
-     "story": "the notification controls",
-     "steps": [
-      {
-       "door": "desk.quick-settings.section",
-       "section": "notifications"
-      },
-      {
-       "wait": 1.0
-      }
-     ],
-     "capture": "the notification controls",
-     "measure": [
-      "what they offer"
      ]
     },
     {
@@ -5570,6 +5599,31 @@
      "capture": "the lock screen",
      "measure": [
       "what it shows"
+     ],
+     "reset": "keep"
+    },
+    {
+     "id": "lock-with-notification",
+     "story": "lock the screen with a notification waiting",
+     "steps": [
+      {
+       "notify": {
+        "summary": "Build finished"
+       }
+      },
+      {
+       "wait": 0.8
+      },
+      {
+       "door": "desk.lock"
+      },
+      {
+       "wait": 1.4
+      }
+     ],
+     "capture": "the lock screen saying what waits behind it",
+     "measure": [
+      "the notification count on the lock"
      ],
      "reset": "keep"
     },

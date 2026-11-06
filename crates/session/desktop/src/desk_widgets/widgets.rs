@@ -552,6 +552,12 @@ impl DeskWidgets {
     /// painted. A glance's remove badge is part of it.
     fn hit_at(&self, p: Point) -> Option<(WidgetId, Form, Rect)> {
         let drawn: Vec<Slot> = self.slots.iter().map(|slot| self.drawn(slot)).collect();
+        self.hit_in(&drawn, p)
+    }
+
+    /// The widget form under `p` in the desk `drawn` stands at: where the
+    /// pointer was is asked against the desk as it stood before the move.
+    fn hit_in(&self, drawn: &[Slot], p: Point) -> Option<(WidgetId, Form, Rect)> {
         drawn.iter().rev().find_map(|slot| {
             let form = self.board.form(slot.id);
             match form {
@@ -1327,6 +1333,13 @@ impl Widget for DeskWidgets {
         let now = ui::time::now();
         if let WindowEvent::CursorMoved { position, .. } = event {
             let p = ctx.logical(position);
+            let drawn: Vec<Slot> = self.slots.iter().map(|slot| self.drawn(slot)).collect();
+            // Where the pointer was, against the desk as it stood: a card it
+            // was on dims when the pointer leaves it, and the move that
+            // leaves lands on the bare desk, so nothing else would repaint.
+            let was_on = self
+                .pointer
+                .is_some_and(|was| self.hit_in(&drawn, was).is_some());
             self.pointer = Some(p);
             if self.grab.is_some() {
                 self.grab_moved(p, now);
@@ -1335,12 +1348,17 @@ impl Widget for DeskWidgets {
                 *ctx.handled = true;
                 return;
             }
-            let drawn: Vec<Slot> = self.slots.iter().map(|slot| self.drawn(slot)).collect();
             self.board.on_pointer(p, now, &drawn);
             self.tick(now);
-            if self.hit_at(p).is_some() {
-                *ctx.handled = true;
+            let on_card = self.hit_at(p).is_some();
+            // A card lights up under the pointer and dims when it leaves, so
+            // moving on, within or off one is a frame the desk owes; a move
+            // across the bare desk changes nothing it paints.
+            if was_on || on_card {
                 self.dirty = true;
+            }
+            if on_card {
+                *ctx.handled = true;
             }
             return;
         }
@@ -2617,6 +2635,42 @@ mod tests {
             !shared(&changes).get(WidgetId::Calendar).enabled,
             "the badge took the widget off the desk"
         );
+    }
+
+    /// Draw the desk once, as the frame does, at the clock the caller holds.
+    fn paint(widgets: &mut DeskWidgets) {
+        widgets.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+            &PresenceCtx::default(),
+        );
+    }
+
+    /// A card lights up under the pointer and dims again as soon as the
+    /// pointer leaves it: the move off lands on the bare desk, which takes
+    /// nothing, so the frame that shows the card dim has to come from the
+    /// card it left.
+    #[test]
+    fn a_card_dims_when_the_pointer_leaves_it_for_the_desk() {
+        let mut rig = rig(&[("ada", "Ada")]);
+        let on_card = centre(rig.slot(WidgetId::Calendar).glance);
+        let t0 = Instant::now();
+        let rest = t0 + Duration::from_secs(2);
+        ui::time::testing::with_monotonic_time(t0, || rig.point_at(on_card));
+        ui::time::testing::with_monotonic_time(rest, || {
+            rig.widgets.tick(rest);
+            paint(&mut rig.widgets);
+        });
+        // `dirty` is the desk's own answer: what wakes it from elsewhere —
+        // Settings, what plays — is asked for beside it.
+        assert!(!rig.widgets.dirty, "a desk at rest owes no frame");
+        let taken = ui::time::testing::with_monotonic_time(rest, || {
+            rig.send(&cursor_moved(BARE.x, BARE.y))
+        });
+        assert!(!taken, "the bare desk takes nothing");
+        assert!(rig.widgets.dirty, "and the card it left dims");
     }
 
     #[test]

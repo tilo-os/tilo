@@ -77,6 +77,9 @@ pub const CORNER_INSET: f64 = 24.0;
 const CARD_PADDING_X: f64 = 14.0;
 /// Least height of the "more" card: a Regular control's target.
 const MORE_HEIGHT: f64 = 40.0;
+/// Banners standing in the corner at once. Further arrivals fold into the
+/// last one's caption as "+N more", opening the centre.
+const MOST_BANNERS: usize = 3;
 
 /// Bundles the render handles the per-section painters need.
 struct PaintCtx<'a> {
@@ -287,6 +290,9 @@ pub struct NotificationStack {
     on_screen: Vec<u64>,
     /// The "more" card's rect; zero when every banner fit.
     more_rect: Rect,
+    /// The banner whose caption carries the further arrivals, if any: its
+    /// body opens the centre rather than the notification alone.
+    folded: Option<u64>,
     /// The keyboard order of the last paint, top to bottom.
     focus_rows: Vec<FocusRow>,
     /// The control keyboard focus is on, while the person moved focus into
@@ -1188,6 +1194,29 @@ impl NotificationStack {
         (label, height, f64::from(label_h))
     }
 
+    /// The caption of the last standing banner for the banners beyond the
+    /// corner's three: "+2 more from Notes" when they share an app, else
+    /// just "2 more".
+    fn fold_label(folded: &[&Banner]) -> Option<String> {
+        let count = folded.len();
+        if count == 0 {
+            return None;
+        }
+        let app = folded
+            .first()
+            .and_then(|banner| banner.notification.app_name.as_deref());
+        let shared = folded
+            .iter()
+            .all(|banner| banner.notification.app_name.as_deref() == app);
+        Some(match app {
+            Some(app) if shared => t_args(
+                "notification-more-from",
+                &[("count", count.into()), ("app", app.into())],
+            ),
+            _ => t_args("notification-more", &[("count", count.into())]),
+        })
+    }
+
     /// The card standing in for `count` banners that did not fit: one line,
     /// the same floating card, opening the notification centre.
     fn draw_more_card(&mut self, ctx: &mut PaintCtx, rect: Rect, label: &str, label_h: f64) {
@@ -1311,7 +1340,12 @@ impl NotificationStack {
         // What the reply field shows, kept across the loop so a frame of
         // none allocates nothing: one buffer, filled only while typing.
         let mut reply_text = String::new();
-        for (index, banner) in banners.iter().enumerate() {
+        // The corner stands at most three banners; the rest fold into the
+        // last one's caption, which opens the centre.
+        let total = banners.len();
+        let standing = total.min(MOST_BANNERS);
+        let fold = Self::fold_label(banners.get(standing..).unwrap_or_default());
+        for (index, banner) in banners.iter().take(standing).enumerate() {
             let n = &banner.notification;
             let actions = &banner.actions;
             let time = relative_time(n, now);
@@ -1320,19 +1354,23 @@ impl NotificationStack {
             if let Some(draft) = draft {
                 reply_text.clone_from(&draft.text);
             }
-            let card = self.banner_card(n, actions, &time, &reply_text, draft.is_some());
+            let mut card = self.banner_card(n, actions, &time, &reply_text, draft.is_some());
+            let folded = index.saturating_add(1) == standing && fold.is_some();
+            if folded && let Some(label) = fold.as_deref() {
+                card.caption = label;
+            }
             let height = ui::widget::toast::card_height(ctx.text_renderer, ctx.theme, &card, width)
                 .max(TOAST_HEIGHT);
-            // The rest fold into the "more" card; a banner that is not the
-            // last must leave room for it.
-            let below = banners.len().saturating_sub(index.saturating_add(1));
-            let reserve = if below > 0 {
+            // Banners that do not fit height-wise fold into the "more" card;
+            // a banner that is not the last must leave room for it.
+            let below = total.saturating_sub(index.saturating_add(1));
+            let reserve = if below > 0 && !folded {
                 Self::more_card(ctx, width, below).1 + TOAST_GAP
             } else {
                 0.0
             };
             if y + height + reserve > bottom {
-                let hidden = banners.len().saturating_sub(index);
+                let hidden = total.saturating_sub(index);
                 let (label, more_h, label_h) = Self::more_card(ctx, width, hidden);
                 if y + more_h <= bottom {
                     let rect = Rect::new(x0_rest, y, x0_rest + width, y + more_h);
@@ -1368,7 +1406,6 @@ impl NotificationStack {
                 y += height + TOAST_GAP;
                 continue;
             }
-            let mut card = card;
             card.alpha = alpha;
             let hit = ui::widget::toast::paint_card(
                 ctx.scene,
@@ -1379,7 +1416,9 @@ impl NotificationStack {
                 &card,
             );
             let radii = (card_radius, control_radius);
-            let row = self.record_card_hits(n, actions, &hit, card_rect, radii, card.closable);
+            let fold = folded.then_some(fold.as_deref()).flatten();
+            let row =
+                self.record_card_hits(n, actions, &hit, card_rect, radii, card.closable, fold);
             self.focus_rows.push(row);
             self.hit_rects.push((n.id, card_rect, hit.close_rect));
             y += height + TOAST_GAP;
@@ -1397,14 +1436,22 @@ impl NotificationStack {
         card_rect: Rect,
         (card_radius, control_radius): (f64, f64),
         closable: bool,
+        fold: Option<&str>,
     ) -> FocusRow {
-        let opened = BannerTarget::Open(n.id);
+        // A card whose caption carries further arrivals stands for the
+        // corner, not for its own notification: pressing it opens the list
+        // where they all are. Its choices and close still reach it.
+        let opened = fold.map_or(BannerTarget::Open(n.id), |_| BannerTarget::More);
+        let name = fold.unwrap_or(&n.title);
         let mut row = FocusRow {
             controls: vec![(opened.clone(), card_rect, card_radius)],
         };
-        self.register_target(opened.clone(), card_rect, &n.title);
+        self.register_target(opened.clone(), card_rect, name);
         self.action_buttons
-            .push((card_rect, n.title.clone(), opened.key()));
+            .push((card_rect, name.to_owned(), opened.key()));
+        if fold.is_some() {
+            self.folded = Some(n.id);
+        }
         // Painted left to right: the secondary choice, then the primary.
         let mut choices = Vec::new();
         if let Some((key, label)) = actions.first() {
@@ -1477,6 +1524,7 @@ impl NotificationStack {
         self.on_screen.clear();
         self.focus_rows.clear();
         self.more_rect = Rect::ZERO;
+        self.folded = None;
         self.reduce_motion = theme.reduce_motion;
         self.rect = Rect::ZERO;
         let feed = std::mem::take(&mut self.feed);
@@ -1659,7 +1707,11 @@ impl NotificationStack {
                 BannerAsk::Dismiss(id)
             } else {
                 debug_assert!(full.contains(p));
-                BannerAsk::Activate(id)
+                if self.folded == Some(id) {
+                    BannerAsk::OpenCenter
+                } else {
+                    BannerAsk::Activate(id)
+                }
             }
         } else if self.more_rect.contains(p) {
             BannerAsk::OpenCenter

@@ -524,25 +524,23 @@ search-window-verb-share = share show unshare stop
 # Notifications: banner stack and notification centre
 drill-in-back = Back
 a11y-notifications-none = No retained notifications.
-a11y-notifications-description = Showing newest rows { $first } through { $last } of { $total }, grouped by app. Use Up and Down to select a notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest retained notification. Enter opens the selected notification or folds its app group, and Delete dismisses it.
+a11y-notifications-description = { $count ->
+    [one] { $count } retained notification, grouped by app.
+   *[other] { $count } retained notifications, grouped by app.
+} Use Up and Down to select a notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest one. Enter opens the selected notification or folds its app group, and Delete dismisses it.
 a11y-notifications-list = Retained notifications
 a11y-notifications-clear = Clear all notifications
 a11y-notifications-clear-description = Delete this session's retained notification history. An Undo action remains available for eight seconds.
 a11y-notifications-cleared = Notifications cleared
 a11y-notifications-undo = Undo clear notifications
 a11y-notifications-undo-description = Restore the cleared notifications in their original order. Press Enter or Space.
-a11y-notifications-newer = Newer notifications
-a11y-notifications-older = Older notifications
 a11y-notifications = Notifications
 notification-center-title = Notifications
 notification-center-empty = No recent notifications
 notification-center-cleared = Notifications cleared
 notification-center-clear-all = Clear all
-notification-center-position = { $first }–{ $last } of { $total }
 notification-center-close = Close notifications
 notification-center-back-to-list = Back to notifications
-notification-center-newer = Newer
-notification-center-older = Older
 history-severity-info = Information
 history-severity-warning = Warning
 history-severity-error = Error
@@ -572,6 +570,7 @@ notification-lock-count = { $count ->
    *[other] { $count } notifications
 }
 notification-more = { $count } more
+notification-more-from = +{ $count } more from { $app }
 notification-stack-a11y = Notifications
 notification-group-system = System
 notification-center-undo = Undo
@@ -1447,6 +1446,7 @@ window-menu-new-tab = New tab of this app
 window-menu-not-yours-to-open = Watching only
 window-menu-no-app = No app here
 window-menu-split-right = Split right
+window-menu-split-one-tab = Nothing to split: this window has one tab
 window-menu-new-group = Move to a new window
 window-menu-close = Close
 window-menu-close-window = Close this window

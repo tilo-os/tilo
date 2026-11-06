@@ -1610,7 +1610,8 @@ fn quick_settings_volume_slider_sets_the_published_volume() {
 /// capture that shows it (`TL_SHELL_SHOTS`).
 /// The bar's status opens the panel over the desk, and what draws it is the
 /// panel's own app: the session starts it where the stack placed the slot.
-/// Escape closes the panel, and the app with it, and the desk comes back.
+/// Escape closes the panel, and the desk comes back; the app stays running
+/// for the session's life, hidden, so the next press shows it at once.
 #[test]
 fn the_bars_status_opens_the_panel_as_its_own_app() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -1669,12 +1670,15 @@ fn the_bars_status_opens_the_panel_as_its_own_app() {
         session.surfaces().names(),
         session.quick_settings_open()
     );
-    // Escape closes the panel, and the app that draws it.
+    // Escape closes the panel; its app keeps running, hidden, and stands
+    // ready to be shown again.
     press_escape(&mut session);
     until_settled(&mut session, |session| !session.quick_settings_open());
-    until_settled(&mut session, |session| {
-        !session.surfaces().running(quick_settings::SURFACE)
-    });
+    assert!(
+        session.surfaces().running(quick_settings::SURFACE),
+        "the panel's app stays up between openings: {:?}",
+        session.surfaces().names()
+    );
     // The panel's ground goes with it: the desk shows where it stood.
     let closed = common::wait_for(
         &mut session,
@@ -1711,20 +1715,23 @@ fn escape_goes_back_a_page_in_the_panel_before_it_closes_it() {
         session.quick_settings_open() && session.surfaces().running(quick_settings::SURFACE)
     });
     let controls = drawn(&mut session);
-    // A page of the panel's own, over the controls: what the person reads.
+    // A page of the panel's own, over the controls: what plays on this
+    // machine, which is what the person reads after picking Sound.
     let page = common::wait_for(&mut session, "the panel's page", |session| {
         session
             .surfaces()
             .published(quick_settings::SURFACE)
             .into_iter()
-            .find(|offered| offered.action == "show-notifications")
+            .find(|offered| offered.action == "open-section")
     });
+    let mut asked = serde_json::Map::new();
+    asked.insert("section".to_owned(), "sound".into());
     session
         .ask_surface(
             quick_settings::SURFACE,
             &page.resource,
             &page.action,
-            ui::tilo_actions::remote::InvokeArgument::None,
+            ui::tilo_actions::remote::InvokeArgument::Json(asked),
         )
         .expect("the panel's app answers the page it publishes");
     let page = common::wait_for(&mut session, "the page drawn", |session| {

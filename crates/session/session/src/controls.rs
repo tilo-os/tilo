@@ -28,7 +28,21 @@ use crate::displays::DisplayMode;
 use tilo_sheets::Seat as _;
 
 use crate::i18n::t;
-use crate::{apply_keyboard, displays, input_sources};
+use crate::{displays, input_sources};
+
+/// Type with `keyboard`: the compositor's keymap, and the words printed on
+/// the keys of what the session draws (the shortcut guide, the desk's
+/// chords), both follow it.
+pub(crate) fn apply_keyboard(
+    compositor: &mut tilo_compositor::Compositor,
+    keyboard: &tilo_compositor::KeyboardLayout,
+) {
+    compositor.set_keyboard_layout(keyboard);
+    ui::keycaps::set_active(ui::keycaps::Keycaps::from_xkb(
+        &keyboard.layout,
+        &keyboard.variant,
+    ));
+}
 
 /// The operation type the session's own actions carry.
 const OPERATION: &str = "tilo.session.command";

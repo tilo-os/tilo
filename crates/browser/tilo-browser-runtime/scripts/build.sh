@@ -312,6 +312,25 @@ assets = [dict(name=str(p.relative_to(out / 'data')), bytes=p.stat().st_size, sh
 PY
 fi
 
+# What the page has to resolve: every module the generated JavaScript imports. A bare name is
+# one only the document host provides (`tilo_model`, the imports a Rust app's model module calls
+# — the model's own crate built as a module), and a page has nothing to resolve it with: the
+# entry stops at its first import and never reaches the desktop. A bundle that links a model
+# where it links an app that draws one keeps it, so the build refuses it here instead.
+python3 - "$out" <<'PY'
+import pathlib, re, sys
+out = pathlib.Path(sys.argv[1])
+statement = re.compile(r'''^[ \t]*(?:import|export)[^;]*?\bfrom\s*["']([^"']+)["']'''
+                       r'''|^[ \t]*(?:import|\}\s*from)\s*["']([^"']+)["']''')
+bare = sorted({match[1] or match[2]
+               for path in (out / 'pkg').glob('*.js')
+               for line in path.read_text(errors='replace').splitlines()
+               if (match := statement.match(line))
+               if not (match[1] or match[2]).startswith(('.', '/'))})
+if bare:
+    sys.exit('the page cannot resolve the modules it imports: ' + ' '.join(bare))
+PY
+
 # Record the actual tools, profile and output hashes; never infer a prebuilt profile.
 [[ "$(git rev-parse HEAD)" == "$revision" && "$(git status --porcelain)" == "$source_status" ]] || {
   echo 'Source changed during build; discard output' >&2; exit 1;
