@@ -62,6 +62,7 @@ pub mod controller_nav;
 pub mod controllers;
 mod controls;
 pub mod conversation;
+mod conversations;
 mod desk;
 mod desk_doc;
 mod desk_migration;
@@ -345,6 +346,10 @@ struct Shared {
     /// The runs of what people ask this session's agents to do, fed every
     /// pass who sits here and what the workspace in front admits.
     agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
+    /// The turns this session's agents answer: a person's message in a
+    /// conversation the agent takes part in, read every pass from Chat's
+    /// record of each workspace.
+    conversations: conversations::Conversations,
     /// Each run's program host, reached by the agent's calls and by the
     /// person's lines in its conversation alike (shell.md §8.1).
     run_programs: run_programs::Shared,
@@ -1480,6 +1485,11 @@ impl Session {
         // workspaces the engine holds: the broker's decisions and the
         // automation's arming both refuse a device its workspace revoked.
         let revocations = engine::revocations_of(engine.as_ref());
+        // The conversations this session's agents answer in, read from
+        // Chat's record of each workspace: the broker delivers their turns to
+        // the agents and admits what they do there.
+        let conversations =
+            conversations::Conversations::new(cli::data_home(), options.wake.handle());
         // The typed opens an app asks this session for: one service, made
         // here so the broker below serves Files' waits for its lists'
         // changes, and started from the doors table.
@@ -1493,7 +1503,7 @@ impl Session {
             &handle,
             std::sync::Arc::new(shortcut_library),
             &activity,
-            std::sync::Arc::clone(&agent_runs),
+            Some(conversations.runs()),
             Some(tools.clone()),
             mount::services::Collaboration {
                 revocations: std::sync::Arc::clone(&revocations),
@@ -1755,6 +1765,7 @@ impl Session {
             capabilities_fed: Cell::new(None),
             fs_authority: fs_authority::Publisher::for_session(),
             workspace_tabs,
+            conversations,
             directory,
             invite,
             invite_made: RefCell::default(),

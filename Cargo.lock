@@ -21327,6 +21327,7 @@ dependencies = [
  "bounded-command",
  "browser-continuity",
  "channel-crypto",
+ "chat",
  "chrono",
  "collab-types",
  "desktop-policy",

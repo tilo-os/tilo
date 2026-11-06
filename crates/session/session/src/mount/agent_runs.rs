@@ -22,7 +22,7 @@ impl Shared {
                 .active_workspace()
                 .map(|held| held.id().to_string())
                 .unwrap_or_default();
-            let workspaces = tree
+            let workspaces: Vec<tilo_agent_runs::WorkspaceFacts> = tree
                 .workspaces
                 .iter()
                 .map(|held| {
@@ -45,7 +45,23 @@ impl Shared {
                 .collect();
             (front, workspaces)
         });
-        self.agent_runs.here(&self.person, &front, workspaces);
+        self.agent_runs
+            .here(&self.person, &front, workspaces.clone());
+        // The turns the conversations in front of every workspace give this
+        // session's agents: read from Chat's record of each, and handed to the
+        // broker's run channel.
+        self.conversations.feed(
+            &self.person,
+            workspaces
+                .into_iter()
+                .filter_map(|facts| {
+                    Some(crate::conversations::WorkspaceFacts {
+                        workspace: facts.workspace,
+                        policy: facts.policy?,
+                    })
+                })
+                .collect(),
+        );
         // The lines people typed in a run's conversation that ended since the last pass are
         // steps of that run: recorded here, where the runs are, and never on the door's thread.
         self.conversation.take_finished();
