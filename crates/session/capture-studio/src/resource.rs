@@ -30,8 +30,16 @@ impl Capture {}
 #[effect(operation = "so.tilo.capture-studio")]
 pub enum CaptureEffect {
     /// Open capture studio
+    ///
+    /// On the kind of capture `mode` names, as the person's own chord opens
+    /// it; on the last kind used when left out.
     #[effect(own_device, attended, icon = "camera")]
-    Open,
+    Open {
+        /// What to capture: a screenshot, a recording or a picture in a
+        /// picture.
+        #[param("What to capture: screenshot, recording or picture_in_picture")]
+        mode: Option<ui::floating_surface::CaptureStudioProtocolMode>,
+    },
     /// Take a screenshot
     #[effect(own_device, attended, icon = "camera")]
     Screenshot {
@@ -94,7 +102,7 @@ mod tests {
     #[test]
     fn every_capture_action_is_published_by_its_name() {
         let ids: Vec<&str> = [
-            CaptureEffect::Open,
+            CaptureEffect::Open { mode: None },
             CaptureEffect::Screenshot {
                 source: None,
                 window: None,

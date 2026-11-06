@@ -23,7 +23,7 @@ use tilo_desktop_model::{
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use ui::headless::FrameHarness;
-use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig, ShortcutHome};
+use ui::shortcut_table::{FixedAction, KeyChord, ShortcutAction, ShortcutConfig, ShortcutHome};
 use ui::synthetic_input::key_press;
 use ui::widget::TileHost;
 use winit::event::{Modifiers, WindowEvent};
@@ -403,6 +403,48 @@ fn the_chords_move_tabs_windows_and_strips() {
     assert!(narrower < normal, "{narrower} is narrower than {normal}");
     press_chord(&mut desk, &mut frame, ShortcutAction::ResizeWider);
     assert_eq!(width_in_front(&handle), Some(normal), "and wider again");
+}
+
+/// The fixed chords find their commands: the window in front closes, another
+/// window of its app opens beside it, and what the session owns is asked for
+/// whole, so the same action answers a menu row, the palette and an agent.
+#[test]
+fn the_fixed_chords_close_duplicate_and_ask_the_session() {
+    let (mut desk, mut frame, handle) = desk_and_chrome(&two_windows());
+    assert_eq!(in_front(&handle), Some(20));
+
+    let chrome = frame.widget_mut::<DesktopChrome>().expect("the chrome");
+    assert!(chrome.fixed_shortcut(FixedAction::CloseTab));
+    for _ in 0..4 {
+        desk.relayout();
+    }
+    assert_eq!(in_front(&handle), Some(21), "the window in front closed");
+
+    // Another window of the app in front is the desk's to open; it asks the
+    // session for nothing.
+    let chrome = frame.widget_mut::<DesktopChrome>().expect("the chrome");
+    assert!(chrome.fixed_shortcut(FixedAction::DuplicateTab));
+    assert!(chrome.take_asks().is_empty(), "the desk opens the window");
+
+    // The capture studio, the guide and the remote control are the
+    // session's: the desk asks for them rather than doing nothing.
+    let chrome = frame.widget_mut::<DesktopChrome>().expect("the chrome");
+    for action in [
+        FixedAction::CaptureScreenshot,
+        FixedAction::PictureInPicture,
+        FixedAction::ShortcutGuide,
+        FixedAction::StopRemoteInput,
+    ] {
+        assert!(
+            !chrome.fixed_shortcut(action),
+            "{action:?} is the session's"
+        );
+        assert_eq!(
+            chrome.take_asks(),
+            [DesktopAsk::FixedShortcut(action)],
+            "{action:?} reaches the session once"
+        );
+    }
 }
 
 /// The window in front takes the strip below it, and the person goes with it.

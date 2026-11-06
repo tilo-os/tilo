@@ -278,6 +278,16 @@ pub enum CaptureStudioProtocolMode {
     PictureInPicture,
 }
 
+impl From<CaptureStudioProtocolMode> for crate::widget::CaptureMode {
+    fn from(mode: CaptureStudioProtocolMode) -> Self {
+        match mode {
+            CaptureStudioProtocolMode::Screenshot => Self::Screenshot,
+            CaptureStudioProtocolMode::Recording => Self::Recording,
+            CaptureStudioProtocolMode::PictureInPicture => Self::Pip,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FloatingSurfaceProtocolRequest {
     pub id: String,

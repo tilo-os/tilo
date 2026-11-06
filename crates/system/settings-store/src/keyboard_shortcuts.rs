@@ -653,6 +653,81 @@ pub fn desktop_owner(chord: &KeyChord) -> Option<&'static FixedShortcut> {
         .find(|fixed| fixed.owns(chord))
 }
 
+/// What a fixed shortcut does, for the ones a session dispatches by its own
+/// command. A fixed chord the keys already answer where it is resolved — the
+/// window walk, the workspace steps, the display sheet, Print — names no
+/// action here: its chord is answered before this table is asked.
+///
+/// Each action is the verb a menu row, a palette row and an agent's
+/// invocation name too, so a person's chord and an action row do the same
+/// thing.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FixedAction {
+    CloseTab,
+    NewWindow,
+    DuplicateTab,
+    OpenTerminal,
+    StripSwitcher,
+    CaptureScreenshot,
+    PictureInPicture,
+    SaveRecentReplay,
+    WorkspaceHistory,
+    ExploreWorkspaceHistory,
+    ShortcutGuide,
+    StopRemoteInput,
+}
+
+impl FixedAction {
+    /// The action the catalogue's fixed shortcut `id` performs, when a
+    /// session carries one.
+    #[must_use]
+    pub fn from_id(id: &str) -> Option<Self> {
+        Some(match id {
+            "fixed-close-tab" => Self::CloseTab,
+            "fixed-new-window" => Self::NewWindow,
+            "fixed-duplicate-tab" => Self::DuplicateTab,
+            "fixed-open-terminal" => Self::OpenTerminal,
+            "fixed-strip-switcher" => Self::StripSwitcher,
+            "fixed-capture-screenshot" => Self::CaptureScreenshot,
+            "fixed-picture-in-picture" => Self::PictureInPicture,
+            "fixed-save-recent-replay" => Self::SaveRecentReplay,
+            "fixed-workspace-history" => Self::WorkspaceHistory,
+            "fixed-explore-workspace-history" => Self::ExploreWorkspaceHistory,
+            "fixed-shortcut-guide" => Self::ShortcutGuide,
+            "fixed-stop-remote-input" => Self::StopRemoteInput,
+            _ => return None,
+        })
+    }
+
+    /// The catalogue id of this action.
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::CloseTab => "fixed-close-tab",
+            Self::NewWindow => "fixed-new-window",
+            Self::DuplicateTab => "fixed-duplicate-tab",
+            Self::OpenTerminal => "fixed-open-terminal",
+            Self::StripSwitcher => "fixed-strip-switcher",
+            Self::CaptureScreenshot => "fixed-capture-screenshot",
+            Self::PictureInPicture => "fixed-picture-in-picture",
+            Self::SaveRecentReplay => "fixed-save-recent-replay",
+            Self::WorkspaceHistory => "fixed-workspace-history",
+            Self::ExploreWorkspaceHistory => "fixed-explore-workspace-history",
+            Self::ShortcutGuide => "fixed-shortcut-guide",
+            Self::StopRemoteInput => "fixed-stop-remote-input",
+        }
+    }
+}
+
+/// The fixed action `chord` asks for, when a session dispatches one.
+#[must_use]
+pub fn fixed_action(chord: &KeyChord) -> Option<FixedAction> {
+    FIXED_SHORTCUTS
+        .iter()
+        .find(|fixed| fixed.owns(chord))
+        .and_then(|fixed| FixedAction::from_id(fixed.id))
+}
+
 impl ShortcutConfig {
     /// Whether the desktop answers `chord` before a stored binding of
     /// `action` to it: a chord fixed since the binding was saved
@@ -1073,5 +1148,55 @@ mod tests {
         let close = entry(&config, "fixed-close-tab").expect("listed");
         assert!(!close.rebindable);
         assert_eq!(close.chords, vec![chord("Alt+F4"), chord("Super+W")]);
+    }
+
+    #[test]
+    fn every_dispatched_fixed_action_is_one_catalogue_entry_with_its_chords() {
+        let actions = [
+            FixedAction::CloseTab,
+            FixedAction::NewWindow,
+            FixedAction::DuplicateTab,
+            FixedAction::OpenTerminal,
+            FixedAction::StripSwitcher,
+            FixedAction::CaptureScreenshot,
+            FixedAction::PictureInPicture,
+            FixedAction::SaveRecentReplay,
+            FixedAction::WorkspaceHistory,
+            FixedAction::ExploreWorkspaceHistory,
+            FixedAction::ShortcutGuide,
+            FixedAction::StopRemoteInput,
+        ];
+        for action in actions {
+            let listed = fixed_shortcut(action.id()).expect("the action is a fixed shortcut");
+            assert_eq!(
+                FIXED_SHORTCUTS
+                    .iter()
+                    .filter(|fixed| FixedAction::from_id(fixed.id) == Some(action))
+                    .count(),
+                1,
+                "{} names one action",
+                action.id()
+            );
+            for chord in listed.chords() {
+                assert_eq!(fixed_action(&chord), Some(action), "{chord:?}");
+            }
+        }
+        // The chords the keys answer where they are resolved, and the
+        // accessibility ones, name no action here.
+        for (text, id) in [
+            ("Alt+Tab", "fixed-switch-windows"),
+            ("Super+PageUp", "fixed-change-workspace"),
+            ("Super+P", "fixed-display-layout"),
+            ("PrintScreen", "fixed-screenshot"),
+            ("Ctrl+Super+Enter", "fixed-toggle-screen-reader"),
+            ("Alt+Shift+NumLock", "fixed-toggle-mouse-keys"),
+        ] {
+            assert_eq!(
+                desktop_owner(&chord(text)).map(|fixed| fixed.id),
+                Some(id),
+                "{text} is fixed"
+            );
+            assert_eq!(fixed_action(&chord(text)), None, "{text} needs no action");
+        }
     }
 }

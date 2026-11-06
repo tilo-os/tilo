@@ -31,7 +31,7 @@ use tilo_desktop_surface::{DesktopHandle, HostActionSource};
 use tilo_resource::Effect;
 use ui::presence::PresenceCtx;
 use ui::search::Scope;
-use ui::shortcut_table::ShortcutAction;
+use ui::shortcut_table::{FixedAction, ShortcutAction};
 use ui::widget::{AppModel, EventCtx, ModelPath, Stack, TaffyTreeExt as _, Widget};
 use ui::{TextRenderer, Theme};
 use vello::Scene;
@@ -140,6 +140,9 @@ pub enum DesktopAsk {
     /// A desktop shortcut the layers have no part in (search, quick
     /// settings, locking, the magnifier, …): the host's to carry out.
     Shortcut(ShortcutAction),
+    /// A fixed shortcut the layers have no part in (a capture, the shortcut
+    /// guide, cutting a remote control): the host's to carry out.
+    FixedShortcut(FixedAction),
     /// The person pressed one of the music widget's controls: the host
     /// steers the player it shows.
     Music(MusicAction),
@@ -1310,6 +1313,9 @@ impl DesktopChrome {
             ChromeIntent::ShowStrips => self
                 .navigator
                 .open_for_choosing(&self.navigator_frame, ui::time::now()),
+            ChromeIntent::ToggleStrips => self
+                .navigator
+                .toggle_from_keyboard(&self.navigator_frame, ui::time::now()),
             ChromeIntent::OpenAvatarAsk => {
                 self.handle.set_personal_ask_open(true);
             }
@@ -2267,6 +2273,15 @@ impl DesktopChrome {
                 // The desk carries out its own and asks its host for the
                 // rest, once: the shortcut's own answer is the whole of it.
                 self.shortcut(action);
+                return Ok(true);
+            }
+            ChromeEffect::FixedShortcut { action } => {
+                let Some(action) = FixedAction::from_id(action) else {
+                    return Ok(false);
+                };
+                // The same split as a configurable shortcut's: the desk's
+                // windows here, the device under them at its host.
+                self.fixed_shortcut(action);
                 return Ok(true);
             }
             _ => return Ok(false),

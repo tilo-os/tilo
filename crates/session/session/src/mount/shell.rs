@@ -617,12 +617,25 @@ impl Shell {
     /// shortcut runs says nothing, rather than a key that would do something
     /// else.
     fn row_shortcut(&self, id: &str) -> Option<String> {
+        if let Some(fixed) = fixed_row_shortcut(id) {
+            return ui::shortcut_table::fixed_shortcut(fixed).map(|fixed| {
+                fixed
+                    .chords()
+                    .iter()
+                    .map(KeyChord::display)
+                    .collect::<Vec<_>>()
+                    .join("  /  ")
+            });
+        }
         let action = match id {
             window_menu::FULLSCREEN | window_menu::EXIT_FULLSCREEN => {
                 ShortcutAction::ToggleFullscreen
             }
             window_menu::MAXIMIZE => ShortcutAction::MaximizeWindow,
             window_menu::RESTORE => ShortcutAction::RestoreWindow,
+            window_menu::SPLIT_RIGHT => ShortcutAction::DetachTab,
+            window_menu::WIDER => ShortcutAction::ResizeWider,
+            window_menu::NARROWER => ShortcutAction::ResizeNarrower,
             _ => return None,
         };
         self.shortcuts
@@ -631,4 +644,14 @@ impl Shell {
             .get(&action)
             .map(KeyChord::display)
     }
+}
+
+/// The fixed shortcut whose chord does what row `id` does, for the rows a
+/// chord that Settings cannot rebind carries.
+fn fixed_row_shortcut(id: &str) -> Option<&'static str> {
+    Some(match id {
+        window_menu::CLOSE => "fixed-close-tab",
+        window_menu::NEW_TAB => "fixed-duplicate-tab",
+        _ => return None,
+    })
 }

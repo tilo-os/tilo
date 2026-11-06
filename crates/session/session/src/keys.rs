@@ -23,7 +23,7 @@ use tilo_desktop::osd::{Device, DeviceGlyph, Hint, Level, OSD_RESOURCE, Osd, Osd
 use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_surface_host::DeskGesture;
 use ui::host_operation::ResourceOperationStart;
-use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
+use ui::shortcut_table::{FixedAction, KeyChord, ShortcutAction, ShortcutConfig};
 use xkeysym::key as keysyms;
 
 use crate::Shared;
@@ -729,6 +729,16 @@ impl SessionKeys {
         tilo_desktop::shortcuts::configured_shortcut_action(&shortcuts, &logical, modifiers)
     }
 
+    /// The fixed action `key` is: a chord Settings cannot rebind, answered
+    /// before any app's. `None` for a chord the keys answer where they are
+    /// resolved (the window walk, the workspace steps, the display sheet,
+    /// Print) and for the accessibility chords, which have no native
+    /// dispatcher yet.
+    fn fixed_action(key: &HostKey) -> Option<FixedAction> {
+        let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
+        tilo_desktop::shortcuts::fixed_shortcut_action(&logical, modifiers)
+    }
+
     /// The chord of this press that runs a saved shortcut's keyboard trigger,
     /// which the session claims and the automation host fires. The chord is
     /// the table's because the automation put it there when it armed the
@@ -790,6 +800,15 @@ impl SessionKeys {
         // keys the fixed table names come before any app's chord.
         if self.opens_the_display_sheet(key) {
             return Some((Invocation::new(DISPLAYS, "open-sheet"), KeyClaim::Take));
+        }
+        // The fixed chords Settings cannot rebind are the desktop's before
+        // any app's, and run the same verb their menu rows and an agent's
+        // invocation name.
+        if let Some(action) = Self::fixed_action(key) {
+            return Some((
+                Invocation::new(CHROME_RESOURCE, "fixed-shortcut").with("action", action.id()),
+                KeyClaim::Take,
+            ));
         }
         // An app's bound shortcut is the person's answer to its sheet: it
         // is pressed like the desktop's own chords are.
@@ -1834,6 +1853,80 @@ mod tests {
         );
         // The lock screen shows no desktop, and no guide to its keys.
         assert_eq!(keys.resolve(&f1, true, false), None);
+    }
+
+    #[test]
+    fn the_fixed_chords_run_the_chrome_verb_their_menu_rows_name() {
+        let keys = keys();
+        let logo = KeyModifiers {
+            logo: true,
+            ..KeyModifiers::default()
+        };
+        let shift_logo = KeyModifiers {
+            shift: true,
+            ..logo
+        };
+        let alt = KeyModifiers {
+            alt: true,
+            ..KeyModifiers::default()
+        };
+        let fixed = |id: &str| {
+            Some((
+                Invocation::new(CHROME_RESOURCE, "fixed-shortcut").with("action", id),
+                KeyClaim::Take,
+            ))
+        };
+        for (pressed, id) in [
+            (key(keysyms::w, Some('w'), logo), "fixed-close-tab"),
+            (key(keysyms::F4, None, alt), "fixed-close-tab"),
+            (key(keysyms::n, Some('n'), logo), "fixed-new-window"),
+            (key(keysyms::t, Some('t'), logo), "fixed-duplicate-tab"),
+            (key(keysyms::Return, None, logo), "fixed-open-terminal"),
+            (key(keysyms::s, Some('s'), logo), "fixed-strip-switcher"),
+            (
+                key(keysyms::s, Some('S'), shift_logo),
+                "fixed-capture-screenshot",
+            ),
+            (
+                key(keysyms::p, Some('P'), shift_logo),
+                "fixed-picture-in-picture",
+            ),
+            (
+                key(keysyms::r, Some('R'), shift_logo),
+                "fixed-save-recent-replay",
+            ),
+            (key(keysyms::h, Some('h'), logo), "fixed-workspace-history"),
+            (
+                key(keysyms::h, Some('H'), shift_logo),
+                "fixed-explore-workspace-history",
+            ),
+            (key(keysyms::Escape, None, logo), "fixed-stop-remote-input"),
+        ] {
+            assert_eq!(keys.resolve(&pressed, false, false), fixed(id), "{id}");
+        }
+        // The chords the keys answer where they resolve keep that answer:
+        // the window walk, the workspace steps, the display sheet and Print.
+        for answered_before in [
+            key(
+                keysyms::Tab,
+                None,
+                KeyModifiers {
+                    alt: true,
+                    ..KeyModifiers::default()
+                },
+            ),
+            key(keysyms::Page_Up, None, logo),
+            key(keysyms::p, Some('p'), logo),
+            key(keysyms::Print, None, KeyModifiers::default()),
+        ] {
+            let resolved = keys.resolve(&answered_before, false, false);
+            assert!(
+                resolved
+                    .as_ref()
+                    .is_none_or(|(invocation, _)| invocation.address.action != "fixed-shortcut"),
+                "{resolved:?}"
+            );
+        }
     }
 
     #[test]

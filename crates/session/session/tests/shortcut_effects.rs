@@ -31,7 +31,7 @@ use tilo_session::mount::shell::WINDOW_MENU;
 use tilo_session::{Options, Session, SessionConfig, quick_settings};
 use tilo_sheets::Seat as _;
 use tilo_test_env::ScopedEnv;
-use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig, ShortcutHome};
+use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig, ShortcutHome, fixed_shortcut};
 
 /// One display's refresh: how often the session asks its clients for their
 /// next frame.
@@ -499,10 +499,20 @@ fn the_window_menu_shows_the_chord_the_table_binds() {
         Some(maximized.as_str()),
         "a row without one of its own takes the table's"
     );
+    let close = fixed_shortcut("fixed-close-tab").expect("closing the window is fixed");
     assert_eq!(
-        row_chord(&session, "window-close"),
-        None,
-        "no shortcut closes a tab, so the row promises no key"
+        row_chord(&session, "window-close").as_deref(),
+        Some(
+            close
+                .chords()
+                .iter()
+                .map(KeyChord::display)
+                .collect::<Vec<_>>()
+                .join("  /  ")
+                .as_str()
+        ),
+        "closing the window in front is a chord Settings cannot rebind, so the row \
+         shows the chords the catalogue binds"
     );
     assert_eq!(
         row_chord(&session, "window-rename"),
