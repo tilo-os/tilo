@@ -43,7 +43,9 @@ use tilo_desktop_search::providers::places::{Continue, Place, RecentPlaces};
 use tilo_desktop_search::providers::records as record_rows;
 use tilo_desktop_search::providers::settings::Settings;
 use tilo_desktop_search::providers::waiting::Waiting;
-use tilo_desktop_search::{DESKTOP_APP, InvokeTarget, SearchPreferences, Source, Target, Usage};
+use tilo_desktop_search::{
+    DESKTOP_APP, InvokeTarget, LaunchPlace, SearchPreferences, Source, Target, Usage,
+};
 use tilo_desktop_surface::{SearchHost, SearchHostFeed};
 use ui::record::{RecordCheckout, RecordId, RecordKind};
 use ui::search::Scope;
@@ -85,6 +87,25 @@ pub trait AppActions {
     /// # Errors
     /// It did not start.
     fn start_host_app(&self, desktop_id: &str) -> Result<(), DoorError>;
+    /// Open the application `app` in `workspace`, where the person asked it:
+    /// a window of its own beside theirs when `place` says so, else the
+    /// window the app has there. A host that starts no windows arranges
+    /// nothing, and opens the app where it already opens.
+    ///
+    /// # Errors
+    /// The host's refusal.
+    fn open_application(
+        &self,
+        workspace: &str,
+        app: &str,
+        place: LaunchPlace,
+    ) -> Result<(), DoorError> {
+        let _ = place;
+        self.invoke(
+            application_open_target(workspace, app),
+            serde_json::Map::new(),
+        )
+    }
 }
 
 /// What the session's search reaches beyond the desktop.
@@ -532,13 +553,13 @@ impl SessionSearch {
                     invoke.arguments,
                 )
             }),
-            Target::Launch { app } => self.with_apps(|apps| match host_apps::launched(&app) {
-                Some(desktop_id) => apps.start_host_app(desktop_id),
-                None => apps.invoke(
-                    application_open_target(workspace, &app),
-                    serde_json::Map::new(),
-                ),
-            }),
+            Target::Launch { app, place } => {
+                self.with_apps(|apps| match host_apps::launched(&app) {
+                    // The machine's own app places its window itself.
+                    Some(desktop_id) => apps.start_host_app(desktop_id),
+                    None => apps.open_application(workspace, &app, place),
+                })
+            }
             Target::Prefer { source, enabled } => {
                 self.prefer(&source, enabled);
                 Ok(())

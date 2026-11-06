@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, TileContent};
 use tilo_desktop_search::providers::{CommandSpec, WindowEntry};
-use tilo_desktop_search::{SearchData, Target};
+use tilo_desktop_search::{LaunchPlace, SearchData, Target};
 use ui::automerge::AutoCommit;
 use ui::kurbo::Rect;
 use ui::search::{AppScope, Scope};
@@ -930,6 +930,13 @@ impl DesktopSurface {
         }
     }
 
+    /// The window group in front, wherever the person is looking: where a
+    /// row chosen as "a tab here" opens.
+    fn window_in_front(&self) -> Option<(StripId, GroupId)> {
+        let shared = self.shared.borrow();
+        navigation::active_route(&shared.tree).map(|ids| (ids.strip, ids.group))
+    }
+
     /// The strip showing the window group `group`, wherever it is.
     fn group_strip(&self, group: GroupId) -> Option<StripId> {
         let shared = self.shared.borrow();
@@ -1221,8 +1228,22 @@ impl DesktopSurface {
             );
         }
         match (choice, self.new_tab_into.take()) {
-            (Some(Target::Launch { app }), Some((strip, group))) => {
-                self.open_tab_in_group(strip, group, &app);
+            // A tab in the window the person asked for: the one the search
+            // was opened from (its new-tab control), else the one in front.
+            (Some(Target::Launch { app, place }), into) => {
+                let group = match place {
+                    LaunchPlace::TabHere => into.or_else(|| self.window_in_front()),
+                    LaunchPlace::Focus | LaunchPlace::Beside => into,
+                };
+                match group {
+                    Some((strip, group)) => {
+                        self.open_tab_in_group(strip, group, &app);
+                    }
+                    // A window of its own opens where the session starts
+                    // windows, and one that names no place opens in the
+                    // window its app has.
+                    None => self.perform(Target::Launch { app, place }),
+                }
             }
             (Some(Target::Action(action)), _) => self.run_action(&action),
             (Some(target), _) => self.perform(target),
@@ -1341,7 +1362,7 @@ impl DesktopSurface {
         let admitted = match target {
             // An app already open is focused, not opened twice: a new
             // window is asked for through a window's new tab instead.
-            Target::Launch { app } => Some(
+            Target::Launch { app, .. } => Some(
                 navigation::window_of_app(&shared.tree, &app)
                     .map_or(Admitted::Launch(app), Admitted::Select),
             ),

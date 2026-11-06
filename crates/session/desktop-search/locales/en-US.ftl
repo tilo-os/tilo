@@ -99,3 +99,6 @@ search-downloaded-add = Add { $name } to apps
 search-downloaded-uninstall = Uninstall { $name }
 search-downloaded-remove = Remove { $name } from apps
 search-show-all-results = Show all { $count } results
+# What the selected row says a held modifier does with where the app opens.
+search-open-as-tab = Opens as a tab here
+search-open-beside = Opens a window beside

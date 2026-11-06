@@ -21,7 +21,7 @@ use app_catalogue::{CatalogueEntry, Source as Origin};
 use ui::search::FieldWeight;
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
-use crate::model::{Hit, InvokeTarget, Source, Target};
+use crate::model::{Hit, InvokeTarget, LaunchPlace, Source, Target};
 
 /// How far below an installed app of the same match a Tilo app to get
 /// ranks.
@@ -138,6 +138,7 @@ impl StoreCatalogue {
                         None,
                         Target::Launch {
                             app: entry.id.clone(),
+                            place: LaunchPlace::Focus,
                         },
                     ),
                     Origin::Flathub { .. } => {
@@ -179,6 +180,7 @@ impl StoreCatalogue {
                     Some(glyph(entry)),
                     Target::Launch {
                         app: entry.id.clone(),
+                        place: LaunchPlace::Focus,
                     },
                 )
             }
@@ -318,7 +320,8 @@ mod tests {
         assert_eq!(
             app.target,
             Target::Launch {
-                app: "so.tilo.sheets".into()
+                app: "so.tilo.sheets".into(),
+                place: LaunchPlace::Focus,
             }
         );
         assert!(app.score < MAX_PROVIDER_SCORE, "below an installed app");

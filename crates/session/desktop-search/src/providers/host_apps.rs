@@ -7,7 +7,7 @@
 use ui::search::FieldWeight;
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
-use crate::model::{Hit, Source, Target};
+use crate::model::{Hit, LaunchPlace, Source, Target};
 use crate::preferences::SearchPreferences;
 
 /// The source id of the host apps, which the person switches on and off on
@@ -35,6 +35,7 @@ pub struct HostAppEntry {
 pub fn launch(desktop_id: &str) -> Target {
     Target::Launch {
         app: format!("{HOST_APP_PREFIX}{desktop_id}"),
+        place: LaunchPlace::Focus,
     }
 }
 

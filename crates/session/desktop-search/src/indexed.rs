@@ -19,7 +19,7 @@ use ui::search::index_publication::{IndexEntry, IndexWeight};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind, provider_score};
 
 use crate::content_index::{AppContentIndex, Contents, IndexedEntry, SlotKey};
-use crate::model::{Hit, InvokeTarget, Source, Target};
+use crate::model::{Hit, InvokeTarget, LaunchPlace, Source, Target};
 
 pub use crate::model::{OPEN_ACTION, OPEN_ANCHOR};
 
@@ -298,6 +298,7 @@ impl IndexedContent {
             icon: Some(ui::icons::Icon::Lock),
             target: Target::Launch {
                 app: app.to_owned(),
+                place: LaunchPlace::Focus,
             },
         }
     }
@@ -509,7 +510,8 @@ mod tests {
         assert_eq!(
             hits[0].target,
             Target::Launch {
-                app: "so.tilo.passwords".into()
+                app: "so.tilo.passwords".into(),
+                place: LaunchPlace::Focus,
             }
         );
     }

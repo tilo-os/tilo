@@ -1137,7 +1137,10 @@ impl crate::Shared {
                 notifications::HistoryActivation::OpenApp { app_id, .. } => {
                     let opened = self.search.perform(
                         &workspace,
-                        tilo_desktop_search::Target::Launch { app: app_id },
+                        tilo_desktop_search::Target::Launch {
+                            app: app_id,
+                            place: tilo_desktop_search::LaunchPlace::Focus,
+                        },
                         &mut |own| {
                             self.doors
                                 .invoke(

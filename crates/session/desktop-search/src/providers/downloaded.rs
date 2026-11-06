@@ -25,7 +25,7 @@ use ui::search::FieldWeight;
 use ui::search::system::ResourceKind;
 
 use crate::i18n::{t, t_args};
-use crate::model::{DESKTOP_APP, Hit, InvokeTarget, Source, Target};
+use crate::model::{DESKTOP_APP, Hit, InvokeTarget, LaunchPlace, Source, Target};
 use crate::rank;
 
 /// The source id of the downloaded programs.
@@ -152,6 +152,7 @@ fn app_row(
     let target = if app.present {
         Target::Launch {
             app: app.launch.clone(),
+            place: LaunchPlace::Focus,
         }
     } else {
         let resource = wire::app(&app.desktop_id);
@@ -431,7 +432,8 @@ mod tests {
         assert_eq!(
             hits[0].target,
             Target::Launch {
-                app: "host:tilo-downloaded-Dropped".into()
+                app: "host:tilo-downloaded-Dropped".into(),
+                place: LaunchPlace::Focus,
             }
         );
         assert!(

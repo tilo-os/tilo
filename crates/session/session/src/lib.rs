@@ -679,6 +679,9 @@ pub struct Session {
     /// The views the person bound to the shell's slots, and the one running
     /// each slot now.
     slots: mount::slots::Slots,
+    /// Whether the window menu's view is up: it stands for the session's
+    /// life, so the menu's first opening draws as fast as every other.
+    window_menu_stood: bool,
     /// The slots whose view is a tilolang package, which the session runs
     /// itself.
     slot_views: slot_views::SlotViews,
@@ -1968,6 +1971,7 @@ impl Session {
             surfaces,
             surface_apps,
             slots: mount::slots::Slots::default(),
+            window_menu_stood: false,
             slot_views,
             displays: display_settings::Displays::default(),
             displays_service,

@@ -62,7 +62,8 @@ use crate::topbar::{BarSpace, Placement, Reveals, TOPBAR_HEIGHT_PX, TopBarChrome
 use crate::window_flight::WindowFlight;
 use crate::window_switcher::{Switcher, SwitcherAsk, WindowSource};
 use crate::workspace_menu::{
-    WorkspaceAction, WorkspaceChoice, WorkspaceMenu, WorkspaceMenuChoice, WorkspaceMenuModel,
+    MenuPlace, WorkspaceAction, WorkspaceChoice, WorkspaceMenu, WorkspaceMenuChoice,
+    WorkspaceMenuModel,
 };
 
 /// The next deadline a child widget reports, for the earliest of them.
@@ -1387,6 +1388,11 @@ impl DesktopChrome {
                 }),
         );
         WorkspaceMenuModel {
+            place: if desk {
+                MenuPlace::Desk
+            } else {
+                MenuPlace::Bar
+            },
             desk: desk_actions,
             workspaces,
             host: self.rules.workspace_host(),

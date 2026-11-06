@@ -13,7 +13,9 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::platform::PlatformConventions;
-use crate::search::{ActivationModifier, FieldWeight, SearchGroup, SearchResult};
+use crate::search::{
+    ActivationModifier, Facet, FacetFilter, FieldWeight, SearchGroup, SearchResult,
+};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{SearchField, Widget};
@@ -270,6 +272,28 @@ impl ActionPalette {
     #[must_use]
     pub fn held_modifier(&self) -> Option<ActivationModifier> {
         ActivationModifier::of(self.held)
+    }
+
+    /// The chips a host feeding its own rows offers above them: it declared
+    /// the facets, so it is the one that can narrow its rows by what is
+    /// picked ([`Self::picked_filters`]). Unlike the facets an app's own rows
+    /// declare, these are the host's whole list: what it stops offering is
+    /// no longer a chip.
+    pub fn set_host_facets(&mut self, facets: Vec<Facet>) {
+        if self.facets == facets {
+            return;
+        }
+        self.facets = facets;
+        self.picked_filters
+            .retain(|filter| self.facets.iter().any(|facet| facet.key == filter.key));
+        self.structure_dirty = true;
+    }
+
+    /// The chips picked among a host's facets: what its rows are narrowed
+    /// by, as the host reads it to feed the ones that match.
+    #[must_use]
+    pub fn picked_filters(&self) -> &[FacetFilter] {
+        &self.picked_filters
     }
 
     /// The selected row's id; `None` while nothing is shown.
@@ -1023,12 +1047,20 @@ impl ActionPalette {
             button: MouseButton::Left,
             ..
         } = event
-            && let Some(row) = self.row_at(self.last_cursor)
         {
-            self.set_cursor(row);
-            self.activate_host_selected();
-            *ctx.handled = true;
-            return true;
+            // A chip above the rows narrows them, as it does over an app's
+            // own rows.
+            if let Some(filter) = self.facet_chip_at(self.last_cursor) {
+                self.toggle_facet(&filter);
+                *ctx.handled = true;
+                return true;
+            }
+            if let Some(row) = self.row_at(self.last_cursor) {
+                self.set_cursor(row);
+                self.activate_host_selected();
+                *ctx.handled = true;
+                return true;
+            }
         }
         false
     }

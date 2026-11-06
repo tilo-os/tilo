@@ -78,6 +78,7 @@ workspace-menu-hosted-by = Hosted by { $host }
 workspace-menu-rename = Rename workspace
 workspace-menu-overview = Overview
 workspace-menu-new-strip = New strip
+workspace-menu-workspace = Workspace
 profile-card = Your profile
 profile-card-of = { $name }’s profile
 profile-id = Person ID

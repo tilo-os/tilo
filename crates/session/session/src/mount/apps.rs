@@ -26,7 +26,7 @@ use tilo_action_broker::collab_app_broker::AppBrokerState;
 use tilo_action_broker::services::LaunchPlace;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, InvokeRequest,
-    RemoteActionTarget, application_provider,
+    RemoteActionTarget, application_open_target, application_provider,
 };
 use tilo_actions::{ActionDescriptor, DoorError, ExecutionLocus, InvocationId};
 use tilo_app_launch::routing;
@@ -34,6 +34,7 @@ use tilo_app_launch::{
     Answer, Authority, Cause, Doors as WindowDoors, HeldDoor, Instance, Kind, Launch, PlanContext,
     Planned, Routed, SessionEnvironment, Shown, Spawner, StartAlone, Workspace,
 };
+use tilo_desktop_search::LaunchPlace as OpenPlace;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_desktop_surface::outcome::{Closed, Outcome};
@@ -677,6 +678,41 @@ impl Apps {
         launched
     }
 
+    /// What a search row names, run as the person's own choice runs it: an
+    /// app in the workspace it was published in, and the action to run
+    /// there. `place` is where they asked the window of an `open` to go.
+    fn invoke_at(
+        &self,
+        target: RemoteActionTarget,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        place: OpenPlace,
+    ) -> Result<(), DoorError> {
+        let Some((workspace, _)) = application_provider(&target.provider) else {
+            return Err(no_action_host());
+        };
+        let workspace = workspace.to_owned();
+        let app = target
+            .address
+            .resource
+            .strip_prefix(APPLICATION_RESOURCE_PREFIX)
+            .map(str::to_owned);
+        let open = target.address.action == APPLICATION_OPEN_ACTION && arguments.is_empty();
+        match (open, app) {
+            (true, Some(app)) => {
+                let workspace = self.workspace_named(&workspace);
+                let launch = Launch::Package { app, open: None };
+                match place {
+                    // A tab of the window in front is the desk's to arrange:
+                    // the session opens the app the way it opens, and the
+                    // desk puts the tab where the person asked.
+                    OpenPlace::Focus | OpenPlace::TabHere => self.start(&launch, &workspace),
+                    OpenPlace::Beside => self.start_beside(&launch, &workspace, None),
+                }
+            }
+            _ => self.deliver(target, arguments, &workspace),
+        }
+    }
+
     /// Start `launch` in `workspace`, unless the app already has a window
     /// there: that one is raised and nothing starts.
     ///
@@ -946,25 +982,23 @@ impl AppActions for Apps {
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), DoorError> {
-        // What a search row names: an app in the workspace it was published
-        // in, and the action to run there.
-        let Some((workspace, _)) = application_provider(&target.provider) else {
-            return Err(no_action_host());
-        };
-        let workspace = workspace.to_owned();
-        let app = target
-            .address
-            .resource
-            .strip_prefix(APPLICATION_RESOURCE_PREFIX)
-            .map(str::to_owned);
-        let open = target.address.action == APPLICATION_OPEN_ACTION && arguments.is_empty();
-        match (open, app) {
-            (true, Some(app)) => {
-                let workspace = self.workspace_named(&workspace);
-                self.start(&Launch::Package { app, open: None }, &workspace)
-            }
-            _ => self.deliver(target, arguments, &workspace),
-        }
+        self.invoke_at(target, arguments, OpenPlace::Focus)
+    }
+
+    /// Open `app` where the person asked it, through the same run of the
+    /// workspace's `open` as [`Self::invoke`]: `place` is what the modifier
+    /// they held over the row asked of the window.
+    fn open_application(
+        &self,
+        workspace: &str,
+        app: &str,
+        place: OpenPlace,
+    ) -> Result<(), DoorError> {
+        self.invoke_at(
+            application_open_target(workspace, app),
+            serde_json::Map::new(),
+            place,
+        )
     }
 
     fn cancel(&self, _app: &str, _workspace: &str, _invocation: &str) -> Result<(), DoorError> {

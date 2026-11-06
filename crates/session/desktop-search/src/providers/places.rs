@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use ui::search::FieldWeight;
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
-use crate::model::{Hit, InvokeTarget, Source, Target};
+use crate::model::{Hit, InvokeTarget, LaunchPlace, Source, Target};
 
 /// How many places are kept: the newest, far more than are shown, so those
 /// of other workspaces leave each workspace its own.
@@ -186,6 +186,7 @@ impl Continue {
             },
             _ => Target::Launch {
                 app: place.app.clone(),
+                place: LaunchPlace::Focus,
             },
         };
         let mut facts = Vec::new();
@@ -365,7 +366,8 @@ mod tests {
         assert_eq!(
             hits[0].target,
             Target::Launch {
-                app: "so.tilo.notes".into()
+                app: "so.tilo.notes".into(),
+                place: LaunchPlace::Focus,
             },
             "another device's window is not here"
         );

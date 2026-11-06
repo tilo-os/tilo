@@ -6208,6 +6208,10 @@ impl FrameHarness {
     /// Deliver one event through the production dispatch path.
     pub fn send(&mut self, event: &WindowEvent) {
         crate::motion::note_input(event);
+        // A host that runs a widget tree of its own (the desktop) sends its
+        // input here: what its controls name of themselves is revealed on the
+        // same dwell a window's own controls are.
+        self.track_tooltip(event);
         crate::focus_visible::note(event);
         // Whether the event can have changed what a frame reads is judged
         // once it is dispatched, as the live window judges it.
@@ -13445,3 +13449,6 @@ mod owner_mount_service_custody;
 #[cfg(test)]
 #[path = "headless/activation_scene_consistency_tests.rs"]
 mod activation_scene_consistency_tests;
+#[cfg(test)]
+#[path = "headless/tooltip_tests.rs"]
+mod tooltip_tests;

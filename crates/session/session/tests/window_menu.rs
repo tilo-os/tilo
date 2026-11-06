@@ -382,3 +382,63 @@ fn a_row_the_window_cannot_choose_reads_with_its_reason() {
         "and says why for each it cannot: {reading}"
     );
 }
+
+/// A program that stands where a surface app would, without a window: what
+/// the session starts for the menu's slot and shows while a menu is up.
+fn stand_in(root: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let program = root.join("window-menu");
+    std::fs::write(&program, "#!/bin/sh\nexec sleep 60\n").expect("a stand-in program");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("a program the session can run");
+    program
+}
+
+/// The layer the menu's view asks the compositor for.
+const NAMESPACE: &str = "tilo-window-menu";
+
+#[test]
+fn the_menus_view_stands_with_the_session_and_is_shown_while_a_menu_is_up() {
+    let root = tempfile::tempdir().expect("a directory for the stand-in");
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment.set("TILO_SURFACE_TILO_WINDOW_MENU", stand_in(root.path()));
+
+    let mut session = session_with(desk_tree());
+    assert!(
+        session
+            .surfaces()
+            .names()
+            .iter()
+            .any(|name| *name == "window-menu"),
+        "the menu's view stands before anything asks for a menu: {:?}",
+        session.surfaces().names()
+    );
+    assert_eq!(
+        session.compositor().layer_shown(NAMESPACE),
+        Some(false),
+        "hidden while no menu is up, so it draws nothing over the desk"
+    );
+
+    press_tab_menu(&mut session);
+    assert_eq!(
+        session.compositor().layer_shown(NAMESPACE),
+        Some(true),
+        "shown where the menu is up"
+    );
+
+    tap(&mut session, KEY_ESCAPE);
+    assert_eq!(
+        session.compositor().layer_shown(NAMESPACE),
+        Some(false),
+        "hidden again once the menu closes"
+    );
+    assert!(
+        session
+            .surfaces()
+            .names()
+            .iter()
+            .any(|name| *name == "window-menu"),
+        "and the view it shows again stands there still: {:?}",
+        session.surfaces().names()
+    );
+}

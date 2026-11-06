@@ -402,3 +402,53 @@ fn unlock_through_the_development_socket(
         "the door invokes again once the screen is unlocked: {invoked}"
     );
 }
+
+/// The chrome advertises its shortcuts by the table's own ids, and a person's
+/// door runs an advertised one: asking for a shortcut the desk publishes is
+/// never answered as an action that does not exist.
+#[test]
+fn the_door_runs_an_advertised_desktop_shortcut() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let owner = root.path().join("admin-control.sock");
+    let mut session = session(root.path());
+    session.compositor().unlock().expect("the screen unlocks");
+    assert!(
+        reached(&mut session, |session| !session.compositor().locked()),
+        "the session is unlocked"
+    );
+    session.step(Duration::from_millis(1)).expect("a turn");
+
+    let listed = ask(
+        &mut session,
+        &owner,
+        &json!({"op": "actions_enumerate", "query": "shortcut"}),
+    );
+    let actions = listed["answer"]["actions"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let advertised = actions
+        .iter()
+        .find(|row| row["resource"] == "desktop:chrome" && row["operation"] == "shortcut")
+        .unwrap_or_else(|| panic!("the chrome advertises its shortcut action: {listed}"));
+    let provider = advertised["provider"].as_str().expect("a provider");
+    let id = advertised["id"].as_str().expect("an id");
+
+    // `tab_menu` is a shortcut of the table, and the desk runs it.
+    let invoked = ask(
+        &mut session,
+        &owner,
+        &json!({
+            "op": "actions_invoke",
+            "provider": provider,
+            "id": id,
+            "args": {"action": "tab_menu"},
+        }),
+    );
+    assert!(
+        !invoked.to_string().contains("unknown_action"),
+        "an advertised shortcut is not answered as an unknown action: {invoked}"
+    );
+    assert!(invoked.get("err").is_none(), "the desk runs it: {invoked}");
+}
