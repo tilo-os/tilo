@@ -20555,6 +20555,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-actions",
+ "tilo-automerge",
+ "tilo-automerge-fork",
  "tilo-resource",
  "uuid",
  "workspace-hack",
