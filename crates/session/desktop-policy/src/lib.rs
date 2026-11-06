@@ -931,6 +931,18 @@ impl DesktopPolicy {
         })
     }
 
+    /// Whether `tab` still shows the place an app's launch held, no window
+    /// having come to fill it: the launch ended in front of the person as a
+    /// window that did not arrive.
+    #[must_use]
+    pub fn holds_a_place(&self, tab: TabId) -> bool {
+        self.handle.read(|tree| {
+            tabs(tree)
+                .find(|found| found.id == tab)
+                .is_some_and(|found| matches!(found.tile, TileContent::AppPlaceholder { .. }))
+        })
+    }
+
     /// The tab held for the next window of the app `app` announces, oldest
     /// first: taken once, by the one window it was held for.
     fn take_held(&self, app: &str) -> Option<HeldTab> {
@@ -1340,10 +1352,12 @@ fn ask_again(
     });
 }
 
-/// What a launch id is called when nothing named its app: a host app's id
-/// without the prefix that says it is one.
+/// What a launch id is called when nothing named its app: the name every
+/// desktop carries for it, or its id written as words.
 fn shown_name(app: &str) -> String {
-    app.strip_prefix("host:").unwrap_or(app).to_owned()
+    // The name every desktop carries, as the window bars and search name the
+    // same app: a tab never shows an app's id.
+    tilo_desktop_search::names::app_name(app)
 }
 
 fn tabs(tree: &DesktopTree) -> impl Iterator<Item = &Tab> {

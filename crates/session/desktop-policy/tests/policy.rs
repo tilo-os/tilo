@@ -643,8 +643,12 @@ fn an_app_that_did_not_start_says_why_in_its_tab_and_tries_again() {
     policy.handle().dispatch(launch).unwrap();
     settle(&mut driver);
     let tab = policy.take_launches()[0].tab.expect("a held tab");
+    assert!(
+        policy.holds_a_place(tab),
+        "no window came for it: the tab still holds the app's place"
+    );
 
-    // The session could not start it: the tab the person opened stays, and
+    // The launch could not start it: the tab the person opened stays, and
     // says what happened and why instead of vanishing.
     let answer = tilo_desktop_surface::outcome::Outcome::new("Notes could not open")
         .saying("it is not installed here")
@@ -680,6 +684,10 @@ fn an_app_that_did_not_start_says_why_in_its_tab_and_tries_again() {
     // The window comes: the answer gives its tab up to it.
     map(&mut driver, &mut policy, 41, "so.tilo.notes");
     settle(&mut driver);
+    assert!(
+        !policy.holds_a_place(tab),
+        "the window filled the place the tab held"
+    );
     assert_eq!(
         tabs(&policy),
         vec![(
@@ -718,7 +726,7 @@ fn a_stopped_app_leaves_a_notice_that_asks_for_it_again() {
         "{texts:?}"
     );
     assert!(
-        texts.iter().any(|text| text == "Try again"),
+        texts.iter().any(|text| text == "Reopen"),
         "the answer offers a way back: {texts:?}"
     );
 

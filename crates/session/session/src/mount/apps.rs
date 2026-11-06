@@ -508,9 +508,27 @@ impl Apps {
                 None => Closed::Crashed,
             };
             if let Some(desktop) = self.desktop.borrow().clone() {
-                let notice = desktop.with_policy(|policy| {
-                    policy.stopped(asked.as_deref().unwrap_or(&event.app), &event.title, closed)
+                let asked = asked.unwrap_or_else(|| event.app.clone());
+                // A launch that ended before its window came never opened,
+                // and says that in the tab the person asked for it in: what
+                // stopped in front of them is a window that did not arrive,
+                // not one that went.
+                let waited = desktop.with_policy(|policy| {
+                    policy
+                        .anchor_for(&asked)
+                        .filter(|(tab, ..)| policy.holds_a_place(*tab))
+                        .map(|(tab, ..)| tab)
                 });
+                if let Some(tab) = waited {
+                    self.could_not_open(
+                        Some(tab),
+                        &asked,
+                        &tilo_desktop_surface::i18n::t("answer-why-not-opened"),
+                    );
+                    continue;
+                }
+                let notice =
+                    desktop.with_policy(|policy| policy.stopped(&asked, &event.title, closed));
                 if let Err(error) = notice {
                     tracing::warn!(%error, app = %event.app, "no notice for the app");
                 }

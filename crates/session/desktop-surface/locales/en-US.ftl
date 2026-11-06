@@ -1157,6 +1157,7 @@ answer-why-runaway = it was closed to keep the rest of the desktop running
 answer-try-again = Try again
 answer-reopen = Reopen
 answer-why-unknown-app = this desktop does not know how to open it
+answer-why-not-opened = it ended before its window came
 
 # The menu behind the top bar's Tilo mark, and the About sheet it opens
 tilo-menu-about = About this computer
