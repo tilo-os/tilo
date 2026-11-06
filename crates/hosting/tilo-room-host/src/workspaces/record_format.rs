@@ -208,6 +208,7 @@ fn take_grant<'a>(
 mod tests {
     use super::*;
     use ed25519_dalek::Signer as _;
+    use tilo_files::native::migration::assert_golden_bytes;
     use tilo_peer_state::join::{MemberRole, TransportHint};
     use tilo_user_identity::DeviceCapabilities;
 
@@ -263,17 +264,7 @@ mod tests {
     /// grant it carries as that build's ledger kept it beside it.
     fn earlier_invitation() -> (Vec<u8>, Vec<u8>, InviteGrant) {
         let (key, authority) = cert(1);
-        let grant = InviteGrant {
-            workspace_id: 7,
-            room: "302d59e0-f586-42e1-a59e-3aa613f0f866".into(),
-            issuer: authority.clone(),
-            role: MemberRole::Editor,
-            nonce: [4; 16],
-            recipient_user_public_key: Some([5; 32]),
-            invitee_name: None,
-            expires_at_ns: u64::MAX,
-            transport: Vec::<TransportHint>::new(),
-        };
+        let grant = kept_grant();
         let earlier = GrantV1 {
             workspace_id: grant.workspace_id,
             room: grant.room.clone(),
@@ -337,29 +328,144 @@ mod tests {
         assert_eq!(tail, b"after");
     }
 
-    /// A whole version 2 record, its ledger holding one invitation of the
-    /// earlier layout, comes up as version 3 with that invitation's grant
-    /// read in the layout its own version names.
+    /// Temporary: print the kept bytes.
     #[test]
-    fn a_version_two_record_comes_up_with_its_invitations_grant() {
+    fn print_kept() {
+        println!(
+            "V3={}",
+            hex::encode(postcard::to_stdvec(&kept_version_three()).unwrap())
+        );
+        println!("V2={}", hex::encode(kept_version_two()));
+    }
+
+    /// The workspace the kept records are of.
+    const KEPT_WORKSPACE: &str = "302d59e0-f586-42e1-a59e-3aa613f0f866";
+
+    /// A governed workspace record as version 3 encoded it, hex, kept so the
+    /// layout cannot change under the version devices hold. It is
+    /// [`kept_version_three`] as `postcard` wrote it.
+    const KEPT_V3: &str = "KEPT_V3_HEX";
+
+    /// A governed workspace record as version 2 encoded it, hex: the same
+    /// workspace, its invitation's grant in the layout of that day.
+    const KEPT_V2: &str = "KEPT_V2_HEX";
+
+    /// Bytes kept as hex, as a test reads them.
+    fn kept(hex: &str) -> Vec<u8> {
+        hex::decode(hex).unwrap()
+    }
+
+    /// The grant the kept records hold, in this build's layout.
+    fn kept_grant() -> InviteGrant {
+        InviteGrant {
+            workspace_id: 7,
+            room: KEPT_WORKSPACE.into(),
+            issuer: cert(1).1,
+            role: MemberRole::Editor,
+            nonce: [4; 16],
+            recipient_user_public_key: Some([5; 32]),
+            invitee_name: None,
+            expires_at_ns: u64::MAX,
+            transport: Vec::<TransportHint>::new(),
+        }
+    }
+
+    /// The record this build writes for the kept workspace: one invitation in
+    /// its ledger, one publication out, its peer state inline.
+    fn kept_version_three() -> WorkspaceRecord {
+        let (key, authority) = cert(1);
+        let grant = kept_grant();
+        let signed = tilo_peer_state::join::issue_invitation(grant.clone(), &key).unwrap();
+        WorkspaceRecord {
+            version: RECORD_VERSION,
+            workspace: KEPT_WORKSPACE.into(),
+            workspace_id: crate::room_workspace_id(KEPT_WORKSPACE).unwrap(),
+            name: "Lounge".into(),
+            authority,
+            peer: vec![super::super::peer_parts::PeerPart::Inline(vec![0x85, 0x6f])],
+            generation: 1,
+            outgoing: vec![Publication {
+                bytes: vec![1, 2, 3],
+                checkpoint: true,
+            }],
+            published: 0,
+            collaboration: JoinLedger {
+                invitations: vec![InvitationRecord {
+                    request_id: [9; 32],
+                    request_digest: [8; 32],
+                    issued: IssuedInvitation {
+                        invite_id: *blake3::hash(&signed).as_bytes(),
+                        signed_invitation: signed,
+                    },
+                    grant,
+                    cancellation: None,
+                }],
+                join_challenges: Vec::new(),
+                join_completions: Vec::new(),
+                membership_challenges: Vec::new(),
+                administration: Vec::new(),
+            },
+        }
+    }
+
+    /// The record version 2 wrote for the kept workspace, byte for byte, its
+    /// invitation's grant in the layout of that day.
+    fn kept_version_two() -> Vec<u8> {
         let (signed, ledger_copy, grant) = earlier_invitation();
         let issued = IssuedInvitation {
             invite_id: *blake3::hash(&signed).as_bytes(),
             signed_invitation: signed,
         };
-        // Version 2's record, byte for byte: the record's own struct, its
-        // invitation's grant in the earlier layout.
         let mut invitation = postcard::to_stdvec(&[9_u8; 32]).unwrap();
         invitation.extend(postcard::to_stdvec(&[8_u8; 32]).unwrap());
         invitation.extend(postcard::to_stdvec(&issued).unwrap());
         invitation.extend(ledger_copy);
         invitation.extend(postcard::to_stdvec(&None::<CancellationRecord>).unwrap());
-        let record = version_two(&grant, &invitation);
-        let migrated = FORMAT.migrate(record, 2).unwrap();
-        let record: WorkspaceRecord = postcard::from_bytes(&migrated).unwrap();
-        assert_eq!(record.version, RECORD_VERSION);
-        assert_eq!(record.collaboration.invitations.len(), 1);
-        assert_eq!(record.collaboration.invitations[0].grant, grant);
+        version_two(&grant, &invitation)
+    }
+
+    /// The record a build of version 2 wrote comes up as version 3 with that
+    /// invitation's grant read in the layout its own version names, and the
+    /// bytes kept here are that build's.
+    #[test]
+    fn the_version_two_record_kept_here_comes_up_with_its_invitations_grant() {
+        assert_golden_bytes(
+            "a governed workspace record, version 2",
+            &kept(KEPT_V2),
+            |bytes| {
+                tilo_files::native::migration::assert_step_reads_previous(
+                    &FORMAT,
+                    bytes,
+                    |migrated| {
+                        let record: WorkspaceRecord = postcard::from_bytes(migrated).unwrap();
+                        assert_eq!(record.version, RECORD_VERSION);
+                        assert_eq!(record.collaboration.invitations.len(), 1);
+                        assert_eq!(record.collaboration.invitations[0].grant, kept_grant());
+                    },
+                );
+            },
+            kept_version_two,
+        );
+    }
+
+    /// The record this build writes reads back the way the bytes kept beside
+    /// it do: a field added, removed or reordered anywhere in the record,
+    /// its ledger or the peer state they hold changes these bytes, and a
+    /// workspace a device already holds would no longer open.
+    #[test]
+    fn the_version_three_record_kept_here_reads_and_writes_as_it_is() {
+        assert_golden_bytes(
+            "a governed workspace record, version 3",
+            &kept(KEPT_V3),
+            |bytes| {
+                let record: WorkspaceRecord = postcard::from_bytes(bytes).unwrap();
+                assert_eq!(record.version, RECORD_VERSION);
+                assert_eq!(record.workspace, KEPT_WORKSPACE);
+                assert_eq!(record.name, "Lounge");
+                assert_eq!(record.collaboration.invitations[0].grant, kept_grant());
+            },
+            || postcard::to_stdvec(&kept_version_three()).unwrap(),
+        );
     }
 
     /// A version 2 record whose ledger holds `invitation`, built field by
