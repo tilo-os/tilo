@@ -130,12 +130,13 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - **What an effect is, and what is not one.** An effect is what a replay cannot compute again,
   so it is recorded on the invocation that read it: the clock and the person's zone (`now`,
   `today`, a time of no zone, `t.day()`, `t.time_of_day()`, a text parsed near a moment,
-  `next_at`, `at`, `std.complete`), a draw and a service outside Tilo. A filter's `today` is the query's input, read where the view is
-  drawn: the query is answered again when the day turns (`ViewState::changes_at`), nothing is
-  replayed, and the checker does not ask an action for `uses time` because a view it shows
-  filters by a day. `t.day()` in a view is the same kind of read — what the person's zone
-  makes of a value that is drawn — and is not refused there. `now` alone is refused outside an
-  action or flow (E049): it is the time of an invocation, and a view has none.
+  `next_at`, `at`, `std.complete`), a draw and a service outside Tilo. A filter's `today` is
+  the query's input, read where the view is drawn: the query is answered again when the day
+  turns (`ViewState::changes_at`), nothing is replayed, and the checker does not ask an action
+  for `uses time` because a view it shows filters by a day. `t.day()` in a view is the same
+  kind of read — what the person's zone makes of a value that is drawn — and is not refused
+  there. `now` alone is refused outside an action or flow (E049): it is the time of an
+  invocation, and a view has none.
 - **A scenario uses every effect.** Its code is seed data, run where a developer runs it and
   never replayed, so it declares nothing and reads anything; `as who at time` gives its actions
   their time.

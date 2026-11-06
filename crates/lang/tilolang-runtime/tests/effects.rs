@@ -60,11 +60,11 @@ flow start(b: demo.Board) -> Time uses time {
 }
 "#;
 
-    struct Clock2 {
+    struct HostClock {
         now: Rc<RefCell<String>>,
     }
 
-    impl Clock2 {
+    impl HostClock {
         fn new(now: &str) -> Self {
             Self {
                 now: Rc::new(RefCell::new(now.to_owned())),
@@ -83,7 +83,7 @@ flow start(b: demo.Board) -> Time uses time {
         }
     }
 
-    fn runtime(clock: &Clock2) -> (Runtime, AmStore) {
+    fn runtime(clock: &HostClock) -> (Runtime, AmStore) {
         let store = AmStore::new();
         let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
         clock.install(&rt);
@@ -92,7 +92,7 @@ flow start(b: demo.Board) -> Time uses time {
 
     #[test]
     fn an_actions_journal_is_kept_beside_its_change() {
-        let clock = Clock2::new("2026-06-30T09:00:00Z");
+        let clock = HostClock::new("2026-06-30T09:00:00Z");
         let (rt, _store) = runtime(&clock);
         let app = App::compile(NOTE, &[]);
         app.load(&rt);
@@ -130,7 +130,7 @@ flow start(b: demo.Board) -> Time uses time {
 
     #[test]
     fn a_flow_resumed_the_next_day_reads_the_moment_it_started() {
-        let clock = Clock2::new("2026-06-30T09:00:00Z");
+        let clock = HostClock::new("2026-06-30T09:00:00Z");
         let (rt, mut store) = runtime(&clock);
         let demo = App::compile(DEMO, &[]);
         let runner = App::compile(RUNNER, &[demo.meta().clone()]);

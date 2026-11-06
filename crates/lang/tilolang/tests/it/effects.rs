@@ -33,6 +33,16 @@ fn the_error_names_the_effect_the_declaration_is_missing() {
 }
 
 #[test]
+fn the_day_it_is_in_an_action_is_the_clock_too() {
+    // `today` is where the clock falls for the person, so an action that reads it says so; a
+    // filter's `today` is the query's input and asks nothing of the action that stamps a value.
+    let read = "action due(m: Mail) {\n    m.day = today\n}\n";
+    assert_eq!(codes(&with_mail(read)), ["E121"]);
+    let declared = "action due(m: Mail) uses time {\n    m.day = today\n}\n";
+    assert_eq!(codes(&with_mail(declared)), Vec::<String>::new());
+}
+
+#[test]
 fn a_flow_reading_the_clock_declares_uses_time() {
     let read = "flow tick() -> Time {\n    return now\n}\n";
     assert_eq!(codes(read), ["E121"]);
