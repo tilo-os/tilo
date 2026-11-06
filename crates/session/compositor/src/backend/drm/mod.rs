@@ -496,12 +496,7 @@ impl Backend for DrmBackend {
             .renderers
             .single_renderer(&primary)
             .map_err(|error| failed("renderer", error))?;
-        crate::backdrop::draw::<_, smithay::backend::renderer::gles::GlesTexture>(
-            &mut renderer,
-            state,
-            region,
-            request,
-        )
+        crate::backdrop::draw(renderer.as_mut(), state, region, request)
     }
 
     fn capture(
