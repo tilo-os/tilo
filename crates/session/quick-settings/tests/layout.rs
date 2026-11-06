@@ -72,6 +72,7 @@ fn the_controls_page_has_the_tiles_two_to_a_row_then_the_sliders_then_the_rows_a
     let wifi = target(&mut app, "qs-tile-wifi");
     let bluetooth = target(&mut app, "qs-tile-bluetooth");
     let vpn = target(&mut app, "qs-tile-vpn");
+    let power_mode = target(&mut app, "qs-tile-power_mode");
     let battery = target(&mut app, "qs-row-battery");
     let notifications = target(&mut app, "qs-row-notifications");
     let power = target(&mut app, "qs-power");
@@ -88,6 +89,15 @@ fn the_controls_page_has_the_tiles_two_to_a_row_then_the_sliders_then_the_rows_a
     assert!(
         (wifi.y0 - bluetooth.y0).abs() < 1.0 && wifi.x1 <= bluetooth.x0,
         "two tiles to a row: {wifi:?} {bluetooth:?}"
+    );
+    assert!(
+        (wifi.height() - bluetooth.height()).abs() < 1.0,
+        "the two tiles of a row stand the same height: {wifi:?} {bluetooth:?}"
+    );
+    assert!(
+        bluetooth.height() > power_mode.height() + 1.0,
+        "the state line that does not fit its tile breaks onto a second line, \
+         and the tile grows for it: {bluetooth:?} {power_mode:?}"
     );
     assert!(vpn.y0 >= wifi.y1, "the third tile starts the next row");
     assert!(brightness.y0 >= vpn.y1, "the sliders come under the tiles");
