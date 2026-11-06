@@ -147,6 +147,10 @@ resumes by itself once both speak the same version:
   version. Loading an older file copies it to `<file>.v<N>` first, then
   replaces it with the migrated bytes; a newer file is refused untouched. Each
   step is tested against a file the previous version wrote, and only that.
+  The bytes the current version writes are kept beside it as a golden fixture
+  (`assert_golden_bytes`), read by today's types and written back exactly, so a
+  field added to, removed from or moved in a persisted type fails a test
+  instead of leaving stored files unreadable.
   `tools/policy/check_format_migrations.py` keeps the chain from losing a step,
   so a machine that missed updates still loads. The desktop state the old shell
   kept in `~/.config/tilo/state.json` was the first such format: it went with

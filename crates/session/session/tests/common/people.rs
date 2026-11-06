@@ -501,10 +501,13 @@ fn door_responder(
                     Err(tilo_relay::workspaces::DoorRefusal::Full { retry_after_secs }) => Some(
                         Reply::status(503).header("retry-after", &retry_after_secs.to_string()),
                     ),
-                    Err(tilo_relay::workspaces::DoorRefusal::Refused(reason)) => Some(
+                    Err(
+                        refusal @ (tilo_relay::workspaces::DoorRefusal::Refused(_)
+                        | tilo_relay::workspaces::DoorRefusal::InvitationOnly),
+                    ) => Some(
                         Reply::status(403)
                             .header("content-type", "application/json")
-                            .body(json!({ "error": reason }).to_string()),
+                            .body(json!({ "error": refusal.to_string() }).to_string()),
                     ),
                 }
             }

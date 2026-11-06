@@ -184,6 +184,26 @@ fn label(c: Channel) -> Text {
 results and resources compare with `==`; options and results are taken apart with `match`
 (`.some(x) => ...`), `if let`, `?.` and `??`.
 
+**A value each person has their own of.** A field declared `personal` holds one value per
+person, in a record everyone shares: the tasks a person picked for their Today, the order they
+put their day in, the day they snoozed a shared mail to. It is a `Bool` or an `Option`, so a
+person who never set it reads the empty value, and the action that writes it writes the value of
+the person who runs it:
+
+```
+type Task {
+    title: Text (title)
+    personal today: Bool = false
+    personal order: Option<Float> = .none
+}
+action pick(t: Task, on: Bool = not t.today) { t.today = on }
+```
+
+Reading `t.today` gives the person looking's value, and a filter or a sort asks the field for
+them too (`filter "Today" = today and not done`), so the same task stands in one person's Today
+and not another's. `others(t.today)` is the people other than the one looking whose value is set
+(`List<Principal>`), which is how a view shows that someone else picked a task.
+
 **Type names and roots.** `type Name = T` names any type. A name for a collection, set or map is
 a resource of its own that code uses as that container (`notes.insert(n)`, `for n in notes`,
 `std.list(notes, notes)`); its one field is `Name.items` in the ids lock, so renaming an old

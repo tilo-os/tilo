@@ -157,6 +157,7 @@ pub(super) fn v6(bytes: &[u8]) -> Result<Opened, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_files::native::migration::assert_golden_bytes;
     use tilo_user_identity::DeviceCapabilities;
 
     /// A device certificate, signed by `root`.
@@ -175,6 +176,122 @@ mod tests {
         cert
     }
 
+    /// The workspace the kept states are of.
+    const KEPT_WORKSPACE: &str = "302d59e0-f586-42e1-a59e-3aa613f0f866";
+
+    /// The state this build writes for the kept workspace, hex, kept so the
+    /// layout cannot change under the version devices already hold. It is
+    /// [`kept_state`] as `postcard` wrote it.
+    const KEPT: &str = "04042433303264353965302d663538362d343265312d613539652d33616136313366306638363601010101010101010101010101010101010101010101010101010101010101010104856f4a83000000000107070707070707070707070707070707070707070707070707070707070707070a0105010c";
+
+    /// The same state as a build before the owner root wrote it, hex: the
+    /// governing device's certificate where this build names the owner's key,
+    /// with that certificate's root as the owner.
+    const KEPT_BEFORE_OWNER: &str = "04032433303264353965302d663538362d343265312d613539652d3361613631336630663836368a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394106c6f756e676520726f6f6d20686f73740000010101004048a78b5536b7a22f7a66cc88614c4d63ed508deb3bb8096ba692949dda1b96f1efe9f37b768745a6f4b4f5cfb1ecb302821d4e28fca992957661212609627a060104856f4a83000000000107070707070707070707070707070707070707070707070707070707070707070a0105010c";
+
+    /// Bytes kept as hex, as a test reads them.
+    fn kept(hex: &str) -> Vec<u8> {
+        hex::decode(hex).unwrap()
+    }
+
+    /// One write waiting to be sent, in both kept states.
+    fn kept_pending() -> VecDeque<([u8; 32], NeighbourMsg, bool)> {
+        VecDeque::from([(
+            [7; 32],
+            neighbour_wire::NeighbourMsg::Heartbeat { peer: 1, ts: 5 },
+            true,
+        )])
+    }
+
+    /// The state this build writes for the kept workspace: nothing published
+    /// yet, one write waiting.
+    fn kept_state() -> DurableV4 {
+        DurableV4 {
+            version: 4,
+            base: Durable {
+                version: DURABLE_BASE_VERSION,
+                workspace: KEPT_WORKSPACE.into(),
+                owner: [1; 32],
+                workspace_bytes: Some(b"\x85\x6f\x4a\x83".to_vec()),
+                documents: Vec::new(),
+                receipts: BTreeMap::new(),
+                certificates: Vec::new(),
+                revocations: Vec::new(),
+            },
+            pending: kept_pending(),
+            pending_bytes: 12,
+        }
+    }
+
+    /// The same state as a build before the owner root wrote it.
+    fn kept_before_owner() -> DurableV4BeforeOwner {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        DurableV4BeforeOwner {
+            version: 4,
+            base: DurableV3 {
+                version: 3,
+                room: KEPT_WORKSPACE.into(),
+                authority: cert(&root, 2),
+                room_bytes: Some(b"\x85\x6f\x4a\x83".to_vec()),
+                documents: Vec::new(),
+                receipts: BTreeMap::new(),
+                certificates: Vec::new(),
+                revocations: Vec::new(),
+            },
+            pending: kept_pending(),
+            pending_bytes: 12,
+        }
+    }
+
+    /// A state this build writes reads back the way the bytes kept beside it
+    /// do, and writes them again exactly: a field of the base or of an
+    /// envelope added, removed or reordered changes these bytes, and every
+    /// device's stored state would stop opening.
+    #[test]
+    fn the_state_kept_here_reads_and_writes_as_it_is() {
+        assert_golden_bytes(
+            "the durable admission state",
+            &kept(KEPT),
+            |bytes| {
+                assert!(!durable_base_is_before_owner(bytes).unwrap());
+                let (value, tail): (DurableV4, _) = postcard::take_from_bytes(bytes).unwrap();
+                assert!(tail.is_empty());
+                assert_eq!(value.base.version, DURABLE_BASE_VERSION);
+                assert_eq!(value.base.workspace, KEPT_WORKSPACE);
+                assert_eq!(value.base.owner, [1; 32]);
+                assert_eq!(value.pending_bytes, 12);
+            },
+            || postcard::to_stdvec(&kept_state()).unwrap(),
+        );
+    }
+
+    /// The state a build before the owner root wrote reads as this build's,
+    /// through the reader the restore path uses, with the certificate's root
+    /// as the owner.
+    #[test]
+    fn the_state_kept_from_before_the_owner_root_names_its_owner() {
+        assert_golden_bytes(
+            "the durable admission state before the owner root",
+            &kept(KEPT_BEFORE_OWNER),
+            |bytes| {
+                assert!(durable_base_is_before_owner(bytes).unwrap());
+                let (durable, pending, pending_bytes, _exact, sealed) = v4(bytes).unwrap();
+                assert_eq!(durable.version, DURABLE_BASE_VERSION);
+                assert_eq!(
+                    durable.owner,
+                    ed25519_dalek::SigningKey::from_bytes(&[1; 32])
+                        .verifying_key()
+                        .to_bytes()
+                );
+                assert_eq!(durable.workspace, KEPT_WORKSPACE);
+                assert_eq!(pending.len(), 1);
+                assert_eq!(pending_bytes, 12);
+                assert!(sealed.is_empty());
+            },
+            || postcard::to_stdvec(&kept_before_owner()).unwrap(),
+        );
+    }
+
     /// A version 3 base names the governing device by its certificate; the
     /// reader takes that certificate's root as the owner, which is whom the
     /// certificate certified the device to act for.
@@ -184,7 +301,7 @@ mod tests {
         let authority = cert(&root, 2);
         let durable = DurableV3 {
             version: 3,
-            room: "302d59e0-f586-42e1-a59e-3aa613f0f866".into(),
+            room: KEPT_WORKSPACE.into(),
             authority: authority.clone(),
             room_bytes: None,
             documents: Vec::new(),
@@ -194,7 +311,7 @@ mod tests {
         };
         let current = durable.into_current(authority.user_public_key);
         assert_eq!(current.version, DURABLE_BASE_VERSION);
-        assert_eq!(current.workspace, "302d59e0-f586-42e1-a59e-3aa613f0f866");
+        assert_eq!(current.workspace, KEPT_WORKSPACE);
         assert_eq!(current.owner, root.verifying_key().to_bytes());
     }
 
@@ -203,27 +320,7 @@ mod tests {
     #[test]
     fn an_older_version_four_state_reads_with_its_pending() {
         let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-        let authority = cert(&root, 2);
-        let bytes = postcard::to_stdvec(&DurableV4BeforeOwner {
-            version: 4,
-            base: DurableV3 {
-                version: 3,
-                room: "302d59e0-f586-42e1-a59e-3aa613f0f866".into(),
-                authority,
-                room_bytes: Some(b"\x85\x6f\x4a\x83".to_vec()),
-                documents: Vec::new(),
-                receipts: BTreeMap::new(),
-                certificates: Vec::new(),
-                revocations: Vec::new(),
-            },
-            pending: VecDeque::from([(
-                [7; 32],
-                neighbour_wire::NeighbourMsg::Heartbeat { peer: 1, ts: 5 },
-                true,
-            )]),
-            pending_bytes: 12,
-        })
-        .unwrap();
+        let bytes = postcard::to_stdvec(&kept_before_owner()).unwrap();
         let (durable, pending, pending_bytes, _exact, sealed) = v4(&bytes).unwrap();
         assert_eq!(durable.version, DURABLE_BASE_VERSION);
         assert_eq!(durable.owner, root.verifying_key().to_bytes());
@@ -235,19 +332,66 @@ mod tests {
         assert_eq!(pending_bytes, 12);
         assert!(sealed.is_empty());
     }
+
+    /// The base of a state this build wrote is this build's, in every
+    /// envelope: a version 4 envelope names it next, and a wrapping one
+    /// after its own version. What follows a version 4 base is its
+    /// workspace's name, whose length is no version.
+    #[test]
+    fn a_state_this_build_wrote_is_not_one_from_before_the_owner_root() {
+        let v4 = kept_state();
+        let v5 = DurableV5 {
+            version: 5,
+            base: DurableV4 {
+                version: 4,
+                base: kept_state().base,
+                pending: VecDeque::new(),
+                pending_bytes: 0,
+            },
+            exact: &[],
+        };
+        assert!(!durable_base_is_before_owner(&postcard::to_stdvec(&v4).unwrap()).unwrap());
+        assert!(!durable_base_is_before_owner(&postcard::to_stdvec(&v5).unwrap()).unwrap());
+    }
+
+    /// A state a build before the owner root wrote is read as that layout,
+    /// in the version 4 envelope and in the ones that wrap it.
+    #[test]
+    fn a_state_from_before_the_owner_root_is_read_as_that_layout() {
+        let v5 = DurableV5BeforeOwner {
+            version: 5,
+            base: kept_before_owner(),
+            exact: &[],
+        };
+        assert!(
+            durable_base_is_before_owner(&postcard::to_stdvec(&kept_before_owner()).unwrap())
+                .unwrap()
+        );
+        assert!(durable_base_is_before_owner(&postcard::to_stdvec(&v5).unwrap()).unwrap());
+    }
 }
 
 /// Whether a durable state's base predates [`DURABLE_BASE_VERSION`], read
-/// from the three integers both layouts begin with.
+/// from the versions that lead the bytes, never by decoding a layout and
+/// retrying another.
+///
+/// How many versions lead the base's depends on the envelope: version 4
+/// names its base's version second, and versions 5 and 6 wrap a version 4
+/// envelope, which names it after its own.
 pub fn durable_base_is_before_owner(bytes: &[u8]) -> Result<bool, String> {
-    let mut rest = bytes;
-    for _ in 0..2 {
-        let (_, tail) =
-            postcard::take_from_bytes::<u32>(rest).map_err(|error| error.to_string())?;
-        rest = tail;
-    }
-    let (base, _) = postcard::take_from_bytes::<u32>(rest).map_err(|error| error.to_string())?;
+    let (envelope, rest) = version(bytes)?;
+    let rest = match envelope {
+        4 => rest,
+        5 | 6 => version(rest)?.1,
+        _ => return Err("unsupported durable admission version".into()),
+    };
+    let (base, _) = version(rest)?;
     Ok(base != DURABLE_BASE_VERSION)
+}
+
+/// The version a durable state names at `bytes`, and the bytes after it.
+fn version(bytes: &[u8]) -> Result<(u32, &[u8]), String> {
+    postcard::take_from_bytes::<u32>(bytes).map_err(|error| error.to_string())
 }
 
 /// The durable base layout. Version 4 names the workspace's owner by their root

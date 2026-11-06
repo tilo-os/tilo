@@ -118,6 +118,7 @@ fn managed_swap_wakes_before_strict_transport_and_retains_hello_lease() {
                     component: "shell".into(),
                     layer: "a".repeat(64),
                     info: None,
+                    partner: None,
                 })
                 .unwrap();
             assert_eq!(applied.generation, 8);

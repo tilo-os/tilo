@@ -179,7 +179,11 @@ impl Grant {
 pub fn take_stored_grant(bytes: &[u8]) -> Result<(InviteGrant, usize), String> {
     let (grant, tail): (Grant, &[u8]) = postcard::take_from_bytes(bytes)
         .map_err(|_| "invalid stored invitation grant".to_string())?;
-    Ok((grant.into_current(), bytes.len() - tail.len()))
+    let taken = bytes
+        .len()
+        .checked_sub(tail.len())
+        .ok_or_else(|| "invalid stored invitation grant".to_string())?;
+    Ok((grant.into_current(), taken))
 }
 
 /// A signed invitation of this layout, checked.

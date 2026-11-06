@@ -708,10 +708,11 @@ fn a_filter_of_a_run_and_a_clock_conjunct_pages_at_the_first_page_and_lists_what
         "filling the first page checked {checked} of 10,000"
     );
     // Every third conversation is muted (3,334) and every fifth snoozed (2,000), 667 of them
-    // both: 4,667 out of the inbox's 10,000, which leaves 5,333. The count the run's column
-    // keeps is the most it can hold; read to its end, the listing says it is exactly that.
+    // both: 4,667 out of the inbox's 10,000, which leaves 5,333. The listing is sized by the
+    // fewest items any one conjunct can name — here the snoozed run's 6,666 — so its length is
+    // an upper bound on what it holds; read to its end, the listing says it is exactly that.
     let listing = inbox_listing(&ada, &meta, &mail);
-    assert_eq!(listing.len(), 10_000);
+    assert_eq!(listing.len(), 6_666);
     assert!(
         !listing.len_is_exact(),
         "the list says its length is up to that many"

@@ -385,8 +385,12 @@ impl GovernedWorkspace {
         device: Option<&DeviceKeys>,
     ) -> Result<Self, String> {
         let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
-        let (version, _) =
-            postcard::take_from_bytes::<u32>(&bytes).map_err(|error| error.to_string())?;
+        let (version, _) = postcard::take_from_bytes::<u32>(&bytes).map_err(|error| {
+            format!(
+                "{}: a workspace record names its version first: {error}",
+                path.display()
+            )
+        })?;
         // An older record comes up before it is read: a version 2 record's
         // grants are in the invitation layout they were written in, which
         // [`record_format`] reads by the invitation's own version. A newer
@@ -394,8 +398,13 @@ impl GovernedWorkspace {
         let bytes = record_format::FORMAT
             .bring_up(&path, bytes, version)
             .map_err(|error| error.to_string())?;
-        let record: WorkspaceRecord =
-            postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
+        let record: WorkspaceRecord = postcard::from_bytes(&bytes).map_err(|error| {
+            format!(
+                "{}: {} version {version}: {error}",
+                path.display(),
+                record_format::FORMAT.name
+            )
+        })?;
         // The record must have been governed by this host's device. What
         // makes a device that device is its key and what the certificate
         // lets it do; a certificate's `device_label` is a human-readable

@@ -161,6 +161,12 @@ impl Platform for InProcess {
         )
     }
 
+    /// A day or a time of day in a sentence, as the toolkit's lists show them, so a row's line
+    /// and a notice carry no stored text.
+    fn shown(&self, kind: &str, value: &str) -> String {
+        tilo_ui_host::date::shown_text(kind, value)
+    }
+
     fn waker(&self) -> tilolang_tilo::background::Waker {
         let wake = ui::wake::WakeHandle::new();
         Arc::new(move || wake.wake())
