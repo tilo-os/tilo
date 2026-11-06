@@ -18,6 +18,39 @@ view dock(s: Shell, d: Desk) {
     }
 }
 
+/// The apps running on this device, one item an app: the window of it the person was in last,
+/// named and drawn as that window is. A window of another of the person's devices is not a
+/// window of this desk's dock. A window is left out when a window nearer the front of the walk
+/// shows the same app (`recency` 1 is the window in front), so each app stands once, where the
+/// person last was in it.
+fn running_items(d: Desk) -> List<DockItem> {
+    let windows = d.windows.filter(w -> w.local).sort_by(w -> w.recency)
+    return windows.filter(w -> front_of_its_app(windows, w)).map(w -> running_item(w))
+}
+
+/// Whether `w` is the window of its app the person was in last: the first of `windows` showing
+/// that app, they being in the order of the walk.
+fn front_of_its_app(windows: List<Win>, w: Win) -> Bool {
+    if let front = windows.find(v -> v.app_key == w.app_key) {
+        return front.key == w.key
+    }
+    return false
+}
+
+/// The dock's item for the running window `w`: the window's app, by its `app_key`, named as the
+/// window names it, with the window's own glyph.
+fn running_item(w: Win) -> DockItem {
+    return DockItem(
+        key: w.app_key,
+        title: w.origin_app,
+        icon: w.icon,
+        pinned: false,
+        running: true,
+        badge: 0,
+        attention: false,
+    )
+}
+
 /// The dock's items in a run the person rearranges by dragging one onto another place.
 /// Letting go runs `place_item`, the one action the gesture commits; a press on an item opens
 /// what it stands for. A floating dock is one compact group centred on its edge; a dock that
@@ -28,19 +61,22 @@ view dock(s: Shell, d: Desk) {
 view dock_run(s: Shell, d: Desk) {
     let standing = s.dock_edge == .left or s.dock_edge == .right
     let across = s.dock_fit == .full
+    let running = running_items(d)
     if standing {
         ui.DragRun(axis: .vertical, distribute: .center) {
             on drop(moved: DockItem, at: Int): place_item(s, moved, at)
             for item in s.dock_items {
                 if item.pinned or s.dock_running {
                     ui.DragItem(item, title: item.title) {
-                        on activate: if item.key == "launcher" {
-                            device.show_surface(device.desk, surface: "launcher")
-                        } else {
-                            session.open(resource("app.{item.key}", of: session.App))
-                        }
+                        on activate: open_item(s, d, item)
                         dock_tile(s, d, item)
                     }
+                }
+            }
+            for item in running {
+                ui.DragItem(item, title: item.title) {
+                    on activate: open_item(s, d, item)
+                    dock_tile(s, d, item)
                 }
             }
         }
@@ -55,13 +91,15 @@ view dock_run(s: Shell, d: Desk) {
                 for item in s.dock_items {
                     if item.pinned or s.dock_running {
                         ui.DragItem(item, title: item.title) {
-                            on activate: if item.key == "launcher" {
-                                device.show_surface(device.desk, surface: "launcher")
-                            } else {
-                                session.open(resource("app.{item.key}", of: session.App))
-                            }
+                            on activate: open_item(s, d, item)
                             dock_tile(s, d, item)
                         }
+                    }
+                }
+                for item in running {
+                    ui.DragItem(item, title: item.title) {
+                        on activate: open_item(s, d, item)
+                        dock_tile(s, d, item)
                     }
                 }
             }
@@ -73,18 +111,33 @@ view dock_run(s: Shell, d: Desk) {
                 for item in s.dock_items {
                     if item.pinned or s.dock_running {
                         ui.DragItem(item, title: item.title) {
-                            on activate: if item.key == "launcher" {
-                                device.show_surface(device.desk, surface: "launcher")
-                            } else {
-                                session.open(resource("app.{item.key}", of: session.App))
-                            }
+                            on activate: open_item(s, d, item)
                             dock_tile(s, d, item)
                         }
+                    }
+                }
+                for item in running {
+                    ui.DragItem(item, title: item.title) {
+                        on activate: open_item(s, d, item)
+                        dock_tile(s, d, item)
                     }
                 }
             }
         }
     }
+}
+
+/// What a press on a dock item does: a window of that app on this desk comes to the front, so the
+/// desk says which window the person is in and the top bar's commands are its own; the window is
+/// the one the item was drawn for, so a press never opens a second copy. An app with no window
+/// open is opened (`session.open_app`), and the launcher shows. One action for the pinned items
+/// and the running ones, so a press on either does the same thing.
+action open_item(s: Shell, d: Desk, item: DockItem) {
+    if let w = d.windows.find(w -> w.app_key == item.key) {
+        session.focus(window: window(w))
+    } else if item.key == "launcher" {
+        device.show_surface(device.desk, surface: "launcher")
+    } else { session.open_app(app: item.key) }
 }
 
 /// One dock item: its glyph, with its badge on the glyph's top trailing corner (the count of what
@@ -102,10 +155,6 @@ view dock_tile(s: Shell, d: Desk, item: DockItem) {
         dot: item.attention,
         alert: item.attention,
     ) {
-        on press: if item.key == "launcher" {
-            device.show_surface(device.desk, surface: "launcher")
-        } else {
-            session.open(resource("app.{item.key}", of: session.App))
-        }
+        on press: open_item(s, d, item)
     }
 }
