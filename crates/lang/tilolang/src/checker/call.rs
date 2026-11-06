@@ -2282,11 +2282,10 @@ impl Checker<'_> {
                 Ex::host(Imp::ListLen, vec![r], Ty::Int)
             }
             (Ty::List(_) | Ty::Set(_) | Ty::Collection(_), "is_empty") if args.is_empty() => {
-                let len = Ex::host(Imp::ListLen, vec![r], Ty::Int);
-                Ex::new(
-                    Ek::Bin(ir::BinOp::Eq, Box::new(len), Box::new(Ex::int(0))),
-                    Ty::Bool,
-                )
+                // Whether it holds nothing reads whether it shows a first item: a filtered
+                // collection's length is only the most it can hold, so measuring it said an
+                // empty one held something ([`Imp::CollEmpty`]), and counting it read the run.
+                Ex::host(Imp::CollEmpty, vec![r], Ty::Bool)
             }
             (
                 Ty::List(t) | Ty::Set(t) | Ty::Collection(t),

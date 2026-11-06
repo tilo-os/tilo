@@ -434,6 +434,20 @@ impl Core {
         Ok(count)
     }
 
+    /// Whether `coll` holds nothing: whether it shows no first item. A listing read page by
+    /// page answers that by reading the page its first item is on, never by reading its run to
+    /// the end, which is what counting it costs ([`Self::coll_count`]).
+    ///
+    /// What it depends on is where its first item is: the listing shows another one, or none,
+    /// when that changes.
+    pub(crate) fn coll_empty(&self, coll: &Rc<CollRef>) -> HResult<bool> {
+        let listing = self.coll_listing(coll)?;
+        let first = listing.first();
+        let empty = first.is_none();
+        self.saw(coll, Read::First(first), listing.len());
+        Ok(empty)
+    }
+
     /// [`Core::coll_len`] or [`Core::coll_count`], as an import asks for one or the other.
     pub(crate) fn coll_len_or_count(&self, coll: &Rc<CollRef>, count: bool) -> HResult<usize> {
         if count {
