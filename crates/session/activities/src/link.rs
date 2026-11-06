@@ -129,7 +129,11 @@ mod tests {
         link.publish(Feed::default());
         let (generation, _) = link.feed_after(0).expect("a new feed");
         assert!(link.feed_after(generation).is_none());
-        link.ask(Ask::Focus(true));
+        link.ask(Ask::Seek {
+            app: "so.tilo.music".into(),
+            activity: "track".into(),
+            fraction: 0.5,
+        });
         link.ask(Ask::Collapse {
             app: "so.tilo.clocks".into(),
             activity: "timer".into(),
@@ -137,7 +141,11 @@ mod tests {
         assert_eq!(
             link.take_asks(),
             [
-                Ask::Focus(true),
+                Ask::Seek {
+                    app: "so.tilo.music".into(),
+                    activity: "track".into(),
+                    fraction: 0.5,
+                },
                 Ask::Collapse {
                     app: "so.tilo.clocks".into(),
                     activity: "timer".into()

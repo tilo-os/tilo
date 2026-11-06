@@ -19,7 +19,9 @@ pub struct State {
     pub tree: DesktopTree,
     pub overlays: Overlays,
     pub glance: ActivityGlance,
-    pub activities: Vec<ui::live_activity::Summary>,
+    /// The activities the bar's pill names, each with the app that shows
+    /// it: an activity's id is only its own app's.
+    pub activities: Vec<(String, ui::live_activity::Summary)>,
     pub active_exposures: Vec<ActiveExposure>,
     pub watching: u32,
     pub intents: Vec<ChromeIntent>,
@@ -93,7 +95,7 @@ impl DesktopChromeSource for FixtureChrome {
                 ws_settings: state.overlays.ws_settings,
             },
             activity_glance: state.glance.clone(),
-            activities: state.activities.clone(),
+            activities: ui::floating_layer::pill(&state.activities),
             active_exposures: state.active_exposures.clone(),
             watching: state.watching,
             own: state.own.clone(),

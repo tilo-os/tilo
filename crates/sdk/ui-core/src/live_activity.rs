@@ -82,7 +82,8 @@ impl Kind {
     }
 }
 
-/// How loudly an activity reads: its bar in the card, and the pill's dot.
+/// How loudly an activity reads: its glyph on the card, its reading in the
+/// pill.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tone {
@@ -93,6 +94,20 @@ pub enum Tone {
     Accent,
     /// Nearly due, or asking for attention.
     Alert,
+}
+
+impl Tone {
+    /// The ink an activity of this tone reads in, wherever it is drawn: the
+    /// bar's pill and the card's glyph say the same thing about it.
+    #[must_use]
+    pub fn ink(self, theme: &crate::theme::Theme) -> vello::peniko::Color {
+        let colors = &theme.tokens.colors;
+        match self {
+            Self::Neutral => colors.text_primary,
+            Self::Accent => colors.intent.accent,
+            Self::Alert => colors.semantic.danger,
+        }
+    }
 }
 
 /// How an activity's artwork heads its card.
@@ -474,17 +489,6 @@ impl Summary {
             .iter()
             .map(|control| control.transport().map(|step| (control.id.as_str(), step)))
             .collect()
-    }
-
-    /// At most [`MAX_CONTROLS`], in the order the card draws them: the close
-    /// last, so it never sits where a hurried press aimed at the main action.
-    #[must_use]
-    pub fn shown_controls(&self) -> Vec<&Control> {
-        let mut controls = self.action_controls();
-        if let Some(close) = self.close_control() {
-            controls.push(close);
-        }
-        controls
     }
 }
 

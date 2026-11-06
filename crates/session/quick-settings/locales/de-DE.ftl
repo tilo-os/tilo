@@ -236,3 +236,4 @@ qs-now-playing-previous = Vorheriger Titel
 qs-now-playing-play = Abspielen
 qs-now-playing-pause = Pause
 qs-now-playing-next = Nächster Titel
+qs-now-playing-seek = Im Titel spulen

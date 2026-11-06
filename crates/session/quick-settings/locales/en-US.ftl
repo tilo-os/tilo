@@ -235,3 +235,4 @@ qs-now-playing-previous = Previous song
 qs-now-playing-play = Play
 qs-now-playing-pause = Pause
 qs-now-playing-next = Next song
+qs-now-playing-seek = Seek in the song

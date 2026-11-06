@@ -9,11 +9,10 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use vello::peniko::Color;
 
 use crate::floating_layer::{Parts, card_parts};
 use crate::icons::Icon;
-use crate::live_activity::{Art, ControlKind, Summary, Tone};
+use crate::live_activity::{Art, ControlKind, Summary};
 use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
 use crate::pictures::Pictures;
@@ -38,15 +37,12 @@ pub struct ActivityCardFace<'a> {
     pub focused: bool,
     /// One of the activity's offered controls is held down, by id.
     pub held: Option<&'a str>,
+    /// The person is dragging the song's progress bar: how far into it they
+    /// point, from 0 to 1, until they let go.
+    pub scrub: Option<f32>,
 }
 
 impl ActivityCardFace<'_> {
-    /// Where the parts of the card stand in `rect`.
-    #[must_use]
-    pub fn parts(&self, rect: Rect) -> Parts {
-        card_parts(rect, self.summary)
-    }
-
     /// Paint the card in `rect`, returning where its parts landed.
     pub fn paint(
         &self,
@@ -63,7 +59,7 @@ impl ActivityCardFace<'_> {
         let glyph = Icon::from_name(summary.glyph())
             .or_else(|| Icon::from_name(summary.kind.glyph()))
             .unwrap_or(Icon::Layers);
-        glyph.draw(scene, transform, parts.icon, tone_ink(summary.tone, theme));
+        glyph.draw(scene, transform, parts.icon, summary.tone.ink(theme));
         if let Some(line) = parts.title {
             let style = theme.text(TextRole::Label);
             let header = text.elide_to_width_style(summary.header_line(), width(line), &style);
@@ -146,7 +142,7 @@ impl ActivityCardFace<'_> {
         }
         if let (Some(row), Some(progress)) = (parts.progress, summary.progress) {
             let mut ctx = PaintCtx::new(scene, transform, text, theme);
-            ProgressBarFace::new(progress).paint(&mut ctx, row);
+            ProgressBarFace::new(self.scrub.unwrap_or(progress)).paint(&mut ctx, row);
         }
         // Where the song is and what is left of it, at the bar's ends.
         if let (Some(elapsed), Some(remaining)) = (parts.elapsed, parts.remaining) {
@@ -246,15 +242,6 @@ impl ActivityCardFace<'_> {
             }
         }
         parts
-    }
-}
-
-/// The ink an activity's tone reads in on a card: its own colour, or the
-/// theme's warning when it asks for attention.
-fn tone_ink(tone: Tone, theme: &Theme) -> Color {
-    match tone {
-        Tone::Neutral | Tone::Accent => theme.tokens.colors.intent.accent,
-        Tone::Alert => theme.tokens.colors.semantic.danger,
     }
 }
 

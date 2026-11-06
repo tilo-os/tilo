@@ -392,13 +392,64 @@ fn what_plays_is_steered_from_the_panel_through_its_effects() {
     ] {
         click(&mut app, name);
     }
+    assert!(
+        has(&mut app, "qs-now-playing-seek"),
+        "the song's point stands as a slider the person drags"
+    );
+    click(&mut app, "qs-now-playing-seek");
+    let mut ran = host.ran();
     assert_eq!(
-        host.ran(),
+        &ran[..3],
         [
             QsEffect::PlayPause,
             QsEffect::NextTrack,
             QsEffect::PreviousTrack,
         ]
+    );
+    let Some(QsEffect::Seek { fraction }) = ran.pop() else {
+        panic!("pressing the slider asks the player to seek: {ran:?}");
+    };
+    assert!(
+        (fraction - 0.5).abs() < 0.02,
+        "the middle of the slider is the middle of the song: {fraction}"
+    );
+    assert_eq!(ran.len(), 3, "one seek, from one press");
+
+    // The bar's ends name where the song stands and what it leaves, as the
+    // card's bar does, and the whole bar belongs to the song's block: it spans
+    // the song's own width, stands under its lines and transport, and keeps
+    // apart from the pickers that follow.
+    let song = target(&mut app, "qs-now-playing");
+    let row = target(&mut app, "qs-now-playing-seek-row");
+    let bar = target(&mut app, "qs-now-playing-seek");
+    let elapsed = target(&mut app, "qs-now-playing-elapsed");
+    let remaining = target(&mut app, "qs-now-playing-remaining");
+    let players = target(&mut app, "qs-now-playing-player");
+    assert!(
+        elapsed.x1 <= bar.x0 + 0.5,
+        "where the song stands stands at the bar's leading end: {elapsed:?} before {bar:?}"
+    );
+    assert!(
+        remaining.x0 >= bar.x1 - 0.5,
+        "what is left stands at its trailing end: {remaining:?} after {bar:?}"
+    );
+    for (name, label) in [("elapsed", elapsed), ("remaining", remaining)] {
+        assert!(
+            (label.center().y - bar.center().y).abs() < 1.0,
+            "the {name} label reads on the bar's line: {label:?} beside {bar:?}"
+        );
+    }
+    assert!(
+        (row.x0 - song.x0).abs() < 0.5 && (row.x1 - song.x1).abs() < 0.5,
+        "the bar spans the song's row: {row:?} beside {song:?}"
+    );
+    assert!(
+        song.y1 <= row.y0 && row.y1 <= players.y0,
+        "the bar stands under the song and above the pickers: {song:?} {row:?} {players:?}"
+    );
+    assert!(
+        row.y0 - song.y1 < players.y0 - row.y1,
+        "the bar stays with the song's block, apart from the pickers: {row:?} under {song:?}, {players:?} below"
     );
 }
 

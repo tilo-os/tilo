@@ -1746,6 +1746,11 @@ impl Music {
                 "play-pause" => self.dispatch(Action::TogglePlay, state),
                 "previous" => self.dispatch(Action::Prev, state),
                 "next" => self.dispatch(Action::Next, state),
+                "seek" => {
+                    if let Some(fraction) = pressed.fraction {
+                        self.dispatch(Action::SeekFrac(fraction), state);
+                    }
+                }
                 _ => {}
             }
         }

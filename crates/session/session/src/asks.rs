@@ -179,7 +179,9 @@ impl Shared {
             ChromeIntent::ToggleProfile => self.people.borrow().show_self(),
             // Pulling an activity out of the bar's pill: its card is the
             // floating layer's to draw.
-            ChromeIntent::ExpandActivity { activity } => self.activities.expand(&activity),
+            ChromeIntent::ExpandActivity { app, activity } => {
+                self.activities.expand(&app, &activity);
+            }
             // Inviting people: the link into the workspace in front is made in
             // the invite sheet, wherever it was asked for — the bar's invite
             // button, the roster's footer, workspace settings or the launchpad's
