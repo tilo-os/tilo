@@ -711,8 +711,23 @@ class NewSide(Side):
         remote = os.environ.get("SHELL_AUDIT_NEW_BUILD_EXEC") or None
         self.real_apps.prepare(self.state_dir, apps=self.apps, built=False, remote=remote)
         session = self.real_apps.Session(self.state_dir)
-        session.start(apps=self.apps, fresh=fresh, out=self.state_dir, tag="audit",
-                      env={**LOCALE, "RUST_LOG": os.environ.get("RUST_LOG", "warn")})
+        # A machine under a heavy load can take longer than the session script
+        # waits for; the run asks for the session once more before it gives up
+        # on the whole catalogue.
+        try:
+            session.start(apps=self.apps, fresh=fresh, out=self.state_dir, tag="audit",
+                          env={**LOCALE, "RUST_LOG": os.environ.get("RUST_LOG", "warn")})
+        except self.real_apps.Failed as error:
+            if "timed out waiting for the session to start" not in str(error):
+                raise Failed(str(error))
+            self.say(f"the session did not come up in time, asking again: {str(error)[:160]}")
+            session.stop()
+            session = self.real_apps.Session(self.state_dir)
+            try:
+                session.start(apps=self.apps, fresh=fresh, out=self.state_dir, tag="audit",
+                              env={**LOCALE, "RUST_LOG": os.environ.get("RUST_LOG", "warn")})
+            except self.real_apps.Failed as again:
+                raise Failed(str(again))
         self.session = session
         self.started_at = time.monotonic()
         self.details.update({"build": str(build), "binary_ref": self.sha})
