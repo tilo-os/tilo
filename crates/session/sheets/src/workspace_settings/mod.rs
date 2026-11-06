@@ -754,8 +754,7 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
     let mut body = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(ui::tokens::Spacing::BASE.s4)
-        .push(Box::new(strip));
+        .with_gap(ui::tokens::Spacing::BASE.s4);
     if let Some(notice) = &settings.notice {
         let dismiss = parts.clone();
         let mut banner = ui::widget::Banner::error(notice.title.clone())
@@ -775,6 +774,8 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
             .with_icon(ui::icons::Icon::LayoutGrid)
             .with_description(settings.role.clone())
             .with_max_width(WIDTH)
+            // The tabs stay in view: the body scrolls under them.
+            .with_header(strip)
             .open(true)
             .secondary_action(settings.close.clone(), move || close.close()),
     )
