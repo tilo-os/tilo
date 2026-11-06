@@ -208,7 +208,7 @@ action new_project(tasks: Tasks) -> Project (icon: .folder_plus, label: "New pro
 }
 
 /// Checks a task off with every task under it, or opens it again with the tasks it is under.
-action check(t: Task, done: Bool = not t.done) (
+action check(t: Task, done: Bool = not t.done) uses time (
     label: if done { "Complete" } else { "Reopen" },
     icon: .check,
     on: t.done,
@@ -236,7 +236,7 @@ action check(t: Task, done: Bool = not t.done) (
 /// Adds a subtask under a task: a task of its own, in its project and section, under the title
 /// given. It stands with its siblings, and a task that was done opens again: there is work under
 /// it now.
-action add_subtask(tasks: Tasks, t: Task, title: Text) -> Task (
+action add_subtask(tasks: Tasks, t: Task, title: Text) -> Task uses time (
     label: "Add subtask",
     icon: .list_tree,
     did: "added a subtask",
@@ -267,19 +267,19 @@ action pick(t: Task, on: Bool = not t.picked) (
 
 /// Sets the day a task is due by, or clears it: the presets take the day, and one entry asks
 /// for any day.
-action due_today(t: Task) (label: "Today", icon: .star, key: "Ctrl+T", group: "Due") {
+action due_today(t: Task) uses time (label: "Today", icon: .star, key: "Ctrl+T", group: "Due") {
     require not t.done "It is done already"
     t.due = .some(today)
 }
 
 /// Makes a task due tomorrow.
-action due_tomorrow(t: Task) (label: "Tomorrow", icon: .calendar, group: "Due") {
+action due_tomorrow(t: Task) uses time (label: "Tomorrow", icon: .calendar, group: "Due") {
     require not t.done "It is done already"
     t.due = .some(today + 1d)
 }
 
 /// Makes a task due at the start of next week.
-action due_next_week(t: Task) (label: "Next week", icon: .calendar, group: "Due") {
+action due_next_week(t: Task) uses time (label: "Next week", icon: .calendar, group: "Due") {
     require not t.done "It is done already"
     t.due = .some(today.start_of_week() + 1w)
 }
@@ -355,7 +355,12 @@ action assign(t: Task, who: Option<Principal>) (label: "Assign", icon: .user) {
 /// for none), where `before` stands when it is given, or at the end of the top level. A task
 /// cannot go inside itself, and open work put under a done task opens it. The outline's drag,
 /// `Ctrl+]` and `Ctrl+[` name it; it is not a command of its own.
-internal action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before: Option<Task>) {
+internal action move_to(
+    tasks: Tasks,
+    moved: Task,
+    parent: Option<Task>,
+    before: Option<Task>,
+) uses time {
     require not within(tasks.items, parent, moved)
         and not within(tasks.items, before?.parent, moved) "A task cannot go inside itself"
     if let b = before {
@@ -374,7 +379,7 @@ internal action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before:
 
 /// Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does:
 /// the row over it names the task of its own level it ends up under.
-action indent(t: Task, above: Option<Task> (above)) (
+action indent(t: Task, above: Option<Task> (above)) uses time (
     label: "Indent",
     icon: .arrow_right,
     key: "Ctrl+]",

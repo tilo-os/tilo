@@ -131,6 +131,11 @@ pub struct Facts {
     pub invokes: BTreeSet<ActionRef>,
     pub action_values: BTreeSet<ActionRef>,
     pub views: BTreeSet<usize>,
+    /// The effects the body's own code reads; what it reaches through a call is
+    /// [`crate::effects::reached`]'s.
+    pub effects: BTreeSet<crate::effects::Effect>,
+    /// The module's own functions and actions this one calls.
+    pub calls: BTreeSet<usize>,
 }
 
 #[derive(Clone, Debug)]

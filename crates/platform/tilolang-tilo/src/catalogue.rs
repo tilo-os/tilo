@@ -660,6 +660,7 @@ impl Reader<'_> {
             frequent: false,
             guard: false,
             applies: false,
+            uses: Vec::new(),
         });
     }
 

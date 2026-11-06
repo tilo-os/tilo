@@ -11,6 +11,7 @@ mod blocks;
 mod common;
 mod components;
 mod coverage;
+mod effects;
 mod errors;
 mod ids_lock;
 mod language;

@@ -105,6 +105,12 @@ impl Ctx {
 #[derive(Default)]
 struct FnState {
     ctx: Ctx,
+    /// The declaration's name, as a message says it.
+    decl: String,
+    /// `uses web, time`: the effects the declaration says its body reads.
+    uses: std::collections::BTreeSet<crate::effects::Effect>,
+    /// The effects already reported as undeclared here: one message per missing word.
+    reported: std::collections::BTreeSet<crate::effects::Effect>,
     locals: Vec<Ty>,
     scopes: Vec<HashMap<String, LocalId>>,
     sinks: Vec<Vec<Stmt>>,
@@ -286,12 +292,20 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         outer_at: None,
     };
     let mut funcs = Vec::new();
+    // The actions and flows, which declare what they read, and where their name is.
+    let mut declaring: Vec<(usize, Span)> = Vec::new();
     for item in &module.items {
         let idx = funcs.len();
         let Some(callable) = env.callables.iter().find(|x| x.func == Some(idx)).cloned() else {
             continue;
         };
         c.at = Some(item.span().start);
+        if let Item::Action(a) = item {
+            declaring.push((idx, a.name.span));
+        }
+        if let Item::Flow(f) = item {
+            declaring.push((idx, f.name.span));
+        }
         let f = match item {
             Item::Action(a) => c.run_action(&callable, &a.requires, &a.applies, &a.body),
             Item::Flow(f) => c.run_body(&callable, FuncKind::Flow, Ctx::Flow, &f.body),
@@ -397,6 +411,39 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             }
             c.at = lines.first().map(|line| line.span.start);
             funcs.push(c.run_guard(action, lines, &action.params, kind, export));
+        }
+    }
+    // What each action and flow reads, including through the fns and actions its body calls,
+    // against what its `uses` clause declares. Its own reads are reported where they are
+    // written; this reports the ones it reaches through a callee, at its name.
+    let reached = crate::effects::reached(&funcs);
+    for (idx, span) in declaring {
+        let Some(callable) = env.callables.iter().find(|x| x.func == Some(idx)) else {
+            continue;
+        };
+        let declared = &callable.uses;
+        let own = funcs.get(idx).map(|f| &f.facts.effects);
+        let word = match callable.kind {
+            CKind::Action => "an action",
+            _ => "a flow",
+        };
+        for e in reached
+            .get(idx)
+            .into_iter()
+            .flatten()
+            .filter(|e| !declared.contains(e))
+            .filter(|e| !own.is_some_and(|o| o.contains(e)))
+        {
+            c.err(
+                "E121",
+                span,
+                format!(
+                    "{word} `{}` reads {}, which a replay cannot compute again: declare `uses {}`",
+                    callable.name,
+                    e.what(),
+                    e.word()
+                ),
+            );
         }
     }
     let module = ir::Module {
@@ -540,6 +587,36 @@ impl Checker<'_> {
         ty.display(&self.env.app)
     }
 
+    /// Records that the code reads `effect`, written as `what` (`now`, `day_of(t)`, a time of no
+    /// zone), and refuses it where it cannot be read: an action or flow reads only what its
+    /// `uses` clause names (convergence.md, "Actions"), a view reads none but the zone it is
+    /// drawn in, and a `fn` reads what it is given and passes its reads to its caller.
+    fn reads(&mut self, effect: crate::effects::Effect, span: Span, what: &str) {
+        self.st.facts.effects.insert(effect);
+        let refused = match self.st.ctx {
+            Ctx::Action | Ctx::Flow => !self.st.uses.contains(&effect),
+            Ctx::View => effect != crate::effects::Effect::Time,
+            _ => false,
+        };
+        if !refused || !self.st.reported.insert(effect) {
+            return;
+        }
+        let what_it_reads = effect.what();
+        let message = if self.st.ctx == Ctx::View {
+            format!(
+                "{what} reads {what_it_reads}, which a view cannot: a view is drawn again from what it is shown, where an action records it and is replayed from the record"
+            )
+        } else {
+            let decl = self.st.decl.clone();
+            format!(
+                "{what} reads {what_it_reads}, which a replay cannot compute again: {} `{decl}` declares it with `uses {}`",
+                self.st.ctx.word(),
+                effect.word()
+            )
+        };
+        self.err("E121", span, message);
+    }
+
     // ---- function state -------------------------------------------------------------------
 
     fn begin(&mut self, ctx: Ctx, params: &[ParamInfo], result: Ty, view_id: &str) {
@@ -608,6 +685,8 @@ impl Checker<'_> {
     ) -> ir::Func {
         self.outer_at = self.at.or(self.outer_at);
         self.begin(ctx, &c.params, c.result.clone(), &c.id);
+        self.st.decl.clone_from(&c.name);
+        self.st.uses.clone_from(&c.uses);
         for r in guards {
             let cond = self.expr_as(&r.cond, &Ty::Bool);
             let reason = self.expr_as(&r.reason, &Ty::Text);

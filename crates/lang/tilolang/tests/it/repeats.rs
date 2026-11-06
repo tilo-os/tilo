@@ -174,21 +174,21 @@ fn two_repeats_compare_by_their_stored_text() {
 fn completing_a_task_in_place_advances_it() {
     assert_eq!(
         codes(&format!(
-            "{TASK}action check(t: Task, done: Bool) {{\n    let again = std.complete(t, done)\n    t.done = done and not again\n}}"
+            "{TASK}action check(t: Task, done: Bool) uses time {{\n    let again = std.complete(t, done)\n    t.done = done and not again\n}}"
         )),
         Vec::<String>::new()
     );
     // Without the `Option`: the item repeats every time it is completed.
     assert_eq!(
         codes(
-            "type Task {\n    done: Bool = false\n    due: Option<Date> = .none\n    repeats: std.Repeat (repeats: due)\n    completed: Set<Date>\n}\naction check(t: Task, done: Bool) {\n    let again = std.complete(t, done)\n    t.done = done and not again\n}"
+            "type Task {\n    done: Bool = false\n    due: Option<Date> = .none\n    repeats: std.Repeat (repeats: due)\n    completed: Set<Date>\n}\naction check(t: Task, done: Bool) uses time {\n    let again = std.complete(t, done)\n    t.done = done and not again\n}"
         ),
         Vec::<String>::new()
     );
     // As the default of a boolean field, so the shape is a value and not a statement.
     assert_eq!(
         codes(&format!(
-            "{TASK}action check(t: Task) {{\n    let repeated = std.complete(t, true)\n}}"
+            "{TASK}action check(t: Task) uses time {{\n    let repeated = std.complete(t, true)\n}}"
         )),
         Vec::<String>::new()
     );
@@ -197,12 +197,12 @@ fn completing_a_task_in_place_advances_it() {
 #[test]
 fn completing_needs_a_task_shaped_type_and_an_action() {
     says(
-        "type T {\n    done: Bool\n}\naction a(t: T) {\n    let b = std.complete(t, true)\n}",
+        "type T {\n    done: Bool\n}\naction a(t: T) uses time {\n    let b = std.complete(t, true)\n}",
         "E118",
         "std.complete",
     );
     says(
-        "type Task {\n    done: Bool\n    due: Option<Date>\n    repeats: Option<std.Repeat> (repeats: due)\n}\naction a(t: Task) {\n    let b = std.complete(t, true)\n}",
+        "type Task {\n    done: Bool\n    due: Option<Date>\n    repeats: Option<std.Repeat> (repeats: due)\n}\naction a(t: Task) uses time {\n    let b = std.complete(t, true)\n}",
         "E118",
         "completed",
     );
@@ -214,12 +214,14 @@ fn completing_needs_a_task_shaped_type_and_an_action() {
         "cannot complete",
     );
     says(
-        &format!("{TASK}action a(t: Task) {{\n    let b = std.complete(t)\n}}"),
+        &format!("{TASK}action a(t: Task) uses time {{\n    let b = std.complete(t)\n}}"),
         "E022",
         "std.complete",
     );
     says(
-        &format!("{TASK}action a(t: Task) {{\n    let b = std.complete(t, true, false)\n}}"),
+        &format!(
+            "{TASK}action a(t: Task) uses time {{\n    let b = std.complete(t, true, false)\n}}"
+        ),
         "E022",
         "std.complete",
     );
@@ -235,14 +237,14 @@ fn what_a_repeat_compiles_to_is_valid_wasm() {
     use crate::common::validate;
     let cases = [
         "type T {\n    due: Date\n    r: std.Repeat (repeats: due)\n}\naction a(t: T, from: Date, done: Date) {\n    let d = t.r.next(from, done)\n}",
-        "type T {\n    due: Date\n    r: std.Repeat (repeats: due)\n}\naction a(t: T, at: Time, day: Date) {\n    let d = t.r.next_at(at, day)\n}",
+        "type T {\n    due: Date\n    r: std.Repeat (repeats: due)\n}\naction a(t: T, at: Time, day: Date) uses time {\n    let d = t.r.next_at(at, day)\n}",
         "type T {\n    due: Date\n    r: std.Repeat (repeats: due)\n    s: Text = \"\"\n}\naction a(t: T) {\n    t.s = t.r.label()\n}",
-        "type T {\n    m: std.Reminder (reminds: due, at)\n    at: Option<Time>\n    due: Date\n    when: Option<Time>\n}\naction a(t: T) {\n    t.when = .some(t.m.at(t.due, t.at))\n}",
+        "type T {\n    m: std.Reminder (reminds: due, at)\n    at: Option<Time>\n    due: Date\n    when: Option<Time>\n}\naction a(t: T) uses time {\n    t.when = .some(t.m.at(t.due, t.at))\n}",
         "type T {\n    due: Date\n    m: std.Reminder (reminds: due)\n    s: Text = \"\"\n}\naction a(t: T) {\n    t.s = t.m.label()\n}",
         &format!(
-            "{TASK}action a(t: Task, done: Bool) {{\n    let again = std.complete(t, done)\n    t.done = done and not again\n}}"
+            "{TASK}action a(t: Task, done: Bool) uses time {{\n    let again = std.complete(t, done)\n    t.done = done and not again\n}}"
         ),
-        "type T {\n    repeats: std.Repeat (repeats: due)\n    done: Bool = false\n    due: Option<Date> = .none\n    at: Time\n    completed: Set<Date>\n}\naction a(t: T, done: Bool) {\n    let again = std.complete(t, done)\n    t.done = done and not again\n}",
+        "type T {\n    repeats: std.Repeat (repeats: due)\n    done: Bool = false\n    due: Option<Date> = .none\n    at: Time\n    completed: Set<Date>\n}\naction a(t: T, done: Bool) uses time {\n    let again = std.complete(t, done)\n    t.done = done and not again\n}",
     ];
     for src in cases {
         let wasm = compile_body(src).wasm;

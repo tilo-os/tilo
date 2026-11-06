@@ -7,7 +7,7 @@ use crate::ids::IdsLock;
 use crate::meta::PackageMeta;
 use crate::prims;
 use crate::types::{MergeKind, Ty, TypeKey};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 mod derived;
 mod model;
@@ -312,7 +312,14 @@ impl Env {
             r.as_ref()
                 .map_or(Ty::Unit, |t| Ty::parse_meta(t, &app).unwrap_or(Ty::Error))
         };
-        let mut add = |kind, name: &str, id: &str, params, result, class, present| {
+        // What a package declared of its own effects, as its metadata carries it.
+        let effects = |names: &[String]| -> BTreeSet<crate::effects::Effect> {
+            names
+                .iter()
+                .filter_map(|n| crate::effects::Effect::parse(n))
+                .collect()
+        };
+        let mut add = |kind, name: &str, id: &str, params, result, class, uses, present| {
             self.callables.push(Callable {
                 kind,
                 name: name.to_string(),
@@ -323,6 +330,7 @@ impl Env {
                 params,
                 result,
                 class,
+                uses,
                 present,
                 scenario: false,
             });
@@ -352,6 +360,7 @@ impl Env {
                 params(&a.params),
                 result(&a.result),
                 Some(a.class),
+                effects(&a.uses),
                 present,
             );
         }
@@ -367,6 +376,7 @@ impl Env {
                 params(&f.params),
                 result(&f.result),
                 Some(f.class),
+                effects(&f.uses),
                 present,
             );
         }
@@ -378,6 +388,7 @@ impl Env {
                 params(&v.params),
                 Ty::View,
                 None,
+                BTreeSet::new(),
                 Presentation::default(),
             );
         }
@@ -400,6 +411,7 @@ impl Env {
                 params(&f.params),
                 Ty::parse_meta(&f.result, &app).unwrap_or(Ty::Error),
                 None,
+                BTreeSet::new(),
                 Presentation::default(),
             );
         }
@@ -2118,6 +2130,7 @@ impl Resolver<'_> {
                 },
                 _ => Presentation::default(),
             };
+            let uses = self.uses_of(item);
             self.env.callables.push(Callable {
                 kind,
                 name: name.name.clone(),
@@ -2128,6 +2141,7 @@ impl Resolver<'_> {
                 params,
                 result,
                 class: None,
+                uses,
                 present,
                 scenario: false,
             });
@@ -2147,6 +2161,7 @@ impl Resolver<'_> {
                 params: vec![subject],
                 result: Ty::View,
                 class: None,
+                uses: BTreeSet::new(),
                 present: Presentation::default(),
                 scenario: false,
             });
@@ -2244,12 +2259,53 @@ impl Resolver<'_> {
             params: Vec::new(),
             result,
             class: None,
+            // Seed data runs where a developer runs it, and is never replayed: it reads any
+            // effect it likes.
+            uses: crate::effects::Effect::ALL.iter().copied().collect(),
             present: Presentation {
                 label: name.clone(),
                 ..Presentation::default()
             },
             scenario: true,
         });
+    }
+
+    /// The effects a declaration's `uses` clause names, each once, checked: an action or flow
+    /// declares the ones its body reads ([`crate::effects::Effect`]); a view and a `fn` read
+    /// none and take no clause.
+    fn uses_of(&mut self, item: &ast::Item) -> BTreeSet<crate::effects::Effect> {
+        let written = match item {
+            Item::Action(a) => &a.uses,
+            Item::Flow(f) => &f.uses,
+            Item::Scenario(_) => return crate::effects::Effect::ALL.iter().copied().collect(),
+            _ => return BTreeSet::new(),
+        };
+        let effects: Vec<&str> = crate::effects::Effect::ALL
+            .iter()
+            .map(|e| e.word())
+            .collect();
+        let mut out = BTreeSet::new();
+        for u in written {
+            match crate::effects::Effect::parse(&u.name) {
+                Some(e) if out.insert(e) => {}
+                Some(_) => self.err("E121", u.span, format!("`{}` is in `uses` twice", u.name)),
+                None => {
+                    // A clause the compiler cannot read makes no further demands of the body:
+                    // the error says what the words are.
+                    self.err(
+                        "E121",
+                        u.span,
+                        format!(
+                            "`{}` is not an effect; `uses` names what a replay cannot compute again: {}",
+                            u.name,
+                            effects.join(", ")
+                        ),
+                    );
+                    out.extend(crate::effects::Effect::ALL.iter().copied());
+                }
+            }
+        }
+        out
     }
 
     /// An action's label, icon and role, from its modifiers and its `(icon: ..., label: ...)`.

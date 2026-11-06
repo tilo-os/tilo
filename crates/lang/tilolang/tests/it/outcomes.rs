@@ -311,6 +311,7 @@ fn published() -> tilolang::PackageMeta {
             role: None,
             scenario: false,
             did: None,
+            uses: Vec::new(),
             applies: false,
             present: None,
             toggles: None,

@@ -428,6 +428,9 @@ pub struct ActionDecl {
     pub name: Ident,
     pub params: Vec<Param>,
     pub result: Option<TypeExpr>,
+    /// `uses web, time`: the effects the action's body has, which it records and replays
+    /// ([`crate::effects::Effect`]). A body that reads one it does not declare is refused.
+    pub uses: Vec<Ident>,
     pub proposal: Option<Proposal>,
     /// `(icon: .plus, label: "New")`, as written.
     pub opts: Vec<ActionOpt>,
@@ -508,6 +511,8 @@ pub struct FlowDecl {
     pub name: Ident,
     pub params: Vec<Param>,
     pub result: Option<TypeExpr>,
+    /// `uses web`: the effects the flow's own body has (an action it invokes has its own).
+    pub uses: Vec<Ident>,
     pub body: Block,
     pub span: Span,
 }

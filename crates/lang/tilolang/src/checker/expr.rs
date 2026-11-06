@@ -120,7 +120,10 @@ impl Checker<'_> {
                 // A time of no zone is the person's own time of day: the instant it names is
                 // read in their zone where the value is built, so seed data says 09:00 and
                 // shows 09:00 wherever it runs.
-                19 => Ex::host(crate::abi::Imp::WallClock, vec![Ex::str(text)], Ty::Time),
+                19 => {
+                    self.reads(crate::effects::Effect::Time, e.span, "a time of no zone");
+                    Ex::host(crate::abi::Imp::WallClock, vec![Ex::str(text)], Ty::Time)
+                }
                 _ => {
                     self.err("E105", e.span, format!("a month is the value of a filter (`query(T, due: {text})`); a day is written `{text}-01`"));
                     Ex::error()
@@ -310,13 +313,14 @@ impl Checker<'_> {
             return Ex::error();
         }
         if name == "now" {
-            if self.st.ctx == Ctx::Action {
+            if matches!(self.st.ctx, Ctx::Action | Ctx::Flow) {
+                self.reads(crate::effects::Effect::Time, span, "`now`");
                 return Ex::host(Imp::Now, vec![], Ty::Time);
             }
             self.err(
                 "E049",
                 span,
-                "`now` is the time of this invocation, which only an action has; pass a Time to anything else",
+                "`now` is the time of this invocation, which only an action or a flow has; pass a Time to anything else",
             );
             return Ex::error();
         }
@@ -324,6 +328,7 @@ impl Checker<'_> {
         // filter's `today` reads it.
         if name == "today" {
             if self.st.ctx == Ctx::Action {
+                self.reads(crate::effects::Effect::Time, span, "`today`");
                 return Ex::host(Imp::Today, vec![], Ty::Date);
             }
             self.err(

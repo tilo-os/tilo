@@ -1467,6 +1467,7 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        let uses = self.uses()?;
         let proposal = if self.eat_kw("proposal") {
             let view = self.ident("the name of the proposal view")?;
             // `(icon: ...)` after the view is the action's options, not the view's arguments.
@@ -1497,6 +1498,7 @@ impl<'a> Parser<'a> {
             name,
             params,
             result,
+            uses,
             proposal,
             opts,
             requires,
@@ -1504,6 +1506,23 @@ impl<'a> Parser<'a> {
             body,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
+    }
+
+    /// `uses web, time` after an action's or flow's parameters: what its body reads that a
+    /// replay cannot compute again.
+    fn uses(&mut self) -> PResult<Vec<Ident>> {
+        let mut out = Vec::new();
+        if !matches!(self.peek(), Tok::Ident(w) if w == "uses") {
+            return Ok(out);
+        }
+        self.bump();
+        loop {
+            out.push(self.ident("an effect: `web`, `random` or `time`")?);
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     /// `(icon: .plus, label: "New")` before an action's body.
@@ -1535,6 +1554,7 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        let uses = self.uses()?;
         let body = self.block()?;
         Ok(FlowDecl {
             node,
@@ -1542,6 +1562,7 @@ impl<'a> Parser<'a> {
             name,
             params,
             result,
+            uses,
             body,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })

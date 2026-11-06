@@ -934,7 +934,7 @@ const DATED: &str = "type Task {\n    title: Text (title)\n    due: Option<Date>
 #[test]
 fn dates_and_times_are_nominal_iso_text() {
     let c = compile_body(&format!(
-        "{DATED}action finish(t: Task) {{\n    t.done_at = now\n    if t.start < Date(\"2027-01-01\") and now >= Time(\"2026-10-21T09:30:00Z\") {{\n        t.title = \"{{t.start}} at {{now}}\"\n    }}\n    t.due = .some(Date(\"2028-02-29\"))\n}}"
+        "{DATED}action finish(t: Task) uses time {{\n    t.done_at = now\n    if t.start < Date(\"2027-01-01\") and now >= Time(\"2026-10-21T09:30:00Z\") {{\n        t.title = \"{{t.start}} at {{now}}\"\n    }}\n    t.due = .some(Date(\"2028-02-29\"))\n}}"
     ));
     let task = &c.meta.types[0];
     let ty = |f: &str| {

@@ -50,9 +50,11 @@ one_type   = ident { "." ident }                                  (* Int, Note, 
              "<" type { "," type } ">"
            | "(" [ type { "," type } ] ")" [ "->" type ] ;         (* tuple, (), or a function type *)
 
-action     = "action" ident params [ "->" type ] [ "proposal" ident [ "(" ident { "," ident } ")" ] ]
-             [ opts ] block ;
-flow       = "flow" ident params [ "->" type ] block ;
+action     = "action" ident params [ "->" type ] [ uses ]
+             [ "proposal" ident [ "(" ident { "," ident } ")" ] ] [ opts ] block ;
+flow       = "flow" ident params [ "->" type ] [ uses ] block ;
+uses       = "uses" effect { "," effect } ;                        (* what the body reads that a replay cannot compute again *)
+effect     = "web" | "random" | "time" ;
 fn         = "fn" ident params "->" type block ;
 view       = "view" ident [ "<" Ident { "," Ident } ">" ] params ui_block ;
 scenario   = "scenario" string [ "->" type ] block ;

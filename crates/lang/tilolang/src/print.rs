@@ -325,6 +325,15 @@ pub fn print_type(t: &TypeExpr) -> String {
     }
 }
 
+/// ` uses web, time`, or nothing for a declaration that uses no effect.
+fn uses_text(uses: &[Ident]) -> String {
+    if uses.is_empty() {
+        return String::new();
+    }
+    let names: Vec<&str> = uses.iter().map(|u| u.name.as_str()).collect();
+    format!(" uses {}", names.join(", "))
+}
+
 /// A string literal with escapes.
 pub fn quote(s: &str) -> String {
     let mut out = String::from("\"");
@@ -1083,6 +1092,7 @@ impl Printer<'_> {
                 if let Some(r) = &a.result {
                     tail.push_str(&format!(" -> {}", print_type(r)));
                 }
+                tail.push_str(&uses_text(&a.uses));
                 if let Some(p) = &a.proposal {
                     tail.push_str(&format!(" proposal {}", p.view.name));
                     if let Some(args) = &p.args {
@@ -1108,11 +1118,12 @@ impl Printer<'_> {
                 self.line("}");
             }
             Item::Flow(f) => {
-                let tail = f
+                let mut tail = f
                     .result
                     .as_ref()
                     .map(|r| format!(" -> {}", print_type(r)))
                     .unwrap_or_default();
+                tail.push_str(&uses_text(&f.uses));
                 let lead = format!("flow {}", f.name.name);
                 self.head(&lead, &f.params, &tail, &[], " {", param_text);
                 self.block_body(&f.body);

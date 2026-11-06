@@ -39,7 +39,7 @@ action describe(l: Line) -> Text {
 }
 
 /// The time an action runs at.
-action stamp(t: Talk) -> Text {
+action stamp(t: Talk) -> Text uses time {
     "{now}"
 }
 

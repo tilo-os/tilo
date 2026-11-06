@@ -607,6 +607,10 @@ pub struct ActionMeta {
     /// surface showing the resource's actions draws directly rather than behind the rest.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub frequent: bool,
+    /// `uses web, random, time`: the effects the action's body reads, each of which its
+    /// invocation records and a replay answers from the record ([`crate::effects::Effect`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uses: Vec<String>,
     /// Whether the action keeps a requirement its subject alone decides, exported as
     /// [`crate::ir::guard_export`]: the first reason it cannot run on the subject now, or empty
     /// while it can. What a surface offering the action reads its availability from.
@@ -695,6 +699,9 @@ pub struct FlowMeta {
     pub result: Option<String>,
     pub class: EffectClass,
     pub reaches: Vec<Reach>,
+    /// `uses web, time`: the effects the flow's body reads ([`crate::effects::Effect`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uses: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

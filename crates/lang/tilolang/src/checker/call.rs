@@ -556,7 +556,10 @@ impl Checker<'_> {
 
     fn call_own(&mut self, c: &Callable, bound: Vec<Ex>, span: Span, what: &str) -> Ex {
         match c.func {
-            Some(f) if c.own => Ex::new(Ek::Call(f, bound), c.result.clone()),
+            Some(f) if c.own => {
+                self.st.facts.calls.insert(f);
+                Ex::new(Ek::Call(f, bound), c.result.clone())
+            }
             _ => {
                 self.err("E081", span, format!("calling the {what} `{}` of another package is not supported in v1: the host ABI has no cross-module call. Only actions of other packages can be applied", c.name));
                 Ex::error()
@@ -572,7 +575,10 @@ impl Checker<'_> {
     fn call_fn(&mut self, c: &Callable, bound: Vec<Ex>, span: Span) -> Ex {
         if c.own {
             return match c.func {
-                Some(f) => Ex::new(Ek::Call(f, bound), c.result.clone()),
+                Some(f) => {
+                    self.st.facts.calls.insert(f);
+                    Ex::new(Ek::Call(f, bound), c.result.clone())
+                }
                 None => {
                     self.err("E081", span, format!("`{}` has no code to call", c.name));
                     Ex::error()
@@ -1182,6 +1188,7 @@ impl Checker<'_> {
         let Some(info) = self.env.type_info(&key) else {
             return Ex::error();
         };
+        self.reads(crate::effects::Effect::Time, span, "`std.complete`");
         let fields = info.fields.clone();
         let names = info.field_names();
         let of_ty = |want: &Ty| -> Vec<FieldInfo> {
@@ -1912,6 +1919,7 @@ impl Checker<'_> {
         }
         let text = self.expr_as(&text.value, &Ty::Text);
         let near = self.expr_as(&near.value, &Ty::Time);
+        self.reads(crate::effects::Effect::Time, span, "`parse`");
         let imp = if ty == Ty::Date {
             Imp::DayParse
         } else {
@@ -1964,8 +1972,12 @@ impl Checker<'_> {
             }
             // A moment read as people read it: the day it falls on for the person, in their
             // zone, and the time of day it is then.
-            (Ty::Time, "day") if args.is_empty() => Ex::host(Imp::TimeDay, vec![r], Ty::Date),
+            (Ty::Time, "day") if args.is_empty() => {
+                self.reads(crate::effects::Effect::Time, span, "`day`");
+                Ex::host(Imp::TimeDay, vec![r], Ty::Date)
+            }
             (Ty::Time, "time_of_day") if args.is_empty() => {
+                self.reads(crate::effects::Effect::Time, span, "`time_of_day`");
                 Ex::host(Imp::TimeOfDay, vec![r], Ty::Duration)
             }
             // A length of time as the seconds it is, which is how a record keeps one.
@@ -1995,6 +2007,7 @@ impl Checker<'_> {
                 };
                 let at = self.expr_as(&at.value, &Ty::Time);
                 let day = self.expr_as(&day.value, &Ty::Date);
+                self.reads(crate::effects::Effect::Time, span, "`next_at`");
                 Ex::host(Imp::RepeatNextAt, vec![r, at, day], Ty::Time)
             }
             (Ty::Repeat, "label") if args.is_empty() => {
@@ -2011,6 +2024,7 @@ impl Checker<'_> {
                 };
                 let due = self.expr_as(&due.value, &Ty::Date);
                 let at = self.expr_as(&at.value, &Ty::Option(Box::new(Ty::Time)));
+                self.reads(crate::effects::Effect::Time, span, "`at`");
                 Ex::host(Imp::ReminderAt, vec![r, due, at], Ty::Time)
             }
             (Ty::Reminder, "label") if args.is_empty() => {

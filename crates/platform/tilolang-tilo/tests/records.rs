@@ -192,7 +192,7 @@ root Day
 
 default view day for Day
 
-action finish(d: Day) {
+action finish(d: Day) uses time {
     d.done_at = now
     d.start = Date("2026-10-25")
     d.due = .some(Date("2026-11-01"))

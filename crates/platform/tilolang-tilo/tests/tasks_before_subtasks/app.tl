@@ -107,7 +107,7 @@ action add(tasks: Tasks, title: Text) -> Task {
 /// Adds what was typed in a quick add entry as a task, to the inbox or to `p`. When it says
 /// when ("Call the landlord tomorrow 9am"), that is its due day and moment; without, a task
 /// added `today` is due today. An empty entry adds nothing.
-action quick_add(tasks: Tasks, entry: Text, p: Option<Project> = .none, today: Bool = false) {
+action quick_add(tasks: Tasks, entry: Text, p: Option<Project> = .none, today: Bool = false) uses time {
     let due: Option<Date> = if let day = Date.parse(entry, near: now) {
         .some(day)
     } else if today { .some(now.day()) } else { .none }

@@ -5,6 +5,7 @@
 use crate::ast::{Expr, StateLayer};
 use crate::resolve::plain_text;
 use crate::types::{EffectClass, MergeKind, Ty, TypeKey};
+use std::collections::BTreeSet;
 
 #[derive(Clone, Debug)]
 pub struct FieldInfo {
@@ -222,6 +223,9 @@ pub struct Callable {
     pub result: Ty,
     /// The class recorded in foreign metadata.
     pub class: Option<EffectClass>,
+    /// `uses web, time`: the effects its body has, as the declaration says them. An action
+    /// reads nothing else that a replay would compute differently ([`crate::effects::Effect`]).
+    pub uses: BTreeSet<crate::effects::Effect>,
     /// How the platform presents an action or flow: its label, icon and role.
     pub present: Presentation,
     /// The hidden action of a `scenario`; its name is the scenario's, which source cannot call.

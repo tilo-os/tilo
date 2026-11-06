@@ -374,6 +374,11 @@ fn result_meta(ty: &Ty, app: &str) -> Option<String> {
     (!matches!(ty, Ty::Unit)).then(|| ty.meta_text(app))
 }
 
+/// The effects a declaration uses, as its metadata spells them.
+fn uses_meta(uses: &std::collections::BTreeSet<crate::effects::Effect>) -> Vec<String> {
+    uses.iter().map(|e| e.word().to_string()).collect()
+}
+
 fn field_meta(f: &crate::resolve::FieldInfo, app: &str) -> FieldMeta {
     FieldMeta {
         id: f.id.clone(),
@@ -583,6 +588,7 @@ fn build_meta(
                     role: None,
                     scenario: true,
                     did: None,
+                    uses: uses_meta(&c.uses),
                     present: None,
                     toggles: None,
                     key: None,
@@ -666,6 +672,7 @@ fn build_meta(
                     role: c.present.role.clone(),
                     scenario: false,
                     did: c.present.did.clone(),
+                    uses: uses_meta(&c.uses),
                     present: c.present.view.clone(),
                     toggles: toggled_field(env, a, &c.params),
                     key: c.present.key.clone(),
@@ -712,6 +719,7 @@ fn build_meta(
                     result: result_meta(&c.result, app),
                     class: class_of(idx),
                     reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),
+                    uses: uses_meta(&c.uses),
                 });
             }
             Item::View(v) => {
@@ -962,6 +970,7 @@ pub fn compile_program_reading(
             result: None,
             class: crate::types::EffectClass::Undoable,
             reaches: Vec::new(),
+            uses: Vec::new(),
         }],
         ..PackageMeta::default()
     };

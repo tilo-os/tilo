@@ -123,6 +123,28 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - A record-typed field must be `Option<T>` unless every value is always set: reading an unset
   reference traps (there is no value to return). A removed target stays a readable reference
   (it compares equal); reading its fields fails.
+- **`uses web, random, time` is written after the signature, before `proposal` and the options**
+  (`action snooze(t: Thread, until: Time) uses time (icon: .clock) { ... }`). It reads as part of
+  what the declaration is, and the canonical form keeps it there. The words are ordinary names,
+  not keywords, as `require` is: `web` and `time` stay usable as identifiers.
+- **What an effect is, and what is not one.** An effect is what a replay cannot compute again,
+  so it is recorded on the invocation that read it: the clock and the person's zone (`now`,
+  `today`, a time of no zone, `t.day()`, `t.time_of_day()`, a text parsed near a moment,
+  `next_at`, `at`, `std.complete`), a draw and a service outside Tilo. A filter's `today` is the query's input, read where the view is
+  drawn: the query is answered again when the day turns (`ViewState::changes_at`), nothing is
+  replayed, and the checker does not ask an action for `uses time` because a view it shows
+  filters by a day. `t.day()` in a view is the same kind of read — what the person's zone
+  makes of a value that is drawn — and is not refused there. `now` alone is refused outside an
+  action or flow (E049): it is the time of an invocation, and a view has none.
+- **A scenario uses every effect.** Its code is seed data, run where a developer runs it and
+  never replayed, so it declares nothing and reads anything; `as who at time` gives its actions
+  their time.
+- **The journal is kept beside the change.** An action's effects go into the change note the
+  store keeps with the change (`ChangeNote::effects`), in the order it read them, so history can
+  say what a change was made of ("fetched … 304"). A flow's go into its `Journal`, saved as it
+  goes, so a run resumed tomorrow reads the moment it started. One entry per invocation holds
+  the moment and the zone; a draw keeps its bound and its value; a fetch keeps the request and
+  the answer.
 - Pinned references (`@kind:id@version`) parse but compile to E070: `ref_lit` has no version.
 - Integer division and remainder trap on zero, as in wasm.
 - `proposal view` may also be written `proposal view(a, b)`, naming action parameters.

@@ -336,6 +336,22 @@ flow cleanup(list: todo.TodoList) -> Text {
 }
 ```
 
+**Effects.** An action or flow whose body reads what a replay cannot compute again says so:
+`uses time` after its parameters, comma-separated when it reads more (`uses web, random`).
+Reading the clock or the person's zone anywhere in the body — `now`, `today`, a time of no zone,
+`t.day()`, `t.time_of_day()`, `Time.parse(...)`, `r.next_at(...)`, `std.complete` — is an error
+until it does (E121),
+and so is a `fn` or an action it calls that reads them. An invocation records what it read in its
+journal: the moment and the zone once per invocation, and each draw and fetch with its answer as
+the language grows into them. The journal is kept beside the change an action makes, so history
+says what a change was made of; a flow that suspends and resumes reads the moment it started,
+not the moment it resumed.
+
+A view reads the person's zone and the day it is as what it is drawn with, not as an effect: it
+has no `now` (E049) and nothing it does is replayed, while the day a filter reads is the query's
+and the window draws again when the day turns. A scenario is seed data, run where a developer
+runs it and never replayed, so it reads every effect without saying so.
+
 **Parameter defaults.** An action parameter may have a default written in terms of the
 parameters before it. An invocation that leaves the argument out gets it, computed when it is
 invoked on what the invoker sees, and records it as the argument; an explicit argument wins:
