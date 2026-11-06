@@ -22,6 +22,9 @@
 //! expected to fall back to a local-only mode.
 
 pub mod agent_transport;
+/// The messages that travel over a connected door: Unix sockets and the
+/// descriptors they carry, so Linux only, like the clients that use it.
+#[cfg(unix)]
 pub mod door;
 #[cfg(target_os = "linux")]
 #[cfg(unix)]

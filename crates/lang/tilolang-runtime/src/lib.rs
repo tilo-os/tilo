@@ -70,7 +70,7 @@ mod written;
 pub use amstore::AmStore;
 pub use authority::{ActionInfo, Authority, Decision, SimpleAuthority};
 pub use catalogue::{Signature, SignatureKind, catalogue};
-pub use core::{Delivery, ModelHost, NameHost, OutsideSink};
+pub use core::{Delivery, ModelHost, NameHost, OutsideSink, ShownHost};
 pub use engine::{
     EngineConfig, EngineKind, EngineLimits, EngineProfile, Translation, configure, configured,
 };

@@ -69,6 +69,14 @@ pub trait NameHost {
     fn name(&self, who: &crate::ids::Principal) -> String;
 }
 
+/// How a value a change shows reads as text, where a sentence must carry it rather than a view
+/// node (a row's line, a notice): a day or a time of day in the person's format. Until the host
+/// says, the value's stored text.
+pub trait ShownHost {
+    /// `value` of the shown kind `kind` (`date` or `time`), as the person reads it.
+    fn shown(&self, kind: &str, value: &str) -> String;
+}
+
 /// The host's answer for the person's zone name, asked each time a rule is read.
 type NamedZone = Box<dyn Fn() -> Option<String>>;
 
@@ -82,6 +90,9 @@ pub struct Core {
     pub models: RefCell<Option<Box<dyn ModelHost>>>,
     /// What names principals; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
+    /// How a day or a time of day reads in a sentence; its stored text until the host says
+    /// (`Runtime::set_shown_host`).
+    pub shown: RefCell<Option<Box<dyn ShownHost>>>,
     /// The workspace's members, as the host last gave them (`workspace.members`).
     pub members: RefCell<crate::members::Members>,
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
@@ -231,6 +242,7 @@ impl Core {
             authority,
             models: RefCell::new(None),
             names: RefCell::new(None),
+            shown: RefCell::new(None),
             members: RefCell::new(crate::members::Members::default()),
             sink: RefCell::new(None),
             retry_waiting: std::cell::Cell::new(false),
@@ -338,7 +350,7 @@ impl Core {
             ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH,
             ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MapGetH, MapKeys, MapPut,
             MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf,
-            ModelCall, NoneV, Now, OfType, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind,
+            ModelCall, NoneV, Now, OfType, Others, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind,
             PrincipalName, PrincipalNamed, PrincipalRole, Print, PrintRows, ProposalNote, Query,
             QueueBlock, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs,
             RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt, ResAddF,
@@ -411,7 +423,7 @@ impl Core {
                 self.ui_import(imp, a)
             }
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
-            | RunChanges | Unseen | FirstUnseen | Mentions | Steps | VersionEnd | Phrase | Word
+            | RunChanges | Unseen | FirstUnseen | Mentions | Others | Steps | VersionEnd | Phrase | Word
             | EntryParts | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)

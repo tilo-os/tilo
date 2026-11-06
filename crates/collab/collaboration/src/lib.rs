@@ -163,7 +163,6 @@ pub mod approved_checks;
 #[cfg(feature = "broker-transport")]
 mod broker;
 pub mod browser_service_sessions;
-#[cfg(feature = "broker-transport")]
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
 pub mod channel_settings;

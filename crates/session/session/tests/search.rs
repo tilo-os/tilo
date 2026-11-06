@@ -51,11 +51,13 @@ struct Host {
     opened: RefCell<Vec<(String, String)>>,
     /// The machine's own apps it was asked to start.
     started: RefCell<Vec<String>>,
+    /// What the workspace's apps publish, as their resources reach it.
+    publishing: RefCell<Vec<PublishedActions>>,
 }
 
 impl AppActions for Host {
     fn published(&self) -> Vec<PublishedActions> {
-        Vec::new()
+        self.publishing.borrow().clone()
     }
 
     fn jobs(&self) -> Vec<JobEntry> {
@@ -1703,4 +1705,74 @@ fn the_applications_scope_lists_a_host_app() {
     );
     until(&mut session, |_| !host.started.borrow().is_empty());
     assert_eq!(host.started.borrow().as_slice(), ["Alacritty.desktop"]);
+}
+
+/// Tasks as it publishes its capture to the workspace: its root, with the
+/// action that takes the one line a person types (`title` is that parameter).
+fn tasks_capture() -> Vec<ResourceSpec> {
+    let capture = tilo_actions::ActionSpec::prompted_param(
+        "quick_add",
+        "New task",
+        tilo_actions::ActionParam::required("title", tilo_actions::ParamType::Text, "What to do")
+            .taking_entry(),
+        "Call the landlord fri 10am",
+        tilo_actions::ExecutionLocus::ClientLocal,
+        |text| tilo_actions::EncodedAction {
+            type_id: "so.tilo.lang.tasks.quick_add".into(),
+            payload: text.as_bytes().to_vec(),
+        },
+    );
+    vec![ResourceSpec::new("tasks", "tl.Tasks.tasks", "Tasks").with_action(capture)]
+}
+
+/// One line typed into the search writes a task down with no Tasks window
+/// open: the workspace's capture answers the sentence as its own line, and
+/// choosing it runs the app's action with the words as typed.
+#[test]
+fn a_line_typed_into_search_runs_the_workspace_s_capture_with_no_app_open() {
+    let _settled = ui::motion::testing::settled();
+    let host = Rc::new(Host::default());
+    let mut session = session(Rc::clone(&host));
+    session.step(Duration::from_millis(1)).expect("step");
+    let workspace = session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(|workspace| workspace.id().to_string())
+            .expect("a workspace")
+    });
+    // The workspace's action host publishes Tasks' capture; no window of the
+    // app is open to write it in.
+    host.publishing.borrow_mut().push(PublishedActions::of(
+        "so.tilo.lang.tasks",
+        &workspace,
+        &tasks_capture(),
+    ));
+
+    let line = "Call the landlord fri 10am";
+    search_for(&mut session, line);
+    let capture = titled(&session, "New task").unwrap_or_else(|| {
+        panic!(
+            "the workspace's capture answers the line typed: {:?}",
+            rows(&session)
+                .into_iter()
+                .map(|row| row.label)
+                .collect::<Vec<_>>()
+        )
+    });
+    invoke(
+        &mut session,
+        capture.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
+    until(&mut session, |_| !host.invoked.borrow().is_empty());
+    let (target, arguments) = host.invoked.borrow()[0].clone();
+    assert_eq!(
+        target,
+        application_action_target(&workspace, "so.tilo.lang.tasks", "tasks", "quick_add"),
+        "the capture runs through the workspace's address for the app's action"
+    );
+    assert_eq!(
+        arguments["title"], line,
+        "what was typed is the line itself, word for word"
+    );
 }

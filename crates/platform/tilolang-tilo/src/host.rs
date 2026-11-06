@@ -35,6 +35,10 @@ use crate::schema::lookup;
 use crate::store::{Committed, TiloStore};
 use tilo_action_policy::Standing;
 
+/// An action's arguments as it runs them, and as its invocation records them; `None` when the
+/// line a person typed names no item, so the action does not run.
+type PlannedArgs = Option<(Vec<Value>, serde_json::Map<String, Json>)>;
+
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
     #[error("{0}")]
@@ -637,7 +641,6 @@ impl HostInner {
             .iter()
             .find(|action| action.id == request.action_id)
             .ok_or_else(|| format!("no action {}", request.action_id))?;
-        let (args, recorded) = self.planned_args(&package, action, request)?;
         // The runtime sees the invoker the door admitted: an agent's task delegate for itself,
         // the person at the window otherwise.
         let invoker = request.caller.map_or_else(
@@ -647,38 +650,48 @@ impl HostInner {
         if let Some(caller) = request.caller.filter(|caller| caller.agent) {
             self.admit_agent(caller);
         }
-        let first = self.store.next_ticket();
-        let outcome = match request.from {
-            Some(from) => {
-                self.runtime
-                    .invoke_action_from(&invoker, (request.action_id, args.clone()), from)
+        let mut committed = Vec::new();
+        let recorded = match self.planned_args(&package, action, request)? {
+            Some((args, recorded)) => {
+                let first = self.store.next_ticket();
+                let outcome = match request.from {
+                    Some(from) => self.runtime.invoke_action_from(
+                        &invoker,
+                        (request.action_id, args.clone()),
+                        from,
+                    ),
+                    None => self
+                        .runtime
+                        .invoke_action(&invoker, (request.action_id, args.clone())),
+                }
+                .map_err(|error| error.to_string())?;
+                self.returned_by(request.action_id, &outcome);
+                match outcome {
+                    InvokeOutcome::Done(Value::Ref(made))
+                        if request.caller.is_none_or(|caller| !caller.agent) =>
+                    {
+                        *self.produced.borrow_mut() = Some((
+                            request.action_id.to_owned(),
+                            std::rc::Rc::unwrap_or_clone(made.target),
+                        ));
+                    }
+                    InvokeOutcome::Done(_) => {}
+                    // An action that needs a person's approval is not refused: it is recorded as
+                    // a suggested invocation, the answer an agent gets and a person decides.
+                    InvokeOutcome::Suggested(suggestion) => {
+                        self.runtime
+                            .record_suggestion(&invoker, request.action_id, args, &suggestion)
+                            .map_err(|error| error.to_string())?;
+                    }
+                    InvokeOutcome::Denied => return Err("the action is not allowed".to_owned()),
+                }
+                committed = self.store.take_from(first);
+                recorded
             }
-            None => self
-                .runtime
-                .invoke_action(&invoker, (request.action_id, args.clone())),
-        }
-        .map_err(|error| error.to_string())?;
-        self.returned_by(request.action_id, &outcome);
-        match outcome {
-            InvokeOutcome::Done(Value::Ref(made))
-                if request.caller.is_none_or(|caller| !caller.agent) =>
-            {
-                *self.produced.borrow_mut() = Some((
-                    request.action_id.to_owned(),
-                    std::rc::Rc::unwrap_or_clone(made.target),
-                ));
-            }
-            InvokeOutcome::Done(_) => {}
-            // An action that needs a person's approval is not refused: it is recorded as a
-            // suggested invocation, the answer an agent gets and a person decides.
-            InvokeOutcome::Suggested(suggestion) => {
-                self.runtime
-                    .record_suggestion(&invoker, request.action_id, args, &suggestion)
-                    .map_err(|error| error.to_string())?;
-            }
-            InvokeOutcome::Denied => return Err("the action is not allowed".to_owned()),
-        }
-        let committed = self.store.take_from(first);
+            // The one line typed names nothing — only space and what the action's other
+            // parameters take — so the action does not run and makes no change.
+            None => request.args.clone(),
+        };
         let mut planned = DynAction {
             app: request.app.to_owned(),
             kind: request.kind.to_owned(),
@@ -711,13 +724,14 @@ impl HostInner {
 
     /// The action's arguments as its invocation records them: those the door was given, and
     /// each left out that has a default computed now, on the invoker's state, since what the
-    /// person saw is the argument.
+    /// person saw is the argument. `None` when the line typed names no item, so the action
+    /// does not run at all.
     fn planned_args(
         &self,
         package: &Package,
         action: &tilolang::meta::ActionMeta,
         request: &PlanRequest<'_>,
-    ) -> Result<(Vec<Value>, serde_json::Map<String, Json>), String> {
+    ) -> Result<PlannedArgs, String> {
         let mut given: Vec<Option<Value>> = Vec::new();
         let mut params = action.params.iter();
         if let (Some(subject), Some(declared)) =
@@ -728,11 +742,23 @@ impl HostInner {
             given.push(Some(Value::resource(&target)));
             params.next();
         }
-        let mut defaulted = Vec::new();
+        // What a person typed as one line, when the action takes an entry and the door was
+        // given it: the words it holds fill the parameters they name, and the entry takes the
+        // rest, so one line from a palette makes the same task as one from the app's entry.
+        let entry = action.params.iter().find(|param| param.entry);
+        let entry_text = entry
+            .and_then(|param| request.args.get(&param.name))
+            .and_then(Json::as_str);
+        let mut computed = Vec::new();
         for param in params {
+            if entry_text.is_some() && entry.is_some_and(|entry| entry.name == param.name) {
+                computed.push(param);
+                given.push(None);
+                continue;
+            }
             match request.args.get(&param.name) {
                 None if param.default.is_some() => {
-                    defaulted.push(param);
+                    computed.push(param);
                     given.push(None);
                 }
                 json => {
@@ -741,12 +767,22 @@ impl HostInner {
                 }
             }
         }
+        if let Some(text) = entry_text {
+            let Some(filled) = self
+                .runtime
+                .fill_entry(request.action_id, given, text)
+                .map_err(|error| error.to_string())?
+            else {
+                return Ok(None);
+            };
+            given = filled;
+        }
         let args = self
             .runtime
             .complete_args(request.action_id, given)
             .map_err(|error| error.to_string())?;
         let mut recorded = request.args.clone();
-        for param in defaulted {
+        for param in computed {
             let index = action
                 .params
                 .iter()
@@ -756,7 +792,7 @@ impl HostInner {
                 recorded.insert(param.name.clone(), json);
             }
         }
-        Ok((args, recorded))
+        Ok(Some((args, recorded)))
     }
 }
 

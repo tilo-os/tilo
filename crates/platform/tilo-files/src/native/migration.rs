@@ -14,6 +14,11 @@
 //! Each step is tested against a file the previous version wrote, and only
 //! that ([`assert_step_reads_previous`]); `tools/policy/check_format_migrations.py`
 //! holds every format to it and keeps the chain from losing a step.
+//!
+//! The version a build writes is pinned by the bytes it wrote
+//! ([`assert_golden_bytes`]): a persisted type's layout is its field order, so
+//! a change to one has to bump the format's version and add the step that
+//! reads what devices hold, never slip in under the version they already have.
 
 use std::path::{Path, PathBuf};
 
@@ -206,6 +211,48 @@ pub fn assert_step_reads_previous(format: &Format, previous: &[u8], reads: impl 
     reads(&migrated);
 }
 
+/// The test every kept layout carries beside it: the bytes are those a build
+/// wrote for it (`golden`, checked in as they were), `read` takes them with
+/// the types this build has, and `write` encodes the same value again, which
+/// must give those bytes back exactly.
+///
+/// A persisted type's layout is its field order; adding, removing, reordering
+/// or changing the type of one changes what it encodes and breaks this, which
+/// is when the format needs a new version and a [`Step`] that reads the bytes
+/// devices already hold. Nothing else notices: postcard reads a shorter or
+/// longer field happily as long as the types line up, and names no field when
+/// it fails.
+pub fn assert_golden_bytes(
+    name: &str,
+    golden: &[u8],
+    read: impl FnOnce(&[u8]),
+    write: impl FnOnce() -> Vec<u8>,
+) {
+    read(golden);
+    let now = write();
+    let parts_at = now
+        .iter()
+        .zip(golden)
+        .position(|(now, kept)| now != kept)
+        .unwrap_or_else(|| now.len().min(golden.len()));
+    assert!(
+        now == golden,
+        "{}: this build writes {} bytes where the bytes kept beside it are {}; they part at byte \
+         {} ({} against {}). A persisted type's layout changed, and what devices hold no longer \
+         reads that way: give the format a new version and the step that reads the old one, or \
+         keep the field where it was.",
+        name,
+        now.len(),
+        golden.len(),
+        parts_at,
+        now.get(parts_at)
+            .map_or_else(|| "its end".into(), |byte| format!("{byte:#04x}")),
+        golden
+            .get(parts_at)
+            .map_or_else(|| "its end".into(), |byte| format!("{byte:#04x}")),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +321,20 @@ mod tests {
         ));
         assert_eq!(std::fs::read(&path).unwrap(), b"v4");
         assert!(!Format::snapshot_path(&path, 1).exists());
+    }
+
+    #[test]
+    fn golden_bytes_are_what_this_build_reads_and_writes() {
+        assert_golden_bytes(
+            "notes",
+            b"v3",
+            |bytes| assert_eq!(bytes, b"v3"),
+            || b"v3".to_vec(),
+        );
+        let failed = std::panic::catch_unwind(|| {
+            assert_golden_bytes("notes", b"v3", |_| {}, || b"v4".to_vec());
+        });
+        assert!(failed.is_err(), "a layout that changed does not pass");
     }
 
     #[test]

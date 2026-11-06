@@ -74,7 +74,7 @@ fn slot_show_reads_imported_provenance_and_keeps_it_after_failed_activation() {
     assert!(daemon.show("proof").unwrap().provenance.is_empty());
     let info = Some(ComponentInfo::new(Scope::Session, vec![]));
     daemon
-        .swap("proof", "shell", &baseline, info.clone())
+        .swap("proof", "shell", &baseline, info.clone(), None)
         .unwrap();
     let before = daemon.show("proof").unwrap();
     assert_eq!(before.provenance["shell"], original);
@@ -84,7 +84,9 @@ fn slot_show_reads_imported_provenance_and_keeps_it_after_failed_activation() {
             .iter()
             .any(|file| file.path == "/usr/bin/shell")
     );
-    let error = daemon.swap("proof", "shell", &next, info).unwrap_err();
+    let error = daemon
+        .swap("proof", "shell", &next, info, None)
+        .unwrap_err();
     assert!(error.to_string().contains("restored generation 1"));
     let recovered = daemon.show("proof").unwrap();
     assert_eq!(recovered.slot.components["shell"], baseline);
@@ -147,7 +149,7 @@ fn failed_swap_restores_generation_and_reports_failed_recovery() {
         let info = Some(ComponentInfo::new(Scope::Session, vec![]));
         assert_eq!(
             daemon
-                .swap(slot, "shell", &hash, info.clone())
+                .swap(slot, "shell", &hash, info.clone(), None)
                 .unwrap()
                 .generation,
             1
@@ -155,7 +157,7 @@ fn failed_swap_restores_generation_and_reports_failed_recovery() {
         mirror.lock().unwrap().clear();
         let next = "cd".repeat(32);
         fs::create_dir_all(root.path().join("layers").join(&next).join("usr/bin")).unwrap();
-        let error = daemon.swap(slot, "shell", &next, info).unwrap_err();
+        let error = daemon.swap(slot, "shell", &next, info, None).unwrap_err();
         let detail = error.to_string();
         assert!(detail.contains("new desktop failed"), "{detail}");
         let record = daemon.load_slot(slot).unwrap();
@@ -241,9 +243,11 @@ fn roll_cohort_back_to_image(
     fs::create_dir_all(layers.join(&next).join("usr/bin")).unwrap();
     let session = Some(ComponentInfo::new(Scope::Session, Vec::new()));
     let cohort = daemon
-        .swap(DEVICE_SLOT, COHORT_COMPONENT, &first, session.clone())
+        .swap(DEVICE_SLOT, COHORT_COMPONENT, &first, session.clone(), None)
         .unwrap();
-    daemon.swap(DEVICE_SLOT, "shell", &next, session).unwrap();
+    daemon
+        .swap(DEVICE_SLOT, "shell", &next, session, None)
+        .unwrap();
     // Rolling back a component the cohort does not carry is never checked.
     daemon
         .rollback(DEVICE_SLOT, Some(cohort.generation))
@@ -496,6 +500,7 @@ fn a_swap_that_leaves_the_app_host_unable_to_read_the_declaration_is_refused() {
             component: "shell".into(),
             layer: hash,
             info: Some(ComponentInfo::new(Scope::Session, Vec::new())),
+            partner: None,
         }))
         .unwrap_err()
         .to_string();
@@ -510,15 +515,43 @@ fn a_swap_that_leaves_the_app_host_unable_to_read_the_declaration_is_refused() {
     );
 }
 
-/// tilo-fs is a runtime service apps reach, swapped VM-wide: an fs
-/// layer serving another runtime version than the declaration the
-/// device reads is refused before anything restarts, and one from the
-/// same tree goes in.
-#[test]
-fn an_fs_swap_serving_another_runtime_version_than_the_device_reads_is_refused() {
-    let root = tempfile::tempdir().unwrap();
+/// A layer of `component` built for `declaration`; `ships` also writes the
+/// file a slot reads its own declaration from.
+fn interface_layer(
+    root: &std::path::Path,
+    hash: u8,
+    component: &str,
+    declaration: &str,
+    ships: bool,
+) -> String {
+    let id = format!("{hash:02x}").repeat(32);
+    let layer = root.join("layers").join(&id);
+    fs::create_dir_all(layer.join("usr/share/tilo")).unwrap();
+    if ships {
+        fs::write(
+            layer.join("usr/share/tilo/system-interfaces.toml"),
+            declaration,
+        )
+        .unwrap();
+    }
+    let mut provenance = Provenance::local(component);
+    provenance.interfaces = tilo_vm_protocol::system_interfaces(declaration);
+    fs::write(
+        layer.join("provenance.json"),
+        serde_json::to_vec(&provenance).unwrap(),
+    )
+    .unwrap();
+    id
+}
+
+const IMAGE_DECLARATION: &str = "[interfaces]\nsystem = 1\nshell-ui = 11\nruntime = 2\n";
+const NEXT_DECLARATION: &str = "[interfaces]\nsystem = 1\nshell-ui = 11\nruntime = 3\n";
+
+/// A device slot running a shell from the image's tree, which reads the
+/// image's declaration whatever happens VM-wide.
+fn device_with_shell(root: &std::path::Path) -> Daemon {
     let mut daemon = Daemon::new(
-        root.path(),
+        root,
         Box::new(RecordingApply::with_login("tester")),
         None,
         BaseInfo::default(),
@@ -531,70 +564,93 @@ fn an_fs_swap_serving_another_runtime_version_than_the_device_reads_is_refused()
         .unwrap();
     let device = daemon.load_slot(DEVICE_SLOT).unwrap();
     daemon.slots.save(&device).unwrap();
-    let declared = "[interfaces]\nsystem = 1\nshell-ui = 11\nruntime = 2\n";
     fs::write(
-        root.path().join("image.json"),
+        root.join("image.json"),
         serde_json::to_vec(&serde_json::json!({
             "image": "composefs:1c9ab8",
             "recorded_at": "2026-10-22T08:00:00Z",
-            "interfaces": tilo_vm_protocol::Declaration::parse(declared),
+            "interfaces": tilo_vm_protocol::Declaration::parse(IMAGE_DECLARATION),
         }))
         .unwrap(),
-    )
-    .unwrap();
-    // The device slot runs a shell from the image's tree, so it reads
-    // runtime 2 whatever happens VM-wide.
-    let shell = "5e".repeat(32);
-    let layer = root.path().join("layers").join(&shell);
-    fs::create_dir_all(layer.join("usr/bin")).unwrap();
-    let mut provenance = Provenance::local("shell");
-    provenance.interfaces = tilo_vm_protocol::system_interfaces(declared);
-    fs::write(
-        layer.join("provenance.json"),
-        serde_json::to_vec(&provenance).unwrap(),
     )
     .unwrap();
     daemon
         .handle(Request::Swap(tilo_vm_protocol::Swap {
             slot: DEVICE_SLOT.into(),
             component: "shell".into(),
-            layer: shell,
+            layer: interface_layer(root, 0x5e, "shell", IMAGE_DECLARATION, false),
             info: Some(ComponentInfo::new(Scope::Session, Vec::new())),
+            partner: None,
         }))
         .unwrap();
-    let fs_layer = |n: u8, runtime: u32| {
-        let hash = format!("{n:02x}").repeat(32);
-        let layer = root.path().join("layers").join(&hash);
-        fs::create_dir_all(layer.join("usr/bin")).unwrap();
-        let mut provenance = Provenance::local("fs");
-        provenance.interfaces = tilo_vm_protocol::system_interfaces(&format!(
-            "[interfaces]\nsystem = 1\nshell-ui = 11\nruntime = {runtime}\n"
-        ));
-        fs::write(
-            layer.join("provenance.json"),
-            serde_json::to_vec(&provenance).unwrap(),
-        )
-        .unwrap();
-        hash
-    };
+    daemon
+}
+
+/// tilo-fs is a runtime service apps reach, swapped VM-wide: an fs layer
+/// serving another runtime version than the declaration the device reads is
+/// refused before anything restarts, and one from the same tree goes in.
+#[test]
+fn an_fs_swap_serving_another_runtime_version_than_the_device_reads_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let mut daemon = device_with_shell(root.path());
+    let vm_before = daemon.load_slot(VM_SLOT).unwrap().current;
     let swap_fs = |daemon: &mut Daemon, layer: String| {
         daemon.handle(Request::Swap(tilo_vm_protocol::Swap {
             slot: VM_SLOT.into(),
             component: "fs".into(),
             layer,
             info: Some(ComponentInfo::new(Scope::Vm, vec!["fs.service".into()])),
+            partner: None,
         }))
     };
-    let vm_before = daemon.load_slot(VM_SLOT).unwrap().current;
 
-    let refused = swap_fs(&mut daemon, fs_layer(0xf3, 3))
-        .unwrap_err()
-        .to_string();
+    let refused = swap_fs(
+        &mut daemon,
+        interface_layer(root.path(), 0xf3, "fs", NEXT_DECLARATION, false),
+    )
+    .unwrap_err()
+    .to_string();
 
     assert!(refused.contains("slot 'device'"), "{refused}");
     assert!(refused.contains("runtime 3"), "{refused}");
     assert_eq!(daemon.load_slot(VM_SLOT).unwrap().current, vm_before);
-    swap_fs(&mut daemon, fs_layer(0xf2, 2)).expect("fs from the same tree goes in");
+    swap_fs(
+        &mut daemon,
+        interface_layer(root.path(), 0xf2, "fs", IMAGE_DECLARATION, false),
+    )
+    .expect("fs from the same tree goes in");
+}
+
+/// A device whose cohort moves in the same breath: the fs swap names the
+/// device slot's next generation, which reads runtime 3, so the pair is
+/// judged whole and one command moves the fleet across the interface.
+#[test]
+fn an_fs_swap_and_the_cohort_that_reads_it_move_together() {
+    let root = tempfile::tempdir().unwrap();
+    let mut daemon = device_with_shell(root.path());
+    let vm_before = daemon.load_slot(VM_SLOT).unwrap().current;
+    let partner = tilo_vm_protocol::Partner {
+        slot: DEVICE_SLOT.into(),
+        components: [(
+            "shell".to_owned(),
+            interface_layer(root.path(), 0x6e, "shell", NEXT_DECLARATION, true),
+        )]
+        .into_iter()
+        .collect(),
+    };
+
+    let paired = daemon
+        .handle(Request::Swap(tilo_vm_protocol::Swap {
+            slot: VM_SLOT.into(),
+            component: "fs".into(),
+            layer: interface_layer(root.path(), 0xf4, "fs", NEXT_DECLARATION, false),
+            info: Some(ComponentInfo::new(Scope::Vm, vec!["fs.service".into()])),
+            partner: Some(partner),
+        }))
+        .expect("the pair moves together");
+
+    assert_eq!(paired["changed"], true, "the filesystem service moved");
+    assert!(daemon.load_slot(VM_SLOT).unwrap().current > vm_before);
 }
 
 #[test]
@@ -623,6 +679,7 @@ fn vm_component_refresh_restarts_declared_live_owner_user_services() {
                 component: "fs".into(),
                 layer: hash,
                 info: Some(info),
+                partner: None,
             }))
             .unwrap(),
     )
@@ -692,6 +749,7 @@ fn a_vm_component_outside_sessions_leaves_desktops_running() {
                     component: component.into(),
                     layer: hash,
                     info: Some(info),
+                    partner: None,
                 }))
                 .unwrap(),
         )
@@ -742,6 +800,7 @@ fn a_laptops_device_slot_shares_the_system_wide_layers_with_the_vm_slot() {
             component: component.into(),
             layer: layer.into(),
             info: Some(ComponentInfo::new(scope, Vec::new())),
+            partner: None,
         })
     };
     let restarted = Action::RestartDesktop {
