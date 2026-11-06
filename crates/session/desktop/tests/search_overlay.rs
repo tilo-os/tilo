@@ -229,6 +229,39 @@ fn typing_and_enter_reach_the_palette_not_the_window() {
     );
 }
 
+/// A row a reader hears is a row the person can take: activating it by name
+/// reaches the card as the click on it does, and search closes.
+#[test]
+fn an_assistive_activation_takes_the_row_it_names() {
+    let tree = desk_tree();
+    let mut session = session(&tree, (1280, 800), None);
+    session.frame();
+    session.search_chord();
+    session.frame();
+    assert!(session.handle.search_open(), "the chord opened the palette");
+    for _ in 0..3 {
+        session.frame();
+    }
+    session.type_text("notes");
+    session.settle_search();
+    let (_, rows) = session.handle.search_rows();
+    assert!(!rows.is_empty(), "the desk's own window is a row");
+
+    let row = session
+        .chrome
+        .a11y_node_named(&rows[0].title)
+        .expect("the row is read by its title");
+    session
+        .chrome
+        .perform_a11y_action(row, &ui::a11y::Action::Activate)
+        .expect("the reader takes the row");
+    session.frame();
+    assert!(
+        !session.handle.search_open(),
+        "the row was taken and search closed, as it does for the person's click"
+    );
+}
+
 /// The card stands where the shell's own stood: three fifths of the display's
 /// width, a little below its top, and as many rows tall as the display gives
 /// it.

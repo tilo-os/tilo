@@ -2803,32 +2803,37 @@ impl Widget for DesktopChrome {
             .filter(|rect| rect.area() > 0.0)
     }
 
-    /// A strip label's semantic target, pressed as a click on the label is.
-    /// The card names no targets: its elements are not carried out by a
-    /// target but pressed where they are drawn, which the host does through
+    /// A strip label's semantic target, pressed as a click on the label is;
+    /// and search's card, whose rows are the targets its host gave them,
+    /// activated as the person's click on the row. The card names no
+    /// targets otherwise: its elements are not carried out by a target but
+    /// pressed where they are drawn, which the host does through
     /// [`Widget::synthetic_accessibility_rect`].
     fn perform_semantic_action(
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut ui::widget::Edits<'_>,
-        _path: &ModelPath,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ModelPath,
     ) -> bool {
-        if !target.starts_with(crate::strip_switcher::TARGET_PREFIX)
-            || !matches!(action, ui::a11y::Action::Activate)
+        if target.starts_with(crate::strip_switcher::TARGET_PREFIX)
+            && matches!(action, ui::a11y::Action::Activate)
         {
-            return false;
+            let Some(answer) = self
+                .navigator
+                .activate_target(&self.navigator_frame, target)
+            else {
+                return false;
+            };
+            if let Some(navigation) = answer {
+                self.apply_navigation(navigation);
+            }
+            return true;
         }
-        let Some(answer) = self
-            .navigator
-            .activate_target(&self.navigator_frame, target)
-        else {
-            return false;
-        };
-        if let Some(navigation) = answer {
-            self.apply_navigation(navigation);
-        }
-        true
+        // Search is drawn from here, over the windows: a row read and
+        // activated there reaches the card as a click on it does.
+        self.search
+            .perform_semantic_action(target, action, state, path)
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
