@@ -244,10 +244,10 @@ fn attachments_are_copied_up_to_chats_limit_and_linked_beyond() {
     ];
     let plan = plan_created(&guild(), &serde_json::Value::Null, &event);
     assert_eq!(plan.files.len(), 1);
-    assert_eq!(
-        plan.files[0].fetch.attachment.as_ref().unwrap().kind,
-        "image"
-    );
+    assert!(matches!(
+        plan.files[0].fetch.attachment,
+        Some(InAttachment::Image { .. })
+    ));
     assert!(plan.posts.is_empty(), "the text goes with the file");
     assert_eq!(
         plan.files[0].post.text,
@@ -279,10 +279,7 @@ fn a_fetched_attachment_is_one_chat_posts() {
             .files
             .into_iter()
             .map(|post| {
-                let attachment = InAttachment {
-                    blob: "ab".repeat(32),
-                    ..post.fetch.attachment.unwrap()
-                };
+                let attachment = post.fetch.attachment.unwrap().fetched("ab".repeat(32), 10);
                 serde_json::from_value(serde_json::to_value(attachment).unwrap()).unwrap()
             })
             .collect();

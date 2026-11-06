@@ -475,20 +475,61 @@ pub struct FetchAssetOp {
     pub inline: bool,
 }
 
-/// A file an op imported, as the bridge describes it before posting it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// A file an op imported, as the bridge describes it before posting it: the
+/// same values a Chat message carries, so the bridge hands them on as they
+/// are.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
-pub struct InAttachment {
-    pub kind: String,
-    pub name: String,
-    #[serde(default)]
-    pub blob: String,
-    #[serde(default)]
-    pub width: u32,
-    #[serde(default)]
-    pub height: u32,
-    #[serde(default)]
-    pub size: u64,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InAttachment {
+    /// A picture, with the size Discord gave or the bytes did.
+    Image {
+        name: String,
+        #[serde(default)]
+        blob: String,
+        #[serde(alias = "width")]
+        w: u32,
+        #[serde(alias = "height")]
+        h: u32,
+    },
+    /// A clip, as wide as Discord says, `size` filled in by the result.
+    Video {
+        name: String,
+        #[serde(default)]
+        blob: String,
+        #[serde(alias = "width")]
+        w: u32,
+        #[serde(alias = "height")]
+        h: u32,
+        #[serde(default)]
+        size: u64,
+    },
+    /// Any other file.
+    File {
+        name: String,
+        #[serde(default)]
+        blob: String,
+        #[serde(default)]
+        size: u64,
+    },
+}
+
+impl InAttachment {
+    /// Itself, holding the bytes a fetch kept at `blob` of `size` bytes.
+    #[must_use]
+    pub fn fetched(self, blob: String, size: u64) -> Self {
+        match self {
+            Self::Image { name, w, h, .. } => Self::Image { name, blob, w, h },
+            Self::Video { name, w, h, .. } => Self::Video {
+                name,
+                blob,
+                w,
+                h,
+                size,
+            },
+            Self::File { name, .. } => Self::File { name, blob, size },
+        }
+    }
 }
 
 /// What an op settled with. Pointers the bridge program uses:
