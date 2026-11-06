@@ -496,7 +496,7 @@ impl Nodes {
     }
 
     /// Which rows start folded, given the rows the view says it holds open: every branch but
-    /// those.
+    /// those, and never the tree's own row, which holds the whole tree.
     fn folded_at_first(&self, expanded: &[ResourceId]) -> Vec<String> {
         let open: HashSet<String> = expanded
             .iter()
@@ -504,7 +504,7 @@ impl Nodes {
             .collect();
         self.branches
             .iter()
-            .filter(|key| !open.contains(*key))
+            .filter(|key| key.as_str() != TOP_LEVEL && !open.contains(*key))
             .cloned()
             .collect()
     }
