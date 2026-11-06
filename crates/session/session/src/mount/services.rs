@@ -96,6 +96,28 @@ impl Published for ServiceDoor {
         }
     }
 
+    /// An agent's or a script's invocation, attributed to it: the actor the session's door was
+    /// given is what the service records the change as, not the person seated here.
+    fn invoke_as(
+        &mut self,
+        actor: &str,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        _look: &mut tilo_surface_host::Look<'_>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        let invoker = tilo_actions::ActionInvoker::actor(actor);
+        match self.services.borrow_mut().invoke_as(
+            &invoker,
+            &address.resource,
+            &address.action,
+            arguments,
+        ) {
+            Ok(Started::Done(output)) => Ok(ResourceOperationStart::Completed(output)),
+            Ok(Started::Accepted) => Ok(ResourceOperationStart::Accepted),
+            Err(error) => Err(error),
+        }
+    }
+
     fn accessible_labels(&mut self) -> Vec<String> {
         Vec::new()
     }

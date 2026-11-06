@@ -1,8 +1,72 @@
 # Apps still doing for themselves what the document host now does
 # (docs/architecture/apps.md §8). One line per app, as `app: what`.
+# `runner` is the SDK runner joining a workspace on the app's behalf; the
+# rest is the app's own code (`broker`, `keys`, `storage`).
 # This list may only shrink: a slice that migrates an app deletes its
 # line, and a new app, or an added use, fails the ratchet.
 
+activity: runner
 agent: broker
+api-tester: runner
+backups: runner
+browser: runner
+calculator: runner
+calendar: runner
+camera: runner
+canvas: runner
+chat: runner
+chip-design: runner
+clocks: runner
+code-editor: runner
+contacts: runner
+containers: runner
+db-client: runner
+diffmerge: runner
+discord: runner
+disk-usage: runner
+disks: runner
+ebook: runner
+feeds: runner
+file-explorer: runner
+firewall: runner
+git-client: runner
+hex-editor: runner
+imager: runner
+launcher: runner
+logs: runner
+mail: runner
+maps: runner
+messages: runner
+model-providers: runner
+monitor: runner
+music: runner
+notes: runner
+osk: runner
+passwords: runner
+pdf-viewer: runner
+photos: runner
+poker: runner
+print-centre: runner
+publisher: runner
+remote: runner
+scratchpad: runner
+settings: runner
+sheets: runner
+shortcuts: runner
+slides: runner
+snippets: runner
+speed-test: runner
+store: runner
+tasks: runner
+terminal: runner
+themes: runner
 tilolang: broker
+totp: runner
+tube: runner
+typst-editor: runner
+video-editor: runner
+video-player: runner
+weather: runner
 web-search: broker
+windows: runner
+word-processor: runner
