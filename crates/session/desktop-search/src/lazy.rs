@@ -25,6 +25,8 @@ pub trait DesktopSearchApi {
     fn escape(&mut self) -> bool;
     fn take_choice(&mut self) -> Option<Target>;
     fn take_scope_widened(&mut self) -> bool;
+    fn refuse(&mut self, target: Target, why: String);
+    fn scope(&self) -> ui::search::Scope;
     fn results(&self) -> &[Hit];
     fn query(&self) -> &str;
     fn choose(&mut self, index: usize, argument: Option<String>) -> bool;
@@ -77,6 +79,12 @@ impl DesktopSearchApi for DesktopSearch {
     }
     fn take_scope_widened(&mut self) -> bool {
         Self::take_scope_widened(self)
+    }
+    fn refuse(&mut self, target: Target, why: String) {
+        Self::refuse(self, target, why);
+    }
+    fn scope(&self) -> ui::search::Scope {
+        Self::scope(self)
     }
     fn results(&self) -> &[Hit] {
         Self::results(self)
@@ -280,6 +288,21 @@ impl LazyDesktopSearch {
     /// What is typed; nothing while the code is on its way.
     pub fn query(&self) -> &str {
         self.search.as_ref().map_or("", |search| search.query())
+    }
+
+    /// The host could not carry out the row `target` names, for `why`: the
+    /// search opened again over it says so on that row.
+    pub fn refuse(&mut self, target: crate::Target, why: String) {
+        if let Some(search) = self.search.as_mut() {
+            search.refuse(target, why);
+        }
+    }
+
+    /// Where the open search stands, for asking it again where it was.
+    pub fn scope(&self) -> ui::search::Scope {
+        self.search
+            .as_ref()
+            .map_or(ui::search::Scope::Workspace, |search| search.scope())
     }
 
     /// Choose the shown row `index`, as a person choosing it does.
