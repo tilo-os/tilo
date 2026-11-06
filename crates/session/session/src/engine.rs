@@ -249,7 +249,13 @@ impl Engine {
             return Ok(None);
         }
         let reader = self.identity.device_cert.device_public_key;
-        let keys = &self.keys;
+        // Taken before the workspace's view is held: the channel service's
+        // pump settles the groups under its own lock and reads the
+        // workspace's governance there, so a read that asked it for keys
+        // while holding the view would wait on it as it waits on the view.
+        let history = self.keys.get().and_then(|keys| {
+            keys.history_keys(workspace, &collab_types::ChannelRoute::new(app, record))
+        });
         self.owner.with_current(workspace, |view| {
             match view.read_document_with_history(
                 reader,
@@ -258,9 +264,12 @@ impl Engine {
                 MAX_DOCUMENT_BYTES,
                 SystemTime::now(),
                 &mut |write| {
-                    keys.get()
+                    let keys = history
+                        .as_ref()
                         .ok_or("this session's channel service is not running")?
-                        .open_history_write(workspace, write)
+                        .as_ref()
+                        .map_err(Clone::clone)?;
+                    keys.open(write)
                 },
             )? {
                 DocumentRead::Captured(document) => Ok(Some(document.bytes)),

@@ -1,8 +1,56 @@
 //! Maintaining a sealed record's history: opening any of its writes, and
 //! sealing the checkpoint that replaces the ones it covers.
-use super::{ChannelAccess, ChannelKeyAccess, EncryptionMetadata, SignedOp, WorkspaceId};
+use super::{
+    ChannelAccess, ChannelContentKeys, ChannelKeyAccess, ChannelRoute, EncryptionMetadata,
+    SignedOp, WorkspaceId,
+};
+
+/// The keys that open a sealed record's history as a reader took them from
+/// the service once ([`ChannelKeyAccess::history_keys`]): every group it held
+/// then, and no lock of the service's.
+///
+/// A reader that opens a record's history while it holds a lock of the
+/// workspace's own takes these first, so the channel service is never asked
+/// for its keys under that lock: the service answers those questions by
+/// reading the workspace's governance, and its pump settles the groups under
+/// the service's lock and reads that governance there, so a reader waiting on
+/// the service while the pump waits on the workspace would wait forever.
+#[derive(Clone)]
+pub struct HistoryKeys(ChannelContentKeys);
+
+impl HistoryKeys {
+    /// Open `envelope`, a write of the record's history (a compaction
+    /// included), under any epoch these keys carry.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an epoch these keys do not carry and invalid ciphertext.
+    pub fn open(&self, envelope: &SignedOp) -> Result<Vec<u8>, String> {
+        let metadata = envelope.encryption.ok_or("the write is not sealed")?;
+        let ciphertext =
+            collab_types::sealed_ciphertext(envelope).map_err(|error| error.to_string())?;
+        self.0
+            .open_content(envelope.artifact, &metadata, &ciphertext)
+            .map(|plaintext| plaintext.to_vec())
+            .map_err(|error| error.to_string())
+    }
+}
 
 impl ChannelKeyAccess {
+    /// `route`'s keys as this device holds them now, for opening a sealed
+    /// record's history outside the service's lock ([`HistoryKeys`]).
+    /// `None` when this device takes part in no group that could carry the
+    /// route; [`Err`] when it does and holds none yet.
+    #[must_use]
+    pub fn history_keys(
+        &self,
+        workspace: WorkspaceId,
+        route: &ChannelRoute,
+    ) -> Option<Result<HistoryKeys, String>> {
+        self.record_keys(workspace, route)
+            .map(|keys| keys.map(HistoryKeys))
+    }
+
     /// Open `envelope`, a write of a sealed record's history (a compaction
     /// included), under any epoch whose key this device holds: what a key
     /// holder compacting the history reads. Call it only for writes already
@@ -18,15 +66,11 @@ impl ChannelKeyAccess {
         envelope: &SignedOp,
     ) -> Result<Vec<u8>, String> {
         let metadata = envelope.encryption.ok_or("the write is not sealed")?;
-        let ciphertext =
-            collab_types::sealed_ciphertext(envelope).map_err(|error| error.to_string())?;
         let keys = self
             .run(|service| service.record_keys(workspace, metadata.channel, None))
             .ok_or("channel service unavailable")?
             .ok_or("this device holds no existing key for the history's channel")??;
-        keys.open_content(envelope.artifact, &metadata, &ciphertext)
-            .map(|plaintext| plaintext.to_vec())
-            .map_err(|error| error.to_string())
+        HistoryKeys(keys).open(envelope)
     }
 
     /// Seal `cleartext`, the merged history of a sealed record, as that
