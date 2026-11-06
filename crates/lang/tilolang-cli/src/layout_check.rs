@@ -1456,6 +1456,45 @@ mod windows {
         out
     }
 
+    /// Every node of `kind` under `node`, in drawing order.
+    fn nodes<'a>(
+        node: &'a tilo_ui_host::UiNode,
+        kind: &str,
+        out: &mut Vec<&'a tilo_ui_host::UiNode>,
+    ) {
+        if node.kind == kind {
+            out.push(node);
+        }
+        for child in &node.children {
+            nodes(child, kind, out);
+        }
+    }
+
+    /// The change marks the rows of the window's lists draw, by the row they stand in.
+    fn row_marks(
+        rows: &std::collections::HashMap<String, tilo_ui_host::UiNode>,
+    ) -> Vec<tilo_ui_host::UiNode> {
+        let mut out = Vec::new();
+        for row in rows.values() {
+            let mut marks = Vec::new();
+            nodes(row, "ui.ChangeMark", &mut marks);
+            out.extend(marks.into_iter().cloned());
+        }
+        out
+    }
+
+    /// The mark a window's header carries: what changed in what it shows, and by whom.
+    fn window_mark(tree: &tilo_ui_host::UiNode) -> Option<tilo_ui_host::UiNode> {
+        let mut marks = Vec::new();
+        nodes(tree, "ui.ChangeMark", &mut marks);
+        marks
+            .into_iter()
+            .find(|mark| {
+                mark.props.get("window") == Some(&tilo_render_protocol::patch::Value::Bool(true))
+            })
+            .cloned()
+    }
+
     /// The window's own tabs under `root`: the strip a `TabStrip` draws (it draws as the
     /// toolkit's bar), never a tab bar an app puts in its own content.
     fn tab_strips(root: &dyn Widget) -> Vec<&dyn Widget> {
@@ -2203,6 +2242,102 @@ mod windows {
         assert_ne!(
             super::on_layer("the traditional desktop", Some("Shell")),
             super::on_layer("the traditional desktop", None)
+        );
+    }
+
+    #[test]
+    fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
+        // The marks a row and a window carry are read from the record's steps, which are the
+        // store's versions and the person's seen marks: a scenario staged for a capture is
+        // written down as a session writes it, or the capture shows nothing of what it staged.
+        tilo_ui_host::i18n::ensure();
+        ui::clock::freeze_for_capture();
+        let packages = tasks_packages();
+
+        let mut away = stage::Staged::over(
+            "so.tilo.lang.tasks",
+            &packages,
+            "while you were away",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+            &["place=Task.today".to_owned()],
+        )
+        .expect("the scenario stages");
+        away.lay_out(
+            (1280, 800),
+            ui::Theme::light(),
+            ui::interaction::InteractionEnvironment::POINTER,
+            1.0,
+        )
+        .expect("the app lays out");
+        let rows = row_marks(&away.rows());
+        assert!(
+            rows.len() >= 2,
+            "the rows of the tasks Bo and the agent changed are marked: {rows:?}"
+        );
+        for mark in &rows {
+            assert!(
+                matches!(
+                    mark.props.get("by"),
+                    Some(tilo_render_protocol::patch::Value::Principal(_))
+                ),
+                "a marked row says who changed it: {mark:?}"
+            );
+            assert!(
+                matches!(
+                    mark.props.get("kind"),
+                    Some(tilo_render_protocol::patch::Value::Text(_))
+                ),
+                "a marked row says what they did: {mark:?}"
+            );
+        }
+        let composed = away.composed().expect("the window composed its view");
+        let window = window_mark(&composed)
+            .unwrap_or_else(|| panic!("the window's header says what changed in it: {composed:?}"));
+        assert!(
+            matches!(
+                window.props.get("count"),
+                Some(tilo_render_protocol::patch::Value::Int(n)) if *n >= 2
+            ),
+            "the window counts the changes she has not seen: {window:?}"
+        );
+
+        let mut changed = stage::Staged::over(
+            "so.tilo.lang.tasks",
+            &packages,
+            "a task that changed since you looked",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        changed
+            .lay_out(
+                (1280, 800),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::POINTER,
+                1.0,
+            )
+            .expect("the app lays out");
+        let composed = changed.composed().expect("the window composed its view");
+        let window = window_mark(&composed).unwrap_or_else(|| {
+            panic!("the page of the task that changed says the change is unseen: {composed:?}")
+        });
+        assert!(
+            matches!(
+                window.props.get("count"),
+                Some(tilo_render_protocol::patch::Value::Int(1))
+            ),
+            "the page counts its one change: {window:?}"
+        );
+        assert!(
+            matches!(
+                window.props.get("by"),
+                Some(tilo_render_protocol::patch::Value::Principal(_))
+            ),
+            "the page names who changed it: {window:?}"
         );
     }
 

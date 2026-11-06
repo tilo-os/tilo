@@ -79,6 +79,9 @@ type Task {
         hide folded
         hide subtasks
         hide subtasks_done
+        // A task's list is shared work, so a colleague's change of a task is marked as an
+        // agent's is: what someone else moved, gave away or finished reads where it happened.
+        mark others
     }
 }
 
@@ -1187,4 +1190,44 @@ scenario "a discussion on a task" -> Task {
         from: t,
     )
     t
+}
+
+/// A day away from the week's tasks: the person looking wrote them, and while they were out a
+/// colleague and their agent changed three of them yesterday, so the window's header counts
+/// what it holds unseen and the rows of the two in today's list are marked. The finished task's
+/// mark is read in Done, where it stands now. Its place is Today:
+/// `layout-check --state place=Task.today` lays the window out there.
+scenario "while you were away" {
+    let ada = invoker
+    let bo = person("Bo")
+    let scout = agent("Scout")
+    // Ada wrote the week's tasks and has the milk for today.
+    let paper = Task(title: "Sort the paper mail")
+    let permit = Task(title: "Ask the neighbours about the parking permit")
+    let survey = Task(title: "Read the survey responses", due: 2026-07-02)
+    let milk = Task(title: "Buy oat milk and eggs", due: 2026-06-30)
+    paper = tasks.items.insert(paper)
+    permit = tasks.items.insert(permit)
+    survey = tasks.items.insert(survey)
+    milk = tasks.items.insert(milk)
+    // While she was out, Bo took the mail; their agent brought the survey's day forward to
+    // today and finished the milk.
+    invoke(assign(paper, .some(ada)), by: bo, at: 2026-06-29T16:20Z)
+    invoke(schedule(survey, .some(2026-06-30)), by: scout, at: 2026-06-29T17:05Z)
+    invoke(check(milk, true), by: scout, at: 2026-06-29T17:12Z)
+}
+
+/// A task the person looking wrote, which a colleague was through since: its page says the
+/// change of it is unseen, and its history tells the change and who made it.
+scenario "a task that changed since you looked" -> Task {
+    let bo = person("Bo")
+    let call = Task(
+        title: "Call the landlord about the boiler",
+        notes: RichText("Ask whether Tuesday morning works for the engineer."),
+        due: 2026-07-06,
+        priority: .medium,
+    )
+    call = tasks.items.insert(call)
+    invoke(schedule(call, .some(2026-06-30)), by: bo, at: 2026-06-29T16:32Z)
+    call
 }

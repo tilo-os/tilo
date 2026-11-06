@@ -1204,10 +1204,18 @@ impl Publications {
                 self.named_by.remove(doc);
                 continue;
             }
-            let fields = changes.docs.get(doc);
+            // The versions of a resource name no value a record is published as: marks and
+            // history read them, and what the tree shows stays as it was.
+            let fields: Option<BTreeSet<_>> = changes.docs.get(doc).map(|fields| {
+                fields
+                    .iter()
+                    .filter(|key| key.field != tilolang_runtime::DOC_VERSIONS)
+                    .cloned()
+                    .collect()
+            });
             let whole = changes.whole.contains(doc)
                 || !self.trees.contains_key(doc)
-                || fields.is_some_and(|fields| {
+                || fields.as_ref().is_some_and(|fields| {
                     fields
                         .iter()
                         .any(|key| key.resource == doc && key.field == ANY_FIELD)
@@ -1217,10 +1225,14 @@ impl Publications {
                 continue;
             }
             let (Some(fields), Some((types, schema))) =
-                (fields, self.record_types(host, planner, doc))
+                (fields.as_ref(), self.record_types(host, planner, doc))
             else {
                 continue;
             };
+            // Nothing the tree shows was named.
+            if fields.is_empty() {
+                continue;
+            }
             let Some(tree) = self.trees.get_mut(doc) else {
                 continue;
             };

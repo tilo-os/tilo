@@ -47,6 +47,7 @@ use automerge::{ChangeHash, ObjType, ReadDoc, ScalarValue, Value as AmValue};
 use serde_json::Value as Json;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Model, Segment};
+use tilolang_runtime::DOC_VERSIONS as VERSIONS;
 use tilolang_runtime::Journal;
 use tilolang_runtime::ids::{AppId, DocId, FieldId, RunId, TypeId};
 use tilolang_runtime::store::{
@@ -694,6 +695,33 @@ fn holds_heads(doc: &Doc, heads: &[ChangeHash]) -> bool {
         .all(|head| doc.committed_document().get_change_by_hash(head).is_some())
 }
 
+/// Name each resource in `ends` as changed in its versions: the record's changes made them,
+/// which marks and history read, and a change reaches the views of a resource even when the
+/// values it writes read as the ones the store already held, as they do when the steps were
+/// written locally first. A document the change reached whole names no field and is left as
+/// it is: every view of it reads the document anew.
+fn name_version_changes(ends: &Ends, docs: &mut BTreeMap<DocId, Vec<FieldKey>>) {
+    for resource in ends.keys() {
+        let doc = doc_of(resource);
+        match docs.get_mut(doc) {
+            Some(fields) if fields.is_empty() => {}
+            Some(fields) => fields.push(FieldKey {
+                resource: resource.clone(),
+                field: VERSIONS.to_owned(),
+            }),
+            None => {
+                docs.insert(
+                    doc.to_owned(),
+                    vec![FieldKey {
+                        resource: resource.clone(),
+                        field: VERSIONS.to_owned(),
+                    }],
+                );
+            }
+        }
+    }
+}
+
 /// Every record of `app` in `docs`, reached as a whole, with those of `before` that are gone:
 /// what derives a package's index anew where it stands.
 fn everything(
@@ -930,6 +958,7 @@ impl TiloStore {
         for (doc, keys) in derived {
             docs.entry(doc).or_default().extend(keys);
         }
+        name_version_changes(&ends, &mut docs);
         for fields in docs.values_mut() {
             fields.sort();
             fields.dedup();
@@ -1201,6 +1230,17 @@ impl TiloStore {
     #[must_use]
     pub fn resource_of(&self, doc: &str) -> Option<(AppId, TypeId)> {
         self.held().index.get(doc).cloned()
+    }
+
+    /// Whether the resource `doc` is one its origin derives: it lives in the store's unsaved
+    /// layer, so a change of it is never written into the workspace record.
+    #[must_use]
+    pub fn derives(&self, doc: &str) -> bool {
+        self.held()
+            .index
+            .get(doc)
+            .and_then(|(_, ty)| lookup(ty))
+            .is_some_and(crate::schema::TypeSchema::derived)
     }
 
     /// Whether the resource `doc` exists.

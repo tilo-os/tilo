@@ -622,9 +622,12 @@ view history<R>(of: R) {
                 // What was done: the sentence its last change says, or, for a step of a run,
                 // who ran it and what it ran.
                 stack(gap: .related) {
-                    row(gap: .related, align: .center) {
+                    // The sentence takes the room the avatar leaves and the time and the button
+                    // stand at its end; a window too narrow for all three wraps them onto a line
+                    // of their own rather than squeezing the avatar under what follows it.
+                    row(gap: .related, align: .center, wrap: true) {
                         avatar(s.who)
-                        stack(gap: .tight) {
+                        stack(gap: .tight, fill: 1.0) {
                             if let run = s.task {
                                 if let v = s.versions.last() {
                                     ui.Text(v.actor, role: .label)
@@ -641,7 +644,6 @@ view history<R>(of: R) {
                                 )
                             }
                         }
-                        spacer()
                         ui.Time(s.at, role: .caption, secondary: true)
                         if let run = s.task {
                             ui.Button(phrase("tilolang-history-undo-run")) {

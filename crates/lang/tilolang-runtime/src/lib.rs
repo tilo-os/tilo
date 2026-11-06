@@ -85,6 +85,7 @@ pub use exec::InvokeOutcome;
 pub use flow::{FlowOutcome, Journal, JournalEntry, Resolution, Suggestion};
 pub use ids::{ModuleHash, PackageId, Principal};
 pub use live::LiveStats;
+pub use marks::DOC_VERSIONS;
 pub use meta::Meta;
 pub use project::ProjectOptions;
 pub use render::ViewTarget;

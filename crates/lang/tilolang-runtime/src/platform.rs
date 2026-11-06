@@ -1143,6 +1143,7 @@ impl Core {
             mark.as_ref(),
             &runs,
             mark_others,
+            &|who| self.is_agent(who),
         ))
     }
 
@@ -1229,7 +1230,15 @@ impl Core {
                 continue;
             }
             let seen = self.seen_mark(person, &candidate.id_string());
-            if !crate::seen::unseen(&versions, person, seen.as_ref(), &runs, mark_others).is_empty()
+            if !crate::seen::unseen(
+                &versions,
+                person,
+                seen.as_ref(),
+                &runs,
+                mark_others,
+                &|who| self.is_agent(who),
+            )
+            .is_empty()
             {
                 return Ok(Some(id.to_string()));
             }
