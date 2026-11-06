@@ -2594,3 +2594,44 @@ fn every_declared_action_is_offered() {
         "every action is offered, in declaration order"
     );
 }
+
+/// Checking a task off reaches what reads the store once: the change the action committed, and
+/// not the same change again when the record takes it in and the store catches up with it. The
+/// record's changes come back naming the run they were made in, and the store knows the runs it
+/// committed.
+#[test]
+fn a_step_is_heard_once_when_the_record_takes_it_in() {
+    let (mut ada, root) = workspace();
+    for title in ["Buy oat milk", "Pay the electricity bill"] {
+        let made = call(&ada, "new_task", create(&root, title));
+        call(
+            &ada,
+            "schedule",
+            vec![made, Value::some(Value::text("2026-10-29"))],
+        );
+        ada.commit();
+    }
+    let mut view = ada.view(APP);
+    go_to(&mut view, "Today");
+    let bill = task(&ada, "Pay the electricity bill");
+    let of = target(&bill).expect("a task");
+    let doc = ada.host.root_of(APP).unwrap().doc;
+    let heard = crate::sync::listen(&ada, &doc);
+    let (_, key, checked) = home_row_of(&mut view, &of);
+    assert!(!checked, "the box is empty");
+    view.fire_with(&key, "check", None).unwrap();
+    assert_eq!(
+        heard.borrow().len(),
+        1,
+        "the step is one change of the record"
+    );
+    // The record takes the step in, and the store follows the record: the same change, already
+    // heard, is no second one.
+    ada.commit();
+    assert_eq!(
+        heard.borrow().len(),
+        1,
+        "the record's copy of the step is not another change"
+    );
+    assert_eq!(read(&ada, &bill, "done"), Value::Bool(true), "it is done");
+}

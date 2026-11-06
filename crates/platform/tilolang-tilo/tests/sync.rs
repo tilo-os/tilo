@@ -59,7 +59,7 @@ fn item_ids(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str) -> Vec
 }
 
 /// What the store tells a subscriber of `doc`.
-fn listen(replica: &Replica, doc: &str) -> Rc<RefCell<Vec<ChangeSummary>>> {
+pub(crate) fn listen(replica: &Replica, doc: &str) -> Rc<RefCell<Vec<ChangeSummary>>> {
     let heard: Rc<RefCell<Vec<ChangeSummary>>> = Rc::default();
     let sink = Rc::clone(&heard);
     let mut store = replica.host.store().clone();

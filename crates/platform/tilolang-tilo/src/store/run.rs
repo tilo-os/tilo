@@ -31,6 +31,16 @@ impl Inner {
         let Some(begin) = self.runs.remove(run) else {
             return;
         };
+        let dropped: Vec<tilo_actions::InvocationId> = self
+            .committed
+            .iter()
+            .filter(|committed| committed.ticket >= begin.ticket)
+            .filter_map(|committed| committed.action.authorship.invocation.as_ref())
+            .map(|run| crate::action::invocation_id(run))
+            .collect();
+        for run in &dropped {
+            self.own_dropped(run);
+        }
         self.committed
             .retain(|committed| committed.ticket < begin.ticket);
         if self.local.len() > begin.local {
