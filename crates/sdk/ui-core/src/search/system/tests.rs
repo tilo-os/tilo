@@ -50,7 +50,7 @@ fn strongest_group_precedes_kind_order_and_ties_preserve_provider_order() {
     );
 }
 #[test]
-fn an_app_to_install_follows_every_hit_the_person_has_however_strong() {
+fn a_store_offer_follows_every_hit_the_person_has_however_strong() {
     // ((kind, availability, name), merged strength)
     let mut merged = vec![
         (
@@ -93,8 +93,8 @@ fn an_app_to_install_follows_every_hit_the_person_has_however_strong() {
         names,
         [
             "installed app",
-            "tilo app",
             "file",
+            "tilo app",
             "exact store page",
             "prefix store page"
         ]
