@@ -1,5 +1,4 @@
 //! A viewer-local reading page using the toolkit's painted scroll region.
-use super::history::source_label;
 use super::{CenterLayout, Notification};
 use crate::i18n::t;
 use ui::TextRole;
@@ -178,11 +177,9 @@ impl NotificationReader {
         let title_style = theme.text(TextRole::Heading);
         let source_style = theme.text(TextRole::Caption);
         let body_style = theme.text(TextRole::Body);
-        let source = source_label(notification).unwrap_or_default();
+        let source = notification.sender_name();
         let hidden = (!notification.show_preview).then(|| t("notification-preview-hidden"));
         let body = hidden.as_deref().unwrap_or(&notification.body);
-        // A notice with no source has no source line, nor its step.
-        let source_gap = if source.is_empty() { 0.0 } else { gap };
         // The overflow lane changes wrap width. Measure again after resolving
         // it so neither the last line nor the scrollbar clips the document.
         let mut title_h = 0.0;
@@ -194,16 +191,10 @@ impl NotificationReader {
                 text.measure_style(&notification.title, Some(width), &title_style)
                     .1,
             );
-            source_h = if source.is_empty() {
-                0.0
-            } else {
-                f64::from(text.measure_style(&source, Some(width), &source_style).1)
-            };
+            source_h = f64::from(text.measure_style(&source, Some(width), &source_style).1);
             body_h = f64::from(text.measure_style(body, Some(width), &body_style).1);
-            self.region.set_content_size(
-                viewport.width(),
-                title_h + source_h + body_h + 3.0 * gap + source_gap,
-            );
+            self.region
+                .set_content_size(viewport.width(), title_h + source_h + body_h + 4.0 * gap);
         }
         let width = f32_of_f64((self.region.content_rect().width() - 2.0 * gap).max(1.0));
         if self.focus_visible && !self.back_focused {
@@ -227,20 +218,18 @@ impl NotificationReader {
                     title_rect,
                     theme.tokens.colors.text_primary,
                 );
-                if !source.is_empty() {
-                    let source_rect = Rect::new(
-                        gap,
-                        2.0 * gap + title_h,
-                        right,
-                        2.0 * gap + title_h + source_h,
-                    );
-                    ui::widget::TextBlockFace::new(&source, &source_style).paint(
-                        &mut ui::paint::PaintCtx::new(scene, content, text, theme),
-                        source_rect,
-                        theme.tokens.colors.text_dim,
-                    );
-                }
-                let body_top = 2.0 * gap + source_gap + title_h + source_h;
+                let source_rect = Rect::new(
+                    gap,
+                    2.0 * gap + title_h,
+                    right,
+                    2.0 * gap + title_h + source_h,
+                );
+                ui::widget::TextBlockFace::new(&source, &source_style).paint(
+                    &mut ui::paint::PaintCtx::new(scene, content, text, theme),
+                    source_rect,
+                    theme.tokens.colors.text_dim,
+                );
+                let body_top = 3.0 * gap + title_h + source_h;
                 let body_rect = Rect::new(gap, body_top, right, body_top + body_h);
                 ui::widget::TextBlockFace::new(body, &body_style).paint(
                     &mut ui::paint::PaintCtx::new(scene, content, text, theme),

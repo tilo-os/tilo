@@ -206,6 +206,7 @@ pub(crate) fn shown(
         sent.app_icon.as_deref(),
         sent.image_data
             .map(|pixels| ui::raster::rgba8(pixels.rgba, pixels.width, pixels.height)),
+        notification.app_name.as_deref(),
     );
     notification.app_id = app_id;
     // A person named by an attributed communications app leads the

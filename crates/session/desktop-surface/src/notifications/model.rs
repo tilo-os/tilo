@@ -39,8 +39,9 @@ impl NotificationSeverity {
 }
 
 /// What a notification is about, when the desktop itself knows: plain
-/// information leads with its glyph. `Generic` has none, so a card leads
-/// with its sender instead.
+/// information leads with its glyph. `Generic` has none of its own, so the
+/// notification leads with its sender's mark, and with the system's bell
+/// when no app is named.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum NotificationIconKind {
     #[default]
@@ -389,6 +390,51 @@ impl Notification {
     /// What is left of the banner's time on screen at `now`.
     pub fn time_left(&self, now: Instant) -> Duration {
         self.dwell.left(self.dismiss_after, now)
+    }
+
+    /// The mark this notification leads with wherever a person meets it:
+    /// the app's own artwork when one arrived with it, else the glyph for
+    /// what the notification is about, else its sender's glyph, and the
+    /// system's bell for a notification from no app. Never an empty leading
+    /// gutter.
+    pub fn mark(&self) -> ui::widget::toast::SenderMark<'_> {
+        let glyph = self
+            .icon_kind
+            .icon()
+            .or_else(|| self.sender_glyph())
+            .unwrap_or(ui::icons::Icon::Bell);
+        ui::widget::toast::SenderMark::new(self.app_image.as_ref(), Some(glyph))
+    }
+
+    /// The glyph standing for this notification's sender. An app the
+    /// launcher attributed draws its own glyph; a sender the launcher only
+    /// knows by the executable that posted (a script, a tool) draws the glyph
+    /// of the name its row shows, so a row never reads "Notes" beside a
+    /// window.
+    fn sender_glyph(&self) -> Option<ui::icons::Icon> {
+        if let Some(app) = self.app_id.as_deref()
+            && !app.trim_start().starts_with('/')
+        {
+            return Some(ui::icons::app_glyph(app, None));
+        }
+        self.app_name
+            .as_deref()
+            .map(|name| ui::icons::app_glyph(&name.trim().to_lowercase(), None))
+            .or_else(|| {
+                self.app_id
+                    .as_deref()
+                    .map(|app| ui::icons::app_glyph(app, None))
+            })
+    }
+
+    /// The name every surface attributes this notification to: the sending
+    /// app's own name, its verified id when it has no display name, else the
+    /// desktop itself. Never empty.
+    pub fn sender_name(&self) -> String {
+        self.app_name
+            .clone()
+            .or_else(|| self.app_id.clone())
+            .unwrap_or_else(|| crate::i18n::t("notification-group-system"))
     }
 }
 

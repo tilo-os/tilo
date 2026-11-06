@@ -1502,13 +1502,14 @@ mod tests {
         .unwrap();
         let notice = pair.notice("Pair “Phone”?", "");
         assert_eq!(
-            crate::notifications::source_label(&notice),
-            Some(crate::i18n::t("host-action-source-devices"))
+            notice.sender_name(),
+            crate::i18n::t("host-action-source-devices")
         );
         let plain: HostAction = serde_json::from_str(r#"{"id":"x","title":"X"}"#).unwrap();
         assert_eq!(
-            crate::notifications::source_label(&plain.notice("X", "")),
-            None
+            plain.notice("X", "").sender_name(),
+            crate::i18n::t("notification-group-system"),
+            "a notice from no named part of the desktop still says who it is from"
         );
     }
 

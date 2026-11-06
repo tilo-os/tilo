@@ -544,8 +544,6 @@ notification-center-back-to-list = Back to notifications
 history-severity-info = Information
 history-severity-warning = Warning
 history-severity-error = Error
-history-notification-description = { $severity }. { $time }
-history-notification-description-body = { $severity }. { $time }. { $body }
 history-notification-description-sourced = { $severity }. From { $source }. { $time }
 history-notification-description-sourced-body = { $severity }. From { $source }. { $time }. { $body }
 host-action-source-identity = Identity
@@ -561,10 +559,6 @@ notification-reply = Reply
 notification-center-dismiss = Dismiss
 notification-center-hand-to = Hand to { $agent }
 notification-center-hand-to-description = Give this notification to the workspace agent as a task.
-notification-center-group-count = { $count ->
-        [one] { $count } notification
-       *[other] { $count } notifications
-    }
 notification-lock-count = { $count ->
     [one] 1 notification
    *[other] { $count } notifications

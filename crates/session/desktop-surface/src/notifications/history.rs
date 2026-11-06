@@ -23,11 +23,7 @@ pub fn group_key(notification: &Notification) -> Option<String> {
 
 /// Label painted and announced for a group: the verified display name.
 pub fn group_label(notification: &Notification) -> String {
-    notification
-        .app_name
-        .clone()
-        .or_else(|| notification.app_id.clone())
-        .unwrap_or_else(|| t("notification-group-system"))
+    notification.sender_name()
 }
 
 /// One row of the notification centre, newest first.
@@ -136,17 +132,6 @@ pub fn relative_time(notification: &Notification, now: Instant) -> String {
     ui::format::relative(i64::try_from(seconds).unwrap_or(i64::MAX))
 }
 
-/// The retained notification's source line: its verified app, or the
-/// part of the system that asks. `None` when nothing names one: a generic
-/// "System" would only repeat that the desktop showed it.
-pub fn source_label(notification: &Notification) -> Option<String> {
-    notification
-        .app_name
-        .as_deref()
-        .or(notification.app_id.as_deref())
-        .map(str::to_string)
-}
-
 fn severity_label(severity: NotificationSeverity) -> String {
     match severity {
         NotificationSeverity::Info => t("history-severity-info"),
@@ -160,12 +145,12 @@ fn severity_label(severity: NotificationSeverity) -> String {
 pub fn accessible_description(notification: &Notification, now: Instant) -> String {
     let severity = severity_label(notification.severity);
     let time = relative_time(notification, now);
-    let mut args = vec![("severity", severity.into()), ("time", time.into())];
-    let mut key = String::from("history-notification-description");
-    if let Some(source) = source_label(notification) {
-        args.push(("source", source.into()));
-        key.push_str("-sourced");
-    }
+    let mut args = vec![
+        ("severity", severity.into()),
+        ("time", time.into()),
+        ("source", notification.sender_name().into()),
+    ];
+    let mut key = String::from("history-notification-description-sourced");
     if !notification.body.is_empty() {
         args.push(("body", notification.body.as_str().into()));
         key.push_str("-body");

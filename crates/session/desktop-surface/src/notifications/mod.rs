@@ -23,7 +23,7 @@ pub use center::{
 };
 pub use history::{
     HistoryActivation, HistoryRow, RowIdentity, accessible_description, group_key, group_label,
-    history_rows, relative_time, source_label,
+    history_rows, relative_time,
 };
 pub use lazy::{
     CentreApi, MakeNotificationCentre, NOTIFICATION_CENTRE, builtin_notification_centre,

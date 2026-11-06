@@ -562,8 +562,6 @@ notification-center-back-to-list = Zurück zu den Benachrichtigungen
 history-severity-info = Information
 history-severity-warning = Warnung
 history-severity-error = Fehler
-history-notification-description = { $severity }. { $time }
-history-notification-description-body = { $severity }. { $time }. { $body }
 history-notification-description-sourced = { $severity }. Von { $source }. { $time }
 history-notification-description-sourced-body = { $severity }. Von { $source }. { $time }. { $body }
 host-action-source-identity = Identität
@@ -579,10 +577,6 @@ notification-reply = Antworten
 notification-center-dismiss = Verwerfen
 notification-center-hand-to = An { $agent } übergeben
 notification-center-hand-to-description = Übergibt diese Benachrichtigung als Aufgabe an den Agenten des Arbeitsbereichs.
-notification-center-group-count = { $count ->
-        [one] { $count } Benachrichtigung
-       *[other] { $count } Benachrichtigungen
-    }
 notification-lock-count = { $count ->
     [one] 1 Benachrichtigung
    *[other] { $count } Benachrichtigungen
