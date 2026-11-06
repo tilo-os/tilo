@@ -221,6 +221,57 @@ fn the_panel_opened_from_the_bar_shows_what_the_services_publish() {
     session.stop_surface("quick-settings");
 }
 
+/// Escape is the panel's own while a page of it is open: the panel goes back
+/// a page and answers that it did, and only its main page has nowhere left to
+/// go, which is where the session closes it.
+#[test]
+fn the_panel_answers_whether_it_had_a_page_to_go_back_to() {
+    let mut laptop = session_of_device(&[panel()], Machine::Owned);
+    let session = &mut laptop.session;
+    open_the_panel(session);
+    until_ready(session, "toggle-wifi");
+
+    // The controls are the page everything goes back to: nothing is behind
+    // them, so Escape closes the panel there.
+    let handled = went_back(ask_ended(session, "back", None));
+    assert!(!handled, "the controls have nothing behind them");
+
+    // A section's page is the controls' own: Escape returns to them, and the
+    // panel stays up to be closed from there.
+    until_ready(session, "open-section");
+    let opened = ask_ended(session, "open-section", Some(json!({ "section": "wifi" })));
+    assert!(
+        matches!(opened, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "the panel opened its networks: {opened:?}"
+    );
+    let handled = went_back(ask_ended(session, "back", None));
+    assert!(handled, "the networks go back to the controls");
+    assert!(
+        session.quick_settings_open(),
+        "the panel is still up after going back a page"
+    );
+    assert!(
+        !went_back(ask_ended(session, "back", None)),
+        "and the controls, reached again, have nothing behind them"
+    );
+
+    session.stop_surface("quick-settings");
+}
+
+/// Whether the panel answered that it went back a page, from what it said
+/// when it ran `back`.
+fn went_back(ended: ui::tilo_actions::InvocationUpdate) -> bool {
+    let ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } = ended else {
+        panic!("the panel did not answer going back: {ended:?}");
+    };
+    output
+        .value
+        .as_ref()
+        .and_then(|value| value.get("handled"))
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| panic!("the panel says whether it went back: {:?}", output.value))
+}
+
 /// The panel on a laptop's screen, the size a person's session gives it: its
 /// card stands over the desk rather than on a ground of its own, and it keeps
 /// to the output instead of running past its edge.

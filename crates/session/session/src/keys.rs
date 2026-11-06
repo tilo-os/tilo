@@ -387,6 +387,10 @@ pub(crate) struct DeskKeys {
     overlays: Overlays,
     /// The desk's own overlays, where Alt+Tab's walk lives.
     switcher: Option<Rc<crate::overlays::Overlays>>,
+    /// What the keys ask the panel's own app, when this device has one and
+    /// draws it: Escape asks it to go back a page, and the panel answers
+    /// whether it had one.
+    panel: Option<Rc<RefCell<Vec<&'static str>>>>,
 }
 
 impl DeskKeys {
@@ -397,6 +401,7 @@ impl DeskKeys {
             fold,
             overlays,
             switcher: None,
+            panel: None,
         }
     }
 
@@ -404,6 +409,14 @@ impl DeskKeys {
     #[must_use]
     pub(crate) fn with_switcher(mut self, switcher: Rc<crate::overlays::Overlays>) -> Self {
         self.switcher = Some(switcher);
+        self
+    }
+
+    /// The same, with the queue the panel's own app is asked through, when
+    /// this device has one and draws it.
+    #[must_use]
+    pub(crate) fn with_panel(mut self, asks: Option<Rc<RefCell<Vec<&'static str>>>>) -> Self {
+        self.panel = asks;
         self
     }
 }
@@ -521,6 +534,8 @@ pub(crate) struct SessionKeys {
     /// The desk's own overlays, where Alt+Tab's walk lives: the keys it
     /// answers while it is up, and the chord that opens it.
     switcher: Option<Rc<crate::overlays::Overlays>>,
+    /// What the keys ask the panel's own app, when this device draws it.
+    panel: Option<Rc<RefCell<Vec<&'static str>>>>,
     /// The shortcut resources whose chords are held down, by key.
     held: RefCell<BTreeMap<u32, String>>,
     /// The controller the person last drove the desktop with, which a press
@@ -566,6 +581,7 @@ impl SessionKeys {
             fold: desk.fold,
             overlays: desk.overlays,
             switcher: desk.switcher,
+            panel: desk.panel,
             held: RefCell::new(BTreeMap::new()),
             controller,
             controller_keys,
@@ -1008,6 +1024,16 @@ impl SurfaceHost for SessionKeys {
             return;
         }
         if let Some(slot) = self.closes_the_top_surface(key) {
+            if slot == Slot::QuickSettings
+                && let Some(asks) = &self.panel
+            {
+                // The panel's own pages are its own: Escape goes back one of
+                // them, and the panel answers whether it had one to go back
+                // to (`Shared::panel_back`). Its main page has none, and the
+                // session closes the panel there.
+                asks.borrow_mut().push("back");
+                return;
+            }
             self.invocations
                 .borrow_mut()
                 .push(Invocation::new(OVERLAYS, "close").with("slot", slot.as_str()));
@@ -1618,6 +1644,50 @@ mod tests {
             keys.key(&key);
             assert_eq!(asked(&keys), vec![desk("commit-switcher")], "{commit:#x}");
         }
+    }
+
+    #[test]
+    fn escape_asks_the_panel_to_go_back_before_it_closes_it() {
+        // The panel's app draws the quick settings on this device: Escape is
+        // its own pages' first, and the session waits for its answer.
+        let asks = Rc::new(RefCell::new(Vec::new()));
+        let overlays = Overlays::new();
+        overlays.open(Slot::QuickSettings, None);
+        let mut keys = SessionKeys::new(
+            Rc::new(RefCell::new(ShortcutConfig::default())),
+            Presses::default(),
+            None,
+            GuideKeys::default(),
+            DeskKeys::new(DeskFold::default(), overlays.clone()).with_panel(Some(Rc::clone(&asks))),
+            None,
+            ControllerKeys::default(),
+            Rc::default(),
+        );
+        let escape = key(keysyms::Escape, None, KeyModifiers::default());
+        keys.key(&escape);
+        assert_eq!(*asks.borrow(), ["back"], "the panel goes back a page");
+        assert!(
+            asked(&keys).is_empty(),
+            "nothing closes until the panel says it has nowhere left to go"
+        );
+
+        // A device whose shell draws the quick settings has no panel app to
+        // ask: Escape closes the surface itself.
+        let mut shell = SessionKeys::new(
+            Rc::new(RefCell::new(ShortcutConfig::default())),
+            Presses::default(),
+            None,
+            GuideKeys::default(),
+            DeskKeys::new(DeskFold::default(), overlays),
+            None,
+            ControllerKeys::default(),
+            Rc::default(),
+        );
+        shell.key(&escape);
+        assert_eq!(
+            asked(&shell),
+            vec![Invocation::new(OVERLAYS, "close").with("slot", "quick-settings")]
+        );
     }
 
     #[test]

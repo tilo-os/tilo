@@ -119,6 +119,15 @@ impl Slot {
         Owner::Shell
     }
 
+    /// Whether the surface stands over the desk beside others: a menu, a
+    /// popover, the strip labels, the search, quick settings — one at a time.
+    /// The overview is the desk itself, the surface everything else stands
+    /// over, so it is not one of them.
+    #[must_use]
+    pub const fn stands_beside(self) -> bool {
+        !matches!(self, Self::Overview)
+    }
+
     /// Where the surface hangs when the verb that opened it named no place.
     #[must_use]
     pub const fn anchor(self) -> Anchor {
@@ -613,8 +622,22 @@ impl Overlays {
 
     /// Put `slot` up, standing at `anchor` or where the slot stands by
     /// itself.
+    ///
+    /// One anchored surface at a time: the person looks at the one they just
+    /// opened, so the others go down with it. Their widgets follow the stack
+    /// ([`Self::is_open`]), which is how the chrome learns to close them.
     pub fn open(&self, slot: Slot, anchor: Option<Anchor>) {
         let mut stack = self.0.borrow_mut();
+        if slot.stands_beside() {
+            for other in Slot::ALL {
+                if other != slot
+                    && other.stands_beside()
+                    && let Some(state) = stack.slots.get_mut(&other)
+                {
+                    state.open = false;
+                }
+            }
+        }
         let state = stack.slots.entry(slot).or_default();
         state.open = true;
         state.anchor = Some(anchor.unwrap_or_else(|| slot.anchor()));
@@ -825,6 +848,34 @@ mod tests {
             "an overlay answers Escape only if its own model says so"
         );
         assert!(!Role::Consent.closes_on_escape(), "a question never does");
+    }
+
+    #[test]
+    fn one_anchored_surface_stands_at_a_time() {
+        let overlays = overlays();
+        overlays.open(Slot::TiloMenu, None);
+        overlays.open(Slot::Strips, None);
+        assert!(
+            !overlays.is_open(Slot::TiloMenu),
+            "the strip labels came up, and the menu went down with them"
+        );
+        overlays.open(Slot::QuickSettings, None);
+        assert!(
+            !overlays.is_open(Slot::Strips),
+            "and quick settings after them"
+        );
+        assert!(overlays.is_open(Slot::QuickSettings));
+        // The overview is the desk the others stand over, not one of them.
+        overlays.open(Slot::Overview, None);
+        assert!(
+            overlays.is_open(Slot::QuickSettings),
+            "the overview keeps what stands over it"
+        );
+        overlays.open(Slot::Strips, None);
+        assert!(
+            overlays.is_open(Slot::Overview),
+            "and the strip labels leave the overview itself up"
+        );
     }
 
     #[test]

@@ -59,7 +59,7 @@ pub struct QuickSettings {
     pub editing: bool,
 }
 
-#[resource(kind = "quick-settings.panel", label = "Quick Settings")]
+#[resource(kind = "quick-settings.panel", label = "Quick Settings", answer = answer)]
 impl QuickSettings {
     /// Show the controls, with nothing open: how the panel opens.
     #[action(housekeeping)]
@@ -137,7 +137,11 @@ impl QuickSettings {
     }
 
     /// Go back: finish arranging, leave a page, or close the open section.
-    #[action(housekeeping)]
+    ///
+    /// It answers whether it had anywhere to go back to
+    /// ([`answer`]): the session that shows the panel closes it only from
+    /// the panel's main page, and asks it to go back everywhere else.
+    #[action(housekeeping, answers)]
     pub fn back(&mut self) {
         if self.editing {
             self.editing = false;
@@ -149,6 +153,18 @@ impl QuickSettings {
             self.section = None;
         }
     }
+}
+
+/// What [`QuickSettings::back`] answers its caller: whether it had anywhere
+/// to go back to, which is exactly whether it changed anything. A panel on
+/// its main page changes nothing, and its caller closes it.
+fn answer(
+    _doc: &ui::tilo_resource::Doc,
+    action: &str,
+    changes: &[ui::tilo_resource::Patch],
+) -> Option<ui::serde_json::Value> {
+    (action == QuickSettings::BACK.id)
+        .then(|| ui::serde_json::json!({ "handled": !changes.is_empty() }))
 }
 
 impl QuickSettings {

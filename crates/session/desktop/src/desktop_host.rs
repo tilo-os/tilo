@@ -946,6 +946,31 @@ impl DesktopChrome {
         if !self.is_focusable() {
             self.focused = false;
         }
+        self.follow_the_stack();
+    }
+
+    /// Take down the widgets whose surface the stack took down.
+    ///
+    /// The stack is the one ledger of what stands over the desk: when another
+    /// surface comes up — the person opened it, the session did, or Escape
+    /// took one away — the slot closes there, and the widget that draws it
+    /// closes here so the two never disagree about what the person sees.
+    fn follow_the_stack(&mut self) {
+        if self.emoji.is_open() && !self.overlays.is_open(Slot::Emoji) {
+            self.emoji.close();
+        }
+        if self.workspace_menu.is_open() && !self.overlays.is_open(Slot::WorkspaceMenu) {
+            self.workspace_menu.close();
+        }
+        if self.tilo_menu.is_menu_open() && !self.overlays.is_open(Slot::TiloMenu) {
+            self.tilo_menu.toggle(Rect::ZERO, self.rect);
+        }
+        if self.navigator.takes_keys() && !self.overlays.is_open(Slot::Strips) {
+            self.navigator.close();
+        }
+        if self.search.is_open() && !self.overlays.is_open(Slot::Search) {
+            self.search.close();
+        }
     }
 
     /// The chrome's own accessibility node: the group over the desk that

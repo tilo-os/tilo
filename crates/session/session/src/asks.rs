@@ -70,17 +70,26 @@ impl Shared {
                         if self.overlays.is_open(Slot::QuickSettings) {
                             self.overlays.close(Slot::QuickSettings);
                         } else {
+                            self.surfaces.clear_shell();
+                            self.surfaces.clear_panel();
                             self.overlays.open(Slot::QuickSettings, None);
                         }
                     }
                 }
                 DesktopAsk::Intent(ChromeIntent::ShowQuickSettings) => self.show_quick_settings(),
                 // The bar's faces, the launcher's Happening now header and a
-                // press on someone in a banner all open who is here.
+                // press on someone in a banner all open who is here: one
+                // surface at a time, so what stood over the desk goes down.
                 DesktopAsk::Intent(ChromeIntent::ToggleCollaborators) => {
+                    if !self.people.borrow().is_open() {
+                        self.surfaces.clear_shell();
+                        self.surfaces.clear_panel();
+                    }
                     self.people.borrow().toggle();
                 }
                 DesktopAsk::Intent(ChromeIntent::ShowPerson(person)) => {
+                    self.surfaces.clear_shell();
+                    self.surfaces.clear_panel();
                     self.people.borrow().show_person(&person);
                 }
                 // This person's own avatar in the bar: their own card, the
@@ -130,6 +139,8 @@ impl Shared {
         // again, though the press it closed for may already be over—a quick
         // click comes up faster than its own toggle does.
         self.overlays.settle_press();
+        // One anchored surface at a time, whichever side opened it.
+        self.lone_surface();
         // What the person chose where only a host performs it: search and a
         // banner hand their host action back here, as the ask on the
         // person's own avatar does.

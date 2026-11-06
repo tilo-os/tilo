@@ -209,8 +209,13 @@ impl People {
         std::mem::take(&mut *self.asks.borrow_mut())
     }
 
+    /// Whether the roster stands over the desk now.
+    pub(crate) fn is_open(&self) -> bool {
+        self.open.get()
+    }
+
     /// Close the roster: the person pressed elsewhere.
-    fn dismiss(&self) {
+    pub(crate) fn dismiss(&self) {
         let was_open = self.open.replace(false);
         if was_open {
             let mut shown = self.shown.borrow_mut();

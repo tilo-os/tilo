@@ -734,9 +734,11 @@ impl NotificationLayer {
     }
 
     /// Hand the stack the banners shown now: none while the host shows
-    /// them elsewhere.
+    /// them elsewhere, and none while the centre is open — the person is
+    /// reading the centre, so no banner stands over it and takes the press
+    /// meant for a row.
     fn feed_stack(&mut self) {
-        let feed = if self.notifications.log.banners_elsewhere.get() {
+        let feed = if self.center.is_some() || self.notifications.log.banners_elsewhere.get() {
             BannerFeed::default()
         } else {
             BannerFeed::of(self.notifications.host())
@@ -1249,6 +1251,34 @@ mod tests {
         notifications.open_center();
         Widget::update(&mut layer, &(), &());
         assert!(layer.center_open(), "the centre opens on the host's word");
+    }
+
+    /// The person opened the centre to read what it holds: no banner stands
+    /// over the rows it covers, and the ones that came meanwhile are there
+    /// once it closes.
+    #[test]
+    fn a_banner_never_stands_over_the_open_centre() {
+        let (mut layer, notifications) = layer_with(2);
+        layer.feed_stack();
+        assert_eq!(
+            layer.stack.feed().banners.len(),
+            2,
+            "the banners stand on the desk"
+        );
+        layer.set_center_open(true);
+        layer.feed_stack();
+        assert_eq!(
+            layer.stack.feed().banners.len(),
+            0,
+            "nothing stands over the centre"
+        );
+        layer.set_center_open(false);
+        layer.feed_stack();
+        assert_eq!(
+            layer.stack.feed().banners.len(),
+            2,
+            "they come back with the desk"
+        );
     }
 
     #[test]
