@@ -11792,9 +11792,30 @@ mod tests {
             let plaintext = DocumentMutation::Incremental(b"secret change".to_vec())
                 .encode()
                 .unwrap();
+            // The action commit a sealed part carries rides inside what only
+            // the unit's readers open.
+            let commit = collab_types::WorkspaceCommit::new(
+                "workspace",
+                collab_types::CommitAuthor {
+                    principal: Some("alice".into()),
+                    device: [9; 32],
+                },
+                1,
+                collab_types::CommitAction {
+                    name: "send".into(),
+                    item: None,
+                    invocation: None,
+                },
+                vec![collab_types::CommitPart {
+                    app: "chat".into(),
+                    record: "main".into(),
+                    changes: vec![[1; 32]],
+                }],
+            );
+            let sealed_plaintext = commit.frame(&plaintext).unwrap();
             let alice_endpoint = group_route_keys(alice);
             let PreparedFrame::Ready(ciphertext, metadata) =
-                prepare_document_payload(&alice_endpoint, artifact, plaintext.clone(), &[])
+                prepare_document_payload(&alice_endpoint, artifact, sealed_plaintext, &[])
             else {
                 panic!("a provisioned endpoint seals at once");
             };
@@ -11820,7 +11841,7 @@ mod tests {
             let endpoint = group_route_keys(bob);
             for _ in 0..2 {
                 // Live delivery and a later scrollback read of the same op.
-                let event = signed_document_event(
+                let signed = signed_document_event(
                     Arrived {
                         envelope: op.clone(),
                         from_user_id: "alice".into(),
@@ -11828,12 +11849,16 @@ mod tests {
                     },
                     &endpoint,
                 )
-                .unwrap()
-                .event;
+                .unwrap();
                 assert!(matches!(
-                    event.document_mutation(),
+                    signed.event.document_mutation(),
                     Some(Ok(DocumentMutation::Incremental(data))) if data == b"secret change"
                 ));
+                assert_eq!(
+                    signed.commit,
+                    Some(commit.clone()),
+                    "the part's action comes out of the sealed payload"
+                );
             }
             let plaintext_downgrade = SignedOp::new_unsigned(
                 plaintext,
