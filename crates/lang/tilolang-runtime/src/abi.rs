@@ -209,6 +209,7 @@ imports! {
     (ActSet, "act_set", "iii", "i"),
     (ActThen, "act_then", "ii", "i"),
     (ActMadeFrom, "act_made_from", "ii", "i"),
+    (ActMany, "act_many", "i", "i"),
     (ActOpen, "act_open", "iii", "i"),
     (ActUndo, "act_undo", "ii", "i"),
     (ChangeView, "change_view", "iii", "i"),

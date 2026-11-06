@@ -720,6 +720,7 @@ impl HostInner {
                 at: None,
                 from: request.from.cloned(),
                 suggested_by: None,
+                count: 1,
             },
             edits: Vec::new(),
         };

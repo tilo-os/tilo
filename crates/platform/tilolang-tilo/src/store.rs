@@ -1864,6 +1864,7 @@ impl Inner {
                 action: note.action.clone(),
                 task: note.group.clone(),
                 from: note.from.clone(),
+                count: note.count.max(1),
                 ..Version::default()
             },
             // No change yet: the action was invoked on top of every change this device
@@ -2483,6 +2484,7 @@ impl Store for TiloStore {
                 at: note.at.clone(),
                 from: note.from.clone(),
                 suggested_by: note.suggested_by.clone(),
+                count: note.count.max(1),
             },
             edits: state.edits,
         };

@@ -223,6 +223,7 @@ imports! {
     ActSet = "act_set" ([I32, H, H] -> [H]);
     ActThen = "act_then" ([H, H] -> [H]);
     ActMadeFrom = "act_made_from" ([H, H] -> [H]);
+    ActMany = "act_many" ([H] -> [H]);
     ActOpen = "act_open" ([H, H, I32] -> [H]);
     ActUndo = "act_undo" ([H, I32] -> [H]);
     ChangeView = "change_view" ([H, I32, H] -> [H]);

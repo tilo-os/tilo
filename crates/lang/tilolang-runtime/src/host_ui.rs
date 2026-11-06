@@ -15,6 +15,10 @@ use crate::view_state::{StateKey, StateLayer};
 /// The action id of `set(name, value)`: changes a view state slot. Its arguments are the
 /// window, the person, the layer (`window` or `lens`), the declaration id and the value.
 pub const SET_ACTION: &str = "$set";
+/// The action the host wires to the selection of a list it keeps: what the list reports of it
+/// goes in the window's own slot, the runtime's reading rather than a state the person declared.
+/// Its arguments are the slot's id and the value reported.
+pub const KEEP_ACTION: &str = "$keep";
 /// The action id of `open(r, view: v, front: f)`: its arguments are the resource, the view id
 /// (empty for the default view of its type) and whether a narrow window brings it in front.
 pub const OPEN_ACTION: &str = "$open";
@@ -261,6 +265,31 @@ impl Core {
         self.ret_h(Value::Action(action.made_from(Some(&from.target))))
     }
 
+    /// `as.many()`: one action that applies each of `as` to its own item, all at once. The
+    /// runtime runs them in one transaction, so they are one change: one undo takes them all
+    /// back, and history says how many items it changed.
+    fn act_many(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let list = self.val(a.h(0)?)?;
+        let Value::List(items) = &list else {
+            return trap(format!(
+                "`.many` takes a list of actions, not {}",
+                list.kind_name()
+            ));
+        };
+        for item in items {
+            if !matches!(item, Value::Action(_)) {
+                return trap(format!("`.many` takes actions, not {}", item.kind_name()));
+            }
+        }
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::Action(ActionRef {
+            action: crate::exec::MANY_ACTION.to_owned(),
+            args: vec![list],
+            author,
+            from: None,
+        }))
+    }
+
     fn act_open(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         // The resource, or the place of the one an event carries.
         let target = match self.val(a.h(0)?)? {
@@ -462,6 +491,7 @@ impl Core {
             Imp::ActSet => self.act_set(a),
             Imp::ActThen => self.act_then(a),
             Imp::ActMadeFrom => self.act_made_from(a),
+            Imp::ActMany => self.act_many(a),
             Imp::ActOpen => self.act_open(a),
             Imp::ActUndo => self.act_undo(a),
             Imp::ChangeView => self.change_view(a),

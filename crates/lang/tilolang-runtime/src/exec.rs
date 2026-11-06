@@ -93,6 +93,10 @@ fn push_chain(chain: &mut Vec<ModuleHash>, author: Option<&ModuleHash>) {
     }
 }
 
+/// The action id of `many(actions)`: one action applied to many items as one change. Its only
+/// argument is the list of the action references, one per item, all naming the same action.
+pub const MANY_ACTION: &str = "$many";
+
 impl Core {
     // ----- marshalling -------------------------------------------------------------------
 
@@ -577,6 +581,195 @@ impl Core {
         }
     }
 
+    /// One action applied to many items (`many`), as one change.
+    ///
+    /// Each reference names the same action for a different item. They are decided once — one
+    /// action, by one person, from one piece of code — and run in one transaction, so they are
+    /// one change: one undo takes them all back, and history says how many items it changed.
+    /// Each is a call at its own app's door when the action is another app's, which keeps its
+    /// own record's changes apart.
+    ///
+    /// # Errors
+    ///
+    /// A malformed `many`, actions of more than one action in it, or anything a single
+    /// invocation fails with.
+    fn invoke_many(
+        &self,
+        invoker: &Principal,
+        aref: &ActionRef,
+        from: Option<&ResourceRef>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        let [Value::List(items)] = aref.args.as_slice() else {
+            return Err(RuntimeError::BadArgs(
+                "`many` takes a list of actions".into(),
+            ));
+        };
+        let mut refs = Vec::with_capacity(items.len());
+        for item in items {
+            let Value::Action(inner) = item else {
+                return Err(RuntimeError::BadArgs(format!(
+                    "`many` takes actions, not {}",
+                    item.kind_name()
+                )));
+            };
+            if inner.action == MANY_ACTION {
+                return Err(RuntimeError::BadArgs(
+                    "`many` takes the actions to apply, not another `many`".into(),
+                ));
+            }
+            refs.push(self.completed(inner)?);
+        }
+        let Some(first) = refs.first() else {
+            return Ok(InvokeOutcome::Done(Value::Unit));
+        };
+        if let Some(other) = refs.iter().find(|r| r.action != first.action) {
+            return Err(RuntimeError::BadArgs(format!(
+                "`many` applies one action over many items: it holds `{}` and `{}`",
+                first.action, other.action
+            )));
+        }
+        if self.foreign_action(&first.action) {
+            let mut done = Value::Unit;
+            for inner in &refs {
+                match self.invoke_foreign(inner)? {
+                    InvokeOutcome::Done(v) => done = v,
+                    other => return Ok(other),
+                }
+            }
+            return Ok(InvokeOutcome::Done(done));
+        }
+        let mut chain = Vec::new();
+        push_chain(&mut chain, first.author.as_ref());
+        let ctx = ExecCtx {
+            invoker: invoker.clone(),
+            chain,
+            approved_by: None,
+            origin: None,
+            from: from.cloned(),
+            suggested_by: None,
+        };
+        match self.decide(&ctx, first)? {
+            Decision::Allow => match self.run_many(&ctx, &refs)? {
+                ActionOutcome::Done(v) => Ok(InvokeOutcome::Done(v)),
+                ActionOutcome::Failed(m) => Err(RuntimeError::Trap(m)),
+            },
+            Decision::Deny => Ok(InvokeOutcome::Denied),
+            Decision::Ask => {
+                let run = self.store.borrow_mut().fresh_id("s");
+                let suggestion = Suggestion {
+                    run: run.clone(),
+                    action: aref.action.clone(),
+                    args: aref.args.clone(),
+                    invoker: ctx.invoker.clone(),
+                    chain: ctx.chain.clone(),
+                };
+                let journal = Journal {
+                    flow: None,
+                    args: aref.args.clone(),
+                    invoker: ctx.invoker,
+                    chain: ctx.chain,
+                    from: ctx.from,
+                    suggested_by: ctx.suggested_by.map(|who| who.0),
+                    entries: Vec::new(),
+                    pending: Some(suggestion.clone()),
+                    finished: false,
+                };
+                self.store.borrow_mut().save_journal(&run, &journal)?;
+                Ok(InvokeOutcome::Suggested(suggestion))
+            }
+        }
+    }
+
+    /// Run `refs`, each naming the same action for a different item, in one transaction and
+    /// one change.
+    ///
+    /// # Errors
+    ///
+    /// As [`Core::run_action`].
+    fn run_many(&self, ctx: &ExecCtx, refs: &[ActionRef]) -> Result<ActionOutcome, RuntimeError> {
+        let Some(first) = refs.first() else {
+            return Ok(ActionOutcome::Done(Value::Unit));
+        };
+        let pkg = self
+            .registry
+            .borrow()
+            .action_package(&first.action)
+            .ok_or_else(|| RuntimeError::NotFound(format!("action {}", first.action)))?;
+        let meta = pkg
+            .action(&first.action)
+            .ok_or_else(|| RuntimeError::NotFound(format!("action {}", first.action)))?
+            .clone();
+        let txn = self.store.borrow_mut().begin()?;
+        let primary = first.args.iter().find_map(|v| match v {
+            Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
+            _ => None,
+        });
+        let mut note = Self::note(ctx, &pkg, first);
+        note.count = u32::try_from(refs.len()).unwrap_or(u32::MAX);
+        self.frames.borrow_mut().push(
+            pkg.hash.clone(),
+            FrameKind::Action(ActionState {
+                txn,
+                action: first.action.clone(),
+                primary,
+                invoker: ctx.invoker.clone(),
+                origin: ctx.origin.clone(),
+                suggested_by: ctx.suggested_by.clone(),
+                suggestions: Vec::new(),
+                queued: Vec::new(),
+                scenario: meta.scenario,
+                invocations: Vec::new(),
+                note: Box::new(note),
+                touched: std::collections::BTreeSet::new(),
+                effects: crate::handles::EffectLog::default(),
+            }),
+        );
+        let mut failure = None;
+        for aref in refs {
+            if let Err(e) = self.call_in_frame(
+                &pkg,
+                &format!("a_{}", aref.action),
+                &meta.params,
+                &aref.args,
+                meta.result.as_deref(),
+            ) {
+                failure = Some(e);
+                break;
+            }
+        }
+        let at = self.change_time();
+        let frame = self.frames.borrow_mut().pop();
+        let (queued, proposed, txn, note) = match frame.map(|f| f.kind) {
+            Some(FrameKind::Action(a)) => {
+                let mut note = *a.note;
+                note.at = Some(at);
+                note.touched = a.touched.into_iter().collect();
+                // The one change records what the run over every item read, in order.
+                note.effects = a.effects.entries;
+                (a.queued, a.suggestions, a.txn, note)
+            }
+            _ => (Vec::new(), Vec::new(), txn, Self::note(ctx, &pkg, first)),
+        };
+        match failure {
+            None => {
+                self.store.borrow_mut().commit(txn, &note)?;
+                self.settle_blocks(&ctx.invoker, queued)?;
+                for (who, suggested) in proposed {
+                    self.propose(&who, &suggested)?;
+                }
+                Ok(ActionOutcome::Done(Value::Unit))
+            }
+            Some(RuntimeError::BadArgs(m)) => {
+                self.store.borrow_mut().rollback(txn);
+                Err(RuntimeError::BadArgs(m))
+            }
+            Some(e) => {
+                self.store.borrow_mut().rollback(txn);
+                Ok(ActionOutcome::Failed(e.to_string()))
+            }
+        }
+    }
+
     /// A direct invocation by a principal, or through an action reference some code wrote.
     ///
     /// # Errors
@@ -602,6 +795,10 @@ impl Core {
         aref: &ActionRef,
         from: Option<&ResourceRef>,
     ) -> Result<InvokeOutcome, RuntimeError> {
+        // One action over many items is one change: its references are the change's own.
+        if aref.action == MANY_ACTION {
+            return self.invoke_many(invoker, aref, from);
+        }
         // What the invoker left out is computed now, on what they see, and recorded.
         let aref = &self.completed(aref)?;
         // An action of an app this runtime does not run is a child invocation at that app's

@@ -11,6 +11,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
+use super::Choosing;
 use super::{ListModel, VirtualList};
 use crate::a11y::AccessNode;
 use crate::presence::PresenceCtx;
@@ -168,7 +169,7 @@ impl<M: ListModel> VirtualList<M> {
             return false;
         }
         if !self.selection.is_selected(&key) {
-            self.apply_selection(key.clone(), false, false);
+            self.apply_selection(key.clone(), false, false, Choosing::ByHand);
         }
         self.focus_row(key.clone());
         self.open_context_menu(Some(&key), at)

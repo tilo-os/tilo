@@ -230,6 +230,13 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Text",
                 "Who proposed the action the change made, as a sentence names them, when the person making it accepted their suggestion; empty for a change made on its own.",
             ),
+            (
+                "count",
+                "Int",
+                "How many items the change was made over: `1` for an action applied to its \
+                 subject, and for one action applied to many items at once (`many`), as many \
+                 as the items it changed.",
+            ),
         ],
     },
     ValueType {
@@ -266,6 +273,12 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "mine",
                 "Bool",
                 "Whether the person looking made it, outside any task run.",
+            ),
+            (
+                "changes",
+                "Int",
+                "How many changes it folds: one for one command, however many items it \
+                 changed at once, and more for a step of several.",
             ),
         ],
     },

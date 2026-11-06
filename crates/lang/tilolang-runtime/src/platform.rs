@@ -495,9 +495,10 @@ impl Core {
     }
 
     /// A version of `of` as a `host.Version`: who, when, what, the task run, its kind, the
-    /// fields it changed by name, the resource, what its action says it does, what it did and
-    /// its icon, and each field it changed with what it held before and after; then the id of
-    /// the action that made it, which `v.is(edit)` compares (`tilolang::host::action_id_at`).
+    /// fields it changed by name, the resource, what its action says it does, what it did, its
+    /// icon, each field it changed with what it held before and after, and how many items the
+    /// change was made over; then the id of the action that made it and of its change, which
+    /// code compares rather than reads (`tilolang::host::action_id_at`).
     fn version_value(&self, v: crate::store::Version, of: &ResourceRef) -> HResult<Value> {
         let task = v.task.as_ref().map(|run| {
             Box::new(Value::Tuple(vec![
@@ -581,6 +582,9 @@ impl Core {
             Value::Opt(icon),
             Value::List(changes),
             Value::Text(suggested),
+            // How many items it changed, read by name; the action and the change it names
+            // stand after the fields code reads by name (`host::action_id_at`).
+            Value::Int(i64::from(v.count)),
             Value::Text(v.action),
             Value::Text(v.change),
         ]))
@@ -995,48 +999,7 @@ impl Core {
                         .collect::<HResult<_>>()?,
                 )
             }
-            Imp::Steps => {
-                let versions = self.store.borrow().versions(at).map_err(trapped)?;
-                self.read_versions_of(at);
-                let mut steps: Vec<Vec<crate::store::Version>> = Vec::new();
-                for v in versions {
-                    match steps.last_mut() {
-                        Some(step) if step.last().is_some_and(|last| same_step(last, &v)) => {
-                            step.push(v);
-                        }
-                        _ => steps.push(vec![v]),
-                    }
-                }
-                let mut out = Vec::with_capacity(steps.len());
-                for step in steps.into_iter().rev() {
-                    let Some(last) = step.last() else {
-                        continue;
-                    };
-                    let who = Value::Principal(Principal(last.who.clone()));
-                    let at_time = Value::Text(last.at.clone());
-                    let task = Value::Opt(last.task.as_ref().map(|run| {
-                        Box::new(Value::Tuple(vec![
-                            Value::Text(run.id.clone()),
-                            Value::Text(run.task().to_owned()),
-                            Value::Text(run.title.clone()),
-                        ]))
-                    }));
-                    let mine = last.task.is_none()
-                        && self.looking_now().as_deref() == Some(last.who.as_str());
-                    let versions = step
-                        .into_iter()
-                        .map(|v| self.version_value(v, at))
-                        .collect::<HResult<_>>()?;
-                    out.push(Value::Tuple(vec![
-                        who,
-                        at_time,
-                        task,
-                        Value::List(versions),
-                        Value::Bool(mine),
-                    ]));
-                }
-                Value::List(out)
-            }
+            Imp::Steps => self.steps_value(at)?,
             _ => {
                 let versions = self.store.borrow().versions(at).map_err(trapped)?;
                 self.read_versions_of(at);
@@ -1048,6 +1011,66 @@ impl Core {
                 )
             }
         })
+    }
+
+    /// `steps(at)`: the changes made to a resource, newest first, each with the versions one
+    /// change made together and the count of changes it folds.
+    fn steps_value(&self, at: &crate::value::ResourceRef) -> HResult<Value> {
+        let trapped = |e: crate::store::StoreError| crate::engine::HostFail::Trap(e.to_string());
+        let versions = self.store.borrow().versions(at).map_err(trapped)?;
+        self.read_versions_of(at);
+        let mut steps: Vec<Vec<crate::store::Version>> = Vec::new();
+        for v in versions {
+            match steps.last_mut() {
+                Some(step) if step.last().is_some_and(|last| same_step(last, &v)) => {
+                    step.push(v);
+                }
+                _ => steps.push(vec![v]),
+            }
+        }
+        let mut out = Vec::with_capacity(steps.len());
+        for step in steps.into_iter().rev() {
+            let Some(last) = step.last() else {
+                continue;
+            };
+            let who = Value::Principal(Principal(last.who.clone()));
+            let at_time = Value::Text(last.at.clone());
+            let task = Value::Opt(last.task.as_ref().map(|run| {
+                Box::new(Value::Tuple(vec![
+                    Value::Text(run.id.clone()),
+                    Value::Text(run.task().to_owned()),
+                    Value::Text(run.title.clone()),
+                ]))
+            }));
+            let mine =
+                last.task.is_none() && self.looking_now().as_deref() == Some(last.who.as_str());
+            // How many changes the step folds: versions of one change are one command over many
+            // items, which history says the count of and Undo takes back together.
+            let changes = {
+                let mut count = 0usize;
+                let mut previous: Option<&str> = None;
+                for v in &step {
+                    if previous != Some(v.change.as_str()) {
+                        count = count.saturating_add(1);
+                    }
+                    previous = Some(v.change.as_str());
+                }
+                count
+            };
+            let versions = step
+                .into_iter()
+                .map(|v| self.version_value(v, at))
+                .collect::<HResult<_>>()?;
+            out.push(Value::Tuple(vec![
+                who,
+                at_time,
+                task,
+                Value::List(versions),
+                Value::Bool(mine),
+                Value::Int(i64::try_from(changes).unwrap_or(i64::MAX)),
+            ]));
+        }
+        Ok(Value::List(out))
     }
 
     /// `changes(of: run)` of the `host.TaskRun` held at `h`: every version it made, oldest

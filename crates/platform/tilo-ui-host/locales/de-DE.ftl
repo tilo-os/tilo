@@ -37,6 +37,7 @@ tilolang-did-set = hat { $field } gesetzt auf
 tilolang-did-cleared = hat { $field } geleert
 tilolang-did-set-date = hat das Datum { $field } gesetzt auf
 tilolang-did-cleared-date = hat das Datum { $field } geleert
+tilolang-did-many = hat { $count } { $kind } geändert
 tilolang-did-set-time = hat die Uhrzeit { $field } gesetzt auf
 tilolang-did-cleared-time = hat die Uhrzeit { $field } geleert
 tilolang-did-and = und
@@ -63,6 +64,11 @@ tilolang-no-date = Kein Datum
 tilolang-all-done = Alles erledigt
 rich-text-reference-unreadable = Nicht mit dir geteilt
 tilolang-none-selected = Nichts ausgewählt
+tilolang-selected = { $count ->
+    [one] 1 ausgewählt
+   *[other] { $count } ausgewählt
+}
+tilolang-clear-selection = Auswahl aufheben
 tilolang-sort = Sortieren
 tilolang-undo = Rückgängig
 tilolang-typing-unplaced = Keine Eingabe hat übernommen, was du getippt hast: „{ $typed }“

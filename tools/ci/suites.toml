@@ -779,6 +779,7 @@ readers = [
   "crates/lang/tilolang-runtime/tests/e2e_notes.rs",
   "crates/lang/tilolang-runtime/tests/e2e_todo.rs",
   "crates/lang/tilolang-runtime/tests/programs.rs",
+  "crates/lang/tilolang-runtime/tests/multi_select.rs",
   "crates/lang/tilolang-runtime/tests/provenance.rs",
   "crates/lang/tilolang-runtime/tests/rich_text.rs",
   "crates/lang/tilolang-runtime/tests/window_bar.rs",

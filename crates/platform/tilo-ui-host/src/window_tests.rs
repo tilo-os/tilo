@@ -1450,3 +1450,138 @@ fn the_list_a_window_moves_to_brings_its_actions_placed_into_the_one_bar() {
         "the project's other action stands in the bar, placed: {section:?}"
     );
 }
+/// The node of `kind` in `tree`, to change.
+fn node_of<'a>(tree: &'a mut UiNode, kind: &str) -> Option<&'a mut UiNode> {
+    if tree.kind == kind {
+        return Some(tree);
+    }
+    tree.children
+        .iter_mut()
+        .find_map(|child| node_of(child, kind))
+}
+
+/// The rows of a list the app renders, each showing the item `id` under `title`, as a loop
+/// over the items of a resource sends them.
+fn listed_rows(items: &[(&str, &str)]) -> Vec<ToUi> {
+    let mut keys = Vec::new();
+    let mut rows = Vec::new();
+    for (id, title) in items {
+        let mut row = UiNode::empty(&kind("ListRow"), &format!("rows/{id}#row"));
+        row.props.insert("title".to_owned(), Value::text(*title));
+        let mut item = UiNode::empty(&kind("ListItem"), &format!("rows/{id}"));
+        item.props.insert(
+            "item".to_owned(),
+            Value::Ref(ResourceRef {
+                id: (*id).to_owned(),
+                ty: "tasks.Task".to_owned(),
+            }),
+        );
+        item.children.push(row);
+        keys.push(format!("rows/{id}"));
+        rows.push(item);
+    }
+    vec![ToUi::Rows {
+        lane: Lane::Root,
+        list: "list".to_owned(),
+        len: u32::try_from(keys.len()).expect("a few rows"),
+        start: 0,
+        keys,
+        rows,
+    }]
+}
+
+/// A choice of several rows is the person's own while it holds: the rows the app sends again
+/// after a press leave it as it is, and only the host's own putting away of the choice ends it.
+#[test]
+fn a_choice_of_several_rows_outlasts_the_rows_the_app_sends_again() {
+    use ui::widget::ListModel;
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let mut page = list_page();
+    let Some(ToUi::Open { tree, .. }) = page.first_mut() else {
+        panic!("the page opens the window");
+    };
+    node_of(tree, &kind("VirtualList"))
+        .expect("the page's list")
+        .props
+        .insert("multi_select".to_owned(), Value::Bool(true));
+    send(&mut app, &page);
+    window.receive();
+    let items = [
+        ("root/tasks:t1", "Call the landlord"),
+        ("root/tasks:t2", "Pay rent"),
+    ];
+    send(&mut app, &listed_rows(&items));
+    window.receive();
+    assert!(
+        window.failed().is_none(),
+        "the rows were taken: {:?}",
+        window.failed()
+    );
+    let list = overview_list(&mut window)
+        .list_mut()
+        .expect("the overview's list");
+    let (first, second) = (
+        "rows/root/tasks:t1".to_owned(),
+        "rows/root/tasks:t2".to_owned(),
+    );
+    assert!(
+        list.model().index_of(&first).is_some() && list.model().index_of(&second).is_some(),
+        "the list holds the rows the app sent"
+    );
+    list.selection_mut().select_only(first.clone());
+    list.selection_mut().toggle(second.clone());
+    assert_eq!(
+        list.selection().len(list.model().len()),
+        2,
+        "both rows are chosen"
+    );
+
+    // The app sends its rows again, as it does after every press: the choice stays.
+    send(&mut app, &listed_rows(&items));
+    window.receive();
+    let list = overview_list(&mut window)
+        .list()
+        .expect("the overview's list");
+    let mut kept: Vec<String> = list.selection().stored_keys().cloned().collect();
+    kept.sort();
+    let mut want = vec![first, second];
+    want.sort();
+    assert_eq!(
+        kept, want,
+        "the choice of several rows outlasts the rows the app sends again"
+    );
+
+    // What the host kept of the choice gone — an action over the rows ran — the list puts its
+    // own away with it.
+    send(
+        &mut app,
+        &[ToUi::Patch {
+            lane: Lane::Root,
+            patches: vec![wire::Patch::SetProp {
+                path: vec![
+                    "overview".to_owned(),
+                    "docked".to_owned(),
+                    "list".to_owned(),
+                ],
+                name: "chosen".to_owned(),
+                value: Some(Value::List(Vec::new())),
+            }],
+        }],
+    );
+    window.receive();
+    assert!(
+        window.failed().is_none(),
+        "the choice was put away: {:?}",
+        window.failed()
+    );
+    assert_eq!(
+        overview_list(&mut window)
+            .list()
+            .expect("the overview's list")
+            .selection()
+            .len(2),
+        0,
+        "the choice the host put away is put away in the list"
+    );
+}
