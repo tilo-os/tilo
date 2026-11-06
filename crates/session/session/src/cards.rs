@@ -444,6 +444,32 @@ mod tests {
         assert!(cards.size("so.tilo.chat", "chat-call:voice").is_none());
     }
 
+    /// The card its app stood down is the connection that presented it to
+    /// bring back: another one of the app's windows cannot take it over by
+    /// presenting a frame for it.
+    #[test]
+    fn another_connection_cannot_resume_a_card_that_stood_down() {
+        let cards = Cards::new();
+        cards
+            .present("so.tilo.chat", 7, &call("chat-call:voice"))
+            .unwrap();
+        cards.told(
+            "so.tilo.chat",
+            "chat-call:voice",
+            Some(Rect::new(0.0, 0.0, 360.0, 240.0)),
+        );
+        assert!(
+            cards
+                .stood_down("so.tilo.chat", 7, "chat-call:voice")
+                .is_some()
+        );
+        assert!(
+            !cards.presented_again("so.tilo.chat", 8, "chat-call:voice"),
+            "a window that never presented the card leaves it stood down"
+        );
+        assert!(cards.presented_again("so.tilo.chat", 7, "chat-call:voice"));
+    }
+
     #[test]
     fn another_window_of_the_app_cannot_take_over_a_card() {
         let cards = Cards::new();
