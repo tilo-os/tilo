@@ -1204,6 +1204,31 @@ impl TiloStore {
         inner.upgrade_plain_text(app, module, by)
     }
 
+    /// Whether the resource `doc`'s own map holds a value under any of `fields`: what a
+    /// migration reads to know its old field was ever written, without the record.
+    #[must_use]
+    pub fn holds_any(&self, doc: &str, fields: &[&str]) -> bool {
+        if fields.is_empty() {
+            return true;
+        }
+        if self.load_record().is_err() {
+            return false;
+        }
+        let inner = self.held();
+        let Ok(mirror) = inner.mirror() else {
+            return false;
+        };
+        let Some((app, _)) = inner.index.get(doc) else {
+            return false;
+        };
+        let Some(root) = crate::reads::resource_obj(mirror, app, doc) else {
+            return false;
+        };
+        fields
+            .iter()
+            .any(|field| mirror.get(&root, *field).ok().flatten().is_some())
+    }
+
     /// Whether the migration `migration` (its action id) ran on the resource `doc`.
     ///
     /// # Errors
@@ -2224,6 +2249,30 @@ impl Store for TiloStore {
             .txns
             .remove(&txn.0)
             .ok_or_else(|| invalid("no such transaction"))?;
+        // A migration that found nothing to change still ran: its marker is a change of the
+        // record like any other, and the next open reads it instead of asking again.
+        let migration = inner
+            .migrating
+            .clone()
+            .filter(|(migration, _)| *migration == note.action);
+        let mut marked = false;
+        if state.edits.is_empty()
+            && let Some((migration, doc)) = migration.clone()
+        {
+            let Some((app, ty)) = inner.index.get(&doc).cloned() else {
+                return Ok(());
+            };
+            let Some(schema) = lookup(&ty) else {
+                return Ok(());
+            };
+            state.app = Some(app.clone());
+            state.kind = Some(format!("tl.{app}.{}", schema.name));
+            let edit = DynEdit::Migrated { id: doc, migration };
+            let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
+            inner.write(&app, edit.clone(), seed, Vec::new(), Moves::default())?;
+            state.edits.push(edit);
+            marked = true;
+        }
         let (Some(app), Some(kind)) = (state.app.clone(), state.kind.clone()) else {
             return Ok(());
         };
@@ -2247,9 +2296,7 @@ impl Store for TiloStore {
             );
         }
         // A migration's change records, with what it did, that it ran on its resource.
-        if let Some((migration, doc)) = inner.migrating.clone()
-            && migration == note.action
-        {
+        if let Some((migration, doc)) = migration.filter(|_| !marked) {
             let edit = DynEdit::Migrated { id: doc, migration };
             let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
             inner.write(&app, edit.clone(), seed, Vec::new(), Moves::default())?;

@@ -1866,22 +1866,6 @@ fn item_label(item: &crate::record::DynRecord) -> Option<String> {
     None
 }
 
-/// Set each action's availability on `resource` and the items under it, as its app says it now:
-/// whether the requirements its subject alone decides hold for the person at the window, or the
-/// first that does not and why. What a palette reads to leave an action out, and a toolbar to
-/// disable its control with the reason.
-pub fn publish_availability(host: &crate::host::Host, resource: &mut ResourceSpec) {
-    let id = resource.id.as_str().to_owned();
-    for action in &mut resource.actions {
-        if let Some(availability) = host.availability(&id, &action.id) {
-            action.type_mut().contract.availability = availability;
-        }
-    }
-    for child in &mut resource.children {
-        publish_availability(host, child);
-    }
-}
-
 /// The package's own resource, carrying the actions that take no record.
 #[must_use]
 pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>, words: &dyn Words) -> ResourceSpec {

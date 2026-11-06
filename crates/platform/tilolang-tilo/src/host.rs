@@ -23,7 +23,7 @@ use tilolang_runtime::meta::{Meta, Ty, parse_ty};
 use tilolang_runtime::store::NewRecord;
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
 use tilolang_runtime::{
-    InvokeOutcome, ModuleHash, PackageId, Principal, Reading, Runtime, RuntimeError, StoreError,
+    InvokeOutcome, ModuleHash, PackageId, Principal, Runtime, RuntimeError, StoreError,
     ViewInstance,
 };
 
@@ -591,18 +591,11 @@ impl HostInner {
     /// Whether the action `action` can run on the published resource `resource` now: the
     /// requirements its subject alone decides, as its app says them, in the person at the
     /// window's eyes. `None` when the app keeps none, or when one of them cannot be read.
+    ///
+    /// Asked of the one resource a caller names, when it names it: an action directory answers
+    /// the rows it is asked for, and an invocation is refused before it runs, so no surface
+    /// carries a requirement's answer for every item it holds.
     fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
-        self.availability_reading(resource, action)
-            .map(|(availability, _)| availability)
-    }
-
-    /// Whether the action `action` can run on `resource` now, and what reading that read of the
-    /// workspace: what a caller keeps to know when to ask again ([`Reading`]).
-    fn availability_reading(
-        &self,
-        resource: &str,
-        action: &str,
-    ) -> Option<(tilo_actions::Availability, Reading)> {
         let package = self
             .packages
             .borrow()
@@ -619,14 +612,11 @@ impl HostInner {
             .unwrap_or(resource);
         let target = ResourceRef::parse_id(id, declared.id.clone())?;
         match self.runtime.refusal_reading(action, &target, &self.viewer) {
-            Ok((Some(reason), read)) => Some((
-                tilo_actions::Availability::Unavailable {
-                    code: "unmet".to_owned(),
-                    reason,
-                },
-                read,
-            )),
-            Ok((None, read)) => Some((tilo_actions::Availability::Available, read)),
+            Ok((Some(reason), _)) => Some(tilo_actions::Availability::Unavailable {
+                code: "unmet".to_owned(),
+                reason,
+            }),
+            Ok((None, _)) => Some(tilo_actions::Availability::Available),
             // A requirement that cannot be read says nothing of the action: it is offered, and
             // refuses with its reason when it runs.
             Err(_) => None,
@@ -641,6 +631,15 @@ impl HostInner {
             .iter()
             .find(|action| action.id == request.action_id)
             .ok_or_else(|| format!("no action {}", request.action_id))?;
+        // A requirement is the app's, and the app is what can read it: an action published
+        // while its rule held, or one an agent addresses by name, is refused here, before it
+        // runs, with its rule's reason.
+        if let Some(subject) = request.resource
+            && let Some(tilo_actions::Availability::Unavailable { reason, .. }) =
+                self.availability(subject, request.action_id)
+        {
+            return Err(reason);
+        }
         // The runtime sees the invoker the door admitted: an agent's task delegate for itself,
         // the person at the window otherwise.
         let invoker = request.caller.map_or_else(
@@ -1007,17 +1006,6 @@ impl Host {
     #[must_use]
     pub fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
         self.inner.availability(resource, action)
-    }
-
-    /// As [`Host::availability`], with what reading the requirement read: the resources it read,
-    /// so a caller keeping the answer knows what has to move for it to be read again.
-    #[must_use]
-    pub fn availability_reading(
-        &self,
-        resource: &str,
-        action: &str,
-    ) -> Option<(tilo_actions::Availability, Reading)> {
-        self.inner.availability_reading(resource, action)
     }
 
     /// The resource `action` returned when the person last ran it here, once: a window opens
@@ -1393,18 +1381,9 @@ impl Host {
     /// Whether the resource `doc` holds anything in the fields `previously` (none: whether it
     /// may hold what an earlier version wrote, which only the migration can tell).
     fn holds_previously(&self, doc: &str, previously: &[&str]) -> bool {
-        if previously.is_empty() {
-            return true;
-        }
-        let Ok(record) = self.inner.store.record(doc) else {
-            return false;
-        };
-        let Ok(empty) = crate::record::DynRecord::empty(record.schema()) else {
-            return false;
-        };
-        previously
-            .iter()
-            .any(|field| record.get(field) != empty.get(field))
+        // Read from the record's own map: a record of ten thousand items is not built to
+        // learn whether one field a migration replaces was ever written.
+        self.inner.store.holds_any(doc, previously)
     }
 
     /// Open the window of `app`'s root resource, through the default view of its type: its
