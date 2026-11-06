@@ -1,8 +1,7 @@
 //! The notification centre: retained notifications grouped by verified app,
-//! a keyboard selection, per-row controls, Clear all with Undo, and the
-//! paging that keeps a long history readable in a compact panel. Paint,
-//! pointer hit-testing, keyboard and accessibility all read the rows and the
-//! one [`CenterLayout`] defined here.
+//! one list that scrolls, a keyboard selection, per-row controls, Clear all
+//! with Undo. Paint, pointer hit-testing, keyboard and accessibility all read
+//! the rows and the one [`CenterLayout`] defined here.
 //!
 //! The centre holds only viewer-local state (selection, folded groups, the
 //! scroll position). The host places it in a panel and owns everything it
@@ -31,7 +30,7 @@ use crate::drill_in::{self as qs, DrillInList};
 use crate::i18n::{t, t_args};
 use ui::TextRole;
 
-/// Rows the panel asks room for before it starts paging.
+/// Rows the panel asks room for; the rest scroll rather than page.
 const PREFERRED_ROWS: usize = 7;
 /// Lines of body a row shows before the rest is left to the reader: enough
 /// for a message or a failure's reason, short enough that a list scans.
