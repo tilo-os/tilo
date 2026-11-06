@@ -226,7 +226,9 @@ impl Workspace {
             .unwrap_or_else(|| panic!("no conversation {subject}"))
     }
 
-    /// Invoke the package's action `name` as the person at the window, as a press does.
+    /// Invoke the package's action `name` as the person at the window, as a press does. A call
+    /// the action makes runs at its own door, so an action that sends asks first: the test
+    /// allows what the app's sheet would ask, as the person pressing does.
     fn press(&mut self, name: &str, args: Vec<RtValue>) -> RtValue {
         let meta = crate::app::builtin::package_named("mail").expect("the mail package");
         let action = meta
@@ -243,7 +245,26 @@ impl Workspace {
         self.settle();
         match out {
             tilolang_tilo::runtime::InvokeOutcome::Done(value) => value,
-            other => panic!("{name} did not run: {other:?}"),
+            tilolang_tilo::runtime::InvokeOutcome::Suggested(suggestion) => {
+                let allowed = self
+                    .host()
+                    .runtime()
+                    .resolve(
+                        &suggestion.run,
+                        &Principal::new("ada"),
+                        tilolang_tilo::runtime::Resolution::Approve,
+                    )
+                    .unwrap_or_else(|error| panic!("{name}: the ask: {error}"));
+                self.window.commit_planned();
+                self.settle();
+                match allowed {
+                    tilolang_tilo::runtime::RunOutcome::Done(value) => value,
+                    suspended @ tilolang_tilo::runtime::RunOutcome::Suspended(_) => {
+                        panic!("{name}: the allowed run waits again: {suspended:?}");
+                    }
+                }
+            }
+            tilolang_tilo::runtime::InvokeOutcome::Denied => panic!("{name} was denied"),
         }
     }
 }
