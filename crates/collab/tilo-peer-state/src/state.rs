@@ -892,7 +892,7 @@ impl StatePeer {
     ) -> Result<(), String> {
         use crate::members::{self, MembershipOpCommand, SignedMembershipOp};
         let workspace = self.core.workspace.clone();
-        let target = tilo_desktop_model::projection::workspace_policy_of(doc, &workspace);
+        let mut target = tilo_desktop_model::projection::workspace_policy_of(doc, &workspace);
         let old = self.core.workspace_doc.as_deref();
         let live = old.is_some_and(|old| members::genesis(&members::ops(old)).is_some());
         let cert = self
@@ -908,6 +908,22 @@ impl StatePeer {
             return Ok(());
         }
         let held = old.map(|old| members::replay(old, &workspace));
+        // A grant is given by the person whose device signs the change that
+        // records it, and every device replays it as theirs: the rows are
+        // written the same way, whether the device writes for itself or on
+        // someone else's behalf. A grant the membership already holds is not
+        // this change's to regive, and keeps the grantor it was given by.
+        if members::starts(doc, &workspace) {
+            let signer = tilo_action_policy::Subject::person(hex::encode(cert.user_public_key));
+            for grant in &mut target.grants {
+                if !held
+                    .as_ref()
+                    .is_some_and(|held| held.grants.iter().any(|held| held == grant))
+                {
+                    grant.granted_by = signer.clone();
+                }
+            }
+        }
         if held.as_ref() == Some(&target) {
             return Ok(());
         }
