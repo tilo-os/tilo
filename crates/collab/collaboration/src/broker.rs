@@ -5541,7 +5541,7 @@ async fn send_document_mutation(
         }
     };
     let claims = origin_claims(&route.spec.app_id, &mutation);
-    let commit = origin_commit(route, signer, commit, &mutation, &inbound.state);
+    let commit = origin_commit(route, signer, commit, &mutation);
     let count = frames.len();
     for (index, frame) in frames.into_iter().enumerate() {
         let frame = match &commit {
@@ -5584,7 +5584,6 @@ fn origin_commit(
     signer: &LocalSdkDocumentSigner,
     declared: Option<collab_types::WorkspaceCommit>,
     mutation: &collab_types::DocumentMutation,
-    state: &BridgeState,
 ) -> Option<collab_types::WorkspaceCommit> {
     let app = route.spec.app_id.as_str();
     let record = route.spec.record.as_deref().unwrap_or("");
