@@ -1066,6 +1066,31 @@ fn row_words(
     ))
 }
 
+/// An output the sound graph names in a paragraph — the card, its mode and
+/// the screen after it — is one line under its slider: the screen and the
+/// port it plays through.
+#[test]
+fn a_screen_output_is_named_by_its_screen_and_port() {
+    let _settled = ui::motion::testing::settled();
+    let (mut app, host) = hosted("controls");
+    host.update(|state| {
+        if let Some(output) = state.sound_outputs.iter_mut().find(|output| output.current) {
+            output.name = "AD106M High Definition Audio Controller Digitales Stereo (HDMI) \
+                           [LG ULTRAGEAR+]"
+                .into();
+        }
+    });
+    app.settle();
+    let (name, _, _) =
+        row_words(&mut app, "qs-volume-device").expect("the volume row says which output plays");
+    assert_eq!(name.as_deref(), Some("LG ULTRAGEAR+ · HDMI"));
+    let caption = target(&mut app, "qs-volume-device");
+    assert!(
+        caption.height() < 30.0,
+        "the output's name is one line, not the card's paragraph: {caption:?}"
+    );
+}
+
 #[test]
 fn every_scenario_renders() {
     for scenario in scenarios::NAMES {
