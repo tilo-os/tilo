@@ -31,7 +31,7 @@ pub mod live;
 pub use origin::YouTubeOrigin;
 pub use remote::RemoteService;
 pub use service::{
-    ChannelItem, ChannelPage, PlaylistItem, Scripted, SearchPage, Service, ServiceError,
+    ChannelItem, ChannelPage, Live, PlaylistItem, Scripted, SearchPage, Service, ServiceError,
     TrendingPage, VideoItem, scripted,
 };
 
