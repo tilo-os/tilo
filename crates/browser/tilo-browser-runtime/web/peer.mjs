@@ -262,13 +262,14 @@ export function createLiveLayer(peer, runtime, workspace, {
   let publisherId = peer.deviceKey?.();
   let state = 'connecting';
   let stopped = false;
+  let lastPublishError = null;
   const previewSeq = new Map();
 
   const publisher = createPresencePublisher({
     encode: value => encoder.encode(JSON.stringify(value)),
     send: (bytes, value) => {
       if (stopped) return false;
-      try { peer.publishPresence(workspace, JSON.stringify(value)); } catch { return false; }
+      try { peer.publishPresence(workspace, JSON.stringify(value)); lastPublishError = null; } catch (error) { lastPublishError = String(error?.message ?? error); return false; }
       return true;
     },
     now,
@@ -459,7 +460,7 @@ export function createLiveLayer(peer, runtime, workspace, {
     onPublish: on('publish'),
     /** An agent member named itself (`{publisher, agentId, name, expired}`). */
     onAgentActivity: on('agentActivity'),
-    stats: () => ({state, members: members.size}),
+    stats: () => ({state, members: members.size, published: publisher.stats(), lastPublishError}),
     /** Apply the session's live and durable events (called on every peer
      * change); pass `events` when several layers share one peer. */
     pump,
