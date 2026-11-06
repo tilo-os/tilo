@@ -637,10 +637,22 @@ impl Overlays {
         state.dismissed = true;
     }
 
-    /// The button that press came from is up: the press is over, and what it
-    /// closed may be raised again.
+    /// The button that press came from is up: the press is over. What it
+    /// closed stays down until the asks it raised have been carried out
+    /// ([`Self::settle_press`]), because a quick click delivers its release
+    /// before them.
     pub fn press_ended(&self) {
-        for state in self.0.borrow_mut().slots.values_mut() {
+        self.0.borrow_mut().press_over = true;
+    }
+
+    /// What the press asked has been carried out: what it closed may be
+    /// raised again.
+    pub fn settle_press(&self) {
+        let mut stack = self.0.borrow_mut();
+        if !std::mem::take(&mut stack.press_over) {
+            return;
+        }
+        for state in stack.slots.values_mut() {
             state.dismissed = false;
         }
     }
@@ -728,6 +740,9 @@ impl Overlays {
 struct Stack {
     slots: BTreeMap<Slot, SlotState>,
     displays: Displays,
+    /// Whether the button of the press that dismissed something has come up,
+    /// and what it asked is yet to be carried out.
+    press_over: bool,
 }
 
 impl Stack {
@@ -964,8 +979,14 @@ mod tests {
         );
         overlays.press_ended();
         assert!(
+            overlays.dismissed_recently(Slot::QuickSettings),
+            "a quick click comes up before what it asked is carried out: \
+             the toggle it raised must not raise it again"
+        );
+        overlays.settle_press();
+        assert!(
             !overlays.dismissed_recently(Slot::QuickSettings),
-            "the button came up: the press is over, and it opens again"
+            "the asks are carried out: the press is over, and it opens again"
         );
 
         overlays.dismiss(Slot::QuickSettings);

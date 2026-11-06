@@ -101,6 +101,10 @@ impl Shared {
                 other => tracing::debug!(?other, "desktop ask the session has no part in yet"),
             }
         }
+        // What the press asked is carried out: what it closed may be raised
+        // again, though the press it closed for may already be over—a quick
+        // click comes up faster than its own toggle does.
+        self.overlays.settle_press();
         // What the person chose where only a host performs it: search and a
         // banner hand their host action back here, as the ask on the
         // person's own avatar does.

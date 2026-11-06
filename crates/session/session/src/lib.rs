@@ -807,9 +807,6 @@ pub struct Session {
     /// that place: one that keeps exiting is given up on.
     quick_settings_run: quick_settings::Run,
     quick_settings_starts: u32,
-    /// Whether the compositor shows its panel now: the app runs for the
-    /// session's life, and its slot opens and closes over a hidden surface.
-    quick_settings_shown: bool,
     /// The portal's link to the loop, while the portal serves.
     portal: Option<portal_link::SessionLink>,
     /// The apps this session started, told to the portal: which of them run
@@ -2124,7 +2121,6 @@ impl Session {
             keyboard_starts: 0,
             quick_settings_run: quick_settings::Run::Down,
             quick_settings_starts: 0,
-            quick_settings_shown: false,
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             action_plane,

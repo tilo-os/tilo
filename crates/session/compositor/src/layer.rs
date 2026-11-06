@@ -114,19 +114,24 @@ impl Layers {
         self.surfaces.retain(|placed| placed.surface.alive());
     }
 
-    /// Whether the person sees `placed` and input reaches it: the session
-    /// shows it, and its client has drawn it.
-    fn visible(&self, placed: &Placed) -> bool {
+    /// Whether the session shows `placed`: one its app keeps running
+    /// between openings stands here without drawing instead.
+    fn shows(&self, placed: &Placed) -> bool {
         self.visibility
             .get(&placed.namespace)
             .copied()
             .unwrap_or(true)
-            && placed.has_buffer()
+    }
+
+    /// Whether the person sees `placed` and input reaches it: the session
+    /// shows it, and its client has drawn it.
+    fn visible(&self, placed: &Placed) -> bool {
+        self.shows(placed) && placed.has_buffer()
     }
 
     /// Whether the session shows the layer surface `namespace`; `None` when
     /// it never said, which is shown.
-    fn shows(&self, namespace: &str) -> Option<bool> {
+    fn shown(&self, namespace: &str) -> Option<bool> {
         self.visibility.get(namespace).copied()
     }
 
@@ -261,17 +266,17 @@ impl State {
         let Some(index) = self.layers.index_of(surface) else {
             return;
         };
-        // Frames of a surface the session hid change nothing on the desk.
+        self.place_layer(index, true);
+        // Frames of a surface the session hid change nothing on the desk and
+        // take no keyboard: it stands there for the opening that shows it.
         if self
             .layers
             .surfaces
             .get(index)
-            .is_some_and(|placed| !self.layers.visible(placed))
+            .is_some_and(|placed| !self.layers.shows(placed))
         {
-            self.place_layer(index, true);
             return;
         }
-        self.place_layer(index, true);
         self.layer_keyboard_focus(index);
         self.mark_redraw_all();
     }
@@ -280,7 +285,7 @@ impl State {
     /// whose app the session keeps running between openings stands here
     /// without drawing, taking input or keeping room.
     pub(crate) fn set_layer_shown(&mut self, namespace: &str, shown: bool) {
-        if self.layers.shows(namespace) == Some(shown) {
+        if self.layers.shown(namespace) == Some(shown) {
             return;
         }
         self.layers.visibility.insert(namespace.to_owned(), shown);
@@ -290,7 +295,7 @@ impl State {
     /// Whether the session shows the layer surface `namespace`, or hid it;
     /// `None` when it has not said, which is shown.
     pub(crate) fn layer_shown(&self, namespace: &str) -> Option<bool> {
-        self.layers.shows(namespace)
+        self.layers.shown(namespace)
     }
 
     /// Place every layer surface again: an output came, went or changed.
@@ -455,7 +460,9 @@ impl State {
     }
 
     /// Send the layer surfaces on `output` their frame callbacks and take
-    /// their presentation feedback with the other buffers of the frame.
+    /// their presentation feedback with the other buffers of the frame: a
+    /// surface the session shows draws on these, so one it keeps running
+    /// between openings draws again as soon as it is shown.
     pub(crate) fn layer_frame_drawn(
         &self,
         output: &Output,
@@ -468,7 +475,7 @@ impl State {
             .surfaces
             .iter()
             .filter(|placed| placed.output.as_ref() == Some(output))
-            .filter(|placed| self.layers.visible(placed))
+            .filter(|placed| self.layers.shows(placed))
         {
             let surface = placed.surface.wl_surface();
             send_frames_surface_tree(

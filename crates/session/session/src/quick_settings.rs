@@ -1,12 +1,13 @@
 //! Quick settings, as the session keeps it: the app that draws the panel runs
-//! while the stack has its slot up, standing where the stack places it, and
-//! shows what the session's services publish.
+//! for the session's life, standing where the stack places it, shown while the
+//! stack has its slot up and hidden between openings, and shows what the
+//! session's services publish.
 //!
 //! The panel is a process of its own, so nothing here crosses an `Rc` between
 //! the two: what it shows of the device is the services' readings, and what a
 //! press does is the services' actions, both reached over the broker as any
 //! app of the session reaches them. What is left to the session is where the
-//! popover stands and when it runs, which only the overlay stack knows.
+//! popover stands and whether it shows, which only the overlay stack knows.
 //!
 //! Opening Settings from the panel, and from the dictation card that sends the
 //! person there, is the session's too: it is the desk's own search, and the
@@ -181,8 +182,7 @@ impl crate::Session {
         }
         // Up, where it stands: the surface is shown rather than started, so
         // an opening the panel already stands for costs nothing.
-        if !self.quick_settings_shown {
-            self.quick_settings_shown = true;
+        if self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(true) {
             self.compositor.show_layer(SURFACE_NAMESPACE, true);
             // An opening nobody asked a page of shows the controls, not the
             // page the panel was left on.
@@ -211,17 +211,13 @@ impl crate::Session {
     /// Hide the panel: its app keeps running, and opening it again shows the
     /// surface it already stands on.
     fn hide_quick_settings(&mut self) {
-        if self.quick_settings_shown {
-            self.quick_settings_shown = false;
-            self.compositor.show_layer(SURFACE_NAMESPACE, false);
-        }
+        self.compositor.show_layer(SURFACE_NAMESPACE, false);
     }
 
     /// Stop quick settings' app, if it runs: it stands somewhere else now.
     pub(crate) fn stop_quick_settings(&mut self) {
         if self.quick_settings_run != Run::Down {
             self.quick_settings_run = Run::Down;
-            self.quick_settings_shown = false;
             self.surfaces.stop(SURFACE);
         }
     }
