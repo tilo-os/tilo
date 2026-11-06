@@ -696,7 +696,6 @@ impl Reader<'_> {
             doc: field.title.clone(),
             default: None,
             role: None,
-            personal: false,
             derived: None,
         })
     }

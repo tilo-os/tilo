@@ -314,9 +314,6 @@ pub struct MergeSpec {
 pub struct FieldDecl {
     pub node: NodeId,
     pub doc: Vec<String>,
-    /// `personal today: Bool = false`: one value per person, in a record everyone shares
-    /// ([`crate::personal`]).
-    pub personal: bool,
     pub name: Ident,
     pub ty: TypeExpr,
     pub merge: Option<MergeSpec>,

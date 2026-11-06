@@ -1353,15 +1353,6 @@ impl<'a> Parser<'a> {
         let doc = self.docs();
         let start = self.span();
         let node = self.node();
-        // `personal today: Bool = false`: one value per person. A word of its own before the
-        // name, so a field may still be named `personal` (`personal: Text`).
-        let personal = match self.peek() {
-            Tok::Ident(word) if word == "personal" && matches!(self.peek_at(1), Tok::Ident(_)) => {
-                self.bump();
-                true
-            }
-            _ => false,
-        };
         let name = self.ident("a field name")?;
         self.expect(&Tok::Colon)?;
         let ty = self.type_expr()?;
@@ -1427,7 +1418,6 @@ impl<'a> Parser<'a> {
         Ok(FieldDecl {
             node,
             doc,
-            personal,
             name,
             ty,
             merge,

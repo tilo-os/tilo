@@ -188,7 +188,6 @@ impl Resolver<'_> {
                 id: id_of(lock, &format!("{owner}.{name}")),
                 ty,
                 merge: MergeKind::Register,
-                personal: false,
                 doc: d.doc.join("\n"),
                 default: Some(default),
                 role: None,

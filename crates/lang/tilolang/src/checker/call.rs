@@ -182,7 +182,6 @@ impl Checker<'_> {
             }
             "changed" => return self.builtin_changed(args, span),
             "unseen" => return self.builtin_unseen(args, span),
-            "others" => return self.builtin_others(args, span),
             "linked" => return self.builtin_links(args, span),
             "proposal_note" => return self.builtin_proposal_note(args, span),
             "first_unseen" => return self.builtin_first_unseen(args, span),

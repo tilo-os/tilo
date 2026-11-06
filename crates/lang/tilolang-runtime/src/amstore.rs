@@ -339,15 +339,6 @@ fn require_child(doc: &AutoCommit, parent: &ObjId, key: &str) -> Result<ObjId, S
     child_obj(doc, parent, key)?.ok_or_else(|| not_found(format!("field or item `{key}`")))
 }
 
-/// The object a personal field keeps each person's value in, made under the field's own key
-/// when it is not there: `{ "person:ada": true }` (`personal.today`).
-fn personal_map(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Result<ObjId, StoreError> {
-    if let Some(map) = child_obj(doc, parent, key)? {
-        return Ok(map);
-    }
-    doc.put_object(parent, key, ObjType::Map).map_err(backend)
-}
-
 /// The map of the item `id`, wherever it is placed.
 fn item_obj(doc: &AutoCommit, id: &str) -> Option<ObjId> {
     let items = child_obj(doc, &ROOT, ITEMS_KEY).ok()??;
@@ -419,16 +410,9 @@ fn scalar_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Result<Option<Scalar>,
 fn read_field(doc: &AutoCommit, obj: &ObjId, field: &FieldSpec) -> Result<FieldValue, StoreError> {
     let key = field.id.as_str();
     match field.kind {
-        FieldKind::Register => match tilolang::personal::split(key) {
-            // One person's value of a personal field, from the map under the field's own key.
-            Some((base, person)) => match child_obj(doc, obj, base)? {
-                Some(map) => Ok(
-                    scalar_at(doc, &map, person)?.map_or(FieldValue::Absent, FieldValue::Scalar)
-                ),
-                None => Ok(FieldValue::Absent),
-            },
-            None => Ok(scalar_at(doc, obj, key)?.map_or(FieldValue::Absent, FieldValue::Scalar)),
-        },
+        FieldKind::Register => {
+            Ok(scalar_at(doc, obj, key)?.map_or(FieldValue::Absent, FieldValue::Scalar))
+        }
         FieldKind::Counter => match doc.get(obj, key).map_err(backend)? {
             Some((Value::Scalar(v), _)) => match v.as_ref() {
                 ScalarValue::Counter(c) => Ok(FieldValue::Counter(i64::from(c))),
@@ -814,18 +798,10 @@ impl Inner {
             .get_mut(&at.doc)
             .ok_or_else(|| not_found(format!("document {}", at.doc)))?;
         match m {
-            Mutation::SetRegister { field, value } => match tilolang::personal::split(field) {
-                // A personal field keeps each person's value of their own, under the field's
-                // own key: `{ "person:ada": true }`.
-                Some((base, person)) => {
-                    let map = personal_map(doc, &obj, base)?;
-                    doc.put(&map, person, to_am(value)?).map_err(backend)?;
-                }
-                None => {
-                    doc.put(&obj, field.as_str(), to_am(value)?)
-                        .map_err(backend)?;
-                }
-            },
+            Mutation::SetRegister { field, value } => {
+                doc.put(&obj, field.as_str(), to_am(value)?)
+                    .map_err(backend)?;
+            }
             Mutation::AddCounter { field, delta } => {
                 doc.increment(&obj, field.as_str(), *delta)
                     .map_err(backend)?;
@@ -992,9 +968,7 @@ impl Store for AmStore {
             .get_mut(&txn.0)
             .map(|t| t.touched.entry(at.doc.clone()).or_default());
         if let (Some(set), Some(field)) = (fields, field_of(m)) {
-            // A person's value of a personal field is the field's own change.
-            let field = tilolang::personal::field_of(field).to_owned();
-            set.insert(FieldKey::new(at, field));
+            set.insert(FieldKey::new(at, field.clone()));
         }
         let moved = match m {
             Mutation::CollRemove { item, .. } | Mutation::CollMove { item, .. } => {

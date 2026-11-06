@@ -27,19 +27,6 @@ pub const LENS_WINDOW: &str = "$lenses";
 /// Where the runtime keeps how each resource's outside effects stand (`delivery(r)`).
 pub const DELIVERY_WINDOW: &str = "$delivery";
 
-/// Whether a person's value of a personal field is one they set: the empty value says they
-/// never set it, or set it to nothing (a `Bool` false, an `Option` none).
-fn set_by_person(value: &crate::store::Scalar) -> bool {
-    use crate::store::Scalar;
-    match value {
-        Scalar::Bool(set) => *set,
-        Scalar::Int(n) => *n != 0,
-        Scalar::Float(n) => *n != 0.0,
-        Scalar::Text(text) => !text.is_empty(),
-        Scalar::Json(json) => !json.is_null(),
-    }
-}
-
 /// One line of what proposing an action with some arguments says: the words a change to the
 /// field reads with, and the value they speak of as its type shows it, when they speak of one.
 pub(crate) struct Says {
@@ -363,7 +350,6 @@ impl Core {
                 let value = self.links_import(a)?;
                 self.ret_h(value)
             }
-            Imp::Others => self.others_import(a),
             Imp::Mentions => self.mentions_import(a),
             Imp::FirstUnseen => self.first_unseen_import(a),
             Imp::MetaOf => {
@@ -448,42 +434,6 @@ impl Core {
             Value::some(Value::resource(&at))
         });
         self.ret_h(value)
-    }
-
-    /// `others(r, field)`: the people besides the one looking who set a value of the personal
-    /// field `field` of `r`, by their ids: who picked a shared task for their day, who snoozed a
-    /// shared mail. It is not secret, so anyone may ask; the value of each stays theirs to read.
-    fn others_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
-        let target = self.ref_arg(a.h(0)?)?;
-        let id = self.text(a.h(1)?)?;
-        let (_, field) = self.lookup_field(&target.target, &id)?;
-        if !field.personal {
-            return trap(format!("`{}` is not a personal field", field.name));
-        }
-        let who = self.looking()?;
-        let read = self
-            .store
-            .borrow()
-            .read(&target.target, &crate::host_res::spec_all(&field))
-            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-        let mut people: Vec<String> = match read {
-            crate::store::FieldValue::Entries(entries) => entries
-                .into_iter()
-                .filter(|(person, value)| *person != who && set_by_person(value))
-                .map(|(person, _)| person)
-                .collect(),
-            _ => Vec::new(),
-        };
-        people.sort_unstable();
-        if let Some(view) = self.frames.borrow_mut().view_mut() {
-            view.reads.push((target.target.id_string(), field.id));
-        }
-        self.ret_h(Value::List(
-            people
-                .into_iter()
-                .map(|person| Value::Principal(Principal(person)))
-                .collect(),
-        ))
     }
 
     /// `workspace.me`: the person the view is shown to, which the frame running carries as the
@@ -625,7 +575,6 @@ impl Core {
                 name: param.name.clone(),
                 ty: ty.clone(),
                 kind: crate::meta::FieldKind::Register,
-                personal: false,
                 role: None,
                 default: None,
                 derived: None,
@@ -748,10 +697,7 @@ impl Core {
             let Some(field) = info.field(&id) else {
                 continue;
             };
-            // A personal field stands as the change's own person had it: the value it wrote, not
-            // everyone's.
             let side = |held: crate::store::FieldValue| -> HResult<Value> {
-                let held = crate::host_res::for_person(field, held, Some(&v.who));
                 let value = self
                     .field_value(of, field, held, None)
                     .map_err(crate::engine::HostFail::Trap)?;
