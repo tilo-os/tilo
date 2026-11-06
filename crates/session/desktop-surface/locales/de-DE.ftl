@@ -1177,6 +1177,7 @@ answer-try-again = Erneut versuchen
 answer-reopen = Wieder öffnen
 answer-why-unknown-app = dieser Desktop weiß nicht, wie er sie öffnen soll
 answer-why-not-opened = es endete, bevor sein Fenster kam
+answer-why-cannot-start = dieser Desktop kann gerade keine Apps starten
 
 # Das Menü hinter dem Tilo-Zeichen der oberen Leiste und das Info-Blatt, das es öffnet
 tilo-menu-about = Über diesen Computer

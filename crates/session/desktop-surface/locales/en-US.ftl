@@ -1158,6 +1158,7 @@ answer-try-again = Try again
 answer-reopen = Reopen
 answer-why-unknown-app = this desktop does not know how to open it
 answer-why-not-opened = it ended before its window came
+answer-why-cannot-start = this desktop cannot start apps right now
 
 # The menu behind the top bar's Tilo mark, and the About sheet it opens
 tilo-menu-about = About this computer

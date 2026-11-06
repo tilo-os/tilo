@@ -157,7 +157,8 @@ impl Shared {
                 // again where it stood, saying why on that row. A row whose
                 // search is gone has nothing to answer on, and says it as a
                 // notice.
-                if !self.handle.answer_search(&choice, error.to_string()) {
+                let why = why_in_words(&error);
+                if !self.handle.answer_search(&choice, why) {
                     self.answer_failed(&t("action-failed-that-row"), &error);
                 }
             }
@@ -738,5 +739,17 @@ impl Shared {
                 tracing::debug!(?action, "a fixed shortcut of the desk's found no window");
             }
         }
+    }
+}
+
+/// Why a row the person chose did not happen, in words they read: the
+/// session's own missing app host says what it means, rather than naming its
+/// code on the row.
+fn why_in_words(error: &tilo_actions::DoorError) -> String {
+    match error {
+        tilo_actions::DoorError::Unavailable { code, .. } if code == "action_host_unavailable" => {
+            tilo_desktop_surface::i18n::t("answer-why-cannot-start")
+        }
+        other => other.to_string(),
     }
 }
