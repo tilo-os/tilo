@@ -781,10 +781,6 @@ mod tests {
             "the app's card keeps the place it was given"
         );
         let app_card = cards.iter().find(|card| card.rich).expect("the app's card");
-        let music_card = cards
-            .iter()
-            .find(|card| !card.rich)
-            .expect("the music card");
         assert!(
             !layer.accepts(app_card.rect.center()),
             "a press inside the app's card reaches its window, not the layer"
