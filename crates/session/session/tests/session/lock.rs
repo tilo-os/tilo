@@ -746,7 +746,7 @@ fn the_lock_screens_transport_steers_whatever_plays() {
 /// What the services publish, as the test changes it: the players' state and
 /// the pack's charge.
 #[derive(Clone, Default)]
-struct Publishing {
+pub(super) struct Publishing {
     /// What plays, as the audio service reports it: the players, and nothing
     /// while nothing plays.
     playing: Rc<RefCell<Option<serde_json::Value>>>,
@@ -759,7 +759,7 @@ struct Publishing {
 
 impl Publishing {
     /// Publish `playing` as what plays.
-    fn set_playing(&self, playing: Option<serde_json::Value>) {
+    pub(super) fn set_playing(&self, playing: Option<serde_json::Value>) {
         *self.playing.borrow_mut() = playing;
         self.moved.set(true);
     }
@@ -778,14 +778,14 @@ impl Publishing {
 
 /// The player, as a system service the session hosts: it publishes what
 /// plays and what the pack holds, and records what it was asked.
-struct PlayerService {
+pub(super) struct PlayerService {
     asked: Rc<RefCell<Vec<String>>>,
     published: Publishing,
 }
 
 impl PlayerService {
     /// A player that publishes nothing until the test hands it what plays.
-    fn new(asked: Rc<RefCell<Vec<String>>>, published: Publishing) -> Self {
+    pub(super) fn new(asked: Rc<RefCell<Vec<String>>>, published: Publishing) -> Self {
         Self { asked, published }
     }
 }
@@ -1006,29 +1006,34 @@ const DISPLAY: &str = "HEADLESS-1";
 
 /// A locked session whose lock screen is the app, with a player the session
 /// hosts: what it publishes of what plays, and what the player was asked.
-struct Locked {
+pub(super) struct Locked {
     /// The window on the desk the lock came over, which keeps the session's
     /// compositor showing a desk under it.
     _client: TestClient,
-    session: Session,
+    pub(super) session: Session,
     asked: Rc<RefCell<Vec<String>>>,
     /// What the player publishes, which the session shows on the lock.
     published: Publishing,
     /// What the app drew of the session with nothing playing.
-    quiet: tilo_compositor::Screenshot,
+    pub(super) quiet: tilo_compositor::Screenshot,
     _home: tempfile::TempDir,
 }
 
 impl Locked {
     /// Lock a session whose lock screen is the app this repository builds,
     /// and read the screen it drew with nothing playing.
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
+        Self::themed(ui::headless::fixture_runner_inputs)
+    }
+
+    /// The same, drawn by a desk presenting itself through `presentation`.
+    pub(super) fn themed(presentation: fn() -> ui::application::ComponentRunnerInputs) -> Self {
         let home = private_home();
         let asked = Rc::new(RefCell::new(Vec::new()));
         let published = Publishing::default();
         let mut session = Session::headless(
             Options {
-                presentation: ui::headless::fixture_runner_inputs,
+                presentation,
                 services: vec![Box::new(PlayerService::new(
                     Rc::clone(&asked),
                     published.clone(),
@@ -1064,7 +1069,7 @@ impl Locked {
     /// Play `now` in the player the session follows and read the screen the
     /// app drew in answer to what it drew in `was`: the session says what
     /// plays in its reading, and the app draws that reading.
-    fn plays(
+    pub(super) fn plays(
         &mut self,
         now: Option<serde_json::Value>,
         media: impl Fn(&serde_json::Value) -> bool,

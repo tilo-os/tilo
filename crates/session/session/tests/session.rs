@@ -2275,6 +2275,9 @@ mod desk;
 #[path = "session/hung.rs"]
 mod hung;
 
+#[path = "session/now_playing.rs"]
+mod now_playing;
+
 #[path = "session/readout.rs"]
 mod readout;
 

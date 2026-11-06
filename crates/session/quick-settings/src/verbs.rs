@@ -16,8 +16,8 @@ use ui::serde_json::{self, Map, Value};
 use crate::QuickSettingsState;
 use crate::effect::QsEffect;
 use crate::session::{
-    BLUETOOTH, CLIPBOARD, DESK, DEVICES, DISPLAYS, MEDIA, NETWORK, NIGHT_LIGHT, NOTIFICATIONS,
-    SCREEN, SLEEP, SOUND, VPN,
+    BLUETOOTH, CHROME, CLIPBOARD, DESK, DEVICES, DISPLAYS, MEDIA, NETWORK, NIGHT_LIGHT,
+    NOTIFICATIONS, SCREEN, SLEEP, SOUND, VPN,
 };
 
 /// What an effect asks of the session: the resource, its action and the
@@ -141,6 +141,10 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
             let node = audio::sound::output_node(output)?;
             put(&mut arguments, "node", &node);
             (SOUND, "route-output")
+        }
+        QsEffect::OpenPlaying { app } => {
+            put(&mut arguments, "app", app);
+            (CHROME, "show-app")
         }
         QsEffect::SetInputVolume { level } => {
             put(&mut arguments, "level", level);

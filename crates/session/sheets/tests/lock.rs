@@ -75,6 +75,7 @@ fn song() -> Media {
         can_toggle: true,
         can_previous: true,
         can_next: true,
+        artwork: String::new(),
     }
 }
 
@@ -327,7 +328,7 @@ fn the_screen_shows_what_plays_and_a_press_asks_the_player() {
     );
 
     app.harness()
-        .perform_named("lock-pause", &A11yAction::Activate)
+        .perform_named("lock-play", &A11yAction::Activate)
         .unwrap();
     app.settle();
     app.harness()

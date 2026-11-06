@@ -369,7 +369,11 @@ fn what_plays_is_steered_from_the_panel_through_its_effects() {
         "two players to choose from"
     );
     assert!(has(&mut app, "qs-now-playing-output"));
-    for name in ["transport.play", "transport.next", "transport.previous"] {
+    for name in [
+        "qs-now-playing-toggle",
+        "qs-now-playing-next",
+        "qs-now-playing-previous",
+    ] {
         click(&mut app, name);
     }
     assert_eq!(

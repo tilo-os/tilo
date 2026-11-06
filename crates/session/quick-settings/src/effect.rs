@@ -537,6 +537,12 @@ pub enum QsEffect {
         #[param("The destination, as the now-playing card lists it")]
         output: String,
     },
+    /// Show the app that plays what is playing.
+    #[effect(own_device, keywords = "music, media, player, app, open")]
+    OpenPlaying {
+        #[param("The app that plays it, by its id")]
+        app: String,
+    },
     /// Continue here what another of the person's devices handed over, at
     /// the point it stopped.
     #[effect(own_device, keywords = "handoff, continue, resume, another device")]

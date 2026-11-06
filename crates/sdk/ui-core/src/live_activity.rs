@@ -142,6 +142,25 @@ impl Control {
         self.icon = icon.into();
         self
     }
+
+    /// What this control does in a media transport, when it is one of the
+    /// transport's three: read from its glyph first, so play and pause say
+    /// what the player does now, then from its id.
+    #[must_use]
+    pub fn transport(&self) -> Option<crate::widget::TransportControl> {
+        use crate::widget::TransportControl;
+        match self.icon.as_str() {
+            "skip-back" | "skip-backward" | "rewind" => Some(TransportControl::Previous),
+            "skip-forward" | "forward" => Some(TransportControl::Next),
+            "play" => Some(TransportControl::PlayPause { playing: false }),
+            "pause" => Some(TransportControl::PlayPause { playing: true }),
+            _ => match self.id.as_str() {
+                "previous" | "back" => Some(TransportControl::Previous),
+                "next" => Some(TransportControl::Next),
+                _ => None,
+            },
+        }
+    }
 }
 
 /// One activity, as the bar's pill and the floating layer draw it.
@@ -163,6 +182,12 @@ pub struct Summary {
     /// header shows it, so a glance says which app the activity is.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub icon: String,
+    /// The app the activity belongs to, as the person knows it ("Music",
+    /// "Clocks"): a card's header says it beside the app's glyph. The session
+    /// that shows the activity fills it, so it is named in the person's
+    /// language and never as an id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
     /// What it reads now: "4:32", "2 min", "muted".
     #[serde(default)]
     pub value: String,
@@ -173,6 +198,14 @@ pub struct Summary {
     /// How far along it is, from 0 to 1, when it has a length.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<f32>,
+    /// How long what it plays runs, in seconds: with `progress`, a card says
+    /// where the song is and what is left of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<u64>,
+    /// Its artwork, by picture address (a content address, or a `data:`
+    /// picture): a card shows it beside the title, the pill's a thumbnail.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub artwork: String,
     #[serde(default)]
     pub tone: Tone,
     #[serde(default)]
@@ -189,9 +222,12 @@ impl Summary {
             title: title.into(),
             subtitle: String::new(),
             icon: String::new(),
+            source: String::new(),
             value: value.into(),
             countdown: None,
             progress: None,
+            length: None,
+            artwork: String::new(),
             tone: Tone::Neutral,
             controls: Vec::new(),
         }
@@ -208,6 +244,14 @@ impl Summary {
     #[must_use]
     pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
         self.icon = icon.into();
+        self
+    }
+
+    /// The app it belongs to, as the person knows it: a card's header says it
+    /// beside the app's glyph.
+    #[must_use]
+    pub fn with_source(mut self, source: impl Into<String>) -> Self {
+        self.source = source.into();
         self
     }
 
@@ -238,6 +282,43 @@ impl Summary {
     pub fn with_progress(mut self, progress: f32) -> Self {
         self.progress = Some(progress.clamp(0.0, 1.0));
         self
+    }
+
+    /// How long it runs, in seconds, so a card can say where it is and what
+    /// is left of it.
+    #[must_use]
+    pub fn with_length(mut self, seconds: u64) -> Self {
+        self.length = Some(seconds);
+        self
+    }
+
+    /// The artwork it shows, by picture address.
+    #[must_use]
+    pub fn with_artwork(mut self, artwork: impl Into<String>) -> Self {
+        self.artwork = artwork.into();
+        self
+    }
+
+    /// Where the activity stands in what it runs, in seconds, from how far
+    /// along it is: `None` when it has no length.
+    #[must_use]
+    pub fn elapsed_seconds(&self) -> Option<u64> {
+        let length = self.length?;
+        let progress = f64::from(self.progress.unwrap_or(0.0).clamp(0.0, 1.0));
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss,
+            reason = "a recording's length in seconds is far inside u64"
+        )]
+        Some((progress * length as f64).round() as u64)
+    }
+
+    /// What is left of it, in seconds, when it has a length.
+    #[must_use]
+    pub fn remaining_seconds(&self) -> Option<u64> {
+        let length = self.length?;
+        Some(length.saturating_sub(self.elapsed_seconds().unwrap_or(0)))
     }
 
     #[must_use]
@@ -282,6 +363,13 @@ impl Summary {
     #[must_use]
     pub fn header_title(&self) -> Option<&str> {
         (!self.value.is_empty() && !self.title.is_empty()).then_some(self.title.as_str())
+    }
+
+    /// What a card's header says beside the app's glyph: the title, when the
+    /// hero is the card's reading, else the app the activity belongs to.
+    #[must_use]
+    pub fn header_line(&self) -> &str {
+        self.header_title().unwrap_or(&self.source)
     }
 
     /// Where this activity stands in the pill: its kind first, then a timer
@@ -340,6 +428,21 @@ impl Summary {
             .iter()
             .filter(|control| control.kind != ControlKind::Close)
             .take(MAX_CONTROLS.saturating_sub(1))
+            .collect()
+    }
+
+    /// The activity's offered controls as a media transport, when every one
+    /// of them is the transport's — previous, play/pause, next: the card then
+    /// paints them the one way every media surface paints a transport, by id.
+    #[must_use]
+    pub fn transport(&self) -> Option<Vec<(&str, crate::widget::TransportControl)>> {
+        let controls = self.action_controls();
+        if controls.is_empty() {
+            return None;
+        }
+        controls
+            .iter()
+            .map(|control| control.transport().map(|step| (control.id.as_str(), step)))
             .collect()
     }
 
