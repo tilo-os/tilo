@@ -65,6 +65,9 @@ struct Subscription {
 #[derive(Default)]
 struct TxnState {
     touched: BTreeMap<DocId, BTreeSet<FieldKey>>,
+    /// Each document it touched, as it was before the transaction's first operation on it: what
+    /// an open run keeps of a document it writes, to take it back if the run fails.
+    before: BTreeMap<DocId, AutoCommit>,
     /// How the listings of the collections it changed moved, step by step.
     listings: BTreeMap<FieldKey, Vec<Splice>>,
 }
@@ -80,7 +83,7 @@ struct Inner {
     journals: BTreeMap<RunId, String>,
     /// The runs that have not finished: each document a run wrote, as it was before the run's
     /// first change, so that a run that fails anywhere takes everything it wrote back out.
-    runs: BTreeMap<String, BTreeMap<DocId, Vec<u8>>>,
+    runs: BTreeMap<String, BTreeMap<DocId, AutoCommit>>,
     /// Each document's items resolved into their collections, as the document is now.
     resolved: RefCell<HashMap<DocId, Rc<Resolved>>>,
     /// The types the runtime loaded, by id: what a record's fields are found by, as a link
@@ -854,7 +857,20 @@ impl Store for AmStore {
             return Err(StoreError::Invalid("the transaction is closed".into()));
         }
         // The document joins the transaction before its first operation, so a failure half
-        // way through is rolled back with the rest.
+        // way through is rolled back with the rest. While a run is open, the document as it
+        // stands before that first operation is kept beside it: a run that fails takes back
+        // what it wrote from before its own first change.
+        let keep_before = !inner.runs.is_empty()
+            && inner
+                .txns
+                .get(&txn.0)
+                .is_some_and(|state| !state.before.contains_key(&at.doc));
+        if keep_before && let Some(doc) = inner.docs.get(&at.doc) {
+            let before = doc.clone();
+            if let Some(state) = inner.txns.get_mut(&txn.0) {
+                state.before.insert(at.doc.clone(), before);
+            }
+        }
         let fields = inner
             .txns
             .get_mut(&txn.0)
@@ -911,32 +927,17 @@ impl Store for AmStore {
 
     fn commit(&mut self, txn: Txn, note: &ChangeNote) -> Result<(), StoreError> {
         let mut inner = self.inner.borrow_mut();
-        let state = inner
+        let mut state = inner
             .txns
             .remove(&txn.0)
             .ok_or_else(|| StoreError::Invalid("the transaction is closed".into()))?;
         // A run that is still open keeps each document it writes as it was before its first
         // change, so that a failure anywhere in it takes all of it back out.
         if let Some(run) = note.invocation.clone() {
-            let missing: Vec<DocId> = {
-                let known = inner.runs.get(&run);
-                state
-                    .touched
-                    .keys()
-                    .filter(|id| known.is_none_or(|known| !known.contains_key(*id)))
-                    .cloned()
-                    .collect()
-            };
-            let before: Vec<(DocId, Vec<u8>)> = missing
-                .into_iter()
-                .filter_map(|id| {
-                    inner
-                        .docs
-                        .get(&id)
-                        .map(|doc| (id, doc.committed_document().save()))
-                })
-                .collect();
-            inner.runs.entry(run).or_default().extend(before);
+            let kept = inner.runs.entry(run).or_default();
+            for (id, doc) in std::mem::take(&mut state.before) {
+                kept.entry(id).or_insert(doc);
+            }
         }
         let mut listings = state.listings;
         for (id, fields) in state.touched {
@@ -998,16 +999,9 @@ impl Store for AmStore {
         let Some(before) = inner.runs.remove(run) else {
             return;
         };
-        for (id, bytes) in before {
-            match AutoCommit::load(&bytes) {
-                Ok(doc) => {
-                    inner.docs.insert(id.clone(), doc);
-                    inner.forget(&id);
-                }
-                Err(error) => {
-                    tracing::error!(%error, doc = %id, "a failed run's document did not go back");
-                }
-            }
+        for (id, doc) in before {
+            inner.docs.insert(id.clone(), doc);
+            inner.forget(&id);
         }
     }
 
