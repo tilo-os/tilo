@@ -3036,6 +3036,11 @@ impl Task {
                 let mut channels = self.replicas.describe();
                 channels.push('\n');
                 channels.push_str(&self.channels.describe());
+                let planes = self.planes.describe();
+                if !planes.is_empty() {
+                    channels.push('\n');
+                    channels.push_str(&planes);
+                }
                 for ((route, from), count) in &self.opened {
                     let _ = write!(
                         channels,

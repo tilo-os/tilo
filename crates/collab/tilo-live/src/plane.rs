@@ -218,6 +218,11 @@ pub(crate) struct Shared {
     /// could not join its group.
     pictures_revision: AtomicU64,
     heard: Mutex<VecDeque<Heard>>,
+    /// How many objects this plane opened from its peers, and why it could not
+    /// open what a reader got: the answer a member needs when it hears nobody
+    /// who is in the roster.
+    heard_total: AtomicU64,
+    refusals: Mutex<BTreeMap<String, usize>>,
     ended: Mutex<bool>,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Told once, when the plane ends: what rejoins the scope elsewhere.
@@ -278,6 +283,8 @@ impl Shared {
             pictures: Mutex::new(Pictures::default()),
             pictures_revision: AtomicU64::new(0),
             heard: Mutex::new(VecDeque::new()),
+            heard_total: AtomicU64::new(0),
+            refusals: Mutex::new(BTreeMap::new()),
             ended: Mutex::new(false),
             wake: Mutex::new(None),
             ended_hook: Mutex::new(None),
@@ -334,7 +341,13 @@ impl Shared {
             }
             queue.push_back(heard);
         }
+        self.heard_total.fetch_add(1, Ordering::Relaxed);
         self.wake();
+    }
+    /// One frame a reader got and this plane could not open, by why.
+    fn refused(&self, refusal: &Refusal) {
+        let mut refusals = self.refusals.lock_recover();
+        *refusals.entry(refusal.to_string()).or_default() += 1;
     }
     /// Queue one received picture, or start its track over at the next
     /// keyframe when its reader fell behind: a decoder is never handed a
@@ -623,6 +636,19 @@ impl Plane {
     #[must_use]
     pub fn try_recv(&self) -> Option<Heard> {
         self.shared.heard.lock_recover().pop_front()
+    }
+
+    /// How many objects this plane opened from the peers it reads.
+    #[must_use]
+    pub fn heard_total(&self) -> u64 {
+        self.shared.heard_total.load(Ordering::Relaxed)
+    }
+
+    /// Why this plane could not open what it read, by reason and count: what a
+    /// member shows when it is in a scope and hears nobody who is in it.
+    #[must_use]
+    pub fn refusals(&self) -> BTreeMap<String, usize> {
+        self.shared.refusals.lock_recover().clone()
     }
 
     /// Show `tracks` of `sender` here, and stop showing those left out: this
@@ -1151,7 +1177,10 @@ async fn read(
                         }
                         // A frame this device may not open is not one to keep
                         // reading the track for: the epoch or the roster moved.
-                        Err(_) => return,
+                        Err(refusal) => {
+                            shared.refused(&refusal);
+                            return;
+                        }
                     }
                 }
             }
