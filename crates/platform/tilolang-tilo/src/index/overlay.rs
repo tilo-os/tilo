@@ -8,10 +8,12 @@ use std::collections::{BTreeSet, HashMap};
 
 use tilolang_runtime::store::FieldValue;
 
-use super::derive::Sink;
+use super::columns::{reversed, reversed_list, type_entry, type_list};
+use super::derive::{Sink, split_values};
 use super::lists::Entry;
-use super::{IndexError, Snapshot};
+use super::{IndexError, Snapshot, TYPE};
 use crate::chunk::ChunkNo;
+use crate::schema::{ColumnKind, lookup};
 
 /// What one list became: entries added to and removed from the index's, or (a list the
 /// writes made anew) all of them.
@@ -166,6 +168,46 @@ impl OverlaySink<'_> {
         rest.split_once('\u{1}').map(|(resource, _)| resource)
     }
 
+    /// Take the resources `within(resource)` out of the type's filter lists, as the index does
+    /// when it drops them ([`super::derive`]'s `remove`): those lists are the workspace's, so
+    /// they are not what the resource itself holds, and a resource in no collection is in none
+    /// of them.
+    fn drop_filters(&mut self, resource: &str) -> Result<(), IndexError> {
+        let inside = format!("{resource}/");
+        let within = |path: &str| path == resource || path.starts_with(&inside);
+        let held: Vec<(String, String, String)> = self
+            .overlay
+            .texts
+            .iter()
+            .filter(|((path, key), _)| within(path) && key.starts_with("$c\u{1}"))
+            .map(|((path, key), text)| (path.clone(), key.clone(), text.clone()))
+            .collect();
+        for (path, key, text) in held {
+            let Some(name) = key.strip_prefix("$c\u{1}") else {
+                continue;
+            };
+            let Some(ty) = self.text(&path, TYPE)? else {
+                continue;
+            };
+            let Some(column) = lookup(&ty)
+                .and_then(|schema| schema.column(name))
+                .filter(|column| column.filter)
+            else {
+                continue;
+            };
+            for value in split_values(&text) {
+                self.remove_entry(&type_list(&ty, name), &type_entry(&value, &path))?;
+                if column.kind == ColumnKind::Ident {
+                    self.remove_entry(
+                        &reversed_list(&ty, name),
+                        &type_entry(&reversed(&value), &path),
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn state(&mut self, list: &str) -> &mut ListState {
         let removed = Self::list_resource(list).is_some_and(|r| self.overlay.removed(r));
         self.overlay
@@ -228,6 +270,7 @@ impl Sink for OverlaySink<'_> {
         // The links it made leave their targets' lists; the ones its items made are dropped
         // with the open writes and read from the index until the record holds the removal.
         super::derive::unlink(self, resource)?;
+        self.drop_filters(resource)?;
         self.overlay.drop_within(resource);
         self.overlay.removed.insert(resource.to_owned());
         Ok(())
