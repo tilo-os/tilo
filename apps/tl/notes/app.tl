@@ -76,8 +76,8 @@ fn listed(notes: Notes, order: NoteOrder) -> List<Note> {
     }
 }
 
-/// The notebook's window: its notes, each opening in a window of its own. The order is the
-/// window's, so everyone looking at it sees the same list.
+/// The notebook's window: its notes, each opening in a window of its own, in the order the
+/// person looking chose.
 view notebook(notes: Notes) {
     window order: NoteOrder = .created
     std.list(notes, listed(notes, order), sort: order, empty: "No notes yet")
