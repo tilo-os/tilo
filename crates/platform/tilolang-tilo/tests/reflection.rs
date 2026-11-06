@@ -315,11 +315,19 @@ action retitle(t: Topic, title: Text) {
 row view topic_row for Topic
 
 view board(b: Topics) {
-    std.list(b, b.topics.sort_by(t -> updated(t), desc))
+    std.list(b.topics.sort_by(t -> updated(t), desc)) { (t, at) ->
+        ui.ListItem(item: t, presence: at) {
+            topic_row(t)
+        }
+    }
 }
 
 view lately(b: Topics) {
-    std.list(b, b.topics.sort_by(t -> changed(t, .title)?.at, desc))
+    std.list(b.topics.sort_by(t -> changed(t, .title)?.at, desc)) { (t, at) ->
+        ui.ListItem(item: t, presence: at) {
+            topic_row(t)
+        }
+    }
 }
 
 view topic_row(t: Topic) {

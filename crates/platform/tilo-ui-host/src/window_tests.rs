@@ -1244,7 +1244,7 @@ fn a_mark_or_a_turn_is_sent_as_the_state_the_control_now_holds() {
     );
 }
 
-/// A page whose overview is one list over the rows the app renders, as `std.rows` builds it:
+/// A page whose overview is one list over the rows the app renders, as `std.list` builds it:
 /// the list inside the page an app docks its composer or bar under.
 fn list_page() -> Vec<ToUi> {
     let mut list = UiNode::empty("ui.VirtualList", "list");
@@ -1586,7 +1586,7 @@ fn a_choice_of_several_rows_outlasts_the_rows_the_app_sends_again() {
     );
 }
 
-/// A page whose overview list lets a person choose several rows, as `std.rows_list` declares
+/// A page whose overview list lets a person choose several rows, as `std.list` declares
 /// it, reporting every change of the choice to the app.
 fn choose_several_page() -> Vec<ToUi> {
     let mut page = list_page();

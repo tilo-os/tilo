@@ -141,7 +141,23 @@ view written(c: Comment) {
 /// beside them as the thread it stands in: the window of the app itself, where a thread is found
 /// by what it is about and opens it.
 view recently(all: Comments) {
-    std.list(all, all.items, empty: "Nothing said yet")
+    ui.NavShell(
+        content_kind: .list,
+        title: .some(phrase("tilolang-all", kind: meta(Comment).plural)),
+        count: .some(all.items.len()),
+    ) {
+        content: {
+            if all.items.is_empty() {
+                ui.EmptyState("Nothing said yet", icon: meta(Comment).icon)
+            } else {
+                std.list(all.items) { (c, at) ->
+                    ui.ListItem(item: c, presence: at) {
+                        remark(c)
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A comment's window: where it was said, which opens, and the thread it stands in — the same

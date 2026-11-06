@@ -67,8 +67,8 @@ terse views make agent answers cheaper and more reliable.
    task_row(x) }` gives the `row: (T) -> View` parameter a block that the tree draws once per
    node it shows, so a view written in `std` names the item's parts without the caller
    repeating them.
-9. **An item block names the values it draws with:** `std.rows(...) { (x, parent) -> row(x,
-   parent) }` for a parameter typed `(T, Option<T>) -> View`. The item and the item it stands
+9. **An item block names the values it draws with:** `std.list(items) { (x, at) -> row(x,
+   at) }` for a parameter typed `(T, Option<Principal>) -> View`. The item and the item it stands
    under reach the row, so a child leaves out the fact its parent already states.
 
 Values present themselves: a `Time`, a person or an amount passed to a component renders in the

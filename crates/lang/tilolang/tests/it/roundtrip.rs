@@ -236,8 +236,8 @@ view note_row(n: Note) {
 
 view notebook(nb: Notebook) {
     state shown: NoteFilter = NoteFilter.all
-    std.list(nb, nb.notes, empty: "No notes yet") { n ->
-        row(n.title, checkbox: n.pinned)
+    std.list(nb.notes) { (n, at) ->
+        ui.ListItem(item: n, presence: at)
     }
 }
 

@@ -236,9 +236,13 @@ d-tpvjqy5m = Clear done~present
 d-i2mhsb3h = Home
     .w-tasks = Tasks
     .w-projects = Projects
+    .w-no-tasks-here = No tasks here
     .w-no-task-selected = No task selected
 
+d-6a6pf4ok = Task list
+
 d-7froalwb = Project list
+    .w-no-tasks-yet = No tasks yet
     .w-no-task-selected = No task selected
 
 d-gu3twlv2 = Project board

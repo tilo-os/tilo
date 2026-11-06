@@ -86,7 +86,19 @@ action mentioning(n: Note) -> List<Text> {
 
 /// The board: its notes.
 view board(b: Board) {
-    std.list(b, b.notes, empty: "Nothing yet")
+    ui.NavShell(content_kind: .list) {
+        content: {
+            if b.notes.is_empty() {
+                ui.EmptyState("Nothing yet", icon: .file_text)
+            } else {
+                std.list(b.notes) { (n, at) ->
+                    ui.ListItem(item: n, presence: at) {
+                        note_row(n)
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A note in a list: its title.

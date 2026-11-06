@@ -1755,7 +1755,7 @@ fn a_selection_delegate_receives_its_neighbours_and_list_rows_join() {
     assert!(list.row_selection(3).above);
 }
 
-/// A delegate whose row a view wraps, as `std.rows` gives every row the swipe its item offers:
+/// A delegate whose row a view wraps, as `std.list` gives every row the swipe its item offers:
 /// the list still hands the row its selection, in place.
 #[test]
 fn a_selection_delegate_wrapped_in_its_swipe_takes_its_selection() {

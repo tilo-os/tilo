@@ -613,19 +613,20 @@ search.md, "What a type declares" and "Types, references and paths".
 - **A query in a view looks inside a resource (`in:`).** A view's dependencies are kept per
   collection; one across the workspace would follow no change. Actions and flows may query
   the workspace (`Store::select`, answered by the index's columns across the workspace).
-- **`std.list` owns its query.** A template may declare `state` at the top of its body; it is
-  the expanding view's, kept under `<view id>:<template>.<name>` and listed in that view's
-  metadata. `std.list`'s `state query: Text` holds the place chosen, as people type
-  it in search (`is:done`); its places are `filters(T)`'s toggles after all of the items
-  (`all`, named `everything:`, by default from the type's plural noun, `host.Meta.plural`: "All notes"); `place:` is
-  the place a window starts on, the state's default (Letters starts on `is:drafts`). Its places
-  draw no badge: a count is a query of the app's own (`items.matching(p.query).len()`), which a
-  view that counts writes. The `filter:` and `count:` parameters are gone.
-- **A list groups by the key its caller gives.** `std.rows(group:)` takes `(T) -> Option<K>` and
+- **The places are the app's, in its own state.** A template may declare `state` at
+  the top of its body; it is the expanding view's, kept under `<view id>:<template>.<name>` and
+  listed in that view's metadata. `std.places` draws the filters the app names, after all of the
+  items (`everything:`, "All notes"), and selects the app's own `chosen` state with their query
+  as people type it in search (`is:done`); the app starts a window on a place by giving that
+  state its default (Letters starts on `is:drafts`). No template scans `filters(T)`: the window
+  offers what its app declares, and a place of days or projects is the app's own `ui.NavList`.
+  Places draw no badge: a count is a query of the app's own (`items.matching(p.query).len()`),
+  which a view that counts writes.
+- **A list groups by the key its caller gives.** `ui.ListItem(group:)` takes the item's own key and
   heads each run of items naming the same key with the key itself, as the platform presents a
   value of its kind — a day as Today, Tomorrow, a weekday; a word as it is written. Items that
-  name no key stand under `ungrouped:`, in the order the caller gave them; `tail:` names the
-  items done with, under `tail_title:`. A place that groups or folds by what it says rather than
+  name no key stand under the list's `ungrouped_title:`, in the order the caller gave them;
+  a row's `tail:` names the items done with, under the list's `tail_title:`. A place that groups or folds by what it says rather than
   by its items answers per item (`group: x -> if by_day { x.due } else { .none }`,
   `tail: x -> folds and x.folded`), so nothing reads the whole collection on every change:
   `headings:`, `folding:` and `closed:` are gone, and a caller whose fold must stand last
@@ -747,8 +748,9 @@ search.md, "What a type declares" and "Types, references and paths".
   midnight, both in the person's zone.
 - **A place the view supplies, and the commands only a view can offer.** An action parameter
   written `above: Option<T> (above)` is a *place*: the view offering the action fills it with
-  what it shows there — `std.rows` and `std.outline` pass the item just over this one in its
-  group, under the same parent, on the same side of the fold — through `actions(x, above)`. The
+  what it shows there — the list passes the item just over this one in its group, under the
+  same parent, on the same side of the fold, as its row says (`above:`) — through
+  `actions(x, above)`. The
   store's order never decides it, so a task first under its day's heading is never nested under
   one of another day. An `applies` line states what this view must show for the action to be
   offered at all (`applies above != .none "Nothing above it here"`); a `require` line states

@@ -606,25 +606,22 @@ view watched_page(h: WatchEntry) {
             }
         }
         content: {
-            std.rows(
-                entries,
-                "Nothing watched yet",
-                .some("The videos you watch are listed here"),
-            ) { (entry, _) ->
-                watch_row(entry)
-            }
+            history_list(yt)
         }
     }
 }
 
 /// The history in the feed's content: the same rows as its own place draws.
 view history_list(yt: YouTube) {
-    std.rows(
-        yt.history.sort_by(.watched, desc),
-        "Nothing watched yet",
-        .some("The videos you watch are listed here"),
-    ) { (entry, _) ->
-        watch_row(entry)
+    let entries = yt.history.sort_by(.watched, desc)
+    if entries.is_empty() {
+        ui.EmptyState("Nothing watched yet", message: .some("The videos you watch are listed here"))
+    } else {
+        std.list(entries) { (entry, at) ->
+            ui.ListItem(item: entry, presence: at) {
+                watch_row(entry)
+            }
+        }
     }
 }
 

@@ -194,7 +194,7 @@ results and resources compare with `==`; options and results are taken apart wit
 
 **Type names and roots.** `type Name = T` names any type. A name for a collection, set or map is
 a resource of its own that code uses as that container (`notes.insert(n)`, `for n in notes`,
-`std.list(notes, notes)`); its one field is `Name.items` in the ids lock, so renaming an old
+`notes.matching(query)`); its one field is `Name.items` in the ids lock, so renaming an old
 `type Notebook { notes: Collection<Note> }` to it (`tilolang ids --rename`) keeps its records. A
 root names one such resource per room: `root notes: Notes` is `notes` in the package and
 `alias.notes` in a package that uses it.
@@ -644,8 +644,8 @@ one, or any other list of it, in the window's own `ui.NavList`.
 
 A filter is a predicate over the type's own fields, and nothing more: what a place holds is
 what its predicate says (`filter "Today" = due <= today and not done`), how its list reads is
-the app's (`std.rows(group:, tail:)`, each answered per item where the place decides so
-itself), and its order is the app's (`sort_by`).
+the app's (`ui.ListItem(group:, tail:)` in the row the app builds, each answered per item
+where the place decides so itself), and its order is the app's (`sort_by`).
 
 **Agent and REPL sessions** (agents.md, "Querying" and "Reading and describing"). A session's
 code — the door's `tilo` tool, `tilolang repl` — has the agent library's words in scope for

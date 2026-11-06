@@ -349,7 +349,7 @@ fn descendants_and_ancestors_follow_the_parent_an_item_names() {
 
 #[test]
 fn a_ui_let_writes_the_type_its_value_is_read_as() {
-    // What `std.rows` writes: a heading of the key the caller groups by, absent when the item
+    // What a row writes: a heading of the key the app groups by, absent when the item
     // names none.
     ok(
         "view w(c: C) {\n    ui.VirtualList {\n        let heading: Option<Date> = if let d = c.due { d } else { .none }\n        ui.ListItem(item: c, group: heading) {\n        }\n    }\n}",

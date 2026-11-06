@@ -2741,7 +2741,7 @@ impl<'a> Parser<'a> {
                 || self.params_arrow_at(1);
             if arrow {
                 // `list(items) { x -> ... }`, or a view that takes a view of an item:
-                // `std.list(nb, nb.notes) { n -> row(n.title) }`. A block of a template's
+                // `std.list(shown) { (x, at) -> ... }`. A block of a template's
                 // function may take several values: `rows(xs) { (x, parent) -> ... }`.
                 self.bump();
                 if self.is(&Tok::LParen) {

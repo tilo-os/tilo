@@ -143,7 +143,38 @@ flow send(v: WrittenView, to: chat.TextChannel) {
 
 /// Every view, the kept ones a place of their own, each opening in a window of its own.
 view views_list(all: Views) {
-    std.list(all, all.items, everything: "All views", empty: "No views yet")
+    state query: Text = ""
+    let places = [WrittenView.kept]
+    let everything = "All views"
+    let title = places.find(f -> f.query == query)?.label ?? everything
+    let shown = all.items.matching(query)
+    ui.NavShell(
+        content_kind: .document,
+        sidebar_title: .some(meta(all).title),
+        overview_title: .some(title),
+        overview_count: .some(shown.len()),
+    ) {
+        sidebar: {
+            std.places(query, places, everything, icon: meta(WrittenView).icon)
+        }
+        overview: {
+            if shown.is_empty() {
+                ui.EmptyState("No views yet", icon: meta(WrittenView).icon)
+            } else {
+                std.list(shown) { (v, at) ->
+                    ui.ListItem(item: v, presence: at) {
+                        view_row(v)
+                    }
+                }
+            }
+        }
+        content: {
+            ui.EmptyState(
+                phrase("tilolang-none-selected", kind: meta(WrittenView).noun),
+                icon: meta(WrittenView).icon,
+            )
+        }
+    }
 }
 
 /// One view in a list: its title, and what was asked.

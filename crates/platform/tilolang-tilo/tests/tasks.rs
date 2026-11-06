@@ -2727,6 +2727,43 @@ fn a_place_whose_tasks_are_all_done_says_so() {
     );
 }
 
+/// A place that holds nothing says it holds nothing: nothing there waits, but nothing there is
+/// done with either, so it is not that all of it is.
+#[test]
+fn a_place_that_holds_nothing_says_so_rather_than_all_done() {
+    let (mut ada, root) = workspace();
+    // Due today, so the place of what nobody sorted does not hold it.
+    let task = call(&ada, "new_task", create(&root, "Buy oat milk"));
+    call(
+        &ada,
+        "schedule",
+        vec![task, Value::some(Value::text("2026-10-29"))],
+    );
+    ada.commit();
+    let mut view = ada.view(APP);
+    let said: Vec<String> = all(view.tree(), "ui.EmptyState")
+        .into_iter()
+        .filter_map(|node| match node.props.get("title") {
+            Some(Value::Text(title)) => Some(title.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        said.iter().any(|title| title == "No tasks here"),
+        "the place says it holds nothing: {said:?}"
+    );
+    assert!(
+        !said
+            .iter()
+            .any(|title| title == "All done" || title == "tilolang-all-done"),
+        "and not that everything is done: {said:?}"
+    );
+    assert!(
+        home_list_rows(&mut view).is_empty(),
+        "a place that holds nothing draws no list"
+    );
+}
+
 /// A workspace that names who a task belongs to offers the place of what the person looking
 /// holds once someone else is in it, after the type's own places, so the place a window opens
 /// on does not move; on their own, nothing is anyone's but theirs and the place would say what

@@ -502,6 +502,12 @@ fn finished_day(t: Task) -> Option<Date> {
     if let at = finished_at(t) { .some(at.day()) } else { .none }
 }
 
+/// The day a task stands under in a list of a place: the day it is due on, or the day it was
+/// finished on in Done, or none where the place groups nothing.
+fn task_day(t: Task, by_day: Bool, finished: Bool) -> Option<Date> {
+    if by_day { t.due } else if finished { finished_day(t) } else { .none }
+}
+
 /// The tasks of a project, in order.
 fn tasks_of(p: Project) -> List<Task> {
     tasks.items.filter(t -> t.project == p)
@@ -553,13 +559,13 @@ view home(t: Tasks) {
         found.sort_by(x -> finished_at(x), desc)
     } else if folds { ordered.sort_by(.folded) } else { ordered }
     let title = if let p = project { p.name } else { chosen?.label ?? "Tasks" }
-    // Whether nothing waits in the place: what it holds, less what is done in a project's
-    // place, never a walk over the window's list, so the answer reads the same from three
-    // tasks to three thousand.
+    // What waits in the place: what it holds, less what is done in a project's place, never a
+    // walk over the window's list, so the answer reads the same from three tasks to three
+    // thousand. With none of it waiting and something there, the place is done with.
     let open: Int = if let p = project {
         found.len() - t.items.matching(Task.project(p), Task.done).len()
     } else { found.len() }
-    let all_done = open == 0
+    let all_done = open == 0 and not found.is_empty()
     // The places whose badge says how many wait there, by key: what a person goes to, not the
     // lists they read their way through. A project's place is its own list, not a tally.
     let counted: List<Text> = ["inbox", "today", "assigned_to_me"]
@@ -604,32 +610,67 @@ view home(t: Tasks) {
             }
         }
         overview: {
-            std.rows(
-                shown,
-                "No tasks here",
-                .some("list-checks"),
-                group: x -> if by_day {
-                    x.due
-                } else if finished { finished_day(x) } else { .none },
-                ungrouped: if by_day {
-                    .some(phrase("tilolang-no-date"))
-                } else { .none },
-                group_done: finished,
-                tail: x -> folds and x.folded,
-                parent: .parent,
-                parent_title: x -> x.parent?.title,
-                progress: x -> subtask_count(x),
-                all_done: all_done,
-                entry: if in_today {
-                    .some(new_task_today(t, p: project))
-                } else { .some(new_task(t, p: project)) },
-                entry_placeholder: entry_placeholder,
-            ) { (x, under) ->
-                task_row(x, .day, under)
+            // The entry at the list's end adds where the place says; the tasks done with fold
+            // under it.
+            ui.Docked {
+                foot: {
+                    stack {
+                        if all_done {
+                            task_list(shown, by_day, finished, folds)
+                        }
+                        if in_today {
+                            std.add_entry(entry_placeholder, new_task_today(t, p: project))
+                        } else {
+                            std.add_entry(entry_placeholder, new_task(t, p: project))
+                        }
+                    }
+                }
+                if all_done {
+                    ui.EmptyState(phrase("tilolang-all-done"), icon: .list_checks, inline: true)
+                } else if shown.is_empty() {
+                    ui.EmptyState("No tasks here", icon: .list_checks)
+                } else {
+                    task_list(shown, by_day, finished, folds)
+                }
             }
         }
         content: {
             ui.EmptyState("No task selected", icon: .list_checks)
+        }
+    }
+}
+
+/// The tasks of a place as a list: under the day they are due on, or the day they were finished
+/// on in Done, each branch nested under the task it is a subtask of, a project's finished work
+/// folded under the list's tail.
+view task_list(items: List<Task>, by_day: Bool, finished: Bool, folds: Bool) {
+    std.list(
+        items,
+        tree: true,
+        ungrouped: if by_day { .some(phrase("tilolang-no-date")) } else { .none },
+        tail_title: if folds { .some(phrase("tilolang-done")) } else { .none },
+    ) { (x, at) ->
+        let heading = task_day(x, by_day, finished)
+        let folded = folds and x.folded
+        // The task just over this one in its group, on this side of the fold, as the list shows
+        // them: the place the actions offered on the row get, and none for the first of a group.
+        let above: Option<Task> = if let p = items.previous(x) {
+            if task_day(p, by_day, finished) == heading and (folds and p.folded) == folded {
+                .some(p)
+            } else { .none }
+        } else { .none }
+        ui.ListItem(
+            item: x,
+            presence: at,
+            group: heading,
+            group_done: finished,
+            tail: folded,
+            above: above,
+            parent: x.parent,
+            parent_title: x.parent?.title,
+            progress: subtask_count(x),
+        ) {
+            task_row(x, .day, x.parent)
         }
     }
 }
@@ -640,17 +681,28 @@ view project_list(p: Project) {
     let shown = tasks_of(p)
     ui.NavShell(content_kind: .document, overview_title: p.name) {
         overview: {
-            std.rows(
-                shown,
-                "No tasks yet",
-                .some("folder"),
-                parent: .parent,
-                parent_title: x -> x.parent?.title,
-                progress: x -> subtask_count(x),
-                entry: .some(new_task(tasks, p: p)),
-                entry_placeholder: "New task in {p.name}",
-            ) { (x, under) ->
-                task_row(x, .project, under)
+            ui.Docked {
+                foot: {
+                    stack {
+                        std.add_entry("New task in {p.name}", new_task(tasks, p: p))
+                    }
+                }
+                if shown.is_empty() {
+                    ui.EmptyState("No tasks yet", icon: .folder)
+                } else {
+                    std.list(shown, tree: true) { (x, at) ->
+                        ui.ListItem(
+                            item: x,
+                            presence: at,
+                            above: shown.previous(x),
+                            parent: x.parent,
+                            parent_title: x.parent?.title,
+                            progress: subtask_count(x),
+                        ) {
+                            task_row(x, .project, x.parent)
+                        }
+                    }
+                }
             }
         }
         content: {

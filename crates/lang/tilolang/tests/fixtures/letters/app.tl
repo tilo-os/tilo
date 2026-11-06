@@ -56,13 +56,39 @@ view compose(d: Draft) {
 /// The desk's window: its letters, each opening in a window of its own, drafts and sent ones
 /// apart as a letter's filters say. It opens on the drafts.
 view desk(desk: Desk) {
-    std.list(
-        desk,
-        desk.drafts,
-        place: "is:drafts",
-        everything: "All letters",
-        empty: "No letters here",
-    )
+    state query: Text = "is:drafts"
+    let kind = meta(Draft)
+    let places = filters(Draft).filter(f -> f.toggle)
+    let shown = desk.drafts.matching(query)
+    let chosen = places.find(p -> p.query == query)
+    let title = chosen?.label ?? if places.is_empty() { meta(Desk).title } else { "All letters" }
+    ui.NavShell(
+        content_kind: .document,
+        sidebar_title: if places.is_empty() { .none } else { .some(meta(Desk).title) },
+        overview_title: .some(title),
+        overview_count: .some(shown.len()),
+    ) {
+        sidebar: {
+            std.places(query, places, "All letters", icon: kind.icon)
+        }
+        overview_actions: {
+            std.header()
+        }
+        overview: {
+            if shown.is_empty() {
+                ui.EmptyState("No letters here", icon: kind.icon)
+            } else {
+                std.list(shown) { (d, at) ->
+                    ui.ListItem(item: d, presence: at) {
+                        draft_row(d)
+                    }
+                }
+            }
+        }
+        content: {
+            ui.EmptyState(phrase("tilolang-none-selected", kind: kind.noun), icon: kind.icon)
+        }
+    }
 }
 
 /// One letter in a list: its subject and who it goes to.
