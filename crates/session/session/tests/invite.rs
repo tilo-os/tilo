@@ -328,8 +328,8 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
 
     // They make a link at the part the sheet opens on: the sheet asks, the
     // session makes it through the desk, and the sheet shows the link back.
-    let mut app = HeadlessApp::<InviteApp>::for_person_with_lent("person", seat.clone())
-        .expect("the sheet draws");
+    let mut app =
+        HeadlessApp::<InviteApp>::for_person_with_lent("person", seat).expect("the sheet draws");
     app.harness()
         .resize((WIDTH as u32, HEIGHT as u32))
         .expect("a screen");
@@ -346,8 +346,12 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
         |session| {
             link = session
                 .invite_sheet()
-                .and_then(|seat| seat.invite().created.clone())
-                .map(|created| created.link)
+                .and_then(|seat| {
+                    seat.invite()
+                        .created
+                        .as_ref()
+                        .map(|created| created.link.clone())
+                })
                 .unwrap_or_default();
             !link.is_empty()
         },

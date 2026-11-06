@@ -455,7 +455,7 @@ impl Clipboard {
         self.seen
             .set(compositor.selection_changes(Selection::Clipboard));
         self.kept_until
-            .set(kept_for.map(|kept| Instant::now() + kept));
+            .set(kept_for.and_then(|kept| Instant::now().checked_add(kept)));
         true
     }
 

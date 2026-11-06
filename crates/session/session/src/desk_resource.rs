@@ -1185,6 +1185,31 @@ impl Desk {
         }))
     }
 
+    /// What an invitation verb answers, when `effect` is one of them: the links
+    /// that still work, one made, or one taken back.
+    fn invitation(&self, effect: &DeskEffect) -> Option<Result<Started, DoorError>> {
+        match effect {
+            DeskEffect::Invitations { workspace } => Some(self.invitations(workspace.as_deref())),
+            DeskEffect::IssueInvitation {
+                role,
+                invitee_name,
+                recipient,
+                expires_in_seconds,
+                workspace,
+            } => Some(self.issue_invitation(
+                role.as_deref(),
+                invitee_name.clone(),
+                recipient.as_deref(),
+                *expires_in_seconds,
+                workspace.as_deref(),
+            )),
+            DeskEffect::CancelInvitation { invite, workspace } => {
+                Some(self.cancel_invitation(invite, workspace.as_deref()))
+            }
+            _ => None,
+        }
+    }
+
     /// This device's engine: invitations are its record's, and a session without
     /// one has none.
     fn engine(&self) -> Result<&crate::engine::Engine, DoorError> {
@@ -1304,28 +1329,10 @@ impl Service for Desk {
                 return Ok(Started::Done(tilo_actions::ActionOutput::default()));
             }
             DeskEffect::OpenTrayItem { key } => return self.open_tray_item(key),
-            DeskEffect::Invitations { workspace } => {
-                return self.invitations(workspace.as_deref());
-            }
-            DeskEffect::IssueInvitation {
-                role,
-                invitee_name,
-                recipient,
-                expires_in_seconds,
-                workspace,
-            } => {
-                return self.issue_invitation(
-                    role.as_deref(),
-                    invitee_name.clone(),
-                    recipient.as_deref(),
-                    *expires_in_seconds,
-                    workspace.as_deref(),
-                );
-            }
-            DeskEffect::CancelInvitation { invite, workspace } => {
-                return self.cancel_invitation(invite, workspace.as_deref());
-            }
             _ => {}
+        }
+        if let Some(answer) = self.invitation(&effect) {
+            return answer;
         }
         if let DeskEffect::ShowSurface { surface } = &effect {
             self.surfaces.toggle(surface);
