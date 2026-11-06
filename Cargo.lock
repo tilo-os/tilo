@@ -19633,6 +19633,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-model-abi"
+version = "0.1.0"
+dependencies = [
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-model-client"
 version = "0.1.0"
 dependencies = [
@@ -19690,6 +19697,21 @@ dependencies = [
  "wire-frame",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-model-guest"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "getrandom 0.4.3",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-model-abi",
+ "tilo-resource",
+ "workspace-hack",
 ]
 
 [[package]]
