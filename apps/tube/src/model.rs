@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-use ui::tilo_resource::{self, Model, resource};
+use ui::tilo_resource::{self, Model};
 
 pub type VideoId = String;
 pub type ChannelId = String;
@@ -333,7 +333,7 @@ impl SearchTypeFilter {
 ///
 /// A declared resource type: a channel the catalogue publishes is an item
 /// resource of this type, found by "youtube channels of …" with nothing Tube
-/// writes for it ([`resource`]).
+/// writes for it ([`resource`](ui::tilo_resource::resource)).
 #[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Channel {
     pub id: ChannelId,
@@ -360,7 +360,7 @@ pub struct Channel {
 ///
 /// A declared resource type: a video the catalogue publishes is an item
 /// resource of this type, found by "youtube videos of …" with nothing Tube
-/// writes for it ([`resource`]).
+/// writes for it ([`resource`](ui::tilo_resource::resource)).
 #[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Video {
     pub id: VideoId,
