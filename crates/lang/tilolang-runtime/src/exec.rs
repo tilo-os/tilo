@@ -1268,7 +1268,11 @@ impl Core {
                 Delegated::Asks => Ok(Some(Self::ask(run, journal, &ctx, &aref))),
             }
         } else {
-            let d = self.decide(&ctx, &aref)?;
+            let d = if step.seed {
+                Decision::Allow
+            } else {
+                self.decide(&ctx, &aref)?
+            };
             match d {
                 Decision::Allow => self.run_step(run, journal, &ctx, &aref),
                 Decision::Deny => {
@@ -1508,8 +1512,9 @@ impl Core {
         };
         // What the call runs under: the invocation a scenario pushed for it, else the run's own.
         // The invocation names who runs it and the moment it acts at; the resource its changes
-        // are made from is the invocation's, else the run's.
-        let (from, who, at) = {
+        // are made from is the invocation's, else the run's. A scenario's code is the host's own
+        // making, so what it calls is seed data too: it runs without asking.
+        let (from, who, at, seed) = {
             let frames = self.frames.borrow();
             match frames.top().map(|f| &f.kind) {
                 Ok(FrameKind::Action(state)) => {
@@ -1520,9 +1525,10 @@ impl Core {
                             .or_else(|| state.note.from.clone()),
                         invocation.map(|inv| inv.who.clone()),
                         invocation.and_then(|inv| inv.at.clone()),
+                        state.scenario,
                     )
                 }
-                _ => (aref.from.clone(), None, None),
+                _ => (aref.from.clone(), None, None, false),
             }
         };
         let replayed = {
@@ -1542,6 +1548,7 @@ impl Core {
                     from,
                     who,
                     at,
+                    seed,
                 }));
                 None
             }

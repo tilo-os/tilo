@@ -89,6 +89,10 @@ pub struct Step {
     /// that moment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<String>,
+    /// Whether the call is seed data's: a scenario's own code is the host's making, so the
+    /// action it calls runs as a scenario's does, without asking a person first.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub seed: bool,
 }
 
 /// What a suspended run waits for.
