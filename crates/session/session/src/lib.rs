@@ -1392,8 +1392,7 @@ impl Session {
             directory.is_some(),
         );
 
-        // The one worker that encodes a recording and writes every capture's
-        // file, and what it makes of the recorder's work.
+        // The one worker that encodes a recording and writes every capture.
         let (capture_io, capture_notes) = capture_io::CaptureIo::new(options.wake.handle());
         // The capture studio, over everything it captures.
         let capture_studio = capture_studio::mount(
@@ -1403,6 +1402,7 @@ impl Session {
             nearby.as_ref(),
             Rc::clone(&capture_io),
             capture_notes,
+            &live_activities,
         );
 
         // The desktop's own chords win over every app's: the portal's

@@ -441,6 +441,16 @@ impl StudioSurface {
         }
     }
 
+    /// The studio comes up on a screenshot choosing a window: the bar the
+    /// person picks one in, over the windows it lists.
+    fn choose_a_window(&mut self) {
+        self.studio.link().open_on(CaptureMode::Screenshot);
+        self.studio.presentation().open(false);
+        self.catch_up();
+        self.widget.set_source_mode(SourceMode::Window);
+        self.dirty = true;
+    }
+
     /// The take `source` names, as an action asked for it.
     fn take_for(&self, source: Option<&str>, window: Option<&str>) -> Take {
         let source = match source.map(str::trim) {
@@ -515,6 +525,13 @@ fn said_chip(
 }
 
 /// The take an intent names.
+/// Whether `take` asks for the window in front and there is none to take:
+/// the studio then comes up to choose one rather than answering with a
+/// failure the person never saw.
+fn nothing_in_front(take: &Take) -> bool {
+    take.source == SourceMode::Window && take.targets.is_empty()
+}
+
 fn take(intent: &CaptureIntent) -> Take {
     Take {
         source: intent.source,
@@ -707,16 +724,28 @@ impl ResourceSurface<Capture, CaptureEffect> for StudioSurface {
             }
             CaptureEffect::Screenshot { source, window } => {
                 let take = self.take_for(source.as_deref(), window.as_deref());
+                if nothing_in_front(&take) {
+                    // No window is in front to take: the person picks one in
+                    // the studio, as a shortcut that names no window does.
+                    self.choose_a_window();
+                    return Ok(Effected::done());
+                }
                 self.studio.link().ask(Ask::Screenshot(take));
             }
             CaptureEffect::Record { source, window } => {
                 let take = self.take_for(source.as_deref(), window.as_deref());
+                if nothing_in_front(&take) {
+                    self.choose_a_window();
+                    return Ok(Effected::done());
+                }
                 if take.source == SourceMode::Region && take.regions.is_empty() {
                     return Err("a region recording needs a selection made in the studio".into());
                 }
                 self.studio.link().ask(Ask::StartRecording(take));
             }
             CaptureEffect::StopRecording => self.studio.link().ask(Ask::StopRecording),
+            CaptureEffect::PauseRecording => self.studio.link().ask(Ask::PauseRecording),
+            CaptureEffect::ResumeRecording => self.studio.link().ask(Ask::ResumeRecording),
             // The last half minute when a buffer keeps one. With nothing
             // kept there is nothing to save: the person's chord starts a
             // recording instead, unless one already runs.
@@ -773,6 +802,52 @@ mod tests {
             Some("A screenshot was not written: no space left on device"),
             "a second attempt that failed the same way is said again"
         );
+    }
+
+    /// Print with the window modifier names the window in front; with none in
+    /// front the bar comes up choosing one, rather than the capture failing
+    /// where the person never saw it.
+    #[test]
+    fn a_window_capture_with_none_in_front_comes_up_to_choose_one() {
+        let studio = Studio::new();
+        let mut surface = StudioSurface::new(Some(studio.clone()));
+        surface.catch_up();
+        let take = surface.take_for(Some("window"), None);
+        assert_eq!(take.source, SourceMode::Window);
+        assert!(nothing_in_front(&take), "no window is in front");
+        surface.choose_a_window();
+        assert!(
+            studio.presentation().is_open(),
+            "the bar comes up rather than the capture failing"
+        );
+        assert_eq!(
+            surface.widget.source_mode(),
+            SourceMode::Window,
+            "choosing the window the capture is of"
+        );
+        assert!(
+            !studio.link().has_asks(),
+            "nothing is captured behind a choice the person has not made"
+        );
+
+        // A window in front is taken at once, without the bar coming up.
+        studio.link().publish(Scene {
+            windows: vec![ui::widget::CaptureTarget {
+                id: "window-1".to_owned(),
+                title: "Notes".to_owned(),
+                app_id: "tilo-notes".to_owned(),
+                visible_rect: Rect::new(0.0, 0.0, 800.0, 600.0),
+                virtual_rect: Rect::new(0.0, 0.0, 800.0, 600.0),
+                complete_rect: None,
+                focused: true,
+                on_active_strip: true,
+            }],
+            ..Scene::default()
+        });
+        surface.catch_up();
+        let take = surface.take_for(Some("window"), None);
+        assert_eq!(take.targets, ["window-1"]);
+        assert!(!nothing_in_front(&take));
     }
 
     #[test]

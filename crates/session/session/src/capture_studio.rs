@@ -65,6 +65,15 @@ const FALLING_BEHIND: u64 = 30;
 /// The columns and rows of a receipt's thumbnail.
 const PREVIEW: (u8, u8) = (12, 8);
 
+/// The side of the thumbnail the floating layer's card shows, in pixels: a
+/// card's picture is half as wide, so this stays crisp on a high-density
+/// display.
+const THUMBNAIL: u32 = 112;
+
+/// How long the last screenshot stays on the floating layer: as long as the
+/// studio's own receipt stays up on its bar.
+const SHOT_SHOWN: Duration = Duration::from_millis(5_500);
+
 /// The capture studio as the session runs it, and what it is doing.
 pub(crate) struct CaptureStudio {
     seat: Studio,
@@ -119,6 +128,22 @@ pub(crate) struct CaptureStudio {
     replay: Option<u8>,
     /// How many clips the replay buffer gave.
     replay_saves: u64,
+    /// Where what the studio is doing shows while its own bar is down: the
+    /// apps' live activities, which the bar's pill and the floating layer
+    /// draw.
+    board: Arc<runtime_collab::LiveActivities>,
+    /// The serial of the last control the person pressed on that activity
+    /// that the studio took up.
+    pressed: u64,
+    /// What the studio shows there now, so a pass that changes nothing says
+    /// nothing.
+    activity: Option<serde_json::Value>,
+    /// The screenshot the floating layer shows, while it shows it, and the
+    /// number of the shot, so the person's putting one away does not put
+    /// away the next.
+    shown_shot: Option<ShownShot>,
+    /// How many screenshots were shown there.
+    shots_shown: u64,
 }
 
 /// A screenshot being written off the loop.
@@ -140,6 +165,22 @@ struct Receipt {
     preview: CapturePreview,
     /// Whether the file goes on the clipboard too.
     copy: bool,
+    /// Whether the person took it from outside the studio, whose bar is down:
+    /// the shot then shows on the floating layer, where the card is the only
+    /// thing saying it was taken.
+    floating: bool,
+    /// The picture the floating layer heads the shot's card with, when it
+    /// shows there: a `data:` picture.
+    thumb: String,
+}
+
+/// The screenshot the floating layer is showing: what it made, the picture
+/// its card is headed with, and when it was taken.
+struct ShownShot {
+    path: PathBuf,
+    thumb: String,
+    number: u64,
+    at: Instant,
 }
 
 /// A screenshot an app asked the person for.
@@ -164,6 +205,9 @@ struct Feeding {
     /// buffer is fed.
     path: Option<PathBuf>,
     last: Option<Instant>,
+    /// How long it has recorded, the paused time left out: what the
+    /// floating layer counts while the studio's bar is down.
+    elapsed: Duration,
     paused: bool,
     /// A source of its sound stopped: the bar says the recording carries no
     /// more of it, once.
@@ -179,6 +223,7 @@ pub(crate) fn mount(
     nearby: Option<&Arc<NearbyTransfer>>,
     io: Rc<CaptureIo>,
     notes: Receiver<Note>,
+    board: &Arc<runtime_collab::LiveActivities>,
 ) -> Option<CaptureStudio> {
     let who = (options.device.as_str(), options.person.as_str());
     let seat = Studio::new();
@@ -222,6 +267,11 @@ pub(crate) fn mount(
                 finished: None,
                 replay: None,
                 replay_saves: 0,
+                board: Arc::clone(board),
+                pressed: 0,
+                activity: None,
+                shown_shot: None,
+                shots_shown: 0,
             })
         }
         Err(error) => {
@@ -271,6 +321,10 @@ impl CaptureStudio {
         self.feed(compositor);
         self.tell_sound_lost();
         self.publish(compositor);
+        // What the person pressed on the floating layer's card is the same
+        // ask as the button it stands for.
+        self.take_presses(compositor);
+        self.publish_activity();
     }
 
     /// Take up what became of the recorder's work since the last pass.
@@ -385,17 +439,29 @@ impl CaptureStudio {
                             self.failed(Failure::NotCopied("its picture was not kept".to_owned()));
                         }
                     }
+                    let path = written.path;
                     self.last = Some(Kept {
                         kept: if receipt.copy {
                             ScreenshotKept::SAVED_AND_COPIED
                         } else {
                             ScreenshotKept::SAVED
                         },
-                        path: written.path,
+                        path: path.clone(),
                         width: receipt.width,
                         height: receipt.height,
                         preview: receipt.preview,
                     });
+                    // The person took it from outside the studio: its card
+                    // says so, with what it caught.
+                    if receipt.floating {
+                        self.shots_shown = self.shots_shown.wrapping_add(1);
+                        self.shown_shot = Some(ShownShot {
+                            path,
+                            thumb: receipt.thumb,
+                            number: self.shots_shown,
+                            at: Instant::now(),
+                        });
+                    }
                     self.sent = None;
                 }
                 Err(error) => {
@@ -579,6 +645,11 @@ impl CaptureStudio {
         }
         if let Some(feeding) = &mut self.feeding {
             feeding.paused = paused;
+            // The pause is not counted: the frame after it starts the count
+            // again rather than adding the time the recorder was held.
+            if paused {
+                feeding.last = None;
+            }
         }
         if let Some(recording) = &mut self.recording {
             recording.paused = paused;
@@ -625,7 +696,7 @@ impl CaptureStudio {
         // keep drawing.
         let path = crate::capture::unique(
             &self.directory,
-            "recording",
+            "Recording",
             tilo_capture_studio::extension(!audio.is_empty()),
         );
         // The file is opened by the frame the worker encodes: a folder that
@@ -640,6 +711,7 @@ impl CaptureStudio {
             audio,
             path: Some(path.clone()),
             last: None,
+            elapsed: Duration::ZERO,
             paused: false,
             sound_lost: false,
         });
@@ -692,6 +764,7 @@ impl CaptureStudio {
             audio,
             path: None,
             last: None,
+            elapsed: Duration::ZERO,
             paused: false,
             sound_lost: false,
         });
@@ -703,7 +776,7 @@ impl CaptureStudio {
         if self.feeding.is_none() {
             return;
         }
-        let path = crate::capture::unique(&self.directory, "replay", "mp4");
+        let path = crate::capture::unique(&self.directory, "Replay", "mp4");
         let clip = self.io.save_replay(path);
         self.clips.push_back(clip);
     }
@@ -758,6 +831,11 @@ impl CaptureStudio {
                 return;
             }
         };
+        // What the floating layer counts while the studio's bar is down: the
+        // time the recorder was fed, never the pauses.
+        if let Some(last) = feeding.last {
+            feeding.elapsed += now.saturating_duration_since(last);
+        }
         feeding.last = Some(now);
         let sound = feeding.drain_audio(true);
         if !io.feed(frame, sound) {
@@ -830,6 +908,14 @@ impl CaptureStudio {
             height: frame.height,
             preview: preview(&frame),
             copy: take.destination != CaptureDestination::File,
+            // A shot the person took from outside the studio has no bar to
+            // show its receipt: its card shows it instead.
+            floating: !self.presentation().is_drawn(),
+            thumb: if self.presentation().is_drawn() {
+                String::new()
+            } else {
+                ui::held_images::thumbnail(&picture, THUMBNAIL)
+            },
         };
         let answer = self.io.write(picture, self.directory.clone(), receipt.copy);
         self.shots.push_back(Shot {
@@ -908,6 +994,262 @@ impl CaptureStudio {
         };
         self.seat.link().publish(scene);
     }
+
+    /// What the person pressed on the floating layer's card, as the ask the
+    /// button it stands for would be.
+    fn take_presses(&mut self, compositor: &mut Compositor) {
+        let Some((serial, controls)) = self
+            .board
+            .pressed_controls(tilo_capture_studio::APP_ID, self.pressed)
+        else {
+            return;
+        };
+        self.pressed = serial;
+        for control in controls {
+            let Some(command) = control.get("command").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            self.pressed_command(command, compositor);
+        }
+    }
+
+    /// One control of the card, by the id its app named it with.
+    fn pressed_command(&mut self, command: &str, compositor: &mut Compositor) {
+        match command {
+            // The last shot's card: it acts on the shot it shows.
+            "copy-shot" => self.answer(Ask::CopyLast, compositor),
+            "open-shot" => {
+                let path = self.shown_shot.as_ref().map(|shot| shot.path.clone());
+                if let Some(path) = path {
+                    self.open(&path, false);
+                }
+            }
+            "reveal-shot" => {
+                let path = self.shown_shot.as_ref().map(|shot| shot.path.clone());
+                if let Some(path) = path {
+                    self.open(&path, true);
+                }
+            }
+            "dismiss-shot" => self.shown_shot = None,
+            // A recording's card, and the buffer's.
+            "stop" => {
+                if self
+                    .feeding
+                    .as_ref()
+                    .is_some_and(|feeding| feeding.path.is_some())
+                {
+                    self.answer(Ask::StopRecording, compositor);
+                } else {
+                    self.answer(Ask::StopReplay, compositor);
+                }
+            }
+            "pause" => self.answer(Ask::PauseRecording, compositor),
+            "resume" => self.answer(Ask::ResumeRecording, compositor),
+            "save-replay" => self.answer(Ask::SaveReplay, compositor),
+            other => tracing::debug!(command = other, "a capture card control nothing answers"),
+        }
+    }
+
+    /// Show on the floating layer what the studio is doing, while its own bar
+    /// is down: the recording or the replay buffer that runs, and the shot
+    /// that was just taken. The bar's pill and the floating layer draw it, so
+    /// a recording the person walked away from is still a control away.
+    fn publish_activity(&mut self) {
+        let activity = self.activity_now();
+        if activity == self.activity {
+            return;
+        }
+        self.activity.clone_from(&activity);
+        self.board.show(tilo_capture_studio::APP_ID, activity);
+    }
+
+    /// What the floating layer shows now, if anything.
+    fn activity_now(&mut self) -> Option<serde_json::Value> {
+        // With the bar up the studio says it on its own status bar; the card
+        // would only say the same thing twice.
+        let summary = if self.presentation().is_drawn() {
+            self.shown_shot = None;
+            None
+        } else if self
+            .feeding
+            .as_ref()
+            .is_some_and(|feeding| feeding.path.is_some())
+        {
+            Some(self.recording_summary())
+        } else if self
+            .feeding
+            .as_ref()
+            .is_some_and(|feeding| feeding.path.is_none())
+        {
+            Some(self.replay_summary())
+        } else {
+            let expired = self
+                .shown_shot
+                .as_ref()
+                .is_some_and(|shot| shot.at.elapsed() >= SHOT_SHOWN);
+            if expired {
+                self.shown_shot = None;
+            }
+            self.shot_summary()
+        };
+        let summary = summary?;
+        let published = ui::live_activity::Published {
+            summary: Some(summary),
+            overlay: true,
+            announce: None,
+        };
+        serde_json::to_value(published)
+            .inspect_err(|error| tracing::warn!(%error, "a capture activity does not write"))
+            .ok()
+    }
+
+    /// The recording that runs, as the card says it: how long it has run and
+    /// the controls that end it or hold it.
+    fn recording_summary(&self) -> ui::live_activity::Summary {
+        use ui::live_activity::{Control, ControlKind, Kind, Summary};
+        let elapsed = self
+            .feeding
+            .as_ref()
+            .map_or(0, |feeding| feeding.elapsed.as_secs());
+        let paused = self
+            .recording
+            .as_ref()
+            .is_some_and(|recording| recording.paused);
+        Summary::new(
+            Kind::Stopwatch,
+            crate::i18n::t("capture-recording-title"),
+            clock(elapsed),
+        )
+        .with_id(format!("recording-{}", self.run))
+        .with_icon("circle-dot")
+        .with_subtitle(self.target_line())
+        .with_tone(if paused {
+            ui::live_activity::Tone::Alert
+        } else {
+            ui::live_activity::Tone::Accent
+        })
+        .with_control(
+            Control::new(
+                "stop",
+                crate::i18n::t("capture-recording-stop"),
+                ControlKind::Primary,
+            )
+            .with_icon("square"),
+        )
+        .with_control(if paused {
+            Control::new(
+                "resume",
+                crate::i18n::t("capture-recording-resume"),
+                ControlKind::Secondary,
+            )
+            .with_icon("play")
+        } else {
+            Control::new(
+                "pause",
+                crate::i18n::t("capture-recording-pause"),
+                ControlKind::Secondary,
+            )
+            .with_icon("pause")
+        })
+        .with_control(Control::new(
+            "stop",
+            crate::i18n::t("capture-recording-stop"),
+            ControlKind::Close,
+        ))
+    }
+
+    /// The replay buffer, as the card says it: how much of the last half
+    /// minute it keeps, and the controls that save it or let it go.
+    fn replay_summary(&self) -> ui::live_activity::Summary {
+        use ui::live_activity::{Control, ControlKind, Kind, Summary};
+        let kept = self.replay.unwrap_or(0);
+        Summary::new(
+            Kind::Stopwatch,
+            crate::i18n::t("capture-replay-title"),
+            clock(u64::from(kept)),
+        )
+        .with_id(format!("replay-{}", self.run))
+        .with_icon("history")
+        .with_subtitle(self.target_line())
+        .with_tone(ui::live_activity::Tone::Neutral)
+        .with_control(
+            Control::new(
+                "save-replay",
+                crate::i18n::t("capture-replay-save"),
+                ControlKind::Primary,
+            )
+            .with_icon("download"),
+        )
+        .with_control(Control::new(
+            "stop",
+            crate::i18n::t("capture-replay-stop"),
+            ControlKind::Close,
+        ))
+    }
+
+    /// The shot just taken, as the card says it, while it stays up.
+    fn shot_summary(&self) -> Option<ui::live_activity::Summary> {
+        use ui::live_activity::{Control, ControlKind, Kind, Summary};
+        let shot = self.shown_shot.as_ref()?;
+        let name = shot
+            .path
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+        Some(
+            Summary::new(Kind::Other, crate::i18n::t("capture-shot-title"), "")
+                .with_id(format!("shot-{}", shot.number))
+                .with_icon("camera")
+                .with_subtitle(name)
+                .with_artwork(shot.thumb.clone())
+                .with_control(
+                    Control::new(
+                        "copy-shot",
+                        crate::i18n::t("capture-shot-copy"),
+                        ControlKind::Primary,
+                    )
+                    .with_icon("copy"),
+                )
+                .with_control(
+                    Control::new(
+                        "open-shot",
+                        crate::i18n::t("capture-shot-open"),
+                        ControlKind::Secondary,
+                    )
+                    .with_icon("image"),
+                )
+                .with_control(
+                    Control::new(
+                        "reveal-shot",
+                        crate::i18n::t("capture-shot-reveal"),
+                        ControlKind::Secondary,
+                    )
+                    .with_icon("folder"),
+                )
+                .with_control(Control::new(
+                    "dismiss-shot",
+                    crate::i18n::t("capture-shot-dismiss"),
+                    ControlKind::Close,
+                )),
+        )
+    }
+
+    /// What the recording or the buffer takes, in the person's words: the
+    /// desktop, a window, or an area of it.
+    fn target_line(&self) -> String {
+        let Some(feeding) = self.feeding.as_ref() else {
+            return String::new();
+        };
+        crate::i18n::t(match feeding.take.source {
+            SourceMode::Display => "capture-target-display",
+            SourceMode::Window | SourceMode::Strip => "capture-target-window",
+            SourceMode::Region => "capture-target-region",
+        })
+    }
+}
+
+/// Minutes and seconds, as a card counts them.
+fn clock(seconds: u64) -> String {
+    format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
 impl Feeding {
@@ -1195,8 +1537,17 @@ mod tests {
         let mut doors = Doors::default();
         let (io, worker_notes) = CaptureIo::new(options.wake.handle());
         let (said, notes) = channel();
-        let studio = mount(&mut compositor, &mut doors, &options, None, io, notes)
-            .expect("the studio mounts");
+        let board = Arc::new(runtime_collab::LiveActivities::default());
+        let studio = mount(
+            &mut compositor,
+            &mut doors,
+            &options,
+            None,
+            io,
+            notes,
+            &board,
+        )
+        .expect("the studio mounts");
         drop(worker_notes);
         (studio, compositor, said)
     }
@@ -1267,5 +1618,123 @@ mod tests {
             "a failure that kept no file says so"
         );
         assert!(!path.exists(), "nothing was written there");
+    }
+
+    /// What the floating layer shows for the studio, now.
+    fn shown(studio: &CaptureStudio) -> ui::live_activity::Published {
+        let activity = studio
+            .board
+            .activity(tilo_capture_studio::APP_ID)
+            .expect("the studio says something on the floating layer");
+        serde_json::from_value(activity).expect("a live activity")
+    }
+
+    /// A shot taken while the bar was down is said on the floating layer with
+    /// what it caught, and the card's own controls act on it: the person sees
+    /// the shot at once and can put it away from there.
+    #[test]
+    fn a_shot_the_bar_was_down_for_shows_a_card_with_its_picture() {
+        let pictures = tempfile::tempdir().expect("a folder");
+        let (mut studio, mut compositor, _said) = studio(pictures.path());
+        let path = pictures.path().join("Screenshot 2026-07-30 12.00.05.png");
+        let thumb = "data:image/jpeg;base64,AA==".to_owned();
+        studio.last = Some(Kept {
+            kept: ScreenshotKept::SAVED,
+            path: path.clone(),
+            width: 1280,
+            height: 800,
+            preview: CapturePreview {
+                columns: 2,
+                rows: 1,
+                pixels: vec![[0, 0, 0, 255]; 2],
+            },
+        });
+        studio.shots_shown = 1;
+        studio.shown_shot = Some(ShownShot {
+            path,
+            thumb: thumb.clone(),
+            number: 1,
+            at: Instant::now(),
+        });
+        studio.serve(&mut compositor);
+
+        let published = shown(&studio);
+        assert!(published.overlay, "the card is kept over the windows");
+        let summary = published.summary.expect("the shot");
+        assert_eq!(summary.kind, ui::live_activity::Kind::Other);
+        assert_eq!(summary.title, "Screenshot");
+        assert_eq!(
+            summary.subtitle, "Screenshot 2026-07-30 12.00.05.png",
+            "the card names the file, which is what search finds it by"
+        );
+        assert_eq!(summary.artwork, thumb, "the card shows what was caught");
+        let controls: Vec<&str> = summary
+            .controls
+            .iter()
+            .map(|control| control.id.as_str())
+            .collect();
+        assert_eq!(
+            controls,
+            ["copy-shot", "open-shot", "reveal-shot", "dismiss-shot"]
+        );
+
+        // The person puts it away on the card.
+        studio.board.press(
+            tilo_capture_studio::APP_ID,
+            serde_json::json!({"command": "dismiss-shot"}),
+        );
+        studio.serve(&mut compositor);
+        assert!(
+            studio.shown_shot.is_none(),
+            "the card's own control acted on the shot"
+        );
+        assert!(
+            studio.board.activity(tilo_capture_studio::APP_ID).is_none(),
+            "and nothing is shown any more"
+        );
+    }
+
+    /// A recording that runs while the bar is down is a card that counts the
+    /// time and stops where the person presses it.
+    #[test]
+    fn a_recording_the_bar_was_down_for_counts_its_time_and_stops_on_its_card() {
+        let pictures = tempfile::tempdir().expect("a folder");
+        let (mut studio, mut compositor, _said) = studio(pictures.path());
+        studio.start(Take {
+            source: SourceMode::Display,
+            ..Take::default()
+        });
+        studio.serve(&mut compositor);
+
+        let published = shown(&studio);
+        let summary = published.summary.expect("the recording");
+        assert_eq!(summary.kind, ui::live_activity::Kind::Stopwatch);
+        assert_eq!(summary.title, "Screen recording");
+        assert_eq!(summary.value, "0:00", "the card says how long it runs");
+        assert_eq!(summary.subtitle, "The whole desktop");
+        let controls: Vec<&str> = summary
+            .controls
+            .iter()
+            .map(|control| control.id.as_str())
+            .collect();
+        assert_eq!(
+            controls,
+            ["stop", "pause", "stop"],
+            "the card stops it and pauses it where the bar would"
+        );
+
+        studio.board.press(
+            tilo_capture_studio::APP_ID,
+            serde_json::json!({"command": "stop"}),
+        );
+        studio.serve(&mut compositor);
+        assert!(
+            studio.recording.is_none(),
+            "the card's Stop ends the recording"
+        );
+        assert!(
+            studio.board.activity(tilo_capture_studio::APP_ID).is_none(),
+            "and the card goes with it"
+        );
     }
 }

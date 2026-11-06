@@ -237,9 +237,9 @@ pub fn cover(picture: &crate::peniko::ImageData, edge: u32) -> String {
         (edge / 2, QUALITY),
         (edge / 4, QUALITY),
     ] {
-        let Some(small) = (edge > 0)
-            .then(|| image::imageops::resize(&square, edge, edge, image::imageops::FilterType::Triangle))
-        else {
+        let Some(small) = (edge > 0).then(|| {
+            image::imageops::resize(&square, edge, edge, image::imageops::FilterType::Triangle)
+        }) else {
             continue;
         };
         let mut encoded = Vec::new();
@@ -260,6 +260,56 @@ pub fn cover(picture: &crate::peniko::ImageData, edge: u32) -> String {
 /// picture beside the song under a wire bound, and a base64 `data:` picture
 /// takes four thirds of that room.
 pub const PICTURE_BUDGET: usize = 6 * 1024;
+
+/// A whole picture as the small `data:` picture a card draws, `edge` square:
+/// fitted inside the square on a dark ground, so a wide screenshot reads as
+/// what it is rather than as a cut-out of its middle. Empty for a picture
+/// that does not encode or that would cost more than [`PICTURE_BUDGET`].
+#[must_use]
+pub fn thumbnail(picture: &image::RgbaImage, edge: u32) -> String {
+    /// What stands around a picture that does not fill the square.
+    const GROUND: image::Rgba<u8> = image::Rgba([22, 22, 25, 255]);
+    if edge == 0 || picture.width() == 0 || picture.height() == 0 {
+        return String::new();
+    }
+    let fit = f64::from(edge) / f64::from(picture.width().max(picture.height()));
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a thumbnail's side is a few dozen pixels"
+    )]
+    let (wide, tall) = (
+        ((f64::from(picture.width()) * fit).round() as u32).clamp(1, edge),
+        ((f64::from(picture.height()) * fit).round() as u32).clamp(1, edge),
+    );
+    let scaled =
+        image::imageops::resize(picture, wide, tall, image::imageops::FilterType::Triangle);
+    let mut tile = image::RgbaImage::from_pixel(edge, edge, GROUND);
+    image::imageops::overlay(
+        &mut tile,
+        &scaled,
+        i64::from((edge - wide) / 2),
+        i64::from((edge - tall) / 2),
+    );
+    for (edge, quality) in [(edge, 82_u8), (edge, 62), (edge / 2, 82), (edge / 4, 82)] {
+        let Some(small) = (edge > 0).then(|| {
+            image::imageops::resize(&tile, edge, edge, image::imageops::FilterType::Triangle)
+        }) else {
+            continue;
+        };
+        let mut encoded = Vec::new();
+        if image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality)
+            .encode_image(&image::DynamicImage::ImageRgba8(small))
+            .is_err()
+        {
+            return String::new();
+        }
+        if encoded.len() <= PICTURE_BUDGET {
+            return format!("data:image/jpeg;base64,{}", picture_text(&encoded));
+        }
+    }
+    String::new()
+}
 
 /// [`mosaic`] for pictures already decoded (covers an image store loaded):
 /// a `side` square of up to four, sampled straight into place, so composing
@@ -471,6 +521,23 @@ mod tests {
         };
         assert_eq!(cover(&grey, 24), "", "a picture it does not read");
         assert_eq!(cover(&wide, 0), "", "a picture with no pixels");
+    }
+
+    /// A screenshot is wide: its thumbnail shows the whole of it, so a card
+    /// says what was taken rather than the middle of it.
+    #[test]
+    fn a_whole_screenshot_fits_its_square() {
+        let shot = image::RgbaImage::from_pixel(320, 180, image::Rgba([200, 30, 30, 255]));
+        let picture = thumbnail(&shot, 56);
+        assert!(picture.starts_with("data:image/jpeg;base64,"), "{picture}");
+        let bytes = picture_bytes(picture.strip_prefix("data:image/jpeg;base64,").unwrap())
+            .expect("the encoded picture");
+        let decoded = image::load_from_memory(&bytes).unwrap().to_rgb8();
+        assert_eq!((decoded.width(), decoded.height()), (56, 56));
+        // The middle of the shot is the shot; above and below it is ground.
+        assert!(decoded.get_pixel(28, 28).0[0] > 150);
+        assert!(decoded.get_pixel(28, 2).0[0] < 60);
+        assert_eq!(thumbnail(&shot, 0), "", "a picture with no square");
     }
 
     /// Noise is what costs a JPEG bytes: a cover that fills its square with

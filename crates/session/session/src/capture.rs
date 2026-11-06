@@ -290,13 +290,25 @@ fn focused(compositor: &mut Compositor) -> Result<image::RgbaImage, String> {
 }
 
 /// A fresh file name under `directory`, `kind` and its extension: what the
-/// person keeps and what an app is handed are named the same way.
+/// person keeps and what an app is handed are named the same way. The name
+/// is when it was taken, as the person reads it ("Screenshot 2026-07-30
+/// 12.00.05.png"), because that is what search, Files and a chat's file
+/// picker find it by; two of the same second get ` 2`, ` 3` and so on.
 pub(crate) fn unique(directory: &Path, kind: &str, extension: &str) -> PathBuf {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    directory.join(format!("{kind}-{stamp}.{extension}"))
+    // A file's name is a machine form, and dots where the ISO form has
+    // colons: colons are not a name every filesystem accepts.
+    // format: machine — a file name
+    let name = format!(
+        "{kind} {}",
+        chrono::Local::now().format("%Y-%m-%d %H.%M.%S")
+    );
+    let mut path = directory.join(format!("{name}.{extension}"));
+    let mut next = 2_u32;
+    while path.exists() {
+        path = directory.join(format!("{name} {next}.{extension}"));
+        next = next.wrapping_add(1);
+    }
+    path
 }
 
 /// Every display on, each at its place in the layout.

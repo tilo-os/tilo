@@ -556,7 +556,7 @@ fn in_folder(path: &Path) -> Result<(), String> {
 /// never shows a picture that is still being written.
 fn write_png(picture: &image::RgbaImage, directory: &Path, copy: bool) -> Result<Written, String> {
     std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-    let path = crate::capture::unique(directory, "screenshot", "png");
+    let path = crate::capture::unique(directory, "Screenshot", "png");
     let writing = path.with_extension("part");
     picture
         .save_with_format(&writing, image::ImageFormat::Png)
