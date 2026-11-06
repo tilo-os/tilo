@@ -33,8 +33,10 @@ use backend::{PeerCore, PeerDocument};
 mod bans;
 mod covered_records;
 mod durable_before_owner;
+#[cfg(test)]
+use durable_before_owner::Durable;
 pub(crate) use durable_before_owner::{
-    DURABLE_BASE_VERSION, Durable, DurableV4, DurableV5, DurableV6, durable_base_is_before_owner,
+    DURABLE_BASE_VERSION, DurableV4, DurableV5, DurableV6, durable_base_is_before_owner,
 };
 mod member_records;
 use member_records::empty_genesis;
@@ -402,7 +404,6 @@ fn process_default() -> (collab_types::Surfaces, AppSurfaces) {
 pub const HELD_FOR_SURFACE: &str = "document change held: its app surface is not here yet";
 
 /// The record `message` writes and its sequence, if it is a document write.
-
 fn written_route(message: &NeighbourMsg) -> Option<(Route, u64)> {
     match message {
         NeighbourMsg::AppDocument {
@@ -3856,9 +3857,9 @@ pub(crate) fn supersedes(held: &DeviceCert, incoming: &DeviceCert) -> bool {
         && incoming.issued_at_ns >= held.issued_at_ns
 }
 
-pub(crate) use governed_rows::{
-    GovernedIdentity, RedemptionReceipt, WorkspaceDelegation, WorkspaceDelegationPermissions,
-};
+pub(crate) use governed_rows::{GovernedIdentity, RedemptionReceipt};
+#[cfg(test)]
+pub(crate) use governed_rows::{WorkspaceDelegation, WorkspaceDelegationPermissions};
 
 fn member_role_from_role(role: Role) -> Option<crate::join::MemberRole> {
     match role {

@@ -6,7 +6,7 @@
 //! one this build keeps.
 //!
 //! The envelopes around it (4, 5 and 6) did not change, so each is read with
-//! this base where the current shape names [`super::Durable`].
+//! this base where the current shape names [`Durable`].
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -75,21 +75,21 @@ impl DurableV3 {
     }
 }
 
+/// What reading an earlier build's state answers: the base this build keeps,
+/// its pending queue and that queue's size, its exact evidence and its sealed
+/// history.
+type Opened = (
+    Durable,
+    VecDeque<([u8; 32], NeighbourMsg, bool)>,
+    usize,
+    super::ExactAdmissions,
+    SealedHistory,
+);
+
 /// A version 4 state an earlier build wrote, read as the base this build
 /// keeps: its pending queue, and no exact evidence or sealed history, which
 /// those envelopes did not have.
-pub(super) fn v4(
-    bytes: &[u8],
-) -> Result<
-    (
-        Durable,
-        VecDeque<([u8; 32], NeighbourMsg, bool)>,
-        usize,
-        super::ExactAdmissions,
-        SealedHistory,
-    ),
-    String,
-> {
+pub(super) fn v4(bytes: &[u8]) -> Result<Opened, String> {
     let value: DurableV4BeforeOwner =
         postcard::from_bytes(bytes).map_err(|error| error.to_string())?;
     if value.base.version != 3 {
@@ -109,18 +109,7 @@ pub(super) fn v4(
 }
 
 /// A version 5 state an earlier build wrote, with its exact evidence.
-pub(super) fn v5(
-    bytes: &[u8],
-) -> Result<
-    (
-        Durable,
-        VecDeque<([u8; 32], NeighbourMsg, bool)>,
-        usize,
-        super::ExactAdmissions,
-        SealedHistory,
-    ),
-    String,
-> {
+pub(super) fn v5(bytes: &[u8]) -> Result<Opened, String> {
     let (value, tail): (DurableV5BeforeOwner<'_>, _) =
         postcard::take_from_bytes(bytes).map_err(|error| error.to_string())?;
     if !tail.is_empty()
@@ -143,18 +132,7 @@ pub(super) fn v5(
 
 /// A version 6 state an earlier build wrote, with its exact evidence and the
 /// sealed writes of each encrypted record.
-pub(super) fn v6(
-    bytes: &[u8],
-) -> Result<
-    (
-        Durable,
-        VecDeque<([u8; 32], NeighbourMsg, bool)>,
-        usize,
-        super::ExactAdmissions,
-        SealedHistory,
-    ),
-    String,
-> {
+pub(super) fn v6(bytes: &[u8]) -> Result<Opened, String> {
     let (value, tail): (DurableV6BeforeOwner<'_>, _) =
         postcard::take_from_bytes(bytes).map_err(|error| error.to_string())?;
     if !tail.is_empty()
