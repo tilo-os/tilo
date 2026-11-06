@@ -690,11 +690,10 @@ impl<'a> Parser<'a> {
             Tok::Ident(n) if n == "primary" => ActionRole::Primary,
             Tok::Ident(n) if n == "destructive" => ActionRole::Destructive,
             Tok::Ident(n) if n == "migration" => ActionRole::Migration,
-            Tok::Ident(n) if n == "internal" => ActionRole::Internal,
             _ => return None,
         };
-        let next_is_role = matches!(self.peek_at(1), Tok::Ident(n) if n == "primary" || n == "destructive" || n == "migration" || n == "internal");
-        (matches!(self.peek_at(1), Tok::Kw("action")) || next_is_role).then_some(role)
+        let next_is_role = matches!(self.peek_at(1), Tok::Ident(n) if n == "primary" || n == "destructive" || n == "migration");
+        (matches!(self.peek_at(1), Tok::Kw("action" | "flow")) || next_is_role).then_some(role)
     }
 
     /// `root T` at the start of an item.
@@ -975,7 +974,7 @@ impl<'a> Parser<'a> {
                 self.diags.push(Diagnostic::new(
                     "E090",
                     span,
-                    "an action is `primary`, `destructive`, a `migration` or `internal`, one of them: the primary action is the one main thing to do, a destructive one never is, a migration is never offered, and an internal one only the app's own gestures run. Keep one of the words",
+                    "an action is `primary`, `destructive` or a `migration`, one of them: the primary action is the one main thing to do, a destructive one never is, and a migration is never offered. Keep one of the words",
                 ));
                 continue;
             }

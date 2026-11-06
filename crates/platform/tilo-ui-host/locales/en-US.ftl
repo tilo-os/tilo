@@ -61,6 +61,8 @@ tilolang-all = All { $kind }
 # The actor of a history line the person looking made.
 tilolang-you = You
 tilolang-empty = Nothing here yet
+# What a list says when it lists none of its kind's items: "No notes yet".
+tilolang-empty-kind = No { $kind } yet
 # What a list's entry at its end says while it is empty.
 tilolang-add = Add an item
 

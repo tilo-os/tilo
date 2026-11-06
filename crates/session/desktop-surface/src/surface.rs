@@ -201,8 +201,9 @@ struct Shared {
     /// The windows waiting for the person ([`DesktopHandle::ask_attention`]),
     /// until each has their focus.
     asking: std::collections::BTreeSet<TabId>,
-    /// The bars the person asked a menu of (a secondary press), waiting for the host.
-    menus: Vec<TabId>,
+    /// The bars the person asked a menu of (a secondary press), and where
+    /// they pressed, waiting for the host.
+    menus: Vec<(TabId, Point)>,
     /// Its person opens windows and tabs here ([`DesktopHandle::set_opens`]):
     /// the windows offer a new tab.
     opens: bool,

@@ -131,10 +131,11 @@ build_host() {
         -p tilo-model-gateway --bin tilo-model-gateway \
         --features server,host-backend,local-models,runtime-client
 }
-# The session's surfaces: the lock screen, the quick settings panel and the on-screen keyboard
-# are programs of their own, which the session starts from beside its own executable, and the
-# audio service is the helper it starts the same way. A session without them is a desktop with
-# no panel, no keyboard and no sound, so the dev session installs all of them.
+# The session's surfaces: the window menu, the lock screen, the quick settings panel and the
+# on-screen keyboard are programs of their own, which the session starts from beside its own
+# executable, and the audio service is the helper it starts the same way. A session without them
+# is a desktop with no menus, no panel, no keyboard and no sound, so the dev session installs all
+# of them.
 #
 # In a build of their own: the panel is an app whose features the session's build must not
 # unify (and vice versa), and `dev-overrides` belongs to the session alone.
@@ -142,6 +143,7 @@ build_surfaces() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
     cargo build --locked --timings "${args[@]}" \
+        -p tilo-window-menu --bin tilo-window-menu \
         -p tilo-lock-screen --bin tilo-lock-screen \
         -p tilo-quick-settings --bin tilo-quick-settings \
         -p osk --bin osk \
@@ -287,7 +289,7 @@ mkdir -p "$out/bin" "$out/thin-app"
 for name in "${host_bins[@]}"; do cp -p "$target/$host_profile/$name" "$out/bin/"; done
 # The session's surfaces, which it starts from beside its own executable under
 # the names the OS image installs them as (`osk` ships as `/usr/bin/tilo-osk`).
-for name in tilo-lock-screen tilo-quick-settings tilo-audio; do
+for name in tilo-window-menu tilo-lock-screen tilo-quick-settings tilo-audio; do
     cp -p "$target/$host_profile/$name" "$out/bin/"
 done
 cp -p "$target/$host_profile/osk" "$out/bin/tilo-osk"

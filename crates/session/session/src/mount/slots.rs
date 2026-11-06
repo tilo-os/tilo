@@ -179,7 +179,11 @@ impl Slots {
             Ok(path) => Some(package_at(&path, binding).unwrap_or(View::Program(path))),
             Err(error) => {
                 // ignored-failure: a slot whose view is not installed shows nothing, and the next publication binds it
-                tracing::debug!(
+                // The slot has no view: the menu it stands for is up in the
+                // session's reading and nothing draws it, so this says so
+                // where a person reading the log finds it, not at a level
+                // nobody turns on.
+                tracing::warn!(
                     slot,
                     app = %binding.app,
                     %error,
@@ -189,6 +193,13 @@ impl Slots {
                 None
             }
         }
+    }
+
+    /// What drew `slot` ended on its own: nothing runs for it any more, so
+    /// the next time the part comes up the view is started again rather than
+    /// trusted to a process that is gone.
+    pub fn forget(&mut self, slot: &str) {
+        self.running.remove(slot);
     }
 
     /// The view that drew `slot` could not start here: the slot keeps what it

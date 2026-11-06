@@ -54,6 +54,7 @@ mod disclosure;
 mod feel;
 mod kept;
 mod named;
+mod placed;
 mod pose;
 mod presence;
 mod rubber_band;
@@ -92,6 +93,7 @@ pub use named::{
     DrillDepth, Extent, Feedback, Float, Follow, ListChange, Mark, PanelSlide, Reveal, Snap,
     Speaking, Thumb, Trace, Transient, WindowMotion, Zoom, held_by_aim, stage, unit_opacity,
 };
+pub use placed::Placed;
 pub use pose::Pose;
 pub use presence::Presence;
 pub use rubber_band::RubberBand;

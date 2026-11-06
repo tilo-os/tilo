@@ -152,6 +152,34 @@ enum Opened {
     Asked,
 }
 
+/// Why a part is not held here, and whether that is only for this moment.
+struct Unopened {
+    reason: String,
+    /// Another process held the part's store for a write while it was looked
+    /// for (a save, the workspace adopting the part): the part opens at the
+    /// next refresh, so a view keeps waiting for it rather than being told
+    /// it is unavailable.
+    retry: bool,
+}
+
+impl From<RecordOpenError> for Unopened {
+    fn from(error: RecordOpenError) -> Self {
+        Self {
+            retry: error.writer_busy(),
+            reason: error.to_string(),
+        }
+    }
+}
+
+impl From<String> for Unopened {
+    fn from(reason: String) -> Self {
+        Self {
+            reason,
+            retry: false,
+        }
+    }
+}
+
 /// What a window holds a chain with: the store of the app's records, who
 /// edits, and what they may do in the workspace.
 #[derive(Clone)]
@@ -343,8 +371,17 @@ impl<P: Chained> ChainState<P> {
                         continue;
                     }
                     Ok(Opened::Asked) => {}
-                    Err(error) => {
-                        tracing::warn!(kind = P::KIND, part = index, %error, "earlier part not opened");
+                    Err(Unopened {
+                        reason,
+                        retry: true,
+                    }) => {
+                        // Another writer held the part's store just now: it is
+                        // waited for again at the next refresh.
+                        tracing::warn!(kind = P::KIND, part = index, %reason, "earlier part not opened yet");
+                        self.looked.set(None);
+                    }
+                    Err(Unopened { reason, .. }) => {
+                        tracing::warn!(kind = P::KIND, part = index, %reason, "earlier part not opened");
                     }
                 }
             }
@@ -368,7 +405,7 @@ impl<P: Chained> ChainState<P> {
     /// Open every part newer than the head that this device holds. Whether
     /// one was.
     fn look(&self) -> bool {
-        self.looked.set(Some(self.workspace.store.kept_revision()));
+        let looked = self.workspace.store.kept_revision();
         let head = self.parts.borrow().keys().next_back().copied();
         // Only the newest is the head; the parts between are opened when
         // someone reads back to them.
@@ -382,9 +419,11 @@ impl<P: Chained> ChainState<P> {
             .last()
             .copied();
         let Some(newest) = kept.max(started) else {
+            self.looked.set(Some(looked));
             return false;
         };
         if head.is_some_and(|head| newest <= head) {
+            self.looked.set(Some(looked));
             return false;
         }
         let opened = if kept.is_some_and(|kept| kept >= newest) {
@@ -401,19 +440,43 @@ impl<P: Chained> ChainState<P> {
                         .insert(newest, PartArrival::Arriving);
                     Ok(())
                 }
-                Opened::Asked => Err("the part is on its way from the workspace".into()),
+                Opened::Asked => Err(Unopened {
+                    reason: "the part is on its way from the workspace".into(),
+                    retry: false,
+                }),
             })
         };
-        opened
-            .map_err(|error| {
-                tracing::warn!(kind = P::KIND, part = newest, %error, "chain head not opened");
-            })
-            .is_ok()
+        match opened {
+            Ok(()) => {
+                self.looked.set(Some(looked));
+                true
+            }
+            Err(Unopened { reason, retry }) => {
+                // A part another writer held for this moment is not gone: it
+                // is looked for again at the next refresh, rather than only
+                // once this device is told of something new. Nothing is
+                // marked moved, so a failed look wakes nobody and cannot
+                // make a pass of its own.
+                tracing::warn!(kind = P::KIND, part = newest, %reason, "chain head not opened");
+                self.looked.set(if retry { None } else { Some(looked) });
+                false
+            }
+        }
+    }
+
+    /// Refuse an action on a part that is not held here, arming the next
+    /// refresh to take it up when another writer held its store for this
+    /// moment ([`Unopened::retry`]).
+    fn refused(&self, error: Unopened) -> ActionError {
+        if error.retry {
+            self.looked.set(None);
+        }
+        ActionError::Refused(error.reason)
     }
 
     /// Hold part `index`, which this device keeps: a part a history verb
     /// names is one someone here wrote to.
-    fn hold_kept(&self, index: u64) -> Result<(), String> {
+    fn hold_kept(&self, index: u64) -> Result<(), Unopened> {
         if self.parts.borrow().contains_key(&index) {
             return Ok(());
         }
@@ -422,9 +485,12 @@ impl<P: Chained> ChainState<P> {
             self.workspace
                 .store
                 .try_open_record(&checkout)
-                .map_err(|error| error.to_string())?;
+                .map_err(Unopened::from)?;
         }
-        self.follow(index)
+        self.follow(index).map_err(|reason| Unopened {
+            reason,
+            retry: false,
+        })
     }
 
     /// Hold part `index`: read it from this device, or, when this device
@@ -436,9 +502,9 @@ impl<P: Chained> ChainState<P> {
     /// ([`Self::waiting`]); its arrival, or the workspace saying it has none of
     /// it, wakes the window ([`RecordStore::wake_on_arrival`]).
     pub(crate) fn hold(&self, index: u64) -> Result<(), String> {
-        match self.open_or_start(index)? {
-            Opened::Held => {}
-            Opened::Started | Opened::Asked => {
+        match self.open_or_start(index) {
+            Ok(Opened::Held) => {}
+            Ok(Opened::Started | Opened::Asked) => {
                 self.waiting
                     .borrow_mut()
                     .insert(index, PartArrival::Arriving);
@@ -447,6 +513,21 @@ impl<P: Chained> ChainState<P> {
                 self.looked.set(None);
                 self.moved();
             }
+            Err(Unopened {
+                retry: true,
+                reason,
+            }) => {
+                // Another writer holds the part's store for this moment: the
+                // part is on its way here, and reading it at the next
+                // refresh succeeds.
+                tracing::warn!(kind = P::KIND, part = index, %reason, "part waits for another writer");
+                self.waiting
+                    .borrow_mut()
+                    .insert(index, PartArrival::Arriving);
+                self.looked.set(None);
+                self.moved();
+            }
+            Err(Unopened { reason, .. }) => return Err(reason),
         }
         Ok(())
     }
@@ -468,15 +549,23 @@ impl<P: Chained> ChainState<P> {
 
     /// Hold part `index`, starting it when nobody has.
     fn start(&self, index: u64) -> Result<(), String> {
-        match self.open_or_start(index)? {
-            Opened::Held | Opened::Started => Ok(()),
-            Opened::Asked => Err("the part is on its way from the workspace".into()),
+        match self.open_or_start(index) {
+            Ok(Opened::Held | Opened::Started) => Ok(()),
+            Ok(Opened::Asked) => Err("the part is on its way from the workspace".into()),
+            Err(error) => {
+                if error.retry {
+                    // Another writer's write is done by the next refresh,
+                    // which holds the part then.
+                    self.looked.set(None);
+                }
+                Err(error.reason)
+            }
         }
     }
 
     /// Hold part `index`, kept on this device or started from its genesis,
     /// or ask the workspace for it where the store reads records through it.
-    fn open_or_start(&self, index: u64) -> Result<Opened, String> {
+    fn open_or_start(&self, index: u64) -> Result<Opened, Unopened> {
         if self.parts.borrow().contains_key(&index) {
             return Ok(Opened::Held);
         }
@@ -493,10 +582,13 @@ impl<P: Chained> ChainState<P> {
                     self.create(&checkout)?;
                     opened = Opened::Started;
                 }
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(error.into()),
             }
         }
-        self.follow(index)?;
+        self.follow(index).map_err(|reason| Unopened {
+            reason,
+            retry: false,
+        })?;
         Ok(opened)
     }
 
@@ -626,7 +718,10 @@ impl<P: Chained> ChainState<P> {
             }
         }
         let head = self.parts.borrow().keys().next_back().copied();
-        match self.open_or_start(index).map_err(ActionError::Refused)? {
+        match self
+            .open_or_start(index)
+            .map_err(|error| self.refused(error))?
+        {
             Opened::Held => {}
             Opened::Started => {
                 if let Some(previous) = head.filter(|head| head.checked_add(1) == Some(index)) {
@@ -689,7 +784,8 @@ impl<P: Chained> ChainState<P> {
                 P::LABEL.to_lowercase()
             )));
         }
-        self.hold_kept(edit.part).map_err(ActionError::Refused)?;
+        self.hold_kept(edit.part)
+            .map_err(|error| self.refused(error))?;
         let encoded = edit.encoded().map_err(ActionError::Refused)?;
         self.write(
             edit.part,

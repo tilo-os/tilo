@@ -46,6 +46,7 @@ const KEY_E: u32 = 18;
 const KEY_TAB: u32 = 15;
 const KEY_ENTER: u32 = 28;
 const KEY_Q: u32 = 16;
+const KEY_W: u32 = 17;
 const KEY_R: u32 = 19;
 const KEY_A: u32 = 30;
 const KEY_D: u32 = 32;
@@ -55,6 +56,7 @@ const KEY_C: u32 = 46;
 const KEY_V: u32 = 47;
 const KEY_SLASH: u32 = 53;
 const KEY_SPACE: u32 = 57;
+const KEY_F4: u32 = 62;
 const KEY_F10: u32 = 68;
 const KEY_DELETE: u32 = 111;
 const KEY_LEFT_CTRL: u32 = 29;
@@ -167,6 +169,7 @@ fn keycode(name: &str) -> u32 {
         "tab" => KEY_TAB,
         "l" => KEY_L,
         "q" => KEY_Q,
+        "w" => KEY_W,
         "r" => KEY_R,
         "a" => KEY_A,
         "c" => KEY_C,
@@ -177,6 +180,7 @@ fn keycode(name: &str) -> u32 {
         "-" => KEY_MINUS,
         "=" => KEY_EQUAL,
         "8" => KEY_8,
+        "f4" => KEY_F4,
         "f10" => KEY_F10,
         "delete" => KEY_DELETE,
         "escape" => KEY_ESCAPE,
@@ -207,7 +211,13 @@ fn press(session: &mut Session, action: ShortcutAction) {
         .get(&action)
         .unwrap_or_else(|| panic!("{action:?} is bound"))
         .clone();
-    let held = modifier_keys(&chord);
+    press_chord(session, &chord);
+}
+
+/// Press `chord` as a person does, through the keyboard the compositor gives
+/// the session.
+fn press_chord(session: &mut Session, chord: &KeyChord) {
+    let held = modifier_keys(chord);
     for keycode in &held {
         key(session, *keycode, true);
     }
@@ -520,6 +530,52 @@ fn the_window_menu_shows_the_chord_the_table_binds() {
         "a row no shortcut does says nothing"
     );
     capture(&mut session, "window-menu");
+}
+
+/// A window's menu belongs to its window: one still up when the window in
+/// front closes goes with it, rather than standing over the desk with nothing
+/// to say and holding what the person presses, and the next window's menu
+/// opens as it always does.
+#[test]
+fn the_window_menu_closes_with_the_window_it_belongs_to() {
+    let _panel = panel_environment();
+    let mut session = session_with(desk_tree());
+    press(&mut session, ShortcutAction::TabMenu);
+    until(&mut session, "the window menu", |session| {
+        menu_tab(session).as_deref() == Some("20")
+    });
+
+    // The window in front goes by the chord that closes it, not by the
+    // menu's own row: the menu is left behind holding a window that is gone.
+    let close = fixed_shortcut("fixed-close-tab").expect("closing the window is fixed");
+    press_chord(&mut session, &close.chords()[0]);
+    until(&mut session, "the window in front to go", |session| {
+        session
+            .handle()
+            .snapshot("session", vec![])
+            .active
+            .is_some_and(|route| route.tab != "20")
+    });
+    until(
+        &mut session,
+        "the menu to close with its window",
+        |session| menu_tab(session).is_none(),
+    );
+    assert!(
+        row_chord(&session, "window-close").is_none(),
+        "no rows stand for the window that went"
+    );
+
+    // And the menu is a menu again for the window in front now: the record of
+    // the view that drew the one that went does not stand in its way.
+    press(&mut session, ShortcutAction::TabMenu);
+    until(&mut session, "the next window's menu", |session| {
+        menu_tab(session).as_deref() == Some("21")
+    });
+    assert!(
+        row_chord(&session, "window-maximize").is_some(),
+        "the menu offers the window in front its rows"
+    );
 }
 
 /// The search a person opens lists the actions a shortcut runs with the chord

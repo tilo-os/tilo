@@ -562,6 +562,27 @@ pub enum Moved {
     Everything,
 }
 
+/// Whether a change to `changed` moves what a read of `read` saw.
+///
+/// The same resource and field, either read or changed whole, is the same thing read and changed
+/// again. A requirement that read a resource whole sees everything published under it, so a
+/// change to one of its items reads it again. A change to a resource above what was read does
+/// not: what an item's own fields are is what a requirement of the item reads, and a collection
+/// changing around it is a change to the collection.
+#[must_use]
+pub fn reached(changed: &Field, read: &Field) -> bool {
+    const WHOLE: &str = tilolang_runtime::ANY_FIELD;
+    let above = |outer: &str, inner: &str| {
+        inner
+            .strip_prefix(outer)
+            .is_some_and(|rest| rest.starts_with('/'))
+    };
+    if changed.0 == read.0 {
+        return changed.1 == read.1 || changed.1 == WHOLE || read.1 == WHOLE;
+    }
+    above(&read.0, &changed.0) || (changed.1 == WHOLE && above(&changed.0, &read.0))
+}
+
 /// What the updates since a revision moved of the records' text, as a reader that keeps one
 /// entry per resource (the search index) reads it: a task checked replaces its entry, a task
 /// added or deleted adds or drops one, whatever else the workspace holds.

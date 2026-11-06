@@ -613,6 +613,97 @@ fn a_window_the_person_opened_opens_again_after_a_restart() {
 }
 
 #[test]
+fn a_launch_before_the_restore_asks_starts_the_app_into_the_saved_tab() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("started");
+    let launcher = installed_probe(&mut home, &started);
+    let state = state_of(&home);
+    save_desk(&state, &one_window(PROBE, "Probe"));
+
+    // The session starts on the desk, and the person — or an action reaching
+    // the app from somewhere else — opens it before the restore has asked for
+    // its saved window: that launch starts the app, into the tab the window
+    // was left in.
+    let apps = apps_at(&home, Some(launcher.path().to_owned()));
+    let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+    let workspace = session
+        .handle()
+        .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
+        .expect("a workspace is in front");
+    let launch = tilo_app_launch::Launch::Package {
+        app: PROBE.into(),
+        open: None,
+    };
+    apps.start(&launch, &apps.workspace_named(&workspace))
+        .expect("the launch is taken");
+    until(&mut session, "the app is started", |_| {
+        starts(&started) == 1
+    });
+
+    // Nothing asks for it again, and the window it opens fills the tab the
+    // person left it in.
+    for _ in 0..100 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert_eq!(starts(&started), 1, "the app started once");
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(window(11, PROBE)))
+        .expect("the window maps");
+    until(&mut session, "the window takes the saved tab", |session| {
+        matches!(
+            tile_of(session, 100),
+            Some(TileContent::Foreign { surface_id: 11, .. })
+        )
+    });
+    assert_eq!(tabs(&session), [(100, 10)], "one tab, not two");
+}
+
+#[test]
+fn a_launch_while_the_saved_window_is_coming_does_not_start_the_app_again() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("started");
+    let launcher = installed_probe(&mut home, &started);
+    let state = state_of(&home);
+    save_desk(&state, &one_window(PROBE, "Probe"));
+
+    // The restore asks for the saved window first, and the same app is asked
+    // for again while its window is coming: a record names the process that
+    // already has the app's records, so no second one starts.
+    let apps = apps_at(&home, Some(launcher.path().to_owned()));
+    let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+    until(&mut session, "the restore asks for the window", |_| {
+        starts(&started) == 1
+    });
+    let workspace = session
+        .handle()
+        .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
+        .expect("a workspace is in front");
+    let record =
+        tilo_app_launch::Launch::parse("record:so.tilo.probe:notes").expect("a record launch");
+    apps.start(&record, &apps.workspace_named(&workspace))
+        .expect("the launch is taken");
+    for _ in 0..100 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert_eq!(starts(&started), 1, "the app is not started a second time");
+
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(window(11, PROBE)))
+        .expect("the window maps");
+    until(&mut session, "the window takes the saved tab", |session| {
+        matches!(
+            tile_of(session, 100),
+            Some(TileContent::Foreign { surface_id: 11, .. })
+        )
+    });
+    assert_eq!(tabs(&session), [(100, 10)], "one tab, not two");
+}
+
+#[test]
 fn a_window_whose_app_is_gone_says_so_in_its_tab_and_that_tab_closes() {
     let _settled = ui::motion::testing::settled();
     let home = tilo_test_env::TestHome::new().unwrap();
@@ -639,7 +730,7 @@ fn a_window_whose_app_is_gone_says_so_in_its_tab_and_that_tab_closes() {
     assert!(
         session
             .desktop()
-            .with_policy(|policy| policy.windows_in_front().is_empty()),
+            .with_policy(|policy| policy.app_tabs_in_front().is_empty()),
         "and no window stands in its place"
     );
     assert_eq!(

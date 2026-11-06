@@ -102,6 +102,15 @@ pages, forms. It relies on general language features any author can use:
 
 An app that needs something `std` doesn't do composes `ui.*` directly and loses nothing native.
 
+A window that is only a list is `std.browse`: it takes the resource its window is of, the items,
+the places and the sort, and writes that window the standard way — the place a person chose as its
+state, the list that place finds, the title and count naming that place, the empty state, the entry
+that adds an item, and the pane beside the list when the rows open there. It draws what the caller
+named and never reads a shell off the type; `opens` is the one fact it takes from the type, whether
+its rows have a window of their own, and a window whose rows open in front of it states
+`opens: false`. An app whose window is more than this — a sidebar of its own, rows that group or
+nest — composes `std.list`, `std.places` and `std.header` itself.
+
 A list groups without a second widget: the row a list draws takes `group:`, naming the item's
 key, and the list draws a section band for each run of items that names the same key and holds
 it at the top while its items scroll past. The heading is the key itself, presented as a value of its kind is

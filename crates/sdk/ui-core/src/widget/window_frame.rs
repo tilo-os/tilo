@@ -125,6 +125,11 @@ pub struct WindowFrame {
     bar: Rect,
     /// The pill around the controls, over the bar's ground or over the app's header row.
     pill: Rect,
+    /// The window arriving where it stands and gliding when its place changes
+    /// (`motion::Placed`: `WindowMotion::OPEN` and `MOVE`, landing at once for a still theme and
+    /// reduced motion). Drawn as a component of the shell's do: a window a view builds again
+    /// each time the arrangement changes still moves rather than jumping.
+    placed: crate::motion::Placed,
 }
 
 /// The layer holding the content, and the one holding the controls.
@@ -247,6 +252,13 @@ impl Described for WindowFrame {
             rect: Rect::ZERO,
             bar: Rect::ZERO,
             pill: Rect::ZERO,
+            // A window a view places after the window has shown is one that just arrived (a
+            // place opened onto the desk): it comes in. One the first frame shows rests.
+            placed: if crate::motion::window_has_shown() {
+                crate::motion::Placed::closed()
+            } else {
+                crate::motion::Placed::opened()
+            },
         }
     }
 
@@ -620,8 +632,20 @@ impl Decorator for WindowFrame {
         self.relayout || (self.layers.needs_redraw() || self.layers.needs_animation_frame())
     }
 
+    /// Whether the window is arriving, going or moving: what asks for frames while it does,
+    /// and what its own content asks for.
+    fn needs_animation_frame(&self) -> bool {
+        self.placed.is_moving(crate::motion::frame_now()) || self.layers.needs_animation_frame()
+    }
+
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         self.layers.collect_damage(regions);
+        // A moving window repaints the band between where it stands and where it was drawn.
+        let now = crate::motion::frame_now();
+        let drawn = self.placed.rect(now);
+        if drawn != self.rect {
+            regions.push(drawn.union(self.rect));
+        }
     }
 
     fn draw(
@@ -636,6 +660,67 @@ impl Decorator for WindowFrame {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
+        let now = crate::motion::frame_now();
+        self.placed.follow(
+            rect,
+            true,
+            theme.motion(),
+            crate::motion::input_source(),
+            now,
+        );
+        let pose = self.placed.pose(rect, now);
+        let bounds = rect.union(pose.drawn_rect(rect));
+        pose.paint(scene, transform, bounds, |scene, transform| {
+            self.paint_frame(scene, transform, text, theme, presence, rect);
+        });
+    }
+
+    /// What the window holds is cut at its edge: a list scrolled past its top is not seen over
+    /// the window behind it, and a press there does not reach it.
+    fn child_clip_rect(&self) -> Option<Rect> {
+        (self.rect.width() > 0.0).then_some(self.rect)
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let relayout = std::mem::take(&mut self.relayout);
+        self.layers.take_structure_dirty() || relayout
+    }
+
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        Widget::take_structure_change(&mut self.layers)
+    }
+
+    fn name(&self) -> &'static str {
+        "WindowFrame"
+    }
+
+    /// The window is found by the key it stands under, so a surface that pans can bring the
+    /// one that just arrived into view.
+    fn test_id(&self) -> Option<&str> {
+        (!self.key.is_empty()).then_some(self.key.as_str())
+    }
+
+    /// The frame is a group named for the window, and what it holds is read inside it.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        self.name.as_ref().map(|name| {
+            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                .with_optional_name(Some(name.clone()))
+        })
+    }
+}
+
+impl WindowFrame {
+    /// The window itself, drawn where `rect` says: what [`Decorator::draw`] draws once the
+    /// window is posed where its arrival or move has reached.
+    fn paint_frame(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        rect: Rect,
+    ) {
         let radius = SurfaceLevel::Window.radius(theme).min(rect.height() / 2.0);
         // The window in front stands higher than the ones behind it: the theme's floating
         // shadow under its own window shadow. One behind keeps the window's soft shadow alone,
@@ -685,39 +770,6 @@ impl Decorator for WindowFrame {
                 &RoundedRect::from_rect(rect.inflate(0.5, 0.5), radius + 0.5),
             );
         }
-    }
-
-    /// What the window holds is cut at its edge: a list scrolled past its top is not seen over
-    /// the window behind it, and a press there does not reach it.
-    fn child_clip_rect(&self) -> Option<Rect> {
-        (self.rect.width() > 0.0).then_some(self.rect)
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let relayout = std::mem::take(&mut self.relayout);
-        self.layers.take_structure_dirty() || relayout
-    }
-
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-        Widget::take_structure_change(&mut self.layers)
-    }
-
-    fn name(&self) -> &'static str {
-        "WindowFrame"
-    }
-
-    /// The window is found by the key it stands under, so a surface that pans can bring the
-    /// one that just arrived into view.
-    fn test_id(&self) -> Option<&str> {
-        (!self.key.is_empty()).then_some(self.key.as_str())
-    }
-
-    /// The frame is a group named for the window, and what it holds is read inside it.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        self.name.as_ref().map(|name| {
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                .with_optional_name(Some(name.clone()))
-        })
     }
 }
 
@@ -929,5 +981,126 @@ mod tests {
             "a window behind shows no name of its own: {:?}",
             own[NAME].get_rect()
         );
+    }
+
+    /// A window's motion: it glides to a new place over several frames, reaches it, then rests
+    /// asking for no frames — and a still theme or reduced motion lands it at once.
+    #[test]
+    fn a_window_glides_to_its_new_place_and_rests_asking_for_no_frames() {
+        let _frame = crate::motion::pin_frame();
+        let mut frame = WindowFrame::from_props(
+            "w",
+            WindowFrameProps {
+                name: Some("A note".to_owned()),
+                focused: true,
+                body: Some(Box::new(Spacer::new())),
+                ..WindowFrameProps::default()
+            },
+        );
+        let now = crate::motion::frame_now();
+        let at = |x: f64| Rect::from_origin_size((x, 40.0), (240.0, 160.0));
+        // Its first placement rests where it is laid out: nothing asks for a frame.
+        frame.placed.follow(
+            at(40.0),
+            true,
+            Theme::dark().motion(),
+            crate::motion::input_source(),
+            now,
+        );
+        assert!(
+            !frame.placed.is_moving(now),
+            "a window first placed rests where it is laid out"
+        );
+
+        // Laid out at 400, it is drawn from where it stood and glides across the frames between
+        // (a person's change moves; a script's lands, as `motion::MotionSource::Action` says).
+        frame.placed.follow(
+            at(400.0),
+            true,
+            Theme::dark().motion(),
+            crate::tokens::MotionSource::Pointer,
+            now,
+        );
+        let start = frame
+            .placed
+            .movement()
+            .sampled_after(crate::time::Duration::ZERO)
+            .0;
+        assert!(
+            (start.x0 - 40.0).abs() < 3.0,
+            "it starts where it stood: {start:?}"
+        );
+        let mid = frame
+            .placed
+            .movement()
+            .sampled_after(crate::time::Duration::from_millis(80))
+            .0;
+        assert!(
+            mid.x0 > start.x0 + 1.0 && mid.x0 < 400.0 - 1.0,
+            "it is on its way: {mid:?}"
+        );
+        // It reaches its place, and then rests: no frame is asked for.
+        let arrived = frame
+            .placed
+            .movement()
+            .sampled_after(crate::time::Duration::from_secs(3))
+            .0;
+        assert!((arrived.x0 - 400.0).abs() < 0.5, "it arrives: {arrived:?}");
+        assert!(
+            !frame
+                .placed
+                .is_moving(now + crate::time::Duration::from_secs(3))
+        );
+    }
+
+    /// A still theme, and reduced motion, land the window where it is laid out on the frame it
+    /// changes.
+    #[test]
+    fn a_still_theme_and_reduced_motion_land_a_window_at_once() {
+        let _frame = crate::motion::pin_frame();
+        let still = crate::tokens::EffectiveMotion::new(
+            crate::tokens::Motion {
+                still: true,
+                ..crate::tokens::Motion::default()
+            },
+            false,
+        );
+        let reduced = crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), true);
+        for motion in [still, reduced] {
+            let mut frame = WindowFrame::from_props(
+                "w",
+                WindowFrameProps {
+                    name: Some("A note".to_owned()),
+                    body: Some(Box::new(Spacer::new())),
+                    ..WindowFrameProps::default()
+                },
+            );
+            let at = |x: f64| Rect::from_origin_size((x, 40.0), (240.0, 160.0));
+            let now = crate::motion::frame_now();
+            // Its first placement, at rest.
+            frame.placed.follow(
+                at(40.0),
+                true,
+                motion,
+                crate::tokens::MotionSource::Pointer,
+                now,
+            );
+            // Laid out at 400, it lands there on the frame it changes.
+            frame.placed.follow(
+                at(400.0),
+                true,
+                motion,
+                crate::tokens::MotionSource::Pointer,
+                now,
+            );
+            assert!(
+                (frame.placed.rect(now).x0 - 400.0).abs() < 0.5,
+                "it lands at its place at once"
+            );
+            assert!(
+                !frame.placed.is_moving(now),
+                "and it asks for no frame to get there"
+            );
+        }
     }
 }

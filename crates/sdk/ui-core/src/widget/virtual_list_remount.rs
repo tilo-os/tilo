@@ -18,11 +18,12 @@ use crate::widget::Remount;
 const REPLACE_AFTER_PX: f64 = 16_384.0;
 
 impl<M: ListModel> VirtualList<M> {
-    /// The rows to mount: those the view and its overscan reach, and,
-    /// while a scroll carries on from the rows mounted, a quarter of the
-    /// view more ahead of it. Every mount lays the list out again, so a
-    /// glide mounts a few rows every few frames rather than one row every
-    /// frame. A jump mounts only what it shows.
+    /// The rows to mount: those the view and its overscan reach, and, while a scroll carries
+    /// on from the rows mounted, a view more of them ahead of it. Every mount lays the list out
+    /// again, so a glide mounts the rows of a whole screen every few frames rather than one row
+    /// every frame, and a notch of a wheel lands inside the rows already announced to the app
+    /// that renders them rather than asking it again ([`ListModel::request_range`]): a scroll
+    /// step costs one ask, or none. A jump mounts only what it shows.
     pub(super) fn mount_window(&self) -> Range<usize> {
         let near = self.rows_to_hold();
         let mounted = self.mounted_range.clone();
@@ -34,7 +35,7 @@ impl<M: ListModel> VirtualList<M> {
             return near;
         }
         let overscan = self.viewport.overscan();
-        let ahead = overscan + (self.viewport.viewport() / 4.0).max(overscan);
+        let ahead = overscan + self.viewport.viewport();
         if near.start < mounted.start {
             self.viewport.range_around(ahead, overscan)
         } else {

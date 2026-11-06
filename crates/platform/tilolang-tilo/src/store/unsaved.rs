@@ -60,6 +60,7 @@ pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState, by: &str) 
     if state.saved > 0 {
         return false;
     }
+    let mut collections = std::mem::take(&mut state.collections);
     for (doc, fields) in std::mem::take(&mut state.touched) {
         if fields.is_empty() {
             continue;
@@ -70,8 +71,9 @@ pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState, by: &str) 
                 .partition(|change| change.key.doc() == doc);
         state.listings = rest;
         inner.notify(&ChangeSummary {
-            doc,
+            doc: doc.clone(),
             fields: fields.into_iter().collect(),
+            collections: collections.remove(&doc).unwrap_or_default().into_iter().collect(),
             listings: own,
             by: Some(by.to_owned()),
         });

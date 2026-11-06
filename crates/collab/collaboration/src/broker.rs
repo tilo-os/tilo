@@ -474,12 +474,6 @@ pub struct NativeHistoryInvocationFixture {
 }
 
 impl BrokerTransport {
-    /// Every complete action this endpoint has seen in `workspace`, oldest
-    /// first: the log [`crate::commits`] keeps for history.
-    pub(crate) fn action_history(&self, workspace: &str) -> Vec<crate::commits::CommitHistory> {
-        self.state.commits().history(workspace)
-    }
-
     /// Hand a command to the shovel. A full bounded queue is backpressure,
     /// never a reason to disable collaboration: a durable command that does
     /// not fit waits in [`Self::spill`] (in order, with a newer action
@@ -936,6 +930,14 @@ impl CollabTransport for BrokerTransport {
 
     fn committed_document_required(&self, channel: &str) -> bool {
         self.state.document_reads.required(channel)
+    }
+
+    fn action_of(
+        &self,
+        workspace: &str,
+        change: &[u8; 32],
+    ) -> Option<crate::commit_log::CommitHistory> {
+        self.state.commits().action_of(workspace, change)
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
