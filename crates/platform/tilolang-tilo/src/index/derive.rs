@@ -101,7 +101,7 @@ pub fn column_field(column: &str) -> String {
 }
 
 /// The values held under a [`column_field`].
-fn split_values(held: &str) -> Vec<String> {
+pub(super) fn split_values(held: &str) -> Vec<String> {
     held.split(columns::SEP).map(str::to_owned).collect()
 }
 

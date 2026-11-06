@@ -20359,6 +20359,7 @@ dependencies = [
  "neighbour-wire",
  "parking_lot",
  "postcard",
+ "proptest",
  "rand_core 0.10.0",
  "registry-types",
  "serde",
@@ -22338,6 +22339,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+ "workspace-hack",
 ]
 
 [[package]]

@@ -736,6 +736,10 @@ impl StatePeer {
         let grants = governed_map(&doc, "grants")?;
         doc.set_actor(self.workspace_actor_of(key));
         put_member(&mut doc, &members, user_public_key, role)?;
+        // Their admission time is recorded beside the role, once: it is part of
+        // the membership an operation reproduces, not a row only some writers
+        // remember.
+        put_member_joined_once(&mut doc, user_public_key, now_ns(now) / 1_000_000)?;
         // An administrator moderates the workspace too: the two grants come and
         // go together.
         let moderation_id = tilo_action_policy::roles::administrator_moderation_grant_id(&person);
@@ -853,6 +857,7 @@ impl StatePeer {
             &mut doc,
         )
         .map_err(err)?;
+        self.record_membership(&mut doc, before, key, now)?;
         let changes = doc
             .get_changes(before)
             .into_iter()
@@ -869,6 +874,73 @@ impl StatePeer {
         )?;
         Ok(outcome.changed || outcome.metadata_changed)
     }
+    /// Record this device's membership change as an operation on the log every
+    /// device replays, and project the log back into the document's rows.
+    ///
+    /// The owner's device starts the log: a workspace that has none yet — new,
+    /// or one whose membership was last-writer-wins — begins at an operation
+    /// naming the membership it holds now. After that every change is an
+    /// operation carrying the steps this device made, and a change its grants
+    /// do not allow is refused here rather than written for other devices to
+    /// discard.
+    fn record_membership(
+        &self,
+        doc: &mut CachedDocument,
+        before: &[automerge::ChangeHash],
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        use crate::members::{self, MembershipOpCommand, SignedMembershipOp};
+        let workspace = self.core.workspace.clone();
+        let target = tilo_desktop_model::projection::workspace_policy_of(doc, &workspace);
+        let old = self.core.workspace_doc.as_deref();
+        let live = old.is_some_and(|old| members::genesis(&members::ops(old)).is_some());
+        let cert = self
+            .certificate(&key.verifying_key().to_bytes(), now)
+            .map_err(|error| error.to_string())?;
+        let owner = cert.user_public_key == self.core.owner;
+        if !live {
+            if owner && old.is_none_or(crate::members::legacy::needs_genesis) {
+                let op =
+                    crate::members::legacy::genesis_op(cert, key, before, &target, now_ns(now))?;
+                crate::members::legacy::put_op(doc, &op)?;
+            }
+            return Ok(());
+        }
+        let held = old.map(|old| members::replay(old, &workspace));
+        if held.as_ref() == Some(&target) {
+            return Ok(());
+        }
+        // The rows may already say what the log says: an invitation's receipt
+        // admits its joiner without an operation, and every device folds it in
+        // the same way.
+        if members::replay(doc, &workspace) == target {
+            return Ok(());
+        }
+        let steps = match &held {
+            Some(held) => members::steps(held, &target).map_err(|error| {
+                format!("the membership change is not a step to write: {error}")
+            })?,
+            None => Vec::new(),
+        };
+        if steps.is_empty() {
+            return Err("the membership change is not this device's to make".into());
+        }
+        let op = SignedMembershipOp::signed(
+            cert,
+            key,
+            members::heads(&members::ops(doc)),
+            now_ns(now),
+            MembershipOpCommand::Project { changes: steps },
+        )?;
+        crate::members::legacy::put_op(doc, &op)?;
+        if members::replay(doc, &workspace) != target {
+            return Err("the membership change is not this device's to make".into());
+        }
+        members::materialise(doc, &target)?;
+        Ok(())
+    }
+
     fn import_governed_certificates(
         &mut self,
         doc: &AutoCommit,

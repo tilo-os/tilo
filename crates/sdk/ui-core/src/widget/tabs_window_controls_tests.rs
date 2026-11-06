@@ -2,9 +2,11 @@
 //! own actions that stand beside them: what belongs to the window, and what
 //! belongs to what the window shows.
 
-use super::tests::{built_layout, lay_out_at_width_with};
+use super::tests::{
+    bar_with_laid_out_rects, browser_slots, built_layout, holder, lay_out_at_width_with, move_to,
+};
 use super::*;
-use crate::testing::Dispatch;
+use crate::testing::{Dispatch, dispatch};
 use crate::widget::window_controls::{LEAD_GAP, WindowControl};
 use winit::event::{ElementState, MouseButton};
 
@@ -270,4 +272,52 @@ fn each_window_control_reports_the_rect_it_is_drawn_in() {
             "tab-close:{id}"
         );
     }
+}
+
+#[test]
+fn a_middle_press_closes_the_tab_under_it() {
+    let mut b = bar_with_laid_out_rects();
+    move_to(&mut b, 95.0, 20.0);
+    let press = WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state: ElementState::Pressed,
+        button: MouseButton::Middle,
+    };
+    assert!(dispatch(&mut b, &press), "the bar takes the middle press");
+    assert_eq!(b.pending_close, Some(2), "closing pill B asks to close B");
+    assert!(b.closing_tabs.iter().any(|c| c.desc.id == 2));
+    assert_eq!(b.active_id, 1, "another tab closing leaves the active one");
+
+    // A tab someone else holds is not this person's to close, by the ×
+    // or by a middle press.
+    let mut b = bar_with_laid_out_rects();
+    b.set_holder(2, Some(holder()));
+    move_to(&mut b, 95.0, 20.0);
+    dispatch(&mut b, &press);
+    assert_eq!(b.pending_close, None);
+    assert!(b.closing_tabs.is_empty());
+
+    // A pinned tab stays where it was put.
+    let mut b = bar_with_laid_out_rects();
+    b.pin(2);
+    move_to(&mut b, 95.0, 20.0);
+    dispatch(&mut b, &press);
+    assert_eq!(b.pending_close, None);
+
+    // A window's only tab is drawn as its icon alone when the app puts
+    // its slots in the title's row, and a middle press still closes it.
+    let mut b = solo_bar_with_slots();
+    assert!(b.icon_only(1));
+    b.tab_rects = vec![Rect::new(0.0, 6.0, 40.0, 34.0)];
+    move_to(&mut b, 20.0, 20.0);
+    assert!(dispatch(&mut b, &press));
+    assert_eq!(b.pending_close, Some(1), "the window's only tab closes");
+}
+
+/// A window of one tab whose app puts its slots in the title's row.
+fn solo_bar_with_slots() -> TabBar {
+    let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
+    b.set_window_controls(true);
+    assert!(b.set_toolbar(1, Some(browser_slots())));
+    b
 }

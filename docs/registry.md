@@ -800,11 +800,12 @@ Every entry keeps up to 128 versions, and every client fetches the snapshot
 at least daily, so the full snapshot grows with each release. Each signing
 command therefore also signs a compact form (`registry_types::compact`)
 with the same key, owner or channel. Both forms, the version indexes and the
-channel authorizations carry the Store package format's one version
+channel authorizations carry the Store package format's version
 (`registry_types::PACKAGE_FORMAT_VERSION`) in `protocol`, and a client reads
-that number only (docs/architecture/compatibility.md). A device that gets
-another number says which format the registry publishes and which it reads,
-and installs and updates nothing from it. So a change of the format ships in
+every format in `registry_types::READABLE_CATALOGUE_FORMATS`
+(docs/architecture/compatibility.md). A device that gets a newer number than
+it reads says so ("update Tilo to read this catalogue") and installs and
+updates nothing from it. So a change of the format ships in
 this order: deploy the registry-server of the commit that changed it, sign a
 snapshot with it (the signing command chains the older-format predecessor by
 its hash), and only then release apps and devices that read the new format;

@@ -887,3 +887,119 @@ fn every_text_field_in_a_wrapping_row_stands_at_least_its_own_width() {
         }
     }
 }
+
+/// A view that fills the slot it is in on both axes, by its stable id: the video box.
+const SUBJECT: &str = "aspect-subject";
+
+fn filling_view() -> crate::widget::Element {
+    Box::new(
+        Stack::stack()
+            .fill_width()
+            .fill_height()
+            .with_id(SUBJECT)
+            .push(boxed(1.0)),
+    )
+}
+
+fn subject_rect(root: &dyn Widget) -> vello::kurbo::Rect {
+    crate::widget::find_test_id(root, SUBJECT)
+        .expect("the view in the slot is laid out")
+        .get_rect()
+}
+
+/// A child that says `aspect: 16/9` and `fill` is 16:9 wide in the slot it fills. The slot's
+/// width is the container's, decided during layout, so the ratio decides the height the slot
+/// takes once that width is solved.
+#[test]
+fn a_child_that_fills_at_an_aspect_keeps_its_ratio_in_a_column() {
+    let theme = Theme::dark();
+    let mut stack = Stack::stack()
+        .fill_width()
+        .push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0))
+        .push(boxed(30.0));
+    solve(&mut stack, &theme, 800.0);
+    let r = subject_rect(&stack);
+    assert!(
+        (r.width() - r.height() * 16.0 / 9.0).abs() < 1.0,
+        "a filled child at 16:9 in a column is {r:?}"
+    );
+    assert!(
+        (r.width() - 800.0).abs() < 1.0,
+        "it takes the column's width: {r:?}"
+    );
+}
+
+/// The same in a row, where the ratio takes the width the row gives the slot and the row's
+/// height follows it.
+#[test]
+fn a_child_that_fills_at_an_aspect_keeps_its_ratio_in_a_row() {
+    let theme = Theme::dark();
+    let mut row = Row::row()
+        .fill_width()
+        .align(Align::Start)
+        .push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0));
+    solve(&mut row, &theme, 800.0);
+    let r = subject_rect(&row);
+    assert!(
+        (r.width() - r.height() * 16.0 / 9.0).abs() < 1.0,
+        "a filled child at 16:9 in a row is {r:?}"
+    );
+}
+
+/// The same in a canvas that fills its pane and scrolls inside its own parts, where the layers
+/// gets no width of its own from the page: the ratio must not feed its width back from the
+/// height it derived, or the box shrinks to a fraction of the room and grows back every solve.
+#[test]
+fn an_aspect_layer_in_a_filling_page_keeps_its_width_and_ratio() {
+    let theme = Theme::dark();
+    let inner = Layers::layers().push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0));
+    let column = Stack::stack()
+        .fill_width()
+        .fill_height()
+        .push(Box::new(inner))
+        .push(boxed(40.0));
+    let mut page = Page::full().filling().push(Box::new(column));
+    solve_in(
+        &mut page,
+        &theme,
+        1000.0,
+        taffy::AvailableSpace::Definite(744.0),
+    );
+    let r = subject_rect(&page);
+    assert!(
+        (r.width() - r.height() * 16.0 / 9.0).abs() < 1.0,
+        "a layer at 16:9 in a filling page is {r:?}"
+    );
+    assert!(
+        (r.width() - 1000.0).abs() < 1.0,
+        "it takes the page's width: {r:?}"
+    );
+}
+
+/// A layer that fills the cell at an aspect takes the cell's width and the height the ratio
+/// gives, not the whole cell's height: `layers(fill, aspect: 16/9)` is the video box.
+#[test]
+fn a_layer_that_fills_at_an_aspect_keeps_its_ratio() {
+    let theme = Theme::dark();
+    let layers = Layers::layers().push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0));
+    // The layers stand in a page's column, which gives them the width they lay out in.
+    let mut page = Stack::stack()
+        .fill_width()
+        .fill_height()
+        .push(Box::new(layers));
+    solve_in(
+        &mut page,
+        &theme,
+        800.0,
+        taffy::AvailableSpace::Definite(600.0),
+    );
+    let r = subject_rect(&page);
+    assert!(
+        (r.width() - r.height() * 16.0 / 9.0).abs() < 1.0,
+        "a filled layer at 16:9 is {r:?}"
+    );
+    assert!(
+        (r.width() - 800.0).abs() < 1.0,
+        "it takes the cell's width: {r:?}"
+    );
+}

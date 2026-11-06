@@ -904,3 +904,55 @@ fn checking_tasks_one_after_another_keeps_the_list_rendering() {
         );
     }
 }
+
+/// A step of the person's reaches the window once: checking a task off runs the window's root
+/// once, on the change the record brought back with what its derivation added, and sends the
+/// tree once. The row then reads its title and its box checked off, in a workspace of a hundred
+/// tasks and of ten thousand.
+#[test]
+fn a_step_reaches_the_window_in_one_frame() {
+    let _motion = ui::motion::testing::settled();
+    for n in [100, SEEDED] {
+        let doc = seeded_tasks(n);
+        let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+        let mut session = Session::tasks_over_in(&route, doc, None);
+        let counted = |session: &Session| -> (u64, u64) {
+            let instance = session
+                .host
+                .instances()
+                .next()
+                .expect("the window's instance")
+                .instance();
+            let runs = instance
+                .view(tilo_render_protocol::patch::Lane::Root)
+                .expect("the root view")
+                .borrow()
+                .stats()
+                .root_runs;
+            (runs, instance.patches_sent())
+        };
+        let (title, x, y) = first_check(&mut session);
+        let (runs, sent) = counted(&session);
+        session.window.click_at(x, y);
+        session.settle();
+        let (ran, published) = counted(&session);
+        assert_eq!(
+            ran - runs,
+            1,
+            "checking {title} in a workspace of {n} tasks runs the window's root {} times, \
+             not once",
+            ran - runs
+        );
+        assert_eq!(
+            published - sent,
+            1,
+            "checking {title} in a workspace of {n} tasks sends the tree {} times, not once",
+            published - sent
+        );
+        assert!(
+            checked_off(&mut session, &title),
+            "the row a person checked in a workspace of {n} tasks reads its title and checked: \
+             {title}"
+        );
+    }
+}

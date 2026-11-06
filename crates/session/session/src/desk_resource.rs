@@ -219,7 +219,7 @@ pub(crate) struct Surfaces {
 impl Surfaces {
     /// Whether the quick settings stand in the panel's own app: the device has it, and the
     /// desk draws the app it stands in.
-    fn panel_shows(&self, surface: &str) -> bool {
+    pub(crate) fn panel_shows(&self, surface: &str) -> bool {
         surface == crate::quick_settings::SURFACE && self.status_panel && !self.shell
     }
 
@@ -233,23 +233,64 @@ impl Surfaces {
             if self.panel.is_open(Slot::QuickSettings) {
                 self.panel.close(Slot::QuickSettings);
             } else {
+                self.clear_shell();
                 self.panel.open(Slot::QuickSettings, None);
             }
             return;
         }
         self.overlays.toggle(surface);
+        self.clear_beside();
         self.settled();
     }
 
     /// Show the surface `name` names (`show-surface`), whether or not it is up.
     pub(crate) fn open(&self, name: &str) {
         if self.panel_shows(name) {
+            self.clear_shell();
             self.panel
                 .open(tilo_desktop::overlays::Slot::QuickSettings, None);
             return;
         }
         self.overlays.open(name);
+        self.clear_beside();
         self.settled();
+    }
+
+    /// One surface at a time: the desk's own popovers go down under the
+    /// shell's view of the surface just opened.
+    fn clear_beside(&self) {
+        if self.overlays.here() == crate::overlays::Overlay::Rest.name() {
+            return;
+        }
+        self.clear_panel();
+    }
+
+    /// Take every popover of the desk's own down: a surface outside its stack
+    /// is coming up instead.
+    pub(crate) fn clear_panel(&self) {
+        for slot in tilo_desktop::overlays::Slot::ALL {
+            if slot.stands_beside() {
+                self.panel.close(slot);
+            }
+        }
+    }
+
+    /// One surface at a time: the shell's view goes down under the desk's own
+    /// popover or the panel's app.
+    pub(crate) fn clear_shell(&self) {
+        let here = self.overlays.here();
+        if here == crate::overlays::Overlay::Rest.name() {
+            return;
+        }
+        self.overlays.close(&here);
+        self.settled();
+    }
+
+    /// Whether any of the desk's own popovers stands over the windows now.
+    pub(crate) fn beside_up(&self) -> bool {
+        tilo_desktop::overlays::Slot::ALL
+            .into_iter()
+            .any(|slot| slot.stands_beside() && self.panel.is_open(slot))
     }
 
     /// Close `surface` (`close-surface`), when it is the one up.

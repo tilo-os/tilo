@@ -199,7 +199,7 @@ pub use resource::{
     SearchText, SearchWeight, SharedRecord, bind_declaration, build_action, child_by_id,
     declaration_spec, default_search, encode, head_inputs, need_of, origin_now_ms, publish,
     publish_head, publish_head_of, reset_type_schemas, scope_contains, spec_kind,
-    with_origin_clock,
+    state_from_reading, with_origin_clock,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape, StoredText, Trust, absent_scalar, stored_text};

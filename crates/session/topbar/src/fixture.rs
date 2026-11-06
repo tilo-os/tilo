@@ -76,6 +76,7 @@ fn status() -> SystemStatus {
 
 fn workspace_menu(tree: &DesktopTree) -> WorkspaceMenuModel {
     WorkspaceMenuModel {
+        desk: Vec::new(),
         workspaces: tree
             .workspaces
             .iter()

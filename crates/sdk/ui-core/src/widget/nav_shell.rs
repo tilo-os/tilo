@@ -4372,6 +4372,15 @@ impl Widget for NavShell {
         earliest
     }
 
+    fn serve_deadline(&mut self, now: Instant) -> bool {
+        // A part's own clock — a call's run time, a countdown — changes
+        // nothing in the model or the tree: serving it asks for the frame
+        // that reads it again, in every part and in the surfaces they draw.
+        let mut served = false;
+        self.for_each_owned_mut(|child| served |= child.serve_deadline(now));
+        served
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // Hidden drawers retain their controls, but their entrance animations
         // cannot advance until the drawer is painted. Only painted parts ask

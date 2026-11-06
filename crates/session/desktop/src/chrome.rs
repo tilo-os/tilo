@@ -327,8 +327,13 @@ pub enum ChromeIntent {
     /// [`crate::topbar::TopBarChrome::tilo_mark_rect`].
     ToggleTiloMenu,
     /// Open or close the menu behind the workspace name, under
-    /// [`crate::topbar::TopBarChrome::workspace_menu_rect`].
-    ToggleWorkspaceMenu,
+    /// [`crate::topbar::TopBarChrome::workspace_menu_rect`] — or, `at` a
+    /// place on the desk a secondary press named, standing there instead:
+    /// the same menu, offering the desk's own commands and kept inside the
+    /// screen at an edge.
+    ToggleWorkspaceMenu {
+        at: Option<(i32, i32)>,
+    },
     /// Open or close the card behind the person's own avatar, under
     /// [`crate::topbar::TopBarChrome::own_avatar_rect`].
     ToggleProfile,

@@ -24,6 +24,11 @@ use crate::{ActionDescriptor, ParamType};
 /// the same arguments; nothing has run.
 pub const AWAITING_CONFIRMATION: &str = "action_awaiting_confirmation";
 
+/// The error code an invocation an agent makes inside a turn is answered with
+/// while the message that caused it has not reached this device: the caller
+/// waits and asks again once it has; nothing has run.
+pub const AWAITING_CAUSE: &str = "action_awaiting_cause";
+
 /// The error code an invocation is answered with when the person declined
 /// it. What follows the code is the reason they gave, if any.
 pub const DECLINED: &str = "action_declined";

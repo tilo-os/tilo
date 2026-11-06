@@ -303,11 +303,14 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
             let rig = Rig::new(&env).await;
             let agent_grant =
                 env.membership.write().workspaces[0].admit_agent("scribe", KindSet::READ);
-            env.membership.write().workspaces[0].allow_app(
+            let agent_app_grant = env.membership.write().workspaces[0].allow_app(
                 tilo_action_policy::Subject::agent("scribe"),
                 &env.route.app_id,
                 KindSet::ALL,
             );
+            // The person's own standing in the workspace, which the agent
+            // session stands on.
+            let person_grant = tilo_action_policy::GrantId("changes-for-a-while".into());
             let person = rig.caller(&env, 904, None).await;
             let agent = rig
                 .app_caller(&env, 905, "so.tilo.files", Some("scribe"))
@@ -338,7 +341,16 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
                 rig.state.invocation_statuses("agent:scribe").is_empty(),
                 "an actor name alone discloses no authenticated invocation"
             );
+            // What bounds the agent is its own: revoking it stops new work
+            // while the person's standing, and its session, still hold. The
+            // door names no action to an agent its grant cannot reach.
             env.membership.write().workspaces[0].revoke_grant(&agent_grant);
+            env.membership.write().workspaces[0].revoke_grant(&agent_app_grant);
+            let refused = invoke(&agent.handle, id(0xb002)).await.unwrap_err();
+            assert!(refused.contains("UnknownAction"), "{refused}");
+            // Its session is its person's: revoking their standing ends the
+            // agent's with it.
+            env.membership.write().workspaces[0].revoke_grant(&person_grant);
             assert!(!matches!(
                 observe(&agent.handle, invocation).await,
                 Ok(Some(_))
@@ -439,7 +451,10 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
                 .expect("the durable invocation's caller");
             assert_eq!(
                 continued,
-                tilo_actions::remote::Caller::local_agent("scribe").in_workspace(workspace.clone())
+                tilo_actions::remote::Caller::local_agent("scribe")
+                    .acting_for(principal_id_for_root(env.cert.user_public_key))
+                    .in_workspace(workspace.clone()),
+                "the invocation's caller names the agent and the person it acts for"
             );
             assert!(rig.state.continuing_caller(904, invocation).is_none());
 

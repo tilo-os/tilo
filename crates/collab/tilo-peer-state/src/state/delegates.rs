@@ -14,7 +14,7 @@
 //! certificate's own root, names that device and this workspace, is inside its
 //! validity window, and the governor has not withdrawn it. It acts with its
 //! person's grants bounded by its delegation
-//! ([`tilo_action_policy::roles::agent_delegation`]): an agent writes where
+//! ([`tilo_action_policy::roles::agent_turn`]): an agent writes where
 //! its person may write and governs nothing. Outside its window the
 //! identity stays on the roster, so the history it wrote stays attributed,
 //! but it is no reader of the workspace's channels and no op of it is admitted.

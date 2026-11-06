@@ -3,10 +3,13 @@ use crate::a11y::Role;
 use crate::synthetic_input::{mouse_press, mouse_release, named_key};
 use crate::testing::dispatch;
 use taffy::prelude::TaffyMaxContent;
+use taffy::style_helpers::length;
 
 fn lay_out(tile: &mut QuickTile, theme: &Theme, width: f32) {
     let mut taffy = TaffyTree::<()>::new();
     let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
     let node = tile.build_layout(&mut taffy, theme, &mut nodes);
     let root = taffy
         .new_with_children(
@@ -21,9 +24,64 @@ fn lay_out(tile: &mut QuickTile, theme: &Theme, width: f32) {
         )
         .unwrap();
     taffy
-        .compute_layout(root, taffy::Size::MAX_CONTENT)
+        .compute_layout_with_measure(
+            root,
+            taffy::Size::MAX_CONTENT,
+            |known, available, id, _, _| {
+                nodes.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, &mut text)
+                })
+            },
+        )
         .unwrap();
     tile.apply_layout(&taffy, node, Point::ZERO);
+}
+
+/// Two tiles in one row, as Quick Settings stands them: each claims half.
+fn lay_out_row(left: &mut QuickTile, right: &mut QuickTile, theme: &Theme, width: f32) {
+    let mut taffy = TaffyTree::<()>::new();
+    let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let a = left.build_layout(&mut taffy, theme, &mut nodes);
+    let b = right.build_layout(&mut taffy, theme, &mut nodes);
+    let row = taffy
+        .new_with_children(
+            Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::auto(),
+                },
+                ..Default::default()
+            },
+            &[a, b],
+        )
+        .unwrap();
+    let root = taffy
+        .new_with_children(
+            Style {
+                size: taffy::Size {
+                    width: length(width),
+                    height: taffy::Dimension::auto(),
+                },
+                ..Default::default()
+            },
+            &[row],
+        )
+        .unwrap();
+    taffy
+        .compute_layout_with_measure(
+            root,
+            taffy::Size::MAX_CONTENT,
+            |known, available, id, _, _| {
+                nodes.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, &mut text)
+                })
+            },
+        )
+        .unwrap();
+    left.apply_layout(&taffy, a, Point::ZERO);
+    right.apply_layout(&taffy, b, Point::ZERO);
 }
 
 fn draw(tile: &mut QuickTile, theme: &Theme) -> Scene {
@@ -55,15 +113,43 @@ fn cursor(point: Point) -> WindowEvent {
 }
 
 #[test]
-fn a_tile_fills_its_width_at_the_two_line_height() {
-    for width in [180.0, 420.0] {
-        let theme = Theme::dark();
-        let mut tile = wifi();
-        lay_out(&mut tile, &theme, width);
-        assert_eq!(tile.get_rect().width(), f64::from(width));
-        assert_eq!(tile.get_rect().height(), QuickTile::height(&theme));
-        assert!(QuickTile::height(&theme) >= f64::from(theme.tokens.metrics.row_double));
-    }
+fn a_tile_fills_its_width_at_the_height_its_state_line_needs() {
+    let theme = Theme::dark();
+    let metrics = TileMetrics::of(&theme);
+    let mut wide = wifi();
+    lay_out(&mut wide, &theme, 420.0);
+    assert_eq!(wide.get_rect().width(), 420.0);
+    assert_eq!(
+        wide.get_rect().height(),
+        metrics.height_one,
+        "a state line that fits leaves the tile one line tall"
+    );
+    assert!(metrics.height_one >= f64::from(theme.tokens.metrics.row_double));
+
+    // Narrow, and sharing its row: the state line breaks, and the tile is
+    // as tall as the two lines it now draws.
+    let corridor = "The network at the far end of the corridor, by the kitchen door";
+    let mut whole = wifi().detail(corridor);
+    lay_out(&mut whole, &theme, 600.0);
+    assert_eq!(whole.get_rect().height(), metrics.height_one);
+    let (mut left, mut right) = (
+        wifi().detail(corridor).share(0.5),
+        wifi().detail(corridor).share(0.5),
+    );
+    lay_out_row(&mut left, &mut right, &theme, 600.0);
+    assert_eq!(left.get_rect().width(), 300.0, "it draws in half the room");
+    assert_eq!(
+        left.get_rect().height(),
+        metrics.height,
+        "the tile grows for the second line"
+    );
+    assert_eq!(right.get_rect().height(), metrics.height);
+
+    // The same row with a state lines that fit: the tiles stay one line tall.
+    let (mut left, mut right) = (wifi().share(0.5), wifi().share(0.5));
+    lay_out_row(&mut left, &mut right, &theme, 600.0);
+    assert_eq!(left.get_rect().height(), metrics.height_one);
+    assert_eq!(right.get_rect().height(), metrics.height_one);
 }
 
 #[test]
@@ -75,6 +161,41 @@ fn larger_text_grows_the_tile_to_fit_both_lines() {
     let label = theme.text(TextRole::Label).line_height_px();
     let detail = theme.text(TextRole::Caption).line_height_px();
     assert!(large >= f64::from(label + detail));
+}
+
+#[test]
+fn a_tile_is_tall_enough_for_a_state_line_on_two_lines() {
+    let theme = Theme::dark();
+    let label = theme.text(TextRole::Label).line_height_px();
+    let detail = theme.text(TextRole::Caption).line_height_px();
+    assert!(
+        QuickTile::height(&theme) >= f64::from(label + 2.0 * detail),
+        "{} >= {}",
+        QuickTile::height(&theme),
+        f64::from(label + 2.0 * detail)
+    );
+}
+
+#[test]
+fn a_state_line_breaks_after_the_last_word_that_fits_and_elides_the_rest() {
+    let theme = Theme::dark();
+    let style = theme.text(TextRole::Caption);
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let room = text.measure_style("The network at", None, &style).0 + 1.0;
+    let (first, second) = detail_lines(
+        &mut text,
+        "The network at the far end of the corridor",
+        room,
+        &style,
+    );
+    assert_eq!(first, "The network at");
+    let second = second.expect("the rest goes on a second line");
+    assert!(!second.is_empty(), "the second line says something");
+
+    let (one, none) = detail_lines(&mut text, "The network", room, &style);
+    assert_eq!(one, "The network", "a state line that fits keeps one line");
+    assert!(none.is_none());
 }
 
 #[test]

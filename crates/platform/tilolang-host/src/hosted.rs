@@ -224,15 +224,18 @@ impl Surface {
 /// `None` when nothing of it is shown: a record of ten thousand items publishes the rows on
 /// screen.
 fn pruned(spec: &ResourceSpec, shown: &Shown) -> Option<ResourceSpec> {
-    if !shown.contains(spec.id.as_str()) {
-        return None;
-    }
     let mut out = shallow(spec);
     out.children = spec
         .children
         .iter()
         .filter_map(|child| pruned(child, shown))
         .collect();
+    // A resource the window does not name is kept when one under it is: the record's shape
+    // holds a row not as its id spells it (a conversation under its account), and what the
+    // window shows is reached through the resources that hold it.
+    if out.children.is_empty() && !shown.contains(spec.id.as_str()) {
+        return None;
+    }
     Some(out)
 }
 

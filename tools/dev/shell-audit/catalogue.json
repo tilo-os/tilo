@@ -958,6 +958,35 @@
      "capture": "the next window in front"
     },
     {
+     "id": "window-more-menu",
+     "story": "open the window's More menu with a note open",
+     "steps": [
+      {
+       "door": "window.launch",
+       "app": "notes"
+      },
+      {
+       "wait": 0.8
+      },
+      {
+       "snapshot": "more-before"
+      },
+      {
+       "click": "More actions"
+      },
+      {
+       "wait": 0.8
+      }
+     ],
+     "measure": [
+      "the note's commands in the menu",
+      "how many More buttons the bar holds"
+     ],
+     "drawn_late": true,
+     "see": "menu",
+     "capture": "the window's one More menu"
+    },
+    {
      "id": "window-menu-open",
      "story": "open the window menu from the window's tab",
      "steps": [

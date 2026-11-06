@@ -572,17 +572,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// One session of agent `agent_id`, which the host admitted itself into
-    /// `workspace` (a desktop's agent door, after `person` said so). It acts as
-    /// that agent, for the person who admitted it: the agent stays the
-    /// principal, and what it may do is the lesser of what the workspace
-    /// grants it and what the person may do, so a revoked membership ends
-    /// both at once. Each session is its own fresh execution, retired when
-    /// the session drops.
+    /// `workspace` (a desktop's agent door, after `person` said so). The
+    /// person's own device hands the session to that agent: the agent stays
+    /// the principal, and what it may do is the person's own authority held
+    /// to the delegation a device gives its agents
+    /// ([`tilo_action_policy::roles::agent_turn`]). Each session is its own
+    /// fresh execution, retired when the session drops.
     #[must_use]
     pub fn for_agent(host: H, workspace: String, agent_id: &str, person: &str) -> Self {
-        let caller = Caller::local_agent(agent_id)
+        let caller = Caller::local_person(person)
             .in_workspace(workspace.clone())
-            .acting_for(person)
+            .delegated_to(agent_id)
             .in_new_execution();
         Self::from_caller(host, workspace, format!("agent:{agent_id}"), caller)
             .with_surface(Surface::Agent)

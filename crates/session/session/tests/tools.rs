@@ -300,7 +300,7 @@ fn an_agent_opens_notes_in_a_workspace() {
         .desktop()
         .with_policy(|policy| policy.map(window(11, NOTES)).unwrap());
     until(&mut session, "the app's window is on the desk", |session| {
-        groups(session) == vec![vec![NOTES.to_owned()]]
+        groups(session) == vec![vec!["Notes".to_owned()]]
     });
 }
 

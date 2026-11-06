@@ -85,7 +85,7 @@ impl DefaultApps {
     /// Open one kind of file or link with an app. Only the chosen kind
     /// changes: the handlers kept for every other kind, including kinds a
     /// newer version knows, stay.
-    #[action(id = "set-default-app-handler")]
+    #[action(id = "set-default-app-handler", label = "Set default app")]
     pub fn open_with(
         &mut self,
         #[param("The kind of file or link: `ext:pdf`, `mime:text/html`, `scheme:https`")]

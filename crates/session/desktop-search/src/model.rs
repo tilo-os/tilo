@@ -271,7 +271,29 @@ pub enum Thing {
     Row(String, String),
 }
 
+/// The id of the source that offers what the person would get from the
+/// Store. Its rows are the only ones that are not already theirs.
+pub const CATALOGUE_SOURCE: &str = "store-catalogue";
+
 impl Hit {
+    /// How far this row is from the person: a row taken from the catalogue
+    /// offers something they do not have, so the merge lists it after every
+    /// row they do ([`system::Availability`]).
+    #[must_use]
+    pub fn availability(&self) -> system::Availability {
+        use system::Availability;
+        // A row the catalogue offers is what the person would get; a Store
+        // page is what they would first install.
+        if self.provider != CATALOGUE_SOURCE {
+            return Availability::OnDevice;
+        }
+        if matches!(self.target, Target::Open { .. }) {
+            Availability::ThirdPartyCatalogue
+        } else {
+            Availability::TiloCatalogue
+        }
+    }
+
     /// What this row is about: two rows of the same [`Thing`] are one
     /// result offered twice, and the stronger one is kept.
     #[must_use]
@@ -593,7 +615,7 @@ impl SearchStream {
     #[must_use]
     pub fn rows(&self) -> Vec<Hit> {
         let mut merged = self.kept();
-        system::order_by_kind(&mut merged, |hit| &hit.kind);
+        system::order_hits(&mut merged, |hit| (&hit.kind, hit.availability()));
         merged.into_iter().map(|(hit, _)| hit).collect()
     }
 
@@ -601,7 +623,7 @@ impl SearchStream {
     #[must_use]
     pub fn groups(&self) -> Vec<KindGroup<Hit>> {
         let mut merged = self.kept();
-        system::order_by_kind(&mut merged, |hit| &hit.kind);
+        system::order_hits(&mut merged, |hit| (&hit.kind, hit.availability()));
         system::group_by_kind(
             merged.into_iter().map(|(hit, _)| hit).collect(),
             |hit| &hit.kind,
@@ -1389,6 +1411,97 @@ mod tests {
             rows(&search("notes", &[&store], 0, &|_| 0.0)),
             ["store-catalogue:Notes"],
             "an app the person does not have is still offered"
+        );
+    }
+
+    #[test]
+    fn a_store_offer_follows_every_row_the_person_has() {
+        // A Flathub page matching the query better than any file named
+        // files: it still lists after the file, which is already here.
+        let files = fixed(
+            "search-files",
+            BROWSE_RANK_LATER,
+            vec![hit(
+                "search-files",
+                "file:notes.txt",
+                "files.txt",
+                ResourceKind::File,
+                30,
+                Target::Open {
+                    uri: "file:///home/q/files.txt".into(),
+                    fallback: None,
+                },
+            )],
+        );
+        let store = fixed(
+            CATALOGUE_SOURCE,
+            BROWSE_RANK_LATER,
+            vec![hit(
+                CATALOGUE_SOURCE,
+                "app:com.example.Files",
+                "Files",
+                ResourceKind::Custom("Store".into()),
+                100,
+                Target::Open {
+                    uri: "tilo-store:app/com.example.Files".into(),
+                    fallback: None,
+                },
+            )],
+        );
+        assert_eq!(
+            rows(&search("files", &[&files, &store], 0, &|_| 0.0)),
+            ["search-files:files.txt", "store-catalogue:Files"]
+        );
+    }
+
+    #[test]
+    fn a_catalogue_row_knows_what_the_person_would_have_to_do() {
+        let offer = |target| Hit {
+            target,
+            ..hit(
+                CATALOGUE_SOURCE,
+                "app:so.tilo.sheets",
+                "Sheets",
+                ResourceKind::Custom("Store".into()),
+                90,
+                Target::Open {
+                    uri: "tilo-store:app/so.tilo.sheets".into(),
+                    fallback: None,
+                },
+            )
+        };
+        assert_eq!(
+            offer(Target::Launch {
+                app: "so.tilo.sheets".into()
+            })
+            .availability(),
+            system::Availability::TiloCatalogue,
+            "a Tilo app opens at once"
+        );
+        assert_eq!(
+            offer(Target::Open {
+                uri: "tilo-store:app/com.example.App".into(),
+                fallback: None,
+            })
+            .availability(),
+            system::Availability::ThirdPartyCatalogue,
+            "a Flathub app is a Store page first"
+        );
+        assert_eq!(
+            hit(
+                "search-files",
+                "file:notes.txt",
+                "notes",
+                ResourceKind::File,
+                30,
+                Target::Open {
+                    uri: "file:///home/q/notes.txt".into(),
+                    fallback: None,
+                },
+            )
+            .availability(),
+            system::Availability::OnDevice,
+            "a row of the person's own is theirs"
         );
     }
 

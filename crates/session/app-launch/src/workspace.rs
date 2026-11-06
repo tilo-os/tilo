@@ -16,8 +16,13 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use collab_types::caps::LaunchGrants;
+use collab_types::caps::{Access, CapOverride, LaunchGrants, Scope, Subject};
 use tilo_action_policy::WorkspacePolicy;
+
+/// The one app that browses this device's own files. It is handed the home
+/// of the machine it runs on; every other app reaches files through what the
+/// person granted it in the workspace.
+const FILE_MANAGER: &str = "so.tilo.file-explorer";
 
 /// One workspace, as a launch into it needs it.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -65,6 +70,37 @@ impl Workspace {
         !self.id.is_empty()
     }
 
+    /// What a launch of `app` is granted: this workspace's grants for it, and
+    /// for the file manager, this device's `home`.
+    ///
+    /// Only what the workspace's grants hand this app reaches it — a
+    /// capability naming a person, a workspace or another app never does
+    /// ([`LaunchGrants::for_app`]).
+    ///
+    /// Files is handed the home of the machine it runs on because that is the
+    /// folder it exists to show. The grant is minted here, per launch, and
+    /// never written into [`Self::grants`]: that record is synced, and a
+    /// grant naming one machine's home is honoured by a peer's sandbox —
+    /// binding the sender's home read-write into it — while the peer's own
+    /// Files still opened on its sandbox directory, seeing none of their
+    /// files. Each device mints its own.
+    #[must_use]
+    pub fn grants_for_launch(&self, app: &str, home: Option<PathBuf>) -> LaunchGrants {
+        let mut grants = self.grants.for_app(app);
+        if app != FILE_MANAGER {
+            return grants;
+        }
+        let Some(home) = home.filter(|home| home.is_absolute()) else {
+            return grants;
+        };
+        grants.sandbox.push(CapOverride::grant(
+            Subject::app(app),
+            Scope::FsPath(home.display().to_string()),
+            Access::Write,
+        ));
+        grants
+    }
+
     /// Write the grants where `tilo-launcher --capabilities` reads them, and
     /// return that path: `None` when nothing was granted, so the launch
     /// carries no capability flag at all.
@@ -85,10 +121,7 @@ impl Workspace {
                 format!("refusing to write a capability file for app {app:?}"),
             ));
         }
-        // Only what this workspace's grants hand this app: a capability naming a
-        // person, a workspace or another app never reaches this app's file
-        // ([`LaunchGrants::for_app`]).
-        let grants = self.grants.for_app(app);
+        let grants = self.grants_for_launch(app, tilo_paths::home());
         if grants.is_empty() {
             return Ok(None);
         }
@@ -168,6 +201,51 @@ mod tests {
                 .mode()
         };
         assert_eq!(mode & 0o777, 0o600, "the person's grants are owner-only");
+    }
+
+    #[test]
+    fn the_file_manager_is_handed_this_devices_home() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let workspace = Workspace::under(directory.path(), "workspace-7");
+        let home = PathBuf::from("/home/you");
+        assert_eq!(
+            workspace.grants_for_launch("so.tilo.file-explorer", Some(home.clone())),
+            LaunchGrants {
+                authors: Vec::new(),
+                sandbox: vec![CapOverride::grant(
+                    Subject::app("so.tilo.file-explorer"),
+                    Scope::FsPath(home.display().to_string()),
+                    Access::Write,
+                )],
+            }
+        );
+        assert!(
+            workspace.grants.sandbox.is_empty(),
+            "the workspace's synced record never names this machine's home"
+        );
+        assert!(
+            workspace
+                .grants_for_launch("so.tilo.notes", Some(home))
+                .is_empty(),
+            "no other app browses the device's files"
+        );
+
+        // Every launch path writes it where the launcher reads it, from the
+        // home this machine is actually running as.
+        let Some(home) = tilo_paths::home() else {
+            return;
+        };
+        let path = workspace
+            .write_grants("so.tilo.file-explorer")
+            .expect("written")
+            .expect("a capability file");
+        let read: LaunchGrants =
+            serde_json::from_slice(&std::fs::read(&path).expect("readable")).expect("JSON");
+        assert_eq!(
+            read,
+            workspace.grants_for_launch("so.tilo.file-explorer", Some(home)),
+            "the launcher is handed the home of this device"
+        );
     }
 
     #[test]

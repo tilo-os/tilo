@@ -198,6 +198,11 @@ pub struct Caller {
     // How far the invocation this caller's requests continue was admitted
     // to reach, set by the host that matched them to it.
     within: within::Within,
+    // The turn an agent acts inside: the person's message in a conversation
+    // that caused it (`Self::agent_turn`). Every op carries it, so the
+    // receiving device checks it against that message and presence can show
+    // what the agent would click.
+    turn: Option<tilo_action_policy::turn::Turn>,
 }
 
 impl Caller {
@@ -216,6 +221,7 @@ impl Caller {
             session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
+            turn: None,
         }
     }
 
@@ -234,6 +240,7 @@ impl Caller {
             session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
+            turn: None,
         }
     }
 
@@ -251,6 +258,7 @@ impl Caller {
             session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
+            turn: None,
         }
     }
 
@@ -270,6 +278,7 @@ impl Caller {
             session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
+            turn: None,
         }
     }
 
@@ -294,6 +303,34 @@ impl Caller {
             session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
+            turn: None,
+        }
+    }
+
+    /// An agent acting inside a turn: `person`'s message in `turn`'s
+    /// conversation caused it, and the agent takes part there. It may do
+    /// exactly what that person may, held to the editor preset and to the
+    /// bound its own record carries, and nothing outside a turn. Every op it
+    /// makes carries the turn, so the receiving device checks the cause it
+    /// arrived with. Set only by the host that admitted the turn.
+    #[must_use]
+    pub fn agent_turn(
+        agent_id: impl Into<String>,
+        person: impl Into<String>,
+        turn: tilo_action_policy::turn::Turn,
+    ) -> Self {
+        Self {
+            principal: CallerPrincipal::Agent(agent_id.into()),
+            user_public_key: None,
+            device_public_key: None,
+            workspace: None,
+            foreign: false,
+            execution: None,
+            acting_for: Some(person.into()),
+            session_delegated: true,
+            shortcut: None,
+            within: within::Within::NONE,
+            turn: Some(turn),
         }
     }
 
@@ -317,6 +354,7 @@ impl Caller {
             session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
+            turn: None,
         }
     }
 
@@ -407,6 +445,14 @@ impl Caller {
     #[must_use]
     pub fn is_session_delegated(&self) -> bool {
         self.session_delegated
+    }
+
+    /// The turn this agent acts inside ([`Self::agent_turn`]), when it was
+    /// admitted as one: the message whose conversation caused its ops, which
+    /// every door it reaches decides it against.
+    #[must_use]
+    pub fn turn(&self) -> Option<&tilo_action_policy::turn::Turn> {
+        self.turn.as_ref()
     }
 
     /// The person this caller acts for, when it is not that person.

@@ -309,6 +309,10 @@ pub struct Instance {
     /// them it told the window it ran (`ToUi::Took`).
     fired: u64,
     fired_told: u64,
+    /// How many times the window was sent what changed of the tree it shows, one per frame
+    /// whose change reached it (a tree's patches, or the rows of its lists): the first tree
+    /// after opening, and one per change.
+    patches_sent: u64,
     /// The form open in the window: an action waiting for its arguments.
     form: Option<form::Pending>,
     /// How many forms the window was sent: the next one's id.
@@ -385,6 +389,7 @@ impl Instance {
             composing: false,
             fired: 0,
             fired_told: 0,
+            patches_sent: 0,
             form: None,
             forms: 0,
         }
@@ -535,6 +540,14 @@ impl Instance {
         self.publication
             .as_ref()
             .map_or(0, |publication| publication.sweeps())
+    }
+
+    /// How many times the window was sent what changed of its tree so far: one per frame whose
+    /// change reached it (a tree's patches, or the rows of its lists), and the first tree after
+    /// opening.
+    #[must_use]
+    pub fn patches_sent(&self) -> u64 {
+        self.patches_sent
     }
 
     /// How long from the platform's clock now until the time a view of the window read
@@ -2013,6 +2026,12 @@ impl Instance {
             return;
         }
         let messages = std::mem::take(&mut self.out);
+        if messages
+            .iter()
+            .any(|message| matches!(message, ToUi::Patch { .. } | ToUi::RowsChanged { .. }))
+        {
+            self.patches_sent = self.patches_sent.saturating_add(1);
+        }
         match ui::encode_batch(&messages) {
             Ok(batch) => {
                 if let Err(error) = self.transport.send(batch) {

@@ -354,8 +354,7 @@ mod tests {
 
     #[test]
     fn an_output_names_its_size_place_and_connector() {
-        let named =
-            |value: &str| named_output(value, 2).map(|(name, size, place)| (name, size, place));
+        let named = |value: &str| named_output(value, 2);
         assert_eq!(
             named("1280x800"),
             Some(("HEADLESS-2".to_owned(), (1280, 800), None))
@@ -441,7 +440,7 @@ fn parse_output(ours: &[String]) -> Option<Output> {
             eprintln!("tilo-session: --connector is for a headless session");
             return None;
         }
-        Some(connector) if connector.is_empty() => {
+        Some("") => {
             eprintln!("tilo-session: --connector takes a connector name");
             return None;
         }

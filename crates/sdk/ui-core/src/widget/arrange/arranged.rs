@@ -100,6 +100,11 @@ pub struct Slot {
     /// Where a layer sits; `None` fills the cell.
     pub at: Option<At>,
     wrapper: Option<NodeId>,
+    /// The block size the fit's `aspect` gives at the width the slot was solved at. A flex or
+    /// grid box derives its cross size from a ratio only when its inline size is definite in
+    /// its style, so a slot whose width the container decides takes the height the ratio gives
+    /// once the width is solved ([`Arranged::derive_aspects`]).
+    height: Option<f32>,
 }
 
 impl Slot {
@@ -124,6 +129,7 @@ impl Slot {
             span: 1,
             at: None,
             wrapper: None,
+            height: None,
         }
     }
 }
@@ -352,6 +358,11 @@ impl<L: Layout> Arranged<L> {
         if slot.fit == fit && slot.span == span && slot.at == at {
             return;
         }
+        // The block size derived from a ratio belongs to the fit that asked for it: a new fit
+        // derives its own on the next solve.
+        if slot.fit.aspect != fit.aspect {
+            slot.height = None;
+        }
         slot.fit = fit;
         slot.span = span;
         slot.at = at;
@@ -378,6 +389,85 @@ impl<L: Layout> Arranged<L> {
             0.0
         };
         self.layout.container(&self.resolved, lead)
+    }
+
+    /// Slot `index`'s wrapper style: what the layout arranges it with, and the block size the
+    /// fit's `aspect` derived from the width it was solved at.
+    ///
+    /// A wrapper that holds a derived height keeps no ratio of its own: with one, taffy would
+    /// derive the width back out of the height it was given, and a slot whose width its
+    /// container decides would shrink to a fraction of the room every other solve.
+    fn slot_style(&self, index: usize, slot: &Slot) -> Style {
+        let mut style = self.layout.slot(index, slot, &self.resolved);
+        if slot.fit.aspect.is_some()
+            && let Some(height) = slot.height
+        {
+            // A ratio decides the block size; a layer that fills the cell or a share of the
+            // column gives way to it, since the ratio is the size the view asked for.
+            style.size.height = taffy::style_helpers::length(height);
+            style.aspect_ratio = None;
+        }
+        style
+    }
+
+    /// Give every slot whose fit asks for an `aspect` the block size the ratio gives at the
+    /// inline size it was solved at.
+    ///
+    /// Taffy derives one size from the other only where the known one is definite in the
+    /// style. A slot takes the width its container decides: stretched across a column, a share
+    /// of a row, a layer's cell, a grid's column. What is solved is where the ratio applies, so
+    /// the derivation reads the solved width and holds the slot at the height that follows.
+    /// Returns whether any slot's height changed, so the host solves again.
+    fn derive_aspects(&mut self, tree: &mut TaffyTree<()>) -> bool {
+        let mut changed = false;
+        for index in 0..self.slots.len() {
+            let Some(slot) = self.slots.get(index) else {
+                continue;
+            };
+            let Some(ratio) = slot.fit.aspect else {
+                continue;
+            };
+            let Some(wrapper) = slot.wrapper else {
+                continue;
+            };
+            let Ok(laid) = tree.layout(wrapper) else {
+                continue;
+            };
+            let width = laid.size.width;
+            if !(width.is_finite() && width > 0.0 && ratio.is_finite() && ratio > 0.0) {
+                continue;
+            }
+            let rem = self.resolved.rem;
+            let bounds = |sizing: super::units::Sizing| {
+                (
+                    sizing.min.map(|min| min.resolve(rem)),
+                    sizing.max.map(|max| max.resolve(rem)),
+                )
+            };
+            let (min, max) = bounds(slot.fit.height);
+            let mut height = width / ratio;
+            if let Some(min) = min {
+                height = height.max(min);
+            }
+            if let Some(max) = max {
+                height = height.min(max);
+            }
+            if slot.height.is_some_and(|held| (held - height).abs() < 0.5) {
+                continue;
+            }
+            if let Some(slot) = self.slots.get_mut(index) {
+                slot.height = Some(height);
+            }
+            let style = self
+                .slots
+                .get(index)
+                .map(|slot| self.slot_style(index, slot));
+            let Some(style) = style else { continue };
+            if tree.set_style(wrapper, style).is_ok() {
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Style the container and its slots again for what the layout settled on. Where the node
@@ -407,7 +497,7 @@ impl<L: Layout> Arranged<L> {
         for (index, slot) in self.slots.iter().enumerate() {
             if let Some(wrapper) = slot.wrapper {
                 changed |= tree
-                    .set_style(wrapper, self.layout.slot(index, slot, &self.resolved))
+                    .set_style(wrapper, self.slot_style(index, slot))
                     .is_ok();
             }
         }
@@ -451,11 +541,10 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     ) -> NodeId {
         self.resolved = Resolved::of(theme).with_target(self.interaction.minimum_target());
         self.layout.items(self.slots.len());
-        let resolved = self.resolved;
         let mut wrappers = Vec::with_capacity(self.slots.len());
         for index in 0..self.slots.len() {
             let style = match self.slots.get(index) {
-                Some(slot) => self.layout.slot(index, slot, &resolved),
+                Some(slot) => self.slot_style(index, slot),
                 None => wrapper_style(),
             };
             let Some(slot) = self.slots.get_mut(index) else {
@@ -529,10 +618,11 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
             return false;
         };
         let allocated = laid.size;
+        let aspects = self.derive_aspects(tree);
         if self.layout.settle(allocated, &self.resolved) {
-            return self.restyle(tree);
+            return self.restyle(tree) || aspects;
         }
-        false
+        aspects
     }
 
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
