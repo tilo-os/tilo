@@ -99,15 +99,15 @@ pub(crate) fn land(qs: &mut QuickSettingsState, sound: &Sound) {
 /// the name its card has.
 pub(crate) fn short_output(name: &str) -> String {
     let trimmed = name.trim();
-    let Some(open) = trimmed.rfind('[') else {
+    let Some((card, bracketed)) = trimmed.rsplit_once('[') else {
         return trimmed.to_owned();
     };
-    let Some(bracketed) = trimmed[open + 1..].strip_suffix(']') else {
+    let Some(monitor) = bracketed.strip_suffix(']') else {
         return trimmed.to_owned();
     };
     // What the card calls the port it plays through, in the words the panel
     // prints: the protocol's own name, which no language localises.
-    let card = trimmed[..open].to_ascii_lowercase();
+    let card = card.to_ascii_lowercase();
     let port = if card.contains("displayport") || card.contains("display port") {
         Some("DisplayPort")
     } else if card.contains("hdmi") {
@@ -115,7 +115,7 @@ pub(crate) fn short_output(name: &str) -> String {
     } else {
         None
     };
-    let monitor = bracketed.trim();
+    let monitor = monitor.trim();
     match (monitor.is_empty(), port) {
         (false, Some(port)) => format!("{monitor} · {port}"),
         (false, None) => monitor.to_owned(),
