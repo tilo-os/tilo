@@ -235,6 +235,16 @@ impl Widget for EmptyWorkspace {
             .unwrap_or_default()
     }
 
+    /// Every pad is laid out in this node, also the ones whose display shows
+    /// a window and so draws and routes nothing: a pad is a place in the
+    /// retained tree, not only something the person can reach.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        for pad in &self.pads {
+            visitor(&pad.launchpad);
+        }
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let at = self.working_pad();
         at.and_then(|at| self.pads.get_mut(at))
