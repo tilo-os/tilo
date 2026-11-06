@@ -566,6 +566,36 @@ fn a_cards_parts_fit_the_height_card_size_reserves() {
     }
 }
 
+/// A card that says a line under its reading stacks its controls under it:
+/// the line and the controls never share pixels, and the rows end where
+/// `card_size` put the card's edge.
+#[test]
+fn a_line_under_the_reading_stands_above_the_controls() {
+    let summary = activity(Kind::Stopwatch, "watch")
+        .with_subtitle("The whole desktop")
+        .with_control(Control::new("stop", "Stop", ControlKind::Primary))
+        .with_control(Control::new("pause", "Pause", ControlKind::Secondary));
+    let rect = Rect::from_origin_size((100.0, 100.0), card_size(work(1280.0, 800.0), &summary));
+    let inside = rect.inflate(-CARD_PADDING, -CARD_PADDING);
+    let parts = card_parts(rect, &summary);
+    let line = parts.subtitle.expect("the line under the reading");
+    let row = parts.controls_row.expect("the controls' row");
+    assert!(
+        line.y1 <= row.y0 + 0.5,
+        "the line {line:?} stands clear of the controls {row:?}"
+    );
+    assert!(
+        (row.y1 - inside.y1).abs() <= 0.5,
+        "the controls end at the card's edge: {row:?} in {inside:?}"
+    );
+    for (id, control) in &parts.controls {
+        assert!(
+            control.y0 >= line.y1 - 0.5,
+            "control {id} {control:?} clears the line {line:?}"
+        );
+    }
+}
+
 /// A window dragged smaller than a card is no reason to crash the session:
 /// the card is placed as far inside as the work area reaches.
 #[test]

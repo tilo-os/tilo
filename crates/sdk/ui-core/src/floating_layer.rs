@@ -353,9 +353,15 @@ pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
         ),
         None => row(CARD_HERO, CARD_ROW_GAP),
     };
-    let subtitle = (!summary.subtitle.is_empty()).then(|| {
-        let top = hero.y1 + CARD_LINE_GAP;
-        Rect::new(lines_x0, top, inside.x1, top + CARD_SUBTITLE)
+    // The line under the hero: beside a song's artwork it follows the hero,
+    // and anywhere else it is a row of its own, so what stands under it
+    // starts below it.
+    let subtitle = (!summary.subtitle.is_empty()).then(|| match lines_top {
+        Some(top) => {
+            let top = top + CARD_HERO.min(inside.height()) + CARD_LINE_GAP;
+            Rect::new(lines_x0, top, inside.x1, top + CARD_SUBTITLE)
+        }
+        None => row(CARD_SUBTITLE, CARD_LINE_GAP),
     });
     let (progress, elapsed, remaining) = match summary.progress {
         None => (None, None, None),
