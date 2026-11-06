@@ -1089,8 +1089,14 @@ impl DesktopSurface {
                 changed |= row.reorder_group_by_id(id, index);
             }
             // A window that opens is placed whole on screen beside the one
-            // it opened next to, sharing the display with it if need be.
+            // it opened next to, sharing the display with it if need be. It
+            // opens on the display the person works on, so it owns that
+            // display's lane before anything is shared.
+            let focused = tree.outputs.focused_display();
             for group in opened {
+                if let Some(display) = focused {
+                    row.set_group_display(group, display);
+                }
                 changed |= row.share_with_neighbour(group);
                 revealed.push((strip.id, group));
             }

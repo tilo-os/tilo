@@ -1801,6 +1801,23 @@ impl GroupRow {
         }
     }
 
+    /// Put `group_id` in the lane of `display` before the shell's next
+    /// [`Self::set_lanes`]: the display a window opens on owns it from the
+    /// first frame, so it shares the strip with the windows there and with
+    /// no window its index merely falls after.
+    pub fn set_group_display(&mut self, group_id: u64, display: u32) {
+        let Some(lane) = self
+            .lanes
+            .iter()
+            .position(|lane| lane.spec.output == display)
+        else {
+            return;
+        };
+        if self.group_lanes.insert(group_id, lane) != Some(lane) {
+            self.structure_dirty = true;
+        }
+    }
+
     /// The lanes this strip is partitioned into; empty for one continuous
     /// row.
     pub fn lanes(&self) -> Vec<StripLane> {

@@ -25,6 +25,7 @@ use std::time::Duration;
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, InputEvent, OutputConfig};
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, DISPLAY_KIND, WINDOW_KIND};
+use tilo_desktop_model::WindowWidth;
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
 use wayland_client::protocol::{
@@ -327,6 +328,28 @@ fn shown_strips(session: &mut Session) -> Vec<(u32, String)> {
     })
 }
 
+/// Each strip group's width as the model holds it, with the display it lives
+/// on and the window it shows: a display's windows keep their width whatever
+/// opens on another.
+fn widths(session: &mut Session) -> Vec<(u32, WindowWidth, Option<String>)> {
+    session.desktop().with_policy(|policy| {
+        policy.handle().read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .map(|group| {
+                    (
+                        tree.outputs.display_of(group.id).unwrap_or(u32::MAX),
+                        group.width,
+                        group.tabs.first().map(|tab| tab.title.clone()),
+                    )
+                })
+                .collect()
+        })
+    })
+}
+
 fn focused(session: &mut Session) -> Option<String> {
     session
         .compositor()
@@ -423,6 +446,46 @@ fn each_display_keeps_the_strip_it_shows() {
         painted(session, "HEADLESS-1") > 0 && painted(session, "HEADLESS-2") > 0
     });
     assert_eq!(focused(&mut session).as_deref(), Some("org.example.Right"));
+}
+
+/// A window opening on one display leaves the windows of the other display
+/// the size they are: two displays are two strips' worth of room, so nothing
+/// is shared across the seam.
+#[test]
+fn a_window_opening_beside_one_display_leaves_the_other_alone() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = docked();
+    let mut client = client(&mut session);
+    tab(&mut session, &mut client, "org.example.Left");
+    pump(&mut session, &mut client, |session, _| {
+        display_of(session, "org.example.Left") == Some(0)
+    });
+    let alone = rect(&mut session, "org.example.Left");
+    let width = widths(&mut session);
+    assert!(
+        painted(&mut session, "HEADLESS-1") > 0,
+        "the left display shows its window"
+    );
+
+    focus_display(&mut session, &mut client, 1);
+    tab(&mut session, &mut client, "org.example.Right");
+    pump(&mut session, &mut client, |session, _| {
+        display_of(session, "org.example.Right") == Some(1)
+    });
+    assert_eq!(
+        widths(&mut session).first(),
+        width.first(),
+        "the left display's window keeps the width it is given"
+    );
+    assert_eq!(
+        rect(&mut session, "org.example.Left"),
+        alone,
+        "and the place and size a person sees it at"
+    );
+    assert!(
+        painted(&mut session, "HEADLESS-2") > 0,
+        "the window that opened shows on its own display"
+    );
 }
 
 #[test]
