@@ -41,10 +41,11 @@ pub(crate) enum JsPointer {
     },
 }
 
-/// The tab of the workspace a tile shows.
+/// The tab of the workspace a tile shows, by its id as a decimal string: a
+/// tab id can pass 2^53, which a JavaScript number cannot hold exactly.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct JsTile {
-    pub(crate) tab: u64,
+    pub(crate) tab: String,
 }
 
 /// The record a window shows, as the live layer names it.
@@ -160,11 +161,7 @@ fn layout(m: &Mount) -> PointerLayout {
         .map(str::to_owned)
         .zip(m.checkout.as_ref())
         .map(|(app, checkout)| {
-            let record = if checkout.id.is_package_primary() {
-                String::new()
-            } else {
-                checkout.id.as_str().to_owned()
-            };
+            let record = crate::desk_records::wire_record(&checkout.id).to_owned();
             (LiveRecord { app, record }, surface)
         })
         .into_iter()
@@ -198,7 +195,9 @@ pub fn pointer_tile(id: u64, x: f32, y: f32) -> Result<Option<String>, JsValue> 
         )]
         let at = [(x - area.x0 as f32), (y - area.y0 as f32)];
         serde_json::to_string(&JsPointer::Tile {
-            tile: JsTile { tab },
+            tile: JsTile {
+                tab: tab.to_string(),
+            },
             at,
         })
         .map(Some)
@@ -264,7 +263,8 @@ impl Mount {
             .filter_map(|p| {
                 let pointer = match p.pointer.clone() {
                     JsPointer::Tile { tile, at } => {
-                        let (_, area) = tabs.iter().find(|(tab, _)| *tab == tile.tab)?;
+                        let over = tile.tab.parse::<u64>().ok()?;
+                        let (_, area) = tabs.iter().find(|(tab, _)| *tab == over)?;
                         #[expect(
                             clippy::cast_possible_truncation,
                             reason = "surface coordinates are a few thousand logical pixels"

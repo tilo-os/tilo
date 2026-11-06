@@ -7,7 +7,7 @@ import {
 } from './live-presence.mjs';
 
 /** A pointer over tab 1's tile. */
-const P = (x, y) => ({tile: {tab: 1}, at: [x, y]});
+const P = (x, y) => ({tile: {tab: '1'}, at: [x, y]});
 
 function manualClock(start = 0) {
   let current = start;
@@ -196,10 +196,19 @@ test('publisher pauses without transport and republishes state on start', () => 
 test('publisher rejects unknown fields and non-finite pointers', () => {
   const {publisher} = publisherHarness();
   assert.throws(() => publisher.update({cursor: [1, 1]}));
+  assert.throws(() => publisher.update({pointer: {tile: {tab: '1e3'}, at: [1, 1]}}), 'a tab id is a decimal string');
   assert.throws(() => publisher.update({pointer: P(NaN, 1)}));
   assert.throws(() => publisher.update({pointer: [1, 1]}), 'a bare point is over nothing');
   assert.throws(() => publisher.update({pointer: {tile: {tab: -1}, at: [1, 1]}}), 'a pointer is over a tab of the workspace');
   assert.throws(() => publisher.update({drag: {object: {id: '01'}, phase: 'fly', position: [0, 0]}}));
+});
+
+test('a pointer over a tab whose id passes 2^53 keeps the id exactly', () => {
+  const {publisher} = publisherHarness();
+  const tab = '15319838557430874115';
+  assert.equal(publisher.update({pointer: {tile: {tab}, at: [3, 4]}}), true);
+  assert.deepEqual(publisher.state().pointer, {tile: {tab}, at: [3, 4]},
+    'the id travels as the string it was given, never a rounded number');
 });
 
 const frame = (seq, sentAtMs, extra = {}) => ({seq, sentAtMs, focus: null, pointer: null, selection: null, drag: null, ...extra});
@@ -333,12 +342,12 @@ test('receiver honours a cleared pointer immediately and reports staleness', () 
 });
 
 test('a pointer moves smoothly over a tab and jumps to what it moved over', () => {
-  const overTab = (tab, at) => ({tile: {tab}, at});
+  const overTab = (tab, at) => ({tile: {tab: String(tab)}, at});
   const remote = createRemotePresence();
   for (let i = 0; i < 4; i++) remote.accept(frame(i + 1, i * 16, {pointer: overTab(7, [i * 16, 0])}), i * 16);
   const delay = remote.interpolationDelayMs();
   const between = remote.sample(2 * 16 + 8 + delay).pointer;
-  assert.deepEqual(between.tile, {tab: 7});
+  assert.deepEqual(between.tile, {tab: '7'});
   assert.ok(Math.abs(between.at[0] - 40) < 0.01, 'interpolated over the tab');
   remote.accept(frame(5, 64, {pointer: overTab(9, [500, 300])}), 64);
   for (const at of [64, 70, 120]) {

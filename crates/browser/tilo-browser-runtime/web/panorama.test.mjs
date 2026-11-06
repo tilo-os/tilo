@@ -12,7 +12,7 @@ function canvas(width=100,height=50) {
 function fixture({room='room',app='notes',record='one',width=100,height=50}={}) {
  let valid=true, clock=0;
  const listeners=new Set(), members=new Set(['agent']);
- const layer={members:()=>[...members], onMember:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},remoteState:()=>[{publisher:'agent',seq:1,receivedAtMs:clock,focus:{app,record},pointer:{tile:{tab:11},at:[20,10]},participant:{kind:'agent',label:'A01',color:'#123456'}}]};
+ const layer={members:()=>[...members], onMember:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},remoteState:()=>[{publisher:'agent',seq:1,receivedAtMs:clock,focus:{app,record},pointer:{tile:{tab:'11'},at:[20,10]},participant:{kind:'agent',label:'A01',color:'#123456'}}]};
  const copies=[];
  const source=createPresentedSource({audience:room,app,canvas:canvas(width,height),layer:()=>layer,valid:()=>valid,now:()=>clock,makeCanvas:(w,h)=>{const copy=canvas(w,h);copies.push(copy);return copy;}});
  const output=canvas();
@@ -36,17 +36,17 @@ test('one transform maps real pixels and pointers with content clipping',()=>{
 });
 test('pointers over other tabs and of non-agents never become cursors',()=>{
  const f=fixture();f.layer.remoteState=()=>[
- {publisher:'agent',focus:{app:'other',record:'one'},pointer:{tile:{tab:12},at:[1,2]}},
- {publisher:'agent',focus:{app:'notes',record:'other'},pointer:{tile:{tab:12},at:[1,2]}},
- {publisher:'agent',focus:{app:'notes',record:'one'},pointer:{tile:{tab:11},at:[100,2]}},
+ {publisher:'agent',focus:{app:'other',record:'one'},pointer:{tile:{tab:'12'},at:[1,2]}},
+ {publisher:'agent',focus:{app:'notes',record:'other'},pointer:{tile:{tab:'12'},at:[1,2]}},
+ {publisher:'agent',focus:{app:'notes',record:'one'},pointer:{tile:{tab:'11'},at:[100,2]}},
  {publisher:'agent',focus:{app:'notes',record:'one'},pointer:null},
  {publisher:'agent',focus:{app:'notes',record:'one'},pointer:null},
- {publisher:'unadmitted',focus:{app:'notes',record:'one'},pointer:{tile:{tab:11},at:[1,2]}}];
+ {publisher:'unadmitted',focus:{app:'notes',record:'one'},pointer:{tile:{tab:'11'},at:[1,2]}}];
  f.present();assert.deepEqual(f.view.render({cx:200,cy:100,scale:1}).panes[0].pointers,[]);f.view.close();
 });
 test("a person's pointer is never drawn into a record's pane",()=>{
  const f=fixture();f.layer.members=()=>['agent','person'];f.layer.remoteState=()=>[
- {publisher:'person',seq:1,receivedAtMs:0,focus:{app:'notes',record:'one'},pointer:{tile:{tab:11},at:[20,10]},participant:{kind:'person',label:'Ada',color:'#654321'}}];
+ {publisher:'person',seq:1,receivedAtMs:0,focus:{app:'notes',record:'one'},pointer:{tile:{tab:'11'},at:[20,10]},participant:{kind:'person',label:'Ada',color:'#654321'}}];
  f.present();assert.deepEqual(f.view.render({cx:200,cy:100,scale:1}).panes[0].pointers,[]);f.view.close();
 });
 test('departed/rejoined publishers cannot reuse cached coordinates; stale pointers expire',()=>{
@@ -82,7 +82,7 @@ test('synthetic-only 80 presences in 20 panes preserve identities through zoom',
  const fixtures=Array.from({length:20},(_,i)=>fixture({record:`test-only-${i}`}));
  for(const [i,f]of fixtures.entries()){
   f.layer.members=()=>Array.from({length:4},(_,j)=>`test-only-agent-${4*i+j}`);
-  f.layer.remoteState=()=>f.layer.members().map((publisher,j)=>({publisher,seq:1,receivedAtMs:0,focus:{app:'notes',record:`test-only-${i}`},pointer:{tile:{tab:11},at:[10+j*20,20]},participant:{kind:'agent',label:publisher,color:'#123456'}}));
+  f.layer.remoteState=()=>f.layer.members().map((publisher,j)=>({publisher,seq:1,receivedAtMs:0,focus:{app:'notes',record:`test-only-${i}`},pointer:{tile:{tab:'11'},at:[10+j*20,20]},participant:{kind:'agent',label:publisher,color:'#123456'}}));
  }
  const view=createPanorama({canvas:canvas(),sources:fixtures.map((f,i)=>({source:f.source.handle,rect:[(i%5)*110,Math.floor(i/5)*60,100,50]})),width:600,height:300,now:()=>0});
  fixtures.forEach(f=>f.present());
