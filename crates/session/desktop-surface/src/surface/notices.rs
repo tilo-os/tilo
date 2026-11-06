@@ -808,6 +808,12 @@ pub(super) struct NotificationLayer {
     pub inbox: Option<AppInbox>,
     stack: NotificationStack,
     center: Option<Centre>,
+    /// The person asked for the centre: it takes input and its arrivals
+    /// join it. A centre that closes stays here until its leaving is drawn.
+    centre_open: bool,
+    /// The centre's coming and going, on the standard appear motion: from
+    /// the corner under the bar's bell and back to it.
+    appear: ui::motion::Appearing,
     /// An application a retained notification asked to open.
     pub open_app: Option<String>,
     rect: Rect,
@@ -828,6 +834,8 @@ impl NotificationLayer {
             inbox: None,
             stack: NotificationStack::new(),
             center: None,
+            centre_open: false,
+            appear: ui::motion::Appearing::closed(),
             open_app: None,
             rect: Rect::ZERO,
             cursor: None,
@@ -879,15 +887,21 @@ impl NotificationLayer {
     /// arrivals read its state: a centre that only appeared to close would
     /// keep every later banner off the desk.
     pub fn set_center_open(&mut self, open: bool) {
-        if open != self.center.is_some() {
-            self.notifications.mark_read();
-            self.notifications.set_centre_open(open);
-            self.center =
-                open.then(|| Centre::new(&NOTIFICATION_CENTRE, (), |make, ()| make.make()));
-            self.dirty = true;
-            self.notifications.set_centre_open(open);
-            self.feed_stack();
+        if open == self.centre_open {
+            return;
         }
+        self.centre_open = open;
+        self.notifications.mark_read();
+        self.notifications.set_centre_open(open);
+        if open {
+            self.center.get_or_insert_with(|| {
+                Centre::new(&NOTIFICATION_CENTRE, (), |make, ()| make.make())
+            });
+        }
+        // Closed, it is drawn until its leaving is over and dropped then.
+        self.appear.show(open);
+        self.dirty = true;
+        self.feed_stack();
     }
 
     /// Open the centre waiting on its code once the code is in. Whether it
@@ -910,8 +924,10 @@ impl NotificationLayer {
         Some(&mut **self.center.as_mut()?.ready_mut()?)
     }
 
+    /// Whether the centre is open, as opposed to leaving: it takes input and
+    /// what arrives joins it.
     pub fn center_open(&self) -> bool {
-        self.center.is_some()
+        self.centre_open
     }
 
     /// Retire what ran out; returns whether that changed what is shown.
@@ -972,7 +988,8 @@ impl NotificationLayer {
         }
         let notifications = self.notifications.clone();
         let host = notifications.host();
-        if self.center.is_none() {
+        // A centre that is leaving takes no press: it goes to what is under it.
+        if !self.centre_open {
             let mut handled = false;
             self.feed_stack();
             self.dirty |= self.stack.handle_pointer_event(event, scale, &mut handled);
@@ -1059,6 +1076,7 @@ impl NotificationLayer {
     /// Whether the layer shows anything at all.
     pub fn visible(&self) -> bool {
         self.center.is_some()
+            || self.appear.is_moving()
             || (!self.notifications.log.banners_elsewhere.get()
                 && !self.notifications.log().active().is_empty())
     }
@@ -1076,6 +1094,7 @@ impl Widget for NotificationLayer {
     }
     fn needs_animation_frame(&self) -> bool {
         self.stack.needs_animation_frame()
+            || self.appear.is_moving()
             || self.centre().is_some_and(CentreApi::reading_needs_frame)
     }
     /// The reading page glides on after a flick, repainted as a wheel's
@@ -1125,33 +1144,56 @@ impl Widget for NotificationLayer {
         self.feed_stack();
         self.stack.draw(scene, transform, text, theme);
         self.answer_stack();
+        // The centre arrives from the corner under the bar's bell and leaves
+        // back to it; one whose leaving is over is dropped here.
+        self.appear.follow(self.centre_open, theme.motion());
+        if !self.centre_open && !self.appear.is_drawn() {
+            self.center = None;
+        }
         let cursor = self.cursor;
-        if let Some(layout) = self.layout()
+        let posed = self.layout().map(|layout| {
+            let panel = layout.panel();
+            // Under the bell: the panel's own top-right corner.
+            let anchor = Point::new(panel.x1, panel.y0);
+            let pose = self
+                .appear
+                .pose(panel, ui::motion::Appear::origin(panel, anchor));
+            (layout, panel, pose)
+        });
+        if let Some((layout, panel, pose)) = posed
             && let Some(center) = self.center.as_mut()
         {
-            let panel = layout.panel();
-            ui::surface::panel(
+            let elevation = &theme.tokens.elevation.floating;
+            let reach = f64::from(elevation.blur) * 2.0 + f64::from(elevation.offset_y).abs() + 2.0;
+            pose.paint(
                 scene,
                 transform,
-                panel,
-                f64::from(theme.tokens.radii.control),
-                theme,
-            );
-            match center.ready_mut() {
-                Some(center) => {
-                    center.draw(host, &layout, scene, transform, text, theme, cursor);
-                }
-                None => {
-                    ui::lazy_code::draw_loading(
+                panel.inflate(reach, reach),
+                |scene, at| {
+                    ui::surface::panel(
                         scene,
-                        transform,
-                        text,
-                        theme,
+                        at,
                         panel,
-                        "lazy-loading",
+                        f64::from(theme.tokens.radii.control),
+                        theme,
                     );
-                }
-            }
+                    match center.ready_mut() {
+                        Some(center) => {
+                            center.draw(host, &layout, scene, at, text, theme, cursor);
+                        }
+                        None => {
+                            ui::lazy_code::draw_loading(
+                                scene,
+                                at,
+                                text,
+                                theme,
+                                panel,
+                                "lazy-loading",
+                            );
+                        }
+                    }
+                },
+            );
         }
         self.drawn_revision.set(Some(notifications.revision()));
         self.dirty = false;
@@ -1291,6 +1333,16 @@ mod tests {
     fn press(layer: &mut NotificationLayer, p: Point) -> bool {
         layer.cursor = Some(p);
         layer.route(&ui::synthetic_input::mouse_press(), 1.0)
+    }
+
+    fn paint(layer: &mut NotificationLayer, theme: &ui::Theme) {
+        layer.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut ui::TextRenderer::new(),
+            theme,
+            &ui::presence::PresenceCtx::default(),
+        );
     }
 
     /// The bell counts what arrived since the person last looked: opening
@@ -1513,6 +1565,37 @@ mod tests {
             1,
             "a desk with no centre over it shows banners again"
         );
+    }
+
+    /// The centre arrives and leaves on the standard motion: closed, it is
+    /// still drawn while it goes and takes no press meanwhile.
+    #[test]
+    fn the_centre_is_drawn_until_its_leaving_is_over() {
+        let (mut layer, _) = layer_with(2);
+        let theme = ui::Theme::dark();
+        // Opened and read at rest: from there the leaving has somewhere to
+        // start.
+        layer.set_center_open(true);
+        layer.appear.snap(true);
+        paint(&mut layer, &theme);
+        assert!(layer.center_open());
+        assert!(layer.visible());
+        let panel = layer.layout().expect("an open centre has a panel").panel();
+        // A press asked for it: the motion, not a key's landing at once.
+        ui::motion::note_source(ui::tokens::MotionSource::Pointer);
+        let frozen = ui::motion::testing::frozen();
+        layer.set_center_open(false);
+        paint(&mut layer, &theme);
+        assert!(layer.center.is_some(), "a leaving centre is still drawn");
+        assert!(!layer.center_open());
+        assert!(
+            !press(&mut layer, panel.center()),
+            "a leaving centre takes no press"
+        );
+        drop(frozen);
+        let _settled = ui::motion::testing::settled();
+        paint(&mut layer, &theme);
+        assert!(layer.center.is_none(), "gone once its leaving is over");
     }
 
     #[test]
