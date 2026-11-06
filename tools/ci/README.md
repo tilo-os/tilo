@@ -83,13 +83,16 @@ than reverted. `stable` is the release branch: it is moved by hand when a
 release is cut (it requires signed commits), and it is the only ref
 publications build from.
 
-- `check.yml` runs after every push to `main`, and every push runs its own
-  checks: a run is green only after its own builder, selection and the checks
-  they select ran, and no run skips itself because a later push exists. A push
-  plans from the main commit it landed on (`github.event.before`), so it
-  measures exactly the commits it added; a manual dispatch validates the whole
-  workspace, and a push with no usable base plans the whole workspace too. Runs
-  share compile work through the compiler and Cargo caches.
+- `check.yml` runs after every push to `main`, one window of commits at a time.
+  Its first job (`tools/ci/push_window.py`, through the Forgejo API) makes the
+  newest push the window: older runs that never started are cancelled, an older
+  run that is executing is waited for (bounded, then this one starts beside it),
+  and a newer run makes this one skip its jobs as a clean success. A run plans
+  from the head of the newest earlier run on main whose window ran
+  (`PLAN_BASE`), falling back to the main commit the push landed on
+  (`github.event.before`) and then to the full workspace, so a cancelled run
+  leaves no commit unmeasured. `main-window.yml` repeats the cancellation every
+  fifteen minutes, so a supersede job that dies cannot let the queue grow back.
 - Release and artifact workflows (`release-*.yml`, `build-*.yml`) trigger on a
   push to `stable` or on a version tag, never on `main`. `ci-nightly.yml` runs
   the full suite on both native architectures as the coverage backstop, and the
