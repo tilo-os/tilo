@@ -180,7 +180,7 @@ mod cases {
     #[test]
     fn a_requirement_on_a_given_argument_refuses_the_invocation_with_its_reason() {
         let app = App::compile(
-            "app t.notes \"Notes\"\ntype Note {\n    title: Text (title)\n}\naction retitle(n: Note, title: Text) (label: \"Rename…\") {\n    require title != n.title \"It has that title already\"\n    n.title = title\n}\n",
+            "app t.notes \"Notes\"\ntype Note {\n    title: Text\n}\naction retitle(n: Note, title: Text) (label: \"Rename…\") {\n    require title != n.title \"It has that title already\"\n    n.title = title\n}\n",
             &[],
         );
         let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();

@@ -17,8 +17,8 @@ const TASKS: &str = r#"app so.tilo.tasks "Tasks"
 
 /// Something to do.
 type Task {
-    title: Text (title)
-    done: Bool (done) = false
+    title: Text
+    done: Bool = false
     due: Option<Date> = .none
     status: Status
     effort: Int
@@ -46,7 +46,7 @@ enum Status {
 
 /// A message in a mailbox.
 type Message {
-    subject: Text (title)
+    subject: Text
     from: std.Identifier = std.Identifier("tel:+10")
     to: Set<std.Identifier>
 }
@@ -540,7 +540,7 @@ fn facet_counts_are_read_from_the_columns() {
 const SNOOZED: &str = r#"app so.tilo.inbox "Inbox"
 
 type Thread {
-    title: Text (title)
+    title: Text
     boxes: Set<Text>
     snoozed_until: Time = Time("1970-01-01T00:00:00Z")
     muted: Bool = false
@@ -728,7 +728,7 @@ fn a_filter_of_a_run_and_a_clock_conjunct_pages_at_the_first_page_and_lists_what
 const INBOX_VIEW: &str = r#"app so.tilo.inbox "Inbox"
 
 type Thread {
-    title: Text (title)
+    title: Text
     boxes: Set<Text>
     snoozed_until: Time = Time("1970-01-01T00:00:00Z")
     muted: Bool = false
@@ -824,7 +824,7 @@ fn a_snooze_ending_moves_its_thread_into_the_inbox_without_reading_the_workspace
 const JUST_WRITTEN: &str = r#"app so.tilo.inbox "Inbox"
 
 type Thread {
-    title: Text (title)
+    title: Text
     unread: Bool
     boxes: Set<Text>
 

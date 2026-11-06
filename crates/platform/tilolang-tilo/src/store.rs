@@ -309,7 +309,12 @@ mod scoped;
 use scoped::{Changing, Held};
 
 mod index_build;
+mod reading;
 use index_build::AppIndex;
+use reading::{
+    collections_by_doc, everything, holds_heads, mirror_of, name_version_changes, note_derived,
+    scan, write_as_a_known_actor,
+};
 mod outbox;
 mod plan;
 mod run;
@@ -614,176 +619,6 @@ fn not_found(what: impl Into<String>) -> StoreError {
     StoreError::NotFound(what.into())
 }
 
-/// Every resource of `doc`, with its app and type id.
-fn scan(doc: &Doc) -> BTreeMap<DocId, (AppId, TypeId)> {
-    let mut out = BTreeMap::new();
-    let Ok(Some((AmValue::Object(ObjType::Map), records))) = doc.get(&automerge::ROOT, RECORDS_KEY)
-    else {
-        return out;
-    };
-    for stored in doc.keys(&records) {
-        let Ok(Some((AmValue::Object(ObjType::Map), app_obj))) = doc.get(&records, stored.as_str())
-        else {
-            continue;
-        };
-        // Records stored under an id their app had before (`previously:`) are that app's.
-        let app = crate::schema::successor(&stored);
-        let own = app == stored;
-        for id in doc.keys(&app_obj) {
-            let Ok(Some((AmValue::Object(ObjType::Map), obj))) = doc.get(&app_obj, id.as_str())
-            else {
-                continue;
-            };
-            if let Ok(Some((AmValue::Scalar(scalar), _))) = doc.get(&obj, TYPE_KEY)
-                && let ScalarValue::Str(ty) = scalar.as_ref()
-                && (own || !out.contains_key(&id))
-            {
-                out.insert(id, (app.clone(), ty.to_string()));
-            }
-        }
-    }
-    out
-}
-
-fn json_of_scalar(scalar: &Scalar) -> Json {
-    match scalar {
-        Scalar::Bool(flag) => Json::Bool(*flag),
-        Scalar::Int(value) => Json::from(*value),
-        Scalar::Float(value) => {
-            serde_json::Number::from_f64(*value).map_or(Json::Null, Json::Number)
-        }
-        Scalar::Text(text) => Json::String(text.clone()),
-        Scalar::Json(value) => value.clone(),
-    }
-}
-
-/// The path from a record's map to the field `field` of a resource of it, whose own map the
-/// path `prefix` reaches ([`Inner::prefix_of`]).
-fn path_to(prefix: &[Segment], field: &str) -> Vec<Segment> {
-    let mut path = prefix.to_vec();
-    path.push(Segment::Field(field.to_owned()));
-    path
-}
-
-/// Have the mirror's writes carry the actor of a change the mirror already holds.
-///
-/// Under an actor of its own, each of the mirror's transactions would add that actor to the
-/// document and its rollback remove it again, and Automerge renumbers every op's actor column
-/// for each: two passes over the whole document per keystroke. The mirror never commits (its
-/// writes are taken back before any change of the record is applied, see
-/// [`TiloStore::sync_from`]), so its ops under a borrowed actor never meet that actor's next
-/// real change.
-fn write_as_a_known_actor(mirror: &mut Doc) {
-    let actor = mirror
-        .committed_document()
-        .get_heads()
-        .first()
-        .and_then(|head| mirror.committed_document().get_change_meta_by_hash(head))
-        .map(|meta| meta.actor.into_owned());
-    if let Some(actor) = actor {
-        mirror.set_actor(actor);
-    }
-}
-
-/// A copy of `record`'s committed changes, to write into.
-fn mirror_of(record: &Doc) -> Doc {
-    let mut mirror = record.clone();
-    // Only the record's committed changes are the mirror's: an open transaction of the
-    // record arrives as a change once the framework commits it.
-    mirror.rollback();
-    write_as_a_known_actor(&mut mirror);
-    mirror
-}
-
-/// Whether `doc` holds every change of `heads`.
-fn holds_heads(doc: &Doc, heads: &[ChangeHash]) -> bool {
-    heads
-        .iter()
-        .all(|head| doc.committed_document().get_change_by_hash(head).is_some())
-}
-
-/// Name each resource in `ends` as changed in its versions: the record's changes made them,
-/// which marks and history read, and a change reaches the views of a resource even when the
-/// values it writes read as the ones the store already held, as they do when the steps were
-/// written locally first. A document the change reached whole names no field and is left as
-/// it is: every view of it reads the document anew.
-fn name_version_changes(ends: &Ends, docs: &mut BTreeMap<DocId, Vec<FieldKey>>) {
-    for resource in ends.keys() {
-        note_derived(
-            docs,
-            doc_of(resource),
-            vec![FieldKey {
-                resource: resource.clone(),
-                field: VERSIONS.to_owned(),
-            }],
-        );
-    }
-}
-
-/// Note what a change named in `doc`: the fields that changed there, which sets aside the
-/// listings of it reading one. A document the change reached as a whole keeps the empty list
-/// that says so: narrower fields would leave the listings they do not name on the old index.
-fn note_derived(docs: &mut BTreeMap<DocId, Vec<FieldKey>>, doc: &str, keys: Vec<FieldKey>) {
-    match docs.get_mut(doc) {
-        Some(fields) if fields.is_empty() => {}
-        Some(fields) => fields.extend(keys),
-        None => {
-            docs.insert(doc.to_owned(), keys);
-        }
-    }
-}
-
-/// The collections whose items joined, left or moved, by the document that holds them: what a
-/// reader of item text reads the steps of, or everything when there are none
-/// ([`tilolang_runtime::store::ChangeSummary::unsaid`]).
-fn collections_by_doc<'a>(
-    keys: impl IntoIterator<Item = &'a FieldKey>,
-) -> BTreeMap<DocId, Vec<FieldKey>> {
-    let mut collections: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
-    for key in keys {
-        collections
-            .entry(key.doc().to_owned())
-            .or_default()
-            .push(key.clone());
-    }
-    collections
-}
-
-/// Every record of `app` in `docs`, reached as a whole, with those of `before` that are gone:
-/// what derives a package's index anew where it stands.
-fn everything(
-    before: &BTreeMap<DocId, (AppId, TypeId)>,
-    now: &BTreeMap<DocId, (AppId, TypeId)>,
-) -> Reached {
-    let mut reached = Reached::default();
-    for doc in before.keys().chain(now.keys()) {
-        reached.docs.insert(doc.clone(), Vec::new());
-    }
-    reached
-}
-
-/// Build the index of `app` from `doc` whole, stamped `heads`.
-fn build(
-    index: &Index,
-    doc: &Doc,
-    docs: &BTreeMap<DocId, (AppId, TypeId)>,
-    app: &str,
-    heads: &[ChangeHash],
-    schemas: &Arc<crate::schema::Schemas>,
-) -> Result<DocReads, IndexError> {
-    // This build may run on a thread of its own, where no store installed its table: the
-    // record's types resolve by the store's package versions, never by another store's.
-    let _scope = schemas.enter();
-    let ends = idx::reflect::ends_of(&doc.committed_document().get_changes(&[]), doc, docs);
-    let nested = Nested::default();
-    index.write(|writer| {
-        let mut derive = Derive::new(doc, docs, &nested);
-        derive.all_with_versions(writer, app, &ends)?;
-        writer.set_heads(heads)?;
-        Ok(derive.reads)
-    })
-}
-
 impl TiloStore {
     /// A store whose mirror starts as `record`, whose outside effects `device` carries out.
     #[must_use]
@@ -958,7 +793,7 @@ impl TiloStore {
                 placed: changed.placed.clone(),
             }
         };
-        let (moved, wholes, derived) = inner.derive_all(&reached, Some((&from, &ends)));
+        let (moved, wholes, notified) = inner.derive_all(&reached, Some((&from, &ends)));
         // The overlay was the old transaction's, and what an origin derives was written onto
         // the mirror again: derive it over the indexes as the record's changes left them, so a
         // later write into one of its collections sees the items it holds, at their places.
@@ -975,9 +810,9 @@ impl TiloStore {
         for doc in wholes {
             docs.insert(doc, Vec::new());
         }
-        // A value the index derives may have moved on an item the change did not name: a
-        // branch that folds because its last task was checked elsewhere.
-        for (doc, keys) in derived {
+        // A field may have moved on a resource the change did not name: what a link target's
+        // [`tilolang_runtime::store::LINKS`] reads of what links to it.
+        for (doc, keys) in notified {
             note_derived(&mut docs, &doc, keys);
         }
         name_version_changes(&ends, &mut docs);
@@ -1365,6 +1200,43 @@ impl TiloStore {
         let mirror = inner.mirror().ok()?;
         let obj = crate::reads::resource_obj(mirror, app, doc)?;
         crate::action::triggered(mirror, &obj, key)
+    }
+
+    /// Record that the migration `migration` (its action id) ran on the resource `doc`, as a
+    /// change of its own: the platform keeps no other mark of it, and runs a migration on each
+    /// resource of its subject type once, whether an earlier version wrote the resource or
+    /// this one. A migration reads what an older version left, so one that finds nothing of it
+    /// changes nothing, and a record made by this version starts with every migration of its
+    /// type run.
+    ///
+    /// # Errors
+    /// The workspace record cannot be had, holds no such resource, or the change cannot be
+    /// written.
+    pub fn mark_migrated(&self, doc: &str, migration: &str) -> Result<(), StoreError> {
+        self.load_record()?;
+        let mut inner = self.mutate();
+        let Some((app, ty)) = inner.index.get(doc).cloned() else {
+            return Err(not_found(format!("resource {doc}")));
+        };
+        let Some(schema) = lookup(&ty) else {
+            return Err(not_found(format!("type {ty}")));
+        };
+        let edit = DynEdit::Migrated {
+            id: doc.to_owned(),
+            migration: migration.to_owned(),
+        };
+        let seed = inner.fresh("migrated:").into_bytes();
+        inner.write(&app, edit.clone(), seed, Vec::new(), Moves::default())?;
+        let action = DynAction {
+            app: app.clone(),
+            kind: format!("tl.{app}.{}", schema.name),
+            action_id: migration.to_owned(),
+            args: Json::String(doc.to_owned()),
+            authorship: Authorship::default(),
+            edits: vec![edit],
+        };
+        inner.enqueue(action);
+        Ok(())
     }
 
     /// Whether the migration `migration` (its action id) ran on the resource `doc`.
@@ -1779,9 +1651,9 @@ impl Inner {
     ) -> (ItemTouches, BTreeSet<DocId>, BTreeMap<DocId, Vec<FieldKey>>) {
         let mut moved = ItemTouches::new();
         let mut wholes = BTreeSet::new();
-        let mut derived: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
+        let mut notified: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
         let Some(mirror) = self.mirror.clone() else {
-            return (moved, wholes, derived);
+            return (moved, wholes, notified);
         };
         let apps: Vec<AppId> = self
             .apps
@@ -1819,21 +1691,16 @@ impl Inner {
                 derive.changes(writer, &app, reached)?;
                 derive.versions(writer, &app, ends)?;
                 writer.set_heads(&seen)?;
-                Ok((
-                    derive.reads,
-                    derive.moved,
-                    derive.wholes,
-                    derive.derived_keys,
-                ))
+                Ok((derive.reads, derive.moved, derive.wholes, derive.notified))
             });
             match written {
-                Ok((reads, app_moved, app_wholes, app_derived)) => {
+                Ok((reads, app_moved, app_wholes, app_notified)) => {
                     for (key, ids) in app_moved {
                         moved.entry(key).or_default().extend(ids);
                     }
                     wholes.extend(app_wholes);
-                    for (doc, keys) in app_derived {
-                        derived.entry(doc).or_default().extend(keys);
+                    for (doc, keys) in app_notified {
+                        notified.entry(doc).or_default().extend(keys);
                     }
                     self.count(reads);
                     if let Some(held) = self.apps.get_mut(&app) {
@@ -1849,7 +1716,7 @@ impl Inner {
                 Err(_) => self.rebuild(&app),
             }
         }
-        (moved, wholes, derived)
+        (moved, wholes, notified)
     }
 
     /// The steps each listed collection took from the indexes `before` (with the overlay

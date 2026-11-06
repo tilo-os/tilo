@@ -347,10 +347,6 @@ window-move-reason-no-window = die App hat dort kein Fenster geöffnet
 window-move-reason-no-start = die App ist dort nicht gestartet
 window-move-bringing-edits = Das Fenster kommt mit dem zurück, was nach dem Verschieben geschrieben wurde.
 
-## A reminder a workspace holds for the person, shown by the session itself.
-reminder-open = Öffnen
-reminder-late = Verspätet
-
 ## The person's own card in the top bar: what it offers about who they are.
 profile-action-identities = Deine Identitäten
 profile-action-backup = Deine Identität sichern

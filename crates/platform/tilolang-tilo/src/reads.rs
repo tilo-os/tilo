@@ -680,11 +680,11 @@ pub struct RecordItems<'a> {
 }
 
 /// The first non-empty text of the resource map `obj` of type `schema` at `path`, and the path
-/// of the resource that holds it: its own texts name it before its items' do. A `title` field
-/// comes first, a `body` field's first line next, then the rest by id; a nested record in
-/// place and a collection's items in order only where the resource holds no text of its own. It
-/// stops at the first, so naming a resource reads the few fields before its first text, not the
-/// whole resource.
+/// of the resource that holds it: its own texts name it before its items' do, its first text
+/// field first; a nested record in place and a collection's items in order only where the
+/// resource holds no text of its own. It stops at the first, so naming a resource reads the few
+/// fields before its first text, not the whole resource. A text names it by its first non-blank
+/// line.
 ///
 /// A channel called "design" whose messages hold text is "design", not the first of its
 /// messages (a milestone's tasks are not its name either); only a record that is nothing but
@@ -696,10 +696,9 @@ pub fn first_text(
     schema: &TypeSchema,
     (path, items): (&str, &RecordItems<'_>),
 ) -> Option<(String, String)> {
-    // `title`, then `body`, then the rest by id: the roles say which field a person knows the
-    // resource by, so a message's body names it before a sender or a date id happens to
-    // ([`TypeSchema::in_naming_order`], the one order naming uses).
-    let fields = schema.in_naming_order();
+    // Its own texts, in the order the type declares them, then the records and collections it
+    // holds ([`TypeSchema::naming_scan`], the one order naming uses).
+    let fields = schema.naming_scan();
     if let Some(own) = own_text(doc, obj, &fields, path) {
         return Some(own);
     }
@@ -749,8 +748,8 @@ pub fn first_text(
 }
 
 /// The first non-empty text `obj` holds in its own [`MergeKind::Text`] fields, and where it
-/// is: a `body` field's first line, any other field's whole text. `None` when it holds none
-/// of its own, where [`first_text`] falls back to its items.
+/// is: its first non-blank line. `None` when it holds none of its own, where [`first_text`]
+/// falls back to its items.
 fn own_text(
     doc: &Doc,
     obj: &ObjId,
@@ -762,14 +761,11 @@ fn own_text(
             continue;
         }
         let text: String = read_key(doc, obj, field.id.as_str()).ok()?;
-        let text = if matches!(field.role, crate::schema::FieldRole::Body) {
-            text.lines()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or_default()
-                .to_owned()
-        } else {
-            text
-        };
+        let text = text
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+            .to_owned();
         if !text.trim().is_empty() {
             return Some((text, path.to_owned()));
         }

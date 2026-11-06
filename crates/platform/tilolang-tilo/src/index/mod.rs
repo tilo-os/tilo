@@ -38,7 +38,6 @@
 pub mod codec;
 pub mod columns;
 pub mod derive;
-pub mod derived;
 pub mod lists;
 pub mod merged;
 pub mod overlay;

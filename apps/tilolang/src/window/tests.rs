@@ -1279,8 +1279,8 @@ fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_onc
 }
 
 /// A workspace of Today with the todo list and the notebook it points at, each with its scenario, and
-/// how many of the todos are finished: what a cleanup takes, read from the list's own index,
-/// which works out each task's branch as done with nothing open under it.
+/// how many of the todos are finished: done itself, and so is every task under it, as the app
+/// reads a branch.
 fn today_workspace() -> (Workspace, usize) {
     let mut workspace = Workspace::new("today");
     workspace.seed("tasks");
@@ -1290,13 +1290,46 @@ fn today_workspace() -> (Workspace, usize) {
     let RtValue::List(items) = host.runtime().read(&list, "items").unwrap() else {
         panic!("the list holds items");
     };
-    let finished = items
-        .iter()
-        .filter(|item| match item {
-            RtValue::Ref(item) => {
-                host.runtime().read(&item.target, "finished").ok() == Some(RtValue::Bool(true))
+    let mut parent: HashMap<String, Option<String>> = HashMap::new();
+    let mut done: HashMap<String, bool> = HashMap::new();
+    for item in items {
+        let RtValue::Ref(item) = item else {
+            panic!("a task is a resource: {item:?}")
+        };
+        let id = item.target.id_string();
+        let under = match host.runtime().read(&item.target, "parent").unwrap() {
+            RtValue::Opt(Some(held)) => match *held {
+                RtValue::Ref(p) => Some(p.target.id_string()),
+                other => panic!("a parent is a task: {other:?}"),
+            },
+            RtValue::Opt(None) => None,
+            other => panic!("a parent may be none: {other:?}"),
+        };
+        let checked = host.runtime().read(&item.target, "done").unwrap() == RtValue::Bool(true);
+        parent.insert(id.clone(), under);
+        done.insert(id, checked);
+    }
+    let finished = parent
+        .keys()
+        .filter(|id| {
+            let below: Vec<&String> = parent
+                .keys()
+                .filter(|other| {
+                    let mut at = parent.get(*other).cloned().flatten();
+                    while let Some(step) = at {
+                        if &step == *id {
+                            return true;
+                        }
+                        at = parent.get(&step).cloned().flatten();
+                    }
+                    false
+                })
+                .collect();
+            if below.is_empty() {
+                done[*id]
+            } else {
+                below.iter().all(|other| done[*other])
             }
-            _ => false,
         })
         .count();
     assert!(finished > 0, "the saturday list has finished tasks");
@@ -1544,9 +1577,12 @@ fn a_plain_key_in_a_focused_mail_window_archives_the_conversation_it_shows() {
 fn search_entries_find_notes_and_open_the_window_at_the_note() {
     let mut workspace = Workspace::seeded("notes");
     let entries = crate::resource::search_entries();
-    assert!(!entries.is_empty());
-    let first = &entries[0];
-    assert_eq!(first.group.as_deref(), Some("Notes"), "{first:?}");
+    // Every text is indexed, so a note's words are found beside every other type's; the one
+    // that names a note is its own.
+    let first = entries
+        .iter()
+        .find(|entry| entry.group.as_deref() == Some("Notes"))
+        .unwrap_or_else(|| panic!("no note among the hits: {entries:#?}"));
     let anchor = first.anchor.clone().expect("a hit names its resource");
     workspace
         .window

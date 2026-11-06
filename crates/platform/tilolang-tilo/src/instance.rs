@@ -2487,19 +2487,17 @@ pub fn sentence(name: &str) -> String {
     })
 }
 
-/// The title of a resource: its first `Text` field marked `title`; else, for a package's root,
-/// the package's title; else its type's name.
+/// The title of a resource: its first text field; else, for a package's root, the package's
+/// title; else its type's name.
 #[must_use]
 pub fn title_of(host: &Host, resource: &ResourceRef) -> String {
     let Some((meta, ty)) = type_of(host, &resource.ty) else {
         return String::new();
     };
-    let titled = ty.fields.iter().find(|field| {
-        field
-            .role
-            .as_ref()
-            .is_some_and(tilolang_runtime::meta::FieldRole::is_title)
-    });
+    let titled = ty
+        .fields
+        .iter()
+        .find(|field| matches!(field.ty.trim(), "Text" | "RichText" | "std.RichText"));
     if let Some(field) = titled
         && let Ok(value) = host.runtime().read(resource, &field.id)
     {

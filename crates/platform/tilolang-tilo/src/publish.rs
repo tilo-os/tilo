@@ -1461,7 +1461,7 @@ impl Published<'_> {
         };
         // The field of the record the name is read through, when an item holds it: a field
         // after it in naming order cannot name the record while it does
-        // ([`TypeSchema::in_naming_order`]).
+        // ([`TypeSchema::naming_scan`]).
         let named_chain = named_by
             .filter(|at| *at != self.doc)
             .and_then(|at| self.chain(at));
@@ -1934,36 +1934,25 @@ fn published_holder(tree: &ResourceSpec, id: &str) -> Option<String> {
     None
 }
 
-/// What names an item, as [`crate::reads::first_text`] names a resource: its own texts first —
-/// a `title` field, then a `body`'s first line, then the rest in declaration order — and only a
-/// record holding none of its own is named by an item it holds (a record that is nothing but
-/// its list). A channel's messages never name the channel: its `name` does.
+/// What names an item, as [`crate::reads::first_text`] names a resource: its own texts first, in
+/// declaration order, by their first non-blank line, and only a record holding none of its own
+/// is named by an item it holds (a record that is nothing but its list). A channel's messages
+/// never name the channel: its `name` does.
 fn item_label(item: &crate::record::DynRecord) -> Option<String> {
     use crate::record::DynValue;
-    use crate::schema::{FieldRole, MergeKind};
+    use crate::schema::MergeKind;
     let schema = item.schema();
     let read = |field: &crate::schema::FieldSchema| match item.get(&field.id) {
-        Some(DynValue::Text(text)) if !text.trim().is_empty() => Some(text.clone()),
+        Some(DynValue::Text(text)) if !text.trim().is_empty() => text
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(str::to_owned),
         _ => None,
     };
     let mut texts = schema
         .fields
         .iter()
         .filter(|field| field.kind == MergeKind::Text);
-    let titled = texts.clone().find(|field| field.role == FieldRole::Title);
-    if let Some(text) = titled.as_ref().and_then(|field| read(field)) {
-        return Some(text);
-    }
-    let bodied = texts.clone().find(|field| field.role == FieldRole::Body);
-    if let Some(text) = bodied.as_ref().and_then(|field| read(field)) {
-        let first = text
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or_default();
-        if !first.trim().is_empty() {
-            return Some(first.to_owned());
-        }
-    }
     if let Some(text) = texts.find_map(read) {
         return Some(text);
     }

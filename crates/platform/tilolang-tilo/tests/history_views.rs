@@ -218,7 +218,7 @@ fn a_change_shows_what_the_title_and_the_due_day_held_before_and_after() {
     assert_eq!(text(after), Some("Shopping"));
     // What it did, in the words of the field it wrote: it renamed the note.
     assert!(
-        reads_as(&section).contains("bo renamed this to"),
+        reads_as(&section).contains("bo changed title"),
         "the entry says what was done: {section:#?}"
     );
 
@@ -278,7 +278,7 @@ fn undo_on_an_older_step_takes_back_that_step_alone() {
                 && n.children.first().is_some_and(|row| {
                     nodes(row)
                         .into_iter()
-                        .any(|t| text(t) == Some("renamed this to"))
+                        .any(|t| text(t) == Some("changed title"))
                 })
         })
         .cloned()
@@ -567,17 +567,21 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
     ada.commit();
     call(&ada, "bo", TASKS_APP, "check", vec![done.clone()]);
     ada.commit();
-    let said = says(&history_of(&ada, &target(&done)));
+    let checked = says(&history_of(&ada, &target(&done)));
     assert!(
-        said.join(" ").contains("bo completed this"),
-        "checking a task off says it was completed: {said:?}"
+        checked.join(" ").contains("bo set done to"),
+        "checking a task off says what it set: {checked:?}"
     );
     call(&ada, "bo", TASKS_APP, "check", vec![done.clone()]);
     ada.commit();
-    let said = says(&history_of(&ada, &target(&done)));
+    let reopened = says(&history_of(&ada, &target(&done)));
     assert!(
-        said.join(" ").contains("bo reopened this"),
-        "opening it again says so: {said:?}"
+        reopened.join(" ").contains("bo set done to"),
+        "opening it again says what it set: {reopened:?}"
+    );
+    assert_ne!(
+        checked, reopened,
+        "the check and the reopening read unlike: the flag each set is shown"
     );
 
     let above = call(
@@ -605,16 +609,19 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
     ada.commit();
     let said = says(&history_of(&ada, &target(&under)));
     assert!(
-        said.join(" ").contains("bo moved this under"),
-        "a task put under another is moved under it: {said:?}"
+        said.join(" ").contains("bo moved this to"),
+        "a task put under another says what it moved to: {said:?}"
     );
-    assert!(said.contains(&"Plan the week".to_owned()), "{said:?}");
+    assert!(
+        said.contains(&"Plan the week".to_owned()),
+        "the parent it moved to is shown: {said:?}"
+    );
     call(&ada, "bo", TASKS_APP, "outdent", vec![under.clone()]);
     ada.commit();
     let said = says(&history_of(&ada, &target(&under)));
     assert!(
-        said.join(" ").contains("bo moved this to the top level"),
-        "a task taken out from under another says so: {said:?}"
+        said.join(" ").contains("bo moved this out of"),
+        "a task taken out from under another says what it left: {said:?}"
     );
 }
 
@@ -622,9 +629,9 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
 const SENTENCES: &str = r#"app so.tilo.test.sentences "Sentences"
 
 type Task {
-    title: Text (title)
+    title: Text
     due: Option<Date>
-    at: Option<Time> (time of: due)
+    at: Option<Time>
 }
 
 type Tasks {
@@ -633,11 +640,6 @@ type Tasks {
 
 action new_task(tasks: Tasks, title: Text, at: Option<Time>) -> Task {
     tasks.items.insert(Task(title: title, at: at))
-}
-
-/// Sets the day a task is due by, leaving the time of day it holds where it stands.
-action reschedule(t: Task, due: Date) {
-    t.due = .some(due)
 }
 
 /// Renames a task, and moves it to a day, in one change.
@@ -667,8 +669,8 @@ view task_page(t: Task) {
 "#;
 const SENTENCES_APP: &str = "so.tilo.test.sentences";
 
-/// A change that wrote two fields reads as one sentence, and a day reads with the time of day
-/// it holds. The window shows the task's history, as an app's does.
+/// A change that wrote two fields reads as one sentence, and each field shows what it held. The
+/// window shows the task's history, as an app's does.
 #[test]
 fn a_change_that_wrote_two_fields_reads_as_one_sentence() {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(SENTENCES, "")]);
@@ -688,32 +690,6 @@ fn a_change_that_wrote_two_fields_reads_as_one_sentence() {
     );
     ada.commit();
     let at = target(&task);
-    // The time of day stands while the day moves: the two read as one fact.
-    call(
-        &ada,
-        "bo",
-        SENTENCES_APP,
-        "reschedule",
-        vec![task.clone(), Value::text("2026-07-01")],
-    );
-    ada.commit();
-    let section = history_of(&ada, &at);
-    let said = says(&section);
-    assert!(
-        said.join(" ").contains("bo set the due date to"),
-        "the day the change sets: {said:?}"
-    );
-    let day = nodes(&section)
-        .into_iter()
-        .find(|node| node.props.get("value:as") == Some(&Value::text("date")))
-        .expect("the day the change set is shown as a day");
-    assert_eq!(day.props.get("value"), Some(&Value::text("2026-07-01")));
-    assert_eq!(
-        day.props.get("value:time"),
-        Some(&Value::text("2026-06-30T09:00:00Z")),
-        "the day reads with the time of day it holds"
-    );
-
     // Two fields written by one change read as one sentence, the second going on with "and".
     call(
         &ada,
@@ -729,11 +705,11 @@ fn a_change_that_wrote_two_fields_reads_as_one_sentence() {
     ada.commit();
     let said = says(&history_of(&ada, &at));
     assert!(
-        said.join(" ").contains("bo renamed this to"),
+        said.join(" ").contains("bo changed title"),
         "the first field the change wrote: {said:?}"
     );
     assert!(
-        said.contains(&"and moved this to".to_owned()),
+        said.contains(&"and set the due date to".to_owned()),
         "the second goes on with and: {said:?}"
     );
     assert!(
@@ -1029,7 +1005,7 @@ fn a_history_row_names_the_person_as_the_avatar_does_and_an_agent_as_its_name_an
     // software, the person looking as the platform's word for them, each over what it did.
     assert_eq!(
         labels(&section),
-        ["Helper (agent)", "You", "renamed this to"],
+        ["Helper (agent)", "You", "changed title"],
         "the rows name people as the avatars do, never their ids"
     );
     assert!(
@@ -1081,12 +1057,16 @@ fn typing_in_a_bound_field_reads_as_an_edit_of_that_field() {
     let section = history(&mut page);
     let said = says(&section);
     assert!(
-        said.join(" ").contains("You renamed this to"),
+        said.join(" ").contains("You changed title"),
         "the entry says what was done: {said:?}"
     );
+    page.press(&button(&section, "tilolang-history-show"))
+        .unwrap();
+    let section = history(&mut page);
+    let said = says(&section);
     assert!(
         said.contains(&"Bring oat milk".to_owned()),
-        "the entry says the name it took: {said:?}"
+        "the entry opened says the name it took: {said:?}"
     );
     assert!(
         !said.iter().any(|what| what.contains("dit-text")),
@@ -1098,7 +1078,7 @@ fn typing_in_a_bound_field_reads_as_an_edit_of_that_field() {
 /// did: it took the tasks under it with it, and the step before it is an entry of its own.
 #[test]
 fn checking_a_task_off_is_one_entry_saying_what_it_did() {
-    const SAYS: &str = "You completed this";
+    const SAYS: &str = "You set done to";
     let (mut ada, _, tasks) = two_people();
     let parent = call(
         &ada,

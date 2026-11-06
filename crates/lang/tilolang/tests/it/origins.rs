@@ -4,7 +4,7 @@
 
 use crate::common::{codes, compile_body};
 
-const MESSAGE: &str = "type Message (origin: imap.message) {\n    subject: Text (title)\n    unread: Bool\n    mailbox: Text\n    note: Text\n}\n";
+const MESSAGE: &str = "type Message (origin: imap.message) {\n    subject: Text\n    unread: Bool\n    mailbox: Text\n    note: Text\n}\n";
 
 #[test]
 fn a_type_names_an_origins_kind_and_the_metadata_carries_it() {

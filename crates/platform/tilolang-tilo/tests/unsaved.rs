@@ -31,7 +31,7 @@ type Desk (origin: session.desk) {
 
 type Workspace (origin: session.workspace) {
   key: Text merge register
-  name: Text merge register (title)
+  name: Text merge register
 }
 
 root Desk

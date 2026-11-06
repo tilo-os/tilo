@@ -102,73 +102,6 @@ pub struct FieldSchema {
     /// wrote in a layout of its own (`crate::native`): what turns it into a value of the type a
     /// program reads. `None` for a field whose declared type does not read.
     pub ty: Option<Ty>,
-    /// What the field is to the platform (`title: Text (title)`): the record's
-    /// [`FieldRole`]. The language's `title` and `body` roles name the record and are the
-    /// field search reads it by; a type declares at most one of each.
-    pub role: FieldRole,
-    /// What the store works the field out from, for a `derive` key
-    /// (`derive folded: Bool = done and children.all(folded)`): a value no record holds, read
-    /// as any other field and written by nothing ([`tilolang::derived`]). Its expression names
-    /// the type's fields by id.
-    pub derived: Option<tilolang::derived::Derived<String>>,
-}
-
-/// What a field is to the platform, as the package declares it (`(title)`, `(body)`,
-/// `(repeats: due)`, `(reminds: due, at, who: assignee)`).
-///
-/// The fields a role names are ids here, the keys the record stores its fields under: a reader
-/// holding the record finds what repeats and what reminds whom without the app's code.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub enum FieldRole {
-    /// Text for people to read, or data with no role of its own.
-    #[default]
-    Plain,
-    /// The record's name: the one text a person knows it by, in a row, a menu, a search
-    /// hit.
-    Title,
-    /// The record's substance, for a record the person does not name by a word of its own (a
-    /// message, an article): search shows its first line where a title would stand.
-    Body,
-    /// The flag saying the record is finished (`done: Bool (done)`): the items a place leaves
-    /// out of its count and folds into its foot.
-    Done,
-    /// The field holds a repeat, counting from the field `date` (a `Date` or `Option<Date>`).
-    Repeats { date: String },
-    /// The field holds a reminder of the day `date`, at the time of day `time` where the type
-    /// has one, for the person `who` where it names one; `None` for either means the type has
-    /// no such field.
-    Reminds {
-        date: String,
-        time: Option<String>,
-        who: Option<String>,
-    },
-    /// The field holds the item this one stands under (`parent: Option<Task> (parent)`): the
-    /// item a type's items nest by, which its derived keys read the items under it through.
-    Parent,
-}
-
-/// What a type publishes for its repeat (`(repeats: due)`): the field holding the rule and the
-/// day it counts from, by id.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Repeats<'a> {
-    /// The `std.Repeat` field: its text is the rule, `FREQ=WEEKLY;INTERVAL=2`.
-    pub rule: &'a str,
-    /// The day it counts from.
-    pub date: &'a str,
-}
-
-/// What a type publishes for its reminder (`(reminds: due, at, who: assignee)`), by id: the
-/// trigger, the day it is due on, the time of day where the type has one, and who it reminds
-/// where it names one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Reminds<'a> {
-    /// The `std.Reminder` field: its text is the trigger, `-PT15M`.
-    pub trigger: &'a str,
-    /// The day it is due on: a reminder of a record with no day is one that never comes.
-    pub date: &'a str,
-    pub time: Option<&'a str>,
-    /// The person field; a record naming nobody there reminds its creator.
-    pub who: Option<&'a str>,
 }
 
 impl FieldSchema {
@@ -182,55 +115,7 @@ impl FieldSchema {
             composite: false,
             refers: false,
             ty: None,
-            role: FieldRole::Plain,
-            derived: None,
         }
-    }
-
-    /// The field is the record's name (`title: Text (title)`).
-    #[must_use]
-    pub fn titled(mut self) -> Self {
-        self.role = FieldRole::Title;
-        self
-    }
-
-    /// The field is the record's substance (`body: RichText (body)`).
-    #[must_use]
-    pub fn bodied(mut self) -> Self {
-        self.role = FieldRole::Body;
-        self
-    }
-
-    /// The field says the record is finished (`done: Bool (done)`).
-    #[must_use]
-    pub fn finished(mut self) -> Self {
-        self.role = FieldRole::Done;
-        self
-    }
-
-    /// The field holds a repeat counting from the field `date` (`repeats: std.Repeat (repeats:
-    /// due)`).
-    #[must_use]
-    pub fn repeating(mut self, date: impl Into<String>) -> Self {
-        self.role = FieldRole::Repeats { date: date.into() };
-        self
-    }
-
-    /// The field holds a reminder of the day `date`, at the time of day `time` and for the
-    /// person `who` where the type has them (`(reminds: due, at, who: assignee)`).
-    #[must_use]
-    pub fn reminding(
-        mut self,
-        date: impl Into<String>,
-        time: Option<String>,
-        who: Option<String>,
-    ) -> Self {
-        self.role = FieldRole::Reminds {
-            date: date.into(),
-            time,
-            who,
-        };
-        self
     }
 
     /// The field holds records of the type `type_id`.
@@ -367,92 +252,24 @@ impl TypeSchema {
         self.fields.iter().find(|field| field.id == id)
     }
 
-    /// The field holding the item this type's items stand under (`(parent)`), by id: the one
-    /// their derived keys read the items under each item through.
-    #[must_use]
-    pub fn parent(&self) -> Option<&str> {
-        self.fields.iter().find_map(|field| match field.role {
-            FieldRole::Parent => Some(field.id.as_str()),
-            _ => None,
-        })
-    }
-
-    /// The field saying its records are finished, by id (`done: Bool (done)`), when it declares
-    /// one: what a place leaves out of its count and folds into its foot.
-    #[must_use]
-    pub fn done(&self) -> Option<&str> {
-        self.fields
-            .iter()
-            .find(|field| field.role == FieldRole::Done)
-            .map(|field| field.id.as_str())
-    }
-
-    /// What the type publishes for its repeat, when it declares one: the rule's field and the
-    /// day it counts from, by id (`(repeats: due)`).
-    #[must_use]
-    pub fn repeats(&self) -> Option<Repeats<'_>> {
-        self.fields.iter().find_map(|field| match &field.role {
-            FieldRole::Repeats { date } => Some(Repeats {
-                rule: field.id.as_str(),
-                date,
-            }),
-            _ => None,
-        })
-    }
-
-    /// What the type publishes for its reminder, when it declares one: the trigger, the day it
-    /// is due on, the time of day and who it reminds, by id (`(reminds: due, at, who:
-    /// assignee)`).
-    #[must_use]
-    pub fn reminds(&self) -> Option<Reminds<'_>> {
-        self.fields.iter().find_map(|field| match &field.role {
-            FieldRole::Reminds { date, time, who } => Some(Reminds {
-                trigger: field.id.as_str(),
-                date,
-                time: time.as_deref(),
-                who: who.as_deref(),
-            }),
-            _ => None,
-        })
-    }
-
     /// The column `name`.
     #[must_use]
     pub fn column(&self, name: &str) -> Option<&ColumnSchema> {
         self.columns.iter().find(|column| column.name == name)
     }
 
-    /// The fields in the order a name is read from them: the `title` first, a `body`'s first
-    /// line next, then the rest as declared. Within a tier the declaration order stands
-    /// (`sort_by_key` is stable), never the field's id: ids are drawn per compile, so an order
-    /// over them would name a type with two plain texts differently on every build.
-    #[must_use]
-    pub fn in_naming_order(&self) -> Vec<&FieldSchema> {
-        let mut fields: Vec<&FieldSchema> = self.fields.iter().collect();
-        fields.sort_by_key(|field| match field.role {
-            FieldRole::Title => 0_u8,
-            FieldRole::Body => 1,
-            _ => 2,
-        });
-        fields
-    }
-
     /// The order [`crate::reads::first_text`] looks at the fields: every text of the resource's
-    /// own first (in [`Self::in_naming_order`]), then the records and collections it holds, in
-    /// that order. A resource holding a text of its own is named by it before any item it
-    /// holds, whatever the fields' ids.
+    /// own first, then the records and collections it holds, in that order. A resource holding
+    /// a text of its own is named by it before any item it holds. The order is the type's
+    /// declaration order, never the fields' ids: ids are drawn per compile, so an order over
+    /// them would name a type with two texts differently on every build.
     #[must_use]
     pub fn naming_scan(&self) -> Vec<&FieldSchema> {
-        let ordered = self.in_naming_order();
-        let own: Vec<&FieldSchema> = ordered
-            .iter()
-            .copied()
-            .filter(|field| field.kind.holds_text())
-            .collect();
-        let mut scan = own;
+        let mut scan: Vec<&FieldSchema> =
+            self.fields.iter().filter(|f| f.kind.holds_text()).collect();
         scan.extend(
-            ordered
-                .into_iter()
+            self.fields
+                .iter()
                 .filter(|field| matches!(field.kind, MergeKind::Record | MergeKind::Collection)),
         );
         scan

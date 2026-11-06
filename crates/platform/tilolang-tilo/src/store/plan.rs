@@ -7,9 +7,10 @@ use tilolang_runtime::place::{Place, Placement};
 use tilolang_runtime::store::{ANY_FIELD, FieldKey, Mutation, StoreError};
 use tilolang_runtime::value::ResourceRef;
 
+use super::reading::{json_of_scalar, path_to};
 use super::{
-    DynEdit, DynRecord, Inner, ItemAt, Planned, backend, idx, invalid, json_of_scalar, lookup,
-    not_found, path_to, sanitize_key,
+    DynEdit, DynRecord, Inner, ItemAt, Planned, backend, idx, invalid, lookup, not_found,
+    sanitize_key,
 };
 use crate::items::Items;
 use crate::store::{AppId, DocReads};

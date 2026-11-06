@@ -297,23 +297,6 @@ type Opened = Rc<RefCell<Vec<(String, String)>>>;
 /// The senders whose notification the person chose, as `(sender, action)`.
 type Chosen = Rc<RefCell<Vec<(u32, Option<String>)>>>;
 
-/// Where a notice the session itself raised is shown: the desk's own log, by
-/// the id it posted, or the notifications daemon, by the id it carried. What
-/// the person does with such a notice comes back as one of these, so whoever
-/// raised it knows what they meant.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Tell {
-    Desk(u64),
-    Daemon(u32),
-}
-
-/// What the person chose of a notice the session raised: where it was shown,
-/// and the action's key, `None` for the notice's own.
-pub(crate) type Answered = (Tell, Option<String>);
-
-/// The notices the person acted on since the loop last asked.
-type Answers = Rc<RefCell<Vec<Answered>>>;
-
 /// What ties the daemon, the desktop's log and the banners app together.
 pub(crate) struct SessionNotifications {
     daemon: Option<Notifications>,
@@ -342,9 +325,6 @@ pub(crate) struct SessionNotifications {
     /// The senders whose notification the person chose, waiting to be
     /// answered with an activation token.
     chosen: Chosen,
-    /// The notices the session raised itself that the person acted on, waiting
-    /// for whoever raised them.
-    answered: Answers,
     /// The desktop's notification for each daemon notification it shows.
     by_sender: BTreeMap<u32, u64>,
     /// The daemon notifications whose banner was up at the last look.
@@ -384,8 +364,6 @@ impl SessionNotifications {
         let choosing = Rc::clone(&opened);
         let chosen: Chosen = Rc::default();
         let answering = Rc::clone(&chosen);
-        let answered: Answers = Rc::default();
-        let answering_own = Rc::clone(&answered);
         desktop.on_outcome(move |outcome| {
             let NotificationOutcome::Activated {
                 notification,
@@ -410,15 +388,6 @@ impl SessionNotifications {
             if let Some(sender) = notification.sender_id {
                 answering.borrow_mut().push((sender, action.clone()));
             }
-            // A notice the session raised has no sender to answer: whoever
-            // raised it hears which one was chosen.
-            answering_own.borrow_mut().push((
-                match notification.sender_id {
-                    Some(sender) => Tell::Daemon(sender),
-                    None => Tell::Desk(notification.id),
-                },
-                action.clone(),
-            ));
         });
         Self {
             daemon,
@@ -432,7 +401,6 @@ impl SessionNotifications {
             opened,
             opening: RefCell::new(Vec::new()),
             chosen,
-            answered,
             by_sender: BTreeMap::new(),
             up: BTreeSet::new(),
             banners_up: BTreeSet::new(),
@@ -668,12 +636,6 @@ impl SessionNotifications {
     /// Tell the person `notice`, which the session itself raised rather than
     /// one of their apps.
     pub(crate) fn tell(&self, notice: crate::notices::Notice) {
-        self.tell_own(notice);
-    }
-
-    /// [`Self::tell`], saying where the notice shows: a notice the person acts
-    /// on finds itself by it ([`Self::take_answered`]).
-    pub(crate) fn tell_own(&self, notice: crate::notices::Notice) -> Tell {
         // The session raises the notice, so it plays its sound here: a
         // sender's category never reaches the events only the session may
         // claim, and the notification carries none for the arrival to
@@ -682,38 +644,16 @@ impl SessionNotifications {
             self.sounds.play(event, self.quiet_state(), true);
         }
         match &self.daemon {
-            Some(daemon) => Tell::Daemon(notice.tell_as(daemon)),
+            Some(daemon) => {
+                notice.tell_as(daemon);
+            }
             // A session without a notifications service still draws its
             // desk: what it raises is kept there, so nothing it says is
             // lost.
-            None => Tell::Desk(notice.tell_desk(&self.desktop)),
-        }
-    }
-
-    /// Take back the notice shown as `tell`: what it was about is no longer
-    /// so, and nothing of it is left on the desk.
-    pub(crate) fn withdraw_own(&self, tell: Tell) {
-        match tell {
-            Tell::Desk(id) => {
-                self.desktop.withdraw(id);
-            }
-            Tell::Daemon(sender) => {
-                // The desk's copy goes now, and the daemon is told so its own
-                // record of what is live says the same.
-                if let Some(id) = self.by_sender.get(&sender).copied() {
-                    self.desktop.withdraw(id);
-                }
-                if let Some(daemon) = &self.daemon {
-                    daemon.request_close(sender);
-                }
+            None => {
+                notice.tell_desk(&self.desktop);
             }
         }
-    }
-
-    /// The notices the session raised that the person acted on since the last
-    /// look, as where each was shown and the action they chose.
-    pub(crate) fn take_answered(&self) -> Vec<Answered> {
-        std::mem::take(&mut *self.answered.borrow_mut())
     }
 
     /// When the desk's banners next change with no one asking: one running

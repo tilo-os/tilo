@@ -37,7 +37,6 @@ pub mod reading;
 pub mod reads;
 pub mod record;
 pub mod records_service;
-pub mod reminders;
 pub mod schema;
 pub mod search;
 pub mod sink;

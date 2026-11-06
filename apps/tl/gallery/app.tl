@@ -6,8 +6,8 @@ app so.tilo.lang.gallery "Gallery" (icon: .layout_grid, category: .system)
 /// test fails while a component of the toolkit is shown in none of them.
 /// A piece of work on the team's board, in its list, and talked about.
 type Item {
-    title: Text (title)
-    notes: RichText (body)
+    title: Text
+    notes: RichText
     stage: Text
     reactions: Map<Set<Principal>>
 }
@@ -15,7 +15,7 @@ type Item {
 /// The everyday parts of a window: navigation, text and buttons, chips, a card of facts, an
 /// empty state and a page of a stack.
 type Basics {
-    title: Text (title)
+    title: Text
     note: Text
     /// Who looks after the basics.
     owner: Option<Principal>
@@ -25,14 +25,14 @@ type Basics {
 
 /// The team's items as a list, with the composer a conversation has at its foot.
 type Backlog {
-    title: Text (title)
+    title: Text
     items: Collection<Item>
     draft: RichText
 }
 
 /// The team's items on a board, a lane per stage.
 type Release {
-    title: Text (title)
+    title: Text
     items: Collection<Item>
     /// Who leads the release: at each of its tabs.
     lead: Option<Principal>

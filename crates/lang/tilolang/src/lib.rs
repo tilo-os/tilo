@@ -43,7 +43,6 @@ pub mod calendar;
 mod checker;
 pub mod cli;
 mod codegen;
-pub mod derived;
 pub mod describe;
 pub mod diag;
 pub mod duration;

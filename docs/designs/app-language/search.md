@@ -19,8 +19,8 @@ list's filter controls, `query(...)` in a view, and an agent's `find`.
 
 ```
 type Message {
-    subject: Text (title)
-    body: Text (body)
+    subject: Text
+    body: Text
     from: MailAddress
     received: Time
     unread: Bool
@@ -50,8 +50,8 @@ type Message {
   filter with its value (`label:urgent`); a name the type declares no filter for is a compile
   error listing the ones it does.
 - `sort` sets the default order. Relevance is offered whenever there's text.
-- Text fields: `(title)` weighs most, `(body)` is prose, others are metadata, `(secret)` is never
-  indexed.
+- Text fields: every `Text` and `RichText` field is indexed, and a result shows the record's
+  first one, cut to its first line.
 - Without a `search` block, every simple field (`Bool`, enum, date, number, reference, set) is a
   filter, and the first time field is the default sort. A Todo with `done` and `due` gets "Done"
   and "Due" filters with no code.
@@ -82,7 +82,7 @@ search matches those too, with no domain knowledge:
 
 ```
 type Mailbox (origin: imap.mailbox) {
-    name: Text (title)
+    name: Text
     role: Text merge register
 
     search {
@@ -91,7 +91,7 @@ type Mailbox (origin: imap.mailbox) {
 }
 
 type TeamMember {
-    name: Text (title)
+    name: Text
 
     search {
         noun "person" "people"

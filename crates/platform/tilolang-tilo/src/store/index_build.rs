@@ -10,7 +10,8 @@ use std::sync::Arc;
 use automerge::ChangeHash;
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
 
-use super::{Doc, Inner, TiloStore, build, everything, holds_heads, mirror_of, scan};
+use super::reading::{build, everything, holds_heads, mirror_of, scan};
+use super::{Doc, Inner, TiloStore};
 use crate::background::{Pending, Poll};
 use crate::index::derive::{Derive, DocReads, Reached};
 use crate::index::view::View;

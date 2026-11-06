@@ -3,7 +3,7 @@
 /// line of text, the window's own surfaces (a modal, a popover, a floating panel) and a page
 /// shown live.
 type Media {
-    title: Text (title)
+    title: Text
     /// A picture's address: its bytes, carried in the address itself.
     photo: Text
     /// How far into the video the player is, in seconds.

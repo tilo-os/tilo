@@ -133,7 +133,6 @@ mod questions;
 pub mod quick_settings;
 mod records;
 pub mod recovery;
-mod reminders;
 mod rotation;
 pub mod run;
 mod run_programs;
@@ -448,9 +447,6 @@ struct Shared {
     /// The daemon's notifications on the desktop, as the session publishes
     /// the centre they are kept in.
     notifications: Rc<RefCell<notifications::SessionNotifications>>,
-    /// The reminders the person's workspaces hold for them, as this session
-    /// tells them, whether or not a window of the app that set them is open.
-    reminders: reminders::Reminders,
     /// What the services ask the person, on the sheets.
     asker: questions::Asker,
     /// Who is here: this session's membership of each workspace, when it
@@ -1967,11 +1963,6 @@ impl Session {
                 notice_signals,
                 options.power.clone(),
             ))),
-            reminders: reminders::Reminders::start(
-                cli::data_home(),
-                &options.person,
-                options.wake.handle(),
-            ),
             asker,
             agent_door: RefCell::new(agent_door),
             session_doors,

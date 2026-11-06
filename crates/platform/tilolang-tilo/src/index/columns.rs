@@ -34,26 +34,6 @@ pub const SEP: char = '\u{0}';
 const AFTER: char = '\u{1}';
 /// Comes after every written value.
 const LAST: char = char::MAX;
-/// Separates a column's list from the one counting its items that are open ([`open_list`]).
-pub const OPEN: char = '\u{2}';
-
-/// The list that counts how many of `list`'s entries are items of a type whose done field
-/// (`done: Bool (done)`) is not set: what a place holds of them. Its counts are kept beside the
-/// list's, so [a window's places](crate::index) read how many open items a run holds without
-/// reading the run, and a workspace's whole inbox costs no more than its first page.
-#[must_use]
-pub fn open_list(list: &str) -> String {
-    format!("{list}{OPEN}")
-}
-
-/// Whether `column`'s runs are counted apart for the items that are open: what a place reads to
-/// count what it holds without reading its run. A column of few values ([`counted`]) of a type
-/// that names the flag saying an item is finished ([`done`]).
-#[must_use]
-pub fn open_split(column: &ColumnSchema, done: Option<&str>) -> bool {
-    done.is_some() && counted(column)
-}
-
 /// Whether `value`'s entries fall in the run `run`: at or after its start, before its end.
 #[must_use]
 pub fn holds_value(value: &str, (from, to): &(String, String)) -> bool {

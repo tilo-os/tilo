@@ -182,7 +182,7 @@ fn the_registry_decodes_the_recorded_action() {
 const DATED: &str = r#"app so.tilo.dated "Dated"
 
 type Day {
-    title: Text (title)
+    title: Text
     start: Date = Date("2026-10-24")
     due: Option<Date> = .none
     done_at: Option<Time> = .none
@@ -274,7 +274,7 @@ const THREAD: &str = r#"app so.tilo.thread "Thread"
 
 type Message {
     author: Principal
-    text: Text (title)
+    text: Text
 }
 
 type Thread {

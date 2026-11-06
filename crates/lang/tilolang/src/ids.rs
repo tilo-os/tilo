@@ -302,10 +302,6 @@ pub fn declared_names(m: &Module) -> Vec<String> {
                 for f in &t.fields {
                     out.push(format!("{}.{}", t.name.name, f.name.name));
                 }
-                // A derived key is a field of the type: its id is the lock's too.
-                for d in &t.derives {
-                    out.push(format!("{}.{}", t.name.name, d.name.name));
-                }
             }
             Item::Enum(e) => {
                 out.push(e.name.name.clone());

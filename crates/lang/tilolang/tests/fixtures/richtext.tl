@@ -2,13 +2,13 @@ app so.tilo.lang.richtext "Board" (icon: .message_circle, category: .network)
 
 /// Something to do, which messages refer to.
 type Task {
-    title: Text (title)
+    title: Text
     done: Bool = false
 }
 
 /// A message: rich text that can refer to people and tasks.
 type Post {
-    body: RichText (body)
+    body: RichText
 }
 
 /// The board: its tasks and the posts about them.

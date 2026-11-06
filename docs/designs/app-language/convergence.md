@@ -232,5 +232,5 @@ it stands with `delivery(r)`: `.none` until the resource's actions queued one, e
 - A package changing where its items live says so itself. The store maps the older layout to the
   flat one; which collection an item belongs in under a new schema is the package's to say, with
   a migration of its own records (authority.md, "Versions"): Board keeps the field that held each
-  card's column `(previously)`, and its migration moves the cards of a board written before into
-  their columns' collections, each keeping its id and history.
+  card's column, and its migration moves the cards of a board written before into their columns'
+  collections, each keeping its id and history.

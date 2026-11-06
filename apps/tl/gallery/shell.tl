@@ -3,14 +3,14 @@
 /// unread line with. Each draws with the theme's own finish and rhythm, as the shell and the
 /// system search use them.
 type ShellParts {
-    title: Text (title)
+    title: Text
     /// What the dock's items stand for: the apps pinned to it.
     apps: Collection<Pinned>
 }
 
 /// One app on a dock: what it stands for and its name.
 type Pinned {
-    title: Text (title)
+    title: Text
 }
 
 default view shell_parts for ShellParts
