@@ -201,6 +201,9 @@ pub(crate) struct Shared {
     /// moves ([`Plane::set_keys`]).
     keys: Mutex<ChannelContentKeys>,
     roster: Mutex<Roster>,
+    /// How many readers each device the roster named has running now: a
+    /// device is read by exactly one set of them.
+    reading: Mutex<BTreeMap<[u8; 32], usize>>,
     published: Mutex<std::collections::BTreeMap<String, moq_net::track::Producer>>,
     /// This device's broadcast, kept for as long as the plane lives: dropping
     /// it withdraws the announcement its subscribers are reading.
@@ -266,6 +269,7 @@ impl Shared {
             opener: Mutex::new(Opener::new(join.keys.clone(), join.roster.clone())),
             keys: Mutex::new(join.keys.clone()),
             roster: Mutex::new(join.roster.clone()),
+            reading: Mutex::new(BTreeMap::new()),
             join: join.clone(),
             incoming: incoming.clone(),
             published: Mutex::new(published),
@@ -379,11 +383,62 @@ impl Shared {
         let roster = self.roster.lock_recover();
         roster.admits(device)
     }
+    /// Take the first reader's hold on `device`: `false` when one already
+    /// reads it.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the entry and its count are one update of the map, and the hold is that update"
+    )]
+    fn claim(&self, device: [u8; 32]) -> bool {
+        let mut reading = self.reading.lock_recover();
+        let readers = reading.entry(device).or_default();
+        *readers = readers.saturating_add(1);
+        *readers == 1
+    }
+    /// Let go of one reader's hold on `device`: the last one frees it.
+    fn release(&self, device: [u8; 32]) {
+        let mut reading = self.reading.lock_recover();
+        if let Some(readers) = reading.get_mut(&device) {
+            *readers = readers.saturating_sub(1);
+            if *readers == 0 {
+                reading.remove(&device);
+            }
+        }
+    }
     fn open(&self, sender: [u8; 32], track: Track, frame: &[u8]) -> Result<Vec<u8>, Refusal> {
         let name = live::track(track);
         let name = TrackName::new(&self.join.scope, name.as_str());
         let opener = self.opener.lock_recover();
         opener.open(sender, stream(track), &name, frame)
+    }
+}
+
+/// Start one reader per track for every device the roster names that no
+/// reader holds yet. A reader lets go of its device when it ends, so a device
+/// that leaves the roster and comes back is read again.
+fn read_roster(shared: &Arc<Shared>, readers: &mut Vec<Task>) {
+    let devices: Vec<[u8; 32]> = shared.roster.lock_recover().devices().collect();
+    for device in devices {
+        if device == shared.join.device || !shared.claim(device) {
+            continue;
+        }
+        for track in TRACKS {
+            let (guard, shared) = (ReadGuard(shared.clone(), device), shared.clone());
+            readers.push(Task::spawn(async move {
+                let _held = guard;
+                receive(shared, device, track).await;
+            }));
+        }
+    }
+}
+
+/// Holds one device while its readers run: the last one to end releases the
+/// device, so the next roster that names it starts readers again.
+struct ReadGuard(Arc<Shared>, [u8; 32]);
+
+impl Drop for ReadGuard {
+    fn drop(&mut self) {
+        self.0.release(self.1);
     }
 }
 
@@ -396,7 +451,9 @@ pub struct Plane {
     /// The peer picture tracks this plane reads now: exactly what its app
     /// shows ([`Self::show`]), one reader each.
     shown: Mutex<BTreeMap<([u8; 32], Track), Task>>,
-    _readers: Vec<Task>,
+    /// One reader per device of the roster, by track: started when the device
+    /// joins the roster, ended by itself once the roster no longer admits it.
+    readers: Mutex<Vec<Task>>,
     _pictures: Vec<Task>,
     _origins: Vec<OriginTask>,
     _connected: Option<Connected>,
@@ -467,19 +524,12 @@ impl Plane {
         if let Some(requests) = shared.take_picture_requests() {
             pictures.push(Task::spawn(accept_pictures(shared.clone(), requests)));
         }
-        for device in shared.join.roster.devices() {
-            if device == shared.join.device {
-                continue;
-            }
-            for track in TRACKS {
-                readers.push(Task::spawn(receive(shared.clone(), device, track)));
-            }
-        }
+        read_roster(&shared, &mut readers);
         Self {
             shared,
             sent: Mutex::new(VecDeque::new()),
             shown: Mutex::new(BTreeMap::new()),
-            _readers: readers,
+            readers: Mutex::new(readers),
             _pictures: pictures,
             _origins: origins,
             _connected: connected,
@@ -719,9 +769,14 @@ impl Plane {
 
     /// Who may send from now on, under the same keys: a roster that moved
     /// while the epoch stayed as it was.
+    ///
+    /// A device that joined the roster is read from now on: a plane reads the
+    /// devices it knew when it started, so without this a member who joins
+    /// after it is never heard.
     pub fn set_roster(&self, roster: Roster) {
         self.shared.opener.lock_recover().set_roster(roster.clone());
         *self.shared.roster.lock_recover() = roster;
+        read_roster(&self.shared, &mut self.readers.lock_recover());
     }
 
     /// Seal and open under `keys` from now on: a channel whose epoch moved.
@@ -977,7 +1032,10 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
             return;
         };
         let Ok(producer) = broadcast.track(name.as_str()) else {
-            return;
+            // The broadcast went away between the route and its tracks: the
+            // same wait the loop's next pass does.
+            n0_future::time::sleep(REJOIN).await;
+            continue;
         };
         // A reader that attaches late starts at the newest group the track
         // holds: the presence a peer said before it joined is what it draws,
@@ -991,7 +1049,8 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
             )
             .await
         else {
-            return;
+            n0_future::time::sleep(REJOIN).await;
+            continue;
         };
         // The newest audio object played: a bundle carries earlier objects
         // again, and one already played is not played twice.
@@ -1000,7 +1059,11 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
         // is announced but already finished ends at once, and asking for it
         // again in a spin would starve the plane's other reads.
         let mut heard_any = false;
-        if !read(
+        // A read that stops because the epoch or the roster moved, or the
+        // peer's broadcast went away, is read again: the loop's next pass
+        // ends this reader only when the plane is over or the device is no
+        // longer a member.
+        read(
             &shared,
             device,
             track,
@@ -1008,19 +1071,16 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
             &mut played,
             &mut heard_any,
         )
-        .await
-        {
-            return;
-        }
+        .await;
         if !heard_any {
             n0_future::time::sleep(REJOIN).await;
         }
     }
 }
 
-/// Read one subscription of `track` to its end: `false` when the plane is
-/// over or the track may no longer be opened here, `true` when the peer's
-/// broadcast ended and may come back.
+/// Read one subscription of `track` until it ends: the peer's broadcast went
+/// away, or its objects can no longer be opened here. Either way the caller
+/// attaches again, unless the plane is over or the device left the roster.
 async fn read(
     shared: &Shared,
     device: [u8; 32],
@@ -1028,7 +1088,7 @@ async fn read(
     subscriber: &mut moq_net::track::Subscriber,
     played: &mut Option<u64>,
     heard_any: &mut bool,
-) -> bool {
+) {
     loop {
         match next(subscriber).await {
             Next::Datagram(datagram) => {
@@ -1048,10 +1108,10 @@ async fn read(
                         continue;
                     }
                     if shared.ended() || !shared.admits(device) {
-                        return false;
+                        return;
                     }
                     if !hear_voice(shared, device, &object) {
-                        return false;
+                        return;
                     }
                     *heard_any = true;
                     *played = Some(object.sequence);
@@ -1061,19 +1121,19 @@ async fn read(
                 let sequence = u32::try_from(group.sequence).unwrap_or(u32::MAX);
                 while let Ok(Some(frame)) = group.read_frame().await {
                     if shared.ended() || !shared.admits(device) {
-                        return false;
+                        return;
                     }
                     if track == Track::Audio {
                         // Group lanes carry one voice object per frame: the
                         // same object the datagram lane carries.
                         let Ok(object) = VoiceObject::decode(&frame.payload) else {
-                            return false;
+                            return;
                         };
                         if played.is_some_and(|seen| object.sequence <= seen) {
                             continue;
                         }
                         if !hear_voice(shared, device, &object) {
-                            return false;
+                            return;
                         }
                         *heard_any = true;
                         *played = Some(object.sequence);
@@ -1091,11 +1151,11 @@ async fn read(
                         }
                         // A frame this device may not open is not one to keep
                         // reading the track for: the epoch or the roster moved.
-                        Err(_) => return false,
+                        Err(_) => return,
                     }
                 }
             }
-            Next::End => return true,
+            Next::End => return,
         }
     }
 }
