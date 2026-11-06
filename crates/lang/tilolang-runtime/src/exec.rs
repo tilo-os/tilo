@@ -654,6 +654,7 @@ impl Core {
                     approved_by: None,
                     origin: None,
                     parent: None,
+                    invocation: run.clone(),
                 };
                 self.store.borrow_mut().save_journal(&run, &journal)?;
                 Ok(InvokeOutcome::Suggested(suggestion))
@@ -670,8 +671,8 @@ impl Core {
     /// The run of one action applied to many items: one attempt, and no journal, because an
     /// action that calls another action has a change and a journal per call.
     fn many_run(&self, ctx: &ExecCtx, first: &ActionRef) -> RunState {
+        let run = self.store.borrow_mut().fresh_id("r");
         RunState {
-            run: self.store.borrow_mut().fresh_id("r"),
             journal: Journal {
                 action: Some(first.action.clone()),
                 args: first.args.clone(),
@@ -686,7 +687,9 @@ impl Core {
                 approved_by: ctx.approved_by.clone(),
                 origin: ctx.origin.clone(),
                 parent: None,
+                invocation: run.clone(),
             },
+            run,
             cursor: 0,
             invoker: ctx.invoker.clone(),
             suggested_by: ctx.suggested_by.clone(),
@@ -873,6 +876,7 @@ impl Core {
                     approved_by: None,
                     origin: None,
                     parent: None,
+                    invocation: run.clone(),
                 };
                 self.store.borrow_mut().save_journal(&run, &journal)?;
                 Ok(InvokeOutcome::Suggested(suggestion))
@@ -960,18 +964,42 @@ impl Core {
             approved_by: ctx.approved_by.clone(),
             origin: ctx.origin.clone(),
             parent: None,
+            invocation: run.clone(),
         };
         self.drive_chain(&run, journal)
     }
 
     /// Run `journal`'s action until it finishes or waits for a person, and answer the run that
     /// invoked it as a step, if one did.
+    ///
+    /// The run at the top of the calls is one action of the workspace: everything it writes,
+    /// and everything the actions it calls write, is kept apart from what is published until
+    /// it ends, and a run that fails anywhere hands all of it back to the store to take back
+    /// out ([`Store::abort_run`]). A run that waits for a person ends there, and goes on as a
+    /// new one.
     fn drive_chain(&self, run: &RunId, journal: Journal) -> Result<RunOutcome, RuntimeError> {
-        match self.drive(run, journal)? {
-            RunEnd::Done { journal, value } => self.answer_parent(&journal, Ok(value)),
-            RunEnd::Suspended(suggestion) => Ok(RunOutcome::Suspended(suggestion)),
-            RunEnd::Failed { journal, error } => self.answer_parent(&journal, Err(error)),
+        let outermost = !self.running.replace(true);
+        let invocation = journal.invocation.clone();
+        if outermost && !invocation.is_empty() {
+            self.store.borrow_mut().begin_run(&invocation);
         }
+        let outcome = match self.drive(run, journal) {
+            Ok(RunEnd::Done { journal, value }) => self.answer_parent(&journal, Ok(value)),
+            Ok(RunEnd::Suspended(suggestion)) => Ok(RunOutcome::Suspended(suggestion)),
+            Ok(RunEnd::Failed { journal, error }) => self.answer_parent(&journal, Err(error)),
+            Err(error) => Err(error),
+        };
+        if outermost {
+            self.running.set(false);
+            if !invocation.is_empty() {
+                let mut store = self.store.borrow_mut();
+                match &outcome {
+                    Ok(_) => store.end_run(&invocation),
+                    Err(_) => store.abort_run(&invocation),
+                }
+            }
+        }
+        outcome
     }
 
     /// Answer the run `journal` was a step of, if it was: its outcome is that run's next
@@ -1142,7 +1170,12 @@ impl Core {
             Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
             _ => None,
         });
-        let note = Self::note(&ctx, pkg, &ActionRef::new(action.clone(), args.clone()));
+        let mut note = Self::note(&ctx, pkg, &ActionRef::new(action.clone(), args.clone()));
+        // A change of a run, and of every action it called, names the one invocation: what
+        // makes the run one action of the workspace.
+        if !state.journal.invocation.is_empty() {
+            note.invocation = Some(state.journal.invocation.clone());
+        }
         let kind = match txn {
             Some(txn) => FrameKind::Action(ActionState {
                 txn,
@@ -1332,6 +1365,7 @@ impl Core {
             approved_by: ctx.approved_by.clone(),
             origin: ctx.origin.clone(),
             parent: Some(run.clone()),
+            invocation: journal.invocation.clone(),
         };
         match self.drive(&child, child_journal)? {
             RunEnd::Done { value, .. } => {
@@ -1390,6 +1424,9 @@ impl Core {
             journal.pending = Some(pending);
             return Err(RuntimeError::NotPending(run.clone()));
         };
+        // The wait split the run: what it wrote before the call was one action, and what it does
+        // on from the answer is another, under an invocation of its own.
+        journal.invocation = self.store.borrow_mut().fresh_id("i");
         let ctx = ExecCtx {
             invoker: suggestion.invoker.clone(),
             chain: suggestion.chain.clone(),

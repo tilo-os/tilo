@@ -221,6 +221,12 @@ pub struct Journal {
     /// back there and it goes on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<RunId>,
+    /// The invocation every change this run makes belongs to: the run at the top of the calls
+    /// it made, carried down to every action it calls, so a run's changes are one action of
+    /// the workspace and fail together. A run that waits for a person goes on as a new one
+    /// ([`crate::exec`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub invocation: String,
 }
 
 /// How a run ended for now.
