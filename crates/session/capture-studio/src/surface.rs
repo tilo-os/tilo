@@ -239,7 +239,11 @@ impl StudioSurface {
         }
         if scene.kept != self.scene.kept
             && let Some(kept) = &scene.kept
+            && (self.own || self.studio.presentation().is_drawn())
         {
+            // A shot taken while the bar is down is said on the floating
+            // layer's card, which the session put up with it: nothing opens
+            // over the desk for it.
             self.widget.set_screenshot_finished(
                 kept.kept,
                 kept.width,
@@ -848,6 +852,53 @@ mod tests {
         let take = surface.take_for(Some("window"), None);
         assert_eq!(take.targets, ["window-1"]);
         assert!(!nothing_in_front(&take));
+    }
+
+    /// A shot taken at the desk once the person put the studio away says so
+    /// on the floating layer; the bar does not come back over the desk for it.
+    #[test]
+    fn a_shot_from_the_desk_does_not_bring_the_studio_back() {
+        use crate::link::Kept;
+        use ui::widget::{CapturePreview, ScreenshotKept};
+
+        let studio = Studio::new();
+        let mut surface = StudioSurface::new(Some(studio.clone()));
+        studio.presentation().open(false);
+        surface.catch_up();
+        assert!(surface.widget.is_open(), "the bar is up with the studio");
+
+        // The person puts it away with Escape: the bar closes itself and the
+        // studio goes with it.
+        surface.widget.close();
+        surface.catch_up();
+        assert!(
+            !studio.presentation().is_open(),
+            "the studio goes down with its bar"
+        );
+
+        // A shot taken from the desk answers where the bar is down: on the
+        // floating layer, with nothing opening over the desk.
+        let kept = Kept {
+            kept: ScreenshotKept::SAVED,
+            path: "/home/person/Pictures/Screenshots/shot.png".into(),
+            width: 800,
+            height: 600,
+            preview: CapturePreview {
+                columns: 1,
+                rows: 1,
+                pixels: vec![[20, 40, 60, 255]],
+            },
+        };
+        studio.link().publish(Scene {
+            kept: Some(kept),
+            ..Scene::default()
+        });
+        surface.catch_up();
+        assert!(
+            !studio.presentation().is_open(),
+            "the shot's card is the floating layer's: the bar stays down"
+        );
+        assert!(!surface.widget.is_open(), "and so does the bar window");
     }
 
     #[test]

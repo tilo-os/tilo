@@ -784,14 +784,24 @@ impl CaptureStudio {
     /// When the recorder next takes a frame: only a buffer that runs and is
     /// not paused feeds itself.
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
-        let feeding = self.feeding.as_ref().filter(|feeding| !feeding.paused)?;
-        let now = Instant::now();
-        Some(
-            feeding
-                .last
-                .and_then(|last| last.checked_add(FRAME_INTERVAL))
-                .unwrap_or(now),
-        )
+        let feeding = self
+            .feeding
+            .as_ref()
+            .filter(|feeding| !feeding.paused)
+            .map(|feeding| {
+                feeding
+                    .last
+                    .and_then(|last| last.checked_add(FRAME_INTERVAL))
+                    .unwrap_or_else(Instant::now)
+            });
+        // A shot's card goes away once it has been up long enough: the pass
+        // that takes it down is due then, rather than waiting for the person
+        // to touch something.
+        let shot = self
+            .shown_shot
+            .as_ref()
+            .and_then(|shot| shot.at.checked_add(SHOT_SHOWN));
+        feeding.into_iter().chain(shot).min()
     }
 
     /// Take one frame into the recorder when it is due: read back here, and
@@ -1692,6 +1702,50 @@ mod tests {
             studio.board.activity(tilo_capture_studio::APP_ID).is_none(),
             "and nothing is shown any more"
         );
+    }
+
+    /// The shot's card goes away on its own: the session comes back for it
+    /// when it has been up long enough, rather than leaving it over the desk
+    /// until the person touches something.
+    #[test]
+    fn the_shots_card_goes_away_on_its_own() {
+        let pictures = tempfile::tempdir().expect("a folder");
+        let (mut studio, mut compositor, _said) = studio(pictures.path());
+        let path = pictures.path().join("Screenshot 2026-07-30 12.00.05.png");
+        studio.shots_shown = 1;
+        studio.shown_shot = Some(ShownShot {
+            path,
+            thumb: String::new(),
+            number: 1,
+            at: Instant::now(),
+        });
+        studio.serve(&mut compositor);
+        assert!(
+            studio.board.activity(tilo_capture_studio::APP_ID).is_some(),
+            "the card is up with the shot"
+        );
+        let due = studio.next_deadline().expect("the card is due to go");
+        let now = Instant::now();
+        assert!(
+            due <= now + SHOT_SHOWN && due + Duration::from_millis(100) >= now + SHOT_SHOWN,
+            "the pass that takes it down is due when it has been up long enough"
+        );
+
+        // That pass: the card is gone, and nothing is left over the desk.
+        studio.shown_shot = Some(ShownShot {
+            path: pictures.path().join("gone.png"),
+            thumb: String::new(),
+            number: 1,
+            at: Instant::now()
+                .checked_sub(SHOT_SHOWN)
+                .expect("the card has been up long enough"),
+        });
+        studio.serve(&mut compositor);
+        assert!(
+            studio.board.activity(tilo_capture_studio::APP_ID).is_none(),
+            "the card goes away once it has been up long enough"
+        );
+        assert!(studio.next_deadline().is_none(), "and nothing else is due");
     }
 
     /// A recording that runs while the bar is down is a card that counts the
