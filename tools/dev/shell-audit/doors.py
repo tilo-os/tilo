@@ -217,7 +217,17 @@ class Doors:
 
     def strip_create(self, name: str = ""):
         if self.new:
-            return self.tail("desktop:chrome\x1fnew-strip", args={"name": name})
+            # The strips surface adds the strip itself; a programmatic caller is
+            # refused that verb, so press the surface's own control.
+            if self.side.target("new strip") is None and \
+                    self.side.target("neuer streifen") is None:
+                self.strips()
+                time.sleep(0.6)
+            row = self.side.target("new strip") or self.side.target("neuer streifen")
+            if row is None:
+                raise DoorMissing("the strips surface lists no control to add a strip")
+            self.press_at(row)
+            return row
         return self.tail("strip.create")
 
     def workspace_step(self, delta: int):
@@ -373,8 +383,16 @@ class Doors:
 
     def lock(self):
         if self.new:
+            chrome = self.side.state().get("chrome") or {}
+            if chrome.get("session_locked"):
+                return "the screen is already locked"
             return self.tail("desktop:chrome\x1fshortcut", args={"action": "lock"})
-        return self.tail("lock")
+        try:
+            return self.tail("lock")
+        except Exception as error:
+            if "session_locked" in str(error):
+                return "the screen is already locked"
+            raise
 
     def logout(self):
         if self.new:
