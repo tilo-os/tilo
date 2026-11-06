@@ -274,7 +274,7 @@ fn a_fetched_attachment_is_one_chat_posts() {
         file("clip.mp4", "video/mp4", 0),
         file("notes.txt", "text/plain", 0),
     ];
-    let posted: Vec<chat::model::Attachment> =
+    let posted: Vec<tilo_reference::Attached> =
         plan_created(&guild(), &serde_json::Value::Null, &event)
             .files
             .into_iter()
@@ -283,34 +283,32 @@ fn a_fetched_attachment_is_one_chat_posts() {
                     blob: "ab".repeat(32),
                     ..post.fetch.attachment.unwrap()
                 };
-                let update: chat::record::AttachmentUpdate =
-                    serde_json::from_value(serde_json::to_value(attachment).unwrap()).unwrap();
-                update.attachment().unwrap()
+                serde_json::from_value(serde_json::to_value(attachment).unwrap()).unwrap()
             })
             .collect();
     let blob = "ab".repeat(32);
     assert_eq!(
         posted,
         [
-            chat::model::Attachment::Image {
+            tilo_reference::Attached::Image {
                 name: "cat.png".into(),
                 blob: blob.clone(),
                 w: 4,
                 h: 4,
             },
-            chat::model::Attachment::File {
+            tilo_reference::Attached::File {
                 name: "odd.png".into(),
                 blob: blob.clone(),
                 size: 10,
             },
-            chat::model::Attachment::Video {
+            tilo_reference::Attached::Video {
                 name: "clip.mp4".into(),
                 blob: blob.clone(),
                 w: 0,
                 h: 0,
                 size: 10,
             },
-            chat::model::Attachment::File {
+            tilo_reference::Attached::File {
                 name: "notes.txt".into(),
                 blob,
                 size: 10,

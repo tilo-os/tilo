@@ -3995,6 +3995,7 @@ dependencies = [
  "tilo-app",
  "tilo-automation",
  "tilo-net",
+ "tilo-reference",
  "workspace-hack",
 ]
 
@@ -4042,6 +4043,7 @@ dependencies = [
  "tilo-connector",
  "tilo-lock",
  "tilo-net",
+ "tilo-reference",
  "tilo-relay",
  "tilo-seal",
  "tilo-secrets",
