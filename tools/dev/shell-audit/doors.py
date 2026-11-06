@@ -112,7 +112,6 @@ class Doors:
             "tab.reopen": self.tab_reopen,
             "tab.duplicate": self.tab_duplicate,
             "clipboard.set": self.clipboard_set,
-            "clipboard.set": self.clipboard_set,
             "clipboard.paste": self.clipboard_paste,
         }
 
@@ -246,7 +245,14 @@ class Doors:
 
     def workspace_rename(self, name: str):
         if self.new:
-            return self.tail("desktop:chrome\x1frename", args={"name": name})
+            # The open workspace, by the name it has now, is what gets renamed.
+            tree = self.side.state().get("workspace_tree") or {}
+            open_workspace = next((entry.get("name") for entry in tree.get("workspaces") or []
+                                   if entry.get("id") == tree.get("active")), "")
+            if not open_workspace:
+                raise DoorMissing("no open workspace to rename")
+            return self.tail("desktop:chrome\x1frename",
+                             args={"workspace": open_workspace, "name": name})
         return self.tail("workspace.rename", args={"name": name})
 
     def quick_settings(self, open: bool | None = None):
@@ -460,7 +466,12 @@ class Doors:
     def shortcut(self, action: str):
         """One of the desktop's own shortcuts, by the name both sides know it."""
         if self.new:
-            return self.tail("desktop:chrome\x1fshortcut", args={"action": action})
+            # The names the catalogue tells stories with, as this session's
+            # shortcut action spells them.
+            names = {"previous_window": "focus_previous_window",
+                     "next_window": "focus_next_window"}
+            return self.tail("desktop:chrome\x1fshortcut",
+                             args={"action": names.get(action, action)})
         old = {
             "search": lambda: self.search(),
             "workspace_overview": lambda: self.tail("overview.toggle"),
@@ -554,7 +565,12 @@ class Doors:
             for name in self.side.target_names():
                 if "screenshot" in name.lower() or "bildschirmfoto" in name.lower():
                     return self.press(name)
-            return self.tail("desktop:chrome\x1fshortcut", args={"action": "screenshot"})
+            # The Print key is what a person presses; its effect is the capture
+            # studio's own action, which no shortcut name stands for.
+            row = self.side.find_action(contains="screenshot")
+            if row is not None:
+                return self.side.invoke(row)
+            return self.side.key("Print")
         return self.tail("capture.open")
 
     def emoji(self):
