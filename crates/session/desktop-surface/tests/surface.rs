@@ -399,6 +399,9 @@ fn an_idle_desktop_asks_its_host_for_no_frame() {
         &handle,
         verb("focus", serde_json::json!({"tab":routes[1].route.tab})),
     );
+    // The view slides to the window the change focused; once it is there
+    // the desk asks for no frame again.
+    settle_still(&mut driver);
     assert!(
         idle(&driver),
         "settles after a change: {:?}",
