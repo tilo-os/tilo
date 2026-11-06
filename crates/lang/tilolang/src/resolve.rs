@@ -1878,18 +1878,16 @@ impl Resolver<'_> {
         let (prefix, name) = dotted.split_at(dotted.len().saturating_sub(1));
         let prefix = prefix.join(".");
         let name = name.first().copied().unwrap_or("");
-        if prefix == crate::stdlib::NS && self.env.find_import(&prefix).is_none() {
-            self.err(
-                "E013",
-                span,
-                format!("the standard library has no type `{name}`; its types are `std.Identifier`, `std.Repeat`, `std.Reminder` and `std.RichText`"),
-            );
-            return Ty::Error;
-        }
         let Some(import) = self.env.find_import(&prefix) else {
             self.err("E013", span, format!("unknown type `{}`: `{prefix}` is not an imported package; add `use <app id> as {prefix}`", dotted.join(".")));
             return Ty::Error;
         };
+        // The library declares no types: what it names under `std.` are the language's
+        // text-held types.
+        if import.app == crate::stdlib::APP {
+            self.err("E013", span, format!("the standard library has no type `{name}`; its types are `std.Identifier`, `std.Repeat`, `std.Reminder` and `std.RichText`"));
+            return Ty::Error;
+        }
         let key = TypeKey {
             app: import.app.clone(),
             name: name.to_string(),
@@ -2204,7 +2202,7 @@ impl Resolver<'_> {
     }
 
     /// A view of the module expanded where it is called: its name taken, its body checked at
-    /// each call, its `window` and `lens` declarations the state of the view it expands in.
+    /// each call, its `window` and `lens` declarations made the view's own state.
     fn template(&mut self, v: &ast::ViewDecl) {
         if self.env.own_callable(&v.name.name).is_some()
             || self.env.template(None, &v.name.name).is_some()
