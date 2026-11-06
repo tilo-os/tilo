@@ -4,16 +4,13 @@
 # test, so the plan always follows that tree's rules rather than those of an
 # older commit's workflow file.
 #
-# The base of a push is the head of the newest earlier push run on main whose
-# window was measured (the `supersede` job's decision, tools/ci/push_window.py),
-# so a run covers every commit whose own run never ran: cancelling a run that is
-# waiting to start loses nothing. When that decision has no answer, the push's
-# own `before` is the base and the plan covers exactly the commits the push
-# added; when neither is usable the plan is the full workspace.
+# The base of a push is the main commit it landed on (`github.event.before`):
+# every push runs its own checks over exactly the commits it added, so no run
+# depends on another run covering its commits. A dispatch validates the complete
+# workspace; when no push base is usable the plan is the full workspace too.
 #
 # Environment (from the workflow):
 #   EVENT_NAME          github.event_name
-#   PLAN_BASE           head of the newest earlier run on main whose window ran
 #   PULL_REQUEST_BASE   the main commit a dispatch was merged onto
 #   PUSH_BEFORE         the main commit the push landed on (github.event.before)
 #   HEAD_SHA, GITHUB_OUTPUT, GITHUB_STEP_SUMMARY
@@ -31,7 +28,7 @@ else
   # A push to main, newest base first. A base is only usable when it is a commit
   # in this history: anything else (unknown, or not an ancestor after a rewrite)
   # has no diff to trust.
-  for candidate in "${PLAN_BASE:-}" "${PULL_REQUEST_BASE:-}" "${PUSH_BEFORE:-}"; do
+  for candidate in "${PULL_REQUEST_BASE:-}" "${PUSH_BEFORE:-}"; do
     case "$candidate" in '' | null | "$zero") continue ;; esac
     if git rev-parse --verify --quiet "$candidate^{commit}" >/dev/null \
       && git merge-base --is-ancestor "$candidate" HEAD; then
@@ -49,7 +46,7 @@ if [ -z "$base" ]; then
   # parent.
   base=$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD)
 fi
-echo "plan base: $base (PLAN_BASE=${PLAN_BASE:-none} before=${PUSH_BEFORE:-none})"
+echo "plan base: $base (before=${PUSH_BEFORE:-none})"
 echo "base=$base" >> "$GITHUB_OUTPUT"
 python3 tools/ci/affected_packages.py --base "$base" --shards 2 "${selection_args[@]}" \
   --github-output "$GITHUB_OUTPUT" | tee ci-plan.json
