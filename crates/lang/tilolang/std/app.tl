@@ -426,10 +426,11 @@ view reply_banner<T>(to: T, cancel: Action) {
 }
 
 /// The foot of a conversation: the field a reply is typed into, and the button that sends it.
-/// Enter or the button runs `send`, then clears the field. What a view says over it (the message
-/// being answered, who is typing, what is being edited) is its own to place.
+/// Enter or the button runs `send`, then clears the field. The field takes everything the button
+/// leaves and ends at its edge, so the two read as one control at any width. What a view says
+/// over it (the message being answered, who is typing, what is being edited) is its own to place.
 view composer(draft: State<RichText>, placeholder: Text, send: Action) {
-    row {
+    row(gap: .none) {
         rich_input(bind: draft, placeholder: placeholder, fill) {
             on submit: send.then(set(draft, RichText("")))
         }
@@ -507,12 +508,12 @@ view suggestions<R>(of: R) {
 
 /// What happened to `of`, newest first, as the platform folds its history (`steps`): each step,
 /// consecutive changes by one person or by one task run, is an entry saying who made it, what
-/// they did and how long ago. What they did is the sentence its last change says
-/// (`version_sentence`), worked out from the fields the change wrote, the person looking as
-/// "You". A step of one change shows each field it changed, what it held before beside what it
-/// holds now, each as the field's type shows it; a step of several opens to each of them. A step
-/// the person looking made offers Undo for it, and a run's step Undo for the whole run; each
-/// change of theirs in a longer step is undone on its own. One change made over many items at
+/// they did and how long ago. What they did is what its last change says (`version_said`),
+/// worked out from the fields the change wrote, the person looking as "You". A step of one
+/// change shows each field it changed, what it held before beside what it holds now, each as
+/// the field's type shows it; a step of several opens to each of them. A step the person
+/// looking made offers Undo for it, and a run's step Undo for the whole run; each change of
+/// theirs in a longer step is undone on its own. One change made over many items at
 /// once — a command run on a choice of them — is one step: it says how many items it changed,
 /// and its Undo takes them all back together.
 view history<R>(of: R) {
@@ -523,21 +524,35 @@ view history<R>(of: R) {
             for s in steps {
                 let key = "{s.at}/{s.who}"
                 // What was done: the sentence its last change says, or, for a step of a run,
-                // who ran it and what it ran.
+                // who ran it and what it ran. The face stands beside the name and the time,
+                // as a comment does, and what was done stands under the name, in the room the
+                // face leaves: the entry reads as a row of the conversation it records.
                 stack(gap: .related) {
-                    // The sentence takes the room the avatar leaves and the time and the button
-                    // stand at its end; a window too narrow for all three wraps them onto a line
-                    // of their own rather than squeezing the avatar under what follows it.
-                    row(gap: .related, align: .center, wrap: true) {
+                    row(gap: .tight, align: .start) {
                         avatar(s.who)
                         stack(gap: .tight, fill: 1.0) {
-                            if let run = s.task {
+                            row(gap: .tight, align: .center) {
                                 if let v = s.versions.last() {
                                     ui.Text(v.actor, role: .label)
                                 }
+                                ui.Time(s.at, role: .caption, secondary: true)
+                                spacer()
+                                if let run = s.task {
+                                    ui.Button(phrase("tilolang-history-undo-run")) {
+                                        on press: undo(run)
+                                    }
+                                } else if s.changes == 1 and s.mine {
+                                    if let v = s.versions.last() {
+                                        ui.Button(phrase("tilolang-undo")) {
+                                            on press: undo(v)
+                                        }
+                                    }
+                                }
+                            }
+                            if let run = s.task {
                                 ui.Text(run.title, role: .caption, secondary: true)
                             } else if let v = s.versions.last() {
-                                std.version_sentence(v)
+                                std.version_said(v)
                             }
                             if s.changes > 1 {
                                 ui.Text(
@@ -545,18 +560,6 @@ view history<R>(of: R) {
                                     role: .caption,
                                     secondary: true,
                                 )
-                            }
-                        }
-                        ui.Time(s.at, role: .caption, secondary: true)
-                        if let run = s.task {
-                            ui.Button(phrase("tilolang-history-undo-run")) {
-                                on press: undo(run)
-                            }
-                        } else if s.changes == 1 and s.mine {
-                            if let v = s.versions.last() {
-                                ui.Button(phrase("tilolang-undo")) {
-                                    on press: undo(v)
-                                }
                             }
                         }
                     }
@@ -596,23 +599,29 @@ view history<R>(of: R) {
     }
 }
 
-/// A version in one sentence: who made it, then what it did, joined by what the platform keeps
-/// beside each change (`said`, `shows`). The words come from the fields the change wrote and
-/// what they held before and after ("moved this to", then the day as a day), or from what the
-/// action declares (`did:`); a version that says neither says what its action does.
-///
-/// A change made over many items at once says how many it changed instead of what one item
-/// read: what the action did to each is the fields of that one's own version, and the words of
-/// the action are written for one item.
+/// A version in one sentence: who made it, then what it did (`version_said`).
 template view version_sentence(v: host.Version) {
+    row(gap: .tight, wrap: true) {
+        ui.Text(v.actor, role: .label)
+        std.version_said(v)
+    }
+}
+
+/// What a version did, in the words a person reads after who did it: the words the app writes
+/// for the action (`did:`), the fields the change wrote and what they held ("set the due date
+/// to", then the day as a day), or, for one that declares nothing and changed no field, the
+/// action's label, which the platform reads by the action's own name when it declares none.
+/// Never what the action's declaration explains to the person writing the app: history says what
+/// happened, and a doc comment is not part of what happened.
+template view version_said(v: host.Version) {
     stack(gap: .tight) {
         if v.count > 1 {
             ui.Text(
-                "{v.actor} {phrase("tilolang-did-many", count: v.count, kind: meta(v.of).plural)}",
+                phrase("tilolang-did-many", count: v.count, kind: meta(v.of).plural),
                 role: .label,
             )
         } else if v.did != "" {
-            ui.Text("{v.actor} {v.did}", role: .label)
+            ui.Text(v.did, role: .label)
         } else if not v.changes.is_empty() {
             row(gap: .tight, wrap: true) {
                 for c in v.changes {
@@ -627,12 +636,7 @@ template view version_sentence(v: host.Version) {
                 }
             }
         } else {
-            ui.Text(v.actor, role: .label)
-            ui.Text(
-                if v.description == "" { v.what } else { v.description },
-                role: .caption,
-                secondary: true,
-            )
+            ui.Text(v.what, role: .label)
         }
         if v.suggested != "" {
             ui.Text(

@@ -169,7 +169,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
         fields: &[
             ("who", "Principal", "Who made it: a person, or an agent."),
             ("at", "Time", "When it was made."),
-            ("what", "Text", "The action that made it, by its label."),
+            (
+                "what",
+                "Text",
+                "The action that made it, by its label, or by its name read as words when it declares none.",
+            ),
             (
                 "task",
                 "Option<TaskRun>",
@@ -202,18 +206,13 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Who made it, as a sentence names them: you for the person looking, everyone else by their name.",
             ),
             (
-                "description",
-                "Text",
-                "What the action that made it does, as its declaration describes it: `Renames a note.`; empty for one that describes nothing.",
-            ),
-            (
                 "did",
                 "Text",
                 "What it did, in words a sentence goes on with after who did it \
                  (`moved this to`): the sentence of the fields it changed, derived from the \
                  change itself; what its action declares (`did:`); or, for one that made or \
                  removed the resource, `created this` or `removed this`. Empty when there is \
-                 nothing to say but what the action does.",
+                 nothing to say but what its action is called (`what`).",
             ),
             (
                 "icon",
@@ -305,8 +304,8 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "The change in words a sentence goes on with (`moved this to`, `assigned this \
                  to`), decided by the field's role and type and by what it held before and \
                  after, from the words the platform keeps; empty when the field reads as \
-                 nothing of its own. The first change of a version opens with who made it, and \
-                 each later one with `and`.",
+                 nothing of its own. Who made it stands in the version, not in each change; a \
+                 change after the first of its version opens with `and`.",
             ),
             (
                 "shows",
