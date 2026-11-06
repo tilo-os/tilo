@@ -8,7 +8,8 @@ pub fn packages() -> PathBuf {
 }
 
 /// The packages `names` stand on: each one, and every package beside it that it `use`s, however
-/// deep, as its own `use` lines name them — the directories a build of `names` reads.
+/// deep, as the `use` lines of its `.tl` files name them — the directories a build of `names`
+/// reads. A name with no directory is one the platform provides, and is not copied.
 #[allow(dead_code, reason = "not every test binary copies packages")]
 pub fn with_used(names: &[&str]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -17,7 +18,16 @@ pub fn with_used(names: &[&str]) -> Vec<String> {
         if out.contains(&name) {
             continue;
         }
-        if let Ok(source) = std::fs::read_to_string(packages().join(&name).join("app.tl")) {
+        let Ok(entries) = std::fs::read_dir(packages().join(&name)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.path().extension().is_none_or(|ext| ext != "tl") {
+                continue;
+            }
+            let Ok(source) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
             for line in source.lines() {
                 let Some(rest) = line.trim().strip_prefix("use ") else {
                     continue;
