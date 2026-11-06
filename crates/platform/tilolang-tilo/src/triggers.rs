@@ -23,7 +23,7 @@ use crate::store::Triggering;
 /// each record of the type it runs for, as the app's own invocation. Returns how many ran. A
 /// run that is refused or fails leaves its record as it is, to be tried again the next time.
 pub fn run(host: &Host, now: i64) -> usize {
-    let mut ran = 0;
+    let mut ran: usize = 0;
     for due in due(host, now) {
         if host.package(&due.app).is_none() {
             continue;
@@ -35,7 +35,7 @@ pub fn run(host: &Host, now: i64) -> usize {
             .invoke_action(&by, (due.action.as_str(), due.args));
         host.store().set_triggering(None);
         match outcome {
-            Ok(InvokeOutcome::Done(_)) => ran += 1,
+            Ok(InvokeOutcome::Done(_)) => ran = ran.saturating_add(1),
             other => tracing::warn!(
                 app = due.app,
                 trigger = due.name,
@@ -92,7 +92,9 @@ fn due(host: &Host, now: i64) -> Vec<Due> {
         for trigger in &package.meta.triggers {
             for doc in host.store().resources_of(&package.meta.app, &trigger.ty) {
                 let at = match &trigger.when {
-                    TriggerWhenMeta::Every(secs) if *secs > 0 => now.div_euclid(*secs) * secs,
+                    TriggerWhenMeta::Every(secs) if *secs > 0 => {
+                        now.div_euclid(*secs).saturating_mul(*secs)
+                    }
                     TriggerWhenMeta::Every(_) => continue,
                     // A time still to come is left for the wake that reaches it.
                     TriggerWhenMeta::At(field) => match time_of(host, &doc, &trigger.ty, field) {
@@ -133,8 +135,7 @@ fn time_of(host: &Host, doc: &str, ty: &str, field: &str) -> Option<i64> {
     };
     let at = ResourceRef::root(doc.to_owned(), ty.to_owned());
     let text = match host.store().read(&at, &spec).ok()? {
-        FieldValue::Scalar(Scalar::Text(text)) => text,
-        FieldValue::Scalar(Scalar::Json(Json::String(text))) => text,
+        FieldValue::Scalar(Scalar::Text(text) | Scalar::Json(Json::String(text))) => text,
         FieldValue::Scalar(Scalar::Json(Json::Object(held))) => {
             held.get("some").and_then(Json::as_str)?.to_owned()
         }

@@ -1929,6 +1929,30 @@ impl Inner {
         reached
     }
 
+    /// Write `edit` on the record `doc` in the transaction `txn`, adding it to `state`: what a
+    /// migration or a trigger did to a resource is a change of the record like any other.
+    /// Whether the record's type is known here, which a mark needs.
+    fn mark(
+        &mut self,
+        state: &mut TxnState,
+        txn: Txn,
+        doc: &str,
+        edit: DynEdit,
+    ) -> Result<bool, StoreError> {
+        let Some((app, ty)) = self.index.get(doc).cloned() else {
+            return Ok(false);
+        };
+        let Some(schema) = lookup(&ty) else {
+            return Ok(false);
+        };
+        state.app = Some(app.clone());
+        state.kind = Some(format!("tl.{app}.{}", schema.name));
+        let seed = format!("{}:{}", txn.0, self.counter).into_bytes();
+        self.write(&app, edit.clone(), seed, Vec::new(), Moves::default())?;
+        state.edits.push(edit);
+        Ok(true)
+    }
+
     /// Apply one edit to the mirror's open transaction and derive what it changed into the
     /// overlay. `touched` names what it changes, and `items` the collection items it adds,
     /// removes or moves. Returns the steps each collection's listing took.
@@ -2201,6 +2225,25 @@ fn sanitize_key(key: &str) -> String {
         .collect()
 }
 
+/// The mark a change records that a migration ran on its resource, or what a trigger last did
+/// for its own: a change is one or the other, never both.
+fn mark_of(
+    migration: Option<&(String, DocId)>,
+    triggering: Option<&Triggering>,
+) -> Option<(DocId, DynEdit)> {
+    if let Some((migration, doc)) = migration {
+        let id = doc.clone();
+        return Some((
+            doc.clone(),
+            DynEdit::Migrated {
+                id,
+                migration: migration.clone(),
+            },
+        ));
+    }
+    triggering.map(|triggering| (triggering.doc.clone(), triggering.edit()))
+}
+
 impl Store for TiloStore {
     fn reads(&self) -> tilolang_runtime::Reads {
         let stats = self.read_stats();
@@ -2388,41 +2431,15 @@ impl Store for TiloStore {
             let (app, _) = inner.index.get(&triggering.doc)?;
             (note.invoker == crate::authority::trigger_principal(app).0).then_some(triggering)
         });
+        // A migration or a trigger that changed nothing still ran: its mark is a change of the
+        // record like any other, and the next open or wake reads it instead of asking again.
         let mut marked = false;
         if state.edits.is_empty()
-            && let Some((migration, doc)) = migration.clone()
+            && let Some((doc, edit)) = mark_of(migration.as_ref(), triggering.as_ref())
         {
-            let Some((app, ty)) = inner.index.get(&doc).cloned() else {
+            if !inner.mark(&mut state, txn, &doc, edit)? {
                 return Ok(());
-            };
-            let Some(schema) = lookup(&ty) else {
-                return Ok(());
-            };
-            state.app = Some(app.clone());
-            state.kind = Some(format!("tl.{app}.{}", schema.name));
-            let edit = DynEdit::Migrated { id: doc, migration };
-            let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
-            inner.write(&app, edit.clone(), seed, Vec::new(), Moves::default())?;
-            state.edits.push(edit);
-            marked = true;
-        }
-        // A trigger whose action changed nothing still ran: its mark is a change of the record
-        // like any other, and the next wake reads it instead of running it again.
-        if state.edits.is_empty()
-            && let Some(triggering) = triggering.clone()
-        {
-            let Some((app, ty)) = inner.index.get(&triggering.doc).cloned() else {
-                return Ok(());
-            };
-            let Some(schema) = lookup(&ty) else {
-                return Ok(());
-            };
-            state.app = Some(app.clone());
-            state.kind = Some(format!("tl.{app}.{}", schema.name));
-            let edit = triggering.edit();
-            let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
-            inner.write(&app, edit.clone(), seed, Vec::new(), Moves::default())?;
-            state.edits.push(edit);
+            }
             marked = true;
         }
         let (Some(app), Some(kind)) = (state.app.clone(), state.kind.clone()) else {
@@ -2447,19 +2464,10 @@ impl Store for TiloStore {
                 "an action wrote both the record's resources and derived ones: the derived ones stay unsaved"
             );
         }
-        // A migration's change records, with what it did, that it ran on its resource.
-        if let Some((migration, doc)) = migration.filter(|_| !marked) {
-            let edit = DynEdit::Migrated { id: doc, migration };
-            let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
-            inner.write(&app, edit.clone(), seed, Vec::new(), Moves::default())?;
-            state.edits.push(edit);
-        }
-        // A trigger's change records, with what it did, what the trigger last did for it.
-        if let Some(triggering) = triggering.filter(|_| !marked) {
-            let edit = triggering.edit();
-            let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
-            inner.write(&app, edit.clone(), seed, Vec::new(), Moves::default())?;
-            state.edits.push(edit);
+        // The change records, with what it did, that a migration or a trigger ran on its
+        // resource.
+        if !marked && let Some((doc, edit)) = mark_of(migration.as_ref(), triggering.as_ref()) {
+            inner.mark(&mut state, txn, &doc, edit)?;
         }
         let versioned = app.clone();
         let (action_id, args) = published_name(note);

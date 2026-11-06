@@ -82,7 +82,7 @@ fn packages() -> Vec<(&'static str, &'static str)> {
 
 /// The package's metadata.
 fn meta(replica: &Replica) -> Meta {
-    replica.host.package(APP).unwrap().meta.clone()
+    replica.host.package(APP).unwrap().meta
 }
 
 /// The id of the type `ty`.
@@ -118,13 +118,13 @@ fn counted(replica: &Replica, doc: &str, ty: &str, field: &str) -> i64 {
 fn workspace() -> (Replica, String, String) {
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &packages());
     let board = ada.host.root_of(APP).unwrap().doc;
-    let reminder = reminder_root(&mut ada);
+    let reminder = reminder_root(&ada);
     ada.commit();
     (ada, board, reminder)
 }
 
 /// The id of the reminder root, made if it is not there.
-fn reminder_root(replica: &mut Replica) -> String {
+fn reminder_root(replica: &Replica) -> String {
     let ty = type_id(replica, "Reminder");
     replica.host.root_record(APP, &ty).unwrap().doc
 }

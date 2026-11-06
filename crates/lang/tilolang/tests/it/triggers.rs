@@ -49,13 +49,13 @@ fn says(body: &str, code: &str, needle: &str) {
     );
 }
 
-const TYPES: &str = r#"type Task {
+const TYPES: &str = r"type Task {
     title: Text
     at: Option<Time> = .none
 }
 
 action ring(t: Task) { }
-"#;
+";
 
 #[test]
 fn a_trigger_says_what_it_runs_and_when() {
