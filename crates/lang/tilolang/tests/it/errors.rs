@@ -723,18 +723,18 @@ view places<T>(t: T, entry: Option<Action> = .none) {\n    ui.Text(meta(t).title
 }
 
 #[test]
-fn e094_made_from_runs_only_in_a_scenario() {
+fn e094_invoke_runs_only_in_a_scenario() {
     expect(
         "E094",
-        "type C {\n    t: Text\n}\nfn f(c: C) -> Int {\n    made from c { 1 }\n}\n",
+        "type C {\n    t: Text\n}\naction a(c: C) {\n    c.t = \"x\"\n}\nfn f(c: C) -> Int {\n    invoke(a(c), by: invoker)\n    1\n}\n",
     );
 }
 
 #[test]
-fn e020_made_from_takes_a_resource() {
+fn e020_invoke_from_takes_a_resource() {
     expect(
         "E020",
-        "type C {\n    t: Text\n}\nroot C\nscenario \"a thing\" -> C {\n    made from 1 { root C }\n}\n",
+        "type C {\n    t: Text\n}\nroot C\naction a(c: C) {\n    c.t = \"x\"\n}\nscenario \"a thing\" -> C {\n    invoke(a(root C), from: 1)\n}\n",
     );
 }
 

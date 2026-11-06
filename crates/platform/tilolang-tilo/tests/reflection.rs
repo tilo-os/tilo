@@ -1,6 +1,7 @@
 //! Reflection over the log: `created(r)`, `updated(r)` and `history(r)` read who made each
 //! version of a resource, when and by which action, from the workspace record's changes, on every
-//! replica. A scenario's `as who at time` blocks are recorded as that person's, at that time.
+//! replica. A scenario's `invoke(..., by: who, at: time)` calls are recorded as that person's,
+//! at that time.
 
 use automerge::AutoCommit;
 use tilolang_runtime::{InvokeOutcome, Principal, Value};
@@ -65,13 +66,9 @@ view talk(t: Talk) {
 
 scenario "a morning" {
     let t = root Talk
-    as person("Mia") at 2026-06-29T07:02Z {
-        say(t, "Morning!")
-    }
-    as person("Leo") at 2026-06-29T07:20Z {
-        say(t, "Hi Mia")
-        stamp(t)
-    }
+    invoke(say(t, "Morning!"), by: person("Mia"), at: 2026-06-29T07:02Z)
+    invoke(say(t, "Hi Mia"), by: person("Leo"), at: 2026-06-29T07:20Z)
+    invoke(stamp(t), by: person("Leo"), at: 2026-06-29T07:20Z)
 }
 "#;
 

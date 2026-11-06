@@ -57,6 +57,7 @@ pub mod runtime;
 pub mod seen;
 mod settle;
 pub mod space;
+pub mod staging;
 pub mod store;
 mod surfaces;
 pub mod textdiff;

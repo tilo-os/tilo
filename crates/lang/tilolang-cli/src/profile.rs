@@ -158,6 +158,7 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
             root: options.root.clone(),
             record,
             costs: true,
+            states: Vec::new(),
         },
     )?;
     staged.lay_out(viewport, theme.clone(), input, 1.0)?;

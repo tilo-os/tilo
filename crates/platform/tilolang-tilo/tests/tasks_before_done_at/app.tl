@@ -530,9 +530,7 @@ scenario "a busy week" -> Task {
         Task(title: "Check the pricing page on phones", project: launch, due: 2026-07-08),
     )
     tasks.items.insert(Task(title: "Set up the redirects", project: launch, done: true))
-    as mia at 2026-06-29T16:00Z {
-        take(copy)
-    }
+    invoke(take(copy), by: mia, at: 2026-06-29T16:00Z)
     call
 }
 

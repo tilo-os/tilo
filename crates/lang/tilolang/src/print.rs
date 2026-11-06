@@ -654,11 +654,6 @@ fn expr_with(e: &Expr, min: u8, col: usize, level: usize, ctx: &mut Ctx) -> Stri
             )
         }
         ExprKind::Block(b) => block_text(b, col, level, ctx, true),
-        ExprKind::MadeFrom { of, body } => {
-            let head = format!("made from {}", expr_with(of, 0, col + 10, level, ctx));
-            let col = col + head.len() + 1;
-            format!("{head} {}", block_text(body, col, level, ctx, true))
-        }
         ExprKind::Match { scrutinee, arms } => {
             let mut out = format!(
                 "match {} {{\n",
@@ -1292,41 +1287,11 @@ impl Printer<'_> {
                 self.block_body(body);
                 self.line("}");
             }
-            StmtKind::As { who, at, body } => {
-                let head = "as ";
-                let col = self.level * 4 + head.len();
-                let w = self.ex_at(who, col);
-                let at = match at {
-                    Some(t) => {
-                        let col = self.level * 4 + head.len() + w.len() + 4;
-                        format!(" at {}", self.ex_at(t, col))
-                    }
-                    None => String::new(),
-                };
-                self.line(&format!("{head}{w}{at} {{"));
-                self.block_body(body);
-                self.line("}");
-            }
             StmtKind::Return(None) => self.line("return"),
             StmtKind::Return(Some(e)) => {
                 let col = self.level * 4 + 7;
                 let v = self.ex_at(e, col);
                 self.line(&format!("return {v}"));
-            }
-            StmtKind::SeedState {
-                layer,
-                view,
-                name,
-                value,
-            } => {
-                let path = view.as_ref().map_or_else(
-                    || name.name.clone(),
-                    |v| format!("{}.{}", v.name, name.name),
-                );
-                let head = format!("{} {path} = ", layer.word());
-                let col = self.level * 4 + head.len();
-                let v = self.ex_at(value, col);
-                self.line(&format!("{head}{v}"));
             }
             StmtKind::Expr(e) => {
                 let v = self.ex(e);

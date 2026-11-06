@@ -173,6 +173,7 @@ impl Checker<'_> {
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),
             "entry_parts" => return self.builtin_entry_parts(args, span),
+            "invoke" => return self.builtin_invoke(args, span),
             "query" => return self.builtin_query(args, span),
             "filters" => return self.builtin_filters(args, span),
             _ => {}

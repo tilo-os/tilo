@@ -150,10 +150,11 @@ primary action new_task(
 
 /// Adds a task that is due today: what the entry of the Today place runs, so a task typed
 /// there stands in Today. It is the one create action with the day it is added on.
-internal action new_task_today(tasks: Tasks, p: Option<Project> = .none, title: Text = "") -> Task uses time (
-    label: "Add a task",
-    icon: .plus,
-) {
+internal action new_task_today(
+    tasks: Tasks,
+    p: Option<Project> = .none,
+    title: Text = "",
+) -> Task uses time (label: "Add a task", icon: .plus) {
     new_task(tasks, p: p, due: .some(today), title: title)
 }
 
@@ -936,6 +937,7 @@ scenario "a busy week" -> Task {
 }
 
 /// The week's log: what was finished on each of its days, newest first, and what still waits.
+/// Its place is Done: `layout-check --state place=Task.done` lays the window out there.
 scenario "what got done this week" {
     let mia = person("Mia")
     let flat = tasks.projects.insert(Project(name: "Move flat"))
@@ -947,22 +949,14 @@ scenario "what got done this week" {
     let passports = tasks.items.insert(Task(title: "Find the passports"))
     tasks.items.insert(Task(title: "Buy oat milk and eggs", due: 2026-06-30))
     tasks.items.insert(Task(title: "Measure the new bedroom", project: flat))
-    as mia at 2026-06-23T12:00Z {
-        check(passports, true)
-    }
-    as mia at 2026-06-29T12:00Z {
-        check(van, true)
-    }
-    as mia at 2026-06-29T15:40Z {
-        check(boxes, true)
-    }
-    as mia at 2026-06-30T07:15Z {
-        check(notice, true)
-    }
-    window place = Task.done
+    invoke(check(passports, true), by: mia, at: 2026-06-23T12:00Z)
+    invoke(check(van, true), by: mia, at: 2026-06-29T12:00Z)
+    invoke(check(boxes, true), by: mia, at: 2026-06-29T15:40Z)
+    invoke(check(notice, true), by: mia, at: 2026-06-30T07:15Z)
 }
 
-/// Today: what is due, what went by, what is done with it, and what I picked for today.
+/// Today: what is due, what went by, what is done with it, and what I picked for today. Its
+/// place is Today: `layout-check --state place=Task.today` lays the window out there.
 scenario "today" {
     let flat = tasks.projects.insert(Project(name: "Move flat"))
     tasks.items.insert(Task(title: "Buy oat milk and eggs", due: 2026-06-30))
@@ -981,7 +975,6 @@ scenario "today" {
     // it is there for, after the days it is due on.
     let mail = tasks.items.insert(Task(title: "Sort the paper mail"))
     pick(mail, true)
-    window place = Task.today
 }
 
 /// A launch post half written: its window, with the subtasks it was broken into, one of them
@@ -1053,12 +1046,8 @@ scenario "a shared week" -> Task {
         ),
     )
     tasks.items.insert(Task(title: "Book the van", due: 2026-07-10, assignee: .some(mia)))
-    as scout {
-        add_subtask(tasks, copy, "Ask three customers for a quote")
-    }
-    as mia {
-        check(quotes, true)
-    }
+    invoke(add_subtask(tasks, copy, "Ask three customers for a quote"), by: scout)
+    invoke(check(quotes, true), by: mia)
     copy
 }
 
@@ -1131,16 +1120,18 @@ scenario "a task made from another" -> Task {
     let van = tasks.items.insert(
         Task(title: "Book the van", project: flat, due: 2026-07-10, priority: .high),
     )
-    let pack = made from van {
+    let pack = invoke(
         tasks.items.insert(
             Task(title: "Pack the kitchen", project: flat, due: 2026-07-08, priority: .high),
-        )
-    }
-    made from pack {
+        ),
+        from: van,
+    )
+    invoke(
         tasks.items.insert(
             Task(title: "Load the boxes by the door", project: flat, due: 2026-07-09),
-        )
-    }
+        ),
+        from: pack,
+    )
     pack
 }
 
@@ -1151,9 +1142,7 @@ scenario "an agent's suggestion" -> Task {
     let scout = agent("Scout")
     let flat = tasks.projects.insert(Project(name: "Move flat"))
     let van = tasks.items.insert(Task(title: "Book the van", project: flat))
-    as scout {
-        suggest schedule(van, due: .some(2026-07-10))
-    }
+    invoke(suggest schedule(van, due: .some(2026-07-10)), by: scout)
     van
 }
 

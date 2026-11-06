@@ -1834,57 +1834,12 @@ impl<'a> Parser<'a> {
                 let body = self.block()?;
                 StmtKind::For { var, iter, body }
             }
-            Tok::Kw("as") => {
-                self.bump();
-                let who = self.expr()?;
-                let at = if matches!(self.peek(), Tok::Ident(w) if w == "at") {
-                    self.bump();
-                    Some(self.expr()?)
-                } else {
-                    None
-                };
-                let body = self.block()?;
-                StmtKind::As { who, at, body }
-            }
             Tok::Kw("return") => {
                 self.bump();
                 if matches!(self.peek(), Tok::Newline | Tok::RBrace | Tok::Eof) {
                     StmtKind::Return(None)
                 } else {
                     StmtKind::Return(Some(self.expr()?))
-                }
-            }
-            // `window place = Task.done` (or `lens place = x`): the state a scenario stages a
-            // window at, either as the view declares it or with the view's name before it
-            // (`home.place`). A declaration names its type where this names a value, so the
-            // two never read alike.
-            Tok::Ident(word)
-                if (word == "window" || word == "lens")
-                    && matches!(self.peek_at(1), Tok::Ident(_))
-                    && (matches!(self.peek_at(2), Tok::Assign)
-                        || (matches!(self.peek_at(2), Tok::Dot)
-                            && matches!(self.peek_at(3), Tok::Ident(_))
-                            && matches!(self.peek_at(4), Tok::Assign))) =>
-            {
-                self.bump();
-                let layer = if word == "window" {
-                    StateLayer::Window
-                } else {
-                    StateLayer::Lens
-                };
-                let first = self.ident("a state name")?;
-                let (view, name) = if self.eat(&Tok::Dot) {
-                    (Some(first), self.ident("a state name")?)
-                } else {
-                    (None, first)
-                };
-                self.expect(&Tok::Assign)?;
-                let value = self.expr()?;
-                StmtKind::SeedState {
-                    layer,
-                    view,
-                    name,
-                    value,
                 }
             }
             _ => {
@@ -2254,25 +2209,6 @@ impl<'a> Parser<'a> {
             Tok::Kw("false") => {
                 self.bump();
                 ExprKind::Bool(false)
-            }
-            // `made from r { ... }`: two words no other expression pairs, so a name `made` or a
-            // field `from` stays an ordinary name.
-            Tok::Ident(name)
-                if name == "made"
-                    && matches!(self.peek_at(1), Tok::Ident(word) if word == "from") =>
-            {
-                self.bump();
-                self.bump();
-                let of = self.expr()?;
-                let body = self.block()?;
-                let span = start.to(body.span);
-                return Ok(Expr {
-                    kind: ExprKind::MadeFrom {
-                        of: Box::new(of),
-                        body,
-                    },
-                    span,
-                });
             }
             Tok::Ident(name) if name == "root" && matches!(self.peek_at(1), Tok::Ident(_)) => {
                 self.bump();

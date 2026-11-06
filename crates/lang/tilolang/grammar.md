@@ -68,7 +68,6 @@ block      = "{" { stmt NL } "}" ;
 stmt       = "let" ident [ ":" type ] "=" expr
            | place ( "=" | "+=" | "-=" ) expr
            | "for" ident "in" expr block
-           | "as" expr [ "at" expr ] block                          (* in a scenario: act as a person, at a time *)
            | "return" [ expr ]
            | expr ;
 place      = ident { "." ident } ;
@@ -86,7 +85,7 @@ mul        = unary { ( "*" | "/" | "%" ) unary } ;
 unary      = ( "-" | "try" ) unary | postfix ;
 postfix    = primary { "." ident | "?." ident [ "(" [ arg { "," arg } ] ")" ]
                      | "(" [ arg { "," arg } ] ")" } ;
-arg        = [ ident ":" ] expr ;
+arg        = [ ident ":" ] expr ;                       (* `invoke(act(args), by: who, at: time, from: r)` in a scenario *)
 primary    = int | float | length | duration | calendar | string | "true" | "false" | reference
            | ident | "root" type
            | "." ident [ "(" [ arg { "," arg } ] ")" ]             (* enum value: .some(x), .primary *)

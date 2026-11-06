@@ -25,14 +25,13 @@ use crate::core::{Args, Core, HResult, ret_i32, ret_void, trap};
 use crate::engine::{CallError, Host, HostFail, Wasm};
 use crate::error::RuntimeError;
 use crate::flow::{FlowOutcome, Journal, JournalEntry, Resolution, Suggestion};
-use crate::handles::{ActionState, FlowState, FrameKind, QueuedBlock};
+use crate::handles::{ActionState, FlowState, FrameKind, Invocation, QueuedBlock};
 use crate::host_res::unboxed;
 use crate::ids::{ModuleHash, Principal, RunId};
 use crate::meta::{EffectClass, ParamMeta, Repr, Ty, parse_ty, repr};
 use crate::registry::Package;
 use crate::store::{ChangeNote, Mutation};
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
-use crate::view_state::StateLayer;
 
 /// Calls into other packages' `fn`s deeper than this are refused: each one is a fresh instance
 /// of the callee's module, running on the host's stack, so recursion across packages would
@@ -530,8 +529,7 @@ impl Core {
                 suggestions: Vec::new(),
                 queued: Vec::new(),
                 scenario: meta.scenario,
-                acting_as: Vec::new(),
-                made_from: Vec::new(),
+                invocations: Vec::new(),
                 note: Box::new(note),
                 touched: std::collections::BTreeSet::new(),
                 effects: crate::handles::EffectLog::default(),
@@ -1600,7 +1598,7 @@ impl Core {
         {
             let frames = self.frames.borrow();
             if let FrameKind::Action(state) = &frames.top()?.kind
-                && let Some(time) = state.acting_as.last().and_then(|(_, at)| at.clone())
+                && let Some(time) = state.invocations.last().and_then(|i| i.at.clone())
             {
                 return Ok(time);
             }
@@ -1623,9 +1621,9 @@ impl Core {
     }
 
     /// In a scenario, commit what the running transaction did so far as one change, made by
-    /// whoever the scenario acts as now and at the time it acts at, and go on in a new one: each
-    /// `as who at time` block is a change of its own, which history and reflection show as
-    /// that person's at that time.
+    /// whoever the scenario runs as now and at the time it runs at, and go on in a new one: each
+    /// `invoke` is a change of its own, which history and reflection show as that person's at
+    /// that time.
     fn scenario_segment(&self) -> HResult<()> {
         let at = self.change_time();
         let (txn, note) = {
@@ -1637,19 +1635,14 @@ impl Core {
                 return trap("only a scenario names people and acts as them");
             }
             let mut note = (*state.note).clone();
-            if let Some((who, time)) = state.acting_as.last() {
-                note.invoker.clone_from(&who.0);
-                note.at = Some(time.clone().unwrap_or(at));
-            } else {
-                note.at = Some(at);
+            match state.invocations.last() {
+                Some(inv) => {
+                    note.invoker.clone_from(&inv.who.0);
+                    note.at = Some(inv.at.clone().unwrap_or(at));
+                    note.from = inv.from.clone().or_else(|| state.note.from.clone());
+                }
+                None => note.at = Some(at),
             }
-            // What the change's resources were made from, when the block it commits is one
-            // (`from r { ... }`).
-            note.from = state
-                .made_from
-                .last()
-                .cloned()
-                .or_else(|| state.note.from.clone());
             note.touched = std::mem::take(&mut state.touched).into_iter().collect();
             (state.txn, note)
         };
@@ -1681,9 +1674,9 @@ impl Core {
             match &mut frames.top_mut()?.kind {
                 FrameKind::Action(state) => {
                     let who = state
-                        .acting_as
+                        .invocations
                         .last()
-                        .map_or_else(|| state.invoker.clone(), |(who, _)| who.clone());
+                        .map_or_else(|| state.invoker.clone(), |inv| inv.who.clone());
                     state.suggestions.push((who, aref.clone()));
                 }
                 FrameKind::Flow(_) => recorded = true,
@@ -1712,18 +1705,6 @@ impl Core {
             }
             _ => trap("only a scenario names people and acts as them"),
         }
-    }
-
-    /// `seed_state`: the view state a scenario stages a window at, before any window reads it.
-    fn seed_state(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
-        let code = a.h(0)?;
-        let layer = StateLayer::from_code(code)
-            .map_or_else(|| trap(format!("unknown view state layer {code}")), Ok)?;
-        let state = self.text(a.h(1)?)?;
-        let value = self.val_whole(a.h(2)?)?;
-        self.scenario_state(|_| ())?;
-        self.view_states.borrow_mut().seed(layer, &state, value);
-        ret_void()
     }
 
     /// `web.get`, `web.post` and what a reply is asked: its status, headers and body.
@@ -1954,9 +1935,9 @@ impl Core {
                 let frames = self.frames.borrow();
                 let who = match &frames.top()?.kind {
                     FrameKind::Action(state) => state
-                        .acting_as
+                        .invocations
                         .last()
-                        .map_or(&state.invoker, |(who, _)| who),
+                        .map_or(&state.invoker, |inv| &inv.who),
                     // An action's requirement read where it is presented: the person looking,
                     // who would invoke it.
                     FrameKind::View(view) => &view.viewer,
@@ -1977,43 +1958,44 @@ impl Core {
                 }
                 self.ret_h(Value::Principal(who))
             }
-            Imp::InvokerPush => {
+            Imp::InvocationPush => {
                 let who = self.principal_arg(a.h(0)?)?;
-                let at = match self.val(a.h(1)?)? {
+                let at = match self.val_whole(a.h(1)?)? {
                     Value::Opt(Some(time)) => match *time {
                         Value::Text(t) => Some(t),
                         other => {
                             return trap(format!("expected a Time, got {}", other.kind_name()));
                         }
                     },
-                    _ => None,
+                    Value::Opt(None) => None,
+                    other => {
+                        return trap(format!("expected a Time, got {}", other.kind_name()));
+                    }
+                };
+                let from = match self.val_whole(a.h(2)?)? {
+                    Value::Opt(Some(source)) => match *source {
+                        Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
+                        other => {
+                            return trap(format!("expected a resource, got {}", other.kind_name()));
+                        }
+                    },
+                    Value::Opt(None) => None,
+                    other => {
+                        return trap(format!("expected a resource, got {}", other.kind_name()));
+                    }
                 };
                 self.scenario_segment()?;
-                self.scenario_state(|state| state.acting_as.push((who, at)))?;
+                let invocation = Invocation { who, at, from };
+                self.scenario_state(|state| state.invocations.push(invocation))?;
                 ret_void()
             }
-            Imp::InvokerPop => {
+            Imp::InvocationPop => {
                 self.scenario_segment()?;
                 self.scenario_state(|state| {
-                    state.acting_as.pop();
+                    state.invocations.pop();
                 })?;
                 ret_void()
             }
-            Imp::FromPush => {
-                let from = self.ref_arg(a.h(0)?)?;
-                let from = ResourceRef::clone(&from.target);
-                self.scenario_segment()?;
-                self.scenario_state(|state| state.made_from.push(from))?;
-                ret_void()
-            }
-            Imp::FromPop => {
-                self.scenario_segment()?;
-                self.scenario_state(|state| {
-                    state.made_from.pop();
-                })?;
-                ret_void()
-            }
-            Imp::SeedState => self.seed_state(a),
             Imp::PrincipalEq => {
                 let (x, y) = (self.principal_arg(a.h(0)?)?, self.principal_arg(a.h(1)?)?);
                 ret_i32(i32::from(x == y))

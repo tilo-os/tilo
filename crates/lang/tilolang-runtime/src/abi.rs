@@ -144,11 +144,8 @@ imports! {
     (WallClock, "wall_clock", "i", "i"),
     (PrincipalNamed, "principal_named", "i", "i"),
     (AgentNamed, "agent_named", "i", "i"),
-    (InvokerPush, "invoker_push", "ii", ""),
-    (InvokerPop, "invoker_pop", "", ""),
-    (FromPush, "from_push", "i", ""),
-    (FromPop, "from_pop", "", ""),
-    (SeedState, "seed_state", "iii", ""),
+    (InvocationPush, "invocation_push", "iii", ""),
+    (InvocationPop, "invocation_pop", "", ""),
     (PrincipalKind, "principal_kind", "i", "l"),
     (PrincipalRole, "principal_role", "i", "i"),
 

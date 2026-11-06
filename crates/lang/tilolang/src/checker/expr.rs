@@ -146,7 +146,6 @@ impl Checker<'_> {
                 self.if_value(cond, then, els.as_deref(), exp, e.span)
             }
             ExprKind::Block(b) => self.block_value(b, exp),
-            ExprKind::MadeFrom { of, body } => self.made_from(of, body, e.span, exp),
             ExprKind::Match { scrutinee, arms } => self.match_value(scrutinee, arms, exp, e.span),
             ExprKind::Variant { name, args } => self.variant(name, args.as_deref(), exp, e.span),
             ExprKind::Lambda { .. } => {

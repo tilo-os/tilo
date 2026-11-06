@@ -350,27 +350,27 @@ impl Core {
             EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged, FilterLit, Filters,
             Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor,
             FloatFloorTo, FloatMax, FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef,
-            FromPop, FromPush, Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin,
-            IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, Keep, Lenses,
-            Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew,
-            ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF,
-            ListSumI, MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me,
-            Members, Mentions, MetaOf, ModelCall, NoneV, Now, OfType, Others, Outside, OutsideAt,
-            Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole,
-            Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
+            Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop,
+            InvocationPush, Invoke, Invoker, IsError, IsSome, Keep, Lenses, Links, ListAvg,
+            ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious,
+            ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI,
+            MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members,
+            Mentions, MetaOf, ModelCall, NoneV, Now, OfType, Others, Outside, OutsideAt, Phrase,
+            PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Print,
+            PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
             RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq,
             RefId, RefIs, RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt,
             ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
-            ResourceRef, RichEmpty, RichNew, RichPart, RichTime, RunChanges, SeedState, SetAdd,
-            SetRemove, Single, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet,
-            Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen,
-            StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt,
-            StrTrim, StrUpper, Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan,
-            Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
-            TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn,
-            UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
-            VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost,
-            WebStatus, WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
+            ResourceRef, RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove,
+            Single, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps,
+            StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit,
+            StrLower, StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim,
+            StrUpper, Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today,
+            TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
+            UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
+            UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
+            Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
+            WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
@@ -410,8 +410,8 @@ impl Core {
             | ResourceRef => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
             | OutsideAt | Withdraw | ModelCall | Invoker | PrincipalEq | PrincipalName
-            | QueueBlock | Now | TimeShift | PrincipalNamed | AgentNamed | InvokerPush
-            | InvokerPop | FromPush | FromPop | SeedState => self.effect_import(imp, a),
+            | QueueBlock | Now | TimeShift | PrincipalNamed | AgentNamed | InvocationPush
+            | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
             | WebText | BytesLength => self.web_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn

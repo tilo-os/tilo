@@ -136,13 +136,18 @@ pub struct Staging {
     /// Whether what the app's units run is counted
     /// ([`tilolang_tilo::runtime::cost`]).
     pub costs: bool,
+    /// The view states the run stages, as the app's own code names them
+    /// (`place=Task.today`), as `layout-check --state` takes them: which place a window
+    /// stands on before anyone picks.
+    pub states: Vec<String>,
 }
 
 impl Staged {
     /// The app `app` of `packages` with `scenario` staged, its window laid out at `viewport`,
     /// showing the layer `root` names rather than the package's first root: a package with more
     /// than one root (the shell's `Desk` beside its `Arrangement`) shows each, and each is laid
-    /// out as a person sees it.
+    /// out as a person sees it. `states` are the view states the run stages (`place=Task.today`),
+    /// as `layout-check --state` takes them: which place a window stands on before anyone picks.
     pub fn over(
         app: &str,
         packages: &Rc<Packages>,
@@ -150,6 +155,7 @@ impl Staged {
         viewport: (u32, u32),
         theme: ui::Theme,
         root: Option<&str>,
+        states: &[String],
     ) -> Result<Self, String> {
         Self::over_workspace(
             app,
@@ -159,6 +165,7 @@ impl Staged {
             Staging {
                 scenario: Some(scenario.to_owned()),
                 root: root.map(str::to_owned),
+                states: states.to_vec(),
                 ..Staging::default()
             },
         )
@@ -243,6 +250,16 @@ impl Staged {
             Ok::<(), String>(())
         };
         settle(&mut instance, &mut record)?;
+        if let Some(host) = instance.host() {
+            for state in &staging.states {
+                let (name, text) = state.split_once('=').ok_or_else(|| {
+                    format!("--state {state} names no value: write `--state place=Task.today`")
+                })?;
+                host.runtime()
+                    .stage_view_state(app, name.trim(), text.trim())
+                    .map_err(|error| format!("--state {state}: {error}"))?;
+            }
+        }
         instance.stage(staging.scenario.as_deref());
         settle(&mut instance, &mut record)?;
         if let Some(why) = instance.take_stage_failure() {

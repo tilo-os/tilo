@@ -46,15 +46,12 @@ pub struct ActionState {
     pub queued: Vec<QueuedBlock>,
     /// Set for a scenario's action, the only one that may act as a named person.
     pub scenario: bool,
-    /// The people a scenario acts as (`as who at time { ... }`), innermost last, each with the
-    /// time it acts at when it names one; `invoker` and `now` read the last one, or `invoker`
-    /// and the invocation's time when there is none.
-    pub acting_as: Vec<(Principal, Option<String>)>,
-    /// What a scenario makes resources from (`from r { ... }`), innermost last: the change it
-    /// commits records it as what they were made from, as an action invoked from `r` does.
-    pub made_from: Vec<ResourceRef>,
-    /// What the change records about its cause; a scenario commits each `as` block under it,
-    /// as the person and at the time the block names.
+    /// The invocations a scenario runs in (`invoke(act(args), by: mia, at: time, from: r)`),
+    /// innermost last: `invoker` and `now` read the last one, or the invocation's own principal
+    /// and time when it names none.
+    pub invocations: Vec<Invocation>,
+    /// What the change records about its cause; a scenario commits each invocation under it, as
+    /// the person and at the time it names.
     pub note: Box<crate::store::ChangeNote>,
     /// The resources the transaction changed, as [`ResourceRef::id_string`] writes them.
     pub touched: std::collections::BTreeSet<String>,
@@ -89,6 +86,15 @@ impl EffectLog {
         self.entries.push(entry);
         self.cursor = self.cursor.saturating_add(1);
     }
+}
+
+/// One invocation a scenario runs: who acts, when, and the resource what it makes was made
+/// from, each where the scenario names one.
+#[derive(Clone, Debug)]
+pub struct Invocation {
+    pub who: Principal,
+    pub at: Option<String>,
+    pub from: Option<ResourceRef>,
 }
 
 /// A block an action asked the host to run after it commits.

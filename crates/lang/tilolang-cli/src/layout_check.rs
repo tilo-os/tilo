@@ -196,6 +196,11 @@ pub struct Options {
     /// `shell` record): a shot of the shell's desk is `--root Desk`. None lays out the
     /// package's first root, as the launcher opens an app.
     pub root: Option<String>,
+    /// View states every window is staged at, as the app's own code names them
+    /// (`place=Task.today`, a filter of the type the state queries; `side=Side.right`, a case
+    /// of its enum): the place a window stands on before anyone picks, for a shot of a state
+    /// that is not the declaration's default.
+    pub states: Vec<String>,
     /// Key presses sent to each window before it is read, in order, as
     /// [`ui::headless::FrameHarness::key`] names them (`Tab`, `Down`, `Space`, or a chord that
     /// holds its modifiers for the press, `Shift+F10`): the layout a person reaches by
@@ -761,6 +766,7 @@ impl Worker<'_> {
             dump: self.options.dump,
             shots: self.options.shots.as_deref(),
             themes: &self.options.themes,
+            states: &self.options.states,
             keys: &self.options.keys,
             gathered: BTreeMap::new(),
             text: &mut self.text,
@@ -948,6 +954,7 @@ struct AppCheck<'a> {
     dump: Option<(u32, u32)>,
     shots: Option<&'a Path>,
     themes: &'a [String],
+    states: &'a [String],
     keys: &'a [String],
     gathered: BTreeMap<Identity, Finding>,
     /// Measures text as the window's pipeline does, for clipped text.
@@ -985,6 +992,7 @@ impl AppCheck<'_> {
             (first.size.width, first.size.height),
             ui::Theme::light(),
             unit.scene.root.as_deref(),
+            self.states,
         )
     }
 
@@ -1063,6 +1071,7 @@ impl AppCheck<'_> {
                     viewport,
                     layout.theme(),
                     unit.scene.root.as_deref(),
+                    self.states,
                 )?;
                 staged.lay_out_moving(viewport, layout.theme(), layout.input())?;
                 let found = {
@@ -1482,6 +1491,7 @@ mod windows {
             (1280, 800),
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the scenario stages");
         let root = staged.harness().root_widget();
@@ -1545,6 +1555,7 @@ mod windows {
             (1280, 800),
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the scenario stages");
         let frames = named(staged.harness().root_widget(), "WindowFrame");
@@ -1564,6 +1575,7 @@ mod windows {
             (1280, 800),
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the scenario stages");
         let group = named(grouped.harness().root_widget(), "WindowFrame");
@@ -1599,6 +1611,7 @@ mod windows {
             (1280, 800),
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the scenario stages");
         let frames = named(staged.harness().root_widget(), "WindowFrame");
@@ -1767,6 +1780,7 @@ mod windows {
                 (width, height),
                 ui::Theme::light().with_text_scale(text),
                 None,
+                &[],
             )
             .expect("the scenario stages");
             let mut controls = Vec::new();
@@ -1825,6 +1839,7 @@ mod windows {
                 (width, height),
                 ui::Theme::light().with_text_scale(text),
                 None,
+                &[],
             )
             .expect("the scenario stages");
             let mut controls = Vec::new();
@@ -1898,6 +1913,7 @@ mod windows {
             (320, 568),
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the scenario stages");
         let root = staged.harness().root_widget();
@@ -1973,6 +1989,7 @@ mod windows {
             size,
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the scenario stages");
         let input = if size.0 < 600 {
@@ -2063,6 +2080,7 @@ mod windows {
                 size,
                 ui::Theme::light(),
                 None,
+                &[],
             )
             .expect("the scenario stages");
             let input = if size.0 < 600 {
@@ -2127,6 +2145,7 @@ mod windows {
                 size,
                 ui::Theme::light(),
                 None,
+                &[],
             )
             .expect("the notes stage");
             let input = if size.0 < 600 {
@@ -2198,6 +2217,7 @@ mod windows {
             (1280, 800),
             ui::Theme::light(),
             None,
+            &[],
         );
         let Err(why) = failed else {
             panic!("a scenario that does not run is an error");
@@ -2297,6 +2317,7 @@ mod board_lane {
             (1280, 800),
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the board stages");
         let root = staged.harness().root_widget();
@@ -2393,6 +2414,7 @@ mod board_lane {
             (864, 800),
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the board stages");
         let root = staged.harness().root_widget();
@@ -2473,6 +2495,7 @@ mod board_lane {
             (1280, 800),
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the board stages");
         let root = staged.harness().root_widget();

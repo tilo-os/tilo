@@ -714,14 +714,14 @@ fn e094_scenarios_and_root() {
     );
 }
 
-/// Only a scenario names people and acts as them: elsewhere a principal comes from `invoker`.
+/// Only a scenario runs an action as a named person: elsewhere a principal comes from `invoker`.
 #[test]
-fn a_scenario_acts_as_named_people() {
+fn a_scenario_runs_actions_as_named_people() {
     let base = with_t(
         "root T\ndefault view v for T\nview v(x: T) {\n    page {\n        text(x.t)\n    }\n}\naction bump(x: T) {\n    x.n = 1\n}\n",
     );
     ok(&format!(
-        "{base}scenario \"two\" {{\n    let r = root T\n    let mia = person(\"Mia\")\n    as mia {{\n        bump(r)\n    }}\n    as person(\"Leo\") {{\n        bump(r)\n    }}\n}}"
+        "{base}scenario \"two\" {{\n    let r = root T\n    let mia = person(\"Mia\")\n    invoke(bump(r), by: mia)\n    invoke(bump(r), by: person(\"Leo\"))\n}}"
     ));
     expect(
         "E094",
@@ -729,12 +729,12 @@ fn a_scenario_acts_as_named_people() {
     );
     expect(
         "E094",
-        &format!("{base}action a(x: T) {{\n    as invoker {{\n        x.n = 2\n    }}\n}}"),
+        &format!("{base}action a(x: T) {{\n    invoke(bump(x), by: invoker)\n}}"),
     );
     expect(
         "E020",
         &format!(
-            "{base}scenario \"s\" {{\n    let r = root T\n    as \"Mia\" {{\n        bump(r)\n    }}\n}}"
+            "{base}scenario \"s\" {{\n    let r = root T\n    invoke(bump(r), by: \"Mia\")\n}}"
         ),
     );
     expect(

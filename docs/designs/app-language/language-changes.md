@@ -20,8 +20,9 @@ added only where a pattern is common, awkward otherwise, and no existing mechani
    (`group: t -> changed(t, .done)?.at.day()`). Code can't rewrite the log, but undo, redo,
    restoring a version and reverting someone's
    changes are ordinary actions on it: attributed, permission-checked and themselves undoable.
-3. **Scenarios set recorded inputs.** `as mia at 2026-06-29T07:02Z { post(...) }` runs the
-   block with that time as `now`. Seed data stops overwriting fields after the fact.
+3. **Scenarios set recorded inputs.** `invoke(post(...), by: mia, at: 2026-06-29T07:02Z)` runs
+   the call as mia at that time, so `now` and `invoker` are what the data was made with. Seed
+   data stops overwriting fields after the fact.
 4. **Typing is personal.** Text being composed is lens state in the view (`lens draft: Text`),
    passed to the action as an argument. A shared `draft` field on a conversation or list is a
    bug: two people typing overwrite each other.

@@ -586,52 +586,63 @@ scenario "a team's channels" -> TextChannel {
     let social = new_category(channels, "Social")
     add_channel(social, "weekend")
     add_channel(social, "books")
-    as mia at 2026-06-29T07:02Z {
-        send(design, RichText("The new onboarding build is on the test machines."))
-    }
-    as mia at 2026-06-29T07:03Z {
-        let launch = send(
-            design,
-            RichText("First launch is down to a second and a half on the old ThinkPad."),
-        )
-        as leo at 2026-06-29T07:05Z {
-            react(launch, "🎉")
-        }
-        as ada at 2026-06-29T07:06Z {
-            react(launch, "🎉")
-            react(launch, "🚀")
-            pin(launch)
-        }
-        as invoker at 2026-06-29T07:07Z {
-            react(launch, "👍")
-        }
-    }
-    as leo at 2026-06-29T07:20Z {
-        let ask = send(design, RichText("Can we move the account step to the end?"))
-        as ada at 2026-06-29T07:31Z {
-            let t = start_thread(design, ask, "Account step")
-            send(t, RichText("Sign-in first keeps sync simple, but people bounce there."))
-            as leo at 2026-06-29T07:40Z {
-                send(t, RichText("Then let them in first and ask once they save something."))
-            }
-        }
-        as invoker at 2026-06-29T07:44Z {
-            send(design, RichText("Agreed. I'll update the flow this afternoon."), ask)
-        }
-    }
-    as ada at 2026-06-30T08:10Z {
-        send(design, RichText("Shots of the new sidebar are in the review folder."))
-    }
-    as mia at 2026-06-30T08:12Z {
-        send(design, RichText("The spacing above the categories looks right now."))
-    }
-    as leo at 2026-06-29T08:30Z {
-        send(general, RichText("Coffee machine on the third floor is fixed."))
-    }
+    invoke(
+        send(design, RichText("The new onboarding build is on the test machines.")),
+        by: mia,
+        at: 2026-06-29T07:02Z,
+    )
+    let launch = invoke(
+        send(design, RichText("First launch is down to a second and a half on the old ThinkPad.")),
+        by: mia,
+        at: 2026-06-29T07:03Z,
+    )
+    invoke(react(launch, "🎉"), by: leo, at: 2026-06-29T07:05Z)
+    invoke(react(launch, "🎉"), by: ada, at: 2026-06-29T07:06Z)
+    invoke(react(launch, "🚀"), by: ada, at: 2026-06-29T07:06Z)
+    invoke(pin(launch), by: ada, at: 2026-06-29T07:06Z)
+    invoke(react(launch, "👍"), by: mia, at: 2026-06-29T07:07Z)
+    let ask = invoke(
+        send(design, RichText("Can we move the account step to the end?")),
+        by: leo,
+        at: 2026-06-29T07:20Z,
+    )
+    let t = invoke(start_thread(design, ask, "Account step"), by: ada, at: 2026-06-29T07:31Z)
+    invoke(
+        send(t, RichText("Sign-in first keeps sync simple, but people bounce there.")),
+        by: ada,
+        at: 2026-06-29T07:31Z,
+    )
+    invoke(
+        send(t, RichText("Then let them in first and ask once they save something.")),
+        by: leo,
+        at: 2026-06-29T07:40Z,
+    )
+    invoke(
+        send(design, RichText("Agreed. I'll update the flow this afternoon."), ask),
+        by: leo,
+        at: 2026-06-29T07:44Z,
+    )
+    invoke(
+        send(design, RichText("Shots of the new sidebar are in the review folder.")),
+        by: ada,
+        at: 2026-06-30T08:10Z,
+    )
+    invoke(
+        send(design, RichText("The spacing above the categories looks right now.")),
+        by: mia,
+        at: 2026-06-30T08:12Z,
+    )
+    invoke(
+        send(general, RichText("Coffee machine on the third floor is fixed.")),
+        by: leo,
+        at: 2026-06-29T08:30Z,
+    )
     let dm = message_person(channels, leo)
-    as leo at 2026-06-30T09:02Z {
-        send(dm, RichText("Are we still on for the walk on Saturday?"))
-    }
+    invoke(
+        send(dm, RichText("Are we still on for the walk on Saturday?")),
+        by: leo,
+        at: 2026-06-30T09:02Z,
+    )
     // The conversation with yourself: your notes, which the sidebar labels as yours.
     let notes = message_person(channels, invoker)
     send(notes, RichText("Ask Leo about the walk on Saturday."))
@@ -643,9 +654,10 @@ scenario "a team's channels" -> TextChannel {
 scenario "a message made from another" -> TextChannel {
     let design = new_channel(channels, "design")
     let ask = send(design, RichText("Can we move the account step to the end?"))
-    made from ask {
-        send(design, RichText("Then let them in first and ask once they save something."))
-    }
+    invoke(
+        send(design, RichText("Then let them in first and ask once they save something.")),
+        from: ask,
+    )
     design
 }
 
@@ -656,11 +668,13 @@ scenario "a thread" -> Thread {
     let design = new_channel(channels, "design")
     let ask = send(design, RichText("Can we move the account step to the end?"))
     let t = start_thread(design, ask, "Account step")
-    as mia {
-        let first = send(t, RichText("Sign-in first keeps sync simple, but people bounce there."))
-        as leo {
-            send(t, RichText("Then let them in first and ask once they save something."), first)
-        }
-    }
+    let first = invoke(
+        send(t, RichText("Sign-in first keeps sync simple, but people bounce there.")),
+        by: mia,
+    )
+    invoke(
+        send(t, RichText("Then let them in first and ask once they save something."), first),
+        by: leo,
+    )
     t
 }

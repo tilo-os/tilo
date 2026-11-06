@@ -159,11 +159,8 @@ imports! {
     WallClock = "wall_clock" ([H] -> [H]);
     PrincipalNamed = "principal_named" ([H] -> [H]);
     AgentNamed = "agent_named" ([H] -> [H]);
-    InvokerPush = "invoker_push" ([H, H] -> []);
-    InvokerPop = "invoker_pop" ([] -> []);
-    FromPush = "from_push" ([H] -> []);
-    FromPop = "from_pop" ([] -> []);
-    SeedState = "seed_state" ([I32, H, H] -> []);
+    InvocationPush = "invocation_push" ([H, H, H] -> []);
+    InvocationPop = "invocation_pop" ([] -> []);
     PrincipalKind = "principal_kind" ([H] -> [I64]);
     PrincipalRole = "principal_role" ([H] -> [H]);
 

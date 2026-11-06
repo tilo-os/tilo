@@ -1111,9 +1111,9 @@ impl Core {
         Ok(match &frame.kind {
             FrameKind::View(view) => view.viewer.0.clone(),
             FrameKind::Action(state) => state
-                .acting_as
+                .invocations
                 .last()
-                .map_or(&state.invoker, |(who, _)| who)
+                .map_or(&state.invoker, |inv| &inv.who)
                 .0
                 .clone(),
             _ => return trap("unseen: only a view or an action has someone looking"),

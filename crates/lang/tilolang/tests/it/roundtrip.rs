@@ -98,8 +98,8 @@ view v(l: todo.TodoList) {
 }
 
 scenario "one line" {
-    window v.order = .line(len: 2)
-    lens v.picked = .some(1)
+    let t = root T
+    invoke(a(t), by: invoker, at: 2026-06-29T07:02Z, from: t)
 }
 "#;
 
@@ -255,10 +255,7 @@ scenario "a week of notes" {
     let nb = root Notebook
     new_note(nb)
     let mia = person("Mia")
-    as mia {
-        new_note(nb)
-    }
-    window notebook.shown = NoteFilter.pinned
+    invoke(new_note(nb), by: mia)
 }
 "#;
 

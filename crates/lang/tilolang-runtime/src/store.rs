@@ -331,7 +331,7 @@ pub struct ChangeNote {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_by: Option<String>,
     /// When it was made: the invocation's time, recorded like an argument (convergence.md,
-    /// "Actions"); a scenario's `as who at time` sets it.
+    /// "Actions"); a scenario's `invoke(..., at: time)` sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<String>,
     /// The resources it changed in the document it is a change of, as

@@ -646,24 +646,22 @@ search.md, "What a type declares" and "Types, references and paths".
   version of a resource says it: `created(r)?.from`, an `Option<host.Resource>`. It is not a
   field anyone declares or writes — every type has it, and an action writes none. A store
   without a record of changes keeps it nowhere and answers nothing.
-- **A scenario's `as` block is a change of its own.** `as who at time { ... }` commits what came
-  before, then the block, as `who` at `time`; history names the scenario as the action, since
-  seed data is the scenario's doing. Rolling back on a failure undoes the last block only.
-- **`made from r { ... }` says what a scenario's seed data was made from.** The block runs as a
-  change made from `r`, the way an invocation on `r` is, so what it creates records it
-  (`created(r)?.from`) and what links to `r` names them, as a person's make from `r` does. It is
-  a change of its own for the same reason `as` is: what the block makes is made from `r`, while
-  what came before is not. Only a scenario writes it, since seed data is what shows a
-  provenance feature in `layout-check`.
-- **A scenario seeds the view state its window stands on.** `window place = Task.done` (and
-  `lens picked = ...`) in a scenario names a state the view declares, with an optional view
-  (`window home.place = ...`) where two declare one name, and the value is checked as the
-  declaration's type is. It sets the declaration, not an instance: the host reads a declared
-  state as the person's slot, then the scenario's seed, then the declaration's default, so a
-  window that opens later stands on it too, and the seed is a generation bump so an open window
-  draws again. A person's own choice is their slot and wins over the seed, and the seed is
-  never written as their change — a capture can show a place no one picked without recording
-  that anyone did. Only a scenario writes it: production code cannot stage a person's place.
+- **`invoke(call, by: who, at: time, from: r)` runs an action as a person, at a time, from a
+  resource.** It gives what the call gives, and each one is a change of its own: what came
+  before commits first, so history names each change as the person who made it, at their time,
+  and rolling back on a failure undoes the last one only. `by` defaults to `invoker`, `at` to
+  now, `from` to nothing; a call made from `r` records it as an invocation on `r` is
+  (`created(r)?.from`). Only a scenario writes it, since seed data is what shows a provenance
+  feature in a capture; elsewhere an action runs as whoever invokes it, now.
+- **A run stages the view state its windows stand on.** `layout-check --state place=Task.done`
+  names a state a view declares, and the value as the app's own code writes it: a filter of the
+  type the state queries, a case of its enum, or a literal a day, a time, a number, a truth or
+  a text takes. It sets the declaration, not an instance: the host reads a declared state as
+  the person's pick, then what the run staged, then the declaration's default, so a window that
+  opens later stands on it too. A person's own choice wins over it, and what a run stages is
+  never written as their change — a capture shows a place no one picked without recording that
+  anyone did. It is no language construct: laying out a window at a state is a run's option,
+  not a scenario's, so app code cannot stage a person's place.
 - **`a.then(b)` joins actions.** It is a method of action values, so it means the same wherever
   one is written; `b` runs once `a` is done. A composer sends its lens draft and clears it with
   `send(c, draft).then(set(draft, ""))`; a button presents the first action.

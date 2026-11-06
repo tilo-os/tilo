@@ -637,22 +637,6 @@ pub enum StmtKind {
         body: Block,
     },
     Return(Option<Expr>),
-    /// `as who { ... }`: in a scenario, the actions the block calls run with `invoker` = `who`;
-    /// `as who at time { ... }` also with `now` = `time`.
-    As {
-        who: Expr,
-        at: Option<Expr>,
-        body: Block,
-    },
-    /// `window place = Task.done` (or `lens place = x`): in a scenario, the value a window's
-    /// state starts from, as a person picking it in the window leaves it. A name more than one
-    /// view declares is written with its view (`home.place`).
-    SeedState {
-        layer: StateLayer,
-        view: Option<Ident>,
-        name: Ident,
-        value: Expr,
-    },
     Expr(Expr),
 }
 
@@ -777,12 +761,6 @@ pub enum ExprKind {
     },
     /// `{ stmts; expr }`: the value of the last expression.
     Block(Block),
-    /// `made from r { ... }`: in a scenario, the resources the block makes were made from `r`,
-    /// as an action invoked from it makes them; the value of the last expression.
-    MadeFrom {
-        of: Box<Expr>,
-        body: Block,
-    },
     /// `match e { .a => x, .b(p, q) => y }`.
     Match {
         scrutinee: Box<Expr>,

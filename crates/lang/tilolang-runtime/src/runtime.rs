@@ -1092,6 +1092,39 @@ impl Runtime {
         self.core.view_states.borrow_mut().restore(key, value)
     }
 
+    /// Stage the value the window state `state` of the app `app` starts from, before anyone
+    /// picks there: `text` names the value as the app's own code writes it (`Task.today`,
+    /// `Side.right`), read against the state's declared type. A window that reads the state
+    /// shows it until its person picks there, and it is no one's change to keep.
+    ///
+    /// # Errors
+    ///
+    /// A message when the app declares no such state, or the state takes no such value.
+    pub fn stage_view_state(&self, app: &str, state: &str, text: &str) -> Result<(), String> {
+        let (id, layer, value) = {
+            let reg = self.core.registry.borrow();
+            let pkg = reg
+                .packages()
+                .into_iter()
+                .find(|pkg| pkg.meta.app == app)
+                .ok_or_else(|| format!("no loaded package is the app `{app}`"))?;
+            let declared = crate::staging::declared_state(&pkg.meta, app, state)?;
+            let layer = match declared.layer.as_str() {
+                "window" => crate::view_state::StateLayer::Window,
+                "lens" => crate::view_state::StateLayer::Lens,
+                other => {
+                    return Err(format!(
+                        "`{other}` is no layer of view state: a state is a `window` or a `lens`"
+                    ));
+                }
+            };
+            let value = crate::staging::state_value(&reg, app, &pkg.meta, &declared.ty, text)?;
+            (declared.id, layer, value)
+        };
+        self.core.view_states.borrow_mut().seed(layer, &id, value);
+        Ok(())
+    }
+
     /// The workspace's members now, from its membership, and how its grants decide who of
     /// them reads a resource (`None`: everyone reads everything the workspace holds). What
     /// `workspace.members`, `members(r)`, `p.kind()` and `p.role()` read; the host gives them
