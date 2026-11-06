@@ -557,12 +557,15 @@ literals only, written `7d` in a query and nowhere else.
   elsewhere): the moment is recorded with the change, so replaying a change computes the same
   days. `Date.parse`/`Time.parse` take the moment in words are read against as an argument
   (`near:`), which is what keeps them pure.
-- **The entry keeps reading words, not the language.** A typed entry's `Text (entry)` is filled
-  by the runtime's own scanner (`Core::entry_fill`, `natural`), so the phrase filling an action's
-  day and moment does not need the language; `Date.parse`/`Time.parse` are for code that reads
-  words itself and names the moment it reads them at. `dated(text, now)` (which answered the
-  rest of the text with its day and moment) and `day_of(t)` (which `t.day()` is) are removed
-  with no alias.
+- **The entry keeps reading words, not the language.** An action's one `Text` parameter is what
+  a typed entry fills: a call of the action leaves it for the words, and the runtime's own
+  scanner (`Core::entry_fill`, `natural`) titles it. The parameter carries no marker of its own
+  (`(entry)` is removed); a view that offers the entry names the action as its `entry:`, and an
+  action with none or several `Text` parameters takes no words (E068). The scanner fills it, so
+  the phrase filling an action's day and moment does not need the language; `Date.parse`/
+  `Time.parse` are for code that reads words itself and names the moment it reads them at.
+  `dated(text, now)` (which answered the rest of the text with its day and moment) and
+  `day_of(t)` (which `t.day()` is) are removed with no alias.
 
 ## Search
 

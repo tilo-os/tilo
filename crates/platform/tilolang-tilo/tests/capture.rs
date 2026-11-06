@@ -1,4 +1,4 @@
-//! Capture: an app's create action that declares an entry (`title: Text (entry)`) run from
+//! Capture: an app's create action with one `Text` parameter run from
 //! anywhere with one line a person typed. The door reads the words for the action's own field
 //! types — a day, a moment, a person, a record — fills them, and titles the rest, so a palette
 //! makes what the app's entry would. What it is made from, when it is made from something, is
@@ -115,14 +115,13 @@ fn invoke(replica: &Replica, app: &str, action: &str, args: Vec<Value>) -> Value
 }
 
 /// The id of the Tasks entry action: the create action that takes the line a person types.
-fn quick_add(replica: &Replica) -> String {
+fn create(replica: &Replica) -> String {
     let meta = replica.host.package(TASKS_APP).unwrap().meta;
     let action = meta
         .actions
         .iter()
-        .find(|a| a.params.iter().any(|param| param.entry))
-        .expect("Tasks takes an entry");
-    assert_eq!(action.name, "quick_add");
+        .find(|a| a.name == "new_task")
+        .expect("Tasks has a create action");
     action.id.clone()
 }
 
@@ -145,7 +144,7 @@ fn one_line_from_anywhere_makes_the_task_its_words_say() {
     // The palette's one line, given to the action's entry parameter: the door reads the day and
     // the moment out of it, and what is left titles the task.
     let line = "Call the landlord fri 10am";
-    let made = planned(&ada, TASKS_APP, "quick_add", json!({ "title": line }), None);
+    let made = planned(&ada, TASKS_APP, "new_task", json!({ "title": line }), None);
     ada.apply(&made);
     ada.commit();
 
@@ -176,7 +175,7 @@ fn one_line_from_anywhere_makes_the_task_its_words_say() {
     assert_eq!(made.args.get("at"), Some(&json!(at)));
 
     // A line of nothing the task says adds no task: capture never blocks on a field.
-    let empty = planned(&ada, TASKS_APP, "quick_add", json!({ "title": "" }), None);
+    let empty = planned(&ada, TASKS_APP, "new_task", json!({ "title": "" }), None);
     ada.apply(&empty);
     ada.commit();
     assert_eq!(tasks(&ada).len(), 1);
@@ -250,7 +249,7 @@ fn a_task_captured_from_a_message_says_what_it_was_made_from() {
         .plan(&PlanRequest {
             app: TASKS_APP,
             kind: &kind,
-            action_id: &quick_add(&ada),
+            action_id: &create(&ada),
             resource: Some(&root),
             args: &arguments,
             caller: None,

@@ -61,7 +61,18 @@ mod cases {
         }
 
         fn task(&self, root: &ResourceRef, title: &str) -> ResourceRef {
-            returned_ref(self.call("new_task", vec![Value::resource(root), Value::text(title)]))
+            returned_ref(self.call(
+                "new_task",
+                vec![
+                    Value::resource(root),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::text(title),
+                ],
+            ))
         }
 
         fn project(&self, root: &ResourceRef, name: &str) -> ResourceRef {

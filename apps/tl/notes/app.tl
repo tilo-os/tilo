@@ -190,7 +190,7 @@ scenario "a week of notes" -> Note {
     notes.insert(
         Note(
             title: "Standup, Thursday",
-            body: RichText("Two blockers left. Chen is out on Friday."),
+            body: RichText("Two blockers left. Chen is out of office."),
         ),
     )
     notes.insert(

@@ -230,7 +230,15 @@ fn a_task_retitled_by_somebody_else_since_keeps_their_title_when_its_first_title
         "ada",
         TASKS_APP,
         "new_task",
-        vec![root(&ada, TASKS_APP), Value::text("")],
+        vec![
+            root(&ada, TASKS_APP),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::text(""),
+        ],
     ));
     ada.commit();
     let title = |text: &str| EditOp::Replace {
@@ -282,14 +290,30 @@ fn a_removed_task_comes_back_after_the_task_beside_it_changed() {
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text("Milk")],
+        vec![
+            tasks.clone(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::text("Milk"),
+        ],
     ));
     let eggs = target(&call(
         &ada,
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text("Eggs")],
+        vec![
+            tasks.clone(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::text("Eggs"),
+        ],
     ));
     ada.commit();
     ada.sync_with(&mut ben);
@@ -429,7 +453,15 @@ fn undo_opens_a_checked_task_and_every_task_under_it_at_once() {
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text("Write the launch post")],
+        vec![
+            tasks.clone(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::text("Write the launch post"),
+        ],
     ));
     ada.commit();
     call(
@@ -508,7 +540,15 @@ fn undo_takes_back_one_persons_pick_for_today_and_leaves_anothers() {
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks, Value::text("Call the landlord")],
+        vec![
+            tasks,
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::text("Call the landlord"),
+        ],
     ));
     ada.commit();
     ben.sync_with(&mut ada);
@@ -568,7 +608,15 @@ fn a_task_indented_under_another_is_put_back_in_one_undo() {
             "ada",
             TASKS_APP,
             "new_task",
-            vec![Value::resource(&tasks), Value::text(title)],
+            vec![
+                Value::resource(&tasks),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::text(title),
+            ],
         ))
     };
     let book = make(&ada, "Book a haircut");

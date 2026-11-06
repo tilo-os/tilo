@@ -143,8 +143,8 @@ fn precedence_and_parentheses_survive() {
 }
 
 #[test]
-fn an_entry_parameter_prints_as_it_is_written() {
-    let src = "app t.x \"X\"\n\ntype Item {\n    title: Text (title)\n}\n\naction add(i: Item, title: Text (entry) = \"\") {\n    i.title = title\n}\n";
+fn a_parameter_marker_prints_as_it_is_written() {
+    let src = "app t.x \"X\"\n\ntype Item {\n    title: Text (title)\n}\n\naction move(i: Item, above: Option<Item> (above)) {\n    i.title = \"x\"\n}\n";
     assert_eq!(print_of(src), src);
 }
 

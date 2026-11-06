@@ -113,11 +113,11 @@ d-u4wzi4k4 = The day it is grouped under, as a list of a day is
 d-ifftrju4 = Its project, as a project's list is of one
     .doc = Its project, as a project's list is of one.
 
-d-u7a3fue4 = Add a task
-    .doc = Adds what was typed in the entry at the end of a list as a task, to the inbox or to `p`, in the lane `s` of its board.
-
 d-rs3ubifz = New task
-    .doc = Adds a task under the title a program or an agent gives it: no task stands without one.
+    .doc = Adds a task: under the title a program or an agent gives it, or the words typed in the entry at the end of a list, to the inbox or to `p`, in the lane `s` of its board.
+
+d-boggc6yt = Add a task
+    .doc = Adds a task that is due today: what the entry of the Today place runs, so a task typed there stands in Today.
 
 d-zjuy7y7f = New project
     .doc = Starts a project.

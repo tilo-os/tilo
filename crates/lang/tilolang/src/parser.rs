@@ -1512,18 +1512,19 @@ impl<'a> Parser<'a> {
             let ty = self.type_expr()?;
             // `above: Option<Task> (above)`: the place the view offering the action supplies,
             // written as part of what the parameter is. No caller gives it, so it has no default.
-            // `title: Text (entry)`: the text the entry at a list's end is typed into.
-            let (place, entry) = if self.is(&Tok::LParen) {
+            let place = if self.is(&Tok::LParen) {
                 self.bump();
-                let role = self.ident("a part a parameter is (`above`, `entry`)")?;
+                let role = self.ident("a part a parameter is (`above`)")?;
                 self.expect(&Tok::RParen)?;
                 if role.name == "entry" {
-                    (None, true)
-                } else {
-                    (Some(role), false)
+                    return self.fail(
+                        role.span,
+                        "an entry fills the action's one `Text` parameter with the words nothing else takes, so the parameter is plain: `title: Text = \"\"`",
+                    );
                 }
+                Some(role)
             } else {
-                (None, false)
+                None
             };
             let default = if self.eat(&Tok::Assign) {
                 let default = self.expr()?;
@@ -1555,7 +1556,6 @@ impl<'a> Parser<'a> {
                 ty,
                 default,
                 place,
-                entry,
             });
             if !self.eat(&Tok::Comma) {
                 break;

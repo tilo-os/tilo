@@ -125,14 +125,14 @@ pub(crate) fn a_run_in_notes_and_tasks() -> Tidied {
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text("Call the landlord")],
+        crate::tasks::create(&tasks, "Call the landlord"),
     );
     let stale = call(
         &ada,
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text("Stale")],
+        crate::tasks::create(&tasks, "Stale"),
     );
     ada.commit();
     let (groceries, old, landlord, stale) = (
@@ -171,7 +171,7 @@ pub(crate) fn a_run_in_notes_and_tasks() -> Tidied {
         AGENT,
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text("Book the dentist")],
+        crate::tasks::create(&tasks, "Book the dentist"),
     );
     call(
         &ada,

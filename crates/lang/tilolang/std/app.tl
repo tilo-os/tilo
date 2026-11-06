@@ -233,7 +233,7 @@ view rows<T, K>(
 }
 
 /// The entry at a list's end: what is typed and Entered there — or left there with — makes an
-/// item of it, through `create`, an action whose `(entry)` parameter takes the words nothing
+/// item of it, through `create`, an action whose one `Text` parameter takes the words nothing
 /// else does. What the words say of the action's other parameters ("Call the landlord fri 10am
 /// @Bo") fills them: the entry shows each as a chip under what is typed, and removing a chip
 /// takes its words away. With no words of its own — nothing typed, space, or only what the

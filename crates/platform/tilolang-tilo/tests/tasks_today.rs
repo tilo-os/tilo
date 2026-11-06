@@ -17,14 +17,42 @@ fn week() -> (Replica, Replica, Value) {
     let called = call(
         &ada,
         "new_task",
-        vec![root.clone(), Value::text("Call the landlord")],
+        vec![
+            root.clone(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::text("Call the landlord"),
+        ],
     );
     let bill = call(
         &ada,
         "new_task",
-        vec![root.clone(), Value::text("Pay the electricity bill")],
+        vec![
+            root.clone(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::text("Pay the electricity bill"),
+        ],
     );
-    let report = call(&ada, "new_task", vec![root, Value::text("Send the report")]);
+    let report = call(
+        &ada,
+        "new_task",
+        vec![
+            root,
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::none(),
+            Value::text("Send the report"),
+        ],
+    );
     ada.commit();
     for task in [&bill, &report] {
         call(

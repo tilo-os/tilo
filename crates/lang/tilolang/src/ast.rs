@@ -405,9 +405,6 @@ pub struct Param {
     /// `above: Option<Task> (above)`: the place the view offers the action in supplies it, and
     /// no invocation does: a row of a list gives the row above it in its own visible group.
     pub place: Option<Ident>,
-    /// `title: Text (entry)`: the text of the entry that runs the action is the item's title,
-    /// and the words before it are the other parameters' (`crate::entry`).
-    pub entry: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

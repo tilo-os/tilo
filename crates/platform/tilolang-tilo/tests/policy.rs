@@ -42,7 +42,7 @@ fn standing(answers: Vec<tilo_action_policy::Grant>) -> Standing {
 fn add_block(replica: &Replica, title: &str) -> String {
     let list = replica.host.root_of(APP).unwrap();
     format!(
-        "tasks.new_task(@tasks.Tasks:{}, \"{title}\")",
+        "tasks.new_task(@tasks.Tasks:{}, title: \"{title}\")",
         list.id_string()
     )
 }

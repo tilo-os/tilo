@@ -64,7 +64,7 @@ fn seeded() -> Task {
     for source in [
         "notes.retitle(notes.new_note(notes.notes), \"Q3 plan\")",
         "notes.pin(notes.new_note(notes.notes), true)",
-        "tasks.new_task(tasks.tasks, \"milk\")\ntasks.new_task(tasks.tasks, \"bins\")",
+        "tasks.new_task(tasks.tasks, title: \"milk\")\ntasks.new_task(tasks.tasks, title: \"bins\")",
     ] {
         let answer = task.run(source, true);
         assert_eq!(answer["state"], "done", "{source}: {answer:#}");
@@ -105,7 +105,7 @@ fn a_programs_lets_stay_for_the_next() {
 fn changes_in_two_apps_are_invocations_of_each() {
     let task = seeded();
     let answer = task.run(
-        "for n in notes.notes.filter(n -> n.pinned) {\n    notes.pin(n, false)\n}\ntasks.new_task(tasks.tasks, \"call Ada\")",
+        "for n in notes.notes.filter(n -> n.pinned) {\n    notes.pin(n, false)\n}\ntasks.new_task(tasks.tasks, title: \"call Ada\")",
         false,
     );
     assert_eq!(answer["state"], "done", "{answer:#}");
@@ -157,7 +157,7 @@ fn an_assignment_is_the_resources_field_edit() {
 #[test]
 fn many_changes_are_previewed_and_sent_on_confirm() {
     let task = seeded();
-    let bulk = "for t in [\"a\", \"b\", \"c\", \"d\"] {\n    tasks.new_task(tasks.tasks, t)\n}\nfor n in notes.notes {\n    n.title = \"x\"\n}";
+    let bulk = "for t in [\"a\", \"b\", \"c\", \"d\"] {\n    tasks.new_task(tasks.tasks, title: t)\n}\nfor n in notes.notes {\n    n.title = \"x\"\n}";
     let previewed = task.run(bulk, false);
     assert_eq!(previewed["state"], "preview", "{previewed:#}");
     assert_eq!(
@@ -198,11 +198,11 @@ fn a_refused_invocation_is_never_done() {
         "{answer:#}"
     );
     let tried = task.run(
-        "match try tasks.new_task(tasks.tasks, \"Saturday\") { .ok(t) => print(t.title), .err(why) => print(why) }",
+        "match try tasks.new_task(tasks.tasks, title: \"Read the letter\") { .ok(t) => print(t.title), .err(why) => print(why) }",
         true,
     );
     assert_eq!(tried["state"], "done", "{tried:#}");
-    assert_eq!(tried["output"], json!(["Saturday"]), "{tried:#}");
+    assert_eq!(tried["output"], json!(["Read the letter"]), "{tried:#}");
 }
 
 #[test]
@@ -234,7 +234,7 @@ fn what_cannot_be_read_is_an_error_never_nothing() {
 fn a_refused_action_stops_the_program_unless_it_tries() {
     let task = task(vec!["new_task"]);
     let answer = task.run(
-        "tasks.new_task(tasks.tasks, \"milk\")\nprint(\"went on\")",
+        "tasks.new_task(tasks.tasks, title: \"milk\")\nprint(\"went on\")",
         true,
     );
     assert_eq!(answer["state"], "failed", "{answer:#}");

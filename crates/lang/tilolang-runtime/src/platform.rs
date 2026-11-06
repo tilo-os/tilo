@@ -1878,7 +1878,8 @@ impl Core {
     /// The offer of making what `action` makes from a subject of the `source`'s type: `action`
     /// makes a type its package declares, puts it in the package's root its first parameter
     /// names, and takes the source, when a parameter's type is the source's type, and the title
-    /// its type is called by; what it leaves to default means a menu runs it as it is. Answers
+    /// its type is called by; what it leaves to default means a menu runs it as it is, and an
+    /// optional one before the title is passed `.none`, which is what its default is. Answers
     /// the type it makes, whether the source is a parameter of it, and the offer.
     fn make_offer<'m>(
         &self,
@@ -1931,6 +1932,14 @@ impl Core {
             } else if !title_arg && param.name == title.name && param.ty == "Text" {
                 args.push(Value::Text(source.title.clone()));
                 title_arg = true;
+            } else if param
+                .default
+                .as_ref()
+                .is_some_and(crate::meta::DefaultMeta::is_none)
+            {
+                // A parameter whose default is `.none` needs nothing before it: the offer passes
+                // it there, so the title the action takes after it still stands.
+                args.push(Value::none());
             } else if param.default.is_some() {
                 break;
             } else {

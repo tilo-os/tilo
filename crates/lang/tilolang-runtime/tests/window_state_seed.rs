@@ -58,7 +58,18 @@ mod cases {
         }
 
         fn task(&self, root: &ResourceRef, title: &str) {
-            self.call("new_task", vec![Value::resource(root), Value::text(title)]);
+            self.call(
+                "new_task",
+                vec![
+                    Value::resource(root),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::text(title),
+                ],
+            );
         }
 
         /// Run the app's scenario `name`, as the host stages it before it lays a window out.

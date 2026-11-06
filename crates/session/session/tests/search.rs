@@ -1717,14 +1717,14 @@ fn the_applications_scope_lists_a_host_app() {
 /// action that takes the one line a person types (`title` is that parameter).
 fn tasks_capture() -> Vec<ResourceSpec> {
     let capture = tilo_actions::ActionSpec::prompted_param(
-        "quick_add",
+        "new_task",
         "New task",
         tilo_actions::ActionParam::required("title", tilo_actions::ParamType::Text, "What to do")
             .taking_entry(),
         "Call the landlord fri 10am",
         tilo_actions::ExecutionLocus::ClientLocal,
         |text| tilo_actions::EncodedAction {
-            type_id: "so.tilo.lang.tasks.quick_add".into(),
+            type_id: "so.tilo.lang.tasks.new_task".into(),
             payload: text.as_bytes().to_vec(),
         },
     );
@@ -1774,7 +1774,7 @@ fn a_line_typed_into_search_runs_the_workspace_s_capture_with_no_app_open() {
     let (target, arguments) = host.invoked.borrow()[0].clone();
     assert_eq!(
         target,
-        application_action_target(&workspace, "so.tilo.lang.tasks", "tasks", "quick_add"),
+        application_action_target(&workspace, "so.tilo.lang.tasks", "tasks", "new_task"),
         "the capture runs through the workspace's address for the app's action"
     );
     assert_eq!(

@@ -680,44 +680,45 @@ fn a_place_a_view_supplies_is_an_option_after_the_subject_and_named_above() {
 }
 
 #[test]
-fn a_parameter_takes_the_text_of_an_entry_last_and_as_text() {
-    let task = "type Task {\n    title: Text (title)\n}\n";
-    let add = |params: &str, body: &str| {
+fn an_entry_fills_the_actions_one_text_parameter() {
+    let task = "type Task {\n    title: Text (title)\n}\n\
+action add(t: Task, title: Text = \"\") {\n    t.title = title\n}\n\
+action twice(t: Task, one: Text = \"\", two: Text = \"\") {\n    t.title = one + two\n}\n\
+action close(t: Task) {\n    t.title = \"x\"\n}\n\
+view places<T>(t: T, entry: Option<Action> = .none) {\n    ui.Text(meta(t).title)\n}\n";
+    let entry = |made: &str| {
         crate::common::codes(&format!(
-            "{task}action add(t: Task, {params}) {{\n{body}\n}}\n"
+            "{task}view home(t: Task) {{\n    places(t, entry: .some({made}))\n}}\n"
         ))
     };
     assert_eq!(
-        add("title: Text (entry) = \"\"", "    t.title = title"),
+        entry("add(t)"),
         Vec::<String>::new(),
-        "an action's last parameter takes the text typed in an entry"
+        "the action's one `Text` parameter is what the words nothing else takes fill"
     );
     assert_eq!(
-        add(
-            "title: Text (entry) = \"\", done: Bool = false",
-            "    t.title = title"
-        ),
+        entry("close(t)"),
         ["E068"],
-        "what a call gives comes before the text of an entry"
+        "an action with no `Text` parameter has nothing for an entry to fill"
     );
     assert_eq!(
-        add("title: Int (entry) = 0", "    t.title = \"x\""),
-        ["E059"]
+        entry("twice(t)"),
+        ["E068"],
+        "an action with two `Text` parameters leaves the words no one of them"
+    );
+    let marked = crate::common::compile_with(
+        &format!("app t.x \"X\"\n{task}action note(t: Task, title: Text (entry) = \"\") {{\n    t.title = title\n}}\n"),
+        &[],
+    )
+    .err()
+    .and_then(|d| d.into_iter().find(|d| d.code == "E003"))
+    .map_or_else(
+        || panic!("the marker says nothing"),
+        |d| d.message,
     );
     assert!(
-        add(
-            "a: Text (entry) = \"\", b: Text (entry) = \"\"",
-            "    t.title = \"x\""
-        )
-        .contains(&"E058".to_owned()),
-        "one entry fills one parameter"
-    );
-    assert_eq!(
-        crate::common::codes(&format!(
-            "{task}view show_task(t: Task (entry)) {{\n    ui.Text(t.title)\n}}\n"
-        )),
-        ["E057"],
-        "an entry fills an action's parameter, not a view's"
+        marked.contains("one `Text` parameter"),
+        "the error says why the marker is gone: {marked}"
     );
 }
 

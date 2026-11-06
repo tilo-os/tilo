@@ -306,12 +306,6 @@ impl ActionTypes {
             let kind = meta.kind_of(&declared.name);
             let actions = meta
                 .offered_actions()
-                // An action that takes an entry is how a person writes something down from
-                // wherever they are: the entry is its surface, so it is published even when
-                // the app lists it in no menu or toolbar of its own.
-                .chain(meta.callable_actions().filter(|action| {
-                    action.is_internal() && action.params.iter().any(|param| param.entry)
-                }))
                 .filter(|action| {
                     meta.subject_of(&action.params)
                         .is_some_and(|subject| subject.name == declared.name)

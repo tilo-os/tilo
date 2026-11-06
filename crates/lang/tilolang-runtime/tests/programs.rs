@@ -136,7 +136,7 @@ mod cases {
             &w.rt,
             &agent(),
             &format!(
-                "let hits = find(\"Note launch\")\nfor n in hits {{\n    tasks.new_task({}, \"Follow up: {{n.title}}\")\n}}\nprint(hits.len(), \"notes\")\nhits",
+                "let hits = find(\"Note launch\")\nfor n in hits {{\n    tasks.new_task({}, title: \"Follow up: {{n.title}}\")\n}}\nprint(hits.len(), \"notes\")\nhits",
                 w.list_literal()
             ),
         );
@@ -205,7 +205,7 @@ mod cases {
             &w.rt,
             &agent(),
             &format!(
-                "print(\"before\")\ntasks.new_task({}, \"Ask first\")\nprint(\"after\")",
+                "print(\"before\")\ntasks.new_task({}, title: \"Ask first\")\nprint(\"after\")",
                 w.list_literal()
             ),
         );

@@ -194,12 +194,12 @@ fn grep_knows_block_kinds_groups_times_and_writers() {
 fn a_grep_result_feeds_actions_in_the_same_program() {
     let w = world();
     let answer = w.run(
-        r"grep(/^Two blockers (.*)/, in: notes).each(m -> tasks.new_task(tasks.tasks, m.group(1)))",
+        r"grep(/^Two blockers (.*)/, in: notes).each(m -> tasks.new_task(tasks.tasks, title: m.group(1)))",
     );
     assert_eq!(answer["state"], "done", "{answer:#}");
     assert_eq!(answer["changed"], 1, "{answer:#}");
     let titles = printed(&w.run("tasks.tasks.items.map(.title)"));
-    assert_eq!(titles, "left. Chen is out on Friday.");
+    assert_eq!(titles, "left. Chen is out of office.");
 }
 
 #[test]
@@ -277,7 +277,7 @@ fn read_states_the_size_first_and_shows_what_matches_with_anchors() {
         "{foreign}"
     );
     assert!(
-        foreign.contains(" ¶1  Two blockers left. Chen is out on Friday."),
+        foreign.contains(" ¶1  Two blockers left. Chen is out of office."),
         "{foreign}"
     );
     assert!(foreign.contains(" .pinned  false"), "{foreign}");
@@ -311,7 +311,7 @@ fn describe_gives_declarations_of_apps_types_actions_fields_and_resources() {
     let action = printed(&w.run("describe(tasks.new_task)"));
     assert!(action.starts_with("/// "), "its doc first: {action}");
     assert!(
-        action.contains("action tasks.new_task(tasks: Tasks, title: Text"),
+        action.contains("action tasks.new_task(tasks: Tasks, p: Option<Project> = .none"),
         "{action}"
     );
     let field = printed(&w.run("describe(Task.done)"));
@@ -326,7 +326,7 @@ fn describe_gives_declarations_of_apps_types_actions_fields_and_resources() {
 #[test]
 fn print_shows_rows_with_the_fields_asked_or_the_types_filters() {
     let w = world();
-    w.run("tasks.new_task(tasks.tasks, \"Milk\")");
+    w.run("tasks.new_task(tasks.tasks, title: \"Milk\")");
     let asked = printed(&w.run("print(tasks.tasks.items, fields: [.title, .done])"));
     assert!(asked.starts_with("@tasks.Task:"), "{asked}");
     assert!(
@@ -371,7 +371,7 @@ fn a_session_of_the_agents_doc_examples() {
         r"grep(/\bTide\b/, in: journal, not: .quote)",
         r"grep(/(?i)release/).count_by(.written_by)",
         r"grep(/Tide/, in: journal, mentions: me).len()",
-        r"grep(/^- \[ \] (.*launch.*)/i, in: journal, changed: -14d).each(t -> tasks.new_task(tasks.todos, t.group(1)))",
+        r"grep(/^- \[ \] (.*launch.*)/i, in: journal, changed: -14d).each(t -> tasks.new_task(tasks.todos, title: t.group(1)))",
         "print(tasks.todos.items, fields: [.title, .done])",
         r#"find("standup chen")"#,
         r#"find("standup").take(2)"#,
@@ -472,7 +472,7 @@ fn a_tasks_next_program_reads_what_its_earlier_ones_changed() {
     task.set_clock(tilolang_tilo::host::system_time);
     apps.lag("so.tilo.lang.tasks");
     let out = printed(&task.run(
-        "let t = tasks.new_task(tasks.tasks, \"Check the launch video\")",
+        "let t = tasks.new_task(tasks.tasks, title: \"Check the launch video\")",
         true,
         &tilolang_tilo::runtime::Principal::new("agent:task-1"),
     ));

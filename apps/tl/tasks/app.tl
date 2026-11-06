@@ -127,40 +127,34 @@ views project_list (icon: .list), project_board (icon: .columns_2) for Project
 
 row view task_summary for Task
 
-/// Adds what was typed in the entry at the end of a list as a task, to the inbox or to `p`, in
-/// the lane `s` of its board. The entry fills `title` with the words nothing else takes, and
-/// what they say of the task's other fields fills those: "Call the landlord fri 10am @Bo" is a
-/// task due Friday at ten, for Bo. Without a day said, a task added on Today is due today. An
-/// entry with nothing but space in it makes no task: it never runs this. It is the entry's, not
-/// a command: the entry is how a task is added there, and the task joins the list in place
+/// Adds a task: under the title a program or an agent gives it, or the words typed in the
+/// entry at the end of a list, to the inbox or to `p`, in the lane `s` of its board. The entry
+/// fills `title` with the words nothing else takes, and what they say of the task's other
+/// fields fills those: "Call the landlord fri 10am @Bo" is a task due Friday at ten, for Bo.
+/// An entry with nothing but space in it makes no task: it never runs this. It is the entry's,
+/// not a command: the entry is how a task is added there, and the task joins the list in place
 /// rather than opening.
-internal action quick_add(
+primary action new_task(
     tasks: Tasks,
     p: Option<Project> = .none,
     s: Option<Section> = .none,
-    today: Bool = false,
     due: Option<Date> = .none,
     at: Option<Time> = .none,
     assignee: Option<Principal> = .none,
-    title: Text (entry) = "",
-) -> Task uses time (label: "Add a task", icon: .plus) {
-    let due: Option<Date> = if let d = due {
-        .some(d)
-    } else if today { .some(now.day()) } else { .none }
+    title: Text = "",
+) -> Task (icon: .plus, label: "New task", key: "Ctrl+N") {
     tasks.items.insert(
         Task(title: title, due: due, at: at, assignee: assignee, project: p, section: s),
     )
 }
 
-/// Adds a task under the title a program or an agent gives it: no task stands without one. A
-/// person adds one by typing it in the entry at the end of the list, which is what this
-/// action's key and the bar's button bring them to.
-primary action new_task(tasks: Tasks, title: Text) -> Task (
+/// Adds a task that is due today: what the entry of the Today place runs, so a task typed
+/// there stands in Today. It is the one create action with the day it is added on.
+internal action new_task_today(tasks: Tasks, p: Option<Project> = .none, title: Text = "") -> Task uses time (
+    label: "Add a task",
     icon: .plus,
-    label: "New task",
-    key: "Ctrl+N",
 ) {
-    tasks.items.insert(Task(title: title))
+    new_task(tasks, p: p, due: .some(today), title: title)
 }
 
 /// Starts a project.
@@ -647,7 +641,9 @@ view home(t: Tasks) {
                 parent_title: x -> x.parent?.title,
                 progress: x -> subtask_count(x),
                 all_done: all_done,
-                entry: .some(quick_add(t, p: project, today: place == Task.today)),
+                entry: if in_today {
+                    .some(new_task_today(t, p: project))
+                } else { .some(new_task(t, p: project)) },
                 entry_placeholder: entry_placeholder,
             ) { (x, under) ->
                 task_row(x, .day, under)
@@ -672,7 +668,7 @@ view project_list(p: Project) {
                 parent: .parent,
                 parent_title: x -> x.parent?.title,
                 progress: x -> subtask_count(x),
-                entry: .some(quick_add(tasks, p: p)),
+                entry: .some(new_task(tasks, p: p)),
                 entry_placeholder: "New task in {p.name}",
             ) { (x, under) ->
                 task_row(x, .project, under)
@@ -699,7 +695,7 @@ view project_board(p: Project) {
                 ui.BoardLane {
                     on drop(moved: Task, at: Int): place(moved, .none, at)
                     foot: {
-                        std.add_entry("New task", quick_add(tasks, p: .some(p)))
+                        std.add_entry("New task", new_task(tasks, p: .some(p)))
                     }
                     for t in loose {
                         task_card(t, sections)
@@ -710,7 +706,7 @@ view project_board(p: Project) {
                     ui.BoardLane(s, title: s.name, count: cards.count()) {
                         on drop(moved: Task, at: Int): place(moved, .some(s), at)
                         foot: {
-                            std.add_entry("New task", quick_add(tasks, p: .some(p), s: .some(s)))
+                            std.add_entry("New task", new_task(tasks, p: .some(p), s: .some(s)))
                         }
                         for t in cards {
                             task_card(t, sections)

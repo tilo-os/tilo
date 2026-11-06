@@ -679,7 +679,7 @@ impl Checker<'_> {
     }
 
     /// The action and the text of `entry_parts(action, text)`: the action a call left its
-    /// `(entry)` parameter of, and what is typed in the entry.
+    /// one `Text` parameter of, and what is typed in the entry.
     fn entry_args(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Option<(Ex, Ex)> {
         let [action, text] = args else {
             self.err(

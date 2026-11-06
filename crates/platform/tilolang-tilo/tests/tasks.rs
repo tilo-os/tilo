@@ -63,6 +63,15 @@ fn target(v: &Value) -> Option<String> {
     }
 }
 
+/// The arguments `new_task` takes for a task added with only its title: the list it is added
+/// to, nothing for the project, section, day, time and assignee, and what was typed.
+pub(crate) fn create(root: &Value, title: &str) -> Vec<Value> {
+    let mut args = vec![root.clone()];
+    args.resize(6, Value::none());
+    args.push(Value::text(title));
+    args
+}
+
 fn items(r: &Replica) -> Vec<Value> {
     let root = r.host.root_of(APP).unwrap();
     match r.host.runtime().read(&root, "items").unwrap() {
@@ -111,11 +120,7 @@ pub(crate) fn count(view: &ViewInstance, place: &str) -> Option<i64> {
 #[test]
 fn a_task_is_made_filed_under_a_project_and_checked_off() {
     let (mut ada, root) = workspace();
-    let task = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Book a haircut")],
-    );
+    let task = call(&ada, "new_task", create(&root, "Book a haircut"));
     ada.commit();
     let project = call(&ada, "new_project", vec![root.clone()]);
     ada.commit();
@@ -138,7 +143,7 @@ fn a_task_is_made_filed_under_a_project_and_checked_off() {
 }
 
 #[test]
-fn a_quick_add_adds_what_was_typed_and_nothing_for_an_empty_entry() {
+fn an_entry_adds_what_was_typed_and_nothing_for_an_empty_entry() {
     let (ada, _) = workspace();
     let mut view = ada.view(APP);
     // An entry with nothing in it adds nothing.
@@ -164,7 +169,7 @@ fn a_quick_add_adds_what_was_typed_and_nothing_for_an_empty_entry() {
 }
 
 #[test]
-fn a_quick_add_reads_when_it_is_due_in_the_persons_zone() {
+fn an_entry_reads_when_it_is_due_in_the_persons_zone() {
     // 20:00 UTC on Thursday 2026-10-29 is 05:00 on Friday the 30th in Tokyo.
     let (mut ada, _) = workspace();
     ada.host
@@ -258,7 +263,7 @@ fn inbox_today_and_upcoming_are_read_when_they_are_asked() {
     let (mut ada, root) = workspace();
     let project = call(&ada, "new_project", vec![root.clone()]);
     ada.commit();
-    let dated = |title: &str| call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+    let dated = |title: &str| call(&ada, "new_task", create(&root, title));
     let late = dated("Pay the electricity bill");
     let today = dated("Buy oat milk");
     let next = dated("Order a present");
@@ -368,7 +373,7 @@ fn overview_count(view: &ViewInstance) -> Option<i64> {
 fn the_home_list_counts_the_inbox_that_was_just_written() {
     let (mut ada, root) = workspace();
     for title in ["Buy oat milk and eggs", "Book a haircut"] {
-        call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+        call(&ada, "new_task", create(&root, title));
     }
     assert_eq!(
         overview_count(&ada.view(APP)),
@@ -382,7 +387,7 @@ fn the_home_list_counts_the_inbox_that_was_just_written() {
 #[test]
 fn a_window_open_over_midnight_moves_what_today_lists_without_the_record_changing() {
     let (mut ada, root) = workspace();
-    let dated = |title: &str| call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+    let dated = |title: &str| call(&ada, "new_task", create(&root, title));
     let today = dated("Buy oat milk");
     let next = dated("Order a present");
     ada.commit();
@@ -428,11 +433,7 @@ fn a_window_open_over_midnight_moves_what_today_lists_without_the_record_changin
 #[test]
 fn two_people_change_one_task_at_once_and_both_changes_stay() {
     let (mut ada, root) = workspace();
-    let task = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Call the landlord")],
-    );
+    let task = call(&ada, "new_task", create(&root, "Call the landlord"));
     ada.commit();
     let mut ben = ada.fork("ben", PACKAGES);
     ben.host.sync_from(&ben.doc);
@@ -530,7 +531,7 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
         "Pack the books",
         "Measure the bedworkspace",
     ] {
-        let t = call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+        let t = call(&ada, "new_task", create(&root, title));
         call(&ada, "file", vec![t.clone(), project.clone()]);
         made.push(t);
     }
@@ -714,11 +715,7 @@ fn titles(r: &Replica) -> Vec<Value> {
 /// A launch post with the subtasks "Outline", "First draft" and "Screenshots".
 fn launch_post() -> (Replica, Value) {
     let (mut ada, root) = workspace();
-    let parent = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Write the launch post")],
-    );
+    let parent = call(&ada, "new_task", create(&root, "Write the launch post"));
     ada.commit();
     for title in ["Outline", "First draft", "Screenshots"] {
         call(
@@ -1031,7 +1028,7 @@ fn enter(view: &mut ViewInstance, text: &str) {
 fn a_checked_task_keeps_its_row_until_the_place_is_left() {
     let (mut ada, root) = workspace();
     for title in ["Buy oat milk", "Pay the electricity bill", "Book a haircut"] {
-        let made = call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+        let made = call(&ada, "new_task", create(&root, title));
         call(
             &ada,
             "schedule",
@@ -1091,12 +1088,8 @@ fn a_task_filed_out_of_the_inbox_keeps_its_row_until_the_view_is_left() {
         "rename",
         vec![project.clone(), Value::text("Move flat")],
     );
-    let packed = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Pack the books")],
-    );
-    call(&ada, "new_task", vec![root, Value::text("Buy oat milk")]);
+    let packed = call(&ada, "new_task", create(&root, "Pack the books"));
+    call(&ada, "new_task", create(&root, "Buy oat milk"));
     ada.commit();
     let mut view = ada.view(APP);
     let of = target(&packed).expect("a task");
@@ -1132,7 +1125,7 @@ fn a_task_filed_out_of_the_inbox_keeps_its_row_until_the_view_is_left() {
 fn a_peers_completion_takes_its_row_away() {
     let (mut ada, root) = workspace();
     for title in ["Buy oat milk", "Pay the electricity bill"] {
-        let made = call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+        let made = call(&ada, "new_task", create(&root, title));
         call(
             &ada,
             "schedule",
@@ -1248,11 +1241,7 @@ fn a_task_whose_assignee_the_page_shows() -> (Replica, Value, ViewInstance, Stri
         ],
         None,
     );
-    let task = call(
-        &ada,
-        "new_task",
-        vec![root, Value::text("Write the launch post")],
-    );
+    let task = call(&ada, "new_task", create(&root, "Write the launch post"));
     ada.commit();
     let page = task_page(&ada, &task);
     let field = {
@@ -1390,11 +1379,7 @@ fn each_pick_of_the_assignee_is_one_step_of_history() {
 #[test]
 fn the_priority_is_one_case_field_and_each_pick_writes_the_case() {
     let (mut ada, root) = workspace();
-    let task = call(
-        &ada,
-        "new_task",
-        vec![root, Value::text("Write the launch post")],
-    );
+    let task = call(&ada, "new_task", create(&root, "Write the launch post"));
     ada.commit();
     let mut page = task_page(&ada, &task);
     let field = {
@@ -1496,11 +1481,7 @@ fn the_priority_is_one_case_field_and_each_pick_writes_the_case() {
 #[test]
 fn a_step_added_while_a_task_is_checked_off_is_never_cleared_with_it() {
     let (mut ada, root) = workspace();
-    let parent = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Write the launch post")],
-    );
+    let parent = call(&ada, "new_task", create(&root, "Write the launch post"));
     ada.commit();
     call(
         &ada,
@@ -1567,11 +1548,7 @@ fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
         "rename",
         vec![project.clone(), Value::text("Website launch")],
     );
-    let post = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Write the launch post")],
-    );
+    let post = call(&ada, "new_task", create(&root, "Write the launch post"));
     call(&ada, "file", vec![post.clone(), project]);
     ada.commit();
     for title in ["Outline", "Screenshots"] {
@@ -1893,11 +1870,7 @@ fn a_tasks_row_and_its_outline_count_what_is_done_alike() {
         "rename",
         vec![project.clone(), Value::text("Website launch")],
     );
-    let post = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Write the launch post")],
-    );
+    let post = call(&ada, "new_task", create(&root, "Write the launch post"));
     call(&ada, "file", vec![post.clone(), project]);
     ada.commit();
     call(
@@ -2137,7 +2110,7 @@ pub(crate) fn page_commands(view: &ViewInstance) -> Vec<Command> {
 #[test]
 fn a_tasks_row_menu_offers_every_command_in_one_order() {
     let (mut ada, root) = workspace();
-    let booked = call(&ada, "new_task", vec![root, Value::text("Book a haircut")]);
+    let booked = call(&ada, "new_task", create(&root, "Book a haircut"));
     ada.commit();
     let mut view = ada.view(APP);
     let commands = row_commands(&mut view, &booked);
@@ -2254,17 +2227,9 @@ fn the_moves_a_row_offers_follow_the_rows_the_view_shows() {
     let (mut ada, root) = workspace();
     // What is overdue and what is due today, in the day's place: the list shows the day gone
     // by first, and the time before today stands over today's tasks in the store.
-    let van = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Book the van")],
-    );
-    let tent = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Pack the tent")],
-    );
-    let tank = call(&ada, "new_task", vec![root, Value::text("Fill the tank")]);
+    let van = call(&ada, "new_task", create(&root, "Book the van"));
+    let tent = call(&ada, "new_task", create(&root, "Pack the tent"));
+    let tank = call(&ada, "new_task", create(&root, "Fill the tank"));
     ada.commit();
     for (task, day) in [
         (&van, "2026-10-27"),
@@ -2363,7 +2328,7 @@ fn identifier_shaped(name: &str) -> bool {
 #[test]
 fn a_typing_control_is_named_by_a_word_a_person_says() {
     let (mut ada, root) = workspace();
-    let task = call(&ada, "new_task", vec![root, Value::text("Book the van")]);
+    let task = call(&ada, "new_task", create(&root, "Book the van"));
     ada.commit();
     let mut home = ada.view(APP);
     let mut page = task_page(&ada, &task);
@@ -2398,7 +2363,7 @@ fn a_typing_control_is_named_by_a_word_a_person_says() {
 #[test]
 fn a_tasks_page_menu_offers_what_its_row_does() {
     let (mut ada, root) = workspace();
-    let booked = call(&ada, "new_task", vec![root, Value::text("Book a haircut")]);
+    let booked = call(&ada, "new_task", create(&root, "Book a haircut"));
     ada.commit();
     let mut home = ada.view(APP);
     let row = row_commands(&mut home, &booked);
@@ -2413,11 +2378,7 @@ fn a_tasks_page_menu_offers_what_its_row_does() {
 #[test]
 fn adding_a_subtask_from_a_menu_asks_for_its_title_and_names_it_under_its_row() {
     let (mut ada, root) = workspace();
-    let parent = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Write the launch post")],
-    );
+    let parent = call(&ada, "new_task", create(&root, "Write the launch post"));
     call(
         &ada,
         "add_subtask",
@@ -2492,7 +2453,7 @@ fn the_offered_actions_are_the_person_facing_ones() {
             "{wanted} is offered: {offered:?}"
         );
     }
-    for gesture in ["place", "move_to", "quick_add", "copy_below"] {
+    for gesture in ["place", "move_to", "copy_below"] {
         assert!(
             !offered.contains(&gesture),
             "{gesture} runs from the app's own gestures alone: {offered:?}"
@@ -2547,17 +2508,9 @@ fn the_sidebar_is_the_windows_places_and_the_projects_the_root_holds() {
         "rename",
         vec![project.clone(), Value::text("Groceries")],
     );
-    let milk = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Buy oat milk")],
-    );
+    let milk = call(&ada, "new_task", create(&root, "Buy oat milk"));
     call(&ada, "file", vec![milk, project]);
-    let done = call(
-        &ada,
-        "new_task",
-        vec![root, Value::text("Take the bins out")],
-    );
+    let done = call(&ada, "new_task", create(&root, "Take the bins out"));
     call(&ada, "check", vec![done]);
     ada.commit();
     let view = ada.view(APP);
@@ -2627,13 +2580,9 @@ fn a_project_place_shows_its_tasks_and_adds_into_it_in_the_same_window() {
         "rename",
         vec![project.clone(), Value::text("Groceries")],
     );
-    let milk = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Buy oat milk")],
-    );
+    let milk = call(&ada, "new_task", create(&root, "Buy oat milk"));
     call(&ada, "file", vec![milk.clone(), project.clone()]);
-    call(&ada, "new_task", vec![root, Value::text("Book a haircut")]);
+    call(&ada, "new_task", create(&root, "Book a haircut"));
     ada.commit();
     let mut view = ada.view(APP);
     assert_eq!(home_list_rows(&mut view).len(), 1, "the inbox first");
@@ -2692,7 +2641,7 @@ fn every_place_leads_to_a_list_not_to_the_nothing_chosen_page() {
     let (mut ada, root) = workspace();
     let project = call(&ada, "new_project", vec![root.clone()]);
     call(&ada, "rename", vec![project, Value::text("Groceries")]);
-    call(&ada, "new_task", vec![root, Value::text("Book a haircut")]);
+    call(&ada, "new_task", create(&root, "Book a haircut"));
     ada.commit();
     let mut view = ada.view(APP);
     let labels: Vec<String> = places(&view).into_iter().map(|(label, _)| label).collect();
@@ -2730,7 +2679,7 @@ fn a_place_whose_tasks_are_all_done_says_so() {
     );
     let mut made = Vec::new();
     for title in ["Buy oat milk", "Take the bins out", "Book a haircut"] {
-        let task = call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+        let task = call(&ada, "new_task", create(&root, title));
         call(&ada, "file", vec![task.clone(), project.clone()]);
         made.push(task);
     }

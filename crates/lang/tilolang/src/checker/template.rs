@@ -295,6 +295,42 @@ impl Checker<'_> {
         }
     }
 
+    /// `entry: .some(new_task(t))`: the action a view's maybe-action is, which the entry fills.
+    /// An entry fills its action's one `Text` parameter with the words nothing else takes, so
+    /// an action without one (`add(t, done: Bool)`), or with several, is no entry's action:
+    /// E068 where the call that makes the action is written.
+    fn entry_action(&mut self, span: Span, e: &ast::Expr) {
+        let held = match &e.kind {
+            ExprKind::Variant { name, args } if name.name == "some" => match args.as_deref() {
+                Some([one]) => &one.value,
+                _ => return,
+            },
+            _ => e,
+        };
+        let ExprKind::Call { callee, .. } = &held.kind else {
+            return;
+        };
+        let ExprKind::Ident(name) = &callee.kind else {
+            return;
+        };
+        let Some(c) = self.own_callable(name).cloned() else {
+            return;
+        };
+        if c.kind != CKind::Action {
+            return;
+        }
+        let texts = c.params.iter().filter(|p| p.ty == Ty::Text).count();
+        if texts == 1 {
+            return;
+        }
+        let what = if texts == 0 {
+            "no `Text` parameter".to_owned()
+        } else {
+            format!("{texts} `Text` parameters")
+        };
+        self.err("E068", span, format!("`{}` has {what}: an entry fills the action's one `Text` parameter with the words nothing else takes, so the entry needs an action with exactly one", c.name));
+    }
+
     /// Expand the template `t` where the UI call `c` stands: its nodes under `parent`, or,
     /// at a view's top, the one node it makes (a fragment of them when it makes several).
     pub(crate) fn expand(
@@ -414,6 +450,9 @@ impl Checker<'_> {
                 Kind::Value(te) => {
                     let Some(a) = given[i] else { continue };
                     let want = self.type_in(te, &types);
+                    if matches!(&want, Ty::Option(inner) if **inner == Ty::Action) {
+                        self.entry_action(a.value.span, &a.value);
+                    }
                     let v = self.expr(&a.value, (!want.is_error()).then_some(&want));
                     let v = if matches!(&te.kind, TypeExprKind::Generic(..)) {
                         self.unhold(v, a.value.span)
