@@ -144,3 +144,42 @@ fn youtube_places_the_client_and_its_feed_draws() {
         "the client's package loads for the place"
     );
 }
+
+/// The client publishes the watch history its scenario seeded, and a video it names opens in its
+/// own page: the video's title, and the way to play it, which records the watch.
+#[test]
+fn the_watch_history_is_published_and_a_video_it_names_opens() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let entries = session
+        .resources()
+        .into_iter()
+        .flat_map(|resource| {
+            let mut out = vec![resource.clone()];
+            out.extend(resource.children.iter().cloned());
+            out
+        })
+        .filter(|resource| resource.kind == format!("tl.{TUBE}.WatchEntry"))
+        .count();
+    assert!(
+        entries > 0,
+        "the client publishes the watch entries its scenario seeded"
+    );
+    let mut repl = Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+    // The video the person watched part way, by the title its history row shows.
+    let (answer, failed) = repl.run(
+        &mut session,
+        "session.place_found(text: \"The watch that needs no winding\", view: .none, x: .some(80), y: .some(60))",
+    );
+    assert!(!failed, "the program ran: {answer}");
+    until(&mut session, "a video placed", |session| {
+        !placed_resources(session).is_empty()
+    });
+    // Its page draws its title and offers to play it, which records the watch in the history the
+    // client's own place lists.
+    until(&mut session, "the video's page", |session| {
+        session.shell_says("The watch that needs no winding")
+    });
+}
