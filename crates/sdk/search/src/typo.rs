@@ -109,6 +109,14 @@ const SUBSTITUTION_SCALARS: usize = 5;
 pub(crate) fn within(query: &[char], word: &[char], distance: usize, prefix: bool) -> bool {
     let (n, m) = (query.len(), word.len());
     if prefix {
+        // A prefix match is a word beginning what was typed, and the typed
+        // word may carry one letter too many. Only a word long enough to be
+        // that typo reads as unfinished: one letter past a short word is
+        // usually another word ("hell" is not the start of "hello"), while
+        // "termin" starts "terminl".
+        if m < n && m < SUBSTITUTION_SCALARS {
+            return false;
+        }
         if m.saturating_add(distance) < n {
             return false;
         }
@@ -210,6 +218,18 @@ mod tests {
         assert!(!near("screenshot", "scr", 2, true));
     }
 
+    #[test]
+    fn a_short_word_does_not_start_a_longer_typed_word() {
+        // One letter past a short word is another word, not a typo.
+        assert!(!near("hello", "hell", 1, true));
+        // A long word may still begin the typed word, one letter too many.
+        assert!(near("terminl", "termin", 1, true));
+        assert!(!near("terminals", "termin", 1, true));
+        // The other way round is a word beginning what was typed.
+        assert!(near("hell", "hello", 1, true));
+        assert!(near("termin", "terminal", 1, true));
+    }
+
     /// The table against a plain recursion over every alignment.
     #[test]
     fn the_bounded_table_agrees_with_the_definition() {
@@ -268,7 +288,15 @@ mod tests {
                         whole,
                         "{query} {word} {distance}"
                     );
-                    let prefixed = (0..=w.len()).any(|end| osa(&q, &w[..end]) <= distance);
+                    let prefixed = if w.len() < q.len() && w.len() < SUBSTITUTION_SCALARS {
+                        false
+                    } else if w.len().saturating_add(distance) < q.len() {
+                        false
+                    } else if q.len() <= distance {
+                        true
+                    } else {
+                        (0..=w.len()).any(|end| osa(&q, &w[..end]) <= distance)
+                    };
                     assert_eq!(
                         within(&q, &w, distance, true),
                         prefixed,
