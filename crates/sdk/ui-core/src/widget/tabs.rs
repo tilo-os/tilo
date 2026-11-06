@@ -32,6 +32,8 @@ mod rename;
 #[path = "tabs_status_chips.rs"]
 mod status_chips;
 pub use status_chips::{SharedBy, SharedWith};
+#[path = "tabs_tips.rs"]
+mod tips;
 #[path = "tabs_title_menu.rs"]
 mod title_menu;
 use crate::tokens::{EffectiveMotion, MotionSource};
@@ -4429,6 +4431,13 @@ impl Widget for TabBar {
                 }
             }
             WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Middle,
+                ..
+            } => {
+                self.on_middle_press(ctx.handled);
+            }
+            WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
@@ -4443,49 +4452,9 @@ impl Widget for TabBar {
     }
 
     /// Every button in the bar names its outcome: the slots' buttons and
-    /// the window's controls.
+    /// the window's controls. See [`tips::TabBar::tip_at`].
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
-        if self.active_toolbar().is_some()
-            && let Some(tip) = self.toolbar_row.tooltip_at(point)
-        {
-            return Some(tip);
-        }
-        // A window of one tab with slots shows that tab as its icon alone:
-        // the icon names the tab, as its accessible node does.
-        if self.active_toolbar().is_some()
-            && let [tab] = self.tabs.as_slice()
-            && let Some(&icon) = self.tab_rects.first()
-            && icon.contains(point)
-        {
-            return Some((icon, tab.title.clone()));
-        }
-        if !self.window_controls {
-            return None;
-        }
-        if self.history_action.area() > 0.0 && self.history_action.contains(point) {
-            return Some((
-                self.history_action,
-                crate::i18n::I18nManager::lookup_plain("history-mode-title"),
-            ));
-        }
-        let control = self.controls.hit(point)?;
-        let (rect, key) = match control {
-            super::window_controls::WindowControl::Maximize => (
-                self.controls.maximize,
-                if self.maximized {
-                    "host-window-restore"
-                } else {
-                    "host-window-maximize"
-                },
-            ),
-            super::window_controls::WindowControl::Close => {
-                (self.controls.close, "host-window-close")
-            }
-            super::window_controls::WindowControl::Minimize => {
-                (self.controls.minimize, "host-window-minimize")
-            }
-        };
-        Some((rect, crate::i18n::I18nManager::lookup_plain(key)))
+        self.tip_at(point)
     }
 
     /// The slots' menus (overflow, suggestions) float in the window's top
@@ -5573,6 +5542,29 @@ impl TabBar {
     /// hover-refresh — otherwise the icon hit is swallowed and the tab just
     /// activates. Split out of `handle_event` to keep that dispatcher inside
     /// the `too_many_lines` budget.
+    /// A middle press: the tab under the pointer closes, as its close chip
+    /// does. A pinned tab keeps its place, and one another device holds is
+    /// not this pointer's to close.
+    fn on_middle_press(&mut self, handled: &mut bool) {
+        let Some(index) = self
+            .tab_rects
+            .iter()
+            .position(|pill| self.tab_hit_rect(*pill).contains(self.last_cursor))
+        else {
+            return;
+        };
+        let icon_only: Vec<bool> = self.tabs.iter().map(|t| self.icon_only(t.id)).collect();
+        if icon_only.get(index).copied().unwrap_or(false) {
+            return;
+        }
+        let Some(tab) = self.tabs.get(index).filter(|t| !self.is_held(t.id)) else {
+            return;
+        };
+        let id = tab.id;
+        self.start_closing(id);
+        *handled = true;
+    }
+
     fn on_left_press(&mut self, handled: &mut bool) {
         self.touch();
         let cursor_pos = self.last_cursor;
@@ -8999,6 +8991,23 @@ mod tests {
             .handled;
     }
 
+    /// A middle press or release at the cursor's last place.
+    pub(super) fn dispatch_middle_button(b: &mut TabBar, state: ElementState, handled: &mut bool) {
+        let (taffy, node) = built_layout(b);
+        *handled = Dispatch::new()
+            .handled(*handled)
+            .layout(&taffy, node)
+            .send(
+                b,
+                &WindowEvent::MouseInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    state,
+                    button: MouseButton::Middle,
+                },
+            )
+            .handled;
+    }
+
     pub(super) fn built_layout(b: &mut TabBar) -> (TaffyTree<()>, NodeId) {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
@@ -10565,6 +10574,45 @@ mod tests {
             !bar.selection_moving(now + crate::time::Duration::from_secs(2)),
             "it arrives and asks for no more frames"
         );
+    }
+
+    /// A middle press closes the tab it lands on, as the tab's close chip
+    /// does.
+    #[test]
+    fn a_middle_press_on_a_tab_closes_it() {
+        let _settled = crate::motion::testing::settled();
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut b = TabBar::new(
+            "g1",
+            vec![
+                TabDescriptor::new(1, "Notes"),
+                TabDescriptor::new(2, "Chat"),
+            ],
+            1,
+        );
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        let mut handled = false;
+        let second = b.tab_rects()[1].center();
+        dispatch_cursor(&mut b, second, &mut handled);
+        dispatch_middle_button(&mut b, ElementState::Pressed, &mut handled);
+        assert!(handled, "the bar takes the press");
+        assert_eq!(b.take_close(), Some(2), "the tab under the pointer");
+    }
+
+    /// Every tab names the whole of its title in a tooltip: the pill cuts it
+    /// to fit the row.
+    #[test]
+    fn a_tab_names_its_whole_title_in_a_tooltip() {
+        let _settled = crate::motion::testing::settled();
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let long = "A note whose title is far longer than its pill";
+        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, long)], 1);
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        let (rect, title) = b
+            .tooltip_target_at(b.tab_rects()[0].center())
+            .expect("the pill names its tab");
+        assert_eq!(title, long);
+        assert_eq!(rect, b.tab_rects()[0]);
     }
 }
 
