@@ -49,7 +49,7 @@ mod browser;
 #[cfg(target_arch = "wasm32")]
 pub fn register_feedback_startup(
     peer: u32,
-    startup: tilo_desktop::feedback::transport::Startup,
+    startup: tilo_feedback_transport::Startup,
 ) -> Result<(), String> {
     feedback_code::register_feedback_startup(peer, startup)
 }

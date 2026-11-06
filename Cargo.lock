@@ -17189,8 +17189,8 @@ dependencies = [
  "tilo-clock",
  "tilo-content",
  "tilo-crypto",
- "tilo-desktop",
  "tilo-desktop-model",
+ "tilo-feedback-transport",
  "tilo-lock",
  "tilo-model-gateway",
  "tilo-net",
@@ -17842,6 +17842,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-desktop-search",
  "tilo-desktop-surface",
+ "tilo-feedback-transport",
  "tilo-files",
  "tilo-live",
  "tilo-lock",
@@ -18359,6 +18360,7 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-emoji-catalogue",
+ "tilo-feedback-transport",
  "tilo-resource",
  "tilo-sort",
  "tilo-surface-host",
@@ -18853,6 +18855,29 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tilo-sort",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-feedback-transport"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "chat",
+ "durable-store",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-app-state",
+ "tilo-automerge-fork",
+ "tilo-clock",
+ "tilo-feedback",
+ "tilo-resource",
+ "tilo-test-env",
+ "tilo-ui",
  "workspace-hack",
 ]
 
