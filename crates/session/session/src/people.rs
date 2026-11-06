@@ -218,11 +218,15 @@ impl People {
     pub(crate) fn dismiss(&self) {
         let was_open = self.open.replace(false);
         if was_open {
-            let mut shown = self.shown.borrow_mut();
-            shown.expanded = None;
-            shown.card_of = None;
-            shown.own_card = false;
-            shown.card_open = None;
+            // What the roster shows is cleared before it draws again: the draw holds what it
+            // shows while it draws it.
+            {
+                let mut shown = self.shown.borrow_mut();
+                shown.expanded = None;
+                shown.card_of = None;
+                shown.own_card = false;
+                shown.card_open = None;
+            }
             self.dismissed.set(Some(std::time::Instant::now()));
             self.redraw();
         }
