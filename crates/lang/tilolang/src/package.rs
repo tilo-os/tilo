@@ -406,8 +406,7 @@ fn at_event_fns(ir: &crate::ir::Module, app: &str) -> Vec<FnMeta> {
         .collect()
 }
 
-/// The `window` and `lens` declarations a view holds, as the host reads them to answer a
-/// `bind`.
+/// The `state` declarations a view holds, as the host reads them to answer a `bind`.
 fn state_meta<'a>(
     states: impl Iterator<Item = &'a crate::resolve::StateInfo>,
     app: &str,
@@ -416,7 +415,6 @@ fn state_meta<'a>(
         .map(|s| StateMeta {
             id: s.id.clone(),
             name: s.name.clone(),
-            layer: s.layer.word().to_string(),
             ty: s.ty.meta_text(app),
         })
         .collect()

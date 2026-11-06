@@ -411,6 +411,26 @@ impl DesktopHandle {
         self.shared.borrow_mut().search_request = Some(SearchRequest::Open { scope, query });
     }
 
+    /// The row the host carried out did not happen, for `why`: search opens
+    /// again where it stood, with the person's query, saying why on that row
+    /// rather than closing over a failure. False when the row is not the one
+    /// last carried out (search has moved on since).
+    pub fn answer_search(&self, target: &Target, why: String) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let Some((scope, query, chosen)) = shared.search_choice_context.take() else {
+            return false;
+        };
+        if &chosen != target {
+            return false;
+        }
+        shared.search_refusal = Some((chosen, why));
+        shared.search_request = Some(SearchRequest::Open {
+            scope,
+            query: Some(query),
+        });
+        true
+    }
+
     /// Search `tab`'s app, the way an app in a process of its own asked
     /// (`ui::floating_surface::FloatingSurfaceClientMessage::OpenAppSearch`):
     /// inside a session there is one search, the shell's, and the app opens
@@ -852,8 +872,12 @@ impl DesktopSurface {
         } else {
             std::collections::HashMap::new()
         };
+        let refusal = self.shared.borrow_mut().search_refusal.take();
         let mut search = self.search.borrow_mut();
         search.open(data);
+        if let Some((target, why)) = refusal {
+            search.refuse(target, why);
+        }
         if let Some(usage) = usage {
             search.set_usage(usage);
         }
@@ -1115,7 +1139,13 @@ impl DesktopSurface {
                 .iter()
                 .map(|hit| SearchRow {
                     title: hit.title.clone(),
-                    subtitle: hit.subtitle.clone(),
+                    // The reason the host could not carry the row out stands
+                    // on it, as the palette draws it, rather than the row
+                    // reading as if nothing happened.
+                    subtitle: search
+                        .refusal_for(&hit.target)
+                        .map(str::to_owned)
+                        .or_else(|| hit.subtitle.clone()),
                     kind: hit.kind.label().to_owned(),
                     facts: hit.facts.clone(),
                 })
@@ -1290,7 +1320,15 @@ impl DesktopSurface {
     fn perform(&self, target: Target) {
         let host = self.shared.borrow().search_host.clone();
         if host.is_some_and(|host| host.performs(&target)) {
-            self.shared.borrow_mut().search_choices.push(target);
+            // Where search stood when the row was chosen, so an answer to
+            // what the host could not carry out stands on that row again.
+            let (scope, query) = {
+                let search = self.search.borrow();
+                (search.scope(), search.query().to_owned())
+            };
+            let mut shared = self.shared.borrow_mut();
+            shared.search_choice_context = Some((scope, query, target.clone()));
+            shared.search_choices.push(target);
             return;
         }
         let mut shared = self.shared.borrow_mut();

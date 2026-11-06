@@ -1,6 +1,6 @@
 //! Every app under `apps/tl`, compiled with its committed ids and run end to end: a chat with
 //! embedded agent blocks (the fixture `tests/block_chat`), letters, Today's foreign views and flow, lists that open their
-//! items in windows of their own, window and lens state, and every root's window at a compact
+//! items in windows of their own, view state, and every root's window at a compact
 //! and a wide space.
 
 #[cfg(test)]
@@ -1064,7 +1064,7 @@ mod cases {
         assert_eq!(thread(&w, &conv)[0].0, "person:ada");
     }
 
-    // ----- windows: open(r), window state and lenses ------------------------------------------
+    // ----- windows: open(r), view state ------------------------------------------
 
     // USER REQUIREMENT (2026-10-20): "notes = a notebook list view (`root Notebook`, list rows
     // that `open(n)`) plus a `default view note_editor for Note`; no `open` field in Notebook
@@ -1116,7 +1116,7 @@ mod cases {
         );
     }
 
-    // Window state is how one person's window shows its resource (workspace-model.md, "The
+    // View state is how one person's window shows its resource (workspace-model.md, "The
     // pieces"): two people with the same window open sort it for themselves, and neither
     // moves the other's view.
     #[test]
@@ -1184,7 +1184,7 @@ mod cases {
     }
 
     #[test]
-    fn a_lists_filter_is_window_state_and_changes_nothing_in_the_list() {
+    fn a_lists_filter_is_view_state_and_changes_nothing_in_the_list() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let list = w.create("Tasks");

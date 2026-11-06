@@ -19,7 +19,7 @@ use crate::handles::ViewState;
 use crate::host_ui::{KEEP_ACTION, SET_ACTION, THEN_ACTION, VIEW_STATE};
 use crate::value::{ActionRef, RefValue, Value};
 use crate::view::{BindTarget, NodeBuild};
-use crate::view_state::{StateKey, StateLayer};
+use crate::view_state::StateKey;
 
 /// A node whose `item` gets the host's menu: what a person right-clicks, long-presses, or picks
 /// out of with the Menu key.
@@ -62,7 +62,7 @@ const CHOSEN: &str = "chosen";
 /// The event a multi-selecting list reports its choice with.
 const SELECTION_EVENT: &str = "selected";
 /// The window slot holding what the person chose of what the window shows. It is the window's
-/// own reading, kept for the person looking alone ([`StateKey::lens`], set by the host), and
+/// own reading, kept for the person looking alone ([`StateKey::runtime`], set by the host), and
 /// what the bar acts on: a selection belongs to where the person is, not to the workspace.
 const SELECTION: &str = "ui:selection";
 /// The words the selection's count reads with, and the way out of it.
@@ -204,10 +204,10 @@ impl Core {
     }
 
     /// The window slot the person's choice is kept in, as the runtime reads it: their window's,
-    /// in their lens.
+    /// their own.
     fn selection_key(&self) -> Result<StateKey, RuntimeError> {
         let (window, viewer) = self.window_here()?;
-        Ok(StateKey::lens(window, viewer, SELECTION))
+        Ok(StateKey::runtime(window, Some(viewer), SELECTION))
     }
 
     /// The window whose surfaces are being worked out, and the person looking.
@@ -507,7 +507,6 @@ impl Core {
                 vec![
                     Value::text(&window),
                     Value::text(&viewer),
-                    Value::Int(i64::from(StateLayer::Window.code())),
                     Value::text(&state),
                     Value::Event,
                 ],
@@ -540,7 +539,7 @@ impl Core {
 
     /// Which of `views` the person's window shows `ty`'s resource through: the view it draws
     /// the resource through now, else the person's choice, else the type's default view, else
-    /// the first. The choice is read from the person's window state, so the bar runs again
+    /// the first. The choice is read from the person's view state, so the bar runs again
     /// when another tab is chosen.
     fn chosen_index(
         &self,
@@ -556,7 +555,7 @@ impl Core {
         if let Some(index) = views.iter().position(|(id, _)| id == shown) {
             return i64::try_from(index).unwrap_or_default();
         }
-        let key = StateKey::window(window, viewer, state.to_owned());
+        let key = StateKey::view(window, viewer, state.to_owned());
         let (held, generation) = {
             let states = self.view_states.borrow();
             (states.get(&key).cloned(), states.generation(&key))

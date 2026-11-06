@@ -1054,7 +1054,7 @@ fn a_checked_task_keeps_its_row_until_the_place_is_left() {
     assert_eq!(now, place, "in the place it stood");
     assert!(drawn, "its box drawn checked");
     // Typing the next task into the entry is not leaving the place: the row stays.
-    view.set_lens("draft", Value::text("Buy bread"));
+    view.set_view_state("draft", Value::text("Buy bread"));
     let rows = home_list_rows(&mut view);
     assert_eq!(rows.len(), 3, "typing settles nothing: {rows:?}");
     // Pressing the box again opens it where it is.

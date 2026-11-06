@@ -30,7 +30,7 @@ view list<R, T, S>(
     entry_placeholder: Text = phrase("tilolang-add"),
     row: (T) -> View,
 ) {
-    window query: Text = place
+    state query: Text = place
     let kind = meta(T)
     let places = filters(T).filter(f -> f.toggle)
     let shown = items.matching(query)
@@ -241,7 +241,7 @@ view rows<T, K>(
 /// there, and Escape leaves none. The host gives it the window's primary action's key, so the
 /// key and the bar's button come here.
 template view add_entry(placeholder: Text, create: Action) {
-    lens typed: Text = ""
+    state typed: Text = ""
     let parts = entry_parts(create, typed)
     stack(gap: .tight) {
         if not parts.is_empty() {
@@ -613,7 +613,7 @@ view suggestions<R>(of: R) {
 /// once — a command run on a choice of them — is one step: it says how many items it changed,
 /// and its Undo takes them all back together.
 view history<R>(of: R) {
-    lens open: Text = ""
+    state open: Text = ""
     let steps = steps(of)
     if not steps.is_empty() {
         section(phrase("tilolang-history")) {

@@ -920,7 +920,7 @@ impl AppWindow {
             show_bound(built, "", &self.bound.borrow(), &reconciler);
         }
         for rows in self.rows.borrow().values() {
-            rows.borrow().refresh_bound();
+            rows.borrow_mut().refresh_bound();
         }
     }
 
@@ -2055,32 +2055,35 @@ pub fn splice_between(before: &str, after: &str) -> (usize, usize, String) {
 }
 
 /// Show what each bound control under `node` is bound to, as `bound` holds it by key in the
-/// composed tree (each of `node`'s keys carrying `prefix` there).
+/// composed tree (each of `node`'s keys carrying `prefix` there), reporting whether any control
+/// was given a value other than the one it showed.
 pub fn show_bound<S: std::hash::BuildHasher>(
     node: &UiNode,
     prefix: &str,
     bound: &HashMap<String, Value, S>,
     reconciler: &Reconciler,
-) {
+) -> bool {
+    let mut changed = false;
     if node.binding.is_some() {
         let key = format!("{prefix}{}", node.key);
         if let Some(value) = bound.get(&key) {
             let flag = node.kind == "checkbox"
                 || node.kind == "toggle"
                 || node.kind == crate::adapter::kind("ListRow");
-            match value {
+            changed |= match value {
                 Value::Bool(checked) => reconciler.set_flag(&key, *checked),
                 Value::Int(number) if flag => reconciler.set_flag(&key, *number != 0),
                 Value::Int(number) => reconciler.set_count(&key, *number),
                 Value::Float(number) => reconciler.set_number(&key, *number),
                 Value::Rich(rich) => reconciler.set_rich(&key, rich),
                 other => reconciler.set_text(&key, &crate::reconcile::display(other)),
-            }
+            };
         }
     }
     for child in &node.children {
-        show_bound(child, prefix, bound, reconciler);
+        changed |= show_bound(child, prefix, bound, reconciler);
     }
+    changed
 }
 
 /// Where a press of a key an app declared leads in a window.

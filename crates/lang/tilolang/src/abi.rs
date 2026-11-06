@@ -218,9 +218,9 @@ imports! {
     UiBind = "ui_bind" ([H, H, H] -> []);
     UiOn = "ui_on" ([H, H, H] -> []);
     UiAnchor = "ui_anchor" ([H, H] -> []);
-    UiBindState = "ui_bind_state" ([H, I32, H] -> []);
-    StateGet = "state_get" ([I32, H, H] -> [H]);
-    ActSet = "act_set" ([I32, H, H] -> [H]);
+    UiBindState = "ui_bind_state" ([H, H] -> []);
+    StateGet = "state_get" ([H, H] -> [H]);
+    ActSet = "act_set" ([H, H] -> [H]);
     ActThen = "act_then" ([H, H] -> [H]);
     ActMadeFrom = "act_made_from" ([H, H] -> [H]);
     ActMany = "act_many" ([H] -> [H]);
@@ -228,7 +228,7 @@ imports! {
     ActUndo = "act_undo" ([H, I32] -> [H]);
     ChangeView = "change_view" ([H, I32, H] -> [H]);
     EventValue = "event_value" ([] -> [H]);
-    StateAt = "state_at" ([I32, H, I32] -> [H]);
+    StateAt = "state_at" ([H, I32] -> [H]);
     ArgAt = "arg_at" ([H, H, I32] -> [H]);
     Actions = "actions" ([H, H] -> [H]);
     Lenses = "lenses" ([H] -> [H]);

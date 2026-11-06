@@ -445,24 +445,25 @@ workspace-model.md. The grammar is [grammar.md](grammar.md); the README shows it
   arm (`.name(..) =>`), so arms need no commas. The printer writes a comma after every arm that
   is not a block.
 - **Keywords.** `enum` and `match` are new keywords; `then`, `none` and `do` are no longer.
-  `window`, `lens` (at the start of a view statement, before `name:`), `root` and `default`
-  (before `view`, at the start of an item) are contextual, so they stay usable as names. A
-  keyword may name a call argument (`open(r, view: v)`).
+  `state` (at the start of a view statement, before `name:`), `root` and `default` (before
+  `view`, at the start of an item) are contextual, so they stay usable as names. A keyword may
+  name a call argument (`open(r, view: v)`).
 - **Flows** invoke an action by calling it. `do act(args)` is a syntax error that says so.
 - **Anchors** follow the call: `button("+1", on: inc(c)) as plus`. `#plus` is a syntax error
   that says so. An anchored node keeps the anchor id as its key, so an anchor belongs on a node
   that appears once in its view's tree, not on a row of a list.
-- **View state.** `window name: T = default` and `lens name: T = default` are declared at the top
-  of a view body (E066 elsewhere, or outside a view); their ids are `view.name` in `app.ids`, and
-  views list them in metadata (`state`: id, name, layer, type). Without a default, Int, Float,
-  Bool, Text, options, lists and payload-less first variants start empty or first; other types
-  need one. The view reads a slot with `state_get(layer, id, default) -> h` (layer 0 window, 1
-  lens; scalars boxed like `some_i`), which returns the slot's value or the default; the host
-  records the read. `bind: name` on a control is `ui_bind_state(node, layer, id)` (Int, Float,
-  Bool or Text state, E062 otherwise). `set(name, value)` in a view is
-  `act_set(layer, id, value) -> h`, an action reference the host applies to the slot; it carries
-  no capability and is never a change to a resource. State is the declaring view's own: other
-  views and nested view calls do not see it (pass values or `Action`s as parameters).
+- **View state.** `state name: T = default` is declared at the top of a view body (E066
+  elsewhere); its id is `view.name` in `app.ids`, and views list them in metadata (`state`: id,
+  name, type). It is what its person keeps in that view — how their window shows the resource,
+  and where they are in it — so it is kept per person and window, synced to their devices and
+  visible to others as presence. Without a default, Int, Float, Bool, Text, options, lists and
+  payload-less first variants start empty or first; other types need one. The view reads a slot
+  with `state_get(id, default) -> h` (scalars boxed like `some_i`), which returns the slot's
+  value or the default; the host records the read. `bind: name` on a control is
+  `ui_bind_state(node, id)` (Int, Float, Bool or Text state, E062 otherwise). `set(name, value)`
+  in a view is `act_set(id, value) -> h`, an action reference the host applies to the slot; it
+  carries no capability and is never a change to a resource. State is the declaring view's own:
+  other views and nested view calls do not see it (pass values or `Action`s as parameters).
 - **`open(r)`** and `open(r, view: v)` in a view are `act_open(r, view id or "") -> h`, an action
   reference the host turns into a request to go to the window of `r` (E067: `r` is a record, `v`
   a view that takes exactly an `r`). Flows and blocks cannot open windows yet.
@@ -612,9 +613,9 @@ search.md, "What a type declares" and "Types, references and paths".
 - **A query in a view looks inside a resource (`in:`).** A view's dependencies are kept per
   collection; one across the workspace would follow no change. Actions and flows may query
   the workspace (`Store::select`, answered by the index's columns across the workspace).
-- **`std.list` owns its query.** A template may declare `window`/`lens` state at the top of its
-  body; it is the expanding view's, kept under `<view id>:<template>.<name>` and listed in that
-  view's metadata. `std.list`'s `window query: Text` holds the place chosen, as people type
+- **`std.list` owns its query.** A template may declare `state` at the top of its body; it is
+  the expanding view's, kept under `<view id>:<template>.<name>` and listed in that view's
+  metadata. `std.list`'s `state query: Text` holds the place chosen, as people type
   it in search (`is:done`); its places are `filters(T)`'s toggles after all of the items
   (`all`, named `everything:`, by default from the type's plural noun, `host.Meta.plural`: "All notes"); `place:` is
   the place a window starts on, the state's default (Letters starts on `is:drafts`). Its places
@@ -663,7 +664,7 @@ search.md, "What a type declares" and "Types, references and paths".
   anyone did. It is no language construct: laying out a window at a state is a run's option,
   not a scenario's, so app code cannot stage a person's place.
 - **`a.then(b)` joins actions.** It is a method of action values, so it means the same wherever
-  one is written; `b` runs once `a` is done. A composer sends its lens draft and clears it with
+  one is written; `b` runs once `a` is done. A composer sends its draft and clears it with
   `send(c, draft).then(set(draft, ""))`; a button presents the first action.
 - **An action a view applies reads its view state at the press.** An action's arguments are
   evaluated when it is invoked, on what the invoker sees, the rule parameter defaults follow.

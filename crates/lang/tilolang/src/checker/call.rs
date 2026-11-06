@@ -510,14 +510,13 @@ impl Checker<'_> {
     /// until then, a scalar's boxed as its slot holds it.
     pub(super) fn state_at(state: &super::StateRef) -> Ex {
         let scalar = state.ty.is_scalar();
-        let layer = Ex::new(Ek::I32(state.layer.code()), Ty::Bool);
         let boxed = Ex::new(Ek::I32(i32::from(scalar)), Ty::Bool);
         let ty = if scalar {
             Ty::Option(Box::new(state.ty.clone()))
         } else {
             state.ty.clone()
         };
-        Ex::host(Imp::StateAt, vec![layer, Ex::str(&state.id), boxed], ty)
+        Ex::host(Imp::StateAt, vec![Ex::str(&state.id), boxed], ty)
     }
 
     fn action_ref(c: &Callable) -> ActionRef {
@@ -1160,9 +1159,7 @@ impl Checker<'_> {
             self.err(
                 "E066",
                 span,
-                format!(
-                    "`set(name, value)` changes a view's `window` or `lens` state; {who} has none"
-                ),
+                format!("`set(name, value)` changes a view's state; {who} has none"),
             );
             return Ex::error();
         }
@@ -1180,7 +1177,7 @@ impl Checker<'_> {
         };
         let Some(state) = state else {
             let known = self.state_names();
-            self.err("E066", target.value.span, format!("the first argument of `set` names a `window` or `lens` declaration of this view; this view declares: {known}"));
+            self.err("E066", target.value.span, format!("the first argument of `set` names a `state` declaration of this view; this view declares: {known}"));
             let _ = self.expr(&value.value, None);
             return Ex::error();
         };
@@ -1190,10 +1187,9 @@ impl Checker<'_> {
 
     /// The action that sets the view state `state` to `v`.
     pub(super) fn set_action(state: &super::StateRef, v: Ex) -> Ex {
-        let layer = Ex::new(Ek::I32(state.layer.code()), Ty::Bool);
         Ex::host(
             Imp::ActSet,
-            vec![layer, Ex::str(&state.id), Self::handle_of(v)],
+            vec![Ex::str(&state.id), Self::handle_of(v)],
             Ty::Action,
         )
     }

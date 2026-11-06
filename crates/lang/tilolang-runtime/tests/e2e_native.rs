@@ -53,7 +53,7 @@ view note_row(n: Note) {
 }
 
 view notebook(nb: Notebook) {
-    window order: NoteOrder = .created
+    state order: NoteOrder = .created
     std.list(nb, nb.notes, sort: order, empty: "No notes yet") { n ->
         row(n.title, checkbox: n.pinned)
     }
@@ -64,7 +64,7 @@ view rows(nb: Notebook) {
 }
 
 view detail(n: Note) {
-    lens shown: NoteFilter = .pinned
+    state shown: NoteFilter = .pinned
     std.document(n) {
         choice(bind: shown)
         facts(n)

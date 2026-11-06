@@ -78,9 +78,21 @@ pub struct Spec {
     pub person: String,
 }
 
-/// What a [`Surface`]'s resources are built from: the published records' revision and the
-/// loaded packages.
-type SurfaceInputs = (u64, Vec<tilolang_tilo::runtime::PackageId>, u64);
+/// What a [`Surface`]'s resources are built from: the published records' revision, the
+/// loaded packages, the updates that saw a change, and the resources the window shows (its
+/// rows, as published ids) — a change in what a person can reach publishes too.
+type SurfaceInputs = (
+    u64,
+    Vec<tilolang_tilo::runtime::PackageId>,
+    u64,
+    Vec<String>,
+);
+
+/// What the instance publishes for its window: the resources a person can reach, by published
+/// id — the lanes' subjects and the rows on screen, with what holds them. A workspace of ten
+/// thousand tasks publishes the rows a window shows; a caller that wants the rest asks the
+/// directory, which answers from the workspace on demand.
+type Shown = HashSet<String>;
 
 /// What the instance publishes on its connection: the workspace's records with their actions, kept up
 /// to date change by change.
@@ -123,19 +135,25 @@ impl Surface {
     }
 
     /// What [`Self::resources`] is built from, besides what never changes for this surface: the
-    /// published records' revision, the loaded packages, and the updates that saw a change.
-    fn inputs(&self) -> SurfaceInputs {
+    /// published records' revision, the loaded packages, the updates that saw a change, and the
+    /// ids of the resources the window shows.
+    fn inputs(&self, shown: &[String]) -> SurfaceInputs {
         (
             self.publications.borrow().revision(),
             self.host.package_ids(),
             self.publications.borrow().moved(),
+            shown.to_vec(),
         )
     }
 
     /// Every resource the workspace's packages hold, each with its actions; the host's own resource;
     /// and each package's actions that take no record, the instance's own app's with what every
     /// app publishes. Built now, so an invocation resolves against what the record holds now.
-    fn resources(&self) -> Vec<ResourceSpec> {
+    ///
+    /// `shown` bounds what a record publishes to the resources a window can reach: its lane's
+    /// subject and the rows on screen. `None` is the whole workspace, what a caller that asks
+    /// the directory reads.
+    fn resources(&self, shown: Option<&Shown>) -> Vec<ResourceSpec> {
         let mut out = vec![host_resource(&self.committer)];
         let trees: Vec<(String, Rc<ResourceSpec>)> = self
             .publications
@@ -145,7 +163,21 @@ impl Surface {
             .map(|(doc, tree)| (doc.clone(), Rc::clone(tree)))
             .collect();
         for (_doc, tree) in trees {
-            out.push((*tree).clone());
+            out.push(match shown {
+                Some(shown) => {
+                    // The record's own resource always publishes: what it offers with no row
+                    // shown (its history, its `read`, the app's own verbs) is the app's answer
+                    // to a window that shows no row of it yet.
+                    let mut kept = shallow(&tree);
+                    kept.children = tree
+                        .children
+                        .iter()
+                        .filter_map(|child| pruned(child, shown))
+                        .collect();
+                    kept
+                }
+                None => (*tree).clone(),
+            });
         }
         let words = self.host.runtime().words();
         for package in self.host.packages() {
@@ -159,6 +191,72 @@ impl Surface {
         }
         out
     }
+
+    /// `resources` with what the address names, added whole when the window does not show it:
+    /// an invocation resolves against the resource it names, whatever the window shows.
+    fn with_addressed(&self, mut resources: Vec<ResourceSpec>, address: &str) -> Vec<ResourceSpec> {
+        if resources.iter().any(|resource| holds(resource, address)) {
+            return resources;
+        }
+        let trees: Vec<Rc<ResourceSpec>> = self
+            .publications
+            .borrow()
+            .trees()
+            .values()
+            .map(Rc::clone)
+            .collect();
+        if let Some(spec) = trees.iter().find_map(|tree| find(tree, address)) {
+            resources.push(spec);
+        }
+        resources
+    }
+}
+
+/// `spec` with only the resources `shown` names or holds under them, each with its actions.
+/// `None` when nothing of it is shown: a record of ten thousand items publishes the rows on
+/// screen.
+fn pruned(spec: &ResourceSpec, shown: &Shown) -> Option<ResourceSpec> {
+    if !shown.contains(spec.id.as_str()) {
+        return None;
+    }
+    let mut out = shallow(spec);
+    out.children = spec
+        .children
+        .iter()
+        .filter_map(|child| pruned(child, shown))
+        .collect();
+    Some(out)
+}
+
+/// `spec` without its children: the resource itself, its actions and its views.
+fn shallow(spec: &ResourceSpec) -> ResourceSpec {
+    ResourceSpec {
+        id: spec.id.clone(),
+        kind: spec.kind.clone(),
+        label: spec.label.clone(),
+        presentation: spec.presentation.clone(),
+        semantic_identity: spec.semantic_identity.clone(),
+        app_id: spec.app_id.clone(),
+        children: Vec::new(),
+        actions: spec.actions.clone(),
+        views: spec.views.clone(),
+        readers: spec.readers,
+        resource_type: spec.resource_type.clone(),
+    }
+}
+
+/// `spec` or a resource under it, its address `address`: without children, which no address
+/// resolves through.
+fn find(spec: &ResourceSpec, address: &str) -> Option<ResourceSpec> {
+    if spec.id.as_str() == address {
+        return Some(shallow(spec));
+    }
+    spec.children.iter().find_map(|child| find(child, address))
+}
+
+/// Whether `spec` or a resource under it is `address`.
+fn holds(spec: &ResourceSpec, address: &str) -> bool {
+    spec.id.as_str() == address || spec.children.iter().any(|child| holds(child, address))
 }
 
 /// The instance's hold on its surface: while the instance publishes, it is the instance's.
@@ -297,6 +395,12 @@ pub struct Hosted {
     /// whether or not the window runs. [`None`] until it has published once.
     search_index: tilo_resource::search_index::Publisher,
     search_index_from: Option<Vec<String>>,
+    /// Where the publication's journal stood when the index last took it: what the change since
+    /// moved, so the index reads the resources it moved and not the workspace.
+    search_index_moved: Option<u64>,
+    /// The entry each resource has in the index, by its published id: what a change replaces,
+    /// and what a resource that is gone takes away, its own entries and those under it.
+    search_entries: std::collections::BTreeMap<String, tilo_resource::search_index::IndexEntry>,
     /// How many builds of the entries the index has been sent: the state's generation.
     search_index_build: u64,
     /// The identity-service connection the instance's connection signs through, held for as
@@ -401,6 +505,8 @@ impl Hosted {
             registry,
             search_index: tilo_resource::search_index::Publisher::default(),
             search_index_from: None,
+            search_index_moved: None,
+            search_entries: std::collections::BTreeMap::new(),
             search_index_build: 0,
             identity: None,
         }
@@ -518,7 +624,10 @@ impl Hosted {
     /// Publish the app's resources to the session's persistent search index, over the
     /// instance's certified route: what search finds of the room (a note's title, a message's
     /// sender, subject and body), keyed by each resource's id, so a hit opens the app at it.
-    /// Nothing is sent while nothing moved; a new route sends the whole set again.
+    /// Nothing is sent while nothing moved; a new route sends the whole set again, and so does a
+    /// change the publication's journal no longer reaches. Otherwise a change sends the entries
+    /// of the resources it moved, and drops those of the resources it deleted: a task checked in
+    /// a book of ten thousand replaces one entry.
     fn publish_search_index(&mut self) {
         let generation: Vec<String> = tilo_resource::heads_of(self.record.doc())
             .unwrap_or_default()
@@ -540,15 +649,31 @@ impl Hosted {
         if !host.index_ready() {
             return;
         }
-        let entries = tilolang_tilo::search::index_entries(&host);
         self.search_index_build = self.search_index_build.saturating_add(1);
         let state = tilo_resource::search_index::IndexState {
             generation: self.search_index_build,
             secrets_unlocked: None,
         };
+        let moved = {
+            let surface = self.surface.borrow().clone();
+            surface.and_then(|surface| {
+                let publications = surface.publications.borrow();
+                let since = self.search_index_moved?;
+                publications.text_since(since)
+            })
+        };
         // What a hit's address names opens at its resource; the entries carry the package's
         // `open`.
-        let deltas = self.search_index.publish(state, entries);
+        let deltas = match moved {
+            Some(tilolang_tilo::publish::TextMoves::These { texts, gone }) => {
+                let (upsert, remove) = self.moved_entries(&host, &texts, &gone);
+                match self.search_index.publish_moved(state, upsert, remove) {
+                    Some(deltas) => deltas,
+                    None => self.publish_index_whole(&host, state),
+                }
+            }
+            _ => self.publish_index_whole(&host, state),
+        };
         for delta in deltas {
             let Some(bytes) = delta.encode() else {
                 continue;
@@ -557,6 +682,11 @@ impl Hosted {
                 .manager_mut()
                 .send(collaboration::CollabRequest::PublishSearchIndex { delta_json: bytes });
         }
+        self.search_index_moved = self
+            .surface
+            .borrow()
+            .as_ref()
+            .map(|surface| surface.publications.borrow().moved());
         self.search_index_from = Some(generation);
     }
 
@@ -579,6 +709,75 @@ impl Hosted {
             {
                 descriptor.contract.availability = availability;
             }
+        }
+    }
+
+    /// Publish every entry of the app's resources again: the first publication, a new route, and
+    /// a change the publication's journal no longer reaches.
+    fn publish_index_whole(
+        &mut self,
+        host: &Host,
+        state: tilo_resource::search_index::IndexState,
+    ) -> Vec<tilo_resource::search_index::IndexDelta> {
+        let entries = tilolang_tilo::search::index_entries(host);
+        self.search_entries = entries
+            .iter()
+            .map(|entry| (entry.resource.clone(), entry.clone()))
+            .collect();
+        self.search_index.publish(state, entries)
+    }
+
+    /// The entries of the resources the change moved, and the keys of the entries it deleted:
+    /// a resource read from the store as it is now, each app's own resources by its own package.
+    fn moved_entries(
+        &mut self,
+        host: &Host,
+        texts: &std::collections::BTreeSet<String>,
+        gone: &std::collections::BTreeSet<String>,
+    ) -> (Vec<tilo_resource::search_index::IndexEntry>, Vec<String>) {
+        let mut upsert = Vec::new();
+        let mut remove = Vec::new();
+        for path in texts {
+            for package in host.packages() {
+                let entry = tilolang_tilo::search::index_entry_at(host, &package.meta, path);
+                if let Some(entry) = entry {
+                    self.search_entries
+                        .insert(entry.resource.clone(), entry.clone());
+                    upsert.push(entry);
+                }
+            }
+        }
+        // The resources that are gone, and whatever was published under them.
+        for package in host.packages() {
+            for path in gone {
+                let id = tilolang_tilo::publish::resource_id(&package.meta.app, path);
+                self.drop_entry(&id, &mut remove);
+            }
+        }
+        // A resource that holds no text any more is no entry, though it is still there.
+        for package in host.packages() {
+            for path in texts {
+                let id = tilolang_tilo::publish::resource_id(&package.meta.app, path);
+                if !upsert.iter().any(|entry| entry.resource == id) {
+                    self.drop_entry(&id, &mut remove);
+                }
+            }
+        }
+        (upsert, remove)
+    }
+
+    /// Drop the index entry of `id`, and those of the resources published under it.
+    fn drop_entry(&mut self, id: &str, remove: &mut Vec<String>) {
+        let under = format!("{id}/");
+        let held: Vec<String> = self
+            .search_entries
+            .range(id.to_owned()..)
+            .take_while(|(key, _)| key.as_str() == id || key.starts_with(&under))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in held {
+            self.search_entries.remove(&key);
+            remove.push(key);
         }
     }
 
@@ -624,22 +823,12 @@ impl Hosted {
         let Some(surface) = self.surface.borrow().clone() else {
             return;
         };
-        let inputs = surface.inputs();
-        let resources = surface.resources();
-        // The descriptors the broker holds are the surface's own while they were read from
-        // it, and rows answer from them; after a change they describe a surface that moved,
-        // so the directory is built from what the surface publishes now.
-        let held = self.published.as_ref().filter(|_| {
-            self.published_from
-                .as_ref()
-                .is_some_and(|(from, at)| Rc::ptr_eq(from, &surface) && *at == inputs)
-        });
-        if let Some((descriptors, _)) = held {
-            self.directory.publish(&resources, descriptors);
-        } else {
-            let descriptors = tilo_actions::door::survey(&resources);
-            self.directory.publish(&resources, &descriptors);
-        }
+        // The directory answers what a caller asks of the whole workspace, not of the rows a
+        // window shows: it is built from every resource when it is asked, and surveyed with
+        // them. The surface the broker holds is the window's, which is not the same set.
+        let resources = surface.resources(None);
+        let descriptors = tilo_actions::door::survey(&resources);
+        self.directory.publish(&resources, &descriptors);
     }
 
     /// Run what the broker delivered on the instance's connection. Every event that waits on an
@@ -789,7 +978,8 @@ impl Hosted {
             .borrow()
             .clone()
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
-        let resources = surface.resources();
+        let shown: Shown = self.shown().into_iter().collect();
+        let resources = surface.with_addressed(surface.resources(Some(&shown)), &address.resource);
         let caller = caller_of(&invoker);
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
         let encoded = encode(&resources, address, argument);
@@ -928,6 +1118,25 @@ impl Hosted {
         })
     }
 
+    /// The resources the window shows, as published ids, with the resources that hold them: a
+    /// row's actions are published on its own resource, and a resource publishes with what
+    /// holds it (the record's tree). What the surface a window reads is bounded by.
+    fn shown(&self) -> Vec<String> {
+        let mut out = std::collections::BTreeSet::new();
+        for id in self.instance.shown_resources() {
+            let mut held = id.as_str();
+            out.insert(id.clone());
+            while let Some((parent, _)) = held.rsplit_once('/') {
+                if !parent.contains(':') {
+                    break;
+                }
+                out.insert(parent.to_owned());
+                held = parent;
+            }
+        }
+        out.into_iter().collect()
+    }
+
     /// Publish what the instance offers, when it changed since the broker last took it.
     fn publish(&mut self) {
         let Some(surface) = self.surface.borrow().clone() else {
@@ -936,7 +1145,8 @@ impl Hosted {
         // Nothing the surface is built from changed since the broker took it: a keystroke into
         // a field nothing published reads, and every turn that changed nothing, cost no more
         // with ten thousand records or items than with one.
-        let inputs = surface.inputs();
+        let shown = self.shown();
+        let inputs = surface.inputs(&shown);
         if self
             .published_from
             .as_ref()
@@ -948,7 +1158,8 @@ impl Hosted {
             return;
         }
         let _phase = tilo_resource::profiling::Phase::start("tl.host.publish");
-        let resources = surface.resources();
+        let windowed: Shown = shown.iter().cloned().collect();
+        let resources = surface.resources(Some(&windowed));
         let handlers: HashSet<String> = HashSet::from([
             <HostEffect as tilo_resource::Effect>::OPERATION.to_owned(),
             <OpenEffect as tilo_resource::Effect>::OPERATION.to_owned(),
@@ -1113,7 +1324,7 @@ impl Hosted {
         let Some((from, taken)) = &self.published_from else {
             return false;
         };
-        if !Rc::ptr_eq(from, surface) || taken.1 != inputs.1 {
+        if !Rc::ptr_eq(from, surface) || taken.1 != inputs.1 || taken.3 != inputs.3 {
             return false;
         }
         let Some(labels) = surface.publications.borrow().labels_since(taken.0) else {
@@ -1497,7 +1708,8 @@ impl Applier {
         // The record as the workspace holds it now: requirements are decided on what others wrote.
         self.host.sync_from(self.record.doc());
         let address = ActionAddress::new(change.resource.clone(), change.action.clone());
-        let resources = self.surface.resources();
+        // An agent asks of the whole record, whatever a window shows.
+        let resources = self.surface.resources(None);
         let caller = caller_of(&invoker);
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller));
         let encoded = tilo_actions::door::encode_json(&resources, &address, &change.arguments);

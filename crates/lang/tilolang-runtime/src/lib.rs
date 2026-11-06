@@ -98,6 +98,6 @@ pub use store::{
 pub use value::{ActionRef, CollRef, EnumValue, RefValue, ResourceRef, Value};
 pub use view::{BindTarget, Binding, Patch, UiNode};
 pub use view_instance::{EditOutcome, UndoAsk, ViewEvent, ViewInstance};
-pub use view_state::{StateKey, StateLayer};
+pub use view_state::StateKey;
 pub use words::{SourceWords, Words};
 pub use written::WrittenViewInfo;

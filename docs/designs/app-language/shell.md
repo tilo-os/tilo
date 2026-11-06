@@ -62,7 +62,7 @@ one window" is the strips shell's policy, not a rule for apps. Someone sending a
 chat and an agent handing one over are the same thing: a reference.
 
 Activating something already shown goes to it. A shell may offer "another view" for two views
-of one resource side by side, each with its own window state.
+of one resource side by side, each with its own view state.
 
 ## 4. Windows
 

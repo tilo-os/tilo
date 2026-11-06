@@ -99,8 +99,8 @@ view gallery(g: Gallery) {
 
 /// The basics' window: places in the sidebar, the parts in the content.
 view basics(b: Basics) {
-    lens place: Text = "parts"
-    lens last: Text = ""
+    state place: Text = "parts"
+    state last: Text = ""
     ui.NavShell(content_kind: .page, title: "Basics", sidebar_title: .some("Gallery")) {
         sidebar: {
             ui.NavList(selected: place) {

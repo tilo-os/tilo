@@ -310,12 +310,15 @@ impl Engine {
     /// The keys this device seals writes of `record` of `app` with in
     /// `workspace`, a workspace whose records are its members' sealed
     /// channels: `Ok(None)` while the record's channel keys are not here yet,
-    /// and the answer arrives as the workspace's other messages do.
+    /// and the answer arrives as the workspace's other messages do. That
+    /// includes a channel the workspace's governance does not name this device
+    /// in yet, as it does on the first look after a session starts: the device
+    /// waits for the answer rather than being told it will never get one.
     ///
     /// # Errors
     /// This session has no channel service, this device has no secret store,
-    /// or it takes part in no channel of the record: it holds no keys, and
-    /// none are coming.
+    /// or the workspace removed it from the record's channel: it holds no
+    /// keys, and none are coming.
     pub(crate) fn seal_keys(
         &self,
         workspace: WorkspaceId,
@@ -328,15 +331,14 @@ impl Engine {
         let route = collab_types::ChannelRoute::new(app, record);
         match keys.access_record(workspace, &route).0 {
             ChannelAccess::Ready(keys) => Ok(Some(keys)),
-            ChannelAccess::Waiting => Ok(None),
+            // Asked and not admitted yet, or admitted nowhere the governance
+            // here can name: either way the keys are not here yet.
+            ChannelAccess::Waiting | ChannelAccess::Unavailable => Ok(None),
             ChannelAccess::Removed => Err(format!(
                 "the workspace removed this device from {record}'s channel"
             )),
             ChannelAccess::NoSecretStore => {
                 Err("this device has no secret store, so it holds no channel keys".to_owned())
-            }
-            ChannelAccess::Unavailable => {
-                Err("this device takes part in no channel of the record".to_owned())
             }
         }
     }

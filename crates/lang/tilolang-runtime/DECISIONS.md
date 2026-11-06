@@ -139,8 +139,8 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   letters and board, each a `root` type with a `default view`. Lists and their items are two
   windows: the notebook, the chat and the letters desk list their items, each row runs
   `open(item)`, and the item type's default view edits it (`note_editor`, `thread`, `editor`);
-  no root keeps an "open" item. Filters and sort orders are `window` state (notes' order and
-  filter, todo's `Show`, letters' `Shelf`); which note row shows its actions is `lens` state.
+  no root keeps an "open" item. Filters and sort orders are view state (notes' order and
+  filter, todo's `Show`, letters' `Shelf`); which note row shows its actions is view state too.
   Chat's `post(c, text, block)` records `author = invoker`; a message is a
   `Collection<Part>` (`kind` `text` or `block`, plus the part's `invocation`). Letters' `send`
   has a proposal view and asks as an Outside action. Board holds `Option` references to the

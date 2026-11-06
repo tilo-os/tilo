@@ -123,7 +123,7 @@ fn pin_height(s: ArrangementStrip) -> Int {
 /// a question, and the run it starts places its conversation there instead. `x` and `y` are
 /// where the caret was, in canvas pixels.
 view canvas_entry(a: Arrangement) {
-    lens typed: Text = ""
+    state typed: Text = ""
     ui.TextInput(value: typed, placeholder: "Find something, or ask") {
         on submit: session
             .conversation(line: typed, x: here_x(a), y: here_y(a))

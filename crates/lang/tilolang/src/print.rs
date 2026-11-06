@@ -1333,7 +1333,7 @@ impl Printer<'_> {
                 self.line(&format!("{head}{v}"));
             }
             UiKind::State(d) => {
-                let head = format!("{} {}: {}", d.layer.word(), d.name.name, print_type(&d.ty));
+                let head = format!("state {}: {}", d.name.name, print_type(&d.ty));
                 let default = match &d.default {
                     Some(e) => {
                         let col = self.level * 4 + head.len() + 3;

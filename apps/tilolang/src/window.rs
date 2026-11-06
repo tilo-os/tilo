@@ -221,9 +221,9 @@ pub struct Window {
     undo: ui::undo::UndoAccess,
     /// A later build this window took and has not drawn yet: its first frame says so.
     undrawn: Option<Undrawn>,
-    /// The workspace's record of each person's own state, when the window has it: the window and
-    /// lens state they set and what they have seen, so the place they picked is still theirs
-    /// after a restart and on their other devices ([`Personal`]).
+    /// The workspace's record of each person's own state, when the window has it: the view state
+    /// they set and what they have seen, so the place they picked is still theirs after a restart
+    /// and on their other devices ([`Personal`]).
     personal: Option<WorkspaceRecord<Personal>>,
 
     /// Input or a new document value changed what this widget paints: it
@@ -323,8 +323,8 @@ impl Window {
         self
     }
 
-    /// This window keeping the person's own state of the workspace in `record`: the window and
-    /// lens state they set in their views, and what they have seen. What their entries hold is
+    /// This window keeping the person's own state of the workspace in `record`: the view state
+    /// they set in their views, and what they have seen. What their entries hold is
     /// given to the views when the window shows ([`Self::bring_personal`]), and what they change
     /// is kept back into them ([`Self::keep_personal`]).
     #[must_use]
@@ -357,7 +357,7 @@ impl Window {
     }
 
     /// Keep what this person changed of their own state since the last frame in the record: the
-    /// window and lens state they set, and what they marked seen. A change the record cannot take
+    /// view state they set, and what they marked seen. A change the record cannot take
     /// stays on this device, told once, rather than stopping the window.
     fn keep_personal(&mut self, record: &WorkspaceRecord<Personal>) {
         let keep_it = |keep: &Keep, what: &str| {

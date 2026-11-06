@@ -225,10 +225,9 @@ pub(crate) struct UiPlace {
     composer: bool,
 }
 
-/// A `window` or `lens` declaration in scope, for `bind:` and `set(...)`.
+/// A `state` declaration in scope, for `bind:` and `set(...)`.
 #[derive(Clone, Debug)]
 pub(crate) struct StateRef {
-    pub layer: ast::StateLayer,
     pub id: String,
     pub ty: Ty,
     pub local: LocalId,

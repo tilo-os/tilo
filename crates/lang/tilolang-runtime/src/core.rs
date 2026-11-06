@@ -109,7 +109,7 @@ pub struct Core {
     pub catalogues: RefCell<Vec<(String, String)>>,
     /// Compiled embedded blocks.
     pub embeds: RefCell<crate::embed::EmbedState>,
-    /// The `window` and `lens` state of every view.
+    /// The view state of every view, and the platform's own readings.
     pub view_states: RefCell<crate::view_state::ViewStates>,
     /// What `now` reads: the current time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. Read
     /// once per outermost invocation; until the host sets one, it is the epoch.

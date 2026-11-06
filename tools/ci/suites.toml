@@ -782,7 +782,7 @@ readers = [
   "crates/lang/tilolang-runtime/tests/provenance.rs",
   "crates/lang/tilolang-runtime/tests/rich_text.rs",
   "crates/lang/tilolang-runtime/tests/window_bar.rs",
-  "crates/lang/tilolang-runtime/tests/window_state_seed.rs",
+  "crates/lang/tilolang-runtime/tests/view_state_seed.rs",
   "crates/lang/tilolang-runtime/tests/written_views.rs",
 ]
 

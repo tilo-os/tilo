@@ -30,8 +30,7 @@ its names.
 | **View** | a function from a resource to UI; a type has several (editor, card, row) | it's code | |
 | **Shell** | a view of the workspace's arrangement and resources: strips, canvas, dock, top bar, list, conversation | the person's choice, per device class | |
 | **Arrangement** | what is open where (strips, window groups, windows, canvas places) | with the workspace: everyone has the same windows | until closed |
-| **Window state** | how one person's window shows its resource: which view, sidebar place, sort, filter, active tab | personal, visible as presence | as long as that window |
-| **Lens** | scroll, cursor, selection, focus | personal, visible as presence | per person and resource, on all their devices |
+| **View state** | what one person keeps in a window: how it shows its resource (which view, sidebar place, sort, filter, active tab) and where they are in it (a draft, what is open); scroll, cursor, selection and focus the platform keeps without a declaration | personal, visible as presence | per person and window, on all their devices |
 
 In code the arrangement is the workspace's layout record (`tilo_desktop_model`'s workspace; a
 strip is `layout::Strip`, a window a `layout::Tab` in a `layout::WindowGroup`).
@@ -59,7 +58,7 @@ window or a place.
   or opens it right after where you came from; others already on `r` show as presence. That's
   how a trail forms. `open(r, in: new_strip)` starts a new line of work.
 - **A list and its item usually share one window.** A notebook's window has the notes in its
-  sidebar and the chosen note beside them; which note is chosen is each person's window state,
+  sidebar and the chosen note beside them; which note is chosen is each person's view state,
   so Ada can read one note while Bo writes another, each seeing the other's face at their note.
   A view that wants a second window (a custom layout, a preview beside an editor) opens one in
   the shared arrangement. On a phone, one pane shows at a time and back returns to the list.
@@ -109,19 +108,20 @@ window or a place.
 
 ```
 view note_list(nb: Notebook) {
-    window sort: NoteOrder = .recent    // personal: how this window shows the list
-    lens expanded: Set<Tag>             // personal: which groups I opened
-    stack { for n in nb.notes.sort_by(n -> sort.key(n)) { note_row(n) } }
+    state order: NoteOrder = .recent    // personal: how this window shows the list
+    state expanded: Set<Tag>            // personal: which groups I opened
+    stack { for n in nb.notes.sort_by(n -> order.key(n)) { note_row(n) } }
 }
 
 root notebook: Notebook
 default view note_editor for Note
 ```
 
-- `window` state is how one person's window shows its resource, `lens` state where that person
-  is in it; both are personal, typed and visible to others as presence. State everyone should share is a field of
-  the resource. Scroll, focus, cursor and
-  selection are lens state the platform keeps without being declared.
+- `state` declares what the person keeps in a view: how its window shows the resource, and where
+  they are in it. Each declaration is personal, typed, kept per person and view on all their
+  devices, and visible to others as presence; `set(name, value)` changes one. State everyone
+  should share is a field of the resource. Scroll, focus, cursor and selection are kept by the
+  platform without being declared.
 - An app whose data is each person's own (mail) says so in its header:
   `app so.tilo.lang.mail "Mail" (records: .own)`. Each member then keeps the app's resources in
   their own record of the workspace (`member:<person>:<kind>`, `tilo_action_policy::member_record`),

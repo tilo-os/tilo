@@ -1091,18 +1091,6 @@ impl Instance {
         self.out.extend(sent);
     }
 
-    /// Whether a view has something to run again: a reading it took moved, the time it read
-    /// passed, or a record it shows changed ([`ViewInstance::is_stale`]). A slot the host fills
-    /// moves one — the person's own state, given back when their window opens or kept on another
-    /// device of theirs, and what they have seen — so the frame runs the views that read it
-    /// rather than waiting for a change of the person's here.
-    fn views_stale(&self) -> bool {
-        [Lane::Root, Lane::Detail]
-            .into_iter()
-            .filter_map(|lane| self.lane(lane))
-            .any(|shown| shown.view.borrow().is_stale())
-    }
-
     /// Re-run the views whose reads changed, and send the window what changed: their trees'
     /// patches, and the changes of their virtual lists' rows. Whether anything did.
     fn poll_views(&mut self) -> bool {
@@ -1115,6 +1103,9 @@ impl Instance {
             let Some(view) = self.lane_mut(lane) else {
                 continue;
             };
+            // What the view reads changed: the tree may stand as it was (a row's control reads
+            // the item's field it is bound to), and the window still needs the values it shows.
+            let stale = view.view.borrow().is_stale();
             let patches = match view.view.borrow_mut().poll_patches() {
                 Ok(patches) => patches,
                 Err(error) => {
@@ -1123,6 +1114,7 @@ impl Instance {
                 }
             };
             if patches.is_empty() {
+                changed |= stale;
                 continue;
             }
             changed = true;
@@ -2993,7 +2985,7 @@ mod tests {
     fn a_bound_control_is_not_named_by_a_name_in_the_code() {
         let state = Binding {
             target: BindTarget::State {
-                key: crate::runtime::StateKey::lens("w", "person:me", "draft"),
+                key: crate::runtime::StateKey::view("w", "person:me", "draft"),
                 name: "draft".to_owned(),
                 ty: "Text".to_owned(),
             },

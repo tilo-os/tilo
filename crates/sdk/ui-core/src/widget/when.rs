@@ -24,7 +24,7 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
 use super::arrange::Fit;
-use super::{AppModel, Decorator, Element, ModelPath, TaffyTreeExt, Widget};
+use super::{AppModel, Decorator, Element, ModelPath, StructureChange, TaffyTreeExt, Widget};
 use crate::theme::Theme;
 
 /// A placeholder that takes no room: no layout box, no gap, no paint.
@@ -261,6 +261,11 @@ impl Decorator for Fitted {
 
     fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
         self.inner.as_mut()
+    }
+
+    // A fit adds no structure of its own: the change is what the view it holds changed.
+    fn take_structure_change(&mut self) -> StructureChange {
+        self.inner.take_structure_change()
     }
 }
 

@@ -1140,7 +1140,7 @@ impl crate::Shared {
     /// that sent them: the app that takes its scheme.
     pub(crate) fn open_notifications(&self) {
         for (workspace, uri) in self.notifications.borrow().take_opened() {
-            self.search.perform(
+            let opened = self.search.perform(
                 &workspace,
                 tilo_desktop_search::Target::Open {
                     uri,
@@ -1156,6 +1156,9 @@ impl crate::Shared {
                         .map(drop)
                 },
             );
+            if let Err(error) = opened {
+                self.answer_failed(&crate::i18n::t("action-failed-that-notification"), &error);
+            }
         }
         // What the person handed to an agent becomes the task it acts on, in
         // the workspace in front: the notification's title is what it is
@@ -1182,19 +1185,24 @@ impl crate::Shared {
             let workspace = self.active_workspace_id();
             let activation = self.notifications.borrow().open(id);
             match activation {
-                notifications::HistoryActivation::OpenApp { app_id, .. } => self.search.perform(
-                    &workspace,
-                    tilo_desktop_search::Target::Launch { app: app_id },
-                    &mut |own| {
-                        self.doors
-                            .invoke(
-                                &own.address,
-                                &own.arguments,
-                                &mut tilo_surface_host::Look::none(),
-                            )
-                            .map(drop)
-                    },
-                ),
+                notifications::HistoryActivation::OpenApp { app_id, .. } => {
+                    let opened = self.search.perform(
+                        &workspace,
+                        tilo_desktop_search::Target::Launch { app: app_id },
+                        &mut |own| {
+                            self.doors
+                                .invoke(
+                                    &own.address,
+                                    &own.arguments,
+                                    &mut tilo_surface_host::Look::none(),
+                                )
+                                .map(drop)
+                        },
+                    );
+                    if let Err(error) = opened {
+                        self.answer_failed(&crate::i18n::t("action-failed-that-app"), &error);
+                    }
+                }
                 other => tracing::debug!(?other, "notification chosen"),
             }
         }

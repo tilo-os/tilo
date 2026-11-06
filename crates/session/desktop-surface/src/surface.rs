@@ -255,6 +255,13 @@ struct Shared {
     search_host: Option<std::rc::Rc<dyn search::SearchHost>>,
     /// Rows chosen in search that the host carries out, in order.
     search_choices: Vec<tilo_desktop_search::Target>,
+    /// The search the host last carried a row out of: where it stood and
+    /// what was typed, so a row it could not carry out is asked again with
+    /// the answer on that row.
+    search_choice_context: Option<(ui::search::Scope, String, tilo_desktop_search::Target)>,
+    /// The reason a row the host carried out did not happen, for the search
+    /// opened again over it to say on that row.
+    search_refusal: Option<(tilo_desktop_search::Target, String)>,
     /// What a caller of the published search asked of it, taken on the
     /// next update pass.
     search_asks: Vec<search::SearchAsk>,
@@ -905,54 +912,7 @@ impl DesktopSurface {
         observe_ids(&mut minter, &tree);
         let search: Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>> =
             Rc::new(RefCell::new(tilo_desktop_search::LazyDesktopSearch::new()));
-        let shared = Rc::new(RefCell::new(Shared {
-            tree,
-            holders: HashMap::new(),
-            window_offers: Vec::new(),
-            asking: std::collections::BTreeSet::new(),
-            opens: true,
-            revision: 1,
-            queue: Vec::new(),
-            activity_focus: None,
-            minter,
-            viewport_width: ui::widget::DEFAULT_STRIP_USABLE_PX,
-            replaced: false,
-            shown_tabs: ShownTabs::default(),
-            shown_strip: None,
-            hint_places: ui::widget::HintPlaces::default(),
-            focused_presence: Vec::new(),
-            rebuild: Vec::new(),
-            search_request: None,
-            search_open: false,
-            search: Rc::clone(&search),
-            search_revision: 0,
-            search_area: None,
-            host_actions: Vec::new(),
-            host_choices: Vec::new(),
-            menus: Vec::new(),
-            search_host: None,
-            search_choices: Vec::new(),
-            search_asks: Vec::new(),
-            shown_search: search::ShownSearch::default(),
-            typed_field: Err(search::TypedRefusal::NoField),
-            typed_ask: None,
-            personal_ask: None,
-            personal_ask_revision: 0,
-            arrivals: Vec::new(),
-            presentation: Presentation::default(),
-            presented: 0,
-            artwork: std::collections::BTreeMap::new(),
-            withheld: std::collections::BTreeSet::new(),
-            unresponsive: std::collections::BTreeSet::new(),
-            unresponsive_revision: 0,
-            liveness: Vec::new(),
-            acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
-            peers: Rc::new(RefCell::new(peer_view::PeerSurfaces::default())),
-            bars: window_bars::Bars::default(),
-            sideways: Vec::new(),
-            wake: crate::wake::Waker::default(),
-        }));
+        let shared = Rc::new(RefCell::new(Shared::new(tree, minter, &search)));
         let acknowledger = shared.borrow().acknowledger.clone();
         #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
         let tiles = Box::new(peer_view::PeerTiles::new(

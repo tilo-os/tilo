@@ -210,7 +210,7 @@ type Notebook {\n    notes: Collection<Note>\n}\n\
 enum NoteOrder {\n    created\n    title\n}\n\
 root Notebook\ndefault view notebook for Notebook\n\
 fn listed(nb: Notebook, order: NoteOrder) -> List<Note> {\n    return match order {\n        .created => nb.notes.filter(n -> true),\n        .title => nb.notes.sort_by(n -> n.title),\n    }\n}\n\
-view notebook(nb: Notebook) {\n    window order: NoteOrder = .created\n    std.list(nb, listed(nb, order), sort: order, empty: \"No notes yet\") { n ->\n        row(n.title, secondary: n.body, mark: if n.pinned { .pin }, checkbox: n.pinned)\n    }\n}";
+view notebook(nb: Notebook) {\n    state order: NoteOrder = .created\n    std.list(nb, listed(nb, order), sort: order, empty: \"No notes yet\") { n ->\n        row(n.title, secondary: n.body, mark: if n.pinned { .pin }, checkbox: n.pinned)\n    }\n}";
 
 #[test]
 fn a_type_with_a_row_view_lists_without_an_item_block() {
@@ -510,12 +510,12 @@ fn a_button_for_an_action_reads_its_label_icon_and_state_with_what_it_applies() 
 #[test]
 fn a_primitive_a_component_draws_takes_the_components_events() {
     let (m, _) = lower(
-        "type Chat {\n    topic: Text\n}\naction say(c: Chat, body: RichText) {\n    c.topic = body.excerpt\n}\nview chat(c: Chat) {\n    lens draft: RichText = RichText(\"\")\n    stack {\n        rich_input(bind: draft) {\n            on submit: say(c, draft).then(set(draft, RichText(\"\")))\n        }\n    }\n}",
+        "type Chat {\n    topic: Text\n}\naction say(c: Chat, body: RichText) {\n    c.topic = body.excerpt\n}\nview chat(c: Chat) {\n    state draft: RichText = RichText(\"\")\n    stack {\n        rich_input(bind: draft) {\n            on submit: say(c, draft).then(set(draft, RichText(\"\")))\n        }\n    }\n}",
     );
     let calls = ui_calls(func(&m, "chat"));
     assert!(has(&calls, "on submit"), "{calls:#?}");
     let wrong = diagnostics(
-        "type Chat {\n    topic: Text\n}\nview chat(c: Chat) {\n    lens draft: RichText = RichText(\"\")\n    rich_input(bind: draft) {\n        on sent: set(draft, RichText(\"\"))\n    }\n}",
+        "type Chat {\n    topic: Text\n}\nview chat(c: Chat) {\n    state draft: RichText = RichText(\"\")\n    rich_input(bind: draft) {\n        on sent: set(draft, RichText(\"\"))\n    }\n}",
     );
     assert!(wrong.iter().any(|d| d.code == "E063"), "{wrong:#?}");
 }
@@ -770,7 +770,7 @@ fn the_sort_is_a_menu_and_the_item_types_toggles_are_the_sidebars_places() {
 #[test]
 fn a_filter_named_by_its_type_is_the_value_a_query_and_a_sidebar_take() {
     const FILTERS: &str = "type Task {\n    title: Text (title)\n    done: Bool (done) = false\n    project: Option<Project> = .none\n    search {\n        filter \"Inbox\" = not done (icon: .inbox)\n        filter \"Done\" = done\n        filter project\n    }\n}\ntype Project {\n    name: Text (title)\n}\ntype Board {\n    tasks: Collection<Task>\n    projects: Collection<Project>\n}\n";
-    let view = "view board(b: Board) {\n    window place: Filter<Task> = Task.inbox\n    ui.NavList(selected: place) {\n        for f in filters(Task).filter(f -> f.toggle) {\n            ui.NavItem(f, f.label) {\n                on select: set(place, f)\n            }\n        }\n        for p in b.projects {\n            ui.NavItem(Task.project(p), p.name, icon: .folder) {\n                on select: set(place, Task.project(p))\n            }\n        }\n    }\n    for t in b.tasks.matching(place) {\n        text(t.title)\n    }\n}";
+    let view = "view board(b: Board) {\n    state place: Filter<Task> = Task.inbox\n    ui.NavList(selected: place) {\n        for f in filters(Task).filter(f -> f.toggle) {\n            ui.NavItem(f, f.label) {\n                on select: set(place, f)\n            }\n        }\n        for p in b.projects {\n            ui.NavItem(Task.project(p), p.name, icon: .folder) {\n                on select: set(place, Task.project(p))\n            }\n        }\n    }\n    for t in b.tasks.matching(place) {\n        text(t.title)\n    }\n}";
     let (m, ids) = lower(&format!("{FILTERS}{view}"));
     let task = ids.get("Task").expect("id").to_string();
     let query_field = crate::host::value_field("Filter", "query").expect("query");
@@ -887,7 +887,7 @@ fn a_body_held_as_rich_text_binds_like_any_field() {
 #[test]
 fn a_document_page_and_transcript_are_shells_of_the_library() {
     let (m, _) = lower(
-        "type Person {\n    name: Text (title)\n    vip: Bool = false\n    owner: Principal\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    lens tab: Tab = .about\n    std.document(p) {\n        choice(bind: tab)\n        avatar(p.owner)\n        section(\"About\") {\n            facts(p)\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            ui.Card(item: p, title: meta(p).title) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",
+        "type Person {\n    name: Text (title)\n    vip: Bool = false\n    owner: Principal\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    state tab: Tab = .about\n    std.document(p) {\n        choice(bind: tab)\n        avatar(p.owner)\n        section(\"About\") {\n            facts(p)\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            ui.Card(item: p, title: meta(p).title) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",
     );
     let calls = ui_calls(func(&m, "person"));
     for want in [
@@ -913,7 +913,7 @@ fn a_document_page_and_transcript_are_shells_of_the_library() {
         "the shell is the root"
     );
     let (m, _) = lower(
-        "type Chat {\n    draft: Text\n    lines: Collection<Line>\n}\ntype Line {\n    text: Text\n}\nview line(l: Line) {\n    text(l.text)\n}\nview chat(c: Chat) {\n    lens draft: Text\n    std.transcript(c, c.lines, row: line) {\n        composer: {\n            input(bind: draft)\n        }\n    }\n}",
+        "type Chat {\n    draft: Text\n    lines: Collection<Line>\n}\ntype Line {\n    text: Text\n}\nview line(l: Line) {\n    text(l.text)\n}\nview chat(c: Chat) {\n    state draft: Text\n    std.transcript(c, c.lines, row: line) {\n        composer: {\n            input(bind: draft)\n        }\n    }\n}",
     );
     let calls = ui_calls(func(&m, "chat"));
     let at = |s: &str| calls.iter().position(|c| c == s).expect(s);
@@ -1122,7 +1122,7 @@ fn a_links_how_is_a_case_of_the_hosts_link_how_enum() {
 #[test]
 fn every_rich_input_is_given_its_drawers_people_by_the_system() {
     let (m, _) = lower(
-        "type Chat {\n    topic: Text\n}\nview chat(c: Chat) {\n    lens draft: RichText = RichText(\"\")\n    stack {\n        rich_input(bind: draft)\n    }\n}\nview loose() {\n    lens draft: RichText = RichText(\"\")\n    rich_input(bind: draft)\n}",
+        "type Chat {\n    topic: Text\n}\nview chat(c: Chat) {\n    state draft: RichText = RichText(\"\")\n    stack {\n        rich_input(bind: draft)\n    }\n}\nview loose() {\n    state draft: RichText = RichText(\"\")\n    rich_input(bind: draft)\n}",
     );
     let chat = host_imports(func(&m, "chat"));
     for want in [Imp::Speakers, Imp::Members] {
@@ -1142,7 +1142,7 @@ fn every_rich_input_is_given_its_drawers_people_by_the_system() {
 #[test]
 fn a_generic_view_with_a_lambda_and_view_state_expands_where_it_is_called() {
     let (m, _) = lower(
-        "type Item {\n    title: Text\n}\ntype Bag {\n    items: Collection<Item>\n}\nenum Size {\n    small\n    large\n}\nview shown<T, E>(things: List<T>, size: State<E>, label: (T) -> Text, extra: Option<View> = .none) {\n    stack {\n        for c in cases(E) {\n            button(c.label(), on: set(size, c))\n        }\n        for t in things {\n            text(label(t))\n        }\n        match extra {\n            .some(v) => v,\n            .none => text(\"none\"),\n        }\n    }\n}\nview bag(b: Bag) {\n    window size: Size = .small\n    shown(b.items, size: size, label: i -> i.title)\n}",
+        "type Item {\n    title: Text\n}\ntype Bag {\n    items: Collection<Item>\n}\nenum Size {\n    small\n    large\n}\nview shown<T, E>(things: List<T>, size: State<E>, label: (T) -> Text, extra: Option<View> = .none) {\n    stack {\n        for c in cases(E) {\n            button(c.label(), on: set(size, c))\n        }\n        for t in things {\n            text(label(t))\n        }\n        match extra {\n            .some(v) => v,\n            .none => text(\"none\"),\n        }\n    }\n}\nview bag(b: Bag) {\n    state size: Size = .small\n    shown(b.items, size: size, label: i -> i.title)\n}",
     );
     let calls = ui_calls(func(&m, "bag"));
     assert_eq!(
@@ -1173,7 +1173,7 @@ fn a_generic_view_with_a_lambda_and_view_state_expands_where_it_is_called() {
 #[test]
 fn an_apps_view_named_as_the_libraries_expands_the_libraries() {
     let (m, _) = lower(
-        "type Chat {\n    topic: Text\n}\naction send(c: Chat, text: RichText) {\n}\nview composer(c: Chat) {\n    window draft: RichText = RichText(\"\")\n    std.composer(draft, \"Message {c.topic}\", send(c, draft))\n}\nview chat(c: Chat) {\n    composer(c)\n}",
+        "type Chat {\n    topic: Text\n}\naction send(c: Chat, text: RichText) {\n}\nview composer(c: Chat) {\n    state draft: RichText = RichText(\"\")\n    std.composer(draft, \"Message {c.topic}\", send(c, draft))\n}\nview chat(c: Chat) {\n    composer(c)\n}",
     );
     let chat = ui_calls(func(&m, "chat"));
     assert!(
@@ -1226,7 +1226,7 @@ type Tasks { items: Collection<Task> }
 root tasks: Tasks
 default view home for Tasks
 view home(t: Tasks) {
-    window place: Filter<Task> = Task.inbox
+    state place: Filter<Task> = Task.inbox
     let side: List<Filter<Task>> = [Task.inbox, Task.done]
     let chosen = side.find(f -> f == place)
     text(chosen?.label ?? "x")

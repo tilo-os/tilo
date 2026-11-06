@@ -161,7 +161,7 @@ fn enums_matches_and_block_values_validate() {
         fn size(m: Mark) -> Float {\n    match m {\n        d: Dot => if d.on { 1.0 } else { 0.0 },\n        c: Disc => {\n            if c.label == \"\" {\n                return c.r\n            }\n            c.r * 2.0\n        }\n    }\n}\n\
         fn same(a: Shape, b: Shape) -> Bool {\n    a == b\n}\n\
         action swap(p: P) {\n    p.o = .some(p.s)\n    p.s = .disc\n    let m = p.marks.insert(Disc(r: 1.5, label: \"x\"))\n    p.pick = m\n    match p.o {\n        .some(_) => {\n            p.s = .dot\n        }\n        .none => {}\n    }\n}\n\
-        view v(p: P) {\n    window shown: Shape = .dot\n    lens n: Text\n    match p.s {\n        .dot => text(\"dot\"),\n        .line => text(n),\n        .disc => stack(gap: .tight) {\n            text(\"disc\")\n        }\n    }\n    for m in p.marks {\n        match m {\n            d: Dot => text(\"dot\"),\n            c: Disc => text(c.label),\n        }\n    }\n    button(\"Line\", on: set(shown, .line))\n    input(bind: n)\n}";
+        view v(p: P) {\n    state shown: Shape = .dot\n    state n: Text\n    match p.s {\n        .dot => text(\"dot\"),\n        .line => text(n),\n        .disc => stack(gap: .tight) {\n            text(\"disc\")\n        }\n    }\n    for m in p.marks {\n        match m {\n            d: Dot => text(\"dot\"),\n            c: Disc => text(c.label),\n        }\n    }\n    button(\"Line\", on: set(shown, .line))\n    input(bind: n)\n}";
     let c = crate::common::compile_body(src);
     assert_shape(&c);
     let names: Vec<String> = shape(&c.wasm).imports.into_iter().map(|(_, n)| n).collect();

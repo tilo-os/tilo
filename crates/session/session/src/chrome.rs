@@ -381,6 +381,12 @@ struct Seen {
     identify: Option<u64>,
     activities: u64,
     words: u64,
+    /// The name and colour this person wears: renaming themselves or
+    /// choosing a colour relabels and repaints their chip in the bar.
+    own_name: Option<String>,
+    own_colour: Option<String>,
+    /// The name and identity the bar's own avatar is drawn from.
+    own_face: (String, String),
 }
 
 /// The bar's view of the session: the desktop's tree, the wall clock, and
@@ -476,6 +482,9 @@ impl SessionChrome {
                 identify: None,
                 activities: u64::MAX,
                 words: u64::MAX,
+                own_name: None,
+                own_colour: None,
+                own_face: (String::new(), String::new()),
             }),
             revision: Cell::new(0),
         }
@@ -507,6 +516,16 @@ impl DesktopChromeSource for SessionChrome {
         // it does for the tree.
         let exposures = self.shares.borrow().exposures();
         let identify = self.identify.borrow().clone();
+        let own_name = ui::local_identity::load().map(|identity| identity.display_name);
+        let own_colour = settings_store::identity::COLOUR.get();
+        // The bar's own avatar is the same face their card shows: one name,
+        // one identity, one colour, read where the card reads it.
+        let own = self
+            .sync
+            .as_ref()
+            .map_or_else(crate::sync::OwnPresence::default, |sync| sync.own());
+        let (own_chip_name, own_chip_identity) = crate::people::own_face(&own, &self.person);
+        let (red, green, blue) = crate::people::own_rgb(&own_chip_identity);
         let seen = Seen {
             tree: self.handle.revision(),
             // Who is here, the window they are in and the call they are in
@@ -531,6 +550,12 @@ impl DesktopChromeSource for SessionChrome {
             // The bar says its words in the person's language: another one
             // relabels it as any other change to what it shows does.
             words: ui::I18nManager::revision(),
+            own_name,
+            own_colour,
+            // The name and identity their own avatar is drawn from: the
+            // presence label they gave themselves moves the bar as their
+            // display name does.
+            own_face: (own_chip_name.clone(), own_chip_identity.clone()),
         };
         if *self.seen.borrow() != seen {
             self.seen.replace(seen);
@@ -545,15 +570,13 @@ impl DesktopChromeSource for SessionChrome {
             clock,
             activities,
             waved,
+            arrived: self.sync.as_ref().and_then(|sync| sync.arrival_notice()),
             own: Some(OwnChip {
                 // The name they go by, and the root key the picture they
                 // chose hangs on: the id is never shown as their name.
-                name: crate::directory::desk_person_name(
-                    ui::local_identity::load().map(|it| it.display_name),
-                    &self.person,
-                ),
-                rgb: ui::presence::user_color(&self.person),
-                identity: self.person.clone(),
+                name: own_chip_name,
+                rgb: (red, green, blue),
+                identity: own_chip_identity,
             }),
             notification_badge: self.signals.unread(),
             notifications_quiet: self.signals.quiet(),

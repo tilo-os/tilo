@@ -419,7 +419,7 @@ impl View<'_> {
 
     /// The resource at `path` as [`Self::every_text`] lists it, read through the open writes:
     /// none when it is gone or holds no text.
-    fn texts_at(&self, path: &str) -> Result<Option<Texts>, IndexError> {
+    pub fn texts_at(&self, path: &str) -> Result<Option<Texts>, IndexError> {
         let Some(schema) = self.type_of(path)?.as_deref().and_then(lookup) else {
             return Ok(None);
         };

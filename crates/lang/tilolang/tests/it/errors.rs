@@ -295,7 +295,7 @@ fn e066_view_state_misuse() {
     // `set` names view state the view declares.
     expect(
         "E066",
-        "view v() {\n    window n: Int = 0\n    button(\"x\", on: set(m, 1))\n}",
+        "view v() {\n    state n: Int = 0\n    button(\"x\", on: set(m, 1))\n}",
     );
     // Only views have state.
     expect(
@@ -305,7 +305,7 @@ fn e066_view_state_misuse() {
     // State is declared at the top of the view body.
     expect(
         "E066",
-        "view v() {\n    stack {\n        lens n: Int = 0\n        text(\"x\")\n    }\n}",
+        "view v() {\n    stack {\n        state n: Int = 0\n        text(\"x\")\n    }\n}",
     );
 }
 

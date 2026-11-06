@@ -65,9 +65,9 @@ fn said_about(about: host.Resource) -> List<host.Resource> {
 /// that has something to discuss places it in one line: a task's page and a note's view
 /// `use` this app and call `thread(t)`.
 view thread(about: host.Resource) {
-    lens draft: RichText = RichText("")
-    lens editing: Option<Comment> = .none
-    lens revised: RichText = RichText("")
+    state draft: RichText = RichText("")
+    state editing: Option<Comment> = .none
+    state revised: RichText = RichText("")
     let all = comments.items
     let said = all.filter(c -> created(c)?.from == .some(about))
     let unread = said.find(c -> not unseen(c).is_empty())

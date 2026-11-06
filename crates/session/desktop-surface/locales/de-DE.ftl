@@ -94,6 +94,10 @@ profile-card = Dein Profil
 profile-card-of = Profil von { $name }
 profile-id = Personen-ID
 profile-copy-id = ID kopieren
+profile-copy-device-key = Schlüssel dieses Geräts kopieren
+profile-device-this = Dieser Computer
+profile-device-another = Ein anderes Gerät
+profile-device-mark = dieses Gerät
 profile-status-own-words = In eigenen Worten
 profile-status-automatic = Automatisch aus dem, was die Person tut
 profile-message = Nachricht
@@ -1161,10 +1165,19 @@ overview-strip-move-down = Nach unten
 browser-new-workspace-name = Arbeitsbereich { $number }
 workspace-notice-joined = { $name } ist dazugekommen
 workspace-notice-renamed = { $name } hat den Arbeitsbereich in { $workspace } umbenannt
-browser-app-crashed = { $app } funktionierte nicht mehr und wurde geschlossen, damit der Rest des Desktops weiterläuft. Schließe dieses Fenster oder öffne { $app } erneut.
-browser-app-closed-for-memory = { $app } wurde geschlossen, um Arbeitsspeicher freizugeben. Schließe dieses Fenster oder öffne { $app } erneut, wenn du sie brauchst.
-browser-app-closed-for-runaway = { $app } hat zu viel Arbeitsspeicher verbraucht und wurde geschlossen, damit der Rest des Desktops weiterläuft. Schließe dieses Fenster oder öffne { $app } erneut, wenn du sie brauchst.
-browser-app-crashed-reopen = Erneut öffnen
+# Was der Schreibtisch sagt, wenn etwas nicht geschehen ist, worum jemand
+# gebeten hat: wonach gefragt wurde, warum, und die Taste, die es erneut versucht.
+answer-app-not-opened = { $app } konnte nicht geöffnet werden
+answer-app-stopped = { $app } funktionierte nicht mehr
+answer-why-stopped = Es wurde unerwartet beendet.
+answer-app-closed-for-memory = { $app } wurde geschlossen, um Arbeitsspeicher freizugeben
+answer-app-closed-for-runaway = { $app } hat zu viel Arbeitsspeicher verbraucht
+answer-why-runaway = Es wurde geschlossen, damit der Rest weiterläuft.
+answer-try-again = Erneut versuchen
+answer-reopen = Wieder öffnen
+answer-why-unknown-app = Es gibt keine App, die das öffnet.
+answer-why-not-opened = Es wurde beendet, bevor ein Fenster erschien.
+answer-why-cannot-start = Apps können gerade nicht gestartet werden.
 
 # Das Menü hinter dem Tilo-Zeichen der oberen Leiste und das Info-Blatt, das es öffnet
 tilo-menu-about = Über diesen Computer

@@ -465,7 +465,7 @@ impl Registry {
         }
     }
 
-    /// The `window` or `lens` declaration with this id.
+    /// The `state` declaration with this id.
     pub fn state_meta(&self, id: &str) -> Option<StateMeta> {
         self.packages().iter().find_map(|p| {
             p.meta

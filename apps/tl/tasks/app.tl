@@ -520,7 +520,7 @@ fn lane_of(p: Project, s: Option<Section>) -> List<Task> {
 /// where they are. The place chosen is the window's, and a window's state is its person's own;
 /// what is typed in the entry at its end is their own too until Enter adds it.
 view home(t: Tasks) {
-    window place: Filter<Task> = Task.inbox
+    state place: Filter<Task> = Task.inbox
     // The places this window offers, in the order it offers them. What is assigned to the person
     // looking is a place of its own where anyone else may be assigned it too: on their own, it
     // holds all of it and tells them nothing.
@@ -768,7 +768,7 @@ view task_outline_row(t: Task, project: Option<Project>, under: Option<Task>) {
 /// it, its subtasks, what was made from it, its facts — when it is due, its project, how much it
 /// matters, who is doing it — as chips, and what happened to it.
 view task_page(t: Task) {
-    lens step: Text
+    state step: Text
     std.document(t) {
         opening(t) {
             std.origin(t)

@@ -84,7 +84,7 @@ fn listed(nb: Notebook, order: NoteOrder) -> List<Note> {
 /// The notebook's window: its notes, each opening in a window of its own, in the order the
 /// person looking chose.
 view notebook(nb: Notebook) {
-    window order: NoteOrder = .created
+    state order: NoteOrder = .created
     std.list(nb, listed(nb, order), sort: order, empty: "No notes yet")
 }
 

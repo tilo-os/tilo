@@ -2,7 +2,7 @@
 //! callables (actions, functions, views, sorts) with the parameters and presentation they
 //! carry.
 
-use crate::ast::{Expr, StateLayer};
+use crate::ast::Expr;
 use crate::resolve::plain_text;
 use crate::types::{EffectClass, MergeKind, Ty, TypeKey};
 use std::collections::BTreeSet;
@@ -112,13 +112,12 @@ impl EnumInfo {
     }
 }
 
-/// A `window` or `lens` declaration of a view.
+/// A `state` declaration of a view.
 #[derive(Clone, Debug)]
 pub struct StateInfo {
     pub view: String,
     pub name: String,
     pub id: String,
-    pub layer: StateLayer,
     pub ty: Ty,
 }
 

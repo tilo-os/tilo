@@ -54,7 +54,7 @@ destructive action retract(m: Message) (icon: .trash) {
 
 /// The channel: its messages above a composer.
 view channel(c: Channel) {
-    lens draft: RichText = RichText("")
+    state draft: RichText = RichText("")
     std.transcript(c, c.messages, row: message) {
         composer: {
             row {

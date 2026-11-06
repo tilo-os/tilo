@@ -236,7 +236,7 @@ action start_thread(c: TextChannel | Direct, m: Message, name: Text = m.body.exc
 /// Choosing one shows it beside the sidebar.
 /// TODO(language): a resource's own key for a navigation item; the category and name stand in.
 view sidebar(all: Conversations) {
-    lens shown: Text = ""
+    state shown: Text = ""
     ui.NavShell(content_kind: .page, sidebar_title: "Channels") {
         sidebar: {
             ui.NavList(selected: shown) {
@@ -330,10 +330,10 @@ view sidebar(all: Conversations) {
 
 /// A text channel: its messages, and a composer that can answer one of them.
 view channel(c: TextChannel) {
-    lens draft: RichText = RichText("")
-    lens replying: Option<Message> = .none
-    lens editing: Option<Message> = .none
-    lens revised: RichText = RichText("")
+    state draft: RichText = RichText("")
+    state replying: Option<Message> = .none
+    state editing: Option<Message> = .none
+    state revised: RichText = RichText("")
     std.transcript(c, c.messages, unread: first_unseen(c)) { m ->
         channel_message(c, m, replying, editing, revised)
         composer: {
@@ -346,10 +346,10 @@ view channel(c: TextChannel) {
 /// A direct conversation: the same messages and composer as a channel, with the person's name
 /// over it.
 view direct(d: Direct) {
-    lens draft: RichText = RichText("")
-    lens replying: Option<Message> = .none
-    lens editing: Option<Message> = .none
-    lens revised: RichText = RichText("")
+    state draft: RichText = RichText("")
+    state replying: Option<Message> = .none
+    state editing: Option<Message> = .none
+    state revised: RichText = RichText("")
     std.transcript(d, d.messages, unread: first_unseen(d)) { m ->
         direct_message(d, m, replying, editing, revised)
         composer: {
@@ -409,10 +409,10 @@ view channel_message(
 
 /// A thread: its messages and a composer, the same way.
 view thread(t: Thread) {
-    lens draft: RichText = RichText("")
-    lens replying: Option<Message> = .none
-    lens editing: Option<Message> = .none
-    lens revised: RichText = RichText("")
+    state draft: RichText = RichText("")
+    state replying: Option<Message> = .none
+    state editing: Option<Message> = .none
+    state revised: RichText = RichText("")
     std.transcript(t, t.messages) { m ->
         thread_message(m, replying, editing, revised)
         composer: {

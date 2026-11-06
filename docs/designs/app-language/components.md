@@ -15,7 +15,7 @@ Each ui-core widget has a description generated from its Rust definition
 | Slots | typed child content | `trailing: View`, `avatar: View<Avatar>` |
 | Events | data, never closures: an action reference or a view-state update | `activate`, `swipe(action)` |
 | Bindings | two-way to a field, with the right merge (text is spliced, never replaced) | `TextInput.value <-> Text` |
-| Own state | scroll, selection, caret, expansion | becomes lens state, so presence and resuming work for every component |
+| Own state | scroll, selection, caret, expansion | becomes view state, so presence and resuming work for every component |
 | Semantics | accessibility role, test id, the resource shown | carried through |
 
 The compiler reads the catalogue as the package `ui`:
@@ -75,7 +75,7 @@ did not place, so every action stays reachable. They all run in the UI host.
 A tilolang `view` is a component: typed parameters are props (a `Collection<T>`, `Set<T>` or
 `Map<V>` parameter is handed the field live, never copied, and a loop over it follows its
 inserts and removals), view parameters are slots, action
-parameters are events, and it has its own `window` and `lens` state. Other packages' views are
+parameters are events, and it declares its own view `state`. Other packages' views are
 used like `ui.*` ones.
 
 ```
@@ -247,7 +247,7 @@ So the whole rung costs an argument:
 
 ```
 view inbox(tasks: Tasks) {
-    lens open: Option<Task> = .none
+    state open: Option<Task> = .none
     page {
         ui.Section("Inbox", collapsible: true, motion: .calm) {
             for x in tasks.items {
@@ -376,7 +376,7 @@ other widgets. A view picks a named motion and its pace; the platform owns what 
 
 1. Description format, derive, generic adapter, the compiler reading `ui` (done for the first
    set).
-2. Action reflection and lens access in the language.
+2. Action reflection and view state access in the language.
 3. `std` in tilolang instead of hard-coded frames.
 4. The remaining widgets one by one, each with its closures turned into data events. This is
    real redesign per widget, and it improves the Rust API too.

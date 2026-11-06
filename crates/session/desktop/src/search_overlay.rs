@@ -280,6 +280,31 @@ impl Widget for SearchOverlay {
         *ctx.handled = true;
     }
 
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        if !self.is_open() {
+            return false;
+        }
+        let answered = {
+            let search = self.handle.search_palette();
+            let mut search = search.borrow_mut();
+            search
+                .palette_mut()
+                .is_some_and(|palette| palette.perform_semantic_action(target, action, state, path))
+        };
+        if answered {
+            // The desk takes up what the card was asked on its next pass, as
+            // it does what the person typed or clicked there.
+            self.handle.note_search_activity();
+        }
+        answered
+    }
+
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
         // The card is the desk's palette: the node this overlay lays out is
         // the palette's own, while the palette itself is not routed here (the

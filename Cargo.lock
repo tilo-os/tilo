@@ -18424,6 +18424,7 @@ dependencies = [
  "serde_json",
  "tilo-clock",
  "tilo-desktop-model",
+ "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-ui",
  "workspace-hack",

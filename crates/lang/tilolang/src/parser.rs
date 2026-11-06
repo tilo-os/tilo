@@ -8,8 +8,8 @@ use crate::ast::{
     DefaultViewDecl, DerivedDecl, EnumDecl, Expr, ExprKind, FieldDecl, FieldMarker, FlowDecl,
     FnDecl, Ident, Item, LetBind, MarkerArg, MatchArm, MergeSpec, Module, NodeId, Param, Pattern,
     Place, Proposal, RootDecl, ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl,
-    StateLayer, Stmt, StmtKind, StrPart, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind,
-    UiStmt, UnOp, UseDecl, VariantDecl, ViewDecl, ViewsDecl,
+    Stmt, StmtKind, StrPart, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp,
+    UseDecl, VariantDecl, ViewDecl, ViewsDecl,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Comment, StrPiece, Tok, Token, lex, lex_at};
@@ -2606,16 +2606,11 @@ impl<'a> Parser<'a> {
                 UiKind::Match { scrutinee, arms }
             }
             Tok::Ident(word)
-                if (word == "window" || word == "lens")
+                if word == "state"
                     && matches!(self.peek_at(1), Tok::Ident(_))
                     && matches!(self.peek_at(2), Tok::Colon) =>
             {
                 self.bump();
-                let layer = if word == "window" {
-                    StateLayer::Window
-                } else {
-                    StateLayer::Lens
-                };
                 let node = self.node();
                 let name = self.ident("a state name")?;
                 self.expect(&Tok::Colon)?;
@@ -2627,7 +2622,6 @@ impl<'a> Parser<'a> {
                 };
                 UiKind::State(StateDecl {
                     node,
-                    layer,
                     name,
                     ty,
                     default,

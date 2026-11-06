@@ -82,6 +82,10 @@ profile-card = Your profile
 profile-card-of = { $name }’s profile
 profile-id = Person ID
 profile-copy-id = Copy ID
+profile-copy-device-key = Copy this device’s key
+profile-device-this = This computer
+profile-device-another = Another device
+profile-device-mark = this device
 profile-status-own-words = In their own words
 profile-status-automatic = Written automatically from what they do
 profile-message = Message
@@ -1142,10 +1146,19 @@ overview-strip-move-down = Move down
 browser-new-workspace-name = Workspace { $number }
 workspace-notice-joined = { $name } joined
 workspace-notice-renamed = { $name } renamed the workspace to { $workspace }
-browser-app-crashed = { $app } stopped working, so it was closed to keep the rest of the desktop running. Close this window, or open { $app } again.
-browser-app-closed-for-memory = { $app } was closed to free memory. Close this window, or open { $app } again when you need it.
-browser-app-closed-for-runaway = { $app } was using too much memory, so it was closed to keep the rest of the desktop running. Close this window, or open { $app } again when you need it.
-browser-app-crashed-reopen = Reopen
+# What the desk says when something a person asked for did not happen: what
+# they asked for, why, and the button that tries it again.
+answer-app-not-opened = { $app } could not open
+answer-app-stopped = { $app } stopped working
+answer-why-stopped = It ended unexpectedly.
+answer-app-closed-for-memory = { $app } was closed to free memory
+answer-app-closed-for-runaway = { $app } was using too much memory
+answer-why-runaway = It was closed so the rest keeps running.
+answer-try-again = Try again
+answer-reopen = Reopen
+answer-why-unknown-app = No app here opens it.
+answer-why-not-opened = It was stopped before a window appeared.
+answer-why-cannot-start = Apps cannot be started right now.
 
 # The menu behind the top bar's Tilo mark, and the About sheet it opens
 tilo-menu-about = About this computer

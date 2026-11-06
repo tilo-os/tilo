@@ -36,7 +36,7 @@ use tilo_app_launch::{
 };
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
-use tilo_desktop_surface::crashed_app::Closed;
+use tilo_desktop_surface::outcome::{Closed, Outcome};
 use tilo_surface_host::{DesktopHost, WidgetHost};
 
 use crate::search::AppActions;
@@ -401,6 +401,11 @@ impl Apps {
         for asked in asked {
             let Some(launch) = Launch::parse(&asked.app) else {
                 tracing::warn!(asked = %asked.app, "not a launch this session knows");
+                self.could_not_open(
+                    asked.tab,
+                    &asked.app,
+                    &tilo_desktop_surface::i18n::t("answer-why-unknown-app"),
+                );
                 continue;
             };
             // A window is on its way to its own tab, and a notice starts
@@ -411,18 +416,41 @@ impl Apps {
             let launch = as_this_machine_knows_it(launch);
             let workspace = self.active_workspace();
             let started = self.start_at(&launch, &workspace, asked.tab);
-            // The desk held a tab for a window this launch opens: one that
-            // raised the window its app already shows, and one that did not
-            // start, leave no window to fill it.
-            if let Some(tab) = asked.tab
-                && !matches!(started, Ok(true))
-            {
-                desktop.with_policy(|policy| policy.release_tab(tab));
-            }
-            if let Err(error) = started {
-                tracing::warn!(asked = %asked.app, %error, "an app did not start");
+            match &started {
+                // The window is coming, or the app's own window came forward
+                // in place of a second one: the tab it was held in takes it.
+                Ok(true) => {}
+                Ok(false) => {
+                    if let Some(tab) = asked.tab {
+                        desktop.with_policy(|policy| policy.release_tab(tab));
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(asked = %asked.app, %error, "an app did not start");
+                    self.could_not_open(asked.tab, &asked.app, &error.to_string());
+                }
             }
         }
+    }
+
+    /// What the person asked for in `tab` did not happen, `why` says why, as
+    /// the desk says such things: the tab keeps its place and shows the
+    /// answer, with the button that asks for the app again. A launch no tab
+    /// holds (a service's own) is answered by whoever asked for it, not
+    /// here.
+    fn could_not_open(&self, tab: Option<u64>, asked: &str, why: &str) {
+        use tilo_desktop_surface::i18n::{t, t_args};
+        let (Some(tab), Some(desktop)) = (tab, self.desktop.borrow().clone()) else {
+            return;
+        };
+        let name = desktop.with_policy(|policy| policy.name_of(asked));
+        let outcome = Outcome::new(t_args("answer-app-not-opened", &[("app", name.into())]))
+            .saying(why)
+            .retryable(t("answer-try-again"));
+        desktop.with_policy(|policy| policy.failed_at(tab, asked, outcome));
+        // The answer is a desktop command like any other: the desk carries it
+        // out, and lays its tab out, on its next pass.
+        desktop.with_widgets(WidgetHost::relayout);
     }
 
     /// Start `launch` on the workspace in front, which is where what the
@@ -480,9 +508,27 @@ impl Apps {
                 None => Closed::Crashed,
             };
             if let Some(desktop) = self.desktop.borrow().clone() {
-                let notice = desktop.with_policy(|policy| {
-                    policy.stopped(asked.as_deref().unwrap_or(&event.app), &event.title, closed)
+                let asked = asked.unwrap_or_else(|| event.app.clone());
+                // A launch that ended before its window came never opened,
+                // and says that in the tab the person asked for it in: what
+                // stopped in front of them is a window that did not arrive,
+                // not one that went.
+                let waited = desktop.with_policy(|policy| {
+                    policy
+                        .anchor_for(&asked)
+                        .filter(|(tab, ..)| policy.holds_a_place(*tab))
+                        .map(|(tab, ..)| tab)
                 });
+                if let Some(tab) = waited {
+                    self.could_not_open(
+                        Some(tab),
+                        &asked,
+                        &tilo_desktop_surface::i18n::t("answer-why-not-opened"),
+                    );
+                    continue;
+                }
+                let notice =
+                    desktop.with_policy(|policy| policy.stopped(&asked, &event.title, closed));
                 if let Err(error) = notice {
                     tracing::warn!(%error, app = %event.app, "no notice for the app");
                 }
@@ -677,8 +723,7 @@ impl Apps {
             };
             Planned::of(launch, &context)
         };
-        let mut planned =
-            planned.map_err(|error| DoorError::Failed(format!("{}: {error}", launch.id())))?;
+        let mut planned = planned.map_err(|error| DoorError::Failed(error.to_string()))?;
         // The tool this launch opens is told what to show: only a package is
         // given it.
         if let (Some(context), Kind::Package) =

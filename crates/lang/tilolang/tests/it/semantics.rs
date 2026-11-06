@@ -310,28 +310,22 @@ fn roots_and_default_views_are_in_the_metadata() {
 }
 
 // USER REQUIREMENT (2026-10-20): view state per workspace-model.md: "inside a view body,
-// `window name: T = default` (shared per window) and `lens name: T = default` (per person per
-// window) declarations, readable in the view; changed only via bindings (`bind: name`) or a
-// platform action reference `set(name, value)` usable in `on:`."
+// `state name: T = default` (per person per window) declarations, readable in the view;
+// changed only via bindings (`bind: name`) or a platform action reference
+// `set(name, value)` usable in `on:`."
 #[test]
 fn view_state_is_declared_read_bound_and_set() {
     let c = crate::common::compile_body(
-        "enum Order {\n    recent\n    title\n}\nview v() {\n    window order: Order = .recent\n    lens query: Text\n    lens open: Bool = false\n    stack {\n        input(bind: query)\n        checkbox(\"Open\", bind: open)\n        button(\"By title\", on: set(order, .title))\n        if order == .title {\n            text(query)\n        }\n    }\n}",
+        "enum Order {\n    recent\n    title\n}\nview v() {\n    state order: Order = .recent\n    state query: Text\n    state open: Bool = false\n    stack {\n        input(bind: query)\n        checkbox(\"Open\", bind: open)\n        button(\"By title\", on: set(order, .title))\n        if order == .title {\n            text(query)\n        }\n    }\n}",
     );
     crate::common::validate(&c.wasm);
     let state = &c.meta.views[0].state;
-    let names: Vec<(&str, &str)> = state
-        .iter()
-        .map(|s| (s.name.as_str(), s.layer.as_str()))
-        .collect();
-    assert_eq!(
-        names,
-        vec![("order", "window"), ("query", "lens"), ("open", "lens")]
-    );
+    let names: Vec<&str> = state.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["order", "query", "open"]);
     assert_eq!(state[0].ty, "enum Order");
     assert_eq!(
         codes(
-            "view v() {\n    window n: Int = 0\n    text(\"{n}\")\n}\nfn f() -> Int {\n    return n\n}"
+            "view v() {\n    state n: Int = 0\n    text(\"{n}\")\n}\nfn f() -> Int {\n    return n\n}"
         ),
         vec!["E014"],
         "view state is the view's own"
@@ -339,7 +333,7 @@ fn view_state_is_declared_read_bound_and_set() {
 }
 
 // A list's rows are a view of their own (`<view>~row<n>`), and a component called in a row that
-// declares `window`/`lens` state keeps it there: the host binds the state by the id the row's
+// declares `state` keeps it there: the host binds the state by the id the row's
 // body reads (`<row view id>:<component>.<state>`), so the row's view meta carries it.
 #[test]
 fn view_state_of_a_component_called_in_a_lists_row_is_the_rows() {
@@ -357,5 +351,4 @@ fn view_state_of_a_component_called_in_a_lists_row_is_the_rows() {
     let ids: Vec<&str> = row.state.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, vec![format!("{}:add_entry.typed", row.id)]);
     assert_eq!(row.state[0].name, "typed");
-    assert_eq!(row.state[0].layer, "lens");
 }

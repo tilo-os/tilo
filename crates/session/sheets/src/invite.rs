@@ -102,6 +102,8 @@ pub struct Created {
     pub brings: String,
     pub lasts: String,
     pub copy: String,
+    /// Taking the link back, beside the one that copies it.
+    pub revoke: String,
     /// The same link as a code to scan, for the person reading it.
     pub alt: String,
 }
@@ -298,6 +300,15 @@ fn composing(
     if !invite.roles.is_empty() {
         items.push(caption(&invite.role_label));
         items.push(roles(invite, choosing, &picked));
+        // What the part on offer means for whoever joins with the link, in
+        // one line under the choice: the same words its hint carries.
+        let at = picked
+            .role
+            .filter(|at| *at < invite.roles.len())
+            .unwrap_or_else(|| invite.default_role());
+        if let Some(role) = invite.roles.get(at) {
+            items.push(caption(&role.brings));
+        }
     }
     if !invite.people.is_empty() {
         items.push(caption(&invite.for_label));
@@ -396,6 +407,8 @@ fn made(created: &Created, link: &LocalState<String>, ask: &Ask) -> Vec<Element>
     }
     let copying = ask.clone();
     let copied = created.link.clone();
+    let revoking = ask.clone();
+    let invite_id = created.invite.clone();
     let text = TextInput::from_state(link)
         .with_id("invite-link")
         .with_read_only(true)
@@ -418,11 +431,26 @@ fn made(created: &Created, link: &LocalState<String>, ask: &Ask) -> Vec<Element>
                         .push(caption(&created.brings))
                         .push(caption(&created.lasts))
                         .push(Box::new(
-                            Button::new("invite-copy-link", &created.copy).on_view(move || {
-                                copying(InviteEffect::Copy {
-                                    link: copied.clone(),
-                                });
-                            }),
+                            Row::new()
+                                .with_rhythm(Rhythm::Tight)
+                                .push(Box::new(
+                                    Button::new("invite-copy-link", &created.copy).on_view(
+                                        move || {
+                                            copying(InviteEffect::Copy {
+                                                link: copied.clone(),
+                                            });
+                                        },
+                                    ),
+                                ))
+                                .push(Box::new(
+                                    Button::new("invite-revoke-made", &created.revoke).on_view(
+                                        move || {
+                                            revoking(InviteEffect::Revoke {
+                                                invite: invite_id.clone(),
+                                            });
+                                        },
+                                    ),
+                                )),
                         )),
                 )),
         ),
@@ -549,6 +577,7 @@ impl ResourceApp for InviteApp {
                     brings: "Ada Lovelace-Byron joins as an editor.".to_owned(),
                     lasts: "The link works for the next 60 minutes.".to_owned(),
                     copy: "Copy link".to_owned(),
+                    revoke: "Take back".to_owned(),
                     alt: "The invitation link as a code to scan".to_owned(),
                 });
                 invite
