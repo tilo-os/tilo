@@ -325,6 +325,10 @@ fn only_the_origin_runs_triggers_from_its_frame() {
 
     let (mut origin, doc) = window(noon, true);
     origin.sync(Some(&doc));
+    // Driven by hand, this window has no frames to take in the index its load builds off
+    // them: it waits for it, as a running window's frames would.
+    origin.host().expect("the window opened").wait_index();
+    origin.sync(Some(&doc));
     origin.sync(Some(&doc));
     let ran: Vec<String> = origin
         .host()
@@ -337,6 +341,8 @@ fn only_the_origin_runs_triggers_from_its_frame() {
     assert_eq!(ran, vec!["trigger:t.trig".to_owned()]);
 
     let (mut reader, doc) = window(noon, false);
+    reader.sync(Some(&doc));
+    reader.host().expect("the window opened").wait_index();
     reader.sync(Some(&doc));
     reader.sync(Some(&doc));
     assert!(
