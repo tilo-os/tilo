@@ -56,9 +56,23 @@ pub(crate) enum PeopleAsk {
     Status(String),
     /// How available they say they are.
     Availability(ui::Availability),
+    /// The presence colour they chose, by its id.
+    Colour(String),
     /// Open the Settings page a card action names, such as their identities
     /// or an identity backup.
     Settings(String),
+}
+
+/// The colour this person wears here: the one they chose in their own
+/// settings, else the one their identity derives, so their face is the same
+/// on every surface and on every device that paints them.
+pub(crate) fn own_rgb(identity: &str) -> (u8, u8, u8) {
+    let chosen = settings_store::identity::COLOUR
+        .get()
+        .as_deref()
+        .and_then(ui::tokens::PresenceHue::from_id);
+    let hue = chosen.unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(identity));
+    ui::presence::identity_rgb(hue)
 }
 
 /// The card of this person themselves, where the roster lists someone else's:
@@ -680,20 +694,22 @@ impl Panel {
             let here = here.borrow();
             here.devices_of(&sync.publisher().to_string())
         });
+        // The identity's key is the person's on every device: the card shows
+        // it short, with Copy, and the roster looks every face up by it.
+        let key = own.user.clone();
+        let (red, green, blue) = own_rgb(&identity);
         ProfileModel {
             name,
             identity: identity.clone(),
-            colour: Some(Color::from_rgb8(
-                ui::presence::user_color(&identity).0,
-                ui::presence::user_color(&identity).1,
-                ui::presence::user_color(&identity).2,
-            )),
+            colour: Some(Color::from_rgb8(red, green, blue)),
+            colour_id: settings_store::identity::COLOUR.get(),
             can_rename: true,
             ask_name: own.label.trim().is_empty(),
             actions: Self::own_actions(),
             availability: own.availability,
             status: own.status.clone().unwrap_or_default(),
             offers_presence: true,
+            key,
             devices,
             ..ProfileModel::default()
         }
@@ -756,18 +772,37 @@ impl Panel {
                 ProfileChoice::Message(key) => {
                     self.asks.borrow_mut().push(PeopleAsk::Message { key });
                 }
-                // The card of someone else offers nothing a session must
-                // carry out: their own card is the bar's, on this person.
-                ProfileChoice::Rename(_)
-                | ProfileChoice::Action(_)
-                | ProfileChoice::Link(_)
+                // The rows of this person's own card: the session keeps
+                // their name, what they say of themselves and how available
+                // they are, and opens the pages their actions name. Nothing
+                // here reaches anyone else's card.
+                ProfileChoice::Rename(name) => {
+                    self.asks.borrow_mut().push(PeopleAsk::Rename(name));
+                }
+                ProfileChoice::Status(status) => {
+                    self.asks.borrow_mut().push(PeopleAsk::Status(status));
+                }
+                ProfileChoice::Availability(chosen) => {
+                    self.asks.borrow_mut().push(PeopleAsk::Availability(chosen));
+                }
+                ProfileChoice::Colour(id) => {
+                    self.asks.borrow_mut().push(PeopleAsk::Colour(id));
+                }
+                ProfileChoice::Action(id) => {
+                    if let Some(link) = Self::own_settings_link(&id) {
+                        self.asks
+                            .borrow_mut()
+                            .push(PeopleAsk::Settings(link.to_owned()));
+                    }
+                }
+                // Nobody else's card asks these of this session, and this
+                // person's own keeps none of them yet: what people here see
+                // is the workspace's own, and the desktop's hints its own.
+                ProfileChoice::Link(_)
                 | ProfileChoice::Unlink(_)
                 | ProfileChoice::Accept(_)
                 | ProfileChoice::Decline(_)
-                | ProfileChoice::Availability(_)
-                | ProfileChoice::Status(_)
                 | ProfileChoice::Sharing(_)
-                | ProfileChoice::Colour(_)
                 | ProfileChoice::Visibility(_)
                 | ProfileChoice::ControlHints(_) => {}
             }

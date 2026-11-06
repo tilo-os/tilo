@@ -311,3 +311,9 @@ window-move-bringing-edits = Das Fenster kommt mit dem zurück, was nach dem Ver
 ## A reminder a workspace holds for the person, shown by the session itself.
 reminder-open = Öffnen
 reminder-late = Verspätet
+
+## The person's own card in the top bar: what it offers about who they are.
+profile-action-identities = Deine Identitäten
+profile-action-backup = Deine Identität sichern
+profile-action-pair-device = Ein weiteres Gerät koppeln
+profile-name-not-saved = Dein Name wurde nicht gespeichert

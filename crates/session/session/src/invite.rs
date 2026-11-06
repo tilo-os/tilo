@@ -168,20 +168,30 @@ impl Shared {
                 }
             })
             .collect();
-        data.people = engine
-            .people(&workspace)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|member| !member.removed && member.person != own)
-            .map(|member| sheet::Person {
-                name: if member.name.is_empty() {
-                    member.person.chars().take(8).collect()
-                } else {
-                    member.name
-                },
-                key: member.person,
-            })
-            .collect();
+        // Everyone this device knows by name, from every workspace it is
+        // part of, the workspace in front first: a link can be made for
+        // someone the person works with elsewhere too, and the same people
+        // a send-to picker would offer.
+        let mut seen = std::collections::HashSet::new();
+        let mut people = Vec::new();
+        let workspaces = std::iter::once(workspace.clone())
+            .chain(engine.workspaces().into_iter().map(|held| held.to_string()));
+        for held in workspaces {
+            for member in engine.people(&held).unwrap_or_default() {
+                if member.removed || member.person == own || !seen.insert(member.person.clone()) {
+                    continue;
+                }
+                people.push(sheet::Person {
+                    name: if member.name.is_empty() {
+                        member.person.chars().take(8).collect()
+                    } else {
+                        member.name
+                    },
+                    key: member.person,
+                });
+            }
+        }
+        data.people = people;
         let now = SystemTime::now();
         data.pending = engine
             .invitations(&workspace, now)
@@ -274,6 +284,7 @@ impl Shared {
                 &[("minutes", minutes_left(expires_at_ns).into())],
             ),
             copy: t("invite-copy"),
+            revoke: t("invite-revoke"),
             alt: t("invite-code-alt"),
         });
         made.note = None;

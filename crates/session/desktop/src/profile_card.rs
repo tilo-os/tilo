@@ -583,13 +583,24 @@ impl ProfileCard {
                     .with_role(TextRole::Caption)
                     .dimmed(),
             ));
-        for device in devices {
-            column = column.push(Box::new(Facts::new(vec![
-                Fact::text(device.label.clone()),
-                Fact::text(t(availability_key(device.availability))),
-            ])));
+        for row in Self::device_rows(devices) {
+            column = column.push(row);
         }
         column
+    }
+
+    /// One row per device: what it calls itself, and how available its
+    /// person is there.
+    fn device_rows(devices: &[crate::here::PersonDevice]) -> Vec<Box<dyn Widget>> {
+        devices
+            .iter()
+            .map(|device| {
+                Box::new(Facts::new(vec![
+                    Fact::text(device.label.clone()),
+                    Fact::text(t(availability_key(device.availability))),
+                ])) as Box<dyn Widget>
+            })
+            .collect()
     }
 
     /// Change the picture, and take it away again, where the host offers
@@ -705,16 +716,20 @@ impl ProfileCard {
                 .filter(|action| action.group == group)
                 // The picture's are offered beside the avatar.
                 .filter(|action| action.id != SET_PHOTO && action.id != RESET_PHOTO)
-                // One clear way to keep who you are: the host's first
-                // (it lists them best first). The rest stay in search, so
-                // three overlapping asks never compete here.
+                // Keeping who you are and backing it up: the two clear
+                // asks, so a third overlapping one never competes here; the
+                // rest stay in search.
                 .take(if group == ProfileGroup::Identity {
-                    1
+                    2
                 } else {
                     usize::MAX
                 })
                 .collect();
-            if actions.is_empty() {
+            // The devices this person is here on are listed once, under
+            // the heading their pairing action shares.
+            let devices = (group == ProfileGroup::Devices && !model.devices.is_empty())
+                .then_some(model.devices.as_slice());
+            if actions.is_empty() && devices.is_none() {
                 continue;
             }
             body = body.push(Box::new(Divider::horizontal()));
@@ -722,6 +737,9 @@ impl ProfileCard {
                 body = body.push(Box::new(
                     Text::new(&t(heading)).with_role(TextRole::Caption).dimmed(),
                 ));
+            }
+            for row in devices.map_or_else(Vec::new, Self::device_rows) {
+                body = body.push(row);
             }
             for action in actions {
                 let chosen = Rc::clone(&self.chosen);

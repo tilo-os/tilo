@@ -38,6 +38,24 @@ impl Shared {
         for ask in asked {
             match ask {
                 people::PeopleAsk::Message { key } => self.message_person(&key),
+                people::PeopleAsk::Rename(name) => self.name_self(&name),
+                people::PeopleAsk::Status(status) => self.set_own_status(&status),
+                people::PeopleAsk::Availability(chosen) => {
+                    let Some(sync) = &self.sync else {
+                        continue;
+                    };
+                    let mut own = sync.own();
+                    own.availability = chosen;
+                    sync.set_own(own);
+                }
+                people::PeopleAsk::Colour(id) => {
+                    if let Err(error) = settings_store::identity::COLOUR.set(Some(id)) {
+                        tracing::warn!(%error, "could not keep the chosen colour");
+                    }
+                }
+                people::PeopleAsk::Settings(link) => {
+                    crate::quick_settings::open_settings(self, &link);
+                }
             }
         }
         let asks = std::mem::take(&mut *self.asks.borrow_mut());
@@ -63,6 +81,11 @@ impl Shared {
                 }
                 DesktopAsk::Intent(ChromeIntent::ShowPerson(person)) => {
                     self.people.borrow().show_person(&person);
+                }
+                // This person's own avatar in the bar: their own card, the
+                // same card as anyone else's, where the roster stands.
+                DesktopAsk::Intent(ChromeIntent::ToggleProfile) => {
+                    self.people.borrow().show_self();
                 }
                 // Pulling an activity out of the bar's pill: its card is
                 // the floating layer's to draw.
@@ -140,6 +163,47 @@ impl Shared {
     /// did in the browser.
     fn message_person(&self, key: &str) {
         self.invoke_app_action(LaunchpadAppAction::message_person(key));
+    }
+
+    /// Name this person, as their own card asked: their active identity
+    /// record takes the name, so their own desktop and everyone they work
+    /// with say it from now on, and this workspace's presence says it here
+    /// at once. Says so when the record could not keep it.
+    fn name_self(&self, name: &str) {
+        use tilo_desktop_surface::notifications::{Notification, NotificationSeverity};
+
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        match identity::rename_to(name) {
+            Ok(()) => {
+                if let Some(sync) = &self.sync {
+                    let mut own = sync.own();
+                    own.label = name.to_owned();
+                    sync.set_own(own);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not keep the person's name");
+                self.notices.post(
+                    Notification::new(crate::i18n::t("profile-name-not-saved"), error)
+                        .with_severity(NotificationSeverity::Error),
+                );
+            }
+        }
+    }
+
+    /// What this person says they are doing, in their own words, beside
+    /// their face here: clearing the words stops saying it.
+    fn set_own_status(&self, status: &str) {
+        let Some(sync) = &self.sync else {
+            return;
+        };
+        let mut own = sync.own();
+        let status = status.trim();
+        own.status = (!status.is_empty()).then(|| status.to_owned());
+        sync.set_own(own);
     }
 
     /// Do what an app action names, in the workspace in front (where the

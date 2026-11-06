@@ -307,3 +307,9 @@ window-move-bringing-edits = The window comes back with what was written after i
 ## A reminder a workspace holds for the person, shown by the session itself.
 reminder-open = Open
 reminder-late = Late
+
+## The person's own card in the top bar: what it offers about who they are.
+profile-action-identities = Your identities
+profile-action-backup = Back up your identity
+profile-action-pair-device = Pair another device
+profile-name-not-saved = Your name was not saved

@@ -381,6 +381,10 @@ struct Seen {
     identify: Option<u64>,
     activities: u64,
     words: u64,
+    /// The name and colour this person wears: renaming themselves or
+    /// choosing a colour relabels and repaints their chip in the bar.
+    own_name: Option<String>,
+    own_colour: Option<String>,
 }
 
 /// The bar's view of the session: the desktop's tree, the wall clock, and
@@ -476,6 +480,8 @@ impl SessionChrome {
                 identify: None,
                 activities: u64::MAX,
                 words: u64::MAX,
+                own_name: None,
+                own_colour: None,
             }),
             revision: Cell::new(0),
         }
@@ -507,6 +513,8 @@ impl DesktopChromeSource for SessionChrome {
         // it does for the tree.
         let exposures = self.shares.borrow().exposures();
         let identify = self.identify.borrow().clone();
+        let own_name = ui::local_identity::load().map(|identity| identity.display_name);
+        let own_colour = settings_store::identity::COLOUR.get();
         let seen = Seen {
             tree: self.handle.revision(),
             // Who is here, the window they are in and the call they are in
@@ -531,6 +539,8 @@ impl DesktopChromeSource for SessionChrome {
             // The bar says its words in the person's language: another one
             // relabels it as any other change to what it shows does.
             words: ui::I18nManager::revision(),
+            own_name,
+            own_colour,
         };
         if *self.seen.borrow() != seen {
             self.seen.replace(seen);
@@ -552,7 +562,7 @@ impl DesktopChromeSource for SessionChrome {
                     ui::local_identity::load().map(|it| it.display_name),
                     &self.person,
                 ),
-                rgb: ui::presence::user_color(&self.person),
+                rgb: crate::people::own_rgb(&self.person),
                 identity: self.person.clone(),
             }),
             notification_badge: self.signals.unread(),

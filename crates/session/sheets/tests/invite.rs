@@ -56,6 +56,7 @@ fn with_link() -> Invite {
             brings: "Ada Lovelace-Byron joins as an editor.".to_owned(),
             lasts: "The link works for the next 60 minutes.".to_owned(),
             copy: "Copy link".to_owned(),
+            revoke: "Take back".to_owned(),
             alt: "The invitation link as a code to scan".to_owned(),
         }),
         pending_title: "Links that still work".to_owned(),
@@ -216,5 +217,35 @@ fn a_person_who_may_not_invite_here_is_told_why_and_cannot_make_a_link() {
             .into_iter()
             .all(|(_, node)| node.label() != Some("Create link")),
         "no button offers a link they may not make"
+    );
+}
+
+/// What the part picked brings whoever joins with it, in a line under the
+/// choice, and it follows the pick.
+#[test]
+fn the_part_on_offer_says_in_a_line_what_it_brings() {
+    let (mut app, _seat) = seated(with_link());
+    assert!(
+        says(&mut app, "Can view, comment on, and edit shared work."),
+        "the part the sheet opens on says what it brings"
+    );
+    press(&mut app, "invite-role:segment:0");
+    assert!(
+        says(&mut app, "Can view shared work."),
+        "picking another part says what that one brings"
+    );
+}
+
+/// The link made is taken back beside the button that copies it.
+#[test]
+fn taking_back_the_link_just_made_asks_for_that_invitation() {
+    let (mut app, seat) = seated(with_link());
+    press(&mut app, "invite-revoke-made");
+    assert_eq!(
+        seat.take_asked(),
+        vec![InviteEffect::Revoke {
+            invite: "8f2c".to_owned(),
+        }],
+        "taking back the link shown takes back the invitation it names"
     );
 }
