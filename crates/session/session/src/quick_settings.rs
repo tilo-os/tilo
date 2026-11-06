@@ -218,7 +218,7 @@ impl crate::Session {
     /// Take what the panel answered when Escape asked it to go back: the
     /// panel closes from its main page, and says so by having nothing left to
     /// go back to (`{"handled": false}`).
-    fn follow_panel_back(&mut self) {
+    fn follow_panel_back(&self) {
         let Some(id) = self.shared.panel_back.get() else {
             return;
         };
