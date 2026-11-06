@@ -606,7 +606,7 @@ view watched_page(h: WatchEntry) {
             }
         }
         content: {
-            history_list(yt)
+            history_list(yt, fill)
         }
     }
 }
