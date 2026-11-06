@@ -138,6 +138,26 @@ pub fn workspace_resource(workspace: &str) -> TreePath {
     TreePath::workspace(workspace).kind(ROOM_KIND)
 }
 
+/// The node of assigning the named grant set `name` in `workspace`: a grant on
+/// it lets someone assign that one set, and nothing else of the workspace.
+#[must_use]
+pub fn preset_assign_node(workspace: &str, name: &str) -> TreePath {
+    workspace_resource(workspace)
+        .field("presets")
+        .item(name.trim().to_lowercase())
+        .action("assign")
+}
+
+/// The set and rule a grant id assigns, when it places one of the workspace's
+/// saved grant sets: `preset:<mint>:<set>:<index>` ([`Preset::assign`]).
+#[must_use]
+pub fn preset_assigned(id: &GrantId) -> Option<(&str, usize)> {
+    let rest = id.as_str().strip_prefix("preset:")?;
+    let (_, rest) = rest.split_once(':')?;
+    let (set, index) = rest.rsplit_once(':')?;
+    Some((set, index.parse().ok()?))
+}
+
 #[must_use]
 pub fn governance_action(workspace: &str, action: &str) -> TreePath {
     workspace_resource(workspace).action(action)
