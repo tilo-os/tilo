@@ -2109,6 +2109,17 @@ pub enum RecordOpenError {
     Retired,
 }
 
+impl RecordOpenError {
+    /// Whether another process was writing the record's store at this moment
+    /// ([`app_state::StoreError::WriterBusy`]): the record is not one this
+    /// device cannot open, it is one it did not open this time, and opening
+    /// it again once that write is done succeeds.
+    #[must_use]
+    pub fn writer_busy(&self) -> bool {
+        matches!(self, Self::Store(app_state::StoreError::WriterBusy { .. }))
+    }
+}
+
 impl From<app_state::StoreError> for RecordOpenError {
     fn from(error: app_state::StoreError) -> Self {
         match error {
