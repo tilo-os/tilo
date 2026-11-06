@@ -88,6 +88,12 @@ type SurfaceInputs = (
     Vec<String>,
 );
 
+/// The part of [`SurfaceInputs`] the directory depends on: the record's revision, the loaded
+/// packages and the updates that saw a change. What the window shows is not in it — the
+/// directory answers questions about the whole workspace, so a change that only brings other
+/// rows on screen leaves it as it was.
+type DirectoryInputs = (u64, Vec<tilolang_tilo::runtime::PackageId>, u64);
+
 /// What the instance publishes for its window: the resources a person can reach, by published
 /// id — the lanes' subjects and the rows on screen, with what holds them. A workspace of ten
 /// thousand tasks publishes the rows a window shows; a caller that wants the rest asks the
@@ -383,6 +389,10 @@ pub struct Hosted {
     /// Whether the surface moved since [`Self::directory`] was built ([`Self::publish`],
     /// [`Self::relabel`]): it is built again when it is next asked, not on every change.
     directory_behind: bool,
+    /// What [`Self::directory`] was built from ([`DirectoryInputs`]): a publication whose
+    /// inputs it covers leaves the directory as it was, so a workspace of ten thousand items
+    /// surveys its door once, not once per row scrolled onto the screen.
+    directory_from: Option<DirectoryInputs>,
     /// The surface and its inputs ([`Surface::inputs`]) the broker's copy was built from: while
     /// they are the same, a turn publishes without building anything.
     published_from: Option<(Rc<Surface>, SurfaceInputs)>,
@@ -500,6 +510,7 @@ impl Hosted {
             published: None,
             directory: PublishedDirectory::default(),
             directory_behind: false,
+            directory_from: None,
             published_from: None,
             refused: Vec::new(),
             registry,
@@ -1147,6 +1158,11 @@ impl Hosted {
         // with ten thousand records or items than with one.
         let shown = self.shown();
         let inputs = surface.inputs(&shown);
+        let whole = (inputs.0, inputs.1.clone(), inputs.2);
+        if self.directory_from.as_ref() != Some(&whole) {
+            self.directory_from = Some(whole);
+            self.directory_behind = true;
+        }
         if self
             .published_from
             .as_ref()
@@ -1179,6 +1195,7 @@ impl Hosted {
             // A stale catalogue that looks valid is worse than none.
             self.directory.withdraw();
             self.directory_behind = false;
+            self.directory_from = None;
             self.offer(&[]);
             if self
                 .published
@@ -1207,7 +1224,6 @@ impl Hosted {
         self.offer(&descriptors);
         // The directory is built when a caller asks for it: what the surface holds is the
         // snapshot's input, not the answer to a question nobody asked.
-        self.directory_behind = true;
         if self
             .published
             .as_ref()
