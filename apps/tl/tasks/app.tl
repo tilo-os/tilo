@@ -79,9 +79,6 @@ type Task {
         hide folded
         hide subtasks
         hide subtasks_done
-        // A task's list is shared work, so a colleague's change of a task is marked as an
-        // agent's is: what someone else moved, gave away or finished reads where it happened.
-        mark others
     }
 }
 

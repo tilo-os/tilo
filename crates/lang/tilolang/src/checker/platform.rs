@@ -242,10 +242,9 @@ impl Checker<'_> {
         Ex::host(Imp::Steps, vec![r], Ty::List(Box::new(host_ty("Step"))))
     }
 
-    /// `unseen(r)`: the versions of `r` the person looking has not seen, oldest first: those a
-    /// task run or an agent made after the person's seen mark of `r` and after their own last
-    /// change of it (task-legibility.md §2, §4). A view that reads it runs again when either
-    /// moves.
+    /// `unseen(r)`: the versions of `r` the person looking has not seen, oldest first: those
+    /// someone else made after the person's seen mark of `r` and after their own last change
+    /// of it (task-legibility.md §2, §4). A view that reads it runs again when either moves.
     pub(super) fn builtin_unseen(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("unseen", args, span) else {
             return Ex::error();

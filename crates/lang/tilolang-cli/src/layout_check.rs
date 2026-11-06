@@ -1429,15 +1429,22 @@ mod windows {
         (app, packages)
     }
 
-    /// The tasks app and every package it uses, staged from `apps/tl/tasks`.
-    fn tasks_packages() -> Rc<stage::Packages> {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/tasks");
+    /// The app `name` and every package it uses, staged from `apps/tl/<name>`.
+    fn app_packages(name: &str) -> Rc<stage::Packages> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../apps/tl")
+            .join(name);
         let search = vec![dir.parent().expect("apps/tl").to_path_buf()];
-        let (built, platform) = super::build(&dir, &search).expect("the tasks app compiles");
+        let (built, platform) = super::build(&dir, &search).expect("the app compiles");
         Rc::new(stage::Packages(
             Rc::new(built.into_iter().map(|b| b.compiled).collect()),
             platform,
         ))
+    }
+
+    /// The tasks app and every package it uses, staged from `apps/tl/tasks`.
+    fn tasks_packages() -> Rc<stage::Packages> {
+        app_packages("tasks")
     }
 
     /// Every widget under `root` named `name`, with its rect, in drawing order.
@@ -2272,9 +2279,12 @@ mod windows {
         )
         .expect("the app lays out");
         let rows = row_marks(&away.rows());
-        assert!(
-            rows.len() >= 2,
-            "the rows of the tasks Bo and the agent changed are marked: {rows:?}"
+        // Bo took the mail and their agent moved the survey and finished the milk: the two in
+        // today's list are marked, the finished one's mark read where it stands now.
+        assert_eq!(
+            rows.len(),
+            2,
+            "the rows of the two tasks Bo and the agent changed are marked: {rows:?}"
         );
         for mark in &rows {
             assert!(
@@ -2295,12 +2305,13 @@ mod windows {
         let composed = away.composed().expect("the window composed its view");
         let window = window_mark(&composed)
             .unwrap_or_else(|| panic!("the window's header says what changed in it: {composed:?}"));
+        // Three: Bo's assign, and the agent's two, one of them the task that is in Done now.
         assert!(
             matches!(
                 window.props.get("count"),
-                Some(tilo_render_protocol::patch::Value::Int(n)) if *n >= 2
+                Some(tilo_render_protocol::patch::Value::Int(3))
             ),
-            "the window counts the changes she has not seen: {window:?}"
+            "the window counts the three changes she has not seen: {window:?}"
         );
 
         let mut changed = stage::Staged::over(
@@ -2338,6 +2349,66 @@ mod windows {
                 Some(tilo_render_protocol::patch::Value::Principal(_))
             ),
             "the page names who changed it: {window:?}"
+        );
+    }
+
+    #[test]
+    fn a_message_someone_else_sent_is_marked_with_nothing_declared() {
+        // Marks are every resource's, for every type: a channel declares nothing about them,
+        // and a message Mia or Leo sent while the person looking was away is unseen, marked on
+        // its row where the conversation shows it.
+        tilo_ui_host::i18n::ensure();
+        ui::clock::freeze_for_capture();
+        let packages = app_packages("chat");
+        let mut channels = stage::Staged::over(
+            "so.tilo.lang.chat",
+            &packages,
+            "a team's channels",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        channels
+            .lay_out(
+                (1280, 800),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::POINTER,
+                1.0,
+            )
+            .expect("the app lays out");
+        let marks = row_marks(&channels.rows());
+        assert!(
+            marks.len() >= 3,
+            "the messages Mia and Leo sent are marked: {marks:?}"
+        );
+        let said_by = |mark: &tilo_ui_host::UiNode| match mark.props.get("by") {
+            Some(tilo_render_protocol::patch::Value::Principal(who)) => who.id.clone(),
+            other => panic!("a marked row says who sent it: {other:?}"),
+        };
+        let theirs: Vec<String> = marks.iter().map(said_by).collect();
+        assert!(
+            theirs
+                .iter()
+                .all(|who| who.starts_with("scenario:") && who != "ada"),
+            "a message someone else sent is what is marked, never the person's own: {theirs:?}"
+        );
+        let kinds: Vec<String> = marks
+            .iter()
+            .filter_map(|mark| match mark.props.get("kind") {
+                Some(tilo_render_protocol::patch::Value::Text(kind)) => Some(kind.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            kinds.len(),
+            marks.len(),
+            "a mark says what happened: {marks:?}"
+        );
+        assert!(
+            kinds.iter().any(|kind| kind == "created"),
+            "the messages they sent are marked as sent: {kinds:?}"
         );
     }
 

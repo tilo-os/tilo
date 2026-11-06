@@ -163,15 +163,7 @@ impl Core {
             }
             self.note_seen_reads(viewer, &resource, acc);
             let mark = self.seen_mark(&viewer.0, &resource);
-            let mark_others = self.marks_others(&coll.item);
-            let unseen = crate::seen::unseen(
-                &versions,
-                &viewer.0,
-                mark.as_ref(),
-                &runs,
-                mark_others,
-                &|who| self.is_agent(who),
-            );
+            let unseen = crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs);
             if unseen.is_empty() {
                 continue;
             }
@@ -387,28 +379,12 @@ impl Core {
             None => resource != at.doc,
         };
         let mut unseen: Vec<Version> = Vec::new();
-        // A window of an item shows the item, and the type it is of says whether the changes
-        // of other people are marked there, as they are on a row of it. A window of a document
-        // is of no one type: the runs and the agents are what its header marks.
-        let ty = self
-            .store
-            .borrow()
-            .type_of(&at)
-            .unwrap_or_else(|_| at.ty.clone());
-        let mark_others = self.marks_others(&ty);
         for (resource, versions) in within.into_iter().filter(|(r, _)| shown(r)) {
             self.note_seen_reads(viewer, &resource, acc);
             let mark = self.seen_mark(&viewer.0, &resource);
             // One per resource: its newest unseen change.
-            if let Some(newest) = crate::seen::unseen(
-                &versions,
-                &viewer.0,
-                mark.as_ref(),
-                &runs,
-                mark_others,
-                &|who| self.is_agent(who),
-            )
-            .pop()
+            if let Some(newest) =
+                crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs).pop()
             {
                 // A change a record made from `resource` stands under both, as that record's
                 // own change and as a change to what it was made from: the window counts it

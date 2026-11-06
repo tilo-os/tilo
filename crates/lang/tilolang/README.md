@@ -268,8 +268,8 @@ an invocation carries the resource it is made from when the host or the invoker 
 change records it, and the resource it created says so, `created(r)?.from` — an
 `Option<host.Resource>`. `changes(of: run)` is every version a run
 made, of every resource, and `unseen(r)` the versions of `r` the person looking has not seen
-yet: an agent's, or another person's that made a record from `r` (a comment about it counts as
-a change to it). The UI host marks those where views show them, with no code
+yet: another person's or an agent's, since their seen mark of `r` (a comment about
+`r` counts as a change to it). The UI host marks those where views show them, with no code
 of the app's; `ui.ChangeMark(r)` places the mark where the default spot is wrong
 (task-legibility.md).
 

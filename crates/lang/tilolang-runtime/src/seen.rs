@@ -12,10 +12,10 @@
 //! marks here is queued for the host to keep
 //! ([`crate::Runtime::take_seen`]).
 //!
-//! Which versions are marked at all: every version made in a task run or by an agent, and
-//! another person's that made a record from the resource (a comment about it changed it as an
-//! edit does), and none the person made themselves. People's changes are not marked otherwise
-//! (§4, the default).
+//! Which versions are marked at all: every version someone else made, a person's or an
+//! agent's, and none the person made themselves. A type declares nothing about it, and the
+//! view chooses whether to show the marks it reads ([`unseen`], the host's row, header and
+//! field marks).
 
 use serde::{Deserialize, Serialize};
 
@@ -73,23 +73,11 @@ pub fn runs_key(person: &str) -> StateKey {
     seen_key(person, "$runs")
 }
 
-/// Whether `version` is one the host marks for `person`: made in a task run or by an agent
-/// (`is_agent`), and not by `person`; or made by another person, when the version's type
-/// declares `mark others` (a conversation marking what people say in it), or when it made a
-/// record from another (what someone made from `r` changed `r`, as a comment under a task
-/// changes it).
+/// Whether `version` is one the host marks for `person`: made by someone else, a person or an
+/// agent. A change of their own is never marked: they made it and so have seen it.
 #[must_use]
-pub fn is_marked(
-    version: &Version,
-    person: &str,
-    mark_others: bool,
-    is_agent: &dyn Fn(&str) -> bool,
-) -> bool {
+pub fn is_marked(version: &Version, person: &str) -> bool {
     version.who != person
-        && (mark_others
-            || version.task.is_some()
-            || is_agent(&version.who)
-            || version.from.is_some())
 }
 
 /// Which of `versions` (oldest first) `person` has not seen, oldest first: those after their
@@ -101,8 +89,6 @@ pub fn unseen(
     person: &str,
     mark: Option<&SeenMark>,
     runs: &[String],
-    mark_others: bool,
-    is_agent: &dyn Fn(&str) -> bool,
 ) -> Vec<Version> {
     let mut from = 0;
     if let Some(mark) = mark {
@@ -121,7 +107,7 @@ pub fn unseen(
         .get(from..)
         .unwrap_or_default()
         .iter()
-        .filter(|v| is_marked(v, person, mark_others, is_agent))
+        .filter(|v| is_marked(v, person))
         .filter(|v| !v.task.as_ref().is_some_and(|task| runs.contains(&task.id)))
         .cloned()
         .collect()
@@ -131,11 +117,6 @@ pub fn unseen(
 mod tests {
     use super::*;
     use crate::store::{TaskRun, VersionKind};
-
-    /// An agent, by the name the platform gives one.
-    fn agent(who: &str) -> bool {
-        who.starts_with("agent:")
-    }
 
     fn version(who: &str, at: &str, change: &str, task: bool) -> Version {
         Version {
@@ -159,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn a_runs_versions_after_the_mark_and_the_persons_own_are_unseen() {
+    fn versions_after_the_mark_and_the_persons_own_are_unseen() {
         let versions = [
             version("ada", "2026-10-30T09:00:00Z", "c1", false),
             version("agent:a", "2026-10-30T09:01:00Z", "c2", true),
@@ -167,70 +148,64 @@ mod tests {
             version("agent:a", "2026-10-30T09:03:00Z", "c4", true),
         ];
         let changes = |list: Vec<Version>| list.into_iter().map(|v| v.change).collect::<Vec<_>>();
-        // Nothing seen: both of the agent's; Ben's change is a person's, not marked.
+        // Nothing seen: everyone else's, the agent's and Ben's alike.
         assert_eq!(
-            changes(unseen(&versions, "ada", None, &[], false, &agent)),
-            ["c2", "c4"]
+            changes(unseen(&versions, "ada", None, &[])),
+            ["c2", "c3", "c4"]
         );
         // Seen up to c2.
         let mark = SeenMark::of(&versions[1]);
         assert_eq!(
-            changes(unseen(&versions, "ada", Some(&mark), &[], false, &agent)),
-            ["c4"]
+            changes(unseen(&versions, "ada", Some(&mark), &[])),
+            ["c3", "c4"]
         );
         // Ben edited after c2: what he saw is seen for him, what came after is not.
-        assert_eq!(
-            changes(unseen(&versions, "ben", None, &[], false, &agent)),
-            ["c4"]
-        );
+        assert_eq!(changes(unseen(&versions, "ben", None, &[])), ["c4"]);
         // A mark whose change the log no longer names stands by its time.
         let gone = SeenMark {
             change: "compacted".to_owned(),
             at: "2026-10-30T09:03:00Z".to_owned(),
         };
-        assert!(unseen(&versions, "ada", Some(&gone), &[], false, &agent).is_empty());
-        // A reviewed run's versions are seen, whatever the marks.
-        assert!(unseen(&versions, "ada", None, &["t1@1".to_owned()], false, &agent).is_empty());
+        assert!(unseen(&versions, "ada", Some(&gone), &[]).is_empty());
+        // A reviewed run's versions are seen, whatever the marks: what Ben changed after it
+        // stands, as it was no step of the run's.
+        assert_eq!(
+            changes(unseen(&versions, "ada", None, &["t1@1".to_owned()])),
+            ["c3"]
+        );
     }
 
     #[test]
-    fn a_type_that_marks_others_counts_another_persons_changes_as_unseen() {
+    fn a_change_is_marked_by_who_made_it_whatever_the_type() {
+        // The same type all three: a person's change is marked as an agent's, and nobody's
+        // own change is.
         let versions = [
             version("ada", "2026-10-30T09:00:00Z", "c1", false),
             version("ben", "2026-10-30T09:02:00Z", "c3", false),
             version("agent:a", "2026-10-30T09:03:00Z", "c4", true),
         ];
         let changes = |list: Vec<Version>| list.into_iter().map(|v| v.change).collect::<Vec<_>>();
-        // Off by default: another person's change is not a mark.
-        assert_eq!(
-            changes(unseen(&versions, "ada", None, &[], false, &agent)),
-            ["c4"]
-        );
-        // Declared `mark others`: Ben's change is unseen too, and so is the agent's.
-        assert_eq!(
-            changes(unseen(&versions, "ada", None, &[], true, &agent)),
-            ["c3", "c4"]
-        );
+        assert_eq!(changes(unseen(&versions, "ada", None, &[])), ["c3", "c4"]);
         // Still not one's own: Ben's own newest change bounds what he has seen, so the
         // agent's later change is all he has not.
-        assert_eq!(
-            changes(unseen(&versions, "ben", None, &[], true, &agent)),
-            ["c4"]
-        );
+        assert_eq!(changes(unseen(&versions, "ben", None, &[])), ["c4"]);
+        assert!(is_marked(&versions[1], "ada"));
+        assert!(is_marked(&versions[2], "ada"));
+        assert!(!is_marked(&versions[0], "ada"));
     }
 
     #[test]
-    fn a_record_made_from_another_is_a_marked_change_to_it() {
+    fn a_record_made_from_another_counts_as_a_change_to_it() {
         let mut comment = version("ben", "2026-10-30T09:02:00Z", "c3", false);
         comment.resource = "comment".to_owned();
         comment.from = Some(crate::value::ResourceRef::parse_id("task", "Task").unwrap());
         // Ben said it about the task: Ada has not seen the task change, nor what he said.
         let changes = |list: Vec<Version>| list.into_iter().map(|v| v.change).collect::<Vec<_>>();
         assert_eq!(
-            changes(unseen(&[comment.clone()], "ada", None, &[], false, &agent)),
+            changes(unseen(&[comment.clone()], "ada", None, &[])),
             ["c3"]
         );
         // Not something Ben has to read back: it was his own change.
-        assert!(unseen(&[comment], "ben", None, &[], false, &agent).is_empty());
+        assert!(unseen(&[comment], "ben", None, &[]).is_empty());
     }
 }

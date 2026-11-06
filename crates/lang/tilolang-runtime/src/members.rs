@@ -112,19 +112,6 @@ impl Core {
         self.view_states.borrow_mut().set(members_key(), value);
     }
 
-    /// Whether `who` is software acting in the workspace: an agent's id, or a member the
-    /// workspace's membership says is an agent (a scenario names its agent `scenario:Scout`,
-    /// not by the id the platform gives an agent's steps).
-    pub(crate) fn is_agent(&self, who: &str) -> bool {
-        who.starts_with("agent:")
-            || self
-                .members
-                .borrow()
-                .list
-                .iter()
-                .any(|member| member.kind == MemberKind::Agent && member.who.0 == who)
-    }
-
     /// A scenario named a person (`person("Mia")`): they are in the workspace it stages, so a
     /// view that offers the members offers them too, under the name the scenario gave.
     pub(crate) fn named_person(&self, who: crate::ids::Principal) {
