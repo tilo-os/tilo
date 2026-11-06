@@ -246,8 +246,8 @@ d-rj4l44km = Task summary
 d-ypbiaiq3 = Task outline row
 
 d-mtmufg3w = Task page
-    .w-title = Title
-    .w-notes = Notes
+    .w-what-to-do = What to do
+    .w-anything-worth-remembering-about-it = Anything worth remembering about it.
+    .w-inbox = Inbox
     .w-subtasks = Subtasks
     .w-add-a-subtask = Add a subtask
-    .w-inbox = Inbox
