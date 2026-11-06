@@ -1173,16 +1173,22 @@ fn a_generic_view_with_a_lambda_and_view_state_expands_where_it_is_called() {
 #[test]
 fn an_apps_view_named_as_the_libraries_expands_the_libraries() {
     let (m, _) = lower(
-        "type Chat {\n    topic: Text\n}\naction send(c: Chat, text: RichText) {\n}\nview composer(c: Chat) {\n    window draft: RichText = RichText(\"\")\n    std.composer(draft, \"Message {c.topic}\", send(c, draft))\n}\nview chat(c: Chat) {\n    composer: {\n        composer(c)\n    }\n}",
+        "type Chat {\n    topic: Text\n}\naction send(c: Chat, text: RichText) {\n}\nview composer(c: Chat) {\n    window draft: RichText = RichText(\"\")\n    std.composer(draft, \"Message {c.topic}\", send(c, draft))\n}\nview chat(c: Chat) {\n    composer(c)\n}",
     );
-    let calls = ui_calls(func(&m, "chat"));
+    let chat = ui_calls(func(&m, "chat"));
     assert!(
-        has(&calls, "on submit"),
-        "the composer's field sends: {calls:#?}"
+        chat.iter().any(|c| c.starts_with("node view:")),
+        "the app's composer stands in its chat: {chat:#?}"
     );
+    let calls = ui_calls(func(&m, "composer"));
     assert!(
-        calls.iter().any(|c| c.starts_with("node ui.BlockEditor")),
-        "the thread's field is drawn: {calls:#?}"
+        calls.iter().any(|c| c.starts_with("node ui.RichInput")),
+        "the library's field is the one drawn: {calls:#?}"
+    );
+    assert!(has(&calls, "on submit"), "and it sends: {calls:#?}");
+    assert!(
+        has(&calls, "on press"),
+        "and so does its button: {calls:#?}"
     );
 }
 
