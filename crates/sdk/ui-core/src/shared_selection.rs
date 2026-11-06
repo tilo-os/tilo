@@ -162,10 +162,10 @@ impl SharedSelection {
         let span = place
             .and_then(|place| Some(Span::chars(place.start?, place.end?)))
             .filter(|span| !span.is_empty());
-        let anchor = if !ids.is_empty() {
-            Some(Anchor::items(ids))
-        } else {
+        let anchor = if ids.is_empty() {
             place.map(|place| Anchor::item(place.item.clone()))
+        } else {
+            Some(Anchor::items(ids))
         };
         let at = ResourceAt {
             app: app.to_owned(),
