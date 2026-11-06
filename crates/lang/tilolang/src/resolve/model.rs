@@ -38,9 +38,6 @@ pub struct TypeInfo {
     pub holder: bool,
     /// The kind of an outside service's resource it holds (`crate::origin`).
     pub origin: Option<String>,
-    /// Its records are attached to the resource they are made from: a comment on a task, not
-    /// work made from it (`linked` tells the two apart).
-    pub attached: bool,
 }
 
 /// The name of the one field of a type that names a container (`type Notes =

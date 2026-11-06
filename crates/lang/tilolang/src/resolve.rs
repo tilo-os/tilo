@@ -310,7 +310,6 @@ impl Env {
                 search: t.search.clone(),
                 holder: t.holder,
                 origin: t.origin.clone(),
-                attached: t.attached,
             });
         }
         let params = |ps: &[crate::meta::ParamMeta]| -> Vec<ParamInfo> {
@@ -683,7 +682,6 @@ impl Resolver<'_> {
                 search: crate::meta::SearchMeta::default(),
                 holder: true,
                 origin: None,
-                attached: false,
             });
         }
         let aliases: Vec<(String, TypeExpr)> = self
@@ -727,7 +725,6 @@ impl Resolver<'_> {
                 search: crate::meta::SearchMeta::default(),
                 holder: false,
                 origin: t.origin.as_ref().map(|o| o.name.clone()),
-                attached: t.attached,
             });
         }
         self.check_origins(&decls);

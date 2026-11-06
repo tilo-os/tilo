@@ -646,7 +646,7 @@ fn build_meta(
                     search: info.search.clone(),
                     holder: false,
                     origin: info.origin.clone(),
-                    attached: info.attached,
+                    attached: t.attached,
                 });
             }
             Item::Action(a) => {
