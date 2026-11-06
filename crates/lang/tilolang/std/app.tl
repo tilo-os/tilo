@@ -573,10 +573,11 @@ view linked_row<R>(of: R, dense: Bool = false) {
 /// at the density of a page of related things, or compact — quiet reference rows right under
 /// the content they belong to, one caption line each, as what a message was made from. Links by
 /// a field are left out: the page of the resource holding the field draws that reference as its
-/// own section of related things, so drawing it here again would show it twice. So are records
-/// of an `(attached)` type: their own view, where they belong, already draws them all.
-view linked<R>(of: R, compact: Bool = false) {
-    let links = linked(of).filter(l -> l.how != .field and not meta(l.of).attached)
+/// own section of related things, so drawing it here again would show it twice. `without` names
+/// what the page draws itself, as a task's page draws its discussion: those are left out too.
+view linked<R>(of: R, compact: Bool = false, without: List<host.Resource> = []) {
+    let linked_to = linked(of).filter(l -> l.how != .field)
+    let links = linked_to.filter(l -> not without.any(x -> x == l.of))
     if not links.is_empty() {
         if compact {
             stack(gap: .tight) {
