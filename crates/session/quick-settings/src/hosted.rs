@@ -319,13 +319,17 @@ pub struct ClipboardCopy {
     pub from: Option<String>,
 }
 
-/// The notification centre, as the session publishes it: how many it keeps.
+/// The notification centre, as the session publishes it: how many it keeps,
+/// and why fresh ones are held back.
 /// The list itself is the shell's centre, which reads its own log; the panel
 /// shows the count that opens it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NotificationCentre {
     /// How many it keeps.
     pub count: usize,
+    /// Why fresh notifications are being held (Do Not Disturb, presenting,
+    /// a focus schedule); `None` while they show.
+    pub quiet: Option<String>,
 }
 
 /// Formats whose copies are pictures.

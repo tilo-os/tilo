@@ -573,6 +573,7 @@ impl SessionNotifications {
     pub(crate) fn centre(&self) -> NotificationCentre {
         NotificationCentre {
             count: self.desktop.log().history().len(),
+            quiet: self.quiet_status(),
         }
     }
 

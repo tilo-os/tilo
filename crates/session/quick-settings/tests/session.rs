@@ -40,7 +40,7 @@ const BATTERY: &str = "power:battery";
 /// The network, as the connectivity service publishes it.
 const NETWORK: &str = "network";
 /// The notification centre, as the session publishes it.
-const CHROME: &str = "desktop:chrome";
+const NOTIFICATIONS: &str = "session:notifications";
 /// How long the panel may take to show its window.
 const OPENING: Duration = Duration::from_secs(90);
 /// One display's refresh: how often the session asks its clients for their
@@ -368,20 +368,21 @@ fn the_wifi_tile_is_the_published_networks_action() {
 }
 
 #[test]
-fn the_quiet_tile_is_the_bars_silenced_bell() {
+fn the_quiet_tile_is_the_published_centres_switch() {
     let mut laptop = session_of_device(&[panel()], Machine::Owned);
     let session = &mut laptop.session;
     open_the_panel(session);
     until_ready(session, "set-do-not-disturb");
     assert!(
-        !session.read(CHROME).expect("the bar is published")["notifications_quiet"]
-            .as_bool()
-            .unwrap_or(true),
+        session
+            .read(NOTIFICATIONS)
+            .expect("the centre is published")["quiet"]
+            .is_null(),
         "nothing holds notifications back to start with"
     );
 
-    // A press on the tile is the panel's effect on the session's own switch:
-    // fresh banners are held, and the bar's bell says so.
+    // A press on the tile is the panel's effect, which is one action of the
+    // session's notification centre: the centre holds them and says so.
     let ended = ask_ended(session, "set-do-not-disturb", Some(json!({ "on": true })));
     assert!(
         matches!(ended, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
@@ -391,17 +392,19 @@ fn the_quiet_tile_is_the_bars_silenced_bell() {
     loop {
         session.settle_services();
         pump(session);
-        let bar = session.read(CHROME).expect("the bar is published");
-        if bar["notifications_quiet"].as_bool() == Some(true) {
+        let centre = session
+            .read(NOTIFICATIONS)
+            .expect("the centre is published");
+        if !centre["quiet"].is_null() {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "the bar never showed a silenced bell: {bar:?}"
+            "the centre never held notifications back: {centre:?}"
         );
     }
-    // The same switch turned off lets them through again, and the bell rings
-    // as it did before the first press.
+    // The same switch turned off lets them through again: the one list the
+    // bell opens says so, as the panel does.
     let ended = ask_ended(session, "set-do-not-disturb", Some(json!({ "on": false })));
     assert!(
         matches!(ended, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
@@ -411,13 +414,15 @@ fn the_quiet_tile_is_the_bars_silenced_bell() {
     loop {
         session.settle_services();
         pump(session);
-        let bar = session.read(CHROME).expect("the bar is published");
-        if bar["notifications_quiet"].as_bool() == Some(false) {
+        let centre = session
+            .read(NOTIFICATIONS)
+            .expect("the centre is published");
+        if centre["quiet"].is_null() {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "the bell never rang again: {bar:?}"
+            "the centre never let notifications through: {centre:?}"
         );
     }
     session.stop_surface("quick-settings");
