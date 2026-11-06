@@ -25,18 +25,40 @@ impl std::fmt::Display for UndeliveredDocument {
     }
 }
 
+/// An opened document op and the action commit its payload carries.
+pub(super) struct SignedDocument {
+    pub(super) event: CollabEvent,
+    pub(super) commit: Option<collab_types::WorkspaceCommit>,
+}
+
 /// Open a live envelope into a document event, or hold it on the route
 /// while this device waits for the channel's keys.
 pub(super) fn signed_document_event(
     arrived: Arrived,
     encryption: &SharedRouteKeys,
-) -> Result<CollabEvent, UndeliveredDocument> {
+) -> Result<SignedDocument, UndeliveredDocument> {
     match decrypt_document_payload(&arrived.envelope, encryption, arrived.admission) {
-        Ok(decrypted_payload) => Ok(CollabEvent::Document {
-            envelope: Box::new(arrived.envelope),
-            from_user_id: arrived.from_user_id,
-            decrypted_payload,
-        }),
+        Ok(decrypted_payload) => {
+            // The commit rides inside the signed payload, which on a sealed
+            // route is the plaintext only this device can open.
+            let envelope = arrived.envelope;
+            let cleartext = decrypted_payload.as_deref().unwrap_or(&envelope.payload);
+            let commit =
+                match collab_types::WorkspaceCommit::of_envelope_payload(&envelope, cleartext) {
+                    Ok(commit) => commit,
+                    Err(error) => {
+                        return Err(UndeliveredDocument::Refused(Refusal::Uncommitted(error)));
+                    }
+                };
+            Ok(SignedDocument {
+                event: CollabEvent::Document {
+                    envelope: Box::new(envelope),
+                    from_user_id: arrived.from_user_id,
+                    decrypted_payload,
+                },
+                commit,
+            })
+        }
         Err(DecryptFailure::Later) => {
             if let Ok(mut keys) = encryption.lock() {
                 keys.hold_inbound(arrived);
@@ -64,6 +86,8 @@ pub(super) enum Refusal {
     Unopened(super::super::route_keys::Never),
     /// Its document frame does not decode.
     Malformed(collab_types::DocumentMutationError),
+    /// The action commit its payload carries does not check.
+    Uncommitted(collab_types::CommitError),
 }
 
 impl std::fmt::Display for Refusal {
@@ -75,6 +99,7 @@ impl std::fmt::Display for Refusal {
             }
             Self::Unopened(never) => never.fmt(f),
             Self::Malformed(error) => write!(f, "malformed document frame: {error}"),
+            Self::Uncommitted(error) => write!(f, "unreadable action commit: {error}"),
         }
     }
 }

@@ -1164,6 +1164,23 @@ impl CollaborationManager {
         self.sync_expected && matches!(self.state(), CollaborationState::Offline(_))
     }
 
+    /// Every complete action this endpoint has seen in `workspace`, oldest
+    /// first: one entry per action, naming its author, its time, what it ran
+    /// and every unit change it made. Empty for a manager with no broker
+    /// connection.
+    #[cfg(feature = "broker-transport")]
+    #[must_use]
+    pub fn action_history(&self, workspace: &str) -> Vec<crate::commits::CommitHistory> {
+        let Backend::Transport(transport) = &self.backend else {
+            return Vec::new();
+        };
+        transport
+            .as_any()
+            .and_then(|any| any.downcast_ref::<broker::BrokerTransport>())
+            .map(|channel| channel.action_history(workspace))
+            .unwrap_or_default()
+    }
+
     /// The current state when it differs from the one this method last
     /// returned (initially, the state the manager was constructed in). Lets
     /// an owner run connect-time work once, when the manager becomes ready.

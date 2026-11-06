@@ -474,6 +474,12 @@ pub struct NativeHistoryInvocationFixture {
 }
 
 impl BrokerTransport {
+    /// Every complete action this endpoint has seen in `workspace`, oldest
+    /// first: the log [`crate::commits`] keeps for history.
+    pub(crate) fn action_history(&self, workspace: &str) -> Vec<crate::commits::CommitHistory> {
+        self.state.commits().history(workspace)
+    }
+
     /// Hand a command to the shovel. A full bounded queue is backpressure,
     /// never a reason to disable collaboration: a durable command that does
     /// not fit waits in [`Self::spill`] (in order, with a newer action
@@ -4642,28 +4648,13 @@ async fn spawn_op_stream(
                     }
                 };
                 let (author, seq) = (envelope.author, envelope.seq);
-                let commit = match collab_types::WorkspaceCommit::of_envelope(&envelope) {
-                    Ok(commit) => commit,
-                    Err(error) => {
-                        tracing::warn!(
-                            %error,
-                            app = %label.app,
-                            workspace = %label.workspace,
-                            record = %label.record,
-                            author = %hex::encode(author.as_bytes()),
-                            seq,
-                            "collab: refused a document op whose action commit is not its author's"
-                        );
-                        continue;
-                    }
-                };
                 let arrived = Arrived {
                     envelope,
                     from_user_id: event.from_user_id,
                     admission: event.admission,
                 };
-                let translated = match signed_document_event(arrived, &encryption) {
-                    Ok(event) => event,
+                let signed = match signed_document_event(arrived, &encryption) {
+                    Ok(signed) => signed,
                     Err(UndeliveredDocument::Held) => {
                         // Sealed under an epoch the held keys lack:
                         // ask for newer keys, once per generation.
@@ -4690,7 +4681,7 @@ async fn spawn_op_stream(
                         continue;
                     }
                 };
-                let Some(complete) = complete_document_event(translated, &tx.reassembly.live)
+                let Some(complete) = complete_document_event(signed.event, &tx.reassembly.live)
                 else {
                     continue;
                 };
@@ -4702,7 +4693,7 @@ async fn spawn_op_stream(
                 };
                 let events = match crate::commits::gate(
                     &tx.state,
-                    commit,
+                    signed.commit,
                     &claims,
                     (label.app.as_str(), label.record.as_str()),
                     complete,
@@ -5603,7 +5594,7 @@ fn origin_commit(
         &route.spec.cluster_id.to_string(),
         app,
         record,
-        collab_types::CommitAuthor {
+        &collab_types::CommitAuthor {
             principal: None,
             device,
         },
@@ -11771,7 +11762,8 @@ mod tests {
                 },
                 &plain_route_keys(),
             )
-            .unwrap();
+            .unwrap()
+            .event;
             assert!(matches!(
                 &event,
                 CollabEvent::Document { from_user_id, .. } if from_user_id == "peer-alice"
@@ -11836,7 +11828,8 @@ mod tests {
                     },
                     &endpoint,
                 )
-                .unwrap();
+                .unwrap()
+                .event;
                 assert!(matches!(
                     event.document_mutation(),
                     Some(Ok(DocumentMutation::Incremental(data))) if data == b"secret change"
@@ -11923,7 +11916,8 @@ mod tests {
                 },
                 &carol_endpoint,
             )
-            .unwrap();
+            .unwrap()
+            .event;
             assert!(matches!(
                 event.document_mutation(),
                 Some(Ok(DocumentMutation::Incremental(data))) if data == b"secret change"

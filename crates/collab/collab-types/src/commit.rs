@@ -183,7 +183,7 @@ impl WorkspaceCommit {
         workspace: &str,
         app: &str,
         record: &str,
-        author: CommitAuthor,
+        author: &CommitAuthor,
         mutation: &DocumentMutation,
     ) -> Result<Option<Self>, CommitError> {
         let DocumentMutation::Incremental(bytes) = mutation else {
@@ -217,20 +217,19 @@ impl WorkspaceCommit {
             }
             // The first change that says who invoked it speaks for the
             // action: every change of one action shares that context.
-            if principal.is_none() || invocation.is_none() {
-                if let Some(context) = change
+            if (principal.is_none() || invocation.is_none())
+                && let Some(context) = change
                     .message()
                     .and_then(tilo_actions::ActionContext::from_change_message)
-                {
-                    if principal.is_none() {
-                        principal = context
-                            .invoker
-                            .as_ref()
-                            .map(|invoker| invoker.actor.clone());
-                    }
-                    if invocation.is_none() {
-                        invocation = context.source_invocation.map(|id| id.0);
-                    }
+            {
+                if principal.is_none() {
+                    principal = context
+                        .invoker
+                        .as_ref()
+                        .map(|invoker| invoker.actor.clone());
+                }
+                if invocation.is_none() {
+                    invocation = context.source_invocation.map(|id| id.0);
                 }
             }
         }
@@ -251,7 +250,7 @@ impl WorkspaceCommit {
             workspace,
             CommitAuthor {
                 principal,
-                ..author
+                device: author.device,
             },
             at_ms,
             action,
@@ -317,8 +316,10 @@ impl WorkspaceCommit {
                     record: part.record.clone(),
                 });
             }
-            if self.parts[..index]
+            if self
+                .parts
                 .iter()
+                .take(index)
                 .any(|earlier| earlier.is(&part.app, &part.record))
             {
                 return Err(CommitError::DuplicatePart {
@@ -360,8 +361,13 @@ impl WorkspaceCommit {
                 max: MAX_COMMIT_BYTES,
             });
         }
-        let mut framed =
-            Vec::with_capacity(COMMIT_FRAME_PREFIX.len() + 4 + commit.len() + inner.len());
+        let mut framed = Vec::with_capacity(
+            COMMIT_FRAME_PREFIX
+                .len()
+                .saturating_add(4)
+                .saturating_add(commit.len())
+                .saturating_add(inner.len()),
+        );
         framed.extend_from_slice(COMMIT_FRAME_PREFIX);
         framed.extend_from_slice(&len.to_le_bytes());
         framed.extend_from_slice(&commit);
@@ -380,7 +386,22 @@ impl WorkspaceCommit {
     /// [`CommitError`] for bytes that are not a framed payload, a commit that
     /// does not check, or a commit authored by another device.
     pub fn of_envelope(envelope: &SignedOp) -> Result<Option<Self>, CommitError> {
-        let (_, commit) = Self::split(&envelope.payload)?;
+        Self::of_envelope_payload(envelope, &envelope.payload)
+    }
+
+    /// The commit carried inside `cleartext`, the payload `envelope` signs once
+    /// it is opened: a sealed route's plaintext, or an unsealed envelope's
+    /// payload. `None` when the payload carries none.
+    ///
+    /// # Errors
+    /// [`CommitError::ForeignDevice`] when the commit names another device than
+    /// the envelope's author, or the [`CommitError`] of a commit that does not
+    /// decode.
+    pub fn of_envelope_payload(
+        envelope: &SignedOp,
+        cleartext: &[u8],
+    ) -> Result<Option<Self>, CommitError> {
+        let (_, commit) = Self::split(cleartext)?;
         let Some(commit) = commit else {
             return Ok(None);
         };
@@ -562,11 +583,13 @@ mod tests {
         let commit = two_part();
         let framed = commit.frame(b"frame").unwrap();
         assert_eq!(
-            WorkspaceCommit::of_envelope(&envelope(framed.clone(), [7; 32])).unwrap(),
-            Some(commit.clone())
+            WorkspaceCommit::of_envelope(&envelope(framed.clone(), [7; 32]))
+                .unwrap()
+                .as_ref(),
+            Some(&commit)
         );
         assert_eq!(
-            WorkspaceCommit::of_envelope(&envelope(framed.clone(), [8; 32])),
+            WorkspaceCommit::of_envelope(&envelope(framed, [8; 32])),
             Err(CommitError::ForeignDevice),
             "another device's signature signs nothing of this action"
         );
@@ -587,6 +610,30 @@ mod tests {
         assert_eq!(
             WorkspaceCommit::split(b"tilo-commit-frame-v1\0"),
             Err(CommitError::Truncated)
+        );
+    }
+
+    #[test]
+    fn a_sealed_part_carries_its_commit_in_the_plaintext() {
+        // A sealed route's envelope holds the ciphertext of the payload; the
+        // commit is inside what only the unit's readers open.
+        let commit = two_part();
+        let cleartext = commit.frame(b"frame").unwrap();
+        let sealed = envelope(b"ciphertext".to_vec(), [7; 32]);
+        assert_eq!(
+            WorkspaceCommit::of_envelope(&sealed).unwrap(),
+            None,
+            "the sealed payload says nothing to a reader without the keys"
+        );
+        assert_eq!(
+            WorkspaceCommit::of_envelope_payload(&sealed, &cleartext)
+                .unwrap()
+                .as_ref(),
+            Some(&commit)
+        );
+        assert_eq!(
+            WorkspaceCommit::of_envelope_payload(&envelope(cleartext.clone(), [8; 32]), &cleartext),
+            Err(CommitError::ForeignDevice)
         );
     }
 
@@ -622,7 +669,7 @@ mod tests {
             "workspace",
             "tasks",
             "a",
-            CommitAuthor {
+            &CommitAuthor {
                 principal: None,
                 device: [7; 32],
             },
@@ -644,7 +691,7 @@ mod tests {
                 "workspace",
                 "tasks",
                 "a",
-                author([7; 32]),
+                &author([7; 32]),
                 &DocumentMutation::Snapshot(vec![1, 2, 3]),
             )
             .unwrap(),
@@ -661,7 +708,7 @@ mod tests {
         doc.commit();
         let mutation = DocumentMutation::Incremental(doc.save_after(&[]));
         assert!(matches!(
-            WorkspaceCommit::of_mutation("workspace", "tasks", "a", author([7; 32]), &mutation),
+            WorkspaceCommit::of_mutation("workspace", "tasks", "a", &author([7; 32]), &mutation),
             Err(CommitError::Unnamed(_))
         ));
     }
@@ -677,7 +724,7 @@ mod tests {
     fn a_field_edit_is_a_commit_too() {
         let (mutation, claims) = field_edit_mutation("tasks", "title", "write").unwrap();
         let commit =
-            WorkspaceCommit::of_mutation("workspace", "tasks", "", author([3; 32]), &mutation)
+            WorkspaceCommit::of_mutation("workspace", "tasks", "", &author([3; 32]), &mutation)
                 .unwrap()
                 .unwrap();
         assert_eq!(commit.parts[0].changes, vec![claims[0].change]);

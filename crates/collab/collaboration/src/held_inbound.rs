@@ -64,15 +64,8 @@ pub(super) async fn deliver_waiting(
 )]
 async fn deliver_decided(route: &SdkRoute, arrived: Arrived, inbound_tx: &InboundBridge) -> bool {
     let op = OpKey::of(&arrived.envelope);
-    let commit = match collab_types::WorkspaceCommit::of_envelope(&arrived.envelope) {
-        Ok(commit) => commit,
-        Err(error) => {
-            tracing::warn!(%error, %op, "collab: refused a held op whose action commit names another device");
-            return true;
-        }
-    };
-    let event = match signed_document_event(arrived, &route.encryption) {
-        Ok(event) => event,
+    let signed = match signed_document_event(arrived, &route.encryption) {
+        Ok(signed) => signed,
         Err(UndeliveredDocument::Held) => return true,
         Err(UndeliveredDocument::Refused(error)) => {
             let label = RouteLabel::of(&route.spec);
@@ -88,7 +81,7 @@ async fn deliver_decided(route: &SdkRoute, arrived: Arrived, inbound_tx: &Inboun
             return true;
         }
     };
-    let Some(complete) = complete_document_event(event, &inbound_tx.reassembly.live) else {
+    let Some(complete) = complete_document_event(signed.event, &inbound_tx.reassembly.live) else {
         return true;
     };
     let claims: Vec<[u8; 32]> = match &complete {
@@ -99,7 +92,7 @@ async fn deliver_decided(route: &SdkRoute, arrived: Arrived, inbound_tx: &Inboun
     };
     let events = match crate::commits::gate(
         &inbound_tx.state,
-        commit,
+        signed.commit,
         &claims,
         (
             route.spec.app_id.as_str(),

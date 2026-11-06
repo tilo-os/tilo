@@ -174,7 +174,7 @@ impl Commits {
             .filter(|entry| entry.workspace == workspace)
             .cloned()
             .collect();
-        actions.sort_by(|left, right| (left.at_ms, left.commit).cmp(&(right.at_ms, right.commit)));
+        actions.sort_by_key(|entry| (entry.at_ms, entry.commit));
         actions
     }
 
