@@ -441,7 +441,7 @@ mod tests {
         assert_eq!(exceptions.len(), 1, "a Deny is no exception to list");
         assert_eq!(exceptions[0].scope, send);
         assert_eq!(exceptions[0].kind, ActionKind::Outside);
-        assert_eq!(exceptions[0].label, "Mail · Send message");
+        assert_eq!(exceptions[0].label, "Send message in Mail");
         let edit = set_agent_answers(
             &mut ws,
             &OWNER.to_string(),
