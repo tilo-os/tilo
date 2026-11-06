@@ -19307,6 +19307,7 @@ version = "0.1.0"
 dependencies = [
  "rustypipe",
  "serde_json",
+ "time",
  "workspace-hack",
 ]
 
@@ -22731,6 +22732,7 @@ dependencies = [
  "tilolang-host",
  "tilolang-mail",
  "tilolang-tilo",
+ "tilolang-youtube",
  "tracing",
  "uuid",
  "workspace-hack",
@@ -22883,6 +22885,22 @@ dependencies = [
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilolang-youtube"
+version = "0.1.0"
+dependencies = [
+ "rustypipe",
+ "serde_json",
+ "tilo-app",
+ "tilo-innertube",
+ "tilo-net",
+ "tilo-resource",
+ "tilolang-runtime",
+ "tilolang-tilo",
+ "tracing",
  "workspace-hack",
 ]
 

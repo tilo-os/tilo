@@ -1,0 +1,34 @@
+[package]
+name = "tilolang-youtube"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The YouTube origin of tilolang packages: keeps a package's youtube types in step with YouTube, through the InnerTube client the platform ships."
+
+[dependencies]
+tilolang-tilo = { path = "../tilolang-tilo" }
+tilolang-runtime = { path = "../../lang/tilolang-runtime" }
+# YouTube's own client, as Tube and Music reach it: each query compiled once beside rustypipe.
+tilo-innertube = { path = "../tilo-innertube" }
+rustypipe = { workspace = true, features = ["rustls-no-provider"] }
+# The app runtime rustypipe's connections live on, and its TLS provider.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+tilo-net = { path = "../tilo-net" }
+serde_json.workspace = true
+tracing.workspace = true
+
+[features]
+default = ["live"]
+# The InnerTube client. An origin polled in a build without it answers nothing, which is what a
+# test's or a development session's own service is for.
+live = []
+
+[dev-dependencies]
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

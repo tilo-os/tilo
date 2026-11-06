@@ -92,6 +92,9 @@ mail = { path = "../mail" }
 # The mail origin: in the window's process outside a host, and the connector process the
 # system runs for a hosted Mail.
 tilolang-mail = { path = "../../crates/platform/tilolang-mail" }
+# YouTube as an outside origin: a live window of an app whose types hold YouTube's resources
+# keeps them in step with it, in native code with the network.
+tilolang-youtube = { path = "../../crates/platform/tilolang-youtube" }
 tilo-content = { path = "../../crates/system/content" }
 # The UI host's half of the window, and the patch protocol between it and the instance.
 tilo-ui-host = { path = "../../crates/platform/tilo-ui-host" }
