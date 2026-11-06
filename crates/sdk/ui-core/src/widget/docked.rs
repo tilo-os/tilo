@@ -117,6 +117,13 @@ impl Decorator for Docked {
     fn name(&self) -> &'static str {
         "Docked"
     }
+
+    /// A column adds no structure of its own: what changes is what it holds, and a
+    /// change it can carry out in place (a list mounting the rows a scroll brought
+    /// near) stays described, so the window keeps its tree.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        self.stack.take_structure_change()
+    }
 }
 
 impl Docked {
@@ -143,3 +150,7 @@ impl Docked {
         self.stack.children().into_iter().next()
     }
 }
+
+#[cfg(test)]
+#[path = "docked_tests.rs"]
+mod tests;

@@ -63,7 +63,6 @@ pub enum Item {
     /// `trigger due(t: Task) at t.at: notify_due(t)`: when an action runs by itself.
     Trigger(TriggerDecl),
     Action(ActionDecl),
-    Flow(FlowDecl),
     View(ViewDecl),
     Fn(FnDecl),
 }
@@ -79,7 +78,6 @@ impl Item {
             Self::Scenario(d) => &d.doc,
             Self::Trigger(d) => &d.doc,
             Self::Action(d) => &d.doc,
-            Self::Flow(d) => &d.doc,
             Self::View(d) => &d.doc,
             Self::Fn(d) => &d.doc,
             Self::Use(_) | Self::Root(_) | Self::DefaultView(_) | Self::RowView(_) => &[],
@@ -100,7 +98,6 @@ impl Item {
             Self::Scenario(d) => d.span,
             Self::Trigger(d) => d.span,
             Self::Action(d) => d.span,
-            Self::Flow(d) => d.span,
             Self::View(d) => d.span,
             Self::Fn(d) => d.span,
         }
@@ -182,10 +179,6 @@ pub enum SearchEntryKind {
     Sort { field: Ident, order: Ident },
     /// `hide to`: a field kept out of filters.
     Hide { field: Ident },
-    /// `mark others`: other people's changes to the type are marked unseen for a reader,
-    /// as an agent's are for every type (task-legibility.md §4, "off by default"). A
-    /// conversation marks what others say in it, so a channel shows what is new.
-    MarkOthers,
 }
 
 /// `enum Name { a, b(x: T, y: U), c }`: a sum type. Values are written `.a`, `.b(x: 1, y: 2)`.
@@ -537,19 +530,6 @@ impl ActionDecl {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct FlowDecl {
-    pub node: NodeId,
-    pub doc: Vec<String>,
-    pub name: Ident,
-    pub params: Vec<Param>,
-    pub result: Option<TypeExpr>,
-    /// `uses web`: the effects the flow's own body has (an action it invokes has its own).
-    pub uses: Vec<Ident>,
-    pub body: Block,
-    pub span: Span,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub struct ViewDecl {
     pub node: NodeId,
     pub doc: Vec<String>,
@@ -797,7 +777,7 @@ pub enum ExprKind {
         types: Vec<TypeExpr>,
         args: Vec<Arg>,
     },
-    /// `try act(args)`: invokes in a flow; a `Result` of the action's result and the reason
+    /// `try act(args)`: invokes in an action; a `Result` of the action's result and the reason
     /// it failed.
     Try(Box<Expr>),
     /// `suggest act(args)`: proposes the action instead of applying it, as a suggestion that
@@ -867,7 +847,7 @@ pub enum UiKind {
         then: Vec<UiStmt>,
         els: Option<Vec<UiStmt>>,
     },
-    /// `window name: T = default` or `lens name: T = default`.
+    /// `state name: T = default`.
     State(StateDecl),
     /// `"Due": d.due`: a labelled fact, which E098 rejects — a fact is a chip derived from
     /// the field it shows (`facts(of)`), never a label and a value.
@@ -910,36 +890,9 @@ pub struct UiArm {
     pub braced: bool,
 }
 
-/// Which layer of view state a declaration lives in (workspace-model.md, "The pieces").
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum StateLayer {
-    /// How one person's window shows its resource.
-    Window,
-    /// Where one person is in a window: scroll, cursor, selection, a draft.
-    Lens,
-}
-
-impl StateLayer {
-    pub const fn word(self) -> &'static str {
-        match self {
-            Self::Window => "window",
-            Self::Lens => "lens",
-        }
-    }
-
-    /// The layer as the host ABI passes it.
-    pub const fn code(self) -> i32 {
-        match self {
-            Self::Window => 0,
-            Self::Lens => 1,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct StateDecl {
     pub node: NodeId,
-    pub layer: StateLayer,
     pub name: Ident,
     pub ty: TypeExpr,
     pub default: Option<Expr>,

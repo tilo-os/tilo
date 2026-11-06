@@ -2,7 +2,7 @@
 //! callables (actions, functions, views, sorts) with the parameters and presentation they
 //! carry.
 
-use crate::ast::{Expr, StateLayer};
+use crate::ast::Expr;
 use crate::resolve::plain_text;
 use crate::types::{EffectClass, MergeKind, Ty, TypeKey};
 use std::collections::BTreeSet;
@@ -112,13 +112,12 @@ impl EnumInfo {
     }
 }
 
-/// A `window` or `lens` declaration of a view.
+/// A `state` declaration of a view.
 #[derive(Clone, Debug)]
 pub struct StateInfo {
     pub view: String,
     pub name: String,
     pub id: String,
-    pub layer: StateLayer,
     pub ty: Ty,
 }
 
@@ -177,7 +176,6 @@ pub fn default_export(action: &str, param: &str) -> String {
 pub enum CKind {
     Fn,
     Action,
-    Flow,
     View,
 }
 
@@ -186,7 +184,6 @@ impl CKind {
         match self {
             Self::Fn => "fn",
             Self::Action => "action",
-            Self::Flow => "flow",
             Self::View => "view",
         }
     }
@@ -208,13 +205,13 @@ pub struct Callable {
     /// `uses web, time`: the effects its body has, as the declaration says them. An action
     /// reads nothing else that a replay would compute differently ([`crate::effects::Effect`]).
     pub uses: BTreeSet<crate::effects::Effect>,
-    /// How the platform presents an action or flow: its label, icon and role.
+    /// How the platform presents an action: its label, icon and role.
     pub present: Presentation,
     /// The hidden action of a `scenario`; its name is the scenario's, which source cannot call.
     pub scenario: bool,
 }
 
-/// What a button or a menu shows for an action or flow, from its declaration.
+/// What a button or a menu shows for an action, from its declaration.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Presentation {
     pub label: String,
@@ -281,7 +278,7 @@ pub(super) fn doc_line(doc: &str) -> Option<String> {
     (!line.is_empty()).then(|| line.to_string())
 }
 
-/// An action's or flow's label: its name in sentence case, or its doc's first line when that is
+/// An action's label: its name in sentence case, or its doc's first line when that is
 /// shorter.
 pub fn action_label(name: &str, doc: &str) -> String {
     let named = sentence_case(name);

@@ -1,6 +1,7 @@
 //! Every app under `apps/tl`, compiled with its committed ids and run end to end: a chat with
-//! embedded agent blocks (the fixture `tests/block_chat`), letters, Today's foreign views and flow, lists that open their
-//! items in windows of their own, window and lens state, and every root's window at a compact
+//! embedded agent blocks (the fixture `tests/block_chat`), letters, Today's foreign views and its
+//! cleanup action, lists that open their items in windows of their own, view state, and every
+//! root's window at a compact
 //! and a wide space.
 
 #[cfg(test)]
@@ -13,9 +14,9 @@ mod cases {
     use serde_json::json;
     use tilolang::IdsLock;
     use tilolang_runtime::{
-        AmStore, EditOutcome, FlowOutcome, InvokeOutcome, MemorySink, ModuleHash, PackageId,
-        Principal, Resolution, ResourceRef, Runtime, RuntimeError, Space, UiNode, Value, ViewEvent,
-        ViewInstance,
+        AmStore, EditOutcome, InvokeOutcome, MemorySink, ModuleHash, PackageId,
+        Principal, Resolution, ResourceRef, RunOutcome, Runtime, RuntimeError, Space, UiNode, Value,
+        ViewEvent, ViewInstance,
     };
 
     /// An app's directory (for messages), source and committed lock, all from one path.
@@ -1064,7 +1065,7 @@ mod cases {
         assert_eq!(thread(&w, &conv)[0].0, "person:ada");
     }
 
-    // ----- windows: open(r), window state and lenses ------------------------------------------
+    // ----- windows: open(r), view state ------------------------------------------
 
     // USER REQUIREMENT (2026-10-20): "notes = a notebook list view (`root Notebook`, list rows
     // that `open(n)`) plus a `default view note_editor for Note`; no `open` field in Notebook
@@ -1116,7 +1117,7 @@ mod cases {
         );
     }
 
-    // Window state is how one person's window shows its resource (workspace-model.md, "The
+    // View state is how one person's window shows its resource (workspace-model.md, "The
     // pieces"): two people with the same window open sort it for themselves, and neither
     // moves the other's view.
     #[test]
@@ -1184,7 +1185,7 @@ mod cases {
     }
 
     #[test]
-    fn a_lists_filter_is_window_state_and_changes_nothing_in_the_list() {
+    fn a_lists_filter_is_view_state_and_changes_nothing_in_the_list() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let list = w.create("Tasks");
@@ -1468,11 +1469,15 @@ mod cases {
 
         let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
         let button = button_labelled(view.tree(), "Morning cleanup").key.clone();
-        let mut out = FlowOutcome::Suspended(suggested(view.press(&button).unwrap()));
+        let mut out = match view.press(&button).unwrap() {
+            InvokeOutcome::Suggested(s) => RunOutcome::Suspended(s),
+            InvokeOutcome::Done(v) => RunOutcome::Done(v),
+            InvokeOutcome::Denied => panic!("the press was denied"),
+        };
         let mut asked = Vec::new();
         let finished = loop {
             match out {
-                FlowOutcome::Suspended(s) => {
+                RunOutcome::Suspended(s) => {
                     assert_eq!(
                         s.chain,
                         vec![m.w.id_of(&apps.today).clone()],
@@ -1481,7 +1486,7 @@ mod cases {
                     asked.push(s.action.clone());
                     out = m.w.rt.resolve(&s.run, &me(), Resolution::Approve).unwrap();
                 }
-                FlowOutcome::Done(v) => break v,
+                RunOutcome::Done(v) => break v,
             }
         };
         assert_eq!(finished, Value::Int(2));
@@ -1493,7 +1498,7 @@ mod cases {
                 apps.notes.action("retitle"),
                 apps.notes.action("tag"),
             ],
-            "one question for the clear, then one per note action, in flow order"
+            "one question for the clear, then one per note action, in the order Today wrote them"
         );
         assert_eq!(items(&m.w, &m.list, "items").len(), 1);
         let notes = items(&m.w, &m.notebook, "notes");
@@ -1545,19 +1550,25 @@ mod cases {
             "the task opened again for its step"
         );
 
-        let flow = apps.today.flow("morning_cleanup");
-        let mut out =
-            m.w.rt
-                .run_flow(&me(), &flow, vec![res(&m.list), res(&m.notebook)])
-                .unwrap();
+        let cleanup = apps.today.action("morning_cleanup");
+        let mut out = match m
+            .w
+            .rt
+            .invoke_action(&me(), (cleanup, vec![res(&m.list), res(&m.notebook)]))
+            .unwrap()
+        {
+            InvokeOutcome::Suggested(s) => RunOutcome::Suspended(s),
+            InvokeOutcome::Done(v) => RunOutcome::Done(v),
+            InvokeOutcome::Denied => panic!("the cleanup was denied"),
+        };
         let mut asked = Vec::new();
         let finished = loop {
             match out {
-                FlowOutcome::Suspended(s) => {
+                RunOutcome::Suspended(s) => {
                     asked.push(s.action.clone());
                     out = m.w.rt.resolve(&s.run, &me(), Resolution::Approve).unwrap();
                 }
-                FlowOutcome::Done(v) => break v,
+                RunOutcome::Done(v) => break v,
             }
         };
         assert_eq!(finished, Value::Int(0), "nothing was finished");
@@ -1586,12 +1597,13 @@ mod cases {
         let m = morning(&apps);
         add_todo(&m, &apps, "a", true);
         m.w.auth.trust(m.w.id_of(&apps.today));
-        let flow = apps.today.flow("morning_cleanup");
-        let out =
-            m.w.rt
-                .run_flow(&me(), &flow, vec![res(&m.list), res(&m.notebook)])
-                .unwrap();
-        assert_eq!(out, FlowOutcome::Done(Value::Int(1)));
+        let cleanup = apps.today.action("morning_cleanup");
+        let out = m
+            .w
+            .rt
+            .invoke_action(&me(), (cleanup, vec![res(&m.list), res(&m.notebook)]))
+            .unwrap();
+        assert_eq!(out, InvokeOutcome::Done(Value::Int(1)));
         assert!(items(&m.w, &m.list, "items").is_empty());
     }
 

@@ -65,9 +65,9 @@ fn said_about(about: host.Resource) -> List<host.Resource> {
 /// that has something to discuss places it in one line: a task's page and a note's view
 /// `use` this app and call `thread(t)`.
 view thread(about: host.Resource) {
-    lens draft: RichText = RichText("")
-    lens editing: Option<Comment> = .none
-    lens revised: RichText = RichText("")
+    state draft: RichText = RichText("")
+    state editing: Option<Comment> = .none
+    state revised: RichText = RichText("")
     let all = comments.items
     let said = all.filter(c -> created(c)?.from == .some(about))
     let unread = said.find(c -> not unseen(c).is_empty())
@@ -89,40 +89,45 @@ view thread(about: host.Resource) {
 }
 
 /// One comment of a thread: who said it and when over what they said — in an editor while its
-/// author changes it — and what they can do to it while they are over it.
+/// author changes it — and what they can do to it while they are over it. What it says stands
+/// at the name's left edge, not the face's, as a conversation's lines and a history's steps do.
 view comment_row(c: Comment, editing: State<Option<Comment>>, revised: State<RichText>) {
     let made = created(c)
-    stack(gap: .tight) {
-        row(gap: .tight) {
-            avatar(made?.who)
-            if let who = made?.who {
-                text(who.name(), role: .label)
-            }
-            if let at = made?.at {
-                ui.Time(at, role: .caption, secondary: true)
-            }
-        }
-        if editing == .some(c) {
-            rich_input(bind: revised, placeholder: "Edit comment") {
-                on submit: edit(c, revised).then(set(editing, .none))
-            }
-            row {
-                ui.Button("Cancel") {
-                    on press: set(editing, .none)
+    row(gap: .tight, align: .start) {
+        avatar(made?.who)
+        // What the comment holds, under the line naming who said it: the face stands beside the
+        // whole of it rather than over it.
+        stack(gap: .tight, fill: 1.0) {
+            row(gap: .tight) {
+                if let who = made?.who {
+                    text(who.name(), role: .label)
                 }
-                ui.Button("Save", role: .primary) {
-                    on press: edit(c, revised).then(set(editing, .none))
+                if let at = made?.at {
+                    ui.Time(at, role: .caption, secondary: true)
                 }
             }
-        } else {
-            written(c)
-        }
-        if made?.who == .some(workspace.me) {
-            ui.HoverToolbar {
-                ui.Button("Edit", icon: .pencil, icon_only: true) {
-                    on press: set(revised, c.text).then(set(editing, c))
+            if editing == .some(c) {
+                rich_input(bind: revised, placeholder: "Edit comment") {
+                    on submit: edit(c, revised).then(set(editing, .none))
                 }
-                button(delete(comments, c))
+                row {
+                    ui.Button("Cancel") {
+                        on press: set(editing, .none)
+                    }
+                    ui.Button("Save", role: .primary) {
+                        on press: edit(c, revised).then(set(editing, .none))
+                    }
+                }
+            } else {
+                written(c)
+            }
+            if made?.who == .some(workspace.me) {
+                ui.HoverToolbar {
+                    ui.Button("Edit", icon: .pencil, icon_only: true) {
+                        on press: set(revised, c.text).then(set(editing, c))
+                    }
+                    button(delete(comments, c))
+                }
             }
         }
     }
@@ -141,7 +146,23 @@ view written(c: Comment) {
 /// beside them as the thread it stands in: the window of the app itself, where a thread is found
 /// by what it is about and opens it.
 view recently(all: Comments) {
-    std.list(all, all.items, empty: "Nothing said yet")
+    ui.NavShell(
+        content_kind: .list,
+        title: .some(phrase("tilolang-all", kind: meta(Comment).plural)),
+        count: .some(all.items.len()),
+    ) {
+        content: {
+            if all.items.is_empty() {
+                ui.EmptyState("Nothing said yet", icon: meta(Comment).icon)
+            } else {
+                std.list(all.items) { (c, at) ->
+                    ui.ListItem(item: c, presence: at) {
+                        remark(c)
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A comment's window: where it was said, which opens, and the thread it stands in — the same

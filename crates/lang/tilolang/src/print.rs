@@ -1143,18 +1143,6 @@ impl Printer<'_> {
                 self.block_body(&a.body);
                 self.line("}");
             }
-            Item::Flow(f) => {
-                let mut tail = f
-                    .result
-                    .as_ref()
-                    .map(|r| format!(" -> {}", print_type(r)))
-                    .unwrap_or_default();
-                tail.push_str(&uses_text(&f.uses));
-                let lead = format!("flow {}", f.name.name);
-                self.head(&lead, &f.params, &tail, &[], " {", param_text);
-                self.block_body(&f.body);
-                self.line("}");
-            }
             Item::Fn(f) => {
                 let tail = format!(" -> {}", print_type(&f.result));
                 let lead = format!("fn {}", f.name.name);
@@ -1252,7 +1240,6 @@ impl Printer<'_> {
                     format!("sort {} {}", field.name, order.name)
                 }
                 SearchEntryKind::Hide { field } => format!("hide {}", field.name),
-                SearchEntryKind::MarkOthers => "mark others".to_owned(),
             };
             self.line(&text);
         }
@@ -1333,7 +1320,7 @@ impl Printer<'_> {
                 self.line(&format!("{head}{v}"));
             }
             UiKind::State(d) => {
-                let head = format!("{} {}: {}", d.layer.word(), d.name.name, print_type(&d.ty));
+                let head = format!("state {}: {}", d.name.name, print_type(&d.ty));
                 let default = match &d.default {
                     Some(e) => {
                         let col = self.level * 4 + head.len() + 3;

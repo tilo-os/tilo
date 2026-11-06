@@ -314,6 +314,16 @@ fn ending_a_pan_gesture_still_syncs_the_notes_windows() {
                 quiet < frames,
                 "ending a pan is not quiet: {quiet} of its {frames} frames were: {rows:?}"
             );
+            // Focus follows the strip once it rests where the pan left it:
+            // the deadline frame ends the gesture, and the frames after it
+            // settle the strip before focus lands on the window the person
+            // is left looking at.
+            for _ in 0..120 {
+                if handle.snapshot("g", vec![]).active != active {
+                    break;
+                }
+                harness.poll_frame().unwrap();
+            }
             assert_ne!(
                 handle.snapshot("g", vec![]).active,
                 active,

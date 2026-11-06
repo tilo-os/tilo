@@ -8,51 +8,51 @@ mod common;
 #[cfg(test)]
 mod cases {
     use super::common::*;
-    use tilolang_runtime::{AmStore, FlowOutcome, Runtime, Value};
+    use tilolang_runtime::{AmStore, InvokeOutcome, Runtime, Value};
 
     const SOURCE: &str = "app so.tilo.text \"Text\"\n\
-flow count(t: Text) -> Int { return t.len() }\n\
-flow empty(t: Text) -> Bool { return t.is_empty() }\n\
-flow tidy(t: Text) -> Text { return t.trim() }\n\
-flow shout(t: Text) -> Text { return t.upper() }\n\
-flow whisper(t: Text) -> Text { return t.lower() }\n\
-flow starts(t: Text, p: Text) -> Bool { return t.starts_with(p) }\n\
-flow ends(t: Text, p: Text) -> Bool { return t.ends_with(p) }\n\
-flow holds(t: Text, p: Text) -> Bool { return t.contains(p) }\n\
-flow glob(t: Text, p: Text) -> Bool { return t.matches(p) }\n\
-flow at(t: Text, p: Text) -> Int { return match t.find(p) { .some(i) => i, .none => -1 } }\n\
-flow cut(t: Text, a: Int, b: Int) -> Text { return t.slice(a, b) }\n\
-flow swap(t: Text, a: Text, b: Text) -> Text { return t.replace(a, b) }\n\
-flow pieces(t: Text, sep: Text) -> List<Text> { return t.split(sep) }\n\
-flow rejoined(t: Text, sep: Text) -> Text { return t.split(sep).join(\"|\") }\n\
-flow tied(xs: List<Text>, sep: Text) -> Text { return xs.join(sep) }\n\
-flow number(t: Text) -> Int { return match t.to_int() { .some(n) => n, .none => -1 } }\n\
-flow lowest(a: Int, b: Int) -> Int { return a.min(b) }\n\
-flow highest(a: Int, b: Int) -> Int { return a.max(b) }\n\
-flow bounded(n: Int) -> Int { return n.clamp(0, 10) }\n\
-flow size(n: Int) -> Int { return n.abs() }\n\
-flow as_float(n: Int) -> Float { return n.to_float() }\n\
-flow int_text(n: Int) -> Text { return n.to_text() }\n\
-flow flowest(a: Float, b: Float) -> Float { return a.min(b) }\n\
-flow fhighest(a: Float, b: Float) -> Float { return a.max(b) }\n\
-flow fbounded(f: Float) -> Float { return f.clamp(0.0, 1.0) }\n\
-flow fsize(f: Float) -> Float { return f.abs() }\n\
-flow whole(f: Float) -> Int { return f.round() }\n\
-flow down(f: Float) -> Int { return f.floor() }\n\
-flow up(f: Float) -> Int { return f.ceil() }\n\
-flow whole_to(f: Float, places: Int) -> Float { return f.round(places) }\n\
-flow down_to(f: Float, places: Int) -> Float { return f.floor(places) }\n\
-flow up_to(f: Float, places: Int) -> Float { return f.ceil(places) }\n\
-flow as_int(f: Float) -> Int { return f.to_int() }\n\
-flow float_text(f: Float) -> Text { return f.to_text() }\n\
-flow total(xs: List<Int>) -> Int { return xs.sum() }\n\
-flow total_f(xs: List<Float>) -> Float { return xs.sum() }\n\
-flow mean(xs: List<Int>) -> Float { return xs.avg() }\n\
-flow among(xs: List<Text>, x: Text) -> Bool { return xs.contains(x) }\n\
-flow has_num(xs: List<Int>, n: Int) -> Bool { return xs.contains(n) }\n\
-flow has_real(xs: List<Float>, f: Float) -> Bool { return xs.contains(f) }\n\
-flow where_num(xs: List<Int>, n: Int) -> Int { return match xs.index_of(n) { .some(i) => i, .none => -1 } }\n\
-flow flag(b: Bool) -> Text { return b.to_text() }";
+action count(t: Text) -> Int { return t.len() }\n\
+action empty(t: Text) -> Bool { return t.is_empty() }\n\
+action tidy(t: Text) -> Text { return t.trim() }\n\
+action shout(t: Text) -> Text { return t.upper() }\n\
+action whisper(t: Text) -> Text { return t.lower() }\n\
+action starts(t: Text, p: Text) -> Bool { return t.starts_with(p) }\n\
+action ends(t: Text, p: Text) -> Bool { return t.ends_with(p) }\n\
+action holds(t: Text, p: Text) -> Bool { return t.contains(p) }\n\
+action glob(t: Text, p: Text) -> Bool { return t.matches(p) }\n\
+action at(t: Text, p: Text) -> Int { return match t.find(p) { .some(i) => i, .none => -1 } }\n\
+action cut(t: Text, a: Int, b: Int) -> Text { return t.slice(a, b) }\n\
+action swap(t: Text, a: Text, b: Text) -> Text { return t.replace(a, b) }\n\
+action pieces(t: Text, sep: Text) -> List<Text> { return t.split(sep) }\n\
+action rejoined(t: Text, sep: Text) -> Text { return t.split(sep).join(\"|\") }\n\
+action tied(xs: List<Text>, sep: Text) -> Text { return xs.join(sep) }\n\
+action number(t: Text) -> Int { return match t.to_int() { .some(n) => n, .none => -1 } }\n\
+action lowest(a: Int, b: Int) -> Int { return a.min(b) }\n\
+action highest(a: Int, b: Int) -> Int { return a.max(b) }\n\
+action bounded(n: Int) -> Int { return n.clamp(0, 10) }\n\
+action size(n: Int) -> Int { return n.abs() }\n\
+action as_float(n: Int) -> Float { return n.to_float() }\n\
+action int_text(n: Int) -> Text { return n.to_text() }\n\
+action least(a: Float, b: Float) -> Float { return a.min(b) }\n\
+action fhighest(a: Float, b: Float) -> Float { return a.max(b) }\n\
+action fbounded(f: Float) -> Float { return f.clamp(0.0, 1.0) }\n\
+action fsize(f: Float) -> Float { return f.abs() }\n\
+action whole(f: Float) -> Int { return f.round() }\n\
+action down(f: Float) -> Int { return f.floor() }\n\
+action up(f: Float) -> Int { return f.ceil() }\n\
+action whole_to(f: Float, places: Int) -> Float { return f.round(places) }\n\
+action down_to(f: Float, places: Int) -> Float { return f.floor(places) }\n\
+action up_to(f: Float, places: Int) -> Float { return f.ceil(places) }\n\
+action as_int(f: Float) -> Int { return f.to_int() }\n\
+action float_text(f: Float) -> Text { return f.to_text() }\n\
+action total(xs: List<Int>) -> Int { return xs.sum() }\n\
+action total_f(xs: List<Float>) -> Float { return xs.sum() }\n\
+action mean(xs: List<Int>) -> Float { return xs.avg() }\n\
+action among(xs: List<Text>, x: Text) -> Bool { return xs.contains(x) }\n\
+action has_num(xs: List<Int>, n: Int) -> Bool { return xs.contains(n) }\n\
+action has_real(xs: List<Float>, f: Float) -> Bool { return xs.contains(f) }\n\
+action where_num(xs: List<Int>, n: Int) -> Int { return match xs.index_of(n) { .some(i) => i, .none => -1 } }\n\
+action flag(b: Bool) -> Text { return b.to_text() }";
 
     struct Surface {
         rt: Runtime,
@@ -67,31 +67,33 @@ flow flag(b: Bool) -> Text { return b.to_text() }";
     }
 
     impl Surface {
-        fn ask(&self, flow: &str, args: Vec<Value>) -> Value {
-            match self.rt.run_flow(&me(), &self.app.flow(flow), args).unwrap() {
-                FlowOutcome::Done(v) => v,
-                FlowOutcome::Suspended(s) => panic!("{flow} stopped to ask {}", s.action),
+        fn ask(&self, action: &str, args: Vec<Value>) -> Value {
+            let aref = (self.app.action(action), args);
+            match self.rt.invoke_action(&me(), aref).unwrap() {
+                InvokeOutcome::Done(v) => v,
+                InvokeOutcome::Suggested(s) => panic!("{action} stopped to ask {}", s.action),
+                InvokeOutcome::Denied => panic!("{action} was denied"),
             }
         }
 
-        fn text(&self, flow: &str, args: Vec<Value>) -> String {
-            match self.ask(flow, args) {
+        fn text(&self, action: &str, args: Vec<Value>) -> String {
+            match self.ask(action, args) {
                 Value::Text(t) => t,
-                other => panic!("{flow} gave {other:?}"),
+                other => panic!("{action} gave {other:?}"),
             }
         }
 
-        fn int(&self, flow: &str, args: Vec<Value>) -> i64 {
-            match self.ask(flow, args) {
+        fn int(&self, action: &str, args: Vec<Value>) -> i64 {
+            match self.ask(action, args) {
                 Value::Int(n) => n,
-                other => panic!("{flow} gave {other:?}"),
+                other => panic!("{action} gave {other:?}"),
             }
         }
 
-        fn yes(&self, flow: &str, args: Vec<Value>) -> bool {
-            match self.ask(flow, args) {
+        fn yes(&self, action: &str, args: Vec<Value>) -> bool {
+            match self.ask(action, args) {
                 Value::Bool(b) => b,
-                other => panic!("{flow} gave {other:?}"),
+                other => panic!("{action} gave {other:?}"),
             }
         }
     }
@@ -197,7 +199,7 @@ flow flag(b: Bool) -> Text { return b.to_text() }";
         assert_eq!(s.text("int_text", vec![Value::Int(-4)]), "-4");
 
         assert_eq!(
-            s.ask("flowest", vec![Value::Float(0.25), Value::Float(0.75)]),
+            s.ask("least", vec![Value::Float(0.25), Value::Float(0.75)]),
             Value::Float(0.25)
         );
         assert_eq!(

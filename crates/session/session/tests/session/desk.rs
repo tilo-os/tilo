@@ -101,20 +101,22 @@ fn invoke_with_at(
 
 /// A session drawing the desk in the light theme.
 pub(super) fn light_session() -> Session {
-    fn light() -> ui::application::ComponentRunnerInputs {
-        let mut inputs = ui::headless::fixture_runner_inputs();
-        inputs.theme = ui::theme::Theme::light();
-        inputs
-    }
     Session::headless(
         Options {
-            presentation: light,
+            presentation: light_presentation,
             collab: false,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session")
+}
+
+/// The presentation of a session drawing the desk in the light theme.
+pub(super) fn light_presentation() -> ui::application::ComponentRunnerInputs {
+    let mut inputs = ui::headless::fixture_runner_inputs();
+    inputs.theme = ui::theme::Theme::light();
+    inputs
 }
 
 /// Run frames until `done` holds, with no client to pump.

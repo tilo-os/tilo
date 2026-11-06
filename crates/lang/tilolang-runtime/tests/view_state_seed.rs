@@ -212,7 +212,7 @@ enum Side {
 root Notes
 default view all for Notes
 view all(n: Notes) {
-    window side: Side = Side.left
+    state side: Side = Side.left
     let heading = if side == Side.left { "left" } else { "right" }
     ui.NavShell(content_kind: .document, overview_title: heading) {
         overview: {

@@ -3,7 +3,7 @@
 Two loops:
 
 - **The app loop.** Save a `.tl` file. The running app shows the change in about
-  50 ms, with its state: its resources, its window and lens state, the scroll,
+  50 ms, with its state: its resources, its view state, the scroll,
   the selection and the open item.
 - **The runtime loop.** Change the runtime (`apps/tilolang`, `tilolang-tilo`,
   `tilolang-runtime`) and build it. The running app restarts on the new runtime,
@@ -116,7 +116,7 @@ The second case covers:
 
 - a field whose type or merge changed;
 - an enum case that was removed;
-- a `window`/`lens` state whose type changed;
+- a view `state` whose type changed;
 - a new app name, icon or category.
 
 The app name, icon and category are the installed manifest's. The window chrome shows

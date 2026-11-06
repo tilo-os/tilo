@@ -24,6 +24,7 @@ use std::io::{self, Write};
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use advisory_lock::{FileLock, LockMode, TryLockError};
@@ -235,6 +236,12 @@ impl DocStore {
     /// `~/.local/share`).
     pub fn native_store() -> Rc<dyn DurableStore> {
         Rc::new(FsStore::new(cli::data_home()))
+    }
+
+    /// [`Self::native_store`] as a handle any thread may hold: a service
+    /// that keeps a document of its own beside the records shares this one.
+    pub fn native_store_shared() -> Arc<dyn DurableStore + Send + Sync> {
+        Arc::new(FsStore::new(cli::data_home()))
     }
 
     /// Open the store for an explicit package id — for tests and migration

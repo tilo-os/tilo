@@ -7,11 +7,10 @@
 //! * a `fn` computes and calls `fn`s; it changes nothing and calls no action;
 //! * a `view` reads resources, calls `fn`s and views and builds UI. Writing `act(args)` in a view
 //!   makes an `Action` value; it doesn't run the action;
-//! * an `action` reads and changes resources of its own package's types, and may call its own
-//!   package's actions, which run in the same change. It can't call another package's action
-//!   (one change can't span apps), a flow, or wait;
-//! * a `flow` invokes any action, its own or another package's, and reads resources, but
-//!   changes fields only through actions.
+//! * an `action` reads and changes resources of its own package's types, and may call any action,
+//!   its own or another package's: the call runs at its door, as a change of its own
+//!   ([`docs/designs/app-language/action-system.md`]);
+//! * an agent's program does what an action does, over every app it can see.
 //!
 //! Lambdas appear only as arguments of the built-in list methods and are inlined as loops, so
 //! there are no closures at run time. Every error found is reported, not only the first
@@ -61,7 +60,9 @@ pub(crate) enum Ctx {
     #[default]
     Fn,
     Action,
-    Flow,
+    /// An agent's program: statements over every app, which apply actions as their own steps
+    /// and send field edits to the app that holds them.
+    Program,
     View,
     /// An agent's block: reads and builds values, never changes anything.
     Block,
@@ -75,7 +76,7 @@ pub(crate) enum Written {
     Declared,
     /// A scenario, where `root T` names a root resource.
     Scenario,
-    /// An agent's program: a flow that may `print`, `find` and `read`.
+    /// An agent's program, which may `print`, `find` and `read`.
     Program,
 }
 
@@ -94,7 +95,7 @@ impl Ctx {
         match self {
             Self::Fn => "a fn",
             Self::Action => "an action",
-            Self::Flow => "a flow",
+            Self::Program => "an agent's program",
             Self::View => "a view",
             Self::Block => "a block",
         }
@@ -109,9 +110,6 @@ pub(crate) enum Invoked {
     Plain,
     /// The operand of `try`: it reports failure rather than trapping.
     Try,
-    /// The first expression of a scenario's `invoke`: an action of another app is invoked at its
-    /// own door, as a flow applies one.
-    Foreign,
 }
 
 #[derive(Default)]
@@ -133,10 +131,8 @@ struct FnState {
     shown: std::collections::HashSet<Span>,
     /// Locals holding the key suffix of each enclosing UI loop, innermost last.
     keys: Vec<LocalId>,
-    /// What the `invoke` call being checked is: the operand of `try`, which reports failure, or
-    /// the first expression of a scenario's `invoke`, where another app's action is invoked at
-    /// its own door, a change of its own, rather than refused as a change spanning apps. Seed
-    /// data is the host's making, as a scenario's own actions are.
+    /// What the `invoke` call being checked is: the operand of `try`, which reports failure
+    /// rather than trapping.
     invoked: Invoked,
     /// Set while checking the operand of `suggest`: `Some(true)` when the call is the value an
     /// agent block proposes, `Some(false)` when it is a statement recording a proposal.
@@ -225,10 +221,9 @@ pub(crate) struct UiPlace {
     composer: bool,
 }
 
-/// A `window` or `lens` declaration in scope, for `bind:` and `set(...)`.
+/// A `state` declaration in scope, for `bind:` and `set(...)`.
 #[derive(Clone, Debug)]
 pub(crate) struct StateRef {
-    pub layer: ast::StateLayer,
     pub id: String,
     pub ty: Ty,
     pub local: LocalId,
@@ -308,7 +303,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         outer_at: None,
     };
     let mut funcs = Vec::new();
-    // The actions and flows, which declare what they read, and where their name is.
+    // The actions, which declare what they read, and where their name is.
     let mut declaring: Vec<(usize, Span)> = Vec::new();
     for item in &module.items {
         let idx = funcs.len();
@@ -319,12 +314,8 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         if let Item::Action(a) = item {
             declaring.push((idx, a.name.span));
         }
-        if let Item::Flow(f) = item {
-            declaring.push((idx, f.name.span));
-        }
         let f = match item {
             Item::Action(a) => c.run_action(&callable, &a.requires, &a.applies, &a.body),
-            Item::Flow(f) => c.run_body(&callable, FuncKind::Flow, Ctx::Flow, &f.body),
             Item::Fn(f) => c.run_body(&callable, FuncKind::Fn, Ctx::Fn, &f.body),
             Item::Scenario(s) => c.run_body(&callable, FuncKind::Action, Ctx::Action, &s.body),
             Item::View(v) if is_template(v) => continue,
@@ -431,7 +422,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             funcs.push(c.run_guard(action, lines, &action.params, kind, export));
         }
     }
-    // What each action and flow reads, including through the fns and actions its body calls,
+    // What each action reads, including through the fns and actions its body calls,
     // against what its `uses` clause declares. Its own reads are reported where they are
     // written; this reports the ones it reaches through a callee, at its name.
     let reached = crate::effects::reached(&funcs);
@@ -443,7 +434,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         let own = funcs.get(idx).map(|f| &f.facts.effects);
         let word = match callable.kind {
             CKind::Action => "an action",
-            _ => "a flow",
+            _ => "a declaration",
         };
         for e in reached
             .get(idx)
@@ -503,7 +494,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         c.err(
             "E044",
             at,
-            "`suggest` must be the whole expression of a block, or stand where an action or a flow runs",
+            "`suggest` must be the whole expression of a block, or stand where an action runs",
         );
     }
     let ty = ex.ty.clone();
@@ -606,13 +597,15 @@ impl Checker<'_> {
     }
 
     /// Records that the code reads `effect`, written as `what` (`now`, `day_of(t)`, a time of no
-    /// zone, `random.int`), and refuses it where it cannot be read: an action or flow reads only
-    /// what its `uses` clause names (convergence.md, "Actions"); a view, a block or a `fn` reads
-    /// none but the person's zone, which is what their device makes of a value they are shown.
+    /// zone, `random.int`), and refuses it where it cannot be read: an action, and an agent's
+    /// program, read only what its `uses` clause names (convergence.md, "Actions"); a view reads
+    /// none but the zone it is drawn in; a `fn` and a block read what they are given and pass
+    /// their reads to their caller.
     fn reads(&mut self, effect: crate::effects::Effect, span: Span, what: &str) {
         let refused = match self.st.ctx {
-            Ctx::Action | Ctx::Flow => !self.st.uses.contains(&effect),
-            _ => effect != crate::effects::Effect::Time,
+            Ctx::Action | Ctx::Program => !self.st.uses.contains(&effect),
+            Ctx::View => effect != crate::effects::Effect::Time,
+            _ => false,
         };
         if !refused {
             // A read that is allowed is the invocation's: what a `fn` reads is its caller's too.
@@ -631,7 +624,7 @@ impl Checker<'_> {
                 "{what} reads {what_it_reads}, which a block cannot: a block answers a question as it is asked, where an action records it and is replayed from the record"
             ),
             Ctx::Fn => format!(
-                "{what} reads {what_it_reads}, which a fn cannot: a fn computes from the values it is given, so the read is written in the action or flow that makes the invocation"
+                "{what} reads {what_it_reads}, which a fn cannot: a fn computes from the values it is given, so the read is written in the action that makes the invocation"
             ),
             _ => {
                 let decl = self.st.decl.clone();
@@ -758,7 +751,6 @@ impl Checker<'_> {
         }
         let prefix = match kind {
             FuncKind::Action => "a_",
-            FuncKind::Flow => "f_",
             FuncKind::Fn => "n_",
             FuncKind::View => "v_",
             FuncKind::Block => "b_",
@@ -966,9 +958,7 @@ impl Checker<'_> {
                 }
             }
         }
-        self.st.invoked = Invoked::Foreign;
         let value = self.expr(&first.value, None);
-        self.st.invoked = Invoked::Plain;
         let ty = value.ty.clone();
         let (mut stmts, last) = match value.kind {
             Ek::Seq(inner, last) => (inner, last),
@@ -1376,7 +1366,7 @@ impl Checker<'_> {
             return;
         }
         if key.app != self.env.app {
-            self.err("E045", span, format!("`{}` is declared by another app ({}); an action may only change its own module's types. Invoke that app's action from a flow instead", key.name, key.app));
+            self.err("E045", span, format!("`{}` is declared by another app ({}); an action may only change its own module's types. Call that app's action instead", key.name, key.app));
             let _ = self.expr(value, None);
             return;
         }

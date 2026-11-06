@@ -269,7 +269,7 @@ fn picking_a_day_asks_until_when_and_runs_once_the_day_reads() {
     assert_eq!(
         shown.as_deref(),
         Some("not a day"),
-        "the lens kept the typing"
+        "the view state kept the typing"
     );
 
     field(&mut app, "Due");

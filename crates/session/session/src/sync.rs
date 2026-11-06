@@ -37,7 +37,7 @@ use collab_types::presence::{
 use iroh::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::record_content::ContentSources;
-use tilo_desktop::chrome::WaveNotice;
+use tilo_desktop::chrome::{ArrivalNotice, WaveNotice};
 use tilo_desktop::here::{Focus, Here, LiveMember, Wave};
 use tilo_desktop_model::{
     DesktopTree, TabId, WorkspaceId as DeskWorkspaceId, WorkspaceSlot as DeskSlot,
@@ -59,6 +59,7 @@ use crate::content;
 use crate::device_actions::DeviceActions;
 use crate::engine::Engine;
 
+mod arrivals;
 mod gate;
 mod plane;
 
@@ -93,6 +94,24 @@ pub const JOIN_PATIENCE: Duration = Duration::from_secs(
 /// starts without one: a desktop with no one else on it, rather than a session
 /// that never opens.
 const BIND_WITHIN: Duration = Duration::from_secs(30);
+
+/// The endpoint the thread bound, within [`BIND_WITHIN`]: what publishes on
+/// it, the endpoint itself, and whether this device can be reached.
+type Bound = (EndpointId, EndpointAddr, Reachability);
+
+fn wait_for_bound(
+    bound: &std::sync::mpsc::Receiver<Result<Bound, String>>,
+) -> std::io::Result<Bound> {
+    bound
+        .recv_timeout(BIND_WITHIN)
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the collaboration endpoint did not bind",
+            )
+        })?
+        .map_err(std::io::Error::other)
+}
 
 /// What this session says of itself here.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -785,6 +804,12 @@ pub struct Client {
     sent_wave: RefCell<Option<Wave>>,
     /// The last wave at this person, for the bar to say.
     notice: RefCell<Option<WaveNotice>>,
+    /// The workspace whose arrival the bar is saying, so a person who comes
+    /// to a workspace where people are is shown arriving once, not on every
+    /// roster change.
+    arrived_in: RefCell<Option<String>>,
+    /// The arrival the bar shows.
+    arrival: RefCell<Option<ArrivalNotice>>,
     outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
     arrived: std::sync::mpsc::Receiver<NetEvent>,
     /// The window streams that reached this device: their frames, starts,
@@ -814,9 +839,9 @@ pub struct Client {
     /// person's other devices are told apart by. Empty on a device that
     /// named none.
     device: String,
-    /// What the plane heard that needs a newer system on this device since
-    /// the last call.
-    updates: std::sync::mpsc::Receiver<()>,
+    /// The collaborator's devices the plane heard at another peer protocol
+    /// version since the last call: what the person is answered.
+    versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
     /// The desk this session shows, whose workspaces' policies hold every
     /// member's messages to what the workspace grants them: `None` until the
     /// session hands it over ([`Self::attach_desk`]).
@@ -964,7 +989,7 @@ impl Client {
         let fabric = restored_fabric(identity.as_ref(), outgoing.clone(), entry.continuity);
         // What the actor serves for the session is installed before it starts:
         // every actor built from here on answers those doors.
-        let updates = crate::network::install(fabric.as_ref(), questions);
+        let versions = crate::network::install(fabric.as_ref(), questions);
         // The channels this session runs, if it runs any: their side of the
         // plane is the engine's, opened before the plane starts. The thread
         // takes its own handle, and this one tells them where the plane is.
@@ -999,15 +1024,7 @@ impl Client {
                     Serving::new(bound_endpoint, plane_link, serving, beside, documents),
                 );
             })?;
-        let (publisher, endpoint, reachability) = bound
-            .recv_timeout(BIND_WITHIN)
-            .map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "the collaboration endpoint did not bind",
-                )
-            })?
-            .map_err(std::io::Error::other)?;
+        let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;
         if let (Some(live), Some(bound)) = (&mut live, endpoint_handle.get()) {
             live.attach(bound.clone());
         }
@@ -1029,6 +1046,8 @@ impl Client {
             said: RefCell::new(Vec::new()),
             sent_wave: RefCell::new(None),
             notice: RefCell::new(None),
+            arrived_in: RefCell::new(None),
+            arrival: RefCell::new(None),
             outgoing,
             arrived,
             surfaces: RefCell::new(Vec::new()),
@@ -1054,7 +1073,7 @@ impl Client {
             reachability,
             beside: served,
             live,
-            updates,
+            versions,
             thread: Some(thread),
         };
         // The person's other devices are heard from the start, so a list one
@@ -1082,11 +1101,12 @@ impl Client {
         self.beside.iter().any(|served| served == alpn)
     }
 
-    /// Whether something heard on this plane needs a newer system on this
-    /// device now — a collaborator's device at a newer peer protocol version —
-    /// since the last call.
-    pub fn take_update_request(&self) -> bool {
-        self.updates.try_iter().next().is_some()
+    /// The collaborator's devices heard on this plane at another peer
+    /// protocol version since the last call, each once per device and
+    /// version: one of the two devices must update before the two work
+    /// together again.
+    pub(crate) fn take_version_mismatches(&self) -> Vec<crate::network::VersionMismatch> {
+        self.versions.try_iter().collect()
     }
 
     /// The desktop's presence, shared with whatever draws who is here.
@@ -1961,24 +1981,6 @@ impl Client {
         ))
     }
 
-    /// Take the waves at this person heard since the last call: the bar
-    /// says who waved, for a moment.
-    fn show_waves(&self) {
-        let heard = self.here.borrow_mut().take_waves();
-        if let Some(last) = heard.last() {
-            *self.notice.borrow_mut() = Some(WaveNotice {
-                from: last.name.clone(),
-                at: ui::time::now(),
-            });
-        }
-    }
-
-    /// The last wave at this person, for the bar to say.
-    #[must_use]
-    pub fn wave_notice(&self) -> Option<WaveNotice> {
-        self.notice.borrow().clone()
-    }
-
     /// Why what this session takes part in needs this device reachable, if
     /// it does: a workspace it shows has someone else here. A host is
     /// dialled at start and on every reconnect, and the peer actor holds
@@ -2004,21 +2006,6 @@ impl Client {
     fn note_reachability(&self) {
         self.reachability
             .need(Need::Session, self.reachability_need());
-    }
-
-    /// Hand the desktop this person and whoever is here with them in the
-    /// workspace in front.
-    fn show_here(&self) {
-        let (own, members) = {
-            let plane = self.plane.borrow();
-            let members = plane
-                .active
-                .and_then(|ws| plane.workspaces.iter().find(|workspace| workspace.ws == ws))
-                .map(Workspace::members)
-                .unwrap_or_default();
-            (self.own_member(), members)
-        };
-        self.here.borrow_mut().set_members(Some(own), Some(members));
     }
 
     /// Say this person's presence again in the workspace in front.
@@ -2356,14 +2343,16 @@ impl Client {
                 said_at: Cell::new(Instant::now()),
                 wave_seq: Cell::new(0),
                 presence_seq: Cell::new(0),
-                updates: {
-                    let (_wanted, updates) = std::sync::mpsc::channel();
-                    updates
+                versions: {
+                    let (_said, versions) = std::sync::mpsc::channel();
+                    versions
                 },
                 #[cfg(test)]
                 said: RefCell::new(Vec::new()),
                 sent_wave: RefCell::new(None),
                 notice: RefCell::new(None),
+                arrived_in: RefCell::new(None),
+                arrival: RefCell::new(None),
                 outgoing,
                 arrived,
                 surfaces: RefCell::new(Vec::new()),

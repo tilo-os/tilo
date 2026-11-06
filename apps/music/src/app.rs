@@ -637,6 +637,10 @@ pub(crate) struct Music {
     /// Entity id (album / artist / playlist / track) → best cover URL, folded
     /// in from live search/home/artist results and re-applied each frame.
     art_urls: HashMap<String, String>,
+    /// The cover last cut down for the song's live activity, with the cover it
+    /// was cut from: the shell's card shows that picture, so it is made once
+    /// per song rather than on every frame.
+    activity_art: Option<(String, String)>,
     /// Playlist covers composed from their tracks' artwork, by playlist id,
     /// with the covers each was made of.
     playlist_mosaics: std::cell::RefCell<HashMap<String, (Vec<u64>, vello::peniko::ImageData)>>,
@@ -791,16 +795,26 @@ impl Music {
     }
 
     pub fn new() -> Self {
-        Self::new_with_device_profile(true)
+        Self::with_bundled_covers(Self::new_with_device_profile(true))
     }
 
     /// The app for a window nobody plays in — a past version in History, a
     /// test: no network, and this device's playback profile is neither read
     /// nor written.
     pub(crate) fn offline() -> Self {
-        let mut app = Self::new_with_device_profile(false);
+        let mut app = Self::with_bundled_covers(Self::new_with_device_profile(false));
         app.allow_network = false;
         app.search = render::SearchView::hermetic();
+        app
+    }
+
+    /// The sample library is catalog data with no artwork of its own: each
+    /// sample album carries a bundled cover, so what shows the library — its
+    /// grids and the shell's now-playing card — shows real cover art.
+    fn with_bundled_covers(mut app: Self) -> Self {
+        for album in crate::seed::sample_library().albums.keys() {
+            app.record_cover(album, &crate::seed::sample_cover(album));
+        }
         app
     }
 
@@ -990,6 +1004,7 @@ impl Music {
             staged_facet: None,
             images: ImageStore::new(&image_fetcher()),
             art_urls: HashMap::new(),
+            activity_art: None,
             playlist_mosaics: std::cell::RefCell::default(),
             home: None,
             home_asked: None,
@@ -1662,6 +1677,78 @@ impl Music {
                 && !self.audio.needs_poll(),
             controller_bus_name: Some(&self.mpris_bus_name),
         });
+    }
+
+    /// Show the song this device plays as the app's live activity: the bar's
+    /// pill names it and its floating card shows its cover, who it is by and
+    /// where the playhead stands. Nothing plays: the activity ends.
+    fn publish_activity(&mut self) {
+        let Some(track_id) = self.pb.current.clone() else {
+            crate::activity::publish(None);
+            return;
+        };
+        let Some(track) = self.playback_track(&track_id) else {
+            crate::activity::publish(None);
+            return;
+        };
+        let (title, album_id, artist_id) = (
+            track.title.clone(),
+            track.album_id.clone(),
+            track.artist_id.clone(),
+        );
+        let artwork = self.activity_artwork(&track_id, &album_id);
+        let song = crate::activity::Playing {
+            track: track_id,
+            title,
+            artist: self.lib.artist_name(&artist_id).to_string(),
+            playing: self.pb.playing,
+            position_ms: self.playhead_ms.max(0.0),
+            length_ms: self.current_duration_ms() as f64,
+            artwork,
+        };
+        crate::activity::publish(Some(&song));
+    }
+
+    /// The cover the song's card shows, as a small `data:` picture: the cover
+    /// this window already decoded, cut down so it fits the activity's wire
+    /// budget. Empty while the cover is still loading.
+    fn activity_artwork(&mut self, track_id: &str, album_id: &str) -> String {
+        let cover = self.best_cover_id(track_id, album_id);
+        let Some(url) = self.art_urls.get(&cover).cloned() else {
+            return String::new();
+        };
+        if let Some((kept, art)) = &self.activity_art
+            && *kept == url
+        {
+            return art.clone();
+        }
+        let art = cover_picture(&url, &self.images);
+        if !art.is_empty() {
+            self.activity_art = Some((url, art.clone()));
+        }
+        art
+    }
+
+    /// Take the controls pressed on the song's pill and card, through the same
+    /// actions a media key reaches.
+    fn drain_activity(&mut self, state: &mut ui::widget::Edits<'_>) {
+        for pressed in crate::activity::take_commands() {
+            // A press names the song it was made on: once another plays, it is
+            // not this song's.
+            if pressed
+                .activity_id
+                .as_deref()
+                .is_some_and(|id| self.pb.current.as_deref() != Some(id))
+            {
+                continue;
+            }
+            match pressed.command.as_str() {
+                "play-pause" => self.dispatch(Action::TogglePlay, state),
+                "previous" => self.dispatch(Action::Prev, state),
+                "next" => self.dispatch(Action::Next, state),
+                _ => {}
+            }
+        }
     }
 
     fn apply_pending_media_handoff(&mut self, state: &mut ui::widget::Edits<'_>) {
@@ -5370,6 +5457,20 @@ fn portable_cover_data_url(source: &[u8]) -> Result<String, String> {
         return Err("normalized image did not meet the portable cover policy".to_string());
     }
     Ok(value)
+}
+
+/// The most a cover is encoded to for the song's live activity, on a side: a
+/// card draws it at 56 points, and the picture shares the activity's 16 KiB
+/// wire budget with the song's own name and controls.
+const ACTIVITY_ART_EDGE: u32 = 112;
+
+/// `url`'s cover as the small `data:` picture the song's activity carries: the
+/// cover this window already decoded, cut down and encoded to keep the
+/// activity inside its wire budget. Empty while the cover is not decoded here.
+fn cover_picture(url: &str, images: &ImageStore) -> String {
+    images.get(url).map_or_else(String::new, |cover| {
+        ui::held_images::cover(&cover, ACTIVITY_ART_EDGE)
+    })
 }
 
 /// Decode, resize and encode the chosen cover image away from the UI

@@ -22,7 +22,7 @@ use web_sys::{
     ReadableStream, ReadableStreamDefaultReader, WritableStream, WritableStreamDefaultWriter,
 };
 
-use super::{call_promise, get, global_get, message, promise};
+use super::{call_promise, get, global_get, message, promise, quietly};
 use crate::webtransport::Options;
 use crate::{Feature, NetError};
 
@@ -514,12 +514,15 @@ impl web_transport_trait::poll::SendStream for SendStream {
     }
 
     fn finish(&mut self) -> Result<(), NetError> {
-        let _ = self.writer.close();
+        // A stream the peer reset is already errored: closing it throws, and
+        // the close rejects when the peer resets it as the close lands. Both
+        // mean the stream is gone, which the caller reads elsewhere.
+        quietly((*self.writer).as_ref(), "close", &JsValue::UNDEFINED);
         Ok(())
     }
 
     fn reset(&mut self, code: u32) {
-        let _ = self.writer.abort_with_reason(&JsValue::from(code));
+        quietly((*self.writer).as_ref(), "abort", &JsValue::from(code));
     }
 
     fn poll_closed(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), NetError>> {
@@ -585,7 +588,7 @@ impl web_transport_trait::poll::RecvStream for RecvStream {
     }
 
     fn stop(&mut self, _code: u32) {
-        let _ = self.reader.cancel();
+        quietly((*self.reader).as_ref(), "cancel", &JsValue::UNDEFINED);
     }
 
     fn poll_closed(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), NetError>> {
@@ -602,7 +605,9 @@ impl web_transport_trait::poll::RecvStream for RecvStream {
 }
 
 fn write_now(writer: &WritableStreamDefaultWriter, data: &[u8]) {
-    let _ = writer.write_with_chunk(&Uint8Array::from(data));
+    // A datagram the transport can no longer carry is dropped, as the
+    // protocol allows; its refusal is not a page error.
+    quietly(writer.as_ref(), "write", &Uint8Array::from(data));
 }
 
 async fn write(writer: &WritableStreamDefaultWriter, data: &[u8]) -> Result<(), NetError> {

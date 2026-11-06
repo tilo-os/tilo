@@ -104,7 +104,6 @@ fn only_an_action_takes_defaults() {
     for src in [
         "fn f(x: Int = 1) -> Int {\n    x\n}",
         "view v(item: Todo, x: Int = 1) {\n    text(item.title)\n}",
-        "flow f(item: Todo, x: Int = 1) {\n}",
     ] {
         assert_eq!(codes_of(&body(src)), vec!["E028"], "{src}");
     }
@@ -121,10 +120,6 @@ fn a_call_may_leave_out_a_defaulted_argument() {
     ));
     assert!(codes_of(&actions).is_empty(), "{:?}", codes_of(&actions));
     validate(&compile(&actions).wasm);
-    let flows = body(&format!(
-        "{CHECK}flow f(item: Todo) {{\n    check(item)\n}}"
-    ));
-    assert!(codes_of(&flows).is_empty(), "{:?}", codes_of(&flows));
     // A control may leave out what a form can ask for: pressing it opens the action's form.
     let asked = body(&format!(
         "{CHECK}view v(item: Todo) {{\n    button(check())\n}}"
@@ -142,19 +137,18 @@ fn a_call_may_leave_out_a_defaulted_argument() {
 }
 
 #[test]
-fn an_applied_action_leaves_out_only_its_last_parameters() {
+fn a_call_leaves_out_only_its_last_parameters() {
     let decl = "action change(item: Todo, done: Bool = not item.done, title: Text = item.title) {\n    item.done = done\n    item.title = title\n}\n";
-    let gap = body(&format!(
+    let applied = body(&format!(
         "{decl}view v(item: Todo) {{\n    button(change(item, title: \"x\"))\n}}"
     ));
-    assert_eq!(codes_of(&gap), vec!["E028"]);
-    let inline = body(&format!(
+    assert_eq!(codes_of(&applied), vec!["E028"]);
+    // A call of another action leaves them out the same way: what is left out at the end is
+    // computed when it runs, and one given after a gap has nowhere to go.
+    let called = body(&format!(
         "{decl}action a(item: Todo) {{\n    change(item, title: \"x\")\n}}"
     ));
-    assert!(
-        codes_of(&inline).is_empty(),
-        "an inlined call computes the gap there"
-    );
+    assert_eq!(codes_of(&called), vec!["E028"]);
 }
 
 #[test]
@@ -259,7 +253,7 @@ fn a_parameter_whose_default_is_none_is_left_out_wherever_it_stands() {
     let decl = "action file(item: Todo, under: Option<Text> = .none, title: Text) {\n    item.title = title\n}\n";
     for applied in [
         "view v(item: Todo) {\n    button(file(item, title: \"x\"))\n}",
-        "flow f(item: Todo) {\n    file(item, title: \"x\")\n}",
+        "action f(item: Todo) {\n    file(item, title: \"x\")\n}",
     ] {
         let src = body(&format!("{decl}{applied}"));
         assert!(codes_of(&src).is_empty(), "{applied}: {:?}", codes_of(&src));
@@ -267,7 +261,7 @@ fn a_parameter_whose_default_is_none_is_left_out_wherever_it_stands() {
     }
     // A default that is computed still reads the parameters before it.
     let computed = body(
-        "action change(item: Todo, done: Bool = not item.done, title: Text) {\n    item.done = done\n    item.title = title\n}\nflow f(item: Todo) {\n    change(item, title: \"x\")\n}",
+        "action change(item: Todo, done: Bool = not item.done, title: Text) {\n    item.done = done\n    item.title = title\n}\naction f(item: Todo) {\n    change(item, title: \"x\")\n}",
     );
     assert_eq!(codes_of(&computed), vec!["E028"]);
 }
@@ -319,6 +313,7 @@ fn published() -> tilolang::PackageMeta {
             group: None,
             frequent: false,
             guard: false,
+            invokes: false,
         }],
         ..tilolang::PackageMeta::default()
     }
@@ -327,8 +322,8 @@ fn published() -> tilolang::PackageMeta {
 #[test]
 fn an_imported_name_read_as_a_value_says_what_to_write() {
     let session = published();
-    let said = |flow: &str| -> Vec<(String, String)> {
-        let src = format!("app t.x \"X\"\nuse so.tilo.session as session\n{TODO}{flow}\n");
+    let said = |decl: &str| -> Vec<(String, String)> {
+        let src = format!("app t.x \"X\"\nuse so.tilo.session as session\n{TODO}{decl}\n");
         crate::common::compile_with(&src, std::slice::from_ref(&session))
             .err()
             .unwrap_or_default()
@@ -336,14 +331,14 @@ fn an_imported_name_read_as_a_value_says_what_to_write() {
             .map(|d| (d.code, d.message))
             .collect()
     };
-    let action = said("flow f(item: Todo) {\n    let a = session.place\n}");
+    let action = said("action f(item: Todo) {\n    let a = session.place\n}");
     assert!(
         matches!(action.as_slice(), [(code, message)] if code == "E026"
             && message.contains("call it: `session.place(workspace: Option<Text> = .none")
             && message.contains("resource: tilo.host.Resource")),
         "{action:?}"
     );
-    let unknown = said("flow f(item: Todo) {\n    let a = session.plac\n}");
+    let unknown = said("action f(item: Todo) {\n    let a = session.plac\n}");
     assert!(
         matches!(unknown.as_slice(), [(code, message)] if code == "E014"
             && message.contains("did you mean `session.place`?")),
@@ -354,8 +349,8 @@ fn an_imported_name_read_as_a_value_says_what_to_write() {
 #[test]
 fn an_imported_action_keeps_its_optional_parameters() {
     let session = published();
-    let codes = |flow: &str| -> Vec<String> {
-        let src = format!("app t.x \"X\"\nuse so.tilo.session as session\n{TODO}{flow}\n");
+    let codes = |decl: &str| -> Vec<String> {
+        let src = format!("app t.x \"X\"\nuse so.tilo.session as session\n{TODO}{decl}\n");
         match crate::common::compile_with(&src, std::slice::from_ref(&session)) {
             Ok(compiled) => {
                 validate(&compiled.wasm);
@@ -367,20 +362,20 @@ fn an_imported_action_keeps_its_optional_parameters() {
     // The optional ones are left out, before and after the one given; a value for an
     // `Option<Int>` is written as the Int, and a resource is passed as the value it is.
     assert_eq!(
-        codes("flow f(item: Todo) {\n    session.place(resource: item, x: 80, y: 60)\n}"),
+        codes("action f(item: Todo) {\n    session.place(resource: item, x: 80, y: 60)\n}"),
         Vec::<String>::new()
     );
     assert_eq!(
-        codes("flow f(item: Todo) {\n    session.place(resource: item)\n}"),
+        codes("action f(item: Todo) {\n    session.place(resource: item)\n}"),
         Vec::<String>::new()
     );
     // What the app needs is still required, and a resource is no text.
     assert_eq!(
-        codes("flow f(item: Todo) {\n    session.place(x: 80)\n}"),
+        codes("action f(item: Todo) {\n    session.place(x: 80)\n}"),
         vec!["E022"]
     );
     assert_eq!(
-        codes("flow f(item: Todo) {\n    session.place(resource: \"tl:x:1\")\n}"),
+        codes("action f(item: Todo) {\n    session.place(resource: \"tl:x:1\")\n}"),
         vec!["E020"]
     );
 }

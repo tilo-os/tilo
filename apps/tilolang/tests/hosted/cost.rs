@@ -1,6 +1,6 @@
 //! What the interactions of a window of a workspace a person has used for years cost: the
-//! table the budgets hold, and the opens that read the workspace's index rather than the
-//! workspace.
+//! table, read against what a person feels as instant, and the opens that read the workspace's
+//! index rather than the workspace.
 
 use super::*;
 
@@ -16,11 +16,11 @@ use std::collections::BTreeMap;
 // action and evaluating the views), the window's sync (taking the views' patches), its layout
 // and its paint.
 //
-// The budgets hold each interaction's CPU time, and what the instance's evaluation and the
-// layout cost within it: a keystroke must not wait for the workspace's size, and neither must a
-// place switch, a check-off, a page or a scroll. They are asserted in an optimised build only
-// (the shipped code), which runs this with `--profile fast`; a development build measures its
-// own slowness and prints the table without holding it.
+// The table is read against what a person feels as instant, and against what the instance's
+// evaluation and the layout cost within it: a keystroke must not wait for the workspace's size,
+// and neither must a place switch, a check-off, a page or a scroll. The targets do not move
+// with the machine: a step over one is reported with its gap, and the gate on the work a change
+// does is the instruction count the `budgets` test holds.
 
 /// The workspace the interactions are measured in: what a person who has used Tasks for years
 /// keeps.
@@ -30,12 +30,12 @@ const SEEDED: usize = 10_000;
 /// open reads the workspace's index rather than the workspace.
 const SEEDED_LARGE: usize = 100_000;
 
-/// A budget for one interaction, in UI-thread CPU microseconds.
+/// What a person feels as instant for one interaction, in UI-thread CPU microseconds: the
+/// whole step (the input, the instance's answer and every frame that shows it), and the
+/// instance's evaluation and the window's layout within it.
 #[derive(Clone, Copy, Debug)]
-struct Budget {
-    /// The whole step: the input, the instance's answer and every frame that shows it.
+struct Target {
     step_us: u64,
-    /// The instance's evaluation and the window's layout within it (`0`: not held).
     eval_layout_us: u64,
 }
 
@@ -120,59 +120,51 @@ impl Costs {
         }
     }
 
-    /// Hold every interaction to its budget, in UI-thread CPU time.
+    /// The reading against the targets every interaction is held to: what it costs, on this
+    /// machine, beside what a person would feel as instant, and the gap between them. A reading
+    /// over its target is reported, not failed: the gate on the work a change does is the
+    /// instruction count [`tilolang_tilo::bench::Work`] and `tilolang-tilo`'s `budgets` test
+    /// hold, which counts the same work the same on every machine, where this table measures
+    /// the machine it runs on as much as the window.
     #[allow(
         clippy::print_stderr,
         reason = "why a measurement was not held is part of its report"
     )]
-    fn hold_to(&self, budgets: &[(&'static str, Budget)]) {
-        if cfg!(debug_assertions) {
-            eprintln!("a development build: the table is reported, not held");
-            return;
-        }
-        let mut misses = Vec::new();
-        for (label, budget) in budgets {
+    fn report(&self, targets: &[(&'static str, Target)]) {
+        let ms = |us: u64| format!("{:.2}", us as f64 / 1000.0);
+        let gap = |measured: u64, target: u64| {
+            if measured == 0 {
+                "met".to_owned()
+            } else {
+                format!("{:.1}x target", measured as f64 / target as f64)
+            }
+        };
+        eprintln!("interaction        cpu p50 vs instant   instance+layout p50 vs instant");
+        let mut behind = Vec::new();
+        for (label, target) in targets {
             if !self.0.contains_key(label) {
-                misses.push(format!("{label}: no interaction measured"));
+                behind.push(format!("{label}: no interaction measured"));
                 continue;
             }
-            let cpu = self.p50(label, |c| c.cpu_us);
-            if cpu > budget.step_us {
-                misses.push(format!(
-                    "{label}: CPU p50 {cpu}us, budget {}us",
-                    budget.step_us
-                ));
-            }
-            if budget.eval_layout_us == 0 {
-                continue;
-            }
+            let cpu = self.p50(label, |cost| cost.cpu_us);
             let eval_layout = self.p50(label, Cost::eval_layout_us);
-            if eval_layout > budget.eval_layout_us {
-                misses.push(format!(
-                    "{label}: instance evaluation and layout p50 {eval_layout}us, budget {}us",
-                    budget.eval_layout_us
-                ));
-            }
-            // A person feels one slow step, not the median: no step may take twice its budget.
-            let worst = self
-                .0
-                .get(label)
-                .into_iter()
-                .flatten()
-                .map(Cost::eval_layout_us)
-                .max()
-                .unwrap_or_default();
-            if worst > budget.eval_layout_us.saturating_mul(2) {
-                misses.push(format!(
-                    "{label}: one step's evaluation and layout {worst}us, over twice its budget"
-                ));
+            eprintln!(
+                "{label:<18} {:>10} ms ({:>9}), {:>10} ms ({:>9})",
+                ms(cpu),
+                gap(cpu, target.step_us),
+                ms(eval_layout),
+                gap(eval_layout, target.eval_layout_us),
+            );
+            if cpu > target.step_us || eval_layout > target.eval_layout_us {
+                behind.push(label.to_string());
             }
         }
-        assert!(
-            misses.is_empty(),
-            "interactions over their budgets:\n{}",
-            misses.join("\n")
-        );
+        if !behind.is_empty() {
+            eprintln!(
+                "not instant yet: {} - reported, not failed: the gate counts instructions",
+                behind.join(", ")
+            );
+        }
     }
 }
 
@@ -251,72 +243,67 @@ fn cost(session: &mut Session, label: &'static str, input: impl FnOnce(&mut Sess
     }
 }
 
-/// The budgets each interaction is held to (see the note above), from what the interactions
-/// cost on this workspace when they were measured, with the room a slower machine, a loaded one
-/// and a heavier workspace take: a step's CPU time twice its measured p50, and the instance's
-/// evaluation and layout likewise, because this runs beside every other test on the machine that
-/// builds the workspace. A session at rest costs 60-100 us a frame; anything a person waits on
-/// costs tens of milliseconds to seconds, which is what these hold down.
+/// What a person feels as instant, for the interactions this measures: 8 ms for a keystroke,
+/// 16 ms for a step a person waits on, 8 ms for a frame of scrolling under the pointer, and
+/// 300 ms to open ten thousand tasks — the one step that reads the whole workspace, once. They
+/// are the targets, not what this workspace costs: a step over one is reported with its gap (see
+/// [`Costs::report`]), and the work of bringing it down is the publication's.
 ///
-/// A person's hand sends a keystroke every 30-100 ms, so every one of these is felt as it comes:
-/// the numbers are what a window of ten thousand tasks costs today, and the budgets hold it
-/// there, so a change that makes one interaction read the whole workspace again fails this
-/// test rather than a person's day.
-///
-/// What a person would call instant is 8 ms a keystroke and 16 ms for each of the rest. Where
-/// this is not that yet, the cause is measured: publishing a workspace sends every item's row to
-/// the window's palette (a second and more a publication, the row of an action the person asked
-/// about answered on demand), and adding a task pays both. The budgets count what that costs
-/// today, so it cannot grow while it is brought down. Opening a workspace is held where it is
-/// measured: [`opening_a_window_reads_the_workspaces_index`].
-const BUDGETS: &[(&str, Budget)] = &[
+/// The same targets, counted rather than timed, are how a change is gated: a modern core of
+/// 3.5 GHz at an IPC of 2.5 retires 8.75 million instructions a millisecond, so 8 ms is 70
+/// million instructions, 16 ms 140 million and 300 ms 2.6 billion, and a callgrind run counts
+/// the same work the same on every machine. This test reports the times;
+/// [`tilolang_tilo::bench::Work`] and `tilolang-tilo`'s `budgets` test hold the counts (a change
+/// publishes the rows it touched, whatever the workspace holds). Opening a workspace reads the
+/// workspace's index rather than the workspace: [`opening_a_window_reads_the_workspaces_index`].
+const TARGETS: &[(&str, Target)] = &[
     (
         "open",
-        Budget {
-            step_us: 16_000_000,
-            eval_layout_us: 16_000_000,
+        Target {
+            step_us: 300_000,
+            eval_layout_us: 300_000,
         },
     ),
     (
         "entry keystroke",
-        Budget {
-            step_us: 120_000,
-            eval_layout_us: 100_000,
+        Target {
+            step_us: 8_000,
+            eval_layout_us: 8_000,
         },
     ),
     (
         "entry enter",
-        Budget {
-            step_us: 4_000_000,
-            eval_layout_us: 4_000_000,
+        Target {
+            step_us: 16_000,
+            eval_layout_us: 16_000,
         },
     ),
     (
         "check a task",
-        Budget {
-            step_us: 1_400_000,
-            eval_layout_us: 1_400_000,
+        Target {
+            step_us: 16_000,
+            eval_layout_us: 16_000,
         },
     ),
     (
         "switch place",
-        Budget {
-            step_us: 400_000,
-            eval_layout_us: 350_000,
+        Target {
+            step_us: 16_000,
+            eval_layout_us: 16_000,
         },
     ),
     (
         "open a task page",
-        Budget {
-            step_us: 250_000,
-            eval_layout_us: 200_000,
+        Target {
+            step_us: 16_000,
+            eval_layout_us: 16_000,
         },
     ),
     (
         "scroll",
-        Budget {
-            step_us: 300_000,
-            eval_layout_us: 300_000,
+        Target {
+            step_us: 8_000,
+            eval_layout_us: 8_000,
         },
     ),
 ];
@@ -458,7 +445,7 @@ fn what_the_interactions_a_person_feels_cost() {
     scroll_the_list(&mut session, &mut costs);
 
     costs.print();
-    costs.hold_to(BUDGETS);
+    costs.report(TARGETS);
 }
 
 /// Opening a window of a workspace a person has used for years: the index an earlier run of the

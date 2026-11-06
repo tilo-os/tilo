@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Wasm host for tilolang apps: handle table, host ABI, action transactions, flow journal, view trees and an Automerge reference store."
+description = "Wasm host for tilolang apps: handle table, host ABI, action transactions, run journal, view trees and an Automerge reference store."
 
 [dependencies]
 # A seeded hasher several times faster than SipHash, for the read cache and index keyed by

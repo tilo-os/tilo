@@ -597,7 +597,7 @@ fn place_title(m: Mail, query: Text) -> Text {
 /// list, a conversation in any account opening beside it; one account's window is its
 /// mailboxes as its places.
 view mail(m: Mail) {
-    lens account: Text = ""
+    state account: Text = ""
     if m.accounts.is_empty() {
         std.page(m) {
             ui.EmptyState("Add a mail account in Settings", icon: .mail)
@@ -612,7 +612,7 @@ view mail(m: Mail) {
 /// Every account's mail in one window: the unified inbox first, then each account's mail, and
 /// each account's own places under it. A conversation shows which account it came to.
 view unified(m: Mail) {
-    window query: Text = "is:inbox"
+    state query: Text = "is:inbox"
     let places = filters(Thread).filter(f -> f.toggle)
     let title = place_title(m, query)
     if let a = m.accounts.first() {
@@ -657,19 +657,7 @@ view unified(m: Mail) {
                 }
             }
             overview: {
-                if shown.is_empty() {
-                    ui.EmptyState("Nothing here", icon: .inbox)
-                } else {
-                    ui.VirtualList(selection_follows_focus: true, in_column: true) {
-                        on select(x: Thread): open(x, front: false).then(mark_read(x, false))
-                        on activate(x: Thread): open(x).then(mark_read(x, false))
-                        for x in shown {
-                            ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
-                                thread_row(x)
-                            }
-                        }
-                    }
-                }
+                thread_list(shown, fill)
             }
             content: {
                 ui.EmptyState("No conversation selected", icon: .mail)
@@ -684,7 +672,7 @@ view unified(m: Mail) {
 /// (`is:inbox`), so everyone looking sees the same list; it starts on the inbox. The person's
 /// labels come after the mailboxes, each showing the conversations it is on.
 view mailboxes(a: Account) {
-    window query: Text = "is:inbox"
+    state query: Text = "is:inbox"
     let m = root Mail
     let places = filters(Thread).filter(f -> f.toggle)
     let shown = a.threads.matching(query)
@@ -826,7 +814,7 @@ fn can_undo(d: Draft) -> Bool {
 /// A conversation's window: its subject, then every message in order with who wrote it, to
 /// whom and when, what it says and what came with it, and a reply at the foot.
 view conversation(t: Thread) {
-    lens draft: Text
+    state draft: Text
     ui.NavShell(content_kind: .page, title: t.subject) {
         content: {
             ui.Docked {
@@ -857,7 +845,7 @@ view conversation(t: Thread) {
 /// hover toolbar and the menu are the list item's: wherever the message's layout places them,
 /// the list runs them.
 view message(m: Message) {
-    lens quoting: Bool
+    state quoting: Bool
     let body = as_lines(m.body)
     let at = quote_begins(body)
     let said = if let i = at { body.slice(0, i) } else { body }

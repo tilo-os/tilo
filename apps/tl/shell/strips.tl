@@ -229,6 +229,14 @@ fn window_name(shown: Option<ArrangementPlace>) -> Text {
     if let p = shown { place_title(p) } else { "Empty strip" }
 }
 
+/// The place in front of `s`, as another strip's menu names it while it offers where a place
+/// can join.
+fn strip_place(a: Arrangement, s: ArrangementStrip) -> Option<ArrangementPlace> {
+    let placed = places_of(a, s.key)
+    let chosen = placed.find(p -> p.key == s.active)
+    chosen ?? placed.first()
+}
+
 /// The resource of the place in front of `s`, as its tab names it: empty while the strip has no
 /// place in front, which lights its first tab instead.
 fn place_in_front(s: ArrangementStrip) -> Option<session.Place> {
@@ -238,7 +246,7 @@ fn place_in_front(s: ArrangementStrip) -> Option<session.Place> {
 /// Shows the place `place` and brings its strip forward with it: what choosing a tab does, and
 /// the same arranging action a script or an agent runs. The strip's own reading moves first, the
 /// desk then brings the place in front of its strip.
-flow show_place(v: Viewing, strip: Text, place: session.Place) {
+action show_place(v: Viewing, strip: Text, place: session.Place) {
     focus_strip(v, strip)
     session.activate(place: place)
 }
@@ -282,6 +290,27 @@ view window_controls(
                         on choose: session.pin(place: the_place(p.key), pinned: true)
                     }
                 }
+                // The strip's places are its tabs: a strip of several shows them as its
+                // tab strip. Moving a place into another strip's tab strip, or its own
+                // beside another place, is the menu's way to make tabs without a drag
+                // (shell.md §2). A strip of one place offers its own place as where to join.
+                if a.strips.len() > 1 {
+                    for other in a.strips {
+                        if other.key != s.key {
+                            ui.MenuItem(
+                                "Move into {window_name(strip_place(a, other))} as a tab",
+                                icon: .columns_2,
+                            ) {
+                                on choose: session.move(
+                                    place: the_place(p.key),
+                                    row: the_row(other.row),
+                                    strip: .some(the_strip(other.key)),
+                                    before: .none,
+                                )
+                            }
+                        }
+                    }
+                }
                 if a.rows.len() > 1 {
                     for r in a.rows {
                         if r.key != strip_row(a, p.strip) {
@@ -289,6 +318,8 @@ view window_controls(
                                 on choose: session.move(
                                     place: the_place(p.key),
                                     row: the_row(r.key),
+                                    strip: .none,
+                                    before: .none,
                                 )
                             }
                         }

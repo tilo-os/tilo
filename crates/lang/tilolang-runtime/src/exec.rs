@@ -1,14 +1,17 @@
-//! Invocation lifecycles of actions and flows.
+//! Invocation lifecycles.
 //!
 //! * **An action** runs in one store transaction. Its writes go into the transaction; if it
 //!   returns, the store commits one change per touched document, each carrying a
 //!   [`ChangeNote`] (the action, its arguments, the invoker, the authorship chain and the
 //!   module). If it traps or runs out of fuel, nothing is committed.
-//! * **A flow** keeps a journal ([`crate::flow`]). Each action it invokes is decided by the
-//!   authority: Allow runs it and journals the result, Deny journals an error value, Ask records
-//!   a suggestion and suspends the run. Once the suggestion is answered the flow runs again from
-//!   the start, and the journal answers every invocation, model call and read that already
-//!   happened, so it takes the same path and nothing runs twice.
+//! * **An action that calls another action** is a run: a journal ([`crate::run`]). A call goes
+//!   through the door: the authority decides it, and it runs as a change of its own. The
+//!   caller's transaction ends at the call, and it runs again from its journal, which answers
+//!   the call and everything it read before it. An invocation the authority or a person must
+//!   answer first suspends the run; the answer runs it on from the same journal, so nothing runs
+//!   twice.
+//! * **An agent's program** is the same run without a transaction: every change it makes goes
+//!   through the host's invoker, to the app that holds the records.
 //!
 //! An action's arguments left out are completed from their defaults, on the invoker's state,
 //! before it is decided, journaled or run. An action's `outside` call doesn't reach outside
@@ -24,13 +27,13 @@ use crate::authority::{ActionInfo, Decision};
 use crate::core::{Args, Core, HResult, ret_i32, ret_void, trap};
 use crate::engine::{CallError, Host, HostFail, Wasm};
 use crate::error::RuntimeError;
-use crate::flow::{FlowOutcome, Journal, JournalEntry, Resolution, Suggestion};
-use crate::handles::{ActionState, FlowState, FrameKind, Invocation, QueuedBlock};
+use crate::handles::{ActionState, FrameKind, Invocation, QueuedBlock, RunState};
 use crate::host_res::unboxed;
 use crate::ids::{ModuleHash, Principal, RunId};
-use crate::meta::{EffectClass, ParamMeta, Repr, Ty, parse_ty, repr};
+use crate::meta::{ActionMeta, EffectClass, ParamMeta, Repr, Ty, parse_ty, repr};
 use crate::registry::Package;
-use crate::store::{ChangeNote, Mutation};
+use crate::run::{Journal, JournalEntry, Pending, Resolution, RunOutcome, Step, Suggestion};
+use crate::store::{Applied, ChangeNote, Mutation, Txn};
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
 
 /// Calls into other packages' `fn`s deeper than this are refused: each one is a fresh instance
@@ -50,18 +53,19 @@ pub struct ExecCtx {
     /// The resource the invocation was made from, when it was made from one: what the resources
     /// it creates were made from, recorded in the change ([`crate::store::Version::from`]).
     pub from: Option<ResourceRef>,
+    /// The moment the invocation acts at, when a scenario named one: what its clock reads.
+    pub at: Option<String>,
     /// Who proposed the action, when the person invoking it accepted a suggestion: recorded in
     /// its change, so history says who suggested it.
     pub suggested_by: Option<Principal>,
-    /// The moment the change is recorded at, when the invocation names one: a scenario's
-    /// `invoke(act(args), at: time)`, whose changes history reads at that time.
-    pub at: Option<String>,
 }
 
 /// How an action ended.
 #[derive(Debug)]
 pub enum ActionOutcome {
     Done(Value),
+    /// It invoked an action a person must answer first: the run waits for them.
+    Suspended(Suggestion),
     /// The action trapped or ran out of fuel; its change was rolled back.
     Failed(String),
 }
@@ -74,30 +78,51 @@ pub enum InvokeOutcome {
     Denied,
 }
 
-enum Step {
-    Replay(Value),
-    Live(ExecCtx),
-    /// Live, and decided already: a scenario's invocation is the host's own seed.
-    Seed(ExecCtx),
+/// What one attempt at a run's code came to.
+enum Attempted {
+    /// The code returned: an action's attempt has the change to commit.
+    Done {
+        journal: Journal,
+        value: Value,
+        change: Option<Box<Change>>,
+    },
+    /// The code stopped at a step, or waited for a person's answer: what it did is rolled back,
+    /// and the run goes on from its journal.
+    Suspended { journal: Journal },
+    /// The code trapped, ran out of fuel, or could not go on: what it did is rolled back.
+    Failed {
+        journal: Journal,
+        error: RuntimeError,
+    },
 }
 
-/// What a scenario's `invoke` runs: its own seed, as its own actions are, so another app's
-/// action runs as the person, at the moment and from the resource the invocation names.
-fn scenario_step(state: &ActionState, aref: &ActionRef) -> Step {
-    let invocation = state.invocations.last();
-    let mut chain = Vec::new();
-    push_chain(&mut chain, aref.author.as_ref());
-    Step::Seed(ExecCtx {
-        invoker: invocation.map_or_else(|| state.invoker.clone(), |named| named.who.clone()),
-        chain,
-        approved_by: None,
-        suggested_by: state.suggested_by.clone(),
-        origin: None,
-        from: invocation
-            .and_then(|named| named.from.clone())
-            .or_else(|| state.note.from.clone()),
-        at: invocation.and_then(|named| named.at.clone()),
-    })
+/// What an invocation the host sends on came to.
+enum Delegated {
+    /// It ran, or was refused or failed: what the run journals of it.
+    Ran(Box<JournalEntry>),
+    /// A person must answer it first.
+    Asks,
+}
+
+/// The change an action's completed attempt makes.
+struct Change {
+    txn: Txn,
+    queued: Vec<QueuedBlock>,
+    proposed: Vec<(Principal, ActionRef)>,
+    note: ChangeNote,
+}
+
+/// How a run whose code stopped came to be run again for its answer.
+enum RunEnd {
+    Done {
+        journal: Journal,
+        value: Value,
+    },
+    Suspended(Suggestion),
+    Failed {
+        journal: Journal,
+        error: RuntimeError,
+    },
 }
 
 /// A scalar result as the guest receives it: boxed like `some_i`, so it unwraps with
@@ -107,6 +132,18 @@ fn boxed(v: Value) -> Value {
         Value::Int(_) | Value::Float(_) | Value::Bool(_) => Value::some(v),
         other => other,
     }
+}
+
+/// Whether an error is the action's own failure, rolled back with it, rather than a mistake in
+/// the request or a store that could not hold it: what a caller sees as a failed invocation.
+fn failed(e: &RuntimeError) -> bool {
+    !matches!(
+        e,
+        RuntimeError::BadArgs(_)
+            | RuntimeError::Store(_)
+            | RuntimeError::NotFound(_)
+            | RuntimeError::NotPending(_)
+    )
 }
 
 fn push_chain(chain: &mut Vec<ModuleHash>, author: Option<&ModuleHash>) {
@@ -284,26 +321,6 @@ impl Core {
         Ok(self.authority.decide(&ctx.invoker, &ctx.chain, &info))
     }
 
-    /// A flow applied as an action: decided like an action, by the flow's own class.
-    fn decide_flow(
-        &self,
-        ctx: &ExecCtx,
-        aref: &ActionRef,
-        pkg: &Package,
-    ) -> Result<Decision, RuntimeError> {
-        let meta = pkg
-            .flow(&aref.action)
-            .ok_or_else(|| RuntimeError::NotFound(format!("flow {}", aref.action)))?;
-        let info = ActionInfo {
-            action: aref.action.clone(),
-            app: pkg.meta.app.clone(),
-            class: meta.class,
-            own: aref.author.as_ref().is_none_or(|a| *a == pkg.hash),
-            module: pkg.hash.clone(),
-        };
-        Ok(self.authority.decide(&ctx.invoker, &ctx.chain, &info))
-    }
-
     pub(crate) fn decide_with(&self, ctx: &ExecCtx, info: &ActionInfo) -> Decision {
         self.authority.decide(&ctx.invoker, &ctx.chain, info)
     }
@@ -317,7 +334,7 @@ impl Core {
         given: Vec<Option<Value>>,
     ) -> Result<Vec<Value>, RuntimeError> {
         let Some(pkg) = self.registry.borrow().action_package(action) else {
-            // A flow takes no defaults: its arguments are all given.
+            // A platform action (`$set`, `then`) no package declares takes what it is given.
             return given
                 .into_iter()
                 .map(|v| v.ok_or_else(|| RuntimeError::BadArgs("an argument is missing".into())))
@@ -519,7 +536,8 @@ impl Core {
         }
     }
 
-    /// Run an action in a transaction: one change per touched document, or nothing.
+    /// Run an action, and every action it invokes, as a run: one change per action it makes a
+    /// change of its own, and one for it.
     ///
     /// # Errors
     ///
@@ -530,81 +548,12 @@ impl Core {
         ctx: &ExecCtx,
         aref: &ActionRef,
     ) -> Result<ActionOutcome, RuntimeError> {
-        let pkg = self
-            .registry
-            .borrow()
-            .action_package(&aref.action)
-            .ok_or_else(|| RuntimeError::NotFound(format!("action {}", aref.action)))?;
-        let meta = pkg
-            .action(&aref.action)
-            .ok_or_else(|| RuntimeError::NotFound(format!("action {}", aref.action)))?
-            .clone();
         let aref = &self.completed(aref)?;
-        let txn = self.store.borrow_mut().begin()?;
-        let primary = aref.args.iter().find_map(|v| match v {
-            Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
-            _ => None,
-        });
-        let note = Self::note(ctx, &pkg, aref);
-        self.frames.borrow_mut().push(
-            pkg.hash.clone(),
-            FrameKind::Action(ActionState {
-                txn,
-                action: aref.action.clone(),
-                primary,
-                invoker: ctx.invoker.clone(),
-                origin: ctx.origin.clone(),
-                suggested_by: ctx.suggested_by.clone(),
-                suggestions: Vec::new(),
-                queued: Vec::new(),
-                scenario: meta.scenario,
-                invocations: Vec::new(),
-                note: Box::new(note),
-                touched: std::collections::BTreeSet::new(),
-                effects: crate::handles::EffectLog::default(),
-            }),
-        );
-        let result = self.call_in_frame(
-            &pkg,
-            &format!("a_{}", aref.action),
-            &meta.params,
-            &aref.args,
-            meta.result.as_deref(),
-        );
-        let at = self.change_time();
-        let frame = self.frames.borrow_mut().pop();
-        let (queued, proposed, txn, note) = match frame.map(|f| f.kind) {
-            Some(FrameKind::Action(a)) => {
-                let mut note = *a.note;
-                // The time it is recorded at: the one the invocation named (`invoke(..
-                // at: time)`), else the clock, which nothing replays.
-                note.at = note.at.or(Some(at));
-                note.touched = a.touched.into_iter().collect();
-                // What the action read on its way, beside the change it made: the moment and
-                // the zone it read, and what later effects fetched or drew (convergence.md,
-                // "Actions").
-                note.effects = a.effects.entries;
-                (a.queued, a.suggestions, a.txn, note)
-            }
-            _ => (Vec::new(), Vec::new(), txn, Self::note(ctx, &pkg, aref)),
-        };
-        match result {
-            Ok(v) => {
-                self.store.borrow_mut().commit(txn, &note)?;
-                self.settle_blocks(&ctx.invoker, queued)?;
-                for (who, suggested) in proposed {
-                    self.propose(&who, &suggested)?;
-                }
-                Ok(ActionOutcome::Done(v))
-            }
-            Err(RuntimeError::BadArgs(m)) => {
-                self.store.borrow_mut().rollback(txn);
-                Err(RuntimeError::BadArgs(m))
-            }
-            Err(e) => {
-                self.store.borrow_mut().rollback(txn);
-                Ok(ActionOutcome::Failed(e.to_string()))
-            }
+        match self.start_ctx(ctx, aref) {
+            Ok(RunOutcome::Done(v)) => Ok(ActionOutcome::Done(v)),
+            Ok(RunOutcome::Suspended(s)) => Ok(ActionOutcome::Suspended(s)),
+            Err(e) if failed(&e) => Ok(ActionOutcome::Failed(e.to_string())),
+            Err(e) => Err(e),
         }
     }
 
@@ -677,10 +626,10 @@ impl Core {
             at: None,
         };
         match self.decide(&ctx, first)? {
-            Decision::Allow => match self.run_many(&ctx, &refs)? {
-                ActionOutcome::Done(v) => Ok(InvokeOutcome::Done(v)),
-                ActionOutcome::Failed(m) => Err(RuntimeError::Trap(m)),
-            },
+            Decision::Allow => {
+                self.run_many(&ctx, &refs)?;
+                Ok(InvokeOutcome::Done(Value::Unit))
+            }
             Decision::Deny => Ok(InvokeOutcome::Denied),
             Decision::Ask => {
                 let run = self.store.borrow_mut().fresh_id("s");
@@ -692,15 +641,19 @@ impl Core {
                     chain: ctx.chain.clone(),
                 };
                 let journal = Journal {
-                    flow: None,
+                    action: None,
                     args: aref.args.clone(),
                     invoker: ctx.invoker,
                     chain: ctx.chain,
                     from: ctx.from,
+                    at: ctx.at,
                     suggested_by: ctx.suggested_by.map(|who| who.0),
                     entries: Vec::new(),
-                    pending: Some(suggestion.clone()),
+                    pending: Some(Pending::Ask(suggestion.clone())),
                     finished: false,
+                    approved_by: None,
+                    origin: None,
+                    parent: None,
                 };
                 self.store.borrow_mut().save_journal(&run, &journal)?;
                 Ok(InvokeOutcome::Suggested(suggestion))
@@ -714,9 +667,37 @@ impl Core {
     /// # Errors
     ///
     /// As [`Core::run_action`].
-    fn run_many(&self, ctx: &ExecCtx, refs: &[ActionRef]) -> Result<ActionOutcome, RuntimeError> {
+    /// The run of one action applied to many items: one attempt, and no journal, because an
+    /// action that calls another action has a change and a journal per call.
+    fn many_run(&self, ctx: &ExecCtx, first: &ActionRef) -> RunState {
+        RunState {
+            run: self.store.borrow_mut().fresh_id("r"),
+            journal: Journal {
+                action: Some(first.action.clone()),
+                args: first.args.clone(),
+                invoker: ctx.invoker.clone(),
+                chain: ctx.chain.clone(),
+                from: ctx.from.clone(),
+                at: ctx.at.clone(),
+                suggested_by: ctx.suggested_by.as_ref().map(|p| p.0.clone()),
+                entries: Vec::new(),
+                pending: None,
+                finished: false,
+                approved_by: ctx.approved_by.clone(),
+                origin: ctx.origin.clone(),
+                parent: None,
+            },
+            cursor: 0,
+            invoker: ctx.invoker.clone(),
+            suggested_by: ctx.suggested_by.clone(),
+            clock: None,
+            journaled: false,
+        }
+    }
+
+    fn run_many(&self, ctx: &ExecCtx, refs: &[ActionRef]) -> Result<(), RuntimeError> {
         let Some(first) = refs.first() else {
-            return Ok(ActionOutcome::Done(Value::Unit));
+            return Ok(());
         };
         let pkg = self
             .registry
@@ -727,6 +708,15 @@ impl Core {
             .action(&first.action)
             .ok_or_else(|| RuntimeError::NotFound(format!("action {}", first.action)))?
             .clone();
+        // `many` is one change over many items: an action that calls another makes a change per
+        // call, so it is no action `many` applies.
+        if meta.invokes {
+            return Err(RuntimeError::Trap(
+                "`many` applies one action to many items as one change, and an action that \
+                 calls another action makes a change per call"
+                    .into(),
+            ));
+        }
         let txn = self.store.borrow_mut().begin()?;
         let primary = first.args.iter().find_map(|v| match v {
             Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
@@ -749,7 +739,7 @@ impl Core {
                 invocations: Vec::new(),
                 note: Box::new(note),
                 touched: std::collections::BTreeSet::new(),
-                effects: crate::handles::EffectLog::default(),
+                run: Box::new(self.many_run(ctx, first)),
             }),
         );
         let mut failure = None;
@@ -773,7 +763,14 @@ impl Core {
                 note.at = Some(at);
                 note.touched = a.touched.into_iter().collect();
                 // The one change records what the run over every item read, in order.
-                note.effects = a.effects.entries;
+                note.effects = a
+                    .run
+                    .journal
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.is_outside_effect())
+                    .cloned()
+                    .collect();
                 (a.queued, a.suggestions, a.txn, note)
             }
             _ => (Vec::new(), Vec::new(), txn, Self::note(ctx, &pkg, first)),
@@ -785,7 +782,7 @@ impl Core {
                 for (who, suggested) in proposed {
                     self.propose(&who, &suggested)?;
                 }
-                Ok(ActionOutcome::Done(Value::Unit))
+                Ok(())
             }
             Some(RuntimeError::BadArgs(m)) => {
                 self.store.borrow_mut().rollback(txn);
@@ -793,7 +790,7 @@ impl Core {
             }
             Some(e) => {
                 self.store.borrow_mut().rollback(txn);
-                Ok(ActionOutcome::Failed(e.to_string()))
+                Err(RuntimeError::Trap(e.to_string()))
             }
         }
     }
@@ -846,28 +843,10 @@ impl Core {
             from: from.cloned(),
             at: None,
         };
-        let flow = self.registry.borrow().flow_package(&aref.action);
-        let decision = match &flow {
-            Some(pkg) => self.decide_flow(&ctx, aref, pkg)?,
-            None => self.decide(&ctx, aref)?,
-        };
-        match decision {
-            Decision::Allow if flow.is_some() => {
-                let outcome = self.start_flow_from(
-                    invoker,
-                    &aref.action,
-                    aref.args.clone(),
-                    ctx.chain,
-                    ctx.from,
-                    ctx.suggested_by,
-                )?;
-                Ok(match outcome {
-                    FlowOutcome::Done(v) => InvokeOutcome::Done(v),
-                    FlowOutcome::Suspended(s) => InvokeOutcome::Suggested(s),
-                })
-            }
+        match self.decide(&ctx, aref)? {
             Decision::Allow => match self.run_action(&ctx, aref)? {
                 ActionOutcome::Done(v) => Ok(InvokeOutcome::Done(v)),
+                ActionOutcome::Suspended(suggestion) => Ok(InvokeOutcome::Suggested(suggestion)),
                 ActionOutcome::Failed(m) => Err(RuntimeError::Trap(m)),
             },
             Decision::Deny => Ok(InvokeOutcome::Denied),
@@ -881,15 +860,19 @@ impl Core {
                     chain: ctx.chain.clone(),
                 };
                 let journal = Journal {
-                    flow: None,
+                    action: None,
                     args: aref.args.clone(),
                     invoker: ctx.invoker,
                     chain: ctx.chain,
                     from: ctx.from,
+                    at: ctx.at,
                     suggested_by: ctx.suggested_by.map(|who| who.0),
                     entries: Vec::new(),
-                    pending: Some(suggestion.clone()),
+                    pending: Some(Pending::Ask(suggestion.clone())),
                     finished: false,
+                    approved_by: None,
+                    origin: None,
+                    parent: None,
                 };
                 self.store.borrow_mut().save_journal(&run, &journal)?;
                 Ok(InvokeOutcome::Suggested(suggestion))
@@ -897,14 +880,13 @@ impl Core {
         }
     }
 
-    /// Whether `action` is an action or a flow of an app this runtime does not run: one the
-    /// host invokes at that app's door.
+    /// Whether `action` is an action of an app this runtime does not run: one the host invokes
+    /// at that app's door.
     fn foreign_action(&self, action: &str) -> bool {
-        let registry = self.registry.borrow();
-        registry
+        self.registry
+            .borrow()
             .action_package(action)
             .is_some_and(|pkg| pkg.foreign)
-            || registry.flow_package(action).is_some_and(|pkg| pkg.foreign)
     }
 
     /// Invoke `aref` where its app runs: the host's invoker sends it on as a child of the code
@@ -932,125 +914,449 @@ impl Core {
         })
     }
 
-    // ----- flows -------------------------------------------------------------------------
-
-    /// Start a flow run.
+    /// Start a run of `action` as `invoker`, with the authorship `chain` that led to it: what a
+    /// program runs as.
     ///
     /// # Errors
     ///
-    /// An unknown flow, arguments that do not fit, a trap, or a store failure.
-    pub fn start_flow(
+    /// An unknown action, arguments that do not fit, a trap, or a store failure.
+    pub fn start_run(
         &self,
         invoker: &Principal,
-        flow: &str,
+        action: &str,
         args: Vec<Value>,
         chain: Vec<ModuleHash>,
-    ) -> Result<FlowOutcome, RuntimeError> {
-        self.start_flow_from(invoker, flow, args, chain, None, None)
-    }
-
-    /// [`Core::start_flow`] of a flow invoked from the resource `from`: what the resources its
-    /// actions create were made from, recorded in the changes it makes.
-    ///
-    /// # Errors
-    ///
-    /// As [`Core::start_flow`].
-    pub fn start_flow_from(
-        &self,
-        invoker: &Principal,
-        flow: &str,
-        args: Vec<Value>,
-        chain: Vec<ModuleHash>,
-        from: Option<ResourceRef>,
-        suggested_by: Option<Principal>,
-    ) -> Result<FlowOutcome, RuntimeError> {
-        if self.registry.borrow().flow_package(flow).is_none() {
-            return Err(RuntimeError::NotFound(format!("flow {flow}")));
-        }
-        let run = self.store.borrow_mut().fresh_id("r");
-        let journal = Journal {
-            flow: Some(flow.to_owned()),
-            args,
+    ) -> Result<RunOutcome, RuntimeError> {
+        let ctx = ExecCtx {
             invoker: invoker.clone(),
             chain,
-            from,
-            suggested_by: suggested_by.map(|p| p.0),
+            approved_by: None,
+            suggested_by: None,
+            origin: None,
+            from: None,
+            at: None,
+        };
+        self.start_ctx(
+            &ctx,
+            &self.completed(&ActionRef::new(action.to_owned(), args))?,
+        )
+    }
+
+    /// Start a run of `aref` for `ctx`: a journal, and the code run until it finishes or waits
+    /// for a person. Nothing is written until it does.
+    fn start_ctx(&self, ctx: &ExecCtx, aref: &ActionRef) -> Result<RunOutcome, RuntimeError> {
+        let run = self.store.borrow_mut().fresh_id("r");
+        let journal = Journal {
+            action: Some(aref.action.clone()),
+            args: aref.args.clone(),
+            invoker: ctx.invoker.clone(),
+            chain: ctx.chain.clone(),
+            from: ctx.from.clone(),
+            at: ctx.at.clone(),
+            suggested_by: ctx.suggested_by.as_ref().map(|p| p.0.clone()),
             entries: Vec::new(),
             pending: None,
             finished: false,
+            approved_by: ctx.approved_by.clone(),
+            origin: ctx.origin.clone(),
+            parent: None,
         };
-        self.store.borrow_mut().save_journal(&run, &journal)?;
-        self.run_journal(&run, journal)
+        self.drive_chain(&run, journal)
     }
 
-    /// Run a flow from the start, answering calls from its journal while it lasts.
-    fn run_journal(&self, run: &RunId, journal: Journal) -> Result<FlowOutcome, RuntimeError> {
-        let flow_id = journal
-            .flow
-            .clone()
-            .ok_or_else(|| RuntimeError::NotFound("a flow for this run".into()))?;
-        let pkg = self
-            .registry
-            .borrow()
-            .flow_package(&flow_id)
-            .ok_or_else(|| RuntimeError::NotFound(format!("flow {flow_id}")))?;
-        let meta = pkg
-            .flow(&flow_id)
-            .ok_or_else(|| RuntimeError::NotFound(format!("flow {flow_id}")))?
-            .clone();
-        let args = journal.args.clone();
-        // An agent's program is code its agent wrote: what it applies is decided as the
-        // agent's code, as a block's is.
-        let module = if pkg.meta.app.starts_with(tilolang::PROGRAM_APP_PREFIX) {
+    /// Run `journal`'s action until it finishes or waits for a person, and answer the run that
+    /// invoked it as a step, if one did.
+    fn drive_chain(&self, run: &RunId, journal: Journal) -> Result<RunOutcome, RuntimeError> {
+        match self.drive(run, journal)? {
+            RunEnd::Done { journal, value } => self.answer_parent(&journal, Ok(value)),
+            RunEnd::Suspended(suggestion) => Ok(RunOutcome::Suspended(suggestion)),
+            RunEnd::Failed { journal, error } => self.answer_parent(&journal, Err(error)),
+        }
+    }
+
+    /// Answer the run `journal` was a step of, if it was: its outcome is that run's next
+    /// journaled entry, and that run goes on. Written before the step's own journal says it
+    /// finished, so a run interrupted between the two runs the step once.
+    fn answer_parent(
+        &self,
+        journal: &Journal,
+        outcome: Result<Value, RuntimeError>,
+    ) -> Result<RunOutcome, RuntimeError> {
+        let Some(parent) = journal.parent.clone() else {
+            return match outcome {
+                Ok(value) => Ok(RunOutcome::Done(value)),
+                Err(e) => Err(e),
+            };
+        };
+        let action = journal.action.clone().unwrap_or_default();
+        let entry = match &outcome {
+            Ok(value) => JournalEntry::Invoked {
+                action,
+                result: value.clone(),
+            },
+            Err(e) => JournalEntry::Failed {
+                action,
+                reason: e.to_string(),
+            },
+        };
+        let mut parent_journal = self
+            .store
+            .borrow_mut()
+            .load_journal(&parent)?
+            .ok_or_else(|| RuntimeError::NotFound(format!("run {parent}")))?;
+        parent_journal.entries.push(entry);
+        parent_journal.pending = None;
+        self.store
+            .borrow_mut()
+            .save_journal(&parent, &parent_journal)?;
+        self.drive_chain(&parent, parent_journal)
+    }
+
+    /// Run the code of `run` from the start of its journal until it finishes, stops, or waits
+    /// for a person.
+    fn drive(&self, run: &RunId, journal: Journal) -> Result<RunEnd, RuntimeError> {
+        let Some(action) = journal.action.clone() else {
+            return Err(RuntimeError::NotFound("an action for this run".into()));
+        };
+        let (pkg, meta) = {
+            let registry = self.registry.borrow();
+            let pkg = registry
+                .action_package(&action)
+                .ok_or_else(|| RuntimeError::NotFound(format!("action {action}")))?;
+            let meta = pkg
+                .action(&action)
+                .ok_or_else(|| RuntimeError::NotFound(format!("action {action}")))?
+                .clone();
+            (pkg, meta)
+        };
+        // An agent's program is code its agent wrote: what it applies is decided as the agent's
+        // code, as a block's is.
+        let program = pkg.meta.app.starts_with(tilolang::PROGRAM_APP_PREFIX);
+        let module = if program {
             ModuleHash::principal(&journal.invoker.0)
         } else {
             pkg.hash.clone()
         };
-        self.frames.borrow_mut().push(
-            module,
-            FrameKind::Flow(Box::new(FlowState {
+        // Only code that calls another action is run again, so only it journals its reads and
+        // its writes. Anything else commits one change and is never replayed.
+        let journaled = program || meta.invokes;
+        // A run a scenario made act at a moment reads its clock as that moment, in the person's
+        // zone: `now`, `today` and the time its change is recorded at all follow it.
+        let clock = journal.at.clone().map(|now| crate::run::Clock {
+            now,
+            zone: self.zone_name.borrow().as_ref().and_then(|name| name()),
+            offset: self.zone.borrow().as_ref().map_or(0, |zone| zone()),
+        });
+        let mut journal = journal;
+        loop {
+            let state = RunState {
                 run: run.clone(),
+                cursor: 0,
                 invoker: journal.invoker.clone(),
                 suggested_by: journal.suggested_by.clone().map(Principal),
+                clock: clock.clone(),
+                journaled,
                 journal,
-                cursor: 0,
-                clock: None,
-            })),
-        );
-        let result = self.call_in_frame(
-            &pkg,
-            &format!("f_{flow_id}"),
-            &meta.params,
-            &args,
-            meta.result.as_deref(),
-        );
-        let frame = self.frames.borrow_mut().pop();
-        let Some(FrameKind::Flow(state)) = frame.map(|f| f.kind) else {
-            return Err(RuntimeError::Package("the flow frame vanished".into()));
-        };
-        let mut journal = state.journal;
-        match result {
-            Ok(v) => {
-                journal.finished = true;
-                journal.pending = None;
-                self.store.borrow_mut().save_journal(run, &journal)?;
-                Ok(FlowOutcome::Done(v))
-            }
-            Err(RuntimeError::Engine(CallError::Suspended)) => {
-                self.store.borrow_mut().save_journal(run, &journal)?;
-                journal.pending.map(FlowOutcome::Suspended).ok_or_else(|| {
-                    RuntimeError::Package("the flow suspended without a suggestion".into())
-                })
-            }
-            Err(e) => {
-                self.store.borrow_mut().save_journal(run, &journal)?;
-                Err(e)
+            };
+            match self.attempt(&pkg, &meta, &module, program, state)? {
+                Attempted::Done {
+                    journal: next,
+                    value,
+                    change,
+                } => {
+                    journal = next;
+                    if let Some(change) = change {
+                        self.commit_segment(&journal.invoker, *change)?;
+                    }
+                    journal.finished = true;
+                    journal.pending = None;
+                    return Ok(RunEnd::Done { journal, value });
+                }
+                Attempted::Suspended { journal: next } => {
+                    journal = next;
+                    match journal.pending.clone() {
+                        Some(Pending::Ask(suggestion)) => {
+                            self.store.borrow_mut().save_journal(run, &journal)?;
+                            return Ok(RunEnd::Suspended(suggestion));
+                        }
+                        Some(Pending::Step(step)) => {
+                            let waited = self.take_step(run, &mut journal, &step)?;
+                            if let Some(suggestion) = waited {
+                                // The step asks: the run now waits for the person, and a
+                                // resume goes on from here.
+                                self.store.borrow_mut().save_journal(run, &journal)?;
+                                return Ok(RunEnd::Suspended(suggestion));
+                            }
+                        }
+                        None => {
+                            return Err(RuntimeError::Package(
+                                "the run suspended with nothing it waits for".into(),
+                            ));
+                        }
+                    }
+                }
+                Attempted::Failed {
+                    journal: next,
+                    error,
+                } => {
+                    return Ok(RunEnd::Failed {
+                        journal: next,
+                        error,
+                    });
+                }
             }
         }
     }
 
-    /// Answer a suggestion. Approving runs the suggested action with the approver recorded;
-    /// declining journals a refusal. A flow then replays from its journal.
+    /// The context a run's code runs in, as its journal recorded it when it started.
+    fn ctx_of(journal: &Journal) -> ExecCtx {
+        ExecCtx {
+            invoker: journal.invoker.clone(),
+            chain: journal.chain.clone(),
+            approved_by: journal.approved_by.clone(),
+            suggested_by: journal.suggested_by.clone().map(Principal),
+            origin: journal.origin.clone(),
+            from: journal.from.clone(),
+            at: journal.at.clone(),
+        }
+    }
+
+    /// One attempt at the code of `run`: the transaction it writes in, and the frame it runs in.
+    fn attempt(
+        &self,
+        pkg: &Package,
+        meta: &ActionMeta,
+        module: &ModuleHash,
+        program: bool,
+        state: RunState,
+    ) -> Result<Attempted, RuntimeError> {
+        let txn = if program {
+            None
+        } else {
+            Some(self.store.borrow_mut().begin()?)
+        };
+        let action = state.journal.action.clone().unwrap_or_default();
+        let args = state.journal.args.clone();
+        let ctx = Self::ctx_of(&state.journal);
+        let primary = args.iter().find_map(|v| match v {
+            Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
+            _ => None,
+        });
+        let note = Self::note(&ctx, pkg, &ActionRef::new(action.clone(), args.clone()));
+        let kind = match txn {
+            Some(txn) => FrameKind::Action(ActionState {
+                txn,
+                action: action.clone(),
+                primary,
+                invoker: ctx.invoker.clone(),
+                origin: ctx.origin.clone(),
+                suggested_by: ctx.suggested_by,
+                suggestions: Vec::new(),
+                queued: Vec::new(),
+                scenario: meta.scenario,
+                invocations: Vec::new(),
+                note: Box::new(note),
+                touched: std::collections::BTreeSet::new(),
+                run: Box::new(state),
+            }),
+            None => FrameKind::Program(Box::new(state)),
+        };
+        self.frames.borrow_mut().push(module.clone(), kind);
+        let result = self.call_in_frame(
+            pkg,
+            &format!("a_{action}"),
+            &meta.params,
+            &args,
+            meta.result.as_deref(),
+        );
+        let at = self.change_time();
+        let Some(frame) = self.frames.borrow_mut().pop() else {
+            return Err(RuntimeError::Package("the run's frame vanished".into()));
+        };
+        let (journal, change) = match frame.kind {
+            FrameKind::Program(state) => (state.journal, None),
+            FrameKind::Action(a) => {
+                let mut note = *a.note;
+                note.at = Some(at);
+                note.touched = a.touched.into_iter().collect();
+                // What the run read of the world outside Tilo on its way, beside the change it
+                // makes: the moment and the zone it read, and what it fetched or drew
+                // (convergence.md, "Actions").
+                note.effects = a
+                    .run
+                    .journal
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.is_outside_effect())
+                    .cloned()
+                    .collect();
+                let change = Change {
+                    txn: a.txn,
+                    queued: a.queued,
+                    proposed: a.suggestions,
+                    note,
+                };
+                (a.run.journal, Some(Box::new(change)))
+            }
+            _ => return Err(RuntimeError::Package("the run's frame vanished".into())),
+        };
+        match result {
+            Ok(value) => Ok(Attempted::Done {
+                journal,
+                value,
+                change,
+            }),
+            Err(error) => {
+                if matches!(error, RuntimeError::Engine(CallError::Suspended)) {
+                    // It stopped to make a call: what it wrote until then is a change of its
+                    // own, kept while the call runs. Its journal answers those writes when it
+                    // goes on, so they are made once, and the call's change stands on them.
+                    if let Some(change) = change {
+                        self.commit_segment(&journal.invoker, *change)?;
+                    }
+                    Ok(Attempted::Suspended { journal })
+                } else {
+                    if let Some(change) = &change {
+                        self.store.borrow_mut().rollback(change.txn);
+                    }
+                    Ok(Attempted::Failed { journal, error })
+                }
+            }
+        }
+    }
+
+    /// Commit `change` as a change of `invoker`'s run, and do what it left for others: settle the
+    /// blocks it settled and record what it proposed.
+    fn commit_segment(&self, invoker: &Principal, change: Change) -> Result<(), RuntimeError> {
+        self.store.borrow_mut().commit(change.txn, &change.note)?;
+        self.settle_blocks(invoker, change.queued)?;
+        for (who, suggested) in change.proposed {
+            self.propose(&who, &suggested)?;
+        }
+        Ok(())
+    }
+
+    /// Run the action `step` names as a change of its own, as a step of `run`, and journal what
+    /// it came to. `Ok(None)` when it ran and the run can go on; `Ok(Some(suggestion))` when it
+    /// waits on a person first.
+    fn take_step(
+        &self,
+        run: &RunId,
+        journal: &mut Journal,
+        step: &Step,
+    ) -> Result<Option<Suggestion>, RuntimeError> {
+        let aref = self.completed(&ActionRef {
+            action: step.action.clone(),
+            args: step.args.clone(),
+            author: step.author.clone(),
+            from: None,
+        })?;
+        let mut chain = journal.chain.clone();
+        push_chain(&mut chain, aref.author.as_ref());
+        let ctx = ExecCtx {
+            // A scenario's `invoke(..., by:)` names who runs the call: the callee is decided and
+            // recorded as that person, not as the run's own invoker.
+            invoker: step.who.clone().unwrap_or_else(|| journal.invoker.clone()),
+            chain,
+            approved_by: None,
+            suggested_by: journal.suggested_by.clone().map(Principal),
+            origin: None,
+            from: step.from.clone().or_else(|| journal.from.clone()),
+            at: step.at.clone(),
+        };
+        // A host that holds no records sends the invocation on to the app that does.
+        if self.invoker.borrow().is_some() {
+            let invocation = self.invocation_of(&aref)?;
+            match self.delegated_step(&aref.action, &invocation)? {
+                Delegated::Ran(entry) => {
+                    journal.entries.push(*entry);
+                    Ok(None)
+                }
+                Delegated::Asks => Ok(Some(Self::ask(run, journal, &ctx, &aref))),
+            }
+        } else {
+            let d = if step.seed {
+                Decision::Allow
+            } else {
+                self.decide(&ctx, &aref)?
+            };
+            match d {
+                Decision::Allow => self.run_step(run, journal, &ctx, &aref),
+                Decision::Deny => {
+                    journal.entries.push(JournalEntry::Denied {
+                        action: step.action.clone(),
+                        reason: "denied by authority".to_owned(),
+                    });
+                    Ok(None)
+                }
+                Decision::Ask => Ok(Some(Self::ask(run, journal, &ctx, &aref))),
+            }
+        }
+    }
+
+    /// Record that `run` waits for a person's answer to `aref`, and hand the suggestion out.
+    fn ask(run: &RunId, journal: &mut Journal, ctx: &ExecCtx, aref: &ActionRef) -> Suggestion {
+        let suggestion = Suggestion {
+            run: run.clone(),
+            action: aref.action.clone(),
+            args: aref.args.clone(),
+            invoker: ctx.invoker.clone(),
+            chain: ctx.chain.clone(),
+        };
+        journal.pending = Some(Pending::Ask(suggestion.clone()));
+        suggestion
+    }
+
+    /// Run `step` as a run of its own, a change of its own, invoked by `run`: its outcome is
+    /// `run`'s next journaled entry, unless it waits on a person, in which case `run` waits with
+    /// it and its outcome comes back here when they answer.
+    fn run_step(
+        &self,
+        run: &RunId,
+        journal: &mut Journal,
+        ctx: &ExecCtx,
+        aref: &ActionRef,
+    ) -> Result<Option<Suggestion>, RuntimeError> {
+        let child = self.store.borrow_mut().fresh_id("r");
+        let child_journal = Journal {
+            action: Some(aref.action.clone()),
+            args: aref.args.clone(),
+            invoker: ctx.invoker.clone(),
+            chain: ctx.chain.clone(),
+            from: ctx.from.clone(),
+            at: ctx.at.clone(),
+            suggested_by: ctx.suggested_by.as_ref().map(|p| p.0.clone()),
+            entries: Vec::new(),
+            pending: None,
+            finished: false,
+            approved_by: ctx.approved_by.clone(),
+            origin: ctx.origin.clone(),
+            parent: Some(run.clone()),
+        };
+        match self.drive(&child, child_journal)? {
+            RunEnd::Done { value, .. } => {
+                journal.entries.push(JournalEntry::Invoked {
+                    action: aref.action.clone(),
+                    result: value,
+                });
+                Ok(None)
+            }
+            RunEnd::Failed { error, .. } => {
+                journal.entries.push(JournalEntry::Failed {
+                    action: aref.action.clone(),
+                    reason: error.to_string(),
+                });
+                Ok(None)
+            }
+            RunEnd::Suspended(suggestion) => {
+                self.store.borrow_mut().save_journal(run, journal)?;
+                Ok(Some(suggestion))
+            }
+        }
+    }
+
+    /// Answer a suggestion, and run on from it. Approving runs the suggested action with the
+    /// approver recorded; declining journals a refusal. A run then runs again from its journal.
     ///
     /// # Errors
     ///
@@ -1060,7 +1366,7 @@ impl Core {
         run: &RunId,
         approver: &Principal,
         resolution: Resolution,
-    ) -> Result<FlowOutcome, RuntimeError> {
+    ) -> Result<RunOutcome, RuntimeError> {
         self.resolve_run(run, approver, resolution)
     }
 
@@ -1069,208 +1375,203 @@ impl Core {
         run: &RunId,
         approver: &Principal,
         resolution: Resolution,
-    ) -> Result<FlowOutcome, RuntimeError> {
+    ) -> Result<RunOutcome, RuntimeError> {
         let mut journal = self
             .store
             .borrow_mut()
             .load_journal(run)?
             .ok_or_else(|| RuntimeError::NotFound(format!("run {run}")))?;
         let pending = match journal.pending.take() {
-            Some(p) if !journal.finished => p,
+            Some(pending) if !journal.finished => pending,
             _ => return Err(RuntimeError::NotPending(run.clone())),
         };
-        let applies_flow = self
-            .registry
-            .borrow()
-            .flow_package(&pending.action)
-            .is_some();
-        if resolution == Resolution::Approve && journal.flow.is_none() && applies_flow {
+        let Pending::Ask(suggestion) = pending else {
+            // A step waits on no person: it runs as soon as the run gets to it.
+            journal.pending = Some(pending);
+            return Err(RuntimeError::NotPending(run.clone()));
+        };
+        let ctx = ExecCtx {
+            invoker: suggestion.invoker.clone(),
+            chain: suggestion.chain.clone(),
+            approved_by: Some(approver.clone()),
+            suggested_by: journal.suggested_by.clone().map(Principal),
+            // The key its outside effects are queued under, so that approving the same
+            // suggestion on two devices queues them once.
+            origin: Some(format!("{run}:{}", journal.entries.len())),
+            from: journal.from.clone(),
+            at: journal.at.clone(),
+        };
+        let aref = ActionRef::new(suggestion.action.clone(), suggestion.args.clone());
+        // A run that is only a suggestion waits no further: what it approves is its whole
+        // action, and the change it makes is its.
+        if journal.action.is_none() {
             journal.finished = true;
             self.store.borrow_mut().save_journal(run, &journal)?;
-            return self.start_flow_from(
-                &pending.invoker,
-                &pending.action,
-                pending.args.clone(),
-                pending.chain.clone(),
-                journal.from.clone(),
-                journal.suggested_by.clone().map(Principal),
-            );
+            return match resolution {
+                Resolution::Approve => self.start_ctx(&ctx, &aref),
+                Resolution::Decline => Ok(RunOutcome::Done(Value::Error(format!(
+                    "declined by {approver}"
+                )))),
+            };
         }
-        let entry = match resolution {
+        match resolution {
             Resolution::Approve => {
-                let ctx = ExecCtx {
-                    invoker: pending.invoker.clone(),
-                    chain: pending.chain.clone(),
-                    approved_by: Some(approver.clone()),
-                    suggested_by: journal.suggested_by.clone().map(Principal),
-                    origin: None,
-                    from: journal.from.clone(),
-                    at: None,
-                };
-                let aref = ActionRef::new(pending.action.clone(), pending.args.clone());
-                match self.run_action(&ctx, &aref)? {
-                    ActionOutcome::Done(result) => JournalEntry::Invoked {
-                        action: pending.action,
-                        result,
-                    },
-                    ActionOutcome::Failed(reason) => JournalEntry::Failed {
-                        action: pending.action,
-                        reason,
-                    },
+                // Its chain already ends in the module that called it.
+                let aref = ActionRef::new(suggestion.action, suggestion.args);
+                if let Some(deeper) = self.run_step(run, &mut journal, &ctx, &aref)? {
+                    return Ok(RunOutcome::Suspended(deeper));
                 }
             }
-            Resolution::Decline => JournalEntry::Denied {
-                action: pending.action,
+            Resolution::Decline => journal.entries.push(JournalEntry::Denied {
+                action: suggestion.action,
                 reason: format!("declined by {approver}"),
-            },
-        };
-        journal.entries.push(entry.clone());
-        if journal.flow.is_none() {
-            journal.finished = true;
-            self.store.borrow_mut().save_journal(run, &journal)?;
-            return Ok(FlowOutcome::Done(entry_value(&entry)));
+            }),
         }
-        self.store.borrow_mut().save_journal(run, &journal)?;
-        self.run_journal(run, journal)
+        self.drive_chain(run, journal)
     }
 
-    /// Run a read of a resource. In a flow the first run records the value in the journal and
-    /// a replay returns the recorded one; anywhere else the read just runs.
+    /// Run a read of a resource. A run that may invoke another action records the value in its
+    /// journal, and running it again answers from the journal; anywhere else the read just runs.
     pub(crate) fn journaled_read(&self, live: impl FnOnce() -> HResult<Value>) -> HResult<Value> {
         {
             let mut frames = self.frames.borrow_mut();
-            let Some(fs) = frames.flow_mut() else {
+            let Some(run) = frames.run_mut().filter(|run| run.journaled) else {
                 drop(frames);
                 return live();
             };
-            if let Some(entry) = fs.journal.entries.get(fs.cursor) {
+            if let Some(entry) = run.journal.entries.get(run.cursor) {
                 let JournalEntry::Read { value } = entry else {
-                    return trap("the flow diverged from its journal: expected a read");
+                    return trap("the run diverged from its journal: expected a read");
                 };
                 let value = value.clone();
-                fs.cursor = fs.cursor.saturating_add(1);
+                run.cursor = run.cursor.saturating_add(1);
                 return Ok(value);
             }
         }
         let value = live()?;
         let mut frames = self.frames.borrow_mut();
-        if let Some(fs) = frames.flow_mut() {
-            fs.journal.entries.push(JournalEntry::Read {
+        if let Some(run) = frames.run_mut().filter(|run| run.journaled) {
+            run.push(JournalEntry::Read {
                 value: value.clone(),
             });
-            fs.cursor = fs.cursor.saturating_add(1);
         }
         Ok(value)
     }
 
-    fn journal_push(&self, entry: JournalEntry) -> HResult<()> {
-        let (run, journal) = {
+    /// Apply a write the running action makes, as [`Core::journaled_read`] answers a read: a run
+    /// that is run again after it waited made this write before the call it waited on, and the
+    /// change it made is in the record. Replay answers the write from the journal and applies
+    /// nothing, so the item it made keeps what the call wrote on top of it.
+    pub(crate) fn journaled_apply(
+        &self,
+        txn: Txn,
+        at: &ResourceRef,
+        m: &Mutation,
+    ) -> HResult<Applied> {
+        {
             let mut frames = self.frames.borrow_mut();
-            let FrameKind::Flow(fs) = &mut frames.top_mut()?.kind else {
-                return trap("not a flow frame");
+            let Some(run) = frames.run_mut().filter(|run| run.journaled) else {
+                drop(frames);
+                return self.apply_write(txn, at, m);
             };
-            fs.journal.entries.push(entry);
-            fs.cursor = fs.cursor.saturating_add(1);
-            (fs.run.clone(), fs.journal.clone())
+            if let Some(entry) = run.journal.entries.get(run.cursor) {
+                let JournalEntry::Wrote { item } = entry else {
+                    return trap("the run diverged from its journal: expected a write");
+                };
+                let applied = item.clone().map_or(Applied::Done, Applied::Item);
+                run.cursor = run.cursor.saturating_add(1);
+                return Ok(applied);
+            }
+        }
+        let applied = self.apply_write(txn, at, m)?;
+        let item = match &applied {
+            Applied::Item(id) => Some(id.clone()),
+            Applied::Done => None,
         };
+        self.journal_push(JournalEntry::Wrote { item })?;
+        Ok(applied)
+    }
+
+    /// Write `m` to `at` in `txn`, as the store takes it.
+    fn apply_write(&self, txn: Txn, at: &ResourceRef, m: &Mutation) -> HResult<Applied> {
         self.store
             .borrow_mut()
-            .save_journal(&run, &journal)
+            .apply(txn, at, m)
             .map_err(|e| HostFail::Trap(e.to_string()))
     }
 
-    /// What invoking `aref` runs where the invocation stands in a flow: the journal's answer
-    /// where it holds one, else a live context with the flow's person and what it was made from.
-    fn flow_step(fs: &mut FlowState, aref: &ActionRef) -> HResult<Step> {
-        if let Some(entry) = fs.journal.entries.get(fs.cursor) {
-            let v = replay_value(entry, &aref.action)?;
-            fs.cursor = fs.cursor.saturating_add(1);
-            return Ok(Step::Replay(v));
-        }
-        let mut chain = fs.journal.chain.clone();
-        push_chain(&mut chain, aref.author.as_ref());
-        Ok(Step::Live(ExecCtx {
-            invoker: fs.invoker.clone(),
-            chain,
-            approved_by: None,
-            suggested_by: fs.suggested_by.clone(),
-            origin: None,
-            from: fs.journal.from.clone(),
-            at: None,
-        }))
+    /// Records an entry in the run's journal.
+    pub(crate) fn journal_push(&self, entry: JournalEntry) -> HResult<()> {
+        let mut frames = self.frames.borrow_mut();
+        let Some(run) = frames.run_mut() else {
+            return trap("not in a run");
+        };
+        run.push(entry);
+        Ok(())
     }
 
-    fn flow_invoke(&self, h: i32) -> HResult<Option<Wasm>> {
+    /// `invoke(aref)` and `try act(args)`: the action runs as a change of its own at its own
+    /// door. The journal answers a call the run already made; otherwise the run stops here, and
+    /// the call runs and the code goes on from its result.
+    fn invoke(&self, h: i32) -> HResult<Option<Wasm>> {
         let Value::Action(aref) = self.val(h)? else {
             return trap("expected an action reference");
         };
-        let step = {
-            let mut frames = self.frames.borrow_mut();
-            match &mut frames.top_mut()?.kind {
-                FrameKind::Flow(fs) => Self::flow_step(fs, &aref)?,
-                FrameKind::Action(state) if state.scenario => scenario_step(state, &aref),
-                _ => return trap("invoke is only available in flows and scenarios"),
-            }
-        };
-        let seeded = matches!(step, Step::Seed(_));
-        let ctx = match step {
-            Step::Replay(v) => return self.ret_h(boxed(v)),
-            Step::Live(ctx) | Step::Seed(ctx) => ctx,
-        };
-        let aref = self
-            .completed(&aref)
-            .map_err(|e| HostFail::Trap(e.to_string()))?;
-        if self.invoker.borrow().is_some() {
-            let invocation = self
-                .invocation_of(&aref)
-                .map_err(|e| HostFail::Trap(e.to_string()))?;
-            return self.delegated(&ctx, &aref.action, &invocation);
-        }
-        let decision = if seeded {
-            Decision::Allow
-        } else {
-            self.decide(&ctx, &aref)
-                .map_err(|e| HostFail::Trap(e.to_string()))?
-        };
-        match decision {
-            Decision::Allow => {
-                let outcome = self
-                    .run_action(&ctx, &aref)
-                    .map_err(|e| HostFail::Trap(e.to_string()))?;
-                let (entry, value) = match outcome {
-                    ActionOutcome::Done(result) => (
-                        JournalEntry::Invoked {
-                            action: aref.action,
-                            result: result.clone(),
-                        },
-                        result,
-                    ),
-                    ActionOutcome::Failed(reason) => (
-                        JournalEntry::Failed {
-                            action: aref.action,
-                            reason: reason.clone(),
-                        },
-                        Value::Error(reason),
-                    ),
-                };
-                if !seeded {
-                    self.journal_push(entry)?;
+        // What the call runs under: the invocation a scenario pushed for it, else the run's own.
+        // The invocation names who runs it and the moment it acts at; the resource its changes
+        // are made from is the invocation's, else the run's. A scenario's code is the host's own
+        // making, so what it calls is seed data too: it runs without asking.
+        let (from, who, at, seed) = {
+            let frames = self.frames.borrow();
+            match frames.top().map(|f| &f.kind) {
+                Ok(FrameKind::Action(state)) => {
+                    let invocation = state.invocations.last();
+                    (
+                        invocation
+                            .and_then(|inv| inv.from.clone())
+                            .or_else(|| state.note.from.clone()),
+                        invocation.map(|inv| inv.who.clone()),
+                        invocation.and_then(|inv| inv.at.clone()),
+                        state.scenario,
+                    )
                 }
-                self.ret_h(boxed(value))
+                _ => (aref.from.clone(), None, None, false),
             }
-            Decision::Deny => {
-                let reason = "denied by authority".to_owned();
-                self.journal_push(JournalEntry::Denied {
-                    action: aref.action,
-                    reason: reason.clone(),
-                })?;
-                self.ret_h(Value::Error(reason))
+        };
+        let replayed = {
+            let mut frames = self.frames.borrow_mut();
+            let Some(run) = frames.run_mut() else {
+                return trap("only an action or a program invokes an action");
+            };
+            if let Some(entry) = run.journal.entries.get(run.cursor) {
+                let value = replay_value(entry, &aref.action)?;
+                run.cursor = run.cursor.saturating_add(1);
+                Some(value)
+            } else {
+                run.journal.pending = Some(Pending::Step(Step {
+                    action: aref.action.clone(),
+                    args: aref.args.clone(),
+                    author: aref.author,
+                    from,
+                    who,
+                    at,
+                    seed,
+                }));
+                None
             }
-            Decision::Ask => {
-                self.suspend_on(&ctx, &aref)?;
-                Err(HostFail::Suspend)
-            }
+        };
+        let Some(value) = replayed else {
+            return Err(HostFail::Suspend);
+        };
+        // What did not run stops a program that does not `try` it: it never goes on as if it
+        // had.
+        if let Value::Error(reason) = &value
+            && !self.trying.get()
+            && self.frames.borrow().program()
+        {
+            return trap(reason.clone());
         }
+        self.ret_h(boxed(value))
     }
 
     /// The invocation a task's host sends on for `aref`: the declared action with its
@@ -1325,63 +1626,43 @@ impl Core {
         })
     }
 
-    /// Send `invocation` (journaled as `action`) to the host's invoker and hand the program its
-    /// answer: the result, or the reason as an error value; one the person is asked about first
-    /// stops the program there.
-    pub(crate) fn delegated(
+    /// Send `invocation` (journaled as `action`) to the host's invoker: a host that holds no
+    /// records makes every change a program asks for there, and answers with what it came to.
+    fn delegated_step(
         &self,
-        ctx: &ExecCtx,
         action: &str,
         invocation: &crate::delegate::Invocation,
-    ) -> HResult<Option<Wasm>> {
+    ) -> Result<Delegated, RuntimeError> {
         use crate::delegate::Invoked;
         let answer = match self.invoker.borrow().as_ref() {
             Some(invoker) => invoker.invoke(invocation),
-            None => return trap("this host sends no invocation on"),
-        };
-        let (entry, value) = match answer {
-            Invoked::Done(result) => (
-                JournalEntry::Invoked {
-                    action: action.to_owned(),
-                    result: result.clone(),
-                },
-                result,
-            ),
-            Invoked::Failed(reason) => (
-                JournalEntry::Failed {
-                    action: action.to_owned(),
-                    reason: reason.clone(),
-                },
-                Value::Error(reason),
-            ),
-            Invoked::Refused(reason) => (
-                JournalEntry::Denied {
-                    action: action.to_owned(),
-                    reason: reason.clone(),
-                },
-                Value::Error(reason),
-            ),
-            Invoked::Asks(_) => {
-                let aref = ActionRef::new(action.to_owned(), Vec::new());
-                self.suspend_on(ctx, &aref)?;
-                return Err(HostFail::Suspend);
+            None => {
+                return Err(RuntimeError::Package(
+                    "this host sends no invocation on".to_owned(),
+                ));
             }
         };
-        self.journal_push(entry)?;
-        // What did not run stops a program that does not `try` it: it never goes on as if it
-        // had.
-        if let Value::Error(reason) = &value
-            && !self.trying.get()
-        {
-            return trap(format!("{}: {reason}", invocation.name()));
-        }
-        self.ret_h(boxed(value))
+        Ok(match answer {
+            Invoked::Done(result) => Delegated::Ran(Box::new(JournalEntry::Invoked {
+                action: action.to_owned(),
+                result,
+            })),
+            Invoked::Failed(reason) => Delegated::Ran(Box::new(JournalEntry::Failed {
+                action: action.to_owned(),
+                reason,
+            })),
+            Invoked::Refused(reason) => Delegated::Ran(Box::new(JournalEntry::Denied {
+                action: action.to_owned(),
+                reason,
+            })),
+            Invoked::Asks(_) => Delegated::Asks,
+        })
     }
 
     /// `r.f = v` in a program: the field edit of `r`, sent to the host's invoker as an
     /// invocation of the app that holds `r`. One the policy refuses or that fails stops the
     /// program with why; one the person is asked about first stops it there.
-    pub(crate) fn flow_edit(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+    pub(crate) fn edit_field(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         use crate::delegate::{Invocation, Invoked};
         let target = self.ref_arg(a.h(0)?)?;
         let field_id = self.text(a.h(1)?)?;
@@ -1403,29 +1684,20 @@ impl Core {
         };
         let field = field.name;
         let action = format!("edit:{field_id}");
-        let ctx = {
+        {
             let mut frames = self.frames.borrow_mut();
-            let FrameKind::Flow(fs) = &mut frames.top_mut()?.kind else {
+            let Some(run) = frames.run_mut() else {
                 return trap("a field is set by a program only");
             };
-            if let Some(entry) = fs.journal.entries.get(fs.cursor) {
+            if let Some(entry) = run.journal.entries.get(run.cursor) {
                 let replayed = replay_value(entry, &action)?;
-                fs.cursor = fs.cursor.saturating_add(1);
+                run.cursor = run.cursor.saturating_add(1);
                 return match replayed {
                     Value::Error(reason) => trap(reason),
                     _ => ret_void(),
                 };
             }
-            ExecCtx {
-                invoker: fs.invoker.clone(),
-                chain: fs.journal.chain.clone(),
-                approved_by: None,
-                suggested_by: fs.suggested_by.clone(),
-                origin: None,
-                from: fs.journal.from.clone(),
-                at: None,
-            }
-        };
+        }
         let invocation = Invocation::Edit {
             app,
             target: ResourceRef::clone(&target.target),
@@ -1463,10 +1735,7 @@ impl Core {
                 },
                 Some(reason),
             ),
-            Invoked::Asks(_) => {
-                self.suspend_on(&ctx, &ActionRef::new(action, Vec::new()))?;
-                return Err(HostFail::Suspend);
-            }
+            Invoked::Asks(_) => return Err(HostFail::Suspend),
         };
         self.journal_push(entry)?;
         match failed {
@@ -1476,10 +1745,10 @@ impl Core {
     }
 
     /// `try act(args)`: invokes like `invoke` and hands the guest a `Result`: `.ok` with the
-    /// action's result (none for a unit action), or `.err` with the reason it failed.
-    fn flow_try_invoke(&self, h: i32) -> HResult<Option<Wasm>> {
+    /// action's result (none for a unit action), or `.err` with the reason it did not run.
+    fn try_invoke(&self, h: i32) -> HResult<Option<Wasm>> {
         let outer = self.trying.replace(true);
-        let invoked = self.flow_invoke(h);
+        let invoked = self.invoke(h);
         self.trying.set(outer);
         let Some(Wasm::I32(raw)) = invoked? else {
             return trap("invoke returned no handle");
@@ -1504,46 +1773,24 @@ impl Core {
         }))
     }
 
-    /// Record the pending suggestion in the flow's journal and persist it.
-    fn suspend_on(&self, ctx: &ExecCtx, aref: &ActionRef) -> HResult<()> {
-        let (run, journal) = {
-            let mut frames = self.frames.borrow_mut();
-            let FrameKind::Flow(fs) = &mut frames.top_mut()?.kind else {
-                return trap("not a flow frame");
-            };
-            fs.journal.pending = Some(Suggestion {
-                run: fs.run.clone(),
-                action: aref.action.clone(),
-                args: aref.args.clone(),
-                invoker: ctx.invoker.clone(),
-                chain: ctx.chain.clone(),
-            });
-            (fs.run.clone(), fs.journal.clone())
-        };
-        self.store
-            .borrow_mut()
-            .save_journal(&run, &journal)
-            .map_err(|e| HostFail::Trap(e.to_string()))
-    }
-
     fn model_call(&self, kind_h: i32, input_h: i32) -> HResult<Option<Wasm>> {
         let (kind, input) = (self.text(kind_h)?, unboxed(self.val_whole(input_h)?));
         {
             let mut frames = self.frames.borrow_mut();
-            let FrameKind::Flow(fs) = &mut frames.top_mut()?.kind else {
-                return trap("model_call is only available in flows");
+            let Some(run) = frames.run_mut() else {
+                return trap("model_call is only available to an action's code");
             };
-            if let Some(entry) = fs.journal.entries.get(fs.cursor) {
+            if let Some(entry) = run.journal.entries.get(run.cursor) {
                 let JournalEntry::Model { kind: k, result } = entry else {
-                    return trap("the flow diverged from its journal: expected a model call");
+                    return trap("the run diverged from its journal: expected a model call");
                 };
                 if *k != kind {
                     return trap(format!(
-                        "the flow diverged from its journal: model call `{k}`"
+                        "the run diverged from its journal: model call `{k}`"
                     ));
                 }
                 let result = result.clone();
-                fs.cursor = fs.cursor.saturating_add(1);
+                run.cursor = run.cursor.saturating_add(1);
                 drop(frames);
                 return self.ret_h(result);
             }
@@ -1612,19 +1859,16 @@ impl Core {
         let Some(primary) = primary else {
             return trap("an outside action needs a resource argument to queue its effect on");
         };
-        self.store
-            .borrow_mut()
-            .apply(
-                txn,
-                &primary,
-                &Mutation::OutboxPush {
-                    capability,
-                    payload,
-                    held_until,
-                    key: origin,
-                },
-            )
-            .map_err(|e| HostFail::Trap(e.to_string()))?;
+        self.journaled_apply(
+            txn,
+            &primary,
+            &Mutation::OutboxPush {
+                capability,
+                payload,
+                held_until,
+                key: origin,
+            },
+        )?;
         self.ret_h(Value::Unit)
     }
 
@@ -1663,9 +1907,11 @@ impl Core {
         // How many arguments it takes, and how many of the last of them an application may
         // leave out: those with defaults, computed when it is invoked, and those its form asks
         // the person for (forms-and-diagrams.md §1).
-        let arity = {
-            let reg = self.registry.borrow();
-            let as_action = reg.action_package(&action).and_then(|pkg| {
+        let arity = self
+            .registry
+            .borrow()
+            .action_package(&action)
+            .and_then(|pkg| {
                 pkg.action(&action).map(|a| {
                     let defaulted = a
                         .params
@@ -1678,11 +1924,6 @@ impl Core {
                     (a.params.len(), defaulted)
                 })
             });
-            as_action.or_else(|| {
-                reg.flow_package(&action)
-                    .and_then(|p| p.flow(&action).map(|f| (f.params.len(), 0)))
-            })
-        };
         match arity {
             None => return trap(format!("unknown action `{action}`")),
             Some((n, defaulted)) if args.len() > n || args.len() < n.saturating_sub(defaulted) => {
@@ -1732,59 +1973,49 @@ impl Core {
         ret_void()
     }
 
-    /// The clock and the person's zone, as the invocation running reads them: what it read the
+    /// The clock and the person's zone, as the code running reads them: what the run read the
     /// first time, from its journal when it recorded one then, else from the host, which it
-    /// records. An action's entry is kept beside its change; a flow's is saved in its journal,
-    /// so a run resumed tomorrow reads the moment it started. Code that journals nothing (a
-    /// view's) reads the host live.
-    pub(crate) fn clock(&self) -> HResult<crate::flow::Clock> {
+    /// records. Code that is no run (a view's) reads the host live.
+    pub(crate) fn clock(&self) -> HResult<crate::run::Clock> {
         {
             let mut frames = self.frames.borrow_mut();
-            let Some(mut effects) = frames.effects() else {
+            let Some(run) = frames.run_mut() else {
                 return Ok(self.host_clock());
             };
-            if let Some(clock) = effects.pinned_clock() {
-                return Ok(clock);
+            if let Some(clock) = &run.clock {
+                return Ok(clock.clone());
             }
-            match effects.next_entry() {
-                Some(crate::flow::JournalEntry::Clock(clock)) => {
-                    effects.pin(clock.clone());
+            match run.next_entry() {
+                Some(JournalEntry::Clock(clock)) => {
+                    run.clock = Some(clock.clone());
                     return Ok(clock);
                 }
                 Some(_) => {
-                    return trap(
-                        "the invocation diverged from its journal: expected the clock's entry",
-                    );
+                    return trap("the run diverged from its journal: expected the clock's entry");
                 }
                 None => {}
             }
         }
         let clock = self.host_clock();
-        {
-            let mut frames = self.frames.borrow_mut();
-            if let Some(mut effects) = frames.effects() {
-                effects.pin_clock(clock.clone());
-            }
+        if let Some(run) = self.frames.borrow_mut().run_mut() {
+            run.clock = Some(clock.clone());
+            run.push(JournalEntry::Clock(clock.clone()));
         }
-        self.save_flow_journal()?;
         Ok(clock)
     }
 
     /// What the host says now: its clock, and the person's zone.
-    fn host_clock(&self) -> crate::flow::Clock {
-        crate::flow::Clock {
+    fn host_clock(&self) -> crate::run::Clock {
+        crate::run::Clock {
             now: self.invocation_time(),
             zone: self.zone_name.borrow().as_ref().and_then(|name| name()),
             offset: self.zone.borrow().as_ref().map_or(0, |zone| zone()),
         }
     }
 
-    /// The clock and zone the invocation running pinned, when it read time.
-    pub(crate) fn pinned_clock(&self) -> Option<crate::flow::Clock> {
-        self.frames
-            .borrow_mut()
-            .effects()
-            .and_then(|effects| effects.pinned_clock())
+    /// The clock and zone the code running read, when it read time.
+    pub(crate) fn pinned_clock(&self) -> Option<crate::run::Clock> {
+        self.frames.borrow().run().and_then(|run| run.clock.clone())
     }
 
     /// The moment the change being made is recorded at: the one the action read, when it read
@@ -1793,21 +2024,6 @@ impl Core {
         self.invocation_time()
     }
 
-    /// Saves the flow's journal when a flow is the invocation running: what it read so far,
-    /// kept for a run that resumes.
-    pub(crate) fn save_flow_journal(&self) -> HResult<()> {
-        let saved = {
-            let frames = self.frames.borrow();
-            frames.flow().map(|fs| (fs.run.clone(), fs.journal.clone()))
-        };
-        let Some((run, journal)) = saved else {
-            return Ok(());
-        };
-        self.store
-            .borrow_mut()
-            .save_journal(&run, &journal)
-            .map_err(|e| HostFail::Trap(e.to_string()))
-    }
     /// A moment moved by some seconds, backwards when `back` says.
     fn time_shift(&self, at_h: i32, secs: i64, back_h: i32) -> HResult<Option<Wasm>> {
         let at = self.text(at_h)?;
@@ -1903,15 +2119,14 @@ impl Core {
 
     /// `suggest act(args)`: records the action as a proposal attached to the resource it is
     /// about, instead of applying it. An action records it once it has committed, so the
-    /// proposal is never part of its transaction; a flow holds no transaction of its own, so it
-    /// records it now.
+    /// proposal is never part of its transaction; a program holds no transaction of its own, so
+    /// it records it now.
     fn propose_in_frame(&self, act: i32) -> HResult<Option<Wasm>> {
         let aref = match self.val(act)? {
             Value::Action(aref) => aref,
             other => return trap(format!("expected an action, got {}", other.kind_name())),
         };
-        let mut recorded = false;
-        {
+        let now = {
             let mut frames = self.frames.borrow_mut();
             match &mut frames.top_mut()?.kind {
                 FrameKind::Action(state) => {
@@ -1920,16 +2135,13 @@ impl Core {
                         .last()
                         .map_or_else(|| state.invoker.clone(), |inv| inv.who.clone());
                     state.suggestions.push((who, aref.clone()));
+                    None
                 }
-                FrameKind::Flow(_) => recorded = true,
-                _ => return trap("only an action or a flow may suggest an action"),
+                FrameKind::Program(state) => Some(state.invoker.clone()),
+                _ => return trap("only an action or a program may suggest an action"),
             }
-        }
-        if recorded {
-            let who = match &self.frames.borrow().top()?.kind {
-                FrameKind::Flow(state) => state.invoker.clone(),
-                _ => return trap("only an action or a flow may suggest an action"),
-            };
+        };
+        if let Some(who) = now {
             self.propose(&who, &aref)
                 .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
         }
@@ -1973,7 +2185,7 @@ impl Core {
                         ));
                     }
                 };
-                let request = crate::flow::WebRequest {
+                let request = crate::run::WebRequest {
                     method: "GET".to_owned(),
                     url,
                     headers,
@@ -1987,7 +2199,7 @@ impl Core {
                 let url = self.text(a.h(0)?)?;
                 let body = self.text(a.h(1)?)?;
                 let headers = self.web_headers(a.h(2)?)?;
-                let request = crate::flow::WebRequest {
+                let request = crate::run::WebRequest {
                     method: "POST".to_owned(),
                     url,
                     headers,
@@ -2065,85 +2277,80 @@ impl Core {
         }
     }
 
-    fn response_arg(&self, h: i32) -> HResult<Rc<crate::flow::WebResponse>> {
+    fn response_arg(&self, h: i32) -> HResult<Rc<crate::run::WebResponse>> {
         self.with_val(h, |v| match v {
             Value::Response(response) => Ok(Rc::clone(response)),
             other => trap(format!("expected a response, got {}", other.kind_name())),
         })
     }
 
-    /// Fetch `request` for the invocation running, once: its journal's next entry answers it
-    /// when it made the request before, else the transport does and the answer is recorded. A
-    /// host the package did not declare, one the workspace revoked, and any network failure are
-    /// values: the invocation carries on and sees why.
-    fn web(&self, request: crate::flow::WebRequest) -> HResult<crate::flow::WebResponse> {
+    /// Fetch `request` for the run running, once: its journal answers a request it made before,
+    /// else the transport does and the answer is recorded, so a run that replays makes each
+    /// request once. A host the package did not declare, one the workspace revoked, and any
+    /// network failure are values: the run carries on and sees why.
+    fn web(&self, request: crate::run::WebRequest) -> HResult<crate::run::WebResponse> {
         {
             let mut frames = self.frames.borrow_mut();
-            if let Some(mut effects) = frames.effects() {
-                match effects.next_entry() {
-                    Some(JournalEntry::Web {
-                        request: before,
-                        response,
-                    }) => {
-                        if before != request {
-                            return trap(format!(
-                                "the invocation diverged from its journal: it now asks for {} {}, not {} {}",
-                                request.method, request.url, before.method, before.url
-                            ));
-                        }
-                        return Ok(response);
-                    }
-                    Some(_) => {
-                        return trap(
-                            "the invocation diverged from its journal: expected a web request's entry",
-                        );
-                    }
-                    None => {}
+            let Some(run) = frames.run_mut() else {
+                return trap("a request is only made in an action");
+            };
+            if let Some(entry) = run.journal.entries.get(run.cursor) {
+                let JournalEntry::Web {
+                    request: before,
+                    response,
+                } = entry
+                else {
+                    return trap(
+                        "the run diverged from its journal: expected a web request's entry",
+                    );
+                };
+                if *before != request {
+                    return trap(format!(
+                        "the run diverged from its journal: it now asks for {} {}, not {} {}",
+                        request.method, request.url, before.method, before.url
+                    ));
                 }
+                let response = response.clone();
+                run.cursor = run.cursor.saturating_add(1);
+                return Ok(response);
             }
         }
         let response = self.web_response(&request);
-        {
-            let mut frames = self.frames.borrow_mut();
-            if let Some(mut effects) = frames.effects() {
-                effects.push(JournalEntry::Web {
-                    request,
-                    response: response.clone(),
-                });
-            }
-        }
-        self.save_flow_journal()?;
+        self.journal_push(JournalEntry::Web {
+            request,
+            response: response.clone(),
+        })?;
         Ok(response)
     }
 
     /// The answer `request` gets now: the transport's, or why it was not made.
-    fn web_response(&self, request: &crate::flow::WebRequest) -> crate::flow::WebResponse {
+    fn web_response(&self, request: &crate::run::WebRequest) -> crate::run::WebResponse {
         let Ok(module) = self.module_of_frame() else {
-            return crate::flow::WebResponse::of(crate::web::WebReply::failed(
-                "web is only available in actions and flows",
+            return crate::run::WebResponse::of(crate::web::WebReply::failed(
+                "web is only available in actions",
             ));
         };
         let package = self.registry.borrow().package(&module);
         let Some(package) = package else {
-            return crate::flow::WebResponse::of(crate::web::WebReply::failed(format!(
+            return crate::run::WebResponse::of(crate::web::WebReply::failed(format!(
                 "no package wrote the code at {}",
                 module.0
             )));
         };
         let app = package.meta.app.clone();
         let Some(host) = crate::web::host_of(&request.url) else {
-            return crate::flow::WebResponse::of(crate::web::WebReply::failed(
+            return crate::run::WebResponse::of(crate::web::WebReply::failed(
                 "only http and https requests are made",
             ));
         };
         if !crate::web::granted(&package.meta.web, &host) {
-            return crate::flow::WebResponse::of(crate::web::WebReply::failed(format!(
+            return crate::run::WebResponse::of(crate::web::WebReply::failed(format!(
                 "`{app}` may not reach `{host}`: it declares web: [{}]",
                 package.meta.web.join(", ")
             )));
         }
         if !self.authority.may_fetch(&app, &host) {
-            return crate::flow::WebResponse::of(crate::web::WebReply::failed(format!(
+            return crate::run::WebResponse::of(crate::web::WebReply::failed(format!(
                 "the workspace revoked `{host}` for `{app}`"
             )));
         }
@@ -2151,14 +2358,14 @@ impl Core {
             || crate::web::WebReply::failed("this host reaches no services"),
             |transport| transport.fetch(request),
         );
-        crate::flow::WebResponse::of(reply)
+        crate::run::WebResponse::of(reply)
     }
 
     pub(crate) fn effect_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::ActRef => self.act_ref(a.h(0)?, a.h(1)?),
-            Imp::Invoke => self.flow_invoke(a.h(0)?),
-            Imp::TryInvoke => self.flow_try_invoke(a.h(0)?),
+            Imp::Invoke => self.invoke(a.h(0)?),
+            Imp::TryInvoke => self.try_invoke(a.h(0)?),
             Imp::Suggest => self.propose_in_frame(a.h(0)?),
             Imp::ProposalNote => {
                 let note = self.proposal_note(a.h(0)?)?;
@@ -2291,6 +2498,8 @@ fn entry_value(entry: &JournalEntry) -> Value {
         JournalEntry::Clock(_) | JournalEntry::Random { .. } | JournalEntry::Web { .. } => {
             Value::Unit
         }
+        // A write is answered where it is made, and a run that waited answers it there.
+        JournalEntry::Wrote { .. } => Value::Unit,
     }
 }
 
@@ -2304,7 +2513,7 @@ fn replay_value(entry: &JournalEntry, action: &str) -> HResult<Value> {
             Ok(entry_value(entry))
         }
         _ => trap(format!(
-            "the flow diverged from its journal: it now invokes `{action}`"
+            "the run diverged from its journal: it now invokes `{action}`"
         )),
     }
 }

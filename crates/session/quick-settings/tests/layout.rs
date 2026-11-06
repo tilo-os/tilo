@@ -369,7 +369,11 @@ fn what_plays_is_steered_from_the_panel_through_its_effects() {
         "two players to choose from"
     );
     assert!(has(&mut app, "qs-now-playing-output"));
-    for name in ["transport.play", "transport.next", "transport.previous"] {
+    for name in [
+        "qs-now-playing-toggle",
+        "qs-now-playing-next",
+        "qs-now-playing-previous",
+    ] {
         click(&mut app, name);
     }
     assert_eq!(
@@ -379,6 +383,104 @@ fn what_plays_is_steered_from_the_panel_through_its_effects() {
             QsEffect::NextTrack,
             QsEffect::PreviousTrack,
         ]
+    );
+}
+
+/// One player and one place to hear it leave nothing to choose, so the row
+/// asks nothing: the song's own name is the way back to the player.
+#[test]
+fn one_player_and_one_output_leave_no_picker_and_the_name_opens_the_app() {
+    let _settled = ui::motion::testing::settled();
+    let (mut app, host) = hosted("now-playing");
+    host.update(|state| {
+        let playing = state
+            .now_playing
+            .as_mut()
+            .expect("the fixture plays a song");
+        playing.players.retain(|player| player.active);
+        playing.outputs.retain(|output| output.current);
+    });
+    app.settle();
+    for picker in [
+        "qs-now-playing-player",
+        "qs-now-playing-output",
+        "qs-now-playing-source",
+    ] {
+        assert!(
+            !has(&mut app, picker),
+            "the row asks nothing it cannot choose: {picker} stands"
+        );
+    }
+    click(&mut app, "qs-now-playing-open");
+    assert_eq!(
+        host.ran(),
+        [QsEffect::OpenPlaying {
+            app: "so.tilo.music".into()
+        }],
+        "the song's name opens the app that plays it"
+    );
+}
+
+/// The song stands in the panel as a row a person reads: the cover it came
+/// with at the leading edge, the song and who it is by beside it, and the
+/// transport named by what each button does. A reading that lands while the
+/// panel is open is what the row shows next.
+#[test]
+fn the_song_stands_in_the_row_with_its_cover_and_named_transport() {
+    let _settled = ui::motion::testing::settled();
+    let (mut app, host) = hosted("now-playing");
+    assert!(
+        has(&mut app, "qs-now-playing"),
+        "the song stands in the panel"
+    );
+    let cover = target(&mut app, "qs-now-playing-cover");
+    assert!(
+        (cover.width() - 40.0).abs() < 0.5 && (cover.height() - 40.0).abs() < 0.5,
+        "the cover takes its square at the row's leading edge: {cover:?}"
+    );
+    let name = target(&mut app, "qs-now-playing-open");
+    assert!(
+        name.x0 > cover.x0 + cover.width() / 2.0 && name.y0 < cover.y1 && name.y1 > cover.y0,
+        "the song's name stands in the row beside the cover: {name:?} against {cover:?}"
+    );
+    let said_by = |app: &mut HeadlessApp<QuickSettingsApp>| {
+        ui::headless::test_support::semantic_nodes(app.harness())
+            .into_iter()
+            .filter_map(|(_, node)| node.name)
+            .collect::<Vec<_>>()
+    };
+    let names = said_by(&mut app);
+    for said in [
+        "Clair de lune",
+        "Claude Debussy",
+        "Pause",
+        "Previous song",
+        "Next song",
+    ] {
+        assert!(
+            names.iter().any(|name| name == said),
+            "the row says {said:?}: {names:?}"
+        );
+    }
+
+    // The player pauses while the panel stands: the middle control now says
+    // what a press would do.
+    host.update(|state| {
+        state
+            .now_playing
+            .as_mut()
+            .expect("the fixture plays a song")
+            .playing = false;
+    });
+    app.settle();
+    let names = said_by(&mut app);
+    assert!(
+        names.iter().any(|name| name == "Play"),
+        "a paused song's middle control offers to play: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|name| name == "Pause"),
+        "and no longer offers to pause: {names:?}"
     );
 }
 

@@ -43,7 +43,7 @@ view conversation(r: Run) {
 /// to the agent, which it takes in as it goes. `session.converse` is the same action the canvas
 /// entry presses, so a person who types here types what the agent would.
 view conversation_entry(r: Run) {
-    lens line: Text = ""
+    state line: Text = ""
     ui.TextInput(value: line, placeholder: "Type a program, or say what to do") {
         on submit: session.conversation(line: line, run: r.key).then(set(line, ""))
     }

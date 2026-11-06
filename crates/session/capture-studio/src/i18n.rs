@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crate::link::{Refusal, Sent};
+use crate::link::{Failure, Refusal, Sent};
 
 ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 
@@ -30,6 +30,48 @@ pub(crate) fn sent(sent: &Sent) -> String {
         ),
         Sent::Refused { why, .. } | Sent::NotSaved { why } => refusal(why),
         Sent::Saved { name } => t_args("screenshot-send-saved", &[("name", name.as_str().into())]),
+    }
+}
+
+/// Why a capture the person took did not come out as they asked.
+pub(crate) fn failed(failure: &Failure) -> String {
+    match failure {
+        Failure::RecordingNotStarted(why) => t_args(
+            "capture-failed-recording-not-started",
+            &[("why", why.as_str().into())],
+        ),
+        Failure::RecordingStopped(why) => t_args(
+            "capture-failed-recording-stopped",
+            &[("why", why.as_str().into())],
+        ),
+        Failure::ReplayNotStarted(why) => t_args(
+            "capture-failed-replay-not-started",
+            &[("why", why.as_str().into())],
+        ),
+        Failure::ReplayStopped(why) => t_args(
+            "capture-failed-replay-stopped",
+            &[("why", why.as_str().into())],
+        ),
+        Failure::SoundLost => t("capture-failed-sound-lost"),
+        Failure::NotTaken(why) => {
+            t_args("capture-failed-not-taken", &[("why", why.as_str().into())])
+        }
+        Failure::NotWritten(why) => t_args(
+            "capture-failed-not-written",
+            &[("why", why.as_str().into())],
+        ),
+        Failure::NotCopied(why) => {
+            t_args("capture-failed-not-copied", &[("why", why.as_str().into())])
+        }
+        Failure::NotRead(why) => t_args("capture-failed-not-read", &[("why", why.as_str().into())]),
+        Failure::ClipNotSaved(why) => t_args(
+            "capture-failed-clip-not-saved",
+            &[("why", why.as_str().into())],
+        ),
+        Failure::NotOpened { path, error } => t_args(
+            "capture-failed-not-opened",
+            &[("path", named(path).into()), ("why", error.as_str().into())],
+        ),
     }
 }
 
@@ -150,5 +192,58 @@ mod tests {
             "Every name in /var/workspace/Screenshots is taken"
         );
         assert_eq!(saving(), "Saving to this workspace's files…");
+    }
+
+    #[test]
+    fn a_capture_that_did_not_come_out_says_why() {
+        assert_eq!(
+            failed(&Failure::RecordingNotStarted(
+                "no disk space left".to_owned()
+            )),
+            "A recording was not started: no disk space left"
+        );
+        assert_eq!(
+            failed(&Failure::RecordingStopped("the encoder gave up".to_owned())),
+            "The recording stopped: the encoder gave up"
+        );
+        assert_eq!(
+            failed(&Failure::ReplayNotStarted("no sound device".to_owned())),
+            "The last half minute could not be kept: no sound device"
+        );
+        assert_eq!(
+            failed(&Failure::ReplayStopped("the buffer is gone".to_owned())),
+            "The last half minute is not kept any more: the buffer is gone"
+        );
+        assert_eq!(
+            failed(&Failure::SoundLost),
+            "The recording carries no more sound: its source stopped"
+        );
+        assert_eq!(
+            failed(&Failure::NotTaken("no window".to_owned())),
+            "A screenshot was not taken: no window"
+        );
+        assert_eq!(
+            failed(&Failure::NotWritten("no space left on device".to_owned())),
+            "A screenshot was not written: no space left on device"
+        );
+        assert_eq!(
+            failed(&Failure::NotCopied("no clipboard".to_owned())),
+            "A screenshot was saved, but not copied: no clipboard"
+        );
+        assert_eq!(
+            failed(&Failure::NotRead("gone".to_owned())),
+            "A screenshot was not copied: gone"
+        );
+        assert_eq!(
+            failed(&Failure::ClipNotSaved("the worker stopped".to_owned())),
+            "A clip of what just happened was not saved: the worker stopped"
+        );
+        assert_eq!(
+            failed(&Failure::NotOpened {
+                path: "/home/me/Screenshot 1.png".into(),
+                error: "no app for it".to_owned()
+            }),
+            "/home/me/Screenshot 1.png could not be opened: no app for it"
+        );
     }
 }

@@ -11,10 +11,10 @@ use crate::core::{Core, ModelHost, OutsideSink};
 use crate::engine::EngineLimits;
 use crate::error::RuntimeError;
 use crate::exec::InvokeOutcome;
-use crate::flow::{FlowOutcome, Resolution};
 use crate::ids::{DocId, ModuleHash, PackageId, Principal, RunId};
 use crate::meta::Meta;
 use crate::project::{ProjectOptions, project};
+use crate::run::Resolution;
 use crate::settle::{AgentBlock, InvocationRecord};
 use crate::store::{ChangeNote, OutboxEntry, Store, StoreError, Version};
 use crate::value::{ActionRef, ResourceRef, Value};
@@ -84,7 +84,7 @@ impl OutsideSink for MemorySink {
     }
 }
 
-/// The tilolang runtime: loads packages and runs their actions, flows and views.
+/// The tilolang runtime: loads packages and runs their actions, programs and views.
 pub struct Runtime {
     pub(crate) core: Rc<Core>,
 }
@@ -183,7 +183,6 @@ impl Runtime {
             .iter()
             .map(|a| format!("a_{}", a.id))
             .chain(meta.views.iter().map(|v| format!("v_{}", v.id)))
-            .chain(meta.flows.iter().map(|f| format!("f_{}", f.id)))
             .chain(meta.fns.iter().map(|f| format!("n_{}", f.id)))
             .chain(
                 meta.at_event
@@ -526,7 +525,7 @@ impl Runtime {
         invoker: &Principal,
         action: &str,
         args: Vec<Value>,
-        suggestion: &crate::flow::Suggestion,
+        suggestion: &crate::run::Suggestion,
     ) -> Result<ResourceRef, RuntimeError> {
         let aref = ActionRef {
             action: action.to_owned(),
@@ -745,20 +744,6 @@ impl Runtime {
         tilolang::natural::dated(text, now, offset)
     }
 
-    /// Run a flow. It finishes, or suspends on a suggestion waiting for a decision.
-    ///
-    /// # Errors
-    ///
-    /// An unknown flow, arguments that do not fit, or a trap.
-    pub fn run_flow(
-        &self,
-        principal: &Principal,
-        flow: &str,
-        args: Vec<Value>,
-    ) -> Result<FlowOutcome, RuntimeError> {
-        self.core.start_flow(principal, flow, args, Vec::new())
-    }
-
     /// Answer the suggestion a run waits on and continue the run.
     ///
     /// # Errors
@@ -769,7 +754,7 @@ impl Runtime {
         run: &RunId,
         approver: &Principal,
         resolution: Resolution,
-    ) -> Result<FlowOutcome, RuntimeError> {
+    ) -> Result<crate::run::RunOutcome, RuntimeError> {
         self.core.resolve(run, approver, resolution)
     }
 
@@ -794,9 +779,9 @@ impl Runtime {
         )
     }
 
-    /// Open a view for `principal` in the window `window`: its `window` state is how their
-    /// window shows the resource and its `lens` state where they are in it, both that person's
-    /// own, so another person looking at the same window is not moved by either.
+    /// Open a view for `principal` in the window `window`: the state it declares is how their
+    /// window shows the resource and where they are in it, that person's own, so another person
+    /// looking at the same window is not moved by it.
     ///
     /// # Errors
     ///
@@ -1127,19 +1112,19 @@ impl Runtime {
         std::mem::take(&mut *self.core.seen_writes.borrow_mut())
     }
 
-    /// The window and lens state the person set in views since last asked, for the host to
+    /// The view state the person set in views since last asked, for the host to
     /// keep in their own record: one entry per slot, as it is now.
     pub fn take_view_writes(&self) -> Vec<(crate::view_state::StateKey, Value)> {
         self.core.view_states.borrow_mut().take_writes()
     }
 
-    /// Put back a slot of window or lens state the person's record keeps: what they picked
+    /// Put back a slot of view state the person's record keeps: what they picked
     /// here before, or on another device of theirs. A slot already holding it is left alone.
     pub fn set_view_state(&self, key: crate::view_state::StateKey, value: Value) -> bool {
         self.core.view_states.borrow_mut().restore(key, value)
     }
 
-    /// Stage the value the window state `state` of the app `app` starts from, before anyone
+    /// Stage the value the view state `state` of the app `app` starts from, before anyone
     /// picks there: `text` names the value as the app's own code writes it (`Task.today`,
     /// `Side.right`), read against the state's declared type. A window that reads the state
     /// shows it until its person picks there, and it is no one's change to keep.
@@ -1148,7 +1133,7 @@ impl Runtime {
     ///
     /// A message when the app declares no such state, or the state takes no such value.
     pub fn stage_view_state(&self, app: &str, state: &str, text: &str) -> Result<(), String> {
-        let (id, layer, value) = {
+        let (id, value) = {
             let reg = self.core.registry.borrow();
             let pkg = reg
                 .packages()
@@ -1156,19 +1141,10 @@ impl Runtime {
                 .find(|pkg| pkg.meta.app == app)
                 .ok_or_else(|| format!("no loaded package is the app `{app}`"))?;
             let declared = crate::staging::declared_state(&pkg.meta, app, state)?;
-            let layer = match declared.layer.as_str() {
-                "window" => crate::view_state::StateLayer::Window,
-                "lens" => crate::view_state::StateLayer::Lens,
-                other => {
-                    return Err(format!(
-                        "`{other}` is no layer of view state: a state is a `window` or a `lens`"
-                    ));
-                }
-            };
             let value = crate::staging::state_value(&reg, app, &pkg.meta, &declared.ty, text)?;
-            (declared.id, layer, value)
+            (declared.id, value)
         };
-        self.core.view_states.borrow_mut().seed(layer, &id, value);
+        self.core.view_states.borrow_mut().seed(&id, value);
         Ok(())
     }
 

@@ -50,7 +50,7 @@ pub struct Module {
 
 /// What a call answered, between the module's `answer` import and the host reading it.
 enum Answered {
-    Success(Answer),
+    Success(Box<Answer>),
     Refused(Refusal),
 }
 
@@ -125,7 +125,7 @@ impl Module {
         let published = state.borrow_mut().answered.take();
         let logged = state.borrow().logged.join("; ");
         match published {
-            Some(Answered::Success(answer)) => Ok(answer),
+            Some(Answered::Success(answer)) => Ok(*answer),
             Some(Answered::Refused(refused)) => Err(ModuleError::Refused(refused.message)),
             // The module published neither an answer nor a refusal.
             None => match outcome {
@@ -196,7 +196,7 @@ impl WasmHost for Call {
                         self.app
                     ))
                 })?;
-                self.state.borrow_mut().answered = Some(Answered::Success(answer));
+                self.state.borrow_mut().answered = Some(Answered::Success(Box::new(answer)));
                 Ok(GuestAnswer::Nothing)
             }
             "fail" => {
@@ -232,7 +232,10 @@ fn answer_bytes(args: &[Wasm], bytes: &[u8]) -> Result<GuestAnswer, HostFail> {
     if bytes.len() > capacity {
         let need = i32::try_from(bytes.len())
             .map_err(|_| HostFail::Trap("the request is larger than a buffer can be".into()))?;
-        return Ok(GuestAnswer::Value(Wasm::I32(-need)));
+        return Ok(GuestAnswer::Value(Wasm::I32(
+            need.checked_neg()
+                .ok_or_else(|| HostFail::Trap("a buffer needs more than it can say".into()))?,
+        )));
     }
     Ok(GuestAnswer::Bytes {
         offset: u32::try_from(pointer).map_err(|_| HostFail::Trap("a bad pointer".into()))?,

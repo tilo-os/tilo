@@ -10,7 +10,7 @@
 //! resource it is invoked on, and the change the module made is checked here before it is
 //! adopted.
 
-use std::sync::Arc;
+use std::rc::Rc;
 
 use serde_json::{Map, Value as Json};
 use tilo_actions::{
@@ -105,7 +105,7 @@ pub struct Record {
     /// The app whose module runs the model.
     app: String,
     /// The module the model runs in.
-    module: Arc<Module>,
+    module: Rc<Module>,
     /// The document, the one copy of what the record holds.
     doc: tilo_resource::Doc,
     /// The tree the module last answered, built into what this host offers, and the heads it
@@ -145,7 +145,7 @@ impl Record {
         kind: &str,
         address: &str,
         doc: tilo_resource::Doc,
-        module: Arc<Module>,
+        module: Rc<Module>,
     ) -> Result<Opened, RecordError> {
         let mut record = Self::holding(app, kind, address, doc, module)?;
         record.load()?;
@@ -169,7 +169,7 @@ impl Record {
         address: &str,
         workspace: &str,
         record: &str,
-        module: Arc<Module>,
+        module: Rc<Module>,
     ) -> Result<Opened, RecordError> {
         let mut kept =
             crate::store::Kept::open(app, workspace, record).map_err(RecordError::Store)?;
@@ -192,7 +192,7 @@ impl Record {
         kind: &str,
         address: &str,
         doc: tilo_resource::Doc,
-        module: Arc<Module>,
+        module: Rc<Module>,
     ) -> Result<Self, RecordError> {
         if !module.serves(kind) {
             return Err(RecordError::NoModel(kind.to_owned()));
@@ -212,7 +212,7 @@ impl Record {
 
     /// Ask the module to open the record, and adopt its document.
     fn load(&mut self) -> Result<(), RecordError> {
-        let answer = self.ask(self.request(Op::Open, None))?;
+        let answer = self.ask(&self.request(Op::Open, None))?;
         let reading = answer.reading.clone();
         self.adopt(&answer, None)?;
         self.offers_of(answer)?;
@@ -279,7 +279,7 @@ impl Record {
         {
             return Ok(spec.clone());
         }
-        let answer = self.ask(self.request(Op::Open, None))?;
+        let answer = self.ask(&self.request(Op::Open, None))?;
         let spec = self.offers_of(answer)?;
         Ok(spec)
     }
@@ -320,7 +320,7 @@ impl Record {
 
     /// The reading of `item` of this record, or the record itself.
     fn reading_of(&self, item: Option<&str>) -> Result<Json, RecordError> {
-        let answer = self.ask(self.request(Op::Read, item))?;
+        let answer = self.ask(&self.request(Op::Read, item))?;
         answer
             .reading
             .ok_or_else(|| RecordError::Module("the module answered no reading".to_owned()))
@@ -375,7 +375,7 @@ impl Record {
             // The one clock: the host reads it here and the module reads it from the request.
             now_ms: tilo_resource::origin_now_ms(),
         };
-        let answer = self.ask(request)?;
+        let answer = self.ask(&request)?;
         self.adopt(&answer, Some(invoker))?;
         self.offers_of(answer)?;
         // What it made is published before it is answered, so a view's next reading names it.
@@ -387,9 +387,9 @@ impl Record {
     }
 
     /// Ask the module `request`, as JSON: a refusal is the model's own words.
-    fn ask(&self, request: Request) -> Result<Answer, RecordError> {
+    fn ask(&self, request: &Request) -> Result<Answer, RecordError> {
         self.module
-            .run(&self.kind, &request)
+            .run(&self.kind, request)
             .map_err(|error| RecordError::Module(error.to_string()))
     }
 

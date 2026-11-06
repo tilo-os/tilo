@@ -173,9 +173,10 @@ fn a_scenario_records_each_block_as_its_person_at_its_time() {
     assert_eq!(
         described,
         [
-            // Seed data is the scenario's doing, so history names it as the action.
-            "scenario:Mia 2026-06-29T07:02:00Z scenario:Mia 2026-06-29T07:02:00Z a morning 1",
-            "scenario:Leo 2026-06-29T07:20:00Z scenario:Leo 2026-06-29T07:20:00Z a morning 1",
+            // Each row names the action the call ran, as every change does, and the person and
+            // moment the scenario's `invoke` gave it.
+            "scenario:Mia 2026-06-29T07:02:00Z scenario:Mia 2026-06-29T07:02:00Z Say 1",
+            "scenario:Leo 2026-06-29T07:20:00Z scenario:Leo 2026-06-29T07:20:00Z Say 1",
         ]
     );
     // The window shows them as the log has them.
@@ -315,11 +316,19 @@ action retitle(t: Topic, title: Text) {
 row view topic_row for Topic
 
 view board(b: Topics) {
-    std.list(b, b.topics.sort_by(t -> updated(t), desc))
+    std.list(b.topics.sort_by(t -> updated(t), desc)) { (t, at) ->
+        ui.ListItem(item: t, presence: at) {
+            topic_row(t)
+        }
+    }
 }
 
 view lately(b: Topics) {
-    std.list(b, b.topics.sort_by(t -> changed(t, .title)?.at, desc))
+    std.list(b.topics.sort_by(t -> changed(t, .title)?.at, desc)) { (t, at) ->
+        ui.ListItem(item: t, presence: at) {
+            topic_row(t)
+        }
+    }
 }
 
 view topic_row(t: Topic) {

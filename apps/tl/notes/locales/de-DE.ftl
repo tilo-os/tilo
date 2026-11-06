@@ -52,6 +52,7 @@ d-spdco6z2 = Erstellt am
 d-vs3pg7vu = Titel
 
 d-akcqjax3 = Notizbuch
+    .w-no-notes-yet = Noch keine Notizen
 
 d-xqxkoqbj = Notizzeile
     .w-untitled = Ohne Titel

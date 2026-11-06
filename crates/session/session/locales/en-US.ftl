@@ -104,6 +104,44 @@ agent-bindings-unreadable-body = This computer could not read which agents you l
 refused-write-app = Changes
 refused-write-title = { $device } will not take your change
 refused-write-body = Your change stays on the devices that took it: { $reason }.
+
+## Why a device or a workspace did not take a change, as the rest of the
+## sentence before it.
+refusal-reason-revoked = the device's access was revoked
+refusal-reason-expired = the device's certificate expired
+refusal-reason-not-certified = the device is not a member here
+refusal-reason-forbidden = it may not change this
+refusal-reason-malformed = the change could not be read
+refusal-reason-waiting = it waits for earlier changes
+refusal-reason-conflict = another change holds its place
+refusal-reason-full = there is no room left there
+refusal-reason-other = the reason is not known
+
+# What a person changed on a workspace's shared desk did not arrive there: the
+# change stays on this device.
+desk-not-shared-app = Shared desk
+desk-not-shared-title = { $workspace } did not take your window arrangement
+desk-not-shared-body = It stays on this device: { $reason }.
+
+# A collaborator's device speaks another Tilo protocol version: the two work
+# together again once one of them updates.
+version-mismatch-updating-title = Updating Tilo to keep working with { $device }
+version-mismatch-updating-body = { $device } runs a newer Tilo. This device fetches the newest system and restarts into it when nobody is working.
+version-mismatch-needs-update-title = { $device } needs to update to keep working together
+version-mismatch-needs-update-body = { $device } runs an older Tilo than this device. Update Tilo there and the two work together again.
+
+# What a person chose in search, on a card or on a notification did not
+# happen, and the row they chose it on is gone: the notice says what they
+# asked for and why it did not happen.
+action-failed-app = Tilo
+action-failed-title = { $what } could not be done
+action-failed-body = { $reason }
+action-failed-that-row = That search row
+action-failed-that-notification = What that notification opens
+action-failed-that-app = That app
+action-failed-no-workspace = This session has no workspace open
+action-failed-that-settings = Settings
+action-failed-that-change = That change
 downloaded-apps-app-name = Downloaded apps
 downloaded-apps-unreadable-title = Your downloaded apps could not be read
 downloaded-apps-unreadable-body = This computer could not read the list of programs you added to your apps, so they are not listed now. Nothing was removed: they are still on this computer.
@@ -307,3 +345,9 @@ window-move-bringing-edits = The window comes back with what was written after i
 ## A reminder a workspace holds for the person, shown by the session itself.
 reminder-open = Open
 reminder-late = Late
+
+## The person's own card in the top bar: what it offers about who they are.
+profile-action-identities = Your identities
+profile-action-backup = Back up your identity
+profile-action-pair-device = Pair another device
+profile-name-not-saved = Your name was not saved

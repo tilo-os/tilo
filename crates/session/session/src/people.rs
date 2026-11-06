@@ -33,7 +33,9 @@ use tilo_desktop::collaborators::{
     collaborator_roster_rows_named,
 };
 use tilo_desktop::launchpad::LaunchpadAppAction;
-use tilo_desktop::profile_card::{OtherPerson, ProfileCard, ProfileChoice, ProfileModel};
+use tilo_desktop::profile_card::{
+    OtherPerson, ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
+};
 
 /// How long after the person pressed elsewhere a press on the faces does not
 /// reopen the roster: their press closed it.
@@ -48,7 +50,54 @@ pub(crate) enum PeopleAsk {
     /// its composer ready: the app is started when it is not up, and the
     /// pair's record is shown either way.
     Message { key: String },
+    /// The name the person gave themselves on their own card.
+    Rename(String),
+    /// What they say they are doing, in their own words.
+    Status(String),
+    /// How available they say they are.
+    Availability(ui::Availability),
+    /// The presence colour they chose, by its id.
+    Colour(String),
+    /// Open the Settings page a card action names, such as their identities
+    /// or an identity backup.
+    Settings(String),
 }
+
+/// The colour this person wears here: the one they chose in their own
+/// settings, else the one their identity derives, so their face is the same
+/// on every surface and on every device that paints them.
+pub(crate) fn own_rgb(identity: &str) -> (u8, u8, u8) {
+    let chosen = settings_store::identity::COLOUR
+        .get()
+        .as_deref()
+        .and_then(ui::tokens::PresenceHue::from_id);
+    let hue = chosen.unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(identity));
+    ui::presence::identity_rgb(hue)
+}
+
+/// This person as their own surfaces show them: the name they go by here, and
+/// the identity their face's letters and colour come from — the root key they
+/// are here by, else the id this device sits as. The bar's own avatar and
+/// their own card both read it here, so one person wears one initial and one
+/// colour wherever they see themselves.
+pub(crate) fn own_face(own: &crate::sync::OwnPresence, seated: &str) -> (String, String) {
+    let identity = own
+        .user
+        .as_deref()
+        .map(str::trim)
+        .filter(|user| !user.is_empty())
+        .unwrap_or(seated)
+        .to_owned();
+    let name = crate::directory::desk_person_name(
+        ui::local_identity::load().map(|identity| identity.display_name),
+        &own.label,
+    );
+    (name, identity)
+}
+
+/// The card of this person themselves, where the roster lists someone else's:
+/// marked in [`Shown::card_open`] while it stands there.
+const SELF_CARD: &str = "";
 
 /// What the panel shows and where it stands, kept at rest between frames.
 #[derive(Default)]
@@ -60,6 +109,12 @@ struct Shown {
     /// Whose card the next frame opens, as the bar's face or the session
     /// asked: read once the roster has drawn the row it opens under.
     card_of: Option<String>,
+    /// This person's own card is asked for: the next frame opens it in the
+    /// roster's place, from the model the session builds of them.
+    own_card: bool,
+    /// The card that stood there goes, as the person asked for the roster
+    /// instead: the next frame closes it.
+    close_card: bool,
     /// Whose card stands in the roster's place, as the panel last drew it:
     /// while one does, there are no rows to read.
     card_open: Option<String>,
@@ -100,12 +155,36 @@ impl People {
         if !dismissed {
             let open = !self.open.get();
             self.open.set(open);
-            if !open {
-                self.shown.borrow_mut().expanded = None;
-                self.shown.borrow_mut().card_of = None;
-                self.shown.borrow_mut().card_open = None;
+            let mut shown = self.shown.borrow_mut();
+            if open {
+                // The roster comes in place of any card that stood there.
+                shown.own_card = false;
+                shown.card_of = None;
+                shown.close_card = true;
+            } else {
+                shown.expanded = None;
+                shown.card_of = None;
+                shown.own_card = false;
+                shown.card_open = None;
             }
         }
+        self.redraw();
+    }
+
+    /// Open this person's own card, or close it again: the bar's own avatar
+    /// opens who they are here, in the same card as anyone else's.
+    pub(crate) fn show_self(&self) {
+        if self.open.get() && self.shown.borrow().card_open.as_deref() == Some(SELF_CARD) {
+            self.dismiss();
+            return;
+        }
+        {
+            let mut shown = self.shown.borrow_mut();
+            shown.own_card = true;
+            shown.card_of = None;
+        }
+        self.open.set(true);
+        self.dismissed.set(None);
         self.redraw();
     }
 
@@ -115,7 +194,11 @@ impl People {
     pub(crate) fn show_person(&self, person: &str) {
         // A row this roster has not read yet still opens: the next frame
         // reads it and the card comes up under it.
-        self.shown.borrow_mut().card_of = Some(person.to_owned());
+        {
+            let mut shown = self.shown.borrow_mut();
+            shown.own_card = false;
+            shown.card_of = Some(person.to_owned());
+        }
         self.open.set(true);
         self.dismissed.set(None);
         self.redraw();
@@ -130,9 +213,11 @@ impl People {
     fn dismiss(&self) {
         let was_open = self.open.replace(false);
         if was_open {
-            self.shown.borrow_mut().expanded = None;
-            self.shown.borrow_mut().card_of = None;
-            self.shown.borrow_mut().card_open = None;
+            let mut shown = self.shown.borrow_mut();
+            shown.expanded = None;
+            shown.card_of = None;
+            shown.own_card = false;
+            shown.card_open = None;
             self.dismissed.set(Some(std::time::Instant::now()));
             self.redraw();
         }
@@ -318,6 +403,7 @@ pub(crate) fn mount(
         open: Rc::clone(&open),
         handle: handle.clone(),
         drawn: Cell::new(0),
+        seated: options.person.clone(),
         sync,
         intents,
         invitable,
@@ -485,6 +571,9 @@ struct Panel {
     /// moving, arriving or leaving moves it, and a desk where nothing moved
     /// asks for no frame.
     drawn: Cell<u64>,
+    /// The id this device sits as, which the person's own face falls back to
+    /// before their presence names the root key they are here by.
+    seated: String,
     sync: Option<Rc<crate::sync::Client>>,
     /// Where the bar's intents go: inviting from the roster's footer is the
     /// bar's own invite, raised here.
@@ -508,6 +597,7 @@ impl Panel {
             let mut shown = self.shown.borrow_mut();
             shown.expanded = None;
             shown.card_of = None;
+            shown.own_card = false;
             shown.card_open = None;
         }
         self.profile.close();
@@ -528,14 +618,31 @@ impl Panel {
         presence: &ui::presence::PresenceCtx,
         shown: &mut Shown,
     ) -> bool {
-        if let Some(who) = shown.card_of.take()
-            && let Some(model) = self.person_model(&who, &shown.rows)
-        {
+        if shown.close_card {
+            shown.close_card = false;
             self.profile.close();
             let _ = self.profile.take_choice();
-            self.profile
-                .toggle(&model, roster_place(shown.area, theme), shown.area);
-            shown.card_open = self.profile.is_open().then_some(who);
+            shown.card_open = None;
+        }
+        let asked = if shown.own_card {
+            shown.own_card = false;
+            Some(SELF_CARD.to_owned())
+        } else {
+            shown.card_of.take()
+        };
+        if let Some(who) = asked {
+            let model = if who == SELF_CARD {
+                Some(self.own_model())
+            } else {
+                self.person_model(&who, &shown.rows)
+            };
+            if let Some(model) = model {
+                self.profile.close();
+                let _ = self.profile.take_choice();
+                self.profile
+                    .toggle(&model, roster_place(shown.area, theme), shown.area);
+                shown.card_open = self.profile.is_open().then_some(who);
+            }
         }
         if self.profile.is_open() {
             self.profile
@@ -592,6 +699,78 @@ impl Panel {
         })
     }
 
+    /// This person's own card: who they are here, as the bar names them, what
+    /// they say of themselves, the devices they are here on, and what they
+    /// can do about their identity. The same card as anyone else's, with the
+    /// rows only their own host offers.
+    fn own_model(&self) -> ProfileModel {
+        let own = self
+            .sync
+            .as_ref()
+            .map_or_else(crate::sync::OwnPresence::default, |sync| sync.own());
+        let (name, identity) = own_face(&own, &self.seated);
+        let devices = self.sync.as_ref().map_or_else(Vec::new, |sync| {
+            let here = sync.here();
+            let here = here.borrow();
+            here.devices_of(&sync.publisher().to_string())
+        });
+        // The identity's key is the person's on every device: the card shows
+        // it short, with Copy, and the roster looks every face up by it.
+        let key = own.user.clone();
+        let (red, green, blue) = own_rgb(&identity);
+        ProfileModel {
+            name,
+            identity,
+            colour: Some(Color::from_rgb8(red, green, blue)),
+            colour_id: settings_store::identity::COLOUR.get(),
+            can_rename: true,
+            ask_name: own.label.trim().is_empty(),
+            actions: Self::own_actions(),
+            availability: own.availability,
+            status: own.status.clone().unwrap_or_default(),
+            offers_presence: true,
+            key,
+            devices,
+            ..ProfileModel::default()
+        }
+    }
+
+    /// What the session offers this person about who they are: the pages
+    /// where their identities are kept and backed up, and where another of
+    /// their devices is paired.
+    fn own_actions() -> Vec<ProfileAction> {
+        vec![
+            ProfileAction {
+                id: "identities".to_owned(),
+                title: crate::i18n::t("profile-action-identities"),
+                group: ProfileGroup::Identity,
+                icon: ui::icons::Icon::Fingerprint,
+            },
+            ProfileAction {
+                id: "identity-backup".to_owned(),
+                title: crate::i18n::t("profile-action-backup"),
+                group: ProfileGroup::Identity,
+                icon: ui::icons::Icon::Download,
+            },
+            ProfileAction {
+                id: "pair-device".to_owned(),
+                title: crate::i18n::t("profile-action-pair-device"),
+                group: ProfileGroup::Devices,
+                icon: ui::icons::Icon::MonitorSmartphone,
+            },
+        ]
+    }
+
+    /// The Settings page an own-card action names.
+    fn own_settings_link(id: &str) -> Option<&'static str> {
+        match id {
+            "identities" => Some("settings://users"),
+            "identity-backup" => Some("settings://about"),
+            "pair-device" => Some("settings://devices_sync"),
+            _ => None,
+        }
+    }
+
     /// Whether this device has the app that holds a person's conversations.
     fn chat_installed() -> bool {
         tilo_installed_apps::read_one_from_env(&LaunchpadAppAction::message_person("").app_id)
@@ -613,18 +792,37 @@ impl Panel {
                 ProfileChoice::Message(key) => {
                     self.asks.borrow_mut().push(PeopleAsk::Message { key });
                 }
-                // The card of someone else offers nothing a session must
-                // carry out: their own card is the bar's, on this person.
-                ProfileChoice::Rename(_)
-                | ProfileChoice::Action(_)
-                | ProfileChoice::Link(_)
+                // The rows of this person's own card: the session keeps
+                // their name, what they say of themselves and how available
+                // they are, and opens the pages their actions name. Nothing
+                // here reaches anyone else's card.
+                ProfileChoice::Rename(name) => {
+                    self.asks.borrow_mut().push(PeopleAsk::Rename(name));
+                }
+                ProfileChoice::Status(status) => {
+                    self.asks.borrow_mut().push(PeopleAsk::Status(status));
+                }
+                ProfileChoice::Availability(chosen) => {
+                    self.asks.borrow_mut().push(PeopleAsk::Availability(chosen));
+                }
+                ProfileChoice::Colour(id) => {
+                    self.asks.borrow_mut().push(PeopleAsk::Colour(id));
+                }
+                ProfileChoice::Action(id) => {
+                    if let Some(link) = Self::own_settings_link(&id) {
+                        self.asks
+                            .borrow_mut()
+                            .push(PeopleAsk::Settings(link.to_owned()));
+                    }
+                }
+                // Nobody else's card asks these of this session, and this
+                // person's own keeps none of them yet: what people here see
+                // is the workspace's own, and the desktop's hints its own.
+                ProfileChoice::Link(_)
                 | ProfileChoice::Unlink(_)
                 | ProfileChoice::Accept(_)
                 | ProfileChoice::Decline(_)
-                | ProfileChoice::Availability(_)
-                | ProfileChoice::Status(_)
                 | ProfileChoice::Sharing(_)
-                | ProfileChoice::Colour(_)
                 | ProfileChoice::Visibility(_)
                 | ProfileChoice::ControlHints(_) => {}
             }
@@ -721,7 +919,7 @@ impl Panel {
     ) {
         // The card is the roster's detail: opened on one of its rows, it
         // stands where the roster would, and the rows wait behind it.
-        let card_stands = if shown.card_of.is_some() || self.profile.is_open() {
+        let card_stands = if shown.card_of.is_some() || shown.own_card || self.profile.is_open() {
             self.draw_card(scene, transform, text, theme, presence, shown)
         } else {
             false

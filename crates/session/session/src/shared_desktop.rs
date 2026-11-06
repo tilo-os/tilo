@@ -71,8 +71,12 @@ pub(crate) struct SharedDesktops {
     /// device changed on the desk itself moves nothing the engine published,
     /// and is written back on the pass that sees it.
     seen: Cell<Option<(u64, u64)>>,
-    /// A failure to read or write a record is said once, not on every frame.
-    warned: Cell<bool>,
+    /// A failure to read or write a record that the person has not heard yet:
+    /// the next look at the desk says it, once per reason, not on every frame.
+    refused: RefCell<Option<(WorkspaceId, String)>>,
+    /// The last failure the person heard: the same one again is not said
+    /// twice.
+    told: RefCell<Option<String>>,
 }
 
 impl SharedDesktops {
@@ -383,12 +387,21 @@ impl SharedDesktops {
         }
     }
 
-    /// Say why a workspace's shared desktop was not kept or published: once
-    /// per session, not on every frame.
+    /// Say why a workspace's shared desktop was not kept or published, for the
+    /// caller to tell the person: once per reason, not on every frame.
     fn say(&self, error: &str, what: &str, room: WorkspaceId) {
-        if !self.warned.replace(true) {
-            tracing::warn!(%error, %room, "{what}");
+        tracing::warn!(%error, %room, "{what}");
+        if self.told.borrow().as_deref() != Some(error) {
+            *self.refused.borrow_mut() = Some((room, error.to_owned()));
         }
+    }
+
+    /// The refusal the person has not heard yet, once: why what they changed
+    /// on a workspace's shared desk did not reach the workspace.
+    pub(crate) fn take_refusal(&self) -> Option<(WorkspaceId, String)> {
+        let (room, refused) = self.refused.borrow_mut().take()?;
+        *self.told.borrow_mut() = Some(refused.clone());
+        Some((room, refused))
     }
 
     /// The record this device makes its write on: the one it last wrote and

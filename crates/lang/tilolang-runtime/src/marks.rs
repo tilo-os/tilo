@@ -43,8 +43,11 @@ const VIRTUAL_LIST: &str = "ui.VirtualList";
 /// The node kind of a list row.
 const LIST_ROW: &str = "ui.ListRow";
 
-/// The pseudo-field a window's mark reads of its document: every version of every resource in
-/// it, so the count moves when any of them changes.
+/// The pseudo-field a mark reads versions through: of a resource, every version of it, and of
+/// a document, every version of every resource in it. A mark reads what a step made, not only
+/// the values the step wrote, so a step that makes a version of a resource reaches it even when
+/// the value reads as the one already there, and the window's count moves when any of its
+/// document's resources changes.
 pub const DOC_VERSIONS: &str = "$versions";
 
 impl Core {
@@ -160,9 +163,7 @@ impl Core {
             }
             self.note_seen_reads(viewer, &resource, acc);
             let mark = self.seen_mark(&viewer.0, &resource);
-            let mark_others = self.marks_others(&coll.item);
-            let unseen =
-                crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs, mark_others);
+            let unseen = crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs);
             if unseen.is_empty() {
                 continue;
             }
@@ -206,6 +207,9 @@ impl Core {
     ) -> Result<Vec<Version>, RuntimeError> {
         let id = at.id_string();
         self.note_seen_reads(viewer, &id, acc);
+        // A step that makes a version of it reaches the mark even when the value it writes
+        // reads as the one already there ([`DOC_VERSIONS`]).
+        acc.reads.push((id.clone(), DOC_VERSIONS.to_owned()));
         // Any field of it changing is a new version. A resource of no type the runtime knows
         // (one removed) is read as its versions alone.
         if let Ok((_, info)) = self.type_of_ref(&at.ty) {
@@ -379,11 +383,8 @@ impl Core {
             self.note_seen_reads(viewer, &resource, acc);
             let mark = self.seen_mark(&viewer.0, &resource);
             // One per resource: its newest unseen change.
-            // Every version within `at` is of one of its resources; a mark asks the type of
-            // the first, the same for them all in a window of the item.
-            let mark_others = self.marks_others(&at.ty);
             if let Some(newest) =
-                crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs, mark_others).pop()
+                crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs).pop()
             {
                 // A change a record made from `resource` stands under both, as that record's
                 // own change and as a change to what it was made from: the window counts it

@@ -82,10 +82,44 @@ fn listed(nb: Notebook, order: NoteOrder) -> List<Note> {
 }
 
 /// The notebook's window: its notes, each opening in a window of its own, in the order the
-/// person looking chose.
+/// person looking chose, under the place they chose.
 view notebook(nb: Notebook) {
-    window order: NoteOrder = .created
-    std.list(nb, listed(nb, order), sort: order, empty: "No notes yet")
+    state query: Text = ""
+    state order: NoteOrder = .created
+    let places = [Note.pinned]
+    let everything = phrase("tilolang-all", kind: meta(Note).plural)
+    let title = places.find(f -> f.query == query)?.label ?? everything
+    let shown = listed(nb, order).matching(query)
+    ui.NavShell(
+        content_kind: .document,
+        sidebar_title: .some(meta(nb).title),
+        overview_title: .some(title),
+        overview_count: .some(shown.len()),
+    ) {
+        sidebar: {
+            std.places(query, places, everything, icon: meta(Note).icon)
+        }
+        overview_actions: {
+            std.header(sort: order)
+        }
+        overview: {
+            if shown.is_empty() {
+                ui.EmptyState("No notes yet", icon: meta(Note).icon)
+            } else {
+                std.list(shown) { (n, at) ->
+                    ui.ListItem(item: n, presence: at) {
+                        note_row(n)
+                    }
+                }
+            }
+        }
+        content: {
+            ui.EmptyState(
+                phrase("tilolang-none-selected", kind: meta(Note).noun),
+                icon: meta(Note).icon,
+            )
+        }
+    }
 }
 
 /// One note in a list: its title, the start of its body, and a pin when it is pinned.

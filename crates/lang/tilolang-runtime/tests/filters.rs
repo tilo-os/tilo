@@ -72,7 +72,7 @@ view titles(b: Board, q: Text) {
 }
 
 view sidebar(b: Board) {
-    window place: Filter<Task> = Task.inbox
+    state place: Filter<Task> = Task.inbox
     // The places whose badge says how many wait there, by key.
     let counted: List<Text> = ["inbox", "today", "done", "assigned_to_me"]
     ui.NavList(selected: place) {
@@ -400,7 +400,7 @@ view sidebar(b: Board) {
             .clone();
         view.fire(&item, "select").unwrap();
         view.poll_patches().unwrap();
-        // `Task.project(p)` asks the project's tasks, and the window state holds the value: the
+        // `Task.project(p)` asks the project's tasks, and the view state holds the value: the
         // list's chosen place is its query, which the platform writes from the value.
         assert_eq!(
             titles_of(view.tree()),

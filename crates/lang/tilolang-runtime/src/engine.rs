@@ -4,7 +4,7 @@
 //!   compiles into it, and a module is compiled once per process, cached by the content hash of
 //!   its bytes. Each runtime keeps its own instances (and so its own stores and limits).
 //! * Each module normally has one instance. A call that arrives while the module's
-//!   instance is already running (a flow in a module invoking an action of the same module)
+//!   instance is already running (an action in a module invoking an action of the same module)
 //!   gets a second instance from the same compiled module, which costs microseconds; guests
 //!   keep no state between calls, so instances are interchangeable.
 //! * Runaway code is stopped by fuel, a fixed budget per call. Memory growth beyond the
@@ -55,7 +55,7 @@ pub enum Wasm {
 pub enum HostFail {
     /// Trap the guest with this message.
     Trap(String),
-    /// Unwind the guest because a flow is waiting for a decision.
+    /// Unwind the guest because a run stopped at an action it invokes.
     Suspend,
 }
 
@@ -123,7 +123,7 @@ pub enum GuestAnswer {
 pub enum CallError {
     #[error("trap: {0}")]
     Trap(String),
-    #[error("the flow is suspended")]
+    #[error("the run is suspended")]
     Suspended,
     #[error("out of fuel: {0}")]
     OutOfFuel(String),
@@ -452,7 +452,7 @@ impl std::fmt::Display for Unwind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.0 {
             HostFail::Trap(message) => f.write_str(message),
-            HostFail::Suspend => f.write_str("flow suspended"),
+            HostFail::Suspend => f.write_str("run suspended"),
         }
     }
 }

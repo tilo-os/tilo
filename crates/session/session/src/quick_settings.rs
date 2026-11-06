@@ -334,6 +334,7 @@ pub(crate) fn open_settings(shared: &Shared, link: &str) {
         background: None,
     };
     if let Err(error) = shared.handle.dispatch(launch) {
-        tracing::warn!(%error, "open settings");
+        // The person asked for Settings and it did not open: they hear why.
+        shared.answer_failed(&crate::i18n::t("action-failed-that-settings"), &error);
     }
 }

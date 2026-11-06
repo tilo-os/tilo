@@ -1803,6 +1803,14 @@ fn workspace_settings_renames_the_workspace_through_its_action() {
             .map(|workspace| workspace.name.clone())
     });
     assert_eq!(name.as_deref(), Some("Garden"));
+    // The bar says the name the workspace has now: the person sees the
+    // rename where the next frame draws it.
+    session.step(Duration::from_millis(1)).unwrap();
+    let bar = session.accessible_labels().join("\n");
+    assert!(
+        bar.contains("Garden: workspaces, overview and strips"),
+        "the bar shows the name the workspace has now: {bar}"
+    );
 }
 
 /// Workspace settings shows the tab the person picked, and moves the
@@ -2267,6 +2275,9 @@ mod desk;
 #[path = "session/hung.rs"]
 mod hung;
 
+#[path = "session/now_playing.rs"]
+mod now_playing;
+
 #[path = "session/readout.rs"]
 mod readout;
 
@@ -2672,16 +2683,15 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
         .map(|(name, _)| name)
         .collect();
     assert_eq!(held.len(), 1, "one workspace is held: {held:?}");
-    let listed: Vec<(String, tilo_sheets::directory::ListingAction)> = seat
+    let listed: Vec<String> = seat
         .directory()
         .listings
         .iter()
-        .map(|listing| (listing.name.clone(), listing.action))
+        .map(|listing| listing.name.clone())
         .collect();
-    assert_eq!(
-        listed,
-        [(held[0].clone(), tilo_sheets::directory::ListingAction::Open)],
-        "the directory lists what this computer holds, ready to open"
+    assert!(
+        listed.is_empty(),
+        "the directory offers what this computer can join, not what it holds: {listed:?}"
     );
     seat.presentation().close();
     invoke(&mut session, CHROME_RESOURCE, "new-workspace");

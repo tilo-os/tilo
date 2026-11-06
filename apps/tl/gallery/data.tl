@@ -57,7 +57,7 @@ default view data for Data
 
 /// The data window: each data view as an app places it, over the window's collection.
 view data(d: Data) {
-    lens last: Text = ""
+    state last: Text = ""
     std.page(d) {
         ui.Section("Table") {
             ui.DataTable(name: .some("Files")) {

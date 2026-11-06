@@ -219,12 +219,12 @@ impl Checker<'_> {
     /// `try act(args)`: a `Result` of the action's result (`()` for an action without one) and
     /// the reason, as Text, when the invocation was denied, declined or failed.
     fn try_expr(&mut self, inner: &ast::Expr, span: Span) -> Ex {
-        if self.st.ctx != Ctx::Flow {
+        if !matches!(self.st.ctx, Ctx::Action | Ctx::Program) {
             let who = self.st.ctx.word();
             self.err(
                 "E044",
                 span,
-                format!("`try` invokes an action and only a flow may do that; {who} cannot"),
+                format!("`try` invokes an action and only an action may do that; {who} cannot"),
             );
             return Ex::error();
         }
@@ -251,19 +251,19 @@ impl Checker<'_> {
     }
 
     /// `suggest act(args)`: records the action as a proposal that waits on the resource it is
-    /// about, instead of applying it. An action or a flow records one where it runs; a block is
+    /// about, instead of applying it. An action records one where it runs; a block is
     /// the proposal itself, the action its value says, and records it when the host runs it.
     fn suggest_expr(&mut self, inner: &ast::Expr, span: Span) -> Ex {
         let value = if self.st.ctx == Ctx::Block && self.st.proposes {
             true
-        } else if matches!(self.st.ctx, Ctx::Action | Ctx::Flow) {
+        } else if matches!(self.st.ctx, Ctx::Action | Ctx::Program) {
             false
         } else {
             let who = self.st.ctx.word();
             self.err(
                 "E044",
                 span,
-                format!("`suggest` proposes an action, and only an action, a flow or an agent's block may do that; {who} cannot"),
+                format!("`suggest` proposes an action, and only an action or an agent's block may do that; {who} cannot"),
             );
             return Ex::error();
         };
@@ -316,14 +316,14 @@ impl Checker<'_> {
             return Ex::error();
         }
         if name == "now" {
-            if matches!(self.st.ctx, Ctx::Action | Ctx::Flow) {
+            if matches!(self.st.ctx, Ctx::Action | Ctx::Program) {
                 self.reads(crate::effects::Effect::Time, span, "`now`");
                 return Ex::host(Imp::Now, vec![], Ty::Time);
             }
             self.err(
                 "E049",
                 span,
-                "`now` is the time of this invocation, which only an action or a flow has; pass a Time to anything else",
+                "`now` is the time of this invocation, which only an action has; pass a Time to anything else",
             );
             return Ex::error();
         }

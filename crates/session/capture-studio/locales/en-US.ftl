@@ -16,3 +16,16 @@ screenshot-send-save-failed = Cannot save to this workspace's files: { $error }
 screenshot-send-too-many = Every name in { $path } is taken
 screenshot-send-too-large = A Nearby send carries up to { $limit }; this screenshot is { $size }
 screenshot-send-refused = The screenshot was not offered: { $reason }
+
+# Why a capture the person took did not come out as they asked.
+capture-failed-recording-not-started = A recording was not started: { $why }
+capture-failed-recording-stopped = The recording stopped: { $why }
+capture-failed-replay-not-started = The last half minute could not be kept: { $why }
+capture-failed-replay-stopped = The last half minute is not kept any more: { $why }
+capture-failed-sound-lost = The recording carries no more sound: its source stopped
+capture-failed-not-taken = A screenshot was not taken: { $why }
+capture-failed-not-written = A screenshot was not written: { $why }
+capture-failed-not-copied = A screenshot was saved, but not copied: { $why }
+capture-failed-not-read = A screenshot was not copied: { $why }
+capture-failed-clip-not-saved = A clip of what just happened was not saved: { $why }
+capture-failed-not-opened = { $path } could not be opened: { $why }

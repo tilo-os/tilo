@@ -8,18 +8,22 @@
 //! wherever its app put it.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Rect};
+use vello::peniko::Color;
 
 use crate::floating_layer::{Parts, card_parts};
 use crate::icons::Icon;
 use crate::live_activity::{ControlKind, Summary, Tone};
 use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
+use crate::pictures::Pictures;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize, ProgressBarFace};
+use crate::widget::media_card::{MediaArt, paint_art_tile};
+use crate::widget::{
+    Button, ButtonFace, ButtonRole, ControlSize, PictureSource, ProgressBarFace, TransportFace,
+};
 
 /// An activity's card, ready to paint: what it says, what its own controls
 /// are called out loud, and what the person is doing to it.
@@ -62,10 +66,10 @@ impl ActivityCardFace<'_> {
         glyph.draw(scene, transform, parts.icon, tone_ink(summary.tone, theme));
         if let Some(line) = parts.title {
             let style = theme.text(TextRole::Label);
-            let title = text.elide_to_width_style(&summary.title, width(line), &style);
+            let header = text.elide_to_width_style(summary.header_line(), width(line), &style);
             text.draw_style(
                 scene,
-                &title,
+                &header,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((line.x0, line.y0)),
                 None,
@@ -105,6 +109,23 @@ impl ActivityCardFace<'_> {
             None,
             &hero,
         );
+        // The artwork a song heads its card with: its cover, or the kind's
+        // glyph while the picture loads or when there is none to load.
+        if let Some(rect) = parts.artwork {
+            let radius = f64::from(theme.tokens.radii.control);
+            let picture = PictureSource {
+                src: summary.artwork.clone(),
+            };
+            if let Some(image) = Pictures::window().get(&picture) {
+                crate::image_store::paint_image_cover(scene, transform, rect, &image, radius);
+            } else {
+                let kind = Icon::from_name(summary.glyph())
+                    .or_else(|| Icon::from_name(summary.kind.glyph()))
+                    .unwrap_or(Icon::Layers);
+                let mut ctx = PaintCtx::new(scene, transform, text, theme);
+                paint_art_tile(&mut ctx, rect, MediaArt::Kind(kind), &summary.title, radius);
+            }
+        }
         if let Some(line) = parts.subtitle {
             let style = theme.text(TextRole::Body);
             let subtitle = text.elide_to_width_style(&summary.subtitle, width(line), &style);
@@ -121,19 +142,56 @@ impl ActivityCardFace<'_> {
             let mut ctx = PaintCtx::new(scene, transform, text, theme);
             ProgressBarFace::new(progress).paint(&mut ctx, row);
         }
+        // Where the song is and what is left of it, at the bar's ends.
+        if let (Some(elapsed), Some(remaining)) = (parts.elapsed, parts.remaining) {
+            let style = theme.text(TextRole::Caption);
+            for (rect, seconds, align_end) in [
+                (
+                    elapsed,
+                    summary.elapsed_seconds().unwrap_or_default(),
+                    false,
+                ),
+                (
+                    remaining,
+                    summary.remaining_seconds().unwrap_or_default(),
+                    true,
+                ),
+            ] {
+                let label = crate::format::timecode(seconds);
+                let (width, _) = text.measure_style(&label, None, &style);
+                let x = if align_end {
+                    rect.x1 - f64::from(width)
+                } else {
+                    rect.x0
+                };
+                text.draw_style(
+                    scene,
+                    &label,
+                    theme.tokens.colors.text_dim,
+                    transform * Affine::translate((x, rect.y0)),
+                    None,
+                    &style,
+                );
+            }
+        }
         let offered = summary.action_controls();
-        // The controls stand in a well of the card's content ground: a
-        // secondary button is a step up from the content, and on the card's
-        // own ground it would be no button at all.
-        if let Some(row) = parts.controls_row {
-            let radius = f64::from(theme.tokens.radii.control);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.content,
-                None,
-                &RoundedRect::from_rect(row, radius),
-            );
+        // A transport stands the way every media surface paints one: a round
+        // play/pause in the accent, plain previous and next beside it, on the
+        // card's own ground instead of in a well of their own.
+        if let (Some(_), Some(steps)) = (parts.controls_row, summary.transport()) {
+            for (id, step) in steps {
+                let Some(rect) = parts
+                    .controls
+                    .iter()
+                    .find(|(fitted, _)| fitted == id)
+                    .map(|(_, rect)| *rect)
+                else {
+                    continue;
+                };
+                let face = TransportFace::new(rect, step).pressed(self.held == Some(id));
+                TransportFace::paint(scene, transform, theme, &face);
+            }
+            return parts;
         }
         for (id, rect) in &parts.controls {
             let Some(control) = offered.iter().find(|control| control.id == *id) else {

@@ -6,20 +6,19 @@ use crate::diag::{Diagnostic, Span};
 
 /// Words that cannot be used as names.
 pub const KEYWORDS: &[&str] = &[
-    "app", "use", "as", "type", "enum", "action", "flow", "view", "fn", "let", "if", "else",
-    "match", "for", "in", "return", "and", "or", "not", "true", "false", "try", "suggest", "merge",
+    "app", "use", "as", "type", "enum", "action", "view", "fn", "let", "if", "else", "match",
+    "for", "in", "return", "and", "or", "not", "true", "false", "try", "suggest", "merge",
     "proposal",
 ];
 
-/// Words that are keywords only where a declaration starts: `window` and `lens` at the start
-/// of a statement of a view body; `root`, `default`, `row` (before `view`), `scenario`,
+/// Words that are keywords only where a declaration starts: `state` at the start of a
+/// statement of a view body; `root`, `default`, `row` (before `view`), `scenario`,
 /// `trigger`, `every`, `at`, `primary`, `destructive`, `migration` and `internal` (before
 /// `action`) at the start of an item;
 /// `root` before a type in a scenario; `derive` before a derived key in a type. Elsewhere they
 /// are ordinary names.
 pub const CONTEXTUAL: &[&str] = &[
-    "window",
-    "lens",
+    "state",
     "root",
     "default",
     "row",

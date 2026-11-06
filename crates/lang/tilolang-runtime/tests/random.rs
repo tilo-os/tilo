@@ -1,5 +1,5 @@
 //! Draws: `random.int`, `random.float`, `random.choice`, `random.shuffle` and `random.id` are
-//! made where the action or flow runs, and the numbers they drew are kept in the invocation's
+//! made where the action runs, and the numbers they drew are kept in its journal, so a
 //! journal, so a run resumed or replayed reads the numbers it drew the first time.
 
 #[cfg(test)]
@@ -9,9 +9,9 @@ mod common;
 #[cfg(test)]
 mod cases {
     use super::common::*;
-    use tilolang_runtime::flow::JournalEntry;
+    use tilolang_runtime::run::{JournalEntry, RunOutcome};
     use tilolang_runtime::{
-        AmStore, FlowOutcome, InvokeOutcome, Resolution, ResourceRef, Runtime, SimpleAuthority,
+        AmStore, InvokeOutcome, Resolution, ResourceRef, Runtime, SimpleAuthority,
         Store, Value,
     };
 
@@ -57,13 +57,13 @@ action mark(b: Board, n: Int) {
 }
 "#;
 
-    /// The runner's flow draws before it invokes another package's action, which asks: what it
+    /// The runner's action draws before it calls another package's action, which asks: what it
     /// drew has to survive the run waiting for a person.
     const RUNNER: &str = r#"app so.tilo.runner "Runner"
 
 use so.tilo.board as board
 
-flow start(b: board.Board) -> Int uses random {
+action start(b: board.Board) -> Int uses random {
     let first = random.int(1, 1000)
     board.mark(b, n: first)
     return first
@@ -138,7 +138,7 @@ flow start(b: board.Board) -> Int uses random {
     }
 
     #[test]
-    fn a_flow_resumed_reads_the_number_it_drew() {
+    fn a_run_resumed_reads_the_number_it_drew() {
         let (rt, mut store) = runtime();
         let board_app = App::compile(BOARD, &[]);
         let runner = App::compile(RUNNER, &[board_app.meta().clone()]);
@@ -146,13 +146,16 @@ flow start(b: board.Board) -> Int uses random {
         runner.load(&rt);
         let board = rt.create("Board").unwrap();
         let out = rt
-            .run_flow(&me(), &runner.flow("start"), vec![Value::resource(&board)])
+            .invoke_action(
+                &me(),
+                (runner.action("start").as_str(), vec![Value::resource(&board)]),
+            )
             .unwrap();
-        let FlowOutcome::Suspended(first) = out else {
+        let InvokeOutcome::Suggested(first) = out else {
             panic!("the other package's action must ask: {out:?}");
         };
 
-        // The number the flow drew is in its journal before it goes on, and the action it asked
+        // The number the run drew is in its journal before it goes on, and the action it asked
         // for has not run yet.
         let journal = store
             .load_journal(&first.run)
@@ -170,7 +173,7 @@ flow start(b: board.Board) -> Int uses random {
         let out = rt.resolve(&first.run, &me(), Resolution::Approve).unwrap();
         assert_eq!(
             out,
-            FlowOutcome::Done(Value::Int(drawn)),
+            RunOutcome::Done(Value::Int(drawn)),
             "a resumed run reads the draw it made"
         );
         assert_eq!(marks(&rt, &board), 1, "the step it approved ran once");
@@ -179,7 +182,7 @@ flow start(b: board.Board) -> Int uses random {
         };
         assert_eq!(
             passed, drawn,
-            "the action it approved was passed the number the flow drew"
+            "the action it approved was passed the number the run drew"
         );
     }
 

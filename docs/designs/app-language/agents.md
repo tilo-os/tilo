@@ -50,9 +50,10 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
    edit, a method to its type's declared action; each is a broker invocation, a child of the
    task, decided at the action's own node (action-system.md step 3). A program never writes a
    record directly.
-6. **Steps:** one call is one run group for undo; atomic within one origin, flow steps across
-   origins (convergence.md). A preview is a provisional run of those invocations; `confirm`
-   sends the same program again.
+6. **Steps:** one call is one run group for undo. Its changes each commit at their own door,
+   and a change that calls another action runs that call as a change of its own: nothing is
+   atomic across origins (convergence.md, "Calls"). A preview is a provisional run of those
+   invocations; `confirm` sends the same program again.
 
 ### Reading records outside their app
 
@@ -172,9 +173,10 @@ grep(/^- \[ \] (.*launch.*)/i, in: docs + notes, changed: -14d)
 - Assignments and methods read like ordinary code (`n.title = …`, `t.done = true`,
   `hits.replace("Tilo")`) and compile to the type's real actions: field edits, text splices,
   declared actions. Permissions, attribution and undo apply; nothing bypasses them.
-- **One call is one step.** Changes to workspace resources in one call commit together, at one
-  origin, all or nothing. Calls to outside origins (a mail server, YouTube) can't be atomic with
-  the workspace; they run as flow steps in order (convergence.md, "Flows").
+- **One call is one step.** Changes to workspace resources in one call commit at the door of the
+  action that makes each, in order. Calls to outside origins (a mail server, YouTube) can't be
+  atomic with the workspace; they run as calls in order, each a change of its own (convergence.md,
+  "Calls").
 - **Preview is a property of the call.** When a program would change many resources or destroy
   something, the door answers with a preview instead of applying it; the agent sends the same
   program again with `confirm`.

@@ -148,6 +148,51 @@ impl Sent {
     }
 }
 
+/// Why a capture the person took did not come out as they asked, in the
+/// session's words: the bar says it where it says what became of a send, so
+/// the reason stays on the thing the person touched.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// A recording the person started did not begin, and why.
+    RecordingNotStarted(String),
+    /// A recording the person started stopped short, and why.
+    RecordingStopped(String),
+    /// The last half minute could not be kept, and why.
+    ReplayNotStarted(String),
+    /// The replay buffer stopped keeping the last half minute, and why.
+    ReplayStopped(String),
+    /// A source of a recording's sound stopped: it carries no more of it.
+    SoundLost,
+    /// A screenshot could not be read back off the desktop, and why.
+    NotTaken(String),
+    /// A screenshot's file could not be written, and why.
+    NotWritten(String),
+    /// A screenshot was written but not put on the clipboard, and why.
+    NotCopied(String),
+    /// A screenshot could not be read back for the clipboard, and why.
+    NotRead(String),
+    /// A clip of what just happened could not be saved, and why.
+    ClipNotSaved(String),
+    /// A capture could not be opened in the person's app for it, and why.
+    NotOpened {
+        /// The capture it did not open.
+        path: PathBuf,
+        /// What the system said, in its own words.
+        error: String,
+    },
+}
+
+/// A failure of the last capture the person took, and a number that tells two
+/// alike failures apart: the bar says each one again, so taking the same
+/// capture twice says the same thing twice.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Failed {
+    /// What changes with every failure, so a repeat says itself again.
+    pub number: u64,
+    /// What went wrong.
+    pub failure: Failure,
+}
+
 /// Why a screenshot did not go where it was sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -220,6 +265,9 @@ pub struct Scene {
     /// What became of sending the last screenshot, to a device or into the
     /// workspace's files, while its receipt shows that.
     pub sent: Option<Sent>,
+    /// Why the last capture the person took did not come out, while the bar
+    /// says so.
+    pub failed: Option<Failed>,
     /// The recording that runs, and whether it is paused.
     pub recording: Option<Recording>,
     /// The recording that ended, while its receipt says what it made of it:

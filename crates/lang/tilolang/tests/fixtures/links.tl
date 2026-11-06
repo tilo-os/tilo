@@ -86,7 +86,19 @@ action mentioning(n: Note) -> List<Text> {
 
 /// The board: its notes.
 view board(b: Board) {
-    std.list(b, b.notes, empty: "Nothing yet")
+    ui.NavShell(content_kind: .list) {
+        content: {
+            if b.notes.is_empty() {
+                ui.EmptyState("Nothing yet", icon: .file_text)
+            } else {
+                std.list(b.notes) { (n, at) ->
+                    ui.ListItem(item: n, presence: at) {
+                        note_row(n)
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A note in a list: its title.
@@ -121,7 +133,7 @@ action write_under(n: Note, title: Text = "under") -> Note (label: "Write") {
 /// A note's page: what is written under it is written from it, so the button that writes says
 /// `.made_from(n)` and the change it makes records the note as what it was made from.
 view note_page(n: Note) {
-    lens draft: Text
+    state draft: Text
     stack {
         input(bind: draft, placeholder: "Write")
         button(write_under(n).made_from(n))

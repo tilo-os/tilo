@@ -1085,6 +1085,42 @@ fn a_modified_click_changes_the_choice_without_opening_the_row() {
     );
 }
 
+/// How a person gathers a few rows: click one, add the next with Control held, then walk
+/// with Shift and the arrow. Every step reports the choice; the walk extends the rows they
+/// gathered instead of replacing them, so the choice the window's bar stands for grows.
+#[test]
+fn shift_and_the_arrow_extend_the_choice_a_modified_click_gathered() {
+    let reported = Rc::new(RefCell::new(Vec::<Vec<u32>>::new()));
+    let reports = Rc::clone(&reported);
+    let mut list = plain_rows(6)
+        .selection_follows_focus()
+        .multi_select(true)
+        .on_selected(move |keys| reports.borrow_mut().push(keys.to_vec()));
+    click_row(&mut list, 0, winit::keyboard::ModifiersState::empty());
+    click_row(&mut list, 1, winit::keyboard::ModifiersState::CONTROL);
+    list.set_focus(true);
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    let shift = winit::keyboard::ModifiersState::SHIFT;
+    for _ in 0..2 {
+        assert!(
+            Dispatch::new()
+                .modifiers(shift)
+                .layout(&taffy, node)
+                .send(
+                    &mut list,
+                    &crate::synthetic_input::named_key(NamedKey::ArrowDown)
+                )
+                .handled,
+            "the list takes the extended walk"
+        );
+    }
+    assert_eq!(
+        &*reported.borrow(),
+        &[vec![0], vec![0, 1], vec![0, 1, 2], vec![0, 1, 2, 3]],
+        "the walk grows the choice the modified click added to, one row per step"
+    );
+}
+
 /// Click `key`'s row with `modifiers` held, as a person's pointer does.
 fn click_row(
     list: &mut VirtualList<VecListModel<u32, u32>>,
@@ -1719,7 +1755,7 @@ fn a_selection_delegate_receives_its_neighbours_and_list_rows_join() {
     assert!(list.row_selection(3).above);
 }
 
-/// A delegate whose row a view wraps, as `std.rows` gives every row the swipe its item offers:
+/// A delegate whose row a view wraps, as `std.list` gives every row the swipe its item offers:
 /// the list still hands the row its selection, in place.
 #[test]
 fn a_selection_delegate_wrapped_in_its_swipe_takes_its_selection() {

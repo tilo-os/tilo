@@ -1527,3 +1527,80 @@ fn an_undrawn_tile_asks_for_no_wake_once_its_arrival_is_due() {
         }
     }
 }
+
+/// An app whose widgets replace themselves on every pass, as a list does
+/// while the rows it shows wait to be mounted: it keeps reporting the change
+/// until a build carries it out.
+struct Restless;
+
+impl Widget for Restless {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.widget_leaf(Style::default(), node_map, self)
+    }
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _tr: &mut TextRenderer,
+        _th: &Theme,
+        _p: &PresenceCtx,
+    ) {
+    }
+    fn name(&self) -> &'static str {
+        "Restless"
+    }
+    fn get_rect(&self) -> Rect {
+        Rect::ZERO
+    }
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        crate::widget::StructureChange::Children
+    }
+}
+
+impl crate::widget::app_widget::AppWidget for Restless {
+    fn app_kind(&self) -> AppKind {
+        AppKind::Files
+    }
+    fn app_title(&self) -> &'static str {
+        "Restless"
+    }
+    fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+        crate::widget::app_widget::IconDescriptor::Glyph("R")
+    }
+}
+
+#[test]
+fn a_tile_whose_history_shows_a_version_leaves_the_hidden_apps_change_with_it() {
+    let (_host, component) = crate::history_mode::integration_tests::component_with_history();
+    let mut tile = TileHost::from_component(component);
+    tile.content = TileContent::App(Box::new(Restless));
+    let history = tile
+        .history
+        .as_mut()
+        .expect("the component registers a History with its tile");
+    // Narrow enough that an open History stands in the app's place.
+    history.set_width(400.0);
+    assert!(history.request_open(), "the History opens");
+    history.refresh(&automerge::AutoCommit::new());
+    assert!(
+        !history.live_visible(),
+        "the test needs the History to lay a version out in the app's place"
+    );
+    // The tile's own installation asked for one composition; a build carries
+    // that out.
+    let _ = tile.take_structure_change();
+    for turn in 0..3 {
+        assert_eq!(
+            tile.take_structure_change(),
+            crate::widget::StructureChange::None,
+            "the History lays a version out in the app's place, so nothing builds the \
+             app (turn {turn}): a change taken from it asks for a composition the host \
+             never builds the app into, pass after pass"
+        );
+    }
+}

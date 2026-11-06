@@ -54,6 +54,7 @@ d-3u3bevec = Untag
 d-m6rqg3kf = Pin~present
 
 d-akcqjax3 = Notebook
+    .w-no-notes-yet = No notes yet
 
 d-xqxkoqbj = Note row
     .w-untitled = Untitled

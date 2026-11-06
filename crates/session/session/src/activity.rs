@@ -224,10 +224,7 @@ impl Activity {
                 .filter(|label| !label.is_empty())
                 .cloned()
                 .unwrap_or_else(|| hex::encode(&refusal.by[..4]));
-            notifications.tell(crate::notices::refused_write_notice(
-                &label,
-                refusal.reason.describe(),
-            ));
+            notifications.tell(crate::notices::refused_write_notice(&label, refusal.reason));
         }
         told.retain(|key| lasting.contains(key));
     }
@@ -806,7 +803,7 @@ impl ActivityHost for NativeActivityHost {
                     .filter(|label| !label.is_empty())
                     .cloned()
                     .unwrap_or_else(|| hex::encode(&refusal.by[..4]));
-                let reason = refusal.reason.describe().to_owned();
+                let reason = crate::notices::reason_in_words(refusal.reason);
                 let permanent = refusal.reason.permanent();
                 refusal
                     .changes

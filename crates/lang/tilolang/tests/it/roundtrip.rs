@@ -55,7 +55,7 @@ fn area(s: Shape) -> Int {
     }
 }
 
-flow f(l: todo.TodoList) -> Result<(), Text> {
+action f(l: todo.TodoList) -> Result<(), Text> {
     let m = [1, 2].map(i -> i + 1)
     todo.add(l, "a {m.len()} b {"nested {1}"}")
     let r = @todo.TodoList:01J8ZK4T
@@ -73,8 +73,8 @@ action a(l: T) -> Int proposal v(l) {
 }
 
 view v(l: todo.TodoList) {
-    window order: Shape = .dot
-    lens picked: Option<Int> = .none
+    state order: Shape = .dot
+    state picked: Option<Int> = .none
     stack(gap: .section, align: .center) {
         for i in l.items {
             if i.done {
@@ -235,9 +235,9 @@ view note_row(n: Note) {
 }
 
 view notebook(nb: Notebook) {
-    window shown: NoteFilter = NoteFilter.all
-    std.list(nb, nb.notes, empty: "No notes yet") { n ->
-        row(n.title, checkbox: n.pinned)
+    state shown: NoteFilter = NoteFilter.all
+    std.list(nb.notes) { (n, at) ->
+        ui.ListItem(item: n, presence: at)
     }
 }
 

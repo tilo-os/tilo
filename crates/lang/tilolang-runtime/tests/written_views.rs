@@ -289,18 +289,17 @@ view unread_mail(m: mail.Mail) {\n\
             "new_channel",
             vec![Value::resource(&channels), Value::text("general")],
         ));
-        let send_flow = apps.views.flow("send");
-        let sent = ada
+        let send = apps.views.action("send");
+        let outcome = ada
             .rt
-            .run_flow(
+            .invoke_action(
                 &ada.who,
-                &send_flow,
-                vec![Value::resource(&v), Value::resource(&general)],
+                (send, vec![Value::resource(&v), Value::resource(&general)]),
             )
             .unwrap();
         assert!(
-            matches!(sent, tilolang_runtime::FlowOutcome::Done(_)),
-            "{sent:?}"
+            matches!(outcome, tilolang_runtime::InvokeOutcome::Done(_)),
+            "{outcome:?}"
         );
         let shared: Vec<_> = ada
             .store

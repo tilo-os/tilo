@@ -1087,6 +1087,16 @@ impl<M: ListModel> VirtualList<M> {
         self.viewport.visible_range()
     }
 
+    /// The rows the list holds mounted: what is on screen, up to the rows the model
+    /// holds. Rows still arriving add theirs when they land
+    /// ([`ListModel::needs_poll`]); until then there is nothing to mount past them,
+    /// so the list asks for no remount it could never carry out.
+    fn rows_to_hold(&self) -> std::ops::Range<usize> {
+        let near = self.viewport.visible_range();
+        let count = self.model.len();
+        near.start.min(count)..near.end.min(count)
+    }
+
     pub fn set_scroll_offset(&mut self, offset: f64) {
         self.viewport.set_offset(offset);
         // The rows move in `apply_layout`, measured as they were; rows the
@@ -1744,7 +1754,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         // else reconciles now.
         let scrolled_only = !self.structure_dirty
             && !self.request_dirty
-            && !self.mounted_covers(&self.viewport.visible_range());
+            && !self.mounted_covers(&self.rows_to_hold());
         if !scrolled_only {
             self.reconcile_mounted();
         }
@@ -2009,7 +2019,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         }
         // A scroll brought other rows near: the rebuild mounting them is
         // described by the frame's damage.
-        if !self.mounted_covers(&self.viewport.visible_range()) {
+        if !self.mounted_covers(&self.rows_to_hold()) {
             self.remount = true;
         }
         self.scroll_dirty = false;

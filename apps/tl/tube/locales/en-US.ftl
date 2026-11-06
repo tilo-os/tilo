@@ -257,6 +257,8 @@ d-yf5l4ysw = Watched page
     .w-history = History
 
 d-lhrpz5jd = History list
+    .w-nothing-watched-yet = Nothing watched yet
+    .w-the-videos-you-watch-are-listed = The videos you watch are listed here
 
 d-yh23kjna = Channel page
     .w-unsubscribe = Unsubscribe

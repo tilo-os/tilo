@@ -166,8 +166,16 @@ impl FilesIndex {
                     if let Err(error) = writer.close() {
                         tracing::warn!(%error, "could not finish the Files body index");
                     }
-                })
-                .ok();
+                });
+            let handle = match handle {
+                Ok(handle) => Some(handle),
+                Err(error) => {
+                    // Search still finds names without a body index; the log
+                    // says why its contents are not there.
+                    tracing::warn!(%error, "the Files body index was not started");
+                    None
+                }
+            };
             if let Ok(mut slot) = writer_handle.write() {
                 *slot = handle;
             }

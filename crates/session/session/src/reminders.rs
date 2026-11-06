@@ -285,16 +285,22 @@ impl Shared {
                     chosen,
                 ),
             };
-            self.search
-                .perform(&workspace, Target::Invoke(Box::new(target)), &mut |own| {
-                    self.doors
-                        .invoke(
-                            &own.address,
-                            &own.arguments,
-                            &mut tilo_surface_host::Look::none(),
-                        )
-                        .map(drop)
-                });
+            let carried =
+                self.search
+                    .perform(&workspace, Target::Invoke(Box::new(target)), &mut |own| {
+                        self.doors
+                            .invoke(
+                                &own.address,
+                                &own.arguments,
+                                &mut tilo_surface_host::Look::none(),
+                            )
+                            .map(drop)
+                    });
+            if let Err(error) = carried {
+                // The reminder's row went with the person's answer: what they
+                // asked for did not happen, so the notice says why.
+                self.answer_failed(&alarm.title, &error);
+            }
         }
     }
 }

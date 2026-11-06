@@ -1,5 +1,5 @@
 //! Another package's `fn`, called through its alias: it runs as that package's own code, its
-//! reads are the caller's, and a flow that replays after a question takes the path it took.
+//! reads are the caller's, and a run that replays after a question takes the path it took.
 
 #[cfg(test)]
 #[path = "common/mod.rs"]
@@ -9,7 +9,8 @@ mod common;
 mod cases {
     use super::common::*;
     use tilolang_runtime::{
-        AmStore, FlowOutcome, Resolution, ResourceRef, Runtime, SimpleAuthority, Value,
+        AmStore, InvokeOutcome, Resolution, ResourceRef, RunOutcome, Runtime, SimpleAuthority,
+        Value,
     };
 
     /// A list of counts, and the rule over it: the only place the rule is written.
@@ -54,12 +55,12 @@ view card(b: Bag) {
 }
 ";
 
-    /// A flow and a view that ask the other package's rule instead of copying it.
+    /// An action and a view that ask the other package's rule instead of copying it.
     const CALLER: &str = "app so.tilo.caller \"Caller\"
 
 use so.tilo.lib as lib
 
-flow sweep(b: lib.Bag) -> Int {
+action sweep(b: lib.Bag) -> Int {
     let n = 0
     if lib.big(b) {
         lib.drop_big(b)
@@ -129,10 +130,9 @@ view bigs(b: lib.Bag) {
                 .unwrap();
         }
 
-        fn start(&self) -> FlowOutcome {
-            let flow = self.caller.flow("sweep");
+        fn start(&self) -> InvokeOutcome {
             self.rt
-                .run_flow(&me(), &flow, vec![res(&self.bag)])
+                .invoke_action(&me(), (self.caller.action("sweep"), vec![res(&self.bag)]))
                 .unwrap()
         }
 
@@ -145,11 +145,11 @@ view bigs(b: lib.Bag) {
     }
 
     #[test]
-    fn a_flow_replays_the_rule_it_read_from_the_package_that_wrote_it() {
+    fn a_run_replays_the_rule_it_read_from_the_package_that_wrote_it() {
         let w = world();
         w.add(20);
         w.add(1);
-        let FlowOutcome::Suspended(asked) = w.start() else {
+        let InvokeOutcome::Suggested(asked) = w.start() else {
             panic!("the other package's action asks");
         };
         assert_eq!(asked.action, w.lib.action("drop_big"));
@@ -159,7 +159,7 @@ view bigs(b: lib.Bag) {
                 .unwrap();
         assert_eq!(
             out,
-            FlowOutcome::Done(Value::Int(1)),
+            RunOutcome::Done(Value::Int(1)),
             "the replay takes the branch it took before the question, and the rule reads what \
              the clear left"
         );
@@ -170,7 +170,7 @@ view bigs(b: lib.Bag) {
                 .iter()
                 .filter(|n| n.action == w.lib.action("drop_big"))
                 .count();
-        assert_eq!(drops, 1, "the clear ran once for the whole flow");
+        assert_eq!(drops, 1, "the clear ran once for the whole run");
     }
 
     #[test]

@@ -39,7 +39,7 @@ pub struct Binding {
 pub enum BindTarget {
     /// A field of a resource: an edit is an attributed change.
     Field { target: ResourceRef, field: FieldId },
-    /// A `window` or `lens` declaration of the view (`bind: name`), with its name and its type
+    /// A `state` declaration of the view (`bind: name`), with its name and its type
     /// as metadata writes it.
     State {
         key: StateKey,

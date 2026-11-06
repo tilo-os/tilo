@@ -500,10 +500,8 @@ impl SessionSearch {
         workspace: &str,
         target: Target,
         own: &mut dyn FnMut(&InvokeTarget) -> Result<(), DoorError>,
-    ) {
-        if let Err(error) = self.perform_checked(workspace, target, own) {
-            tracing::warn!(%error, "search row not carried out");
-        }
+    ) -> Result<(), DoorError> {
+        self.perform_checked(workspace, target, own)
     }
 
     /// [`Self::perform`], saying whether it was carried out: a caller that

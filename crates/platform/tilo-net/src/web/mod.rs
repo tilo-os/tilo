@@ -48,6 +48,25 @@ pub(crate) fn global() -> Option<JsValue> {
     (!global.is_undefined()).then_some(global)
 }
 
+#[cfg(feature = "webtransport")]
+#[wasm_bindgen(inline_js = r#"
+// A stream the peer reset or stopped sending on answers its next call by
+// throwing or by rejecting: both say the same thing, that the stream is
+// gone, and the caller acts on neither. Left alone they reach the page as
+// uncaught errors, so a call whose outcome nothing reads is settled here.
+export function quietly(object, method, argument) {
+  try {
+    const result = object[method](argument);
+    if (result && typeof result.catch === 'function') result.catch(() => {});
+  } catch (_) {}
+}
+"#)]
+extern "C" {
+    /// Call `object[method](argument)`, dropping what it answers: a throw or
+    /// a rejection is the stream's end, which the caller learns elsewhere.
+    pub(crate) fn quietly(object: &JsValue, method: &str, argument: &JsValue);
+}
+
 /// `object[key]`, unless it is `undefined` or `null`.
 pub(crate) fn get(object: &JsValue, key: &str) -> Option<JsValue> {
     Reflect::get(object, &JsValue::from_str(key))

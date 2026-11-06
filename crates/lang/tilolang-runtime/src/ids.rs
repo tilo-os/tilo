@@ -13,7 +13,6 @@ pub type TypeId = String;
 pub type FieldId = String;
 pub type ActionId = String;
 pub type ViewId = String;
-pub type FlowId = String;
 pub type ItemId = String;
 pub type DocId = String;
 pub type RunId = String;

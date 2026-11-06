@@ -63,7 +63,7 @@ type Workshop {
 - An action that would break an invariant of anything it touches is rejected, the same way
   everywhere, and its author is told why.
 - Invariants come with the type: reuse a `Workshop` and its capacity rule comes along.
-- An invariant can only cover data with one origin. Across origins there are flows (§6).
+- An invariant can only cover data with one origin. Across origins there are calls (§6).
 - An action states what it needs of its subject with `require`, the action's own invariant:
 
   ```
@@ -115,23 +115,28 @@ action refresh(feed: Feed) uses web {
   indexed locally. Writes ("archive", "like") apply at once and become final when the service
   accepts.
 
-## 6. Flows
+## 6. Calls
 
-An action is atomic at one origin; nothing is atomic across origins. So calling another origin's
-action is only allowed in a `flow`, a durable sequence of steps:
+An action is atomic at one origin; nothing is atomic across origins. So an action that calls
+another action — its own package's or another one's — makes each call at the callee's door, as a
+change of its own, and commits what it wrote itself after its calls:
 
 ```
-flow book(w: Workshop, p: Principal, card: Card) {
+action book(w: Workshop, p: Principal, card: Card) {
     reserve(w, p)                  // the workspace: hosted, checks seats
     stripe.charge(card, w.price)   // runs once the reservation is final
     mail.send(confirmation(w, p))  // runs once the charge is final
 }
 ```
 
-- Each step runs only once the previous one is final: no charge for a rejected booking.
-- Each step carries the flow's id so the origin can drop duplicates. Where a service can't
-  (SMTP), one device sends, and a crash mid-call is shown as **outcome unknown**, never retried
-  silently.
+- Each call runs only once the previous one is final: no charge for a booking the seat check
+  rejected.
+- A call that needs a person's approval suspends the caller with it. The run replays from its
+  journal when the person answers, so a call it already made is not made again and its own
+  writes are the ones it was making.
+- A run's outside effects are queued under the run's id, so a run that goes again queues each of
+  them once. Where a service can't drop duplicates (SMTP), one device sends, and a crash mid-call
+  is shown as **outcome unknown**, never retried silently.
 
 ## 7. What people see
 

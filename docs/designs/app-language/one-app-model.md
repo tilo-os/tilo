@@ -37,7 +37,7 @@ Mail's root.
 |---|---|
 | `ResourceApp::view(cx) -> Element`: one imperative widget tree for the whole app, in its own window | `#[view] fn page(c: &Channel, cx: &mut ViewCx) -> Node`. Many named views per type, and `#[view(default)]` for the one a place shows unasked. |
 | Widgets built and laid out in the app process, then drawn as scenes | A view returns described components (`ui::component` builders over the same catalogue tilolang's `ui.X` checks against). The app sends them as component patches (`tilo-render-protocol` `patch`), exactly as a tilolang app does. The UI host draws them in whatever place shows the resource. |
-| Bindings and events wired to the app's widgets | The same binding and event protocol tilolang views use (`patch`: bindings, events, focus). An event fires an action of the type, or updates the view's window state or lens. |
+| Bindings and events wired to the app's widgets | The same binding and event protocol tilolang views use (`patch`: bindings, events, focus). An event fires an action of the type, or sets a view's state. |
 
 So the shell places a Rust app's view exactly as it places a tilolang view: by resource and view
 name. Only who computes the tree differs: the tilolang runtime for a package, the app's process

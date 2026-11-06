@@ -7,46 +7,39 @@
 //! commit's own order, so an app never applies half an action and every peer
 //! that can read all parts applies them in the same order. A peer that
 //! receives only some parts keeps the ones it has, undelivered, until the
-//! rest come.
+//! rest come. A part that comes again on its own — a publisher that sent it
+//! in a later pass, under a commit of its own or none — still completes the
+//! action it was held for, so one action stays one action however its parts
+//! were retried.
 //!
-//! The log is also the action log history reads: [`Commits::history`] names
-//! one action with its author, its time, the action it ran and every unit
-//! change it made, in one query.
+//! The log is also the action log history reads: [`crate::commit_log::CommitLog`]
+//! indexes the complete actions and the changes that made them, so a
+//! resource's history is one index entry and the actions it names.
+//! [`Commits::history`] names one action with its author, its time, its
+//! invocation and run and every unit change it made; [`Commits::history_of`]
+//! answers for one resource; [`Commits::action_of`] gives the whole action a
+//! change belongs to, which is what an undo of one change takes back. The log
+//! is derived from the changes and commits, never persisted: a restarted
+//! endpoint rebuilds it as they arrive again.
 
 use std::collections::BTreeMap;
 
-use collab_types::{CommitAction, CommitPart, WorkspaceCommit};
+use collab_types::{CommitPart, WorkspaceCommit};
 
 use crate::CollabEvent;
 use crate::broker::BridgeState;
+
+pub use crate::commit_log::{ChangeFact, CommitHistory, CommitLog};
 
 /// Commits whose every part has arrived, and commits this endpoint received
 /// only parts of.
 #[derive(Default)]
 pub(crate) struct Commits {
-    /// Complete actions, in arrival order of their last part.
-    log: Vec<CommitHistory>,
+    /// Every action this endpoint kept, as the workspace record history and
+    /// undo read it.
+    log: CommitLog,
     /// Actions some of whose parts have not arrived, oldest first.
     held: Vec<HeldCommit>,
-}
-
-/// One complete action, as history reads it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CommitHistory {
-    /// The commit's content address.
-    pub commit: [u8; 32],
-    /// The workspace whose units the action wrote.
-    pub workspace: String,
-    /// The principal that invoked it, when one did.
-    pub principal: Option<String>,
-    /// The device that signed it.
-    pub device: [u8; 32],
-    /// When it was made, in milliseconds since the Unix epoch.
-    pub at_ms: u64,
-    /// The action's name, item and invocation.
-    pub action: CommitAction,
-    /// Every unit it wrote, with the hashes of the changes it made there.
-    pub parts: Vec<CommitPart>,
 }
 
 struct HeldCommit {
@@ -78,6 +71,18 @@ pub(crate) fn gate(
     unit: (&str, &str),
     event: CollabEvent,
 ) -> Delivery {
+    // The part a held action waits for is here, named by another commit or
+    // by none: the action goes on with it. A publisher that could not send
+    // every part of an action in one pass sends the rest later, and it is
+    // still one action.
+    let held = state.commits().holding(unit, claims);
+    if let Some(held) = held
+        && commit
+            .as_ref()
+            .is_none_or(|commit| commit.id() != held.id())
+    {
+        return state.commits().arrive(held, unit, event);
+    }
     let Some(commit) = commit else {
         return Delivery::Now(event);
     };
@@ -95,6 +100,27 @@ pub(crate) fn gate(
 }
 
 impl Commits {
+    /// The action this endpoint holds a part of for `unit`, when every change
+    /// that part names is among `claims`: the part arrived again, so the
+    /// action it is part of can go on.
+    pub(crate) fn holding(
+        &self,
+        unit: (&str, &str),
+        claims: &[[u8; 32]],
+    ) -> Option<WorkspaceCommit> {
+        if claims.is_empty() {
+            return None;
+        }
+        self.held
+            .iter()
+            .find(|held| {
+                held.commit
+                    .part(unit.0, unit.1)
+                    .is_some_and(|part| part.changes.iter().all(|change| claims.contains(change)))
+            })
+            .map(|held| held.commit.clone())
+    }
+
     /// Note the arrival of one part of `commit` on the unit `(app, record)`,
     /// keeping its `event` until the action's other parts are here.
     pub(crate) fn arrive(
@@ -104,7 +130,7 @@ impl Commits {
         event: CollabEvent,
     ) -> Delivery {
         let id = commit.id();
-        if self.log.iter().any(|entry| entry.commit == id) {
+        if self.log.kept(&commit) {
             return Delivery::Now(event);
         }
         if !commit.covers(unit.0, unit.1) {
@@ -145,37 +171,66 @@ impl Commits {
         };
         let mut held = self.held.remove(index);
         let mut parts = std::mem::take(&mut held.parts);
-        let events = held
+        let released: Vec<(&CommitPart, CollabEvent)> = held
             .commit
             .parts
             .iter()
-            .filter_map(|part| parts.remove(&key(part)))
+            .filter_map(|part| parts.remove(&key(part)).map(|event| (part, event)))
             .collect();
-        self.log.push(CommitHistory::of(&held.commit));
-        Delivery::Complete(events)
+        let facts: Vec<ChangeFact> = released
+            .iter()
+            .flat_map(|(part, event)| {
+                ChangeFact::of_payload(&part.app, &part.record, payload(event))
+            })
+            .collect();
+        self.log.record(&held.commit, &facts);
+        Delivery::Complete(released.into_iter().map(|(_, event)| event).collect())
     }
 
-    /// Note an action this endpoint itself made: every part of it is here.
-    pub(crate) fn record(&mut self, commit: WorkspaceCommit) {
-        let id = commit.id();
-        if self.log.iter().any(|entry| entry.commit == id) {
-            return;
-        }
-        self.log.push(CommitHistory::of(&commit));
+    /// Note an action this endpoint itself made: every part of it is here,
+    /// and `facts` are the changes its parts carry.
+    pub(crate) fn record(&mut self, commit: WorkspaceCommit, facts: &[ChangeFact]) {
+        self.log.record(&commit, facts);
     }
 
     /// Every action this endpoint has seen in `workspace`, oldest first: one
     /// action with its author, its time and every unit change it made.
-    #[must_use]
     pub fn history(&self, workspace: &str) -> Vec<CommitHistory> {
-        let mut actions: Vec<CommitHistory> = self
-            .log
-            .iter()
-            .filter(|entry| entry.workspace == workspace)
-            .cloned()
-            .collect();
-        actions.sort_by_key(|entry| (entry.at_ms, entry.commit));
-        actions
+        self.log.history(workspace)
+    }
+
+    /// Every action that wrote `resource` of `app`'s `record` in
+    /// `workspace`, newest first, at most `limit` of them.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "the log's readers answer a resource's history and an action's changes with it"
+        )
+    )]
+    pub fn history_of(
+        &mut self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+        resource: &str,
+        limit: usize,
+    ) -> Vec<CommitHistory> {
+        self.log.history_of(workspace, app, record, resource, limit)
+    }
+
+    /// The whole action the change `hash` of `workspace` is part of: every
+    /// unit and every change of it, so an undo of one change takes its action
+    /// back whole.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "undo takes a whole action back through this query"
+        )
+    )]
+    pub fn action_of(&mut self, workspace: &str, hash: &[u8; 32]) -> Option<CommitHistory> {
+        self.log.action_of(workspace, hash)
     }
 
     /// How many parts of actions are held back waiting for the rest.
@@ -185,22 +240,24 @@ impl Commits {
     }
 }
 
-impl CommitHistory {
-    fn of(commit: &WorkspaceCommit) -> Self {
-        Self {
-            commit: commit.id(),
-            workspace: commit.workspace.clone(),
-            principal: commit.author.principal.clone(),
-            device: commit.author.device,
-            at_ms: commit.at_ms,
-            action: commit.action.clone(),
-            parts: commit.parts.clone(),
-        }
-    }
-}
-
 fn key(part: &CommitPart) -> (String, String) {
     (part.app.clone(), part.record.clone())
+}
+
+/// The signed payload a document event carries: the plaintext a sealed route
+/// opens, or what the envelope holds otherwise.
+fn payload(event: &CollabEvent) -> &[u8] {
+    let CollabEvent::Document {
+        envelope,
+        decrypted_payload,
+        ..
+    } = event
+    else {
+        return &[];
+    };
+    decrypted_payload
+        .as_deref()
+        .unwrap_or(envelope.payload.as_slice())
 }
 
 /// Actions this endpoint holds parts of, waiting for the rest. Bounded so a
@@ -239,9 +296,9 @@ mod tests {
             })),
             invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
             source_invocation: Some(invocation),
-            ..ActionContext::for_resource("tasks", "tasks", field)
+            ..ActionContext::for_resource(field, "tasks", field)
         };
-        let mut options = automerge::transaction::CommitOptions::default();
+        let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_000);
         options.set_message(context.change_message().unwrap());
         let hash = doc.commit_with(options).unwrap();
         (doc, hash.0)
@@ -328,36 +385,110 @@ mod tests {
         }
     }
 
+    /// One action that wrote two units, and the commit the publisher sends
+    /// with them: the two replicas it changed, and one commit naming both.
     fn two_unit_action() -> (WorkspaceCommit, AutoCommit, AutoCommit) {
         let invocation = InvocationId(uuid::Uuid::from_u128(11));
-        let (first, first_change) = record("title", "child", invocation);
-        let (second, second_change) = record("body", "text", invocation);
-        let commit = WorkspaceCommit::new(
-            WORKSPACE,
-            collab_types::CommitAuthor {
-                principal: Some("alice".to_owned()),
-                device: DEVICE,
+        let (first, _) = record("title", "child", invocation);
+        let (second, _) = record("body", "text", invocation);
+        let first_mutation = mutation(&mut first.clone());
+        let second_mutation = mutation(&mut second.clone());
+        let units = [
+            collab_types::UnitMutation {
+                app: "tasks",
+                record: "a",
+                mutation: &first_mutation,
             },
-            1_700_000_000_000,
-            collab_types::CommitAction {
-                name: "title".to_owned(),
-                item: None,
-                invocation: Some(invocation.0),
+            collab_types::UnitMutation {
+                app: "discussion",
+                record: "thread",
+                mutation: &second_mutation,
             },
-            vec![
-                CommitPart {
-                    app: "tasks".to_owned(),
-                    record: "a".to_owned(),
-                    changes: vec![first_change],
-                },
-                CommitPart {
-                    app: "tasks".to_owned(),
-                    record: "b".to_owned(),
-                    changes: vec![second_change],
-                },
-            ],
-        );
+        ];
+        let author = publisher();
+        let commit = WorkspaceCommit::of_units(WORKSPACE, &author, &units)
+            .unwrap()
+            .remove(0)
+            .expect("a unit that changed travels under its action's commit");
         (commit, first, second)
+    }
+
+    /// Write `field` = `value` on `doc` as the action `field`, invoked by
+    /// alice under `invocation`: one more change on top of what `doc` holds.
+    fn rewrite(
+        doc: &mut AutoCommit,
+        field: &str,
+        value: &str,
+        invocation: InvocationId,
+    ) -> [u8; 32] {
+        doc.put(automerge::ROOT, field, value).unwrap();
+        let context = ActionContext {
+            what: Some(Did::Edit(FieldEdit {
+                ty: "tasks".to_owned(),
+                field: field.to_owned(),
+                path: vec![PathStep::Field(field.to_owned())],
+                op: EditOp::Set,
+                old: None,
+                new: None,
+                args: std::collections::BTreeMap::new(),
+            })),
+            invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+            source_invocation: Some(invocation),
+            ..ActionContext::for_resource(field, "tasks", field)
+        };
+        let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_001);
+        options.set_message(context.change_message().unwrap());
+        doc.commit_with(options).unwrap().0
+    }
+
+    /// Who publishes from this device.
+    fn publisher() -> collab_types::CommitAuthor {
+        collab_types::CommitAuthor {
+            principal: None,
+            device: DEVICE,
+        }
+    }
+
+    #[test]
+    fn a_part_retried_alone_completes_the_action_it_was_held_for() {
+        let (commit, first, second) = two_unit_action();
+        let state = BridgeState::new();
+        let mut peer = AutoCommit::new();
+        let part_a = publication(&commit, "tasks", "a", &first, 1);
+        assert!(
+            !deliver(&state, &part_a, "tasks", "a", &mut peer),
+            "the first part alone is not applied"
+        );
+        assert_eq!(state.commits().held_parts(), 1);
+
+        // The publisher could not send the second part with the first, and
+        // sends it in a later pass under a commit naming it alone: the action
+        // it was part of is still one action, and completes.
+        let alone = WorkspaceCommit::of_units(
+            WORKSPACE,
+            &publisher(),
+            &[collab_types::UnitMutation {
+                app: "discussion",
+                record: "thread",
+                mutation: &mutation(&mut second.clone()),
+            }],
+        )
+        .unwrap()
+        .remove(0)
+        .expect("the part's own commit");
+        let retried = publication(&alone, "discussion", "thread", &second, 2);
+        assert!(
+            deliver(&state, &retried, "discussion", "thread", &mut peer),
+            "the retried part completes the action"
+        );
+        assert!(peer.get(automerge::ROOT, "title").unwrap().is_some());
+        assert!(peer.get(automerge::ROOT, "body").unwrap().is_some());
+        assert_eq!(state.commits().held_parts(), 0);
+        assert_eq!(
+            state.commits().history(WORKSPACE).len(),
+            1,
+            "one action, one entry"
+        );
     }
 
     #[test]
@@ -375,9 +506,9 @@ mod tests {
         assert_eq!(peer.get(automerge::ROOT, "body").unwrap(), None);
         assert_eq!(state.commits().held_parts(), 1);
 
-        let part_b = publication(&commit, "tasks", "b", &second, 2);
+        let part_b = publication(&commit, "discussion", "thread", &second, 2);
         assert!(
-            deliver(&state, &part_b, "tasks", "b", &mut peer),
+            deliver(&state, &part_b, "discussion", "thread", &mut peer),
             "the second part completes the action"
         );
         assert!(peer.get(automerge::ROOT, "title").unwrap().is_some());
@@ -403,9 +534,9 @@ mod tests {
         );
         deliver(
             &state,
-            &publication(&commit, "tasks", "b", &second, 2),
-            "tasks",
-            "b",
+            &publication(&commit, "discussion", "thread", &second, 2),
+            "discussion",
+            "thread",
             &mut peer,
         );
 
@@ -435,13 +566,11 @@ mod tests {
         );
         deliver(
             &state,
-            &publication(&commit, "tasks", "b", &second, 2),
-            "tasks",
-            "b",
+            &publication(&commit, "discussion", "thread", &second, 2),
+            "discussion",
+            "thread",
             &mut peer,
         );
-        state.commits().record(commit.clone());
-
         let history = state.commits().history(WORKSPACE);
         assert_eq!(history.len(), 1, "one action, one entry: {history:?}");
         let action = &history[0];
@@ -449,12 +578,121 @@ mod tests {
         assert_eq!(action.principal.as_deref(), Some("alice"));
         assert_eq!(action.device, DEVICE);
         assert_eq!(action.at_ms, commit.at_ms);
-        assert_eq!(action.action.name, "title");
-        assert_eq!(action.action.invocation, Some(uuid::Uuid::from_u128(11)));
+        assert_eq!(
+            action.invocation,
+            Some(uuid::Uuid::from_u128(11)),
+            "the invocation every change of the action ran under"
+        );
         assert_eq!(action.parts, commit.parts);
         assert_eq!(action.parts.len(), 2);
         assert_eq!(action.parts[0].changes, vec![commit.parts[0].changes[0]]);
+        // Each resource the action wrote reads it in its own history, once.
+        let resources = [("tasks", "a", "title"), ("discussion", "thread", "body")];
+        for (app, record, resource) in resources {
+            let of_resource = state
+                .commits()
+                .history_of(WORKSPACE, app, record, resource, 10);
+            assert_eq!(
+                of_resource.len(),
+                1,
+                "{app}/{record}/{resource}: {of_resource:?}"
+            );
+            assert_eq!(of_resource[0].commit, commit.id());
+        }
+        // Undo of any change takes the whole action back, both units with it.
+        let undo = state
+            .commits()
+            .action_of(WORKSPACE, &commit.parts[1].changes[0])
+            .unwrap();
+        assert_eq!(undo.commit, commit.id());
+        assert_eq!(undo.parts.len(), 2);
         assert!(state.commits().history("elsewhere").is_empty());
+    }
+
+    #[test]
+    fn a_peer_receiving_an_undo_reverts_both_units_together() {
+        let (commit, first, second) = two_unit_action();
+        let state = BridgeState::new();
+        let mut peer = AutoCommit::new();
+        for (app, record, doc, seq) in [
+            ("tasks", "a", &first, 1),
+            ("discussion", "thread", &second, 2),
+        ] {
+            deliver(
+                &state,
+                &publication(&commit, app, record, doc, seq),
+                app,
+                record,
+                &mut peer,
+            );
+        }
+
+        // The undo of that action: a change on top of each unit, taking the
+        // value the action wrote back to what it was.
+        let undo_invocation = InvocationId(uuid::Uuid::from_u128(12));
+        let mut reverted_first = first.clone();
+        let mut reverted_second = second.clone();
+        let before_first = reverted_first.get_heads();
+        let before_second = reverted_second.get_heads();
+        rewrite(&mut reverted_first, "title", "undone", undo_invocation);
+        rewrite(&mut reverted_second, "body", "undone", undo_invocation);
+        let undo_first =
+            collab_types::DocumentMutation::Incremental(reverted_first.save_after(&before_first));
+        let undo_second =
+            collab_types::DocumentMutation::Incremental(reverted_second.save_after(&before_second));
+        let undo_commit = WorkspaceCommit::of_units(
+            WORKSPACE,
+            &publisher(),
+            &[
+                collab_types::UnitMutation {
+                    app: "tasks",
+                    record: "a",
+                    mutation: &undo_first,
+                },
+                collab_types::UnitMutation {
+                    app: "discussion",
+                    record: "thread",
+                    mutation: &undo_second,
+                },
+            ],
+        )
+        .unwrap()
+        .remove(0)
+        .unwrap();
+
+        let undo_b = publication(&undo_commit, "discussion", "thread", &reverted_second, 3);
+        assert!(
+            !deliver(&state, &undo_b, "discussion", "thread", &mut peer),
+            "the undo's second part alone reverts nothing"
+        );
+        assert_eq!(
+            peer.get(automerge::ROOT, "title").unwrap().unwrap().0,
+            automerge::Value::from("child"),
+            "the first unit keeps what the action wrote"
+        );
+        assert_eq!(
+            peer.get(automerge::ROOT, "body").unwrap().unwrap().0,
+            automerge::Value::from("text")
+        );
+
+        let undo_a = publication(&undo_commit, "tasks", "a", &reverted_first, 4);
+        assert!(
+            deliver(&state, &undo_a, "tasks", "a", &mut peer),
+            "the undo completes and reverts the action"
+        );
+        assert_eq!(
+            peer.get(automerge::ROOT, "title").unwrap().unwrap().0,
+            automerge::Value::from("undone")
+        );
+        assert_eq!(
+            peer.get(automerge::ROOT, "body").unwrap().unwrap().0,
+            automerge::Value::from("undone")
+        );
+        assert_eq!(
+            state.commits().history(WORKSPACE).len(),
+            2,
+            "the action and its undo, one entry each"
+        );
     }
 
     #[test]
@@ -522,11 +760,8 @@ mod tests {
                     device: DEVICE,
                 },
                 u64::try_from(index).unwrap(),
-                collab_types::CommitAction {
-                    name: "title".to_owned(),
-                    item: None,
-                    invocation: None,
-                },
+                None,
+                None,
                 vec![
                     CommitPart {
                         app: "tasks".to_owned(),

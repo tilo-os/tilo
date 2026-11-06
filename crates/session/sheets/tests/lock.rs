@@ -75,6 +75,7 @@ fn song() -> Media {
         can_toggle: true,
         can_previous: true,
         can_next: true,
+        artwork: String::new(),
     }
 }
 
@@ -327,7 +328,7 @@ fn the_screen_shows_what_plays_and_a_press_asks_the_player() {
     );
 
     app.harness()
-        .perform_named("lock-pause", &A11yAction::Activate)
+        .perform_named("lock-play", &A11yAction::Activate)
         .unwrap();
     app.settle();
     app.harness()
@@ -577,6 +578,32 @@ fn the_field_holds_the_keyboard_as_the_screen_comes_up() {
         Some("Password"),
         "a person who is unlocking types; nothing else has to be found first"
     );
+}
+
+/// The screen reads in the language the person chose: the field asks for the
+/// password in German, and in nothing of the source language.
+#[test]
+fn the_screen_reads_in_the_persons_language() {
+    settings_store::appearance::LANGUAGE
+        .set(Some("de-DE".to_owned()))
+        .expect("the person's language is saved");
+    let (mut app, _seat, _asked) = locked(screen());
+    let said = labels(&mut app);
+    let field = holds_keyboard(&mut app);
+    settings_store::appearance::LANGUAGE
+        .set(None)
+        .expect("the language is the system's again");
+    assert_eq!(
+        field.as_deref(),
+        Some("Passwort"),
+        "the field asks for the password in German: {said:?}"
+    );
+    for english in ["Password", "Show password", "Unlock", "On-screen keyboard"] {
+        assert!(
+            !said.iter().any(|label| label == english),
+            "nothing on the screen says {english:?}: {said:?}"
+        );
+    }
 }
 
 #[test]

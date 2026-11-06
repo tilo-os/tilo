@@ -782,7 +782,7 @@ readers = [
   "crates/lang/tilolang-runtime/tests/provenance.rs",
   "crates/lang/tilolang-runtime/tests/rich_text.rs",
   "crates/lang/tilolang-runtime/tests/window_bar.rs",
-  "crates/lang/tilolang-runtime/tests/window_state_seed.rs",
+  "crates/lang/tilolang-runtime/tests/view_state_seed.rs",
   "crates/lang/tilolang-runtime/tests/written_views.rs",
 ]
 
@@ -1551,6 +1551,10 @@ reason = "needs the built web entry image"
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-image.sh"
 reason = "needs the built Lounge image"
+
+[[unrequired]]
+suite = "os/containers/tilo-lounge/test-integration.sh"
+reason = "starts the built Lounge image and drives its web entry, so it needs both the image and the desktop bundle"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"

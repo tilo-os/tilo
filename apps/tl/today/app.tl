@@ -15,7 +15,7 @@ default view today for Today
 
 /// Clears the finished todos, when there are any, and files a note saying how many went. The
 /// changes belong to the todo and notes apps, so each one asks until Today is trusted.
-flow morning_cleanup(list: todo.Tasks, nb: notes.Notebook) -> Int {
+action morning_cleanup(list: todo.Tasks, nb: notes.Notebook) -> Int {
     let n = 0
     // The clear is refused while nothing is finished, so it is asked only then.
     if list.items.any(x -> x.finished) {
