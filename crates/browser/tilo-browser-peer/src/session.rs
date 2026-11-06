@@ -1242,8 +1242,10 @@ enum Exit {
     Lost(String),
 }
 
-/// A sealed frame held for its keys, with its authenticated author.
-type HeldFrame = (Vec<u8>, [u8; 32]);
+/// A frame held for its route, with its authenticated author and whether the
+/// host was replaying it: its record's history is admitted where a live
+/// write is not, and a frame decided again keeps that verdict.
+type HeldFrame = (Vec<u8>, [u8; 32], bool);
 
 struct Task {
     /// This session's own command queue, for answers it waits on in the
@@ -2656,7 +2658,7 @@ impl Task {
         let replicas = &self.replicas;
         let changes = self.channels.open(
             route,
-            &|route| replicas.participants(route),
+            &|route| replicas.policy(route),
             tilo_clock::unix_now_ms(),
         );
         self.absorb(changes);
@@ -2689,10 +2691,9 @@ impl Task {
             }
         }
         let replicas = &self.replicas;
-        let changes = self.channels.retry_early(
-            &|route| replicas.participants(route),
-            tilo_clock::unix_now_ms(),
-        );
+        let changes = self
+            .channels
+            .retry(&|route| replicas.policy(route), tilo_clock::unix_now_ms());
         self.absorb(changes);
         // A record opened before the governance admitted it waits with its
         // channel unopened: opening it here asks the participants for the keys
@@ -2713,13 +2714,12 @@ impl Task {
     /// is admitted through the workspace's replica; channel governance and
     /// documents go on.
     fn inbound_body(&mut self, workspace_id: u64, body: Vec<u8>, author: [u8; 32]) {
+        let retained = lock(&self.shared).status.workspaces.get(&workspace_id) != Some(&true);
         match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body) {
             Ok(
                 message @ (neighbour_wire::NeighbourMsg::IdentityHello { .. }
                 | neighbour_wire::NeighbourMsg::SyncResp { .. }),
             ) => {
-                let retained =
-                    lock(&self.shared).status.workspaces.get(&workspace_id) != Some(&true);
                 // Governance the replica refuses is not the workspace's.
                 let admitted = self.replicas.admit(
                     workspace_id,
@@ -2732,24 +2732,26 @@ impl Task {
                     self.follow_governance(workspace_id);
                 }
             }
-            Ok(message) => self.inbound_message(body, message, author),
+            Ok(message) => self.inbound_message(body, message, author, retained),
             Err(_) => {}
         }
     }
 
-    /// A held document, decided again.
-    fn held_body(&mut self, body: Vec<u8>, author: [u8; 32]) {
+    /// A held document, decided again; `retained` as it arrived.
+    fn held_body(&mut self, body: Vec<u8>, author: [u8; 32], retained: bool) {
         if let Ok(message) = postcard::from_bytes(&body) {
-            self.inbound_message(body, message, author);
+            self.inbound_message(body, message, author, retained);
         }
     }
 
-    /// Channel governance or a document `author` wrote.
+    /// Channel governance or a document `author` wrote, `retained` while the
+    /// host replays the workspace.
     fn inbound_message(
         &mut self,
         body: Vec<u8>,
         message: neighbour_wire::NeighbourMsg,
         author: [u8; 32],
+        retained: bool,
     ) {
         let now = tilo_clock::unix_now_ms();
         match message {
@@ -2760,7 +2762,7 @@ impl Task {
                 let changes = self.channels.receive_frame(
                     &workspace,
                     *frame,
-                    &|route| replicas.participants(route),
+                    &|route| replicas.policy(route),
                     now,
                 );
                 self.absorb(changes);
@@ -2790,8 +2792,6 @@ impl Task {
                 };
                 // The workspace's governance decides the write before any app
                 // sees it, and holds it while it cannot yet.
-                let retained =
-                    lock(&self.shared).status.workspaces.get(&workspace_id) != Some(&true);
                 match self.replicas.decide_document(
                     workspace_id,
                     author,
@@ -2801,7 +2801,7 @@ impl Task {
                 ) {
                     Ok(true) => {}
                     Ok(false) => {
-                        self.hold_document(route, OpKey::of(envelope), body, author);
+                        self.hold_document(route, OpKey::of(envelope), body, author, retained);
                         return;
                     }
                     Err(error) => {
@@ -2824,6 +2824,7 @@ impl Task {
                                 self.governance_known(&route),
                                 self.ciphers.contains_key(&route),
                             ),
+                            retained,
                             None,
                         )
                         .admits_cleartext()
@@ -2840,7 +2841,7 @@ impl Task {
                 };
                 if waits {
                     let key = OpKey::of(envelope);
-                    self.hold_document(route, key, body, author);
+                    self.hold_document(route, key, body, author, retained);
                     return;
                 }
                 self.open_document(&body, author);
@@ -2870,8 +2871,8 @@ impl Task {
                 .unwrap_or_default();
             // The count stands until each document is decided again: one
             // still sealed is held again, and only what opened stops it.
-            for (_, (body, author)) in held {
-                self.held_body(body, author);
+            for (_, (body, author, retained)) in held {
+                self.held_body(body, author, retained);
             }
             let waiting = self.held_inbound.get(&route).map_or(0, InboundHold::len);
             self.update(|status| {
@@ -2896,7 +2897,9 @@ impl Task {
             let opens = self.ciphers.contains_key(&route)
                 || self
                     .channels
-                    .admission(&route, (true, false), None)
+                    // What the host replays is the record's history, whose
+                    // cleartext base opens where a live write would wait.
+                    .admission(&route, (true, false), true, None)
                     .admits_cleartext()
                     == Some(true);
             if opens {
@@ -2916,12 +2919,19 @@ impl Task {
 
     /// Hold a document until its route's keys change, its workspace's governance
     /// is known, or the host's replay supplies it.
-    fn hold_document(&mut self, route: DocumentRoute, key: OpKey, body: Vec<u8>, author: [u8; 32]) {
+    fn hold_document(
+        &mut self,
+        route: DocumentRoute,
+        key: OpKey,
+        body: Vec<u8>,
+        author: [u8; 32],
+        retained: bool,
+    ) {
         let held = self
             .held_inbound
             .entry(route.clone())
             .or_insert_with(|| InboundHold::new(MAX_HELD_DOCUMENTS));
-        held.hold(key, (body, author));
+        held.hold(key, (body, author, retained));
         let count = held.len();
         self.update(|status| {
             status.routes.entry(route).or_default().awaiting_keys = count;
@@ -3081,8 +3091,8 @@ impl Task {
                     .unwrap_or_default();
                 // Open what waited first: a reader that sees the route no
                 // longer awaiting keys has its documents among the events.
-                for (_, (body, author)) in held {
-                    self.held_body(body, author);
+                for (_, (body, author, retained)) in held {
+                    self.held_body(body, author, retained);
                 }
                 let waiting = self.held_inbound.get(&route).map_or(0, InboundHold::len);
                 self.update(|status| {
@@ -3177,11 +3187,20 @@ async fn signed_governance(
     } = outgoing;
     let signature = signer.sign(request.signing_bytes().ok()?).await.ok()?;
     request.signature = collab_types::Signature::from_bytes(signature);
-    let routed = neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
-        room: cluster_id,
-        request: Box::new(request),
-        route: Box::new(route),
-        delivery: rand::random(),
+    // A group the unit's own is asked for with the record it carries, so its
+    // participants decide Read on it; the workspace's scope names no record.
+    let routed = match route {
+        Some(route) => neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
+            room: cluster_id,
+            request: Box::new(request),
+            route: Box::new(route),
+            delivery: rand::random(),
+        },
+        None => neighbour_wire::NeighbourMsg::MlsAccessRequest {
+            workspace: cluster_id,
+            request: Box::new(request),
+            delivery: rand::random(),
+        },
     };
     Some(vec![(workspace_id, routed)])
 }

@@ -41,7 +41,7 @@ pub mod transport;
 pub mod voice;
 
 pub use channel_crypto::ChannelContentKeys;
-pub use channels::document_admission;
+pub use channels::{document_admission, document_history_admission};
 pub use custody::{
     CertifyError, IssuedRole, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, answer_pairing,
     certify, certify_with_root, decide_pairing, issue_device_cert, pending_pairings,

@@ -135,21 +135,24 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     people.sort_unstable();
     let pair = collab_types::direct_pair_id(&workspace.workspace, &people[0], &people[1]).unwrap();
 
-    // Alice's desktop holds the conversation's record channel, as one of the
-    // record's own devices; the page opens the record and writes its message,
-    // which waits for the keys the desktop has to hand out.
+    // Alice's desktop holds the workspace's key scope, which the conversation's
+    // record resolves to: no grant narrows it, so the record is read by the
+    // workspace's readers, as the desktop's governance replica resolves it.
+    // The page opens the record and writes its message, which waits for the
+    // keys the desktop has to hand out.
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.workspace.clone(),
         record: collab_types::direct_record(&pair),
     };
     let channel = document_channel_id(&route.app_id, &route.cluster_id, &route.record);
+    let scope = collab_types::workspace_scope(&workspace.workspace);
     let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record);
     let vault = VaultKey::new([7; 32]);
     let desktop_dir = tempfile::tempdir().unwrap();
     let mut desktop_channel = ChannelPeer::create_now(
         Some(desktop_dir.path()),
-        channel,
+        scope,
         Box::new(alice.key.clone()),
         &vault,
     )
@@ -188,9 +191,8 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
             },
         );
     }
-    // The record's channel is the two people's: the desktop's own device and
-    // the requiring person's devices, exactly as the workspace's governance
-    // names its readers.
+    // The scope's readers are the workspace's members' devices: the two
+    // people in the conversation, each on their own devices.
     let bob_device = Ed25519PublicKey::from_bytes(bob_cert.device_public_key);
 
     bob.open_record(workspace.workspace_id, route.clone())
@@ -208,17 +210,19 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     while opened.is_none() {
         let inbound = tokio::time::timeout_at(deadline, desktop.recv())
             .await
-            .expect("the page's message to reach the desktop")
+            .unwrap_or_else(|_| {
+                panic!(
+                    "the page's message to reach the desktop; the page's channels:\n{}",
+                    bob.status().channels
+                )
+            })
             .expect("the desktop's session open");
         let Inbound::Delta { data, .. } = inbound else {
             continue;
         };
         match postcard::from_bytes::<NeighbourMsg>(&data) {
-            Ok(NeighbourMsg::MlsRoutedAccessRequest { request, route, .. })
-                if request.channel == channel =>
-            {
+            Ok(NeighbourMsg::MlsAccessRequest { request, .. }) if request.channel == scope => {
                 assert_eq!(request.device, bob_device, "the page asks, not the host");
-                assert_eq!(route.record, collab_types::direct_record(&pair));
                 request.verify().expect("signed by the page's device key");
                 desktop_channel.learn_request(*request, &vault).unwrap();
                 let allowed =
@@ -249,6 +253,7 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
                 let clear = desktop_channel
                     .content_keys()
                     .unwrap()
+                    .for_unit(channel)
                     .open_content(artifact, &metadata, &envelope.payload)
                     .unwrap();
                 opened = Some(DocumentFrame::decode(&clear).unwrap());
@@ -273,6 +278,7 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     let (metadata, sealed) = desktop_channel
         .content_keys()
         .unwrap()
+        .for_unit(channel)
         .seal_content(artifact, ContentRetention::Delta, &frame)
         .unwrap();
     let mut op = SignedOp::new_unsigned_with_encryption(
