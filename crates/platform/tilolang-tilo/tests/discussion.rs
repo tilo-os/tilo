@@ -458,10 +458,9 @@ fn a_comment_is_about_its_task_so_the_page_does_not_list_it_as_made_from_it() {
     );
 }
 
-/// Tasks' scenario comments through the discussion app's own action: each comment is the person
-/// the scenario names, at the moment it names, made from the task the thread stands under.
-#[test]
-fn a_scenario_comments_as_the_people_and_times_it_names() {
+/// Ada's workspace with Tasks' discussion scenario run in it: the task it answers with, and what
+/// the two people it names said about it.
+fn a_task_discussed_by_a_scenario() -> (Replica, ResourceRef) {
     let (mut ada, loaded) = Replica::new(
         "ada",
         AutoCommit::new(),
@@ -487,27 +486,32 @@ fn a_scenario_comments_as_the_people_and_times_it_names() {
         InvokeOutcome::Done(v) => v,
         other => panic!("the scenario answers the task: {other:?}"),
     });
+    (ada, task)
+}
 
-    let said: Vec<ResourceRef> = ada
-        .host
+/// What was said about `task`, each as the change that made it.
+fn comments_about(ada: &Replica, task: &ResourceRef) -> Vec<tilolang_runtime::store::Version> {
+    ada.host
         .store()
-        .linked(&task)
+        .linked(task)
         .unwrap()
         .into_iter()
         // The task is made from the tasks root too; what the scenario comments are items.
         .filter(|link| link.how == LinkHow::CreatedFrom && link.of.item.is_some())
-        .map(|link| link.of)
-        .collect();
-    let made: Vec<_> = said
-        .iter()
-        .map(|comment| {
+        .map(|link| {
             ada.host
                 .store()
-                .version_end(comment, false)
+                .version_end(&link.of, false)
                 .unwrap()
                 .unwrap()
         })
-        .collect();
+        .collect()
+}
+
+#[test]
+fn a_scenario_comments_as_the_people_and_times_it_names() {
+    let (ada, task) = a_task_discussed_by_a_scenario();
+    let made = comments_about(&ada, &task);
     assert_eq!(
         made.iter().map(|v| v.who.as_str()).collect::<Vec<_>>(),
         ["scenario:Ada", "scenario:Bo", "scenario:Ada"],
@@ -529,7 +533,11 @@ fn a_scenario_comments_as_the_people_and_times_it_names() {
             .is_some_and(|from| from.id_string() == task.id_string())),
         "each comment is about the task: {made:#?}"
     );
+}
 
+#[test]
+fn the_page_under_a_task_draws_its_thread_with_names_and_times() {
+    let (ada, task) = a_task_discussed_by_a_scenario();
     let page = ada.host.open_resource(&task, None).unwrap();
     assert_eq!(
         comments_drawn(page.tree())
