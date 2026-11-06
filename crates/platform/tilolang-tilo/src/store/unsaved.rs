@@ -73,7 +73,11 @@ pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState, by: &str) 
         inner.notify(&ChangeSummary {
             doc: doc.clone(),
             fields: fields.into_iter().collect(),
-            collections: collections.remove(&doc).unwrap_or_default().into_iter().collect(),
+            collections: collections
+                .remove(&doc)
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
             listings: own,
             by: Some(by.to_owned()),
         });

@@ -15,11 +15,19 @@
 //! both start part `n + 1` start the same record, and nothing has to decide
 //! which of them did.
 //!
+//! A record the platform splits into *chunks* keeps one of them — chunk `0`,
+//! the record itself — eager and declares the rest
+//! (`derived:chunk.<n>@<base>`, `n` from `1`) on-demand: the record's manifest
+//! says which chunks exist, and a device is sent the ones it opens. A write
+//! therefore moves only the chunk it changed to the devices holding it.
+//!
 //! The declaration is the record id itself, because every host can read the
 //! route a change travels on, sealed or not.
 
 /// Role of a part of a chained record, in `derived:part.<n>@<base>`.
 const PART_ROLE: &str = "part.";
+/// Role of a chunk of a split record, in `derived:chunk.<n>@<base>`.
+const CHUNK_ROLE: &str = "chunk.";
 /// Role of a record declared on-demand, in `derived:on-demand@<base>`.
 const ON_DEMAND_ROLE: &str = "on-demand";
 
@@ -38,6 +46,14 @@ pub enum RecordSync<'a> {
         /// The part's number, from `0`.
         index: u64,
     },
+    /// Chunk `number` of the split record `base`, its `0` being the record
+    /// itself; always on-demand.
+    Chunk {
+        /// The record the chunk belongs to.
+        base: &'a str,
+        /// The chunk's number, from `1`.
+        number: u64,
+    },
 }
 
 /// How `record` (a route's record id) is synced.
@@ -52,23 +68,45 @@ pub fn record_sync(record: &str) -> RecordSync<'_> {
     if role == ON_DEMAND_ROLE {
         return RecordSync::OnDemand;
     }
-    let Some(index) = role.strip_prefix(PART_ROLE) else {
+    if let Some(index) = role.strip_prefix(PART_ROLE) {
+        return match numbered(index) {
+            Some(index) => RecordSync::Part { base, index },
+            None => RecordSync::Eager,
+        };
+    }
+    let Some(number) = role.strip_prefix(CHUNK_ROLE) else {
         return RecordSync::Eager;
     };
-    // Canonical decimal only, so one part has one id.
+    // Chunks are numbered from `1`: chunk `0` is the record itself.
+    match numbered(number) {
+        Some(number) if number > 0 => RecordSync::Chunk { base, number },
+        _ => RecordSync::Eager,
+    }
+}
+
+/// The number a `part.`/`chunk.` role carries, when it is canonical: decimal
+/// digits and no leading zero, so one part or chunk has one id.
+fn numbered(index: &str) -> Option<u64> {
     let canonical = !index.is_empty()
         && index.bytes().all(|byte| byte.is_ascii_digit())
         && (index == "0" || !index.starts_with('0'));
-    match index.parse() {
-        Ok(index) if canonical => RecordSync::Part { base, index },
-        _ => RecordSync::Eager,
-    }
+    canonical
+        // ignored-failure: a probe of the id's shape; digits only, so only a number past u64 fails, which is no part or chunk
+        .then(|| index.parse().ok())
+        .flatten()
 }
 
 /// The id of part `index` of the chained record `base`.
 #[must_use]
 pub fn record_part(base: &str, index: u64) -> String {
     format!("derived:{PART_ROLE}{index}@{base}")
+}
+
+/// The id of chunk `number` of the split record `base` (`number` from `1`;
+/// chunk `0` is `base`).
+#[must_use]
+pub fn record_chunk(base: &str, number: u64) -> String {
+    format!("derived:{CHUNK_ROLE}{number}@{base}")
 }
 
 /// The id of `base` declared on-demand.
@@ -109,6 +147,27 @@ mod tests {
             "derived:part.@chat",
             "derived:part.1x@chat",
             "derived:part.-1@chat",
+        ] {
+            assert_eq!(record_sync(other), RecordSync::Eager, "{other}");
+        }
+    }
+
+    #[test]
+    fn a_chunk_is_a_numbered_record_sent_when_opened() {
+        assert_eq!(
+            record_sync(&record_chunk("general", 3)),
+            RecordSync::Chunk {
+                base: "general",
+                number: 3
+            }
+        );
+        // Chunk 0 is the record itself, which a join replays like any record.
+        for other in [
+            "general",
+            "derived:chunk.0@general",
+            "derived:chunk.01@general",
+            "derived:chunk.@general",
+            "derived:chunk.1x@general",
         ] {
             assert_eq!(record_sync(other), RecordSync::Eager, "{other}");
         }

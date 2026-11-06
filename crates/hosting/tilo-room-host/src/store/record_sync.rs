@@ -29,6 +29,9 @@ enum Class {
     OnDemand,
     /// Part `index` of chain `base`.
     Part { base: String, index: u64 },
+    /// A chunk of a record split into chunks: its manifest names it, and a
+    /// device is sent it once it opens it.
+    Chunk,
 }
 
 /// How one retained frame's record reaches devices.
@@ -75,6 +78,7 @@ impl Classes {
                     index,
                 }
             }
+            RecordSync::Chunk { .. } => Class::Chunk,
         };
         self.channels.insert(channel, class);
     }
@@ -82,7 +86,7 @@ impl Classes {
     fn reach(&self, channel: &[u8; 32]) -> Option<Reach> {
         Some(match self.channels.get(channel)? {
             Class::Eager => Reach::Everyone,
-            Class::OnDemand => Reach::Opened(*channel),
+            Class::OnDemand | Class::Chunk => Reach::Opened(*channel),
             Class::Part { base, index } => {
                 if self.heads.get(base).is_some_and(|(head, _)| head > index) {
                     Reach::Opened(*channel)
