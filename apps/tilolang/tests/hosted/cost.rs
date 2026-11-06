@@ -676,6 +676,55 @@ fn open_pages(session: &mut Session, costs: &mut Costs) {
     }
 }
 
+/// The host's turns that changed something, until the window and the app have nothing left to
+/// do: what a step spent in round trips between the two.
+fn turns_until_rest(session: &mut Session) -> u32 {
+    let mut changed = 0;
+    let mut quiet = 0;
+    while quiet < 3 {
+        if session.host.turn() {
+            changed += 1;
+            quiet = 0;
+        } else {
+            quiet = 1_u32.saturating_add(quiet);
+        }
+        session.window.frame();
+    }
+    changed
+}
+
+/// Scrolling a list of ten thousand tasks: the app is asked for the rows a scroll is about to
+/// reach before it reaches them, so a step costs the window's frames and one ask, or none. What
+/// a scroll step asks of the app is what makes the person wait for it, so it is counted, not
+/// timed: a step that asked once per row would pass any budget on a fast enough machine.
+#[test]
+fn scrolling_asks_the_app_for_rows_ahead_not_once_a_row() {
+    let _motion = ui::motion::testing::settled();
+    let doc = seeded_tasks(SEEDED);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::tasks_over_in(&route, doc, None);
+    session.settle();
+    let first = top_title(&mut session);
+    let at = shown_at(&mut session, &first);
+    session.window.move_to(at.0, at.1);
+    session.settle();
+
+    let notches = 8;
+    let before = top_title(&mut session);
+    let mut turns = 0;
+    for _ in 0..notches {
+        session.window.scroll(0.0, -3.0);
+        turns += turns_until_rest(&mut session);
+        session.settle();
+    }
+    assert_ne!(top_title(&mut session), before, "the list scrolled");
+    eprintln!("scroll: {notches} notches asked the app {turns} times");
+    assert!(
+        turns <= notches,
+        "{notches} scroll steps asked the app {turns} times: a step costs one ask or none"
+    );
+}
+
 /// Scrolling the list: a wheel notch down and back up, the top row changing each time.
 fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
     let first = top_title(session);

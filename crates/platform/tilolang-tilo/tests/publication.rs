@@ -17,7 +17,7 @@ use tilolang_tilo::action::DynAction;
 use tilolang_tilo::host::argument_json;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{
-    ActionTypes, PlanRequest, Planner, action_type, open_with_id, publish_record,
+    ActionTypes, PlanRequest, Planner, action_type, open_with_id, publish_record, reached,
 };
 use tilolang_tilo::surface::package_surfaces;
 
@@ -449,4 +449,26 @@ fn a_command_that_asks_for_an_argument_says_so_before_it_opens() {
     };
     assert_eq!(label("rename"), "Rename…", "the name is the form's");
     assert_eq!(label("empty"), "Empty", "it runs on what it is given");
+}
+
+/// What a change reaches: an answer kept between publications ([`tilolang_tilo::publish`]) stands
+/// while nothing it read moved, so a change to a resource it did not read, or to a field of one it
+/// did, must not read it again — and one that did, must.
+#[test]
+fn a_change_reaches_what_read_it() {
+    let field = |resource: &str, field: &str| (resource.to_owned(), field.to_owned());
+    let list = "tl:tasks:task";
+    let task = "tl:tasks:task/1";
+    // A requirement that read a task's own field is read again when that field moves, or when the
+    // task is replaced whole; another field of the same task leaves the answer standing.
+    assert!(reached(&field(task, "done"), &field(task, "done")));
+    assert!(reached(&field(task, "*"), &field(task, "done")));
+    assert!(reached(&field(task, "done"), &field(task, "*")));
+    assert!(!reached(&field(task, "title"), &field(task, "done")));
+    // A requirement that read the list of tasks read every task in it: a change to one task is
+    // read again, while a change to one of the list's own fields is not a change to its tasks.
+    assert!(reached(&field(task, "done"), &field(list, "done")));
+    assert!(!reached(&field(list, "order"), &field(task, "title")));
+    // The list replaced whole is every task in it changed.
+    assert!(reached(&field(list, "*"), &field(task, "title")));
 }

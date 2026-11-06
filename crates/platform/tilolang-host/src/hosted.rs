@@ -45,7 +45,7 @@ use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
 use tilolang_tilo::publish::package_resource_id;
 use tilolang_tilo::publish::{
-    Caller, Committer, Planner, Publications, host_resource, publish_package,
+    Caller, Committer, Moved, Planner, Publications, host_resource, publish_package, reached,
 };
 use tilolang_tilo::{HostEffect, OpenEffect};
 
@@ -371,6 +371,101 @@ pub struct Kept {
     pub indexes: Option<std::path::PathBuf>,
 }
 
+/// What the actions of the rows a window shows answered, by resource and action: a window asks
+/// about every action of every row it shows, and the rows it shows move as it scrolls.
+#[derive(Default)]
+struct Answers {
+    /// The answer to each question, by the resource and the action it was asked of.
+    said: std::collections::HashMap<(String, String), Answered>,
+    /// The loaded packages the answers were read over: a package that loads is answered again.
+    packages: Vec<tilolang_tilo::runtime::PackageId>,
+}
+
+/// What one action of one published resource answered, and what reading it read.
+struct Answered {
+    /// Where the publications stood when the answer was read ([`Publications::moved`]).
+    at: u64,
+    /// What can run on the resource by the action: `None` for an action whose app keeps no
+    /// requirement it can decide, which is offered as it is published.
+    said: Option<tilo_actions::Availability>,
+    /// The fields reading the answer read; `None` for an answer that read beyond the workspace
+    /// (the clock, the window's space, the person's view state), which moves without it moving.
+    reads: Option<Vec<(String, String)>>,
+}
+
+/// How many answers a window's rows keep: a person scrolling a list of ten thousand asks about
+/// the rows they reach, so keeping every answer of every row would grow with the workspace.
+/// Past this, the answers start over.
+const ANSWERS_KEPT: usize = 8_192;
+
+impl Answers {
+    /// What can run on `resource` by `action`, as `host` says it now, with the publications
+    /// where `at` says: an answer read earlier stands while nothing it read moved
+    /// ([`Self::forget`]).
+    fn answer(
+        &mut self,
+        host: &Host,
+        at: u64,
+        resource: &str,
+        action: &str,
+    ) -> Option<tilo_actions::Availability> {
+        let key = (resource.to_owned(), action.to_owned());
+        if let Some(answered) = self.said.get(&key) {
+            return answered.said.clone();
+        }
+        let (said, reads) = match host.availability_reading(resource, action) {
+            Some((availability, reading)) => (
+                Some(availability),
+                (!reading.beyond).then_some(reading.reads),
+            ),
+            None => (None, Some(Vec::new())),
+        };
+        if self.said.len() >= ANSWERS_KEPT {
+            self.said.clear();
+        }
+        self.said.insert(
+            key,
+            Answered {
+                at,
+                said: said.clone(),
+                reads,
+            },
+        );
+        said
+    }
+
+    /// Forget what a change reached since an answer was read ([`Publications::changed_since`]),
+    /// and every answer when the packages loaded changed: an answer read nothing but the
+    /// workspace, so it stands until a field it read moves.
+    fn forget(
+        &mut self,
+        publications: &Publications,
+        packages: &[tilolang_tilo::runtime::PackageId],
+    ) {
+        if packages != self.packages.as_slice() {
+            self.packages = packages.to_vec();
+            self.said.clear();
+            return;
+        }
+        let mut since: std::collections::HashMap<u64, Option<Moved>> =
+            std::collections::HashMap::new();
+        self.said.retain(|_, answered| {
+            let Some(reads) = &answered.reads else {
+                return false;
+            };
+            match since
+                .entry(answered.at)
+                .or_insert_with(|| publications.changed_since(answered.at))
+            {
+                None | Some(Moved::Everything) => false,
+                Some(Moved::These(changed)) => !changed
+                    .iter()
+                    .any(|changed| reads.iter().any(|read| reached(changed, read))),
+            }
+        });
+    }
+}
+
 /// One app instance. See the module docs.
 pub struct Hosted {
     spec: Spec,
@@ -398,6 +493,10 @@ pub struct Hosted {
     published_from: Option<(Rc<Surface>, SurfaceInputs)>,
     /// Why the surface was last refused instead of published: empty once it publishes.
     refused: Vec<tilo_actions::ContractViolation>,
+    /// What can run on the rows the window shows, and what reading each answer read: a scroll or
+    /// a place switch asks again only for the rows that came into view, and only when what their
+    /// answers read moved ([`Answers`]).
+    answers: Answers,
     registry: ActionRegistry,
     /// What the instance last published to the session's persistent search index, and what it
     /// published from: it publishes the app's resources' entries when the record's heads move,
@@ -513,6 +612,7 @@ impl Hosted {
             directory_from: None,
             published_from: None,
             refused: Vec::new(),
+            answers: Answers::default(),
             registry,
             search_index: tilo_resource::search_index::Publisher::default(),
             search_index_from: None,
@@ -706,21 +806,50 @@ impl Hosted {
     /// app's to answer for them. Every other row is answered when a caller asks about it
     /// ([`Self::answer_directory`]), so nothing carries a condition's answer for every item a
     /// query could name.
-    fn answer_what_the_window_shows(&self, descriptors: &mut [ActionDescriptor]) {
+    ///
+    /// An answer stands while nothing it read moved ([`Answers`]): a scroll shows rows whose
+    /// answers are known, and costs only the rows that came into view.
+    fn answer_what_the_window_shows(&mut self, descriptors: &mut [ActionDescriptor]) {
         let Some(host) = self.instance.host() else {
             return;
         };
         let shown = self.instance.shown_resources();
+        self.forget_answers();
+        let at = self.moved();
         for descriptor in descriptors {
             if !shown.contains(&descriptor.address.resource) {
                 continue;
             }
-            if let Some(availability) =
-                host.availability(&descriptor.address.resource, &descriptor.address.action)
-            {
+            if let Some(availability) = self.answers.answer(
+                &host,
+                at,
+                &descriptor.address.resource,
+                &descriptor.address.action,
+            ) {
                 descriptor.contract.availability = availability;
             }
         }
+    }
+
+    /// Where the publications stand now: what an answer is read at, and how far it stands
+    /// without being read again.
+    fn moved(&self) -> u64 {
+        self.surface
+            .borrow()
+            .as_ref()
+            .map_or(0, |surface| surface.publications.borrow().moved())
+    }
+
+    /// Forget the answers a change since reached ([`Answers::forget`]): what a window shows is
+    /// answered again only where what it read moved, and rows no change reached keep theirs.
+    fn forget_answers(&mut self) {
+        let surface = self.surface.borrow().clone();
+        let Some(surface) = surface else {
+            return;
+        };
+        let publications = surface.publications.borrow();
+        let packages = surface.host.package_ids();
+        self.answers.forget(&publications, &packages);
     }
 
     /// Publish every entry of the app's resources again: the first publication, a new route, and
@@ -813,13 +942,16 @@ impl Hosted {
             }
             return;
         };
+        self.forget_answers();
+        let at = self.moved();
+        let answers = &mut self.answers;
         for request in requests {
             self.directory.answer_refreshed(request, |row| {
                 let Some(descriptor) = row.descriptor.as_mut() else {
                     return;
                 };
                 if let Some(availability) =
-                    host.availability(&descriptor.resource, &descriptor.action)
+                    answers.answer(&host, at, &descriptor.resource, &descriptor.action)
                 {
                     descriptor.contract.availability = availability;
                 }
