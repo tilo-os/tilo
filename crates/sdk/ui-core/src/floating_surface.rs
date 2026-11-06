@@ -270,7 +270,7 @@ impl FloatingSurfaceProtocolRole {
 
 /// Starting mode for an app-requested session-shell chooser. The request only
 /// opens trusted shell UI; it never grants an app capture permission or pixels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureStudioProtocolMode {
     Screenshot,
