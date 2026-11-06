@@ -379,26 +379,33 @@
      ]
     },
     {
-     "id": "apps-menu",
-     "story": "open the app's own menu",
+     "id": "apps-reopen-closed",
+     "story": "close an app and bring it back with the keyboard shortcut",
      "steps": [
       {
        "door": "window.launch",
        "app": "notes"
       },
       {
-       "wait": 0.7
+       "wait": 0.8
       },
       {
-       "door": "app.open-menu"
+       "door": "tab.close"
       },
       {
        "wait": 0.8
+      },
+      {
+       "door": "tab.reopen"
+      },
+      {
+       "wait": 1.2
       }
      ],
-     "capture": "the app's menu",
+     "capture": "the app brought back",
      "measure": [
-      "what the app offers"
+      "a window came back",
+      "changed pixels"
      ]
     },
     {

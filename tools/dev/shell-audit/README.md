@@ -38,8 +38,8 @@ pass `--out` to put them elsewhere):
 - `pairs/<scenario>/old.png`, `new.png` — the same story on each side;
 - `manifest-old.json`, `manifest-new.json` — per scenario: what each step did,
   how long it took, what the desk answered, and the controls it listed;
-- `index.md` — the two sides side by side, the doors each one has, and what a
-  side could not do.
+- `index.md` — the two sides side by side, per-area totals, the doors each one
+  has, and what a side could not do.
 
 Useful arguments:
 

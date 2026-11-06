@@ -208,8 +208,6 @@ class Run:
             return "waited"
         if "drag" in step:
             return self.side.drag(*step["drag"])
-        if "drag_between" in step:
-            return self.drag_between(step["drag_between"])
         if "scroll" in step:
             return self.side.scroll(*step["scroll"])
         if "scroll_at" in step:
@@ -239,15 +237,6 @@ class Run:
             self.side.key(key)
         finally:
             self.side.modifiers()
-
-    def drag_between(self, spec: dict) -> dict:
-        start = spec["from"]
-        end = spec["to"]
-        from_row = self.doors.target(start) if isinstance(start, str) else None
-        to_row = self.doors.target(end) if isinstance(end, str) else None
-        from_x, from_y = self.centre(from_row["rect"]) if from_row else start
-        to_x, to_y = self.centre(to_row["rect"]) if to_row else end
-        return self.side.drag(from_x, from_y, to_x, to_y, int(spec.get("steps", 14)))
 
     @staticmethod
     def centre(rect):
@@ -453,7 +442,34 @@ def pair(out: Path, catalogue: Catalogue) -> Path:
     lines += ["", "A door one side lacks is in the table as `door missing` with what that",
               "side answered instead. Timings are wall milliseconds for the whole scenario,",
               "including the capture; `px` is how much of the desk the scenario changed.",
-              "", "| scenario | area | old | new | pairs |", "| --- | --- | --- | --- | --- |"]
+              "", "## By area", "",
+              "| area | scenarios | captured | door missing | failed | old ms | new ms |",
+              "| --- | --- | --- | --- | --- | --- | --- |"]
+
+    def side_of(manifest, area_id):
+        if not manifest:
+            return {"captured": 0, "door_missing": 0, "failed": 0, "ms": []}
+        rows = [row for row in manifest["rows"]
+                if row.get("area") == area_id and "outcome" in row]
+        return {"captured": sum(1 for row in rows if row["outcome"] == "captured"),
+                "door_missing": sum(1 for row in rows if row["outcome"] == "door_missing"),
+                "failed": sum(1 for row in rows if row["outcome"] not in
+                              ("captured", "door_missing")),
+                "ms": [row["total_ms"] for row in rows if row["outcome"] == "captured"]}
+
+    def mean(values):
+        return f"{sum(values) / len(values):.0f}" if values else "-"
+
+    for area in catalogue.areas:
+        old = side_of(manifests.get("old"), area["id"])
+        new = side_of(manifests.get("new"), area["id"])
+        lines.append(f"| {area['id']} | {len(area['scenarios'])} | "
+                     f"{old['captured']} / {new['captured']} | "
+                     f"{old['door_missing']} / {new['door_missing']} | "
+                     f"{old['failed']} / {new['failed']} | "
+                     f"{mean(old['ms'])} | {mean(new['ms'])} |")
+    lines += ["", "## Every scenario, both sides", "",
+              "| scenario | area | old | new | pairs |", "| --- | --- | --- | --- | --- |"]
 
     def describe(manifest, scenario_id):
         if not manifest:
@@ -481,6 +497,7 @@ def pair(out: Path, catalogue: Catalogue) -> Path:
     lines += ["", "## Doors each side has", "",
               "| door | old | new |", "| --- | --- | --- |"]
     asked: dict[str, set[str]] = {}
+    tried: dict[str, set[str]] = {}
     for name, manifest in manifests.items():
         for row in manifest["rows"]:
             if "outcome" not in row:
@@ -491,14 +508,19 @@ def pair(out: Path, catalogue: Catalogue) -> Path:
                 if label.startswith('{"door": "'):
                     door = label.split('"')[3]
                 if door:
-                    asked.setdefault(door, set())
+                    tried.setdefault(door, set()).add(name)
                     if "door_missing" in step:
-                        asked[door].add(name)
-    for door in sorted(asked):
-        missing = asked[door]
-        old = "missing" if "old" in missing else ("have" if "old" in manifests else "-")
-        new = "missing" if "new" in missing else ("have" if "new" in manifests else "-")
-        lines.append(f"| {door} | {old} | {new} |")
+                        asked.setdefault(door, set()).add(name)
+
+    def have(door, name):
+        if name not in manifests:
+            return "-"
+        if name in asked.get(door, set()):
+            return "missing"
+        return "have" if name in tried.get(door, set()) else "not tried"
+
+    for door in sorted(set(tried) | set(asked)):
+        lines.append(f"| {door} | {have(door, 'old')} | {have(door, 'new')} |")
 
     # What could not be captured, per side.
     lines += ["", "## What a side could not do", ""]
@@ -528,7 +550,7 @@ def pair(out: Path, catalogue: Catalogue) -> Path:
 VERBS = {"door", "click", "click_at", "right_click", "right_click_at", "hover", "hover_at",
          "move", "double_click", "double_click_at", "middle_click", "drag_tab_to", "drag_tab",
          "window_body", "key", "client_key", "chord", "type", "client_type", "wait", "drag",
-         "drag_between", "scroll", "scroll_at", "launch", "notify", "snapshot"}
+         "scroll", "scroll_at", "launch", "notify", "snapshot"}
 
 
 def check(catalogue: "Catalogue") -> list[str]:

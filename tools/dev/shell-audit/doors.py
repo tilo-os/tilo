@@ -111,9 +111,8 @@ class Doors:
             "tab.reopen": self.tab_reopen,
             "tab.duplicate": self.tab_duplicate,
             "clipboard.set": self.clipboard_set,
+            "clipboard.set": self.clipboard_set,
             "clipboard.paste": self.clipboard_paste,
-            "app.open-menu": self.app_menu,
-            "app.type": self.app_type,
         }
 
     # -- plumbing ---------------------------------------------------------
@@ -788,11 +787,3 @@ class Doors:
         self.side.modifiers()
         return "Ctrl+V to the focused client"
 
-    def app_menu(self, name: str = ""):
-        if self.new:
-            return self.tail("desktop:chrome\x1fopen-app", args={"app": name, "beside": False})
-        raise DoorMissing("the old shell has no open-app action; its launchpad holds the apps")
-
-    def app_type(self, text: str):
-        self.side.client_type(text)
-        return text
