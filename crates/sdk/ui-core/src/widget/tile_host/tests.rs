@@ -165,10 +165,15 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
         for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
             let name = theme.name.clone();
             let focus = theme.tokens.colors.window_edge_focused();
+            assert_eq!(
+                focus.to_rgba8().to_u32(),
+                theme.tokens.colors.border_focus.to_rgba8().to_u32(),
+                "{name}: window focus is the accent, the mark a focus ring has"
+            );
             assert_ne!(
                 focus.to_rgba8().to_u32(),
-                theme.tokens.colors.intent.you.to_rgba8().to_u32(),
-                "{name}: window focus is neutral, not your colour"
+                theme.window_edge().to_rgba8().to_u32(),
+                "{name}: the focused window's edge is the resting hairline, so focus distinguishes nothing"
             );
             let (fr, fg, fb) = {
                 let rgba = focus.to_rgba8();

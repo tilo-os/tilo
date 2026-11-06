@@ -2768,10 +2768,10 @@ impl TileHost {
         radius: f64,
         rect: Rect,
     ) {
-        // Focus is the window's own edge, recoloured and a pixel heavier: the
-        // band is drawn outside the card, so the extra pixel is desktop, and
-        // the weight is what tells the window taking the keyboard from its
-        // neighbours at a glance.
+        // Focus is the window's own edge in the accent, and a pixel heavier:
+        // the band is drawn outside the card, so the extra pixel is desktop,
+        // and the weight is what tells the window taking the keyboard from
+        // its neighbours at a glance.
         let edge_color = if self.focused {
             theme.tokens.colors.window_edge_focused()
         } else {
