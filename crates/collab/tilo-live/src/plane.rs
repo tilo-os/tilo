@@ -346,8 +346,11 @@ impl Shared {
     }
     /// One frame a reader got and this plane could not open, by why.
     fn refused(&self, refusal: &Refusal) {
-        let mut refusals = self.refusals.lock_recover();
-        *refusals.entry(refusal.to_string()).or_default() += 1;
+        self.refusals
+            .lock_recover()
+            .entry(refusal.to_string())
+            .and_modify(|count| *count = count.saturating_add(1))
+            .or_insert(1);
     }
     /// Queue one received picture, or start its track over at the next
     /// keyframe when its reader fell behind: a decoder is never handed a

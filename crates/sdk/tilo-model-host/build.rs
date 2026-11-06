@@ -12,8 +12,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn main() {
-    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets it"));
+fn main() -> Result<(), String> {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let model = manifest.join("../../../apps/tasks-model");
     // The guest crate the module is built with, and the ABI it is built against: a module of an
     // older guest is not the module this host reads.
@@ -24,7 +24,8 @@ fn main() {
         manifest.join("../tilo-model-guest/Cargo.toml"),
         manifest.join("../tilo-model-abi/src"),
     ];
-    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets it"));
+    let out =
+        PathBuf::from(std::env::var_os("OUT_DIR").ok_or("cargo sets OUT_DIR for build scripts")?);
     let module = out.join("tasks_model.wasm");
     // Every source the module is built from: cargo watches a directory's own entry only, so a
     // file changed under it is not seen.
@@ -36,14 +37,14 @@ fn main() {
     // none; it is set before any path that might return.
     println!("cargo::rustc-env=TILO_MODEL_FIXTURE_DIR={}", out.display());
     if sources.iter().all(|source| fresh(&module, source)) {
-        return;
+        return Ok(());
     }
     if let Err(error) = build(&model, &out) {
         // A host that cannot be tested without a module still builds; the test that needs one
         // says so itself, rather than every build of this crate failing on a wasm toolchain.
         println!("cargo::warning=the model module fixture was not built: {error}");
-        return;
     }
+    Ok(())
 }
 
 /// Build `model` for `wasm32-unknown-unknown` into `out/target`, and copy the module beside it.
@@ -122,15 +123,15 @@ fn build(model: &Path, out: &Path) -> Result<(), String> {
 /// system's.
 fn module_toolchain() -> Option<String> {
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-    candidates(rustc)
+    candidates(&rustc)
         .into_iter()
         .find(|sysroot| has_wasm(sysroot))
 }
 
 /// The sysroots to try, in order: the running toolchain, then every rustup one.
-fn candidates(rustc: std::ffi::OsString) -> Vec<String> {
+fn candidates(rustc: &std::ffi::OsString) -> Vec<String> {
     let mut out = Vec::new();
-    if let Ok(output) = Command::new(&rustc).arg("--print").arg("sysroot").output() {
+    if let Ok(output) = Command::new(rustc).arg("--print").arg("sysroot").output() {
         out.push(String::from_utf8_lossy(&output.stdout).trim().to_owned());
     }
     let home = std::env::var_os("RUSTUP_HOME")
@@ -160,7 +161,7 @@ fn fresh(module: &Path, sources: &Path) -> bool {
     let Ok(built) = std::fs::metadata(module).and_then(|meta| meta.modified()) else {
         return false;
     };
-    !newest(sources).is_some_and(|modified| modified > built)
+    newest(sources).is_none_or(|modified| modified <= built)
 }
 
 /// The modification time of the newest `.rs` file under `dir`.

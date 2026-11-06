@@ -19,7 +19,6 @@
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use serde_json::{Map, Value as Json};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
@@ -41,7 +40,7 @@ struct Modules {
     /// The engine every module runs on: the one the session's packages run on too.
     engine: Rc<Engine>,
     /// Each app's module, by the app's id.
-    loaded: BTreeMap<String, Arc<Module>>,
+    loaded: BTreeMap<String, Rc<Module>>,
 }
 
 impl Modules {
@@ -53,15 +52,15 @@ impl Modules {
     }
 
     /// `app`'s module, loaded from `wasm` the first time it is asked for.
-    fn get(&mut self, app: &str, wasm: &[u8]) -> Result<Arc<Module>, RecordError> {
+    fn get(&mut self, app: &str, wasm: &[u8]) -> Result<Rc<Module>, RecordError> {
         if let Some(module) = self.loaded.get(app) {
-            return Ok(Arc::clone(module));
+            return Ok(Rc::clone(module));
         }
-        let module = Arc::new(
+        let module = Rc::new(
             Module::load(app, wasm, Rc::clone(&self.engine))
                 .map_err(|error| RecordError::Module(error.to_string()))?,
         );
-        self.loaded.insert(app.to_owned(), Arc::clone(&module));
+        self.loaded.insert(app.to_owned(), Rc::clone(&module));
         Ok(module)
     }
 }
