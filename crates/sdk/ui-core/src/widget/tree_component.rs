@@ -233,9 +233,6 @@ struct Inner {
     children: HashMap<String, Vec<String>>,
     /// The rows that open to show subtasks.
     branches: HashSet<String>,
-    /// The rows that start open when the view does not say which are open: the nodes that say
-    /// they are branches.
-    open: HashSet<String>,
     /// The resource each node stands for, by its key, and the key each resource stands at.
     items: HashMap<String, ResourceId>,
     keys: HashMap<String, String>,
@@ -364,7 +361,6 @@ impl Nodes {
         let mut index = HashMap::new();
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
         let mut branches = HashSet::new();
-        let mut open = HashSet::new();
         let mut items = HashMap::new();
         let mut item_keys = HashMap::new();
         if root_shown {
@@ -414,7 +410,6 @@ impl Nodes {
                 // A branch shows its disclosure whether or not its nodes are in the list: a
                 // folder read when it opens.
                 branches.insert(part.key.clone());
-                open.insert(part.key.clone());
             }
             let under = parent.clone().unwrap_or_else(|| TOP_LEVEL.to_owned());
             children.entry(under).or_default().push(part.key.clone());
@@ -455,7 +450,6 @@ impl Nodes {
                 index,
                 children,
                 branches,
-                open,
                 items,
                 keys: item_keys,
                 root_shown,
@@ -494,10 +488,6 @@ impl Nodes {
             .map_or(&[], Vec::as_slice)
     }
 
-    fn is_root(&self, key: &str) -> bool {
-        key == TOP_LEVEL
-    }
-
     /// The row a node stands under, among the nodes the owner names: none at the top level.
     fn declared_parent(&self, key: &str) -> Option<String> {
         self.node(key)
@@ -505,29 +495,18 @@ impl Nodes {
             .filter(|parent| parent != TOP_LEVEL)
     }
 
-    /// Which rows start folded: every branch, less the nodes the view says are open; or, with
-    /// the view saying nothing, less the nodes that say they are branches and the tree's own
-    /// name.
-    fn folded_at_first(&self, expanded: Option<&[ResourceId]>) -> Vec<String> {
-        match expanded {
-            Some(open) => {
-                let open: HashSet<String> = open
-                    .iter()
-                    .filter_map(|id| self.key_of_item(&id.0))
-                    .collect();
-                self.branches
-                    .iter()
-                    .filter(|key| !open.contains(*key))
-                    .cloned()
-                    .collect()
-            }
-            None => self
-                .branches
-                .iter()
-                .filter(|key| !self.open.contains(*key) && !self.is_root(key))
-                .cloned()
-                .collect(),
-        }
+    /// Which rows start folded, given the rows the view says it holds open: every branch but
+    /// those.
+    fn folded_at_first(&self, expanded: &[ResourceId]) -> Vec<String> {
+        let open: HashSet<String> = expanded
+            .iter()
+            .filter_map(|id| self.key_of_item(&id.0))
+            .collect();
+        self.branches
+            .iter()
+            .filter(|key| !open.contains(*key))
+            .cloned()
+            .collect()
     }
 
     /// Whether `source` may land at `target`: not on itself, not inside its own subtree, and
@@ -780,7 +759,11 @@ impl DescribedTreeView {
         // What the rows of the tree are: the list fills it as it mounts them, and reads it as
         // it builds each one.
         let marks = Rc::new(TreeMarks::<String>::default());
-        marks.restore_folded(nodes.folded_at_first(expanded.as_deref()));
+        // A view that says which rows it holds open is where the tree is, every build; one that
+        // says nothing leaves what a person folded to the list.
+        if let Some(open) = expanded.as_deref() {
+            marks.restore_folded(nodes.folded_at_first(open));
+        }
         let row_marks = Rc::clone(&marks);
         let mut list = VirtualList::with_selection_delegate(
             nodes.clone(),
@@ -1236,9 +1219,9 @@ mod tests {
         );
         assert!(!nodes.has_subtasks(of("file")), "a leaf folds nothing");
         assert_eq!(
-            nodes.folded_at_first(None),
-            Vec::<String>::new(),
-            "a folder a person just opened shows its files when they come"
+            nodes.folded_at_first(&[]),
+            vec!["folder".to_owned()],
+            "a view that holds nothing open folds its branch, and the list opens it when read"
         );
     }
 }
