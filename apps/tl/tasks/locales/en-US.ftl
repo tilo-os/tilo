@@ -230,7 +230,7 @@ d-mg3c777a = Move to~present
 
 d-tpvjqy5m = Clear done~present
 
-d-rxpe5yqk = Place in board~present
+d-rxpe5yqk = Place~present
 
 d-i2mhsb3h = Home
     .w-tasks = Tasks
