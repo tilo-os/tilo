@@ -218,6 +218,28 @@ fn a_run_missed_while_every_device_was_off_runs_once_when_one_comes_up() {
 }
 
 #[test]
+fn a_wake_comes_at_the_next_instant_a_trigger_is_due() {
+    let (mut ada, _, reminder) = workspace();
+    let ten = tilolang::calendar::instant("2026-10-27T10:07:30Z").unwrap();
+    let now = ten - 60;
+
+    // No reminder time to come first: the board's next half hour.
+    let next = ada.host.next_trigger(now).unwrap();
+    assert!(next > now && next <= now + PERIOD, "{next} after {now}");
+    assert_eq!(next % PERIOD, 0, "a period's start: {next}");
+
+    // A time still to come comes first.
+    remind_at(&mut ada, &reminder, "2026-10-27T10:07:30Z");
+    assert_eq!(ada.host.next_trigger(now), Some(ten), "the reminder's time");
+
+    // Once it rang, the board's half hour is what wakes the app again.
+    turn(&mut ada, ten);
+    let next = ada.host.next_trigger(ten).unwrap();
+    assert!(next > ten && next <= ten + PERIOD, "{next} after {ten}");
+    assert_eq!(next % PERIOD, 0);
+}
+
+#[test]
 fn two_devices_run_a_trigger_once() {
     let (mut ada, board, _) = workspace();
     let now = 1_790_000_400 / PERIOD * PERIOD;

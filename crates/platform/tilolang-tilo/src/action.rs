@@ -28,8 +28,8 @@ pub const ACTION_TYPE: &str = "tl.action";
 /// The key of the map in a resource that holds the migrations that ran on it, by action id.
 pub const MIGRATED_KEY: &str = "$migrated";
 
-/// The key of the map in a resource that holds what each trigger last did for it, by trigger id
-/// and the resource's path: the period it ran in, or the instant it fired at.
+/// The key of the map in a resource that holds what each trigger last did for it, by trigger
+/// id: the period it ran in, or the instant it fired at.
 pub const TRIGGERS_KEY: &str = "$triggers";
 
 /// The key of the map in the workspace record that holds every tilolang resource.
@@ -764,8 +764,8 @@ fn mark_trigger(
     let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(app, id)? else {
         return Err(ActionError::Refused(format!("there is no resource `{id}`")));
     };
-    // `require not run`: where actions are applied in order (the origin), a second run of the
-    // same period or instant is refused, not applied twice.
+    // Where changes are applied in order, a second run of the same period or instant is
+    // refused as it is made, not applied twice.
     if triggered(doc, &obj, key).as_deref() == Some(value) {
         return Err(ActionError::Refused(format!(
             "the trigger `{key}` already ran as `{value}` on `{id}`"
