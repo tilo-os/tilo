@@ -642,6 +642,9 @@ fn retire_agent(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, agent: &
     edit(fed.handle, fed.person, |ws, actor| {
         domain::remove_agent(ws, actor, agent)
     });
+    // The review was of an agent the workspace no longer lists.
+    let shown = seat.settings();
+    show(seat, fed, shown.tab, None);
 }
 
 /// Choose the model an agent plans with, as its keeper: the record holds the

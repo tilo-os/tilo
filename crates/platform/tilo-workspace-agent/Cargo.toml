@@ -22,6 +22,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-files = { version = "0.1.0", path = "../tilo-files" }
 
 [lints]
 workspace = true

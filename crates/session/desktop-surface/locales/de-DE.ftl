@@ -788,14 +788,6 @@ workspace-settings-grant-remote-control = Fernsteuerung
 workspace-settings-grant-network = Netzwerkzugriff
 workspace-settings-grant-read-files = Dateien des Arbeitsbereichs lesen
 workspace-settings-grant-edit-files = Dateien des Arbeitsbereichs bearbeiten
-workspace-settings-preset-observer = Beobachter
-workspace-settings-preset-contributor = Mitwirkender
-workspace-settings-preset-operator = Operator
-workspace-settings-preset-custom = Benutzerdefiniert
-workspace-settings-preset-observer-hint = Nur Lesen auf Bereichen, die du auswählst
-workspace-settings-preset-contributor-hint = Lesen und Schreiben nur auf Bereichen, die du auswählst
-workspace-settings-preset-operator-hint = Nur freigegebene App-Aktionen ausführen
-workspace-settings-preset-custom-hint = Jede eingeschränkte Berechtigung prüfen
 workspace-settings-members-count = { $count ->
     [one] 1 Person teilt diesen Arbeitsbereich
    *[other] { $count } Personen teilen diesen Arbeitsbereich
@@ -820,7 +812,7 @@ workspace-settings-agents-count = { $count ->
     [one] 1 mitwirkender Agent
    *[other] { $count } mitwirkende Agenten
 }
-workspace-settings-agents-help = Agenten sind sichtbar nicht-menschliche Mitwirkende. Die Zulassung gewährt keine allgemeinen Rechte im Arbeitsbereich.
+workspace-settings-agents-help = Agenten arbeiten hier mit dir. Sie tun nur, was du ihnen erlaubst.
 workspace-settings-add-agent = Agent hinzufügen
 workspace-settings-agents-empty-title = Keine Agenten haben Zugriff
 workspace-settings-agents-empty-detail = Beginne mit einem sicheren Profil und prüfe dann jeden einzelnen Bereich.
@@ -845,17 +837,15 @@ workspace-settings-service-ends-soon = Zugriff endet in weniger als einer Minute
 workspace-settings-service-ends-minutes = Zugriff endet in { $minutes } Min.
 workspace-settings-service-ends-hours = Zugriff endet in { $hours } Std.
 workspace-settings-badge-service = Dienst
-workspace-settings-badge-agent = Agent
-workspace-settings-agent-detail = { $count ->
-    [0] { $admission } · Noch keine Berechtigungen, Prüfung nötig
-    [one] { $admission } · { $profile }, 1 Berechtigung
-   *[other] { $admission } · { $profile }, { $count } Berechtigungen
-}
-workspace-settings-admitted = Zugelassen
-workspace-settings-agent-kept-by = Betreut von { $name }
-workspace-settings-agent-kept-by-you = Von dir betreut
 workspace-settings-retire-agent = Zurückziehen
-workspace-settings-agent-name = Sein Name
+workspace-settings-agent-name = Neuen Agenten benennen
+workspace-settings-agent-name-number = Agent { $number }
+workspace-settings-agent-yours = Deiner
+workspace-settings-agent-status-observer = Kann hier lesen, sonst nichts
+workspace-settings-agent-status-contributor = Kann lesen und kommentieren, fragt vor Änderungen
+workspace-settings-agent-status-operator = Kann lesen und ändern, fragt vor Wirkungen nach außen
+workspace-settings-agent-status-custom = Seine Berechtigungen sind einzeln gesetzt
+workspace-settings-agent-model-line = Modell: { $model }
 workspace-settings-agent-detail-none = Noch kein Zugriff in diesem Arbeitsbereich
 workspace-settings-agents-unavailable = Die Agenten des Workspace lassen sich auf diesem Gerät nicht lesen
 workspace-settings-agent-name-needed = Benenne den Agenten zuerst
@@ -865,14 +855,10 @@ workspace-settings-agent-access-note = Lege fest, was dieser Agent in jeder App 
 workspace-settings-agent-access-read = Lesen
 workspace-settings-agent-access-change = Änderungen
 workspace-settings-agent-access-outside = Wirkungen nach außen
-workspace-settings-agent-access-summary-part = { $kind }: { $answer }
-workspace-settings-agent-access-custom = Angepasst
-workspace-settings-agent-access-custom-detail = Für diesen Agenten festgelegt
-workspace-settings-agent-access-inherited = Folgt der Zulassung
-workspace-settings-agent-access-set-here = hier festgelegt
-workspace-settings-agent-access-default = Standard
+workspace-settings-agent-access-set-here = Hier gesetzt
 workspace-settings-agent-access-reset = Standard verwenden
 workspace-settings-agent-access-always = Immer erlaubt · { $count }
+workspace-settings-agent-exception = { $app } · { $action }
 workspace-settings-agent-access-stop = Wieder fragen
 workspace-settings-agent-model = Modell
 workspace-settings-agent-model-default = Der Standard: { $model }
@@ -887,10 +873,6 @@ workspace-settings-answer-allow = Erlauben
 workspace-settings-answer-ask = Erst fragen
 workspace-settings-answer-deny = Verbieten
 workspace-settings-revoke = Entziehen
-workspace-settings-admission-admin = Zulassung als Admin
-workspace-settings-admission-write = Zulassung zum Schreiben
-workspace-settings-admission-comment = Zulassung zum Kommentieren
-workspace-settings-admission-read = Zulassung zum Lesen
 workspace-settings-unavailable-app = Nicht verfügbare App
 workspace-settings-apps-empty-title = Keine Dateiverknüpfungen installiert
 workspace-settings-apps-empty-detail = Noch keine App gibt einen unterstützten Dateityp an.

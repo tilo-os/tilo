@@ -291,13 +291,10 @@ pub enum Confirm {
 }
 
 /// What the sheet keeps to itself while it is up: the question it is
-/// asking, and what of an agent's review is open.
+/// asking and what the permission composer has chosen.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Local {
     confirming: Option<Confirm>,
-    /// The app whose answers are open in an agent's review.
-    open_app: Option<String>,
-    models_open: bool,
     /// What the permission composer has chosen.
     draft: permissions::Draft,
 }
@@ -493,13 +490,6 @@ impl ResourceApp for WorkspaceSettingsApp {
 
     fn fixture(fixture: &mut ui::framework::Fixture<WorkspaceSettings>) {
         let settings = scenario(fixture.scenario());
-        if fixture.scenario() == Some("agent-review") {
-            fixture.provide(Local {
-                open_app: Some("so.tilo.notes".to_owned()),
-                models_open: true,
-                ..Local::default()
-            });
-        }
         if fixture.scenario() == Some("permissions-revoking") {
             fixture.provide(Local {
                 confirming: Some(Confirm::Revoke {
@@ -661,16 +651,6 @@ impl Parts {
                 return;
             }
         }
-        if matches!(
-            effect,
-            WorkspaceSettingsEffect::ReviewAgent { .. } | WorkspaceSettingsEffect::EndReview
-        ) {
-            // Each review opens with everything closed.
-            self.local.update(|local| {
-                local.open_app = None;
-                local.models_open = false;
-            });
-        }
         match &self.seat {
             Some(seat) if self.dispatch.is_own_gesture(&effect) => seat.ask(effect),
             _ => self.dispatch.effect(&effect),
@@ -714,24 +694,6 @@ impl Parts {
     /// Ask whether to make `change` before asking the shell for it.
     fn confirm(&self, change: Confirm) {
         self.local.update(|local| local.confirming = Some(change));
-    }
-
-    /// Open the answers of the app `scope` in an agent's review, or close
-    /// them when they are open.
-    fn toggle_app(&self, scope: &str) {
-        self.local.update(|local| {
-            local.open_app = if local.open_app.as_deref() == Some(scope) {
-                None
-            } else {
-                Some(scope.to_owned())
-            };
-        });
-    }
-
-    /// Show or hide the models an agent may plan with.
-    fn toggle_models(&self) {
-        self.local
-            .update(|local| local.models_open = !local.models_open);
     }
 
     /// Whether an agent's review is shown.

@@ -83,6 +83,18 @@ struct Seen {
     revision: u64,
 }
 
+/// What one agent's review reads: the record that keeps it, the workspace it
+/// works in, the agents the tab lists, and this device's apps and Settings.
+#[derive(Clone, Copy)]
+struct Review<'a> {
+    record: &'a WorkspaceRecord<Record>,
+    workspace: &'a Workspace,
+    apps: &'a dyn domain::AppDirectory,
+    names: &'a PeopleNames,
+    summaries: &'a [domain::AgentSummary],
+    config: &'a agent_provider_config::ProviderConfig,
+}
+
 impl Agents {
     /// The workspace's agents in the store rooted at `root`, waking the
     /// session's loop through `wake` when a change lands.
@@ -158,7 +170,8 @@ impl Agents {
         let me = record.me();
         let manage = workspace.may_administer(person);
         let summaries = domain::agent_summaries(workspace);
-        let admitted = t("workspace-settings-admitted");
+        let config = agent_provider_config::ProviderConfig::load();
+        let yours = t("workspace-settings-agent-yours");
         let mut agents: Vec<sheet::Agent> = state
             .active()
             .map(|agent| {
@@ -166,13 +179,12 @@ impl Agents {
                 sheet::Agent {
                     key: agent.id.0.clone(),
                     name: agent.name.clone(),
-                    badge: t("workspace-settings-badge-agent"),
-                    detail: summary.map_or_else(
+                    status: summary.map_or_else(
                         || t("workspace-settings-agent-detail-none"),
                         |summary| summary.detail.clone(),
                     ),
-                    admitted: summary.is_some().then(|| admitted.clone()),
-                    keeper: Some(keeper_line(names, workspace, me, &agent.keeper)),
+                    tag: same_person(&agent.keeper, me).then(|| yours.clone()),
+                    model: model_line(&config, &agent.id.0, agent.model.as_deref()),
                 }
             })
             .collect();
@@ -186,15 +198,29 @@ impl Agents {
             agents.push(sheet::Agent {
                 key: summary.agent.clone(),
                 name: summary.name.clone(),
-                badge: summary.badge.clone(),
-                detail: summary.detail.clone(),
-                admitted: Some(admitted.clone()),
-                keeper: None,
+                status: summary.detail.clone(),
+                tag: summary
+                    .service
+                    .then(|| t("workspace-settings-badge-service")),
+                // A service has no model; an agent admitted elsewhere has its
+                // keeper's, which this device does not hold yet.
+                model: String::new(),
             });
         }
         let count = agents.len();
         let review = review.and_then(|agent| {
-            Self::reviewed(record, workspace, agent, manage, apps, names, &summaries)
+            Self::reviewed(
+                &Review {
+                    record,
+                    workspace,
+                    apps,
+                    names,
+                    summaries: &summaries,
+                    config: &config,
+                },
+                agent,
+                manage,
+            )
         });
         sheet::Agents {
             intro: sheet::Intro {
@@ -239,42 +265,70 @@ impl Agents {
         }
     }
 
-    /// One agent's review: what it may do in each app, the model it plans
-    /// with and the actions it may always take. `None` once it is neither one
-    /// of the record's nor admitted here.
-    fn reviewed(
-        record: &WorkspaceRecord<Record>,
-        workspace: &Workspace,
-        agent: &str,
-        editable: bool,
-        apps: &dyn domain::AppDirectory,
-        names: &PeopleNames,
-        summaries: &[domain::AgentSummary],
-    ) -> Option<sheet::AgentReview> {
-        let state = record.get();
-        let kept = state.get(&Id::from_raw(agent.to_owned()));
-        let summary = summaries.iter().find(|summary| summary.agent == agent);
-        let name = kept
-            .map(|kept| kept.name.clone())
-            .or_else(|| summary.map(|summary| summary.name.clone()))?;
-        let badge = summary.map_or_else(
-            || t("workspace-settings-badge-agent"),
-            |summary| summary.badge.clone(),
-        );
+    /// Each app's row in a review: its kinds, each with the answer it has
+    /// now, as the segmented choice shows them.
+    fn access_apps(rows: &[agent_access::AgentAccessRow]) -> Vec<sheet::AccessApp> {
         let answer_index = |answer: tilo_action_policy::Answer| {
             agent_access::ANSWERS
                 .iter()
                 .position(|candidate| *candidate == answer)
                 .unwrap_or_default()
         };
+        rows.iter()
+            .map(|row| sheet::AccessApp {
+                app: row.app.clone(),
+                scope: row.scope.key(),
+                label: row.label.clone(),
+                customised: row.customised(),
+                kinds: row
+                    .cells
+                    .iter()
+                    .map(|cell| sheet::KindLine {
+                        kind: agent_access::kind_key(cell.kind).to_owned(),
+                        label: agent_access::kind_label(cell.kind),
+                        answer: answer_index(cell.answer),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// One agent's review: what it may do in each app, the model it plans
+    /// with and the actions it may always take. `None` once it is neither one
+    /// of the record's nor admitted here.
+    fn reviewed(review: &Review<'_>, agent: &str, editable: bool) -> Option<sheet::AgentReview> {
+        let Review {
+            record,
+            workspace,
+            apps,
+            names,
+            summaries,
+            config,
+        } = *review;
+        let state = record.get();
+        let kept = state.get(&Id::from_raw(agent.to_owned()));
+        let summary = summaries.iter().find(|summary| summary.agent == agent);
+        let name = kept
+            .map(|kept| kept.name.clone())
+            .or_else(|| summary.map(|summary| summary.name.clone()))?;
+        let status = summary.map_or_else(
+            || t("workspace-settings-agent-detail-none"),
+            |summary| summary.detail.clone(),
+        );
+        let tag = match (&kept, summary) {
+            (Some(kept), _) if same_person(&kept.keeper, record.me()) => {
+                Some(t("workspace-settings-agent-yours"))
+            }
+            (None, Some(summary)) if summary.service => Some(t("workspace-settings-badge-service")),
+            _ => None,
+        };
         let rows = agent_access::agent_access_rows(workspace, agent, apps);
         let exceptions = agent_access::agent_exceptions(workspace, agent, apps);
         // What an agent plans with is its keeper's to choose, alone, and the
         // record holds the choice: an agent the record does not know yet — a
-        // service, or one admitted on another device — has no model row.
-        let models = kept.and_then(|kept| {
-            let offered =
-                agent_access::agent_models(&agent_provider_config::ProviderConfig::load(), agent);
+        // service, or one admitted on another device — has no model here.
+        let models = kept.map(|kept| {
+            let offered = agent_access::agent_models(config, agent);
             let keeps = same_person(&kept.keeper, record.me());
             let note = if keeps {
                 t("workspace-settings-agent-model-keeper-you")
@@ -288,54 +342,35 @@ impl Agents {
                 )
             };
             let chosen = kept.model.as_deref();
-            model_choices(offered.as_ref(), chosen).map(|choices| sheet::Models {
+            sheet::Models {
                 title: t("workspace-settings-agent-model"),
                 summary: chosen.map_or_else(
                     || model_summary(offered.as_ref()),
                     |model| model_label(offered.as_ref(), model),
                 ),
-                choices,
+                choices: model_choices(offered.as_ref(), chosen),
                 can_choose: keeps,
                 note: Some(note),
-            })
+            }
         });
         Some(sheet::AgentReview {
             agent: agent.to_owned(),
             name,
-            badge,
+            status,
+            tag,
             back: t("workspace-settings-agent-access-back"),
             note: t("workspace-settings-agent-access-note"),
             editable,
+            can_retire: editable,
+            retire: t("workspace-settings-retire-agent"),
             answers: [
                 t("workspace-settings-answer-allow"),
                 t("workspace-settings-answer-ask"),
                 t("workspace-settings-answer-deny"),
             ],
             reset: t("workspace-settings-agent-access-reset"),
-            custom: t("workspace-settings-agent-access-custom"),
-            apps: rows
-                .iter()
-                .map(|row| sheet::AccessApp {
-                    scope: row.scope.key(),
-                    label: row.label.clone(),
-                    customised: row.customised(),
-                    detail: t("workspace-settings-agent-access-custom-detail"),
-                    kinds: row
-                        .cells
-                        .iter()
-                        .map(|cell| sheet::KindLine {
-                            kind: agent_access::kind_key(cell.kind).to_owned(),
-                            label: agent_access::kind_label(cell.kind),
-                            origin: t(if cell.explicit {
-                                "workspace-settings-agent-access-set-here"
-                            } else {
-                                "workspace-settings-agent-access-inherited"
-                            }),
-                            answer: answer_index(cell.answer),
-                        })
-                        .collect(),
-                })
-                .collect(),
+            custom: t("workspace-settings-agent-access-set-here"),
+            apps: Self::access_apps(&rows),
             empty: t("workspace-settings-agent-access-empty"),
             models,
             use_model: t("workspace-settings-agent-model-use"),
@@ -457,6 +492,10 @@ impl Agents {
     /// by whoever admitted it, so the roster, the names people read and the
     /// search find the agents that worked here before records were.
     ///
+    /// An admission names no name of its own — its id is no name a person
+    /// reads — so each is numbered, in id order, around the names the
+    /// workspace already uses.
+    ///
     /// A model chosen for the agent on this device before the record held one
     /// is its keeper's choice, and goes into the record with it.
     fn record_admitted(
@@ -466,6 +505,8 @@ impl Agents {
         config: &agent_provider_config::ProviderConfig,
     ) {
         let state = record.get();
+        let mut taken: Vec<String> = state.active().map(|agent| agent.name.clone()).collect();
+        let mut number: u64 = 0;
         for (agent, _) in workspace.agent_members_at(tilo_clock::unix_now()) {
             if state.get(&Id::from_raw(agent.clone())).is_some() {
                 continue;
@@ -485,9 +526,20 @@ impl Agents {
             let Some(keeper) = keeper else {
                 continue;
             };
-            let Some(name) = tilo_resource::NonBlank::parse(&domain::short_id(&agent)) else {
+            let name = loop {
+                number = number.saturating_add(1);
+                let name = t_args(
+                    "workspace-settings-agent-name-number",
+                    &[("number", number.into())],
+                );
+                if !taken.contains(&name) {
+                    break name;
+                }
+            };
+            let Some(name) = tilo_resource::NonBlank::parse(&name) else {
                 continue;
             };
+            taken.push(name.as_str().to_owned());
             let model = same_person(&keeper, person)
                 .then(|| {
                     agent_access::agent_models(config, &agent)
@@ -617,32 +669,32 @@ impl Agents {
     }
 }
 
-/// Who keeps an agent, as the person reads it.
-fn keeper_line(names: &PeopleNames, workspace: &Workspace, me: &str, keeper: &str) -> String {
-    if same_person(keeper, me) {
-        return t("workspace-settings-agent-kept-by-you");
-    }
+/// The model `agent` plans with, as its row reads it: the one its keeper
+/// chose, or that none is chosen yet.
+fn model_line(
+    config: &agent_provider_config::ProviderConfig,
+    agent: &str,
+    chosen: Option<&str>,
+) -> String {
+    let offered = agent_access::agent_models(config, agent);
+    let label = chosen.map_or_else(
+        || t("workspace-settings-agent-model-none"),
+        |model| model_label(offered.as_ref(), model),
+    );
     t_args(
-        "workspace-settings-agent-kept-by",
-        &[(
-            "name",
-            domain::member_row_name(names, workspace, me, keeper).into(),
-        )],
+        "workspace-settings-agent-model-line",
+        &[("model", label.into())],
     )
 }
 
 /// The models a person may choose for an agent, the one in use marked: the
 /// default first, then every model this device's Settings offer, and — where
 /// the choice was made on a device that offers more — the model it runs with,
-/// so the review always shows it. `None` where there is nothing to choose and
-/// nothing chosen.
+/// so the review always shows it.
 fn model_choices(
     models: Option<&agent_access::AgentModels>,
     in_use: Option<&str>,
-) -> Option<Vec<sheet::ModelChoice>> {
-    if models.is_none() && in_use.is_none() {
-        return None;
-    }
+) -> Vec<sheet::ModelChoice> {
     let mut choices: Vec<sheet::ModelChoice> = vec![sheet::ModelChoice {
         key: String::new(),
         label: t("workspace-settings-agent-model-none"),
@@ -664,7 +716,7 @@ fn model_choices(
             in_use: true,
         });
     }
-    Some(choices)
+    choices
 }
 
 /// What an agent plans with by default, as the review's models row reads it.

@@ -22630,6 +22630,7 @@ dependencies = [
  "tilo-action-policy",
  "tilo-actions",
  "tilo-automerge-fork",
+ "tilo-files",
  "tilo-resource",
  "workspace-hack",
 ]

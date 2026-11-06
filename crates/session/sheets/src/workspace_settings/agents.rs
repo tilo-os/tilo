@@ -6,11 +6,11 @@
 //! app: Allow, Ask first or Deny for reading, changes and outside effects,
 //! the model it plans with, and the actions always allowed without asking.
 
-use ui::icons::Icon;
+use ui::icons::{Icon, app_glyph};
 use ui::tokens::Rhythm;
 use ui::widget::{
-    Button, ButtonRole, ChipStyle, Column, ControlSize, Element, EmptyState, Fact, Facts, ListRow,
-    Row, Section, Segment, TextInput, ToggleGroup, Tone,
+    Button, ButtonRole, ChipStyle, Column, ControlSize, Element, EmptyState, ListRow, Row, Section,
+    Segment, TextInput, ToggleGroup, Tone,
 };
 
 use super::general::{button, buttons, caption};
@@ -32,15 +32,14 @@ pub struct Agent {
     /// What it is asked for by.
     pub key: String,
     pub name: String,
-    /// Whether it is an agent or a service the workspace admitted.
-    pub badge: String,
-    /// What it was admitted with and holds besides.
-    pub detail: String,
-    /// "Admitted", where the workspace admitted it.
-    pub admitted: Option<String>,
-    /// Who keeps it, for an agent the workspace keeps a record of: its
-    /// devices run it and its model is theirs to choose.
-    pub keeper: Option<String>,
+    /// What it may do, in one plain line.
+    pub status: String,
+    /// "Yours" or "Service", when it is one of the two: one quiet tag, never
+    /// a pile of them.
+    pub tag: Option<String>,
+    /// The model it plans with, as the row's quiet fact; empty for a service,
+    /// which has none.
+    pub model: String,
 }
 
 /// One of the workspace's bots.
@@ -61,8 +60,6 @@ pub struct KindLine {
     /// read, change or outside.
     pub kind: String,
     pub label: String,
-    /// Whether the answer was set here or follows the admission.
-    pub origin: String,
     /// The answer, as an index into [`AgentReview::answers`].
     pub answer: usize,
 }
@@ -70,12 +67,13 @@ pub struct KindLine {
 /// One app an agent's answers are given for.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AccessApp {
+    /// The app it is, for its mark.
+    pub app: String,
     /// What its answers are asked for by.
     pub scope: String,
     pub label: String,
-    /// Whether any of its answers was set here, and what that means open.
+    /// Whether any of its answers was set here, which Reset takes back.
     pub customised: bool,
-    pub detail: String,
     pub kinds: Vec<KindLine>,
 }
 
@@ -114,18 +112,25 @@ pub struct Exception {
 pub struct AgentReview {
     pub agent: String,
     pub name: String,
-    pub badge: String,
+    /// What it may do, in one plain line.
+    pub status: String,
+    pub tag: Option<String>,
     pub back: String,
     pub note: String,
     /// Whether the person may change its answers.
     pub editable: bool,
+    /// Whether the person may retire it here.
+    pub can_retire: bool,
+    pub retire: String,
     /// The three answers' names: Allow, Ask first, Deny.
     pub answers: [String; 3],
     pub reset: String,
+    /// What an app's answers say as one tag, once any was set here.
     pub custom: String,
     pub apps: Vec<AccessApp>,
     /// What the review says when there is no app to answer for.
     pub empty: String,
+    /// The model it plans with, for an agent the workspace keeps a record of.
     pub models: Option<Models>,
     pub use_model: String,
     pub in_use: String,
@@ -140,7 +145,8 @@ pub struct Agents {
     pub intro: Intro,
     /// What the button making an agent says.
     pub add: String,
-    /// What the new agent's name field is called for assistive tools.
+    /// What the new agent's name field is called for assistive tools, and
+    /// what it says while it is empty.
     pub name: String,
     /// Whether the person may make, review the controls of, and retire
     /// agents and bots.
@@ -231,6 +237,7 @@ fn new_agent(agents: &Agents, parts: &Parts) -> Element {
     let submit = parts.clone();
     let field = TextInput::from_state(&parts.new_agent)
         .with_id("ws-agents-name")
+        .with_placeholder(agents.name.clone())
         .with_accessible_name(agents.name.clone())
         .with_read_only(!agents.manage)
         .on_submit_view(move |_| submit.add_agent());
@@ -248,8 +255,8 @@ fn new_agent(agents: &Agents, parts: &Parts) -> Element {
     )
 }
 
-/// One agent: its mark, name and what it holds, who keeps it, its kind,
-/// Admitted, Review access and Retire.
+/// One agent: its mark, name, what it may do and the model it plans with,
+/// with Review access and Retire.
 fn agent_row(agents: &Agents, agent: &Agent, parts: &Parts) -> Element {
     let (review, remove) = (agent.key.clone(), agent.key.clone());
     let controls = buttons(vec![
@@ -275,22 +282,17 @@ fn agent_row(agents: &Agents, agent: &Agent, parts: &Parts) -> Element {
         .control_size(ControlSize::Small)
         .with_enabled(agents.manage),
     ]);
-    let mut tags: Vec<(&str, ChipStyle)> = Vec::new();
-    if let Some(keeper) = &agent.keeper {
-        tags.push((keeper.as_str(), ChipStyle::Neutral));
+    let mut row = ListRow::new(format!("ws-agents-agent-{}", agent.key), agent.name.clone())
+        .two_line_title()
+        .avatar(agent.name.clone(), agent.key.clone())
+        .secondary(agent.status.clone());
+    if let Some(tag) = &agent.tag {
+        row = row.tags(&[(tag.as_str(), ChipStyle::Neutral)]);
     }
-    tags.push((agent.badge.as_str(), ChipStyle::Neutral));
-    if let Some(admitted) = &agent.admitted {
-        tags.push((admitted.as_str(), ChipStyle::Tinted(Tone::Success)));
+    if !agent.model.is_empty() {
+        row = row.value(agent.model.clone());
     }
-    Box::new(
-        ListRow::new(format!("ws-agents-agent-{}", agent.key), agent.name.clone())
-            .two_line_title()
-            .avatar(agent.name.clone(), agent.key.clone())
-            .secondary(agent.detail.clone())
-            .tags(&tags)
-            .trailing(controls),
-    )
+    Box::new(row.trailing(controls))
 }
 
 /// The workspace's bots: a header with Add a bot, then a row for each.
@@ -333,36 +335,46 @@ fn bots(agents: &Agents, parts: &Parts) -> Element {
 /// One agent's review in the roster's place: Back, then each app's
 /// answers, its model and its standing exceptions.
 fn reviewed(review: &AgentReview, parts: &Parts) -> Element {
-    let local = parts.local.get();
-    let mut groups: Vec<Element> = vec![
-        Box::new(
-            Row::new()
-                .with_rhythm(Rhythm::Related)
-                .align_start()
-                .push(Box::new(
-                    button(parts, "ws-agent-back", &review.back, || {
-                        WorkspaceSettingsEffect::EndReview
-                    })
-                    .with_icon(Icon::ChevronLeft),
-                )),
-        ),
-        Box::new(
-            ListRow::new("ws-agent-name", review.name.clone())
-                .avatar(review.name.clone(), review.agent.clone())
-                .secondary(review.note.clone())
-                .two_line_secondary()
-                .tags(&[(review.badge.as_str(), ChipStyle::Neutral)]),
-        ),
-    ];
+    let mut groups: Vec<Element> = vec![Box::new(
+        Row::new()
+            .with_rhythm(Rhythm::Related)
+            .align_start()
+            .push(Box::new(
+                button(parts, "ws-agent-back", &review.back, || {
+                    WorkspaceSettingsEffect::EndReview
+                })
+                .with_icon(Icon::ChevronLeft),
+            )),
+    )];
+    let agent = review.agent.clone();
+    let mut head = ListRow::new("ws-agent-name", review.name.clone())
+        .avatar(review.name.clone(), review.agent.clone())
+        .secondary(review.status.clone());
+    if let Some(tag) = &review.tag {
+        head = head.tags(&[(tag.as_str(), ChipStyle::Neutral)]);
+    }
+    if review.can_retire {
+        head = head.trailing(Box::new(
+            button(parts, "ws-agent-retire", &review.retire, move || {
+                WorkspaceSettingsEffect::RemoveAgent {
+                    agent: agent.clone(),
+                }
+            })
+            .role(ButtonRole::Destructive)
+            .control_size(ControlSize::Small)
+            .with_enabled(review.editable),
+        ));
+    }
+    groups.push(Box::new(head));
+    groups.push(caption(&review.note));
     if review.apps.is_empty() {
         groups.push(caption(&review.empty));
     }
     for app in &review.apps {
-        let open = local.open_app.as_deref() == Some(app.scope.as_str());
-        groups.push(access_app(review, app, open, parts));
+        groups.push(access_app(review, app, parts));
     }
     if let Some(models) = &review.models {
-        groups.push(models_section(review, models, local.models_open, parts));
+        groups.push(models_section(review, models, parts));
     }
     if !review.exceptions.is_empty() {
         groups.push(Box::new(Section::titled(
@@ -401,18 +413,13 @@ fn reviewed(review: &AgentReview, parts: &Parts) -> Element {
     column(groups)
 }
 
-/// One app: its name and its answers as separate facts, which opens to an
-/// Allow, Ask first or Deny control for each kind of action, with Reset once
-/// any of them was set here.
-fn access_app(review: &AgentReview, app: &AccessApp, open: bool, parts: &Parts) -> Element {
-    let toggle = parts.clone();
-    let scope = app.scope.clone();
+/// One app: its mark and name, with Reset once any of its answers was set
+/// here, then an Allow, Ask first or Deny control for each kind of action.
+fn access_app(review: &AgentReview, app: &AccessApp, parts: &Parts) -> Element {
     let mut head = ListRow::new(format!("ws-agent-app-{}", app.scope), app.label.clone())
-        .secondary(app.detail.clone())
-        .disclosure()
-        .selected(open)
-        .on_view(move || toggle.toggle_app(&scope));
-    if app.customised && open {
+        .icon(app_glyph(&app.app, None));
+    if app.customised {
+        head = head.tags(&[(review.custom.as_str(), ChipStyle::Tinted(Tone::Info))]);
         let (agent, scope) = (review.agent.clone(), app.scope.clone());
         head = head.trailing(Box::new(
             button(
@@ -427,34 +434,20 @@ fn access_app(review: &AgentReview, app: &AccessApp, open: bool, parts: &Parts) 
             .control_size(ControlSize::Small)
             .with_enabled(review.editable),
         ));
-    } else if app.customised {
-        head = head.tags(&[(review.custom.as_str(), ChipStyle::Tinted(Tone::Info))]);
     }
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
         .with_rhythm(Rhythm::Related)
         .push(Box::new(head));
-    if !open {
-        // Closed, each kind's answer is its own fact; open, its own control.
-        let facts = app
-            .kinds
-            .iter()
-            .map(|line| {
-                let answer = review.answers.get(line.answer).map_or("", String::as_str);
-                Fact::text(format!("{}: {answer}", line.label))
-            })
-            .collect();
-        return Box::new(column.push(Box::new(Facts::new(facts))));
-    }
     for line in &app.kinds {
         column = column.push(kind_line(review, app, line, parts));
     }
     Box::new(column)
 }
 
-/// One kind of action at one app: its name, where its answer comes from,
-/// and the answer, which the arrow keys move along.
+/// One kind of action at one app: its name and the answer, which the arrow
+/// keys move along.
 fn kind_line(review: &AgentReview, app: &AccessApp, line: &KindLine, parts: &Parts) -> Element {
     let segments = review
         .answers
@@ -490,28 +483,21 @@ fn kind_line(review: &AgentReview, app: &AccessApp, line: &KindLine, parts: &Par
             line.label.clone(),
         )
         .nested()
-        .secondary(line.origin.clone())
         .trailing(Box::new(answers)),
     )
 }
 
-/// The agent's model: what it plans with, which opens to the default and
-/// every model offered, the one in use marked and each other with Use.
-fn models_section(review: &AgentReview, models: &Models, open: bool, parts: &Parts) -> Element {
-    let toggle = parts.clone();
-    let head = ListRow::new("ws-agent-models", models.title.clone())
-        .secondary(models.summary.clone())
-        .disclosure()
-        .selected(open)
-        .on_view(move || toggle.toggle_models());
-    if !open {
-        return Box::new(head);
-    }
+/// The agent's model: what it plans with, who chooses it, and the default
+/// and every model offered, the one in use marked and each other with Use
+/// for its keeper.
+fn models_section(review: &AgentReview, models: &Models, parts: &Parts) -> Element {
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
         .with_rhythm(Rhythm::Related)
-        .push(Box::new(head));
+        .push(Box::new(
+            ListRow::new("ws-agent-models", models.title.clone()).value(models.summary.clone()),
+        ));
     if let Some(note) = &models.note {
         column = column.push(caption(note));
     }
@@ -547,44 +533,44 @@ fn models_section(review: &AgentReview, models: &Models, open: bool, parts: &Par
 
 /// The Agents tab as the workspace's owner sees it, for captures.
 pub(super) fn sample() -> Agents {
-    let agent = |key: &str, name: &str, detail: &str, keeper: Option<&str>| Agent {
+    let agent = |key: &str, name: &str, status: &str, tag: &str, model: &str| Agent {
         key: key.to_owned(),
         name: name.to_owned(),
-        badge: "Agent".to_owned(),
-        detail: detail.to_owned(),
-        admitted: Some("Admitted".to_owned()),
-        keeper: keeper.map(str::to_owned),
+        status: status.to_owned(),
+        tag: Some(tag.to_owned()),
+        model: model.to_owned(),
     };
     Agents {
         intro: Intro {
             title: "3 agents".to_owned(),
-            help: "Agents act in the workspace with the access you give them.".to_owned(),
+            help: "Agents work alongside you here. They only do what you allow.".to_owned(),
             authority: "You manage".to_owned(),
         },
         add: "Add agent".to_owned(),
-        name: "Its name".to_owned(),
+        name: "Name a new agent".to_owned(),
         manage: true,
         header: "Agents".to_owned(),
         agents: vec![
             agent(
                 "claude",
                 "Claude",
-                "Can change things as a Contributor, 1 more permission",
-                Some("Kept by you"),
+                "Can read and change, asks before acting outside",
+                "Yours",
+                "Model: Sonnet from Anthropic",
             ),
             agent(
                 "reviewer",
                 "Reviewer",
-                "Can change things as a Contributor, 2 more permissions",
-                Some("Kept by Ada Lovelace"),
+                "Can read and comment, asks before changing",
+                "Yours",
+                "Model: No model chosen in Settings",
             ),
             Agent {
                 key: "relay".to_owned(),
                 name: "Encrypted backup".to_owned(),
-                badge: "Service".to_owned(),
-                detail: "Reads until removed".to_owned(),
-                admitted: Some("Admitted".to_owned()),
-                keeper: None,
+                status: "Reads encrypted content until removed".to_owned(),
+                tag: Some("Service".to_owned()),
+                model: String::new(),
             },
         ],
         review_label: "Review access".to_owned(),
@@ -617,50 +603,52 @@ pub(super) fn sample() -> Agents {
     }
 }
 
-/// One agent's review, for captures: notes open, a model chosen and one
-/// action always allowed.
+/// One agent's review, for captures: answers set in two apps, a model
+/// chosen and one action always allowed.
 pub(super) fn sample_review() -> AgentReview {
-    let line = |kind: &str, label: &str, origin: &str, answer: usize| KindLine {
+    let line = |kind: &str, label: &str, answer: usize| KindLine {
         kind: kind.to_owned(),
         label: label.to_owned(),
-        origin: origin.to_owned(),
         answer,
     };
     AgentReview {
         agent: "claude".to_owned(),
         name: "Claude".to_owned(),
-        badge: "Agent".to_owned(),
-        back: "Agents".to_owned(),
-        note: "Actions that send, publish or delete for good still ask first.".to_owned(),
+        status: "Can read and change, asks before acting outside".to_owned(),
+        tag: Some("Yours".to_owned()),
+        back: "All agents".to_owned(),
+        note: "Sending, publishing and deleting for good still ask you first, unless you allowed that action for good.".to_owned(),
         editable: true,
+        can_retire: true,
+        retire: "Retire".to_owned(),
         answers: [
             "Allow".to_owned(),
             "Ask first".to_owned(),
             "Deny".to_owned(),
         ],
-        reset: "Reset".to_owned(),
-        custom: "Custom".to_owned(),
+        reset: "Use defaults".to_owned(),
+        custom: "Set here".to_owned(),
         apps: vec![
             AccessApp {
+                app: "so.tilo.notes".to_owned(),
                 scope: "so.tilo.notes".to_owned(),
                 label: "Notes".to_owned(),
                 customised: true,
-                detail: "Set here for this agent".to_owned(),
                 kinds: vec![
-                    line("read", "Reading", "Default", 0),
-                    line("change", "Changes", "Set here", 1),
-                    line("outside", "Outside effects", "Default", 2),
+                    line("read", "Reading", 0),
+                    line("change", "Changes", 1),
+                    line("outside", "Outside effects", 2),
                 ],
             },
             AccessApp {
+                app: "so.tilo.calendar".to_owned(),
                 scope: "so.tilo.calendar".to_owned(),
                 label: "Calendar".to_owned(),
                 customised: false,
-                detail: "Follows its admission".to_owned(),
                 kinds: vec![
-                    line("read", "Reading", "Default", 0),
-                    line("change", "Changes", "Default", 0),
-                    line("outside", "Outside effects", "Default", 1),
+                    line("read", "Reading", 0),
+                    line("change", "Changes", 0),
+                    line("outside", "Outside effects", 1),
                 ],
             },
         ],
@@ -685,12 +673,12 @@ pub(super) fn sample_review() -> AgentReview {
         }),
         use_model: "Use".to_owned(),
         in_use: "In use".to_owned(),
-        exceptions_title: "Always allowed (1)".to_owned(),
+        exceptions_title: "Always allowed: 1".to_owned(),
         exceptions: vec![Exception {
             scope: "so.tilo.notes/notes.notebook/delete".to_owned(),
             kind: "outside".to_owned(),
             label: "Notes: Delete for good".to_owned(),
         }],
-        stop: "Stop".to_owned(),
+        stop: "Ask again".to_owned(),
     }
 }

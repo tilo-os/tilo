@@ -1,5 +1,5 @@
 use super::{Agent, AgentState, Bound, KIND, MAX_AGENTS, WorkspaceAgents, workspace_agents};
-use tilo_resource::{Id, NonBlank, Replica};
+use tilo_resource::{Id, Model as _, NonBlank, Replica};
 
 const ADA: &str = "ada";
 const GRACE: &str = "grace";
@@ -340,4 +340,75 @@ fn the_same_agent_made_on_two_devices_shares_its_record() {
     names.sort_unstable();
     assert_eq!(names, ["Claude Code", "Reviewer"]);
     assert!(a.valid().is_ok());
+}
+
+/// The record's layout as the bytes devices keep it in: the field order,
+/// the names and the enums are the format, and this build must write them
+/// back exactly.
+#[test]
+fn the_record_layout_is_the_bytes_devices_keep() {
+    let state = golden_state();
+    tilo_files::native::migration::assert_golden_bytes(
+        "chat.agent v1",
+        GOLDEN.as_bytes(),
+        |bytes| {
+            let value: serde_json::Value =
+                serde_json::from_slice(bytes).expect("the kept bytes are JSON");
+            let read = WorkspaceAgents::from_json(&value).expect("the kept record reads");
+            assert_eq!(read, state, "the kept bytes hold this record");
+        },
+        || serde_json::to_vec_pretty(&state.to_json()).expect("the record writes"),
+    );
+}
+
+/// The bytes `chat.agent` v1 was published with.
+const GOLDEN: &str = r#"{
+  "agents": [
+    {
+      "id": "claude",
+      "name": "Claude",
+      "colour": 2,
+      "keeper": "ada",
+      "model": "anthropic/sonnet",
+      "bound": [
+        {
+          "node": "room:ws/app:so.tilo.notes",
+          "kinds": [
+            "read",
+            "undoable"
+          ],
+          "answer": "allow"
+        }
+      ],
+      "state": "active",
+      "created_at": 1700000000000
+    }
+  ]
+}"#;
+
+/// One agent as the format keeps it: a keeper's model choice and a bound.
+fn golden_state() -> WorkspaceAgents {
+    let mut record = as_person(ADA);
+    record.set_now_ms(1_700_000_000_000);
+    record
+        .apply(
+            WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                name: NonBlank::parse("Claude").expect("a name"),
+                keeper: Some(ADA.to_owned()),
+                id: Some("claude".to_owned()),
+                model: Some("anthropic/sonnet".to_owned()),
+            }),
+        )
+        .unwrap();
+    record
+        .apply(set_bound(
+            "claude",
+            vec![Bound {
+                node: "room:ws/app:so.tilo.notes".to_owned(),
+                kinds: vec!["read".to_owned(), "undoable".to_owned()],
+                answer: "allow".to_owned(),
+            }],
+        ))
+        .unwrap();
+    record.state().unwrap()
 }
