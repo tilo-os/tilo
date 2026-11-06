@@ -21,6 +21,8 @@
     )
 )]
 
+mod attached;
+
 mod reference;
 
 pub mod embed;
@@ -29,6 +31,7 @@ pub mod link;
 
 pub mod program_step;
 
+pub use attached::{Anchor, Attached, StoredFile};
 pub use embed::Embed;
 pub use program_step::{ProgramStep, StepChange, StepOutcome, StepPreview};
 pub use reference::{Referent, ResourceAt, ResourceRef, Span, SpanUnit};

@@ -14,6 +14,7 @@ use tilo_sheets::directory::DirectorySeat;
 use tilo_sheets::display_confirm::ConfirmSeat;
 use tilo_sheets::displays::DisplaysSeat;
 use tilo_sheets::file_picker::FilePickerSeat;
+use tilo_sheets::invite::InviteSeat;
 use tilo_sheets::lock::LockSeat;
 use tilo_sheets::portal::PortalSeat;
 use tilo_sheets::power::PowerSeat;
@@ -31,6 +32,7 @@ pub(crate) struct Sheets {
     pub(crate) power: Option<PowerSeat>,
     pub(crate) workspace_settings: Option<WorkspaceSettingsSeat>,
     pub(crate) directory: Option<DirectorySeat>,
+    pub(crate) invite: Option<InviteSeat>,
     pub(crate) portal: Option<PortalSeat>,
     pub(crate) file_picker: Option<FilePickerSeat>,
     pub(crate) display_confirm: Option<ConfirmSeat>,
@@ -92,6 +94,14 @@ pub(crate) fn mount_sheets(
         who,
         options,
     );
+    let invite = mount_sheet(
+        compositor,
+        doors,
+        tilo_sheets::invite::definition(),
+        InviteSeat::default(),
+        who,
+        options,
+    );
     let portal = mount_sheet(
         compositor,
         doors,
@@ -145,6 +155,7 @@ pub(crate) fn mount_sheets(
         power,
         workspace_settings,
         directory,
+        invite,
         portal,
         file_picker,
         display_confirm,

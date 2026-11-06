@@ -759,14 +759,11 @@ async fn live(token: String, guild_id: String) -> usize {
                     text: "notes from Tilo".into(),
                     parent: None,
                     body: None,
-                    attachment: Some(chat::record::AttachmentUpdate {
-                        kind: "file".into(),
+                    attachments: vec![tilo_reference::Attached::File {
                         name: "notes.txt".into(),
                         blob,
-                        width: 0,
-                        height: 0,
                         size: bytes.len() as u64,
-                    }),
+                    }],
                     mentions: None,
                     written: None,
                 },
@@ -911,7 +908,7 @@ async fn live(token: String, guild_id: String) -> usize {
         workspace.message("notes from Discord").await
     })
     .await;
-    let attachment = file.map(|(_, m)| format!("{:?}", m.attachment));
+    let attachment = file.map(|(_, m)| format!("{:?}", m.attachments));
     report.case(
         "Discord->Tilo file",
         attachment

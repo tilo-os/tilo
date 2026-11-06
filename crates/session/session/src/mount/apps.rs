@@ -26,9 +26,9 @@ use tilo_action_broker::collab_app_broker::AppBrokerState;
 use tilo_action_broker::services::LaunchPlace;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, InvokeRequest,
-    RemoteActionTarget, provider_workspace,
+    RemoteActionTarget, application_provider,
 };
-use tilo_actions::{DoorError, InvocationId};
+use tilo_actions::{ActionDescriptor, DoorError, ExecutionLocus, InvocationId};
 use tilo_app_launch::routing;
 use tilo_app_launch::{
     Answer, Authority, Cause, Doors as WindowDoors, HeldDoor, Instance, Kind, Launch, PlanContext,
@@ -793,12 +793,56 @@ impl Apps {
 }
 
 impl AppActions for Apps {
-    /// Nothing is published through this session yet: the action host an
-    /// app's resources and jobs arrive on is not mounted here.
-    fn published(&self) -> Vec<PublishedActions> {
-        Vec::new()
+    /// What the apps publish, read from the session's action broker: the one
+    /// host every app publishes on, whatever it is built with. A tilolang app
+    /// publishes through its host and an app on the SDK through its own
+    /// connection, both on the channel they joined the workspace with, and
+    /// the broker keeps the last surface an app published after it closes,
+    /// which is why a closed app's actions are offered too: choosing one
+    /// starts the app and delivers the call there. Read when a search opens.
+    fn published(&self, workspace: &str) -> Vec<PublishedActions> {
+        let state = self.state.borrow();
+        let Some(broker) = &state.broker else {
+            return Vec::new();
+        };
+        // By app, workspace and address: the broker holds a surface per
+        // record, and an action two of them carry is still the one action
+        // that workspace addresses.
+        let mut listed: BTreeMap<(String, String), BTreeMap<(String, String), ActionDescriptor>> =
+            BTreeMap::new();
+        for surface in broker.published_surfaces() {
+            let published_in = &surface.route.cluster_id;
+            if !workspace.is_empty() && published_in != workspace {
+                continue;
+            }
+            let actions = listed
+                .entry((surface.app_id.clone(), published_in.clone()))
+                .or_default();
+            for action in &surface.actions {
+                // A live surface is listed before the one retained from
+                // before the app closed, and is the one to keep.
+                actions
+                    .entry((action.resource.clone(), action.action.clone()))
+                    .or_insert_with(|| action.descriptor(ExecutionLocus::ClientLocal));
+            }
+        }
+        listed
+            .into_iter()
+            .map(|((app, workspace), actions)| PublishedActions {
+                app,
+                workspace,
+                actions: actions.into_values().collect(),
+                // An exported action names its resource's kind but not what
+                // the resource is to a person ([`PublishedActions::types`]):
+                // that stays with the app's own host.
+                types: BTreeMap::new(),
+            })
+            .collect()
     }
 
+    /// The broker follows each invocation it delivered, but offers no listing
+    /// that names the app, workspace and action label a job's row reads, so
+    /// there is nothing to list here yet.
     fn jobs(&self) -> Vec<JobEntry> {
         Vec::new()
     }
@@ -813,29 +857,30 @@ impl AppActions for Apps {
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), DoorError> {
-        let open = target.address.action == APPLICATION_OPEN_ACTION
-            && arguments.is_empty()
-            && target
-                .address
-                .resource
-                .starts_with(APPLICATION_RESOURCE_PREFIX);
-        let workspace = provider_workspace(&target.provider).map(str::to_owned);
+        // What a search row names: an app in the workspace it was published
+        // in, and the action to run there.
+        let Some((workspace, _)) = application_provider(&target.provider) else {
+            return Err(no_action_host());
+        };
+        let workspace = workspace.to_owned();
         let app = target
             .address
             .resource
             .strip_prefix(APPLICATION_RESOURCE_PREFIX)
             .map(str::to_owned);
-        match (open, app, workspace) {
-            (true, Some(app), Some(workspace)) => {
+        let open = target.address.action == APPLICATION_OPEN_ACTION && arguments.is_empty();
+        match (open, app) {
+            (true, Some(app)) => {
                 let workspace = self.workspace_named(&workspace);
                 self.start(&Launch::Package { app, open: None }, &workspace)
             }
-            (false, _, Some(workspace)) => self.deliver(target, arguments, &workspace),
-            _ => Err(no_action_host()),
+            _ => self.deliver(target, arguments, &workspace),
         }
     }
 
-    fn cancel(&self, _app: &str, _room: &str, _invocation: &str) -> Result<(), DoorError> {
+    fn cancel(&self, _app: &str, _workspace: &str, _invocation: &str) -> Result<(), DoorError> {
+        // A job's row carries the invocation the broker follows, and no row
+        // is listed yet ([`Self::jobs`]), so nothing names one to stop.
         Err(no_action_host())
     }
 

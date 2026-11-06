@@ -98,8 +98,8 @@ view v(l: todo.TodoList) {
 }
 
 scenario "one line" {
-    window v.order = .line(len: 2)
-    lens v.picked = .some(1)
+    let t = root T
+    invoke(a(t), by: invoker, at: 2026-06-29T07:02Z, from: t)
 }
 "#;
 
@@ -143,8 +143,8 @@ fn precedence_and_parentheses_survive() {
 }
 
 #[test]
-fn an_entry_parameter_prints_as_it_is_written() {
-    let src = "app t.x \"X\"\n\ntype Item {\n    title: Text (title)\n}\n\naction add(i: Item, title: Text (entry) = \"\") {\n    i.title = title\n}\n";
+fn a_parameter_marker_prints_as_it_is_written() {
+    let src = "app t.x \"X\"\n\ntype Item {\n    title: Text (title)\n}\n\naction move(i: Item, above: Option<Item> (above)) {\n    i.title = \"x\"\n}\n";
     assert_eq!(print_of(src), src);
 }
 
@@ -255,10 +255,7 @@ scenario "a week of notes" {
     let nb = root Notebook
     new_note(nb)
     let mia = person("Mia")
-    as mia {
-        new_note(nb)
-    }
-    window notebook.shown = NoteFilter.pinned
+    invoke(new_note(nb), by: mia)
 }
 "#;
 

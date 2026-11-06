@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use automerge::AutoCommit;
 use chrono::NaiveDate;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use tilo_ui::component::{Described, ResourceId};
 use tilo_ui::i18n::I18nManager;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
@@ -32,10 +33,10 @@ use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation as ToolbarOrientation;
-use tilo_ui::widget::tree_view::TreeNode;
 use tilo_ui::widget::{
-    Avatar, Badge, Breadcrumb, ColorPicker, Column, DatePicker, ProgressBar, Row, ScrollAxis,
-    Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar, TreeView, Widget,
+    Avatar, Badge, Breadcrumb, ColorPicker, Column, DatePicker, DescribedTreeView, ProgressBar,
+    Row, ScrollAxis, Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar,
+    TreeViewNodeProps, TreeViewProps, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
@@ -68,26 +69,28 @@ fn avatar_badge_row() -> Box<dyn Widget> {
 }
 
 fn build_tree() -> Box<dyn Widget> {
-    let tree_root = TreeNode::branch(
-        1u64,
-        "project",
-        (),
-        vec![
-            TreeNode::branch(
-                2u64,
-                "src",
-                (),
-                vec![
-                    TreeNode::leaf(3u64, "main.rs", ()),
-                    TreeNode::leaf(4u64, "lib.rs", ()),
-                ],
-            ),
-            TreeNode::leaf(5u64, "README.md", ()),
-        ],
+    let node = |label: &str, id: u64, parent: Option<u64>, branch: bool| TreeViewNodeProps {
+        item: ResourceId(id.to_string()),
+        label: label.into(),
+        parent: parent.map(|parent| ResourceId(parent.to_string())),
+        branch,
+        ..TreeViewNodeProps::default()
+    };
+    let tree = DescribedTreeView::from_props(
+        "tree",
+        TreeViewProps {
+            hide_root: true,
+            nodes: vec![
+                node("project", 1, None, true),
+                node("src", 2, Some(1), true),
+                node("main.rs", 3, Some(2), false),
+                node("lib.rs", 4, Some(2), false),
+                node("README.md", 5, Some(1), false),
+            ],
+            expanded: Some(vec![ResourceId("1".into()), ResourceId("2".into())]),
+            ..TreeViewProps::default()
+        },
     );
-    let mut tree = TreeView::new(tree_root);
-    tree.toggle_expand(1);
-    tree.toggle_expand(2);
 
     Box::new(
         Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(

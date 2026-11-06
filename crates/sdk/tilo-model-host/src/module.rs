@@ -115,16 +115,17 @@ impl Module {
             .map_err(|error| ModuleError::Malformed(self.app.clone(), error.to_string()))?;
         // The engine keeps its host for the call's whole length, so the call owns
         // everything it answers with; what it publishes is read back afterwards.
-        let answered = Rc::new(RefCell::new(Some(Answered::Nothing)));
+        let state = Rc::new(RefCell::new(Saying::default()));
         let host = Call {
             app: self.app.clone(),
             request: asked,
-            answered: Rc::clone(&answered),
+            state: Rc::clone(&state),
         };
         let outcome = self.engine.call(&self.hash, &symbol, &[], Rc::new(host));
         // The call's answer is what its imports published, whether or not the trap that ends a
         // refusal reached the host first.
-        let published = answered.borrow_mut().take();
+        let published = state.borrow_mut().answered.take();
+        let logged = state.borrow().logged.join("; ");
         match published {
             Some(Answered::Success(answer)) => Ok(answer),
             Some(Answered::Refused(refused)) => Err(ModuleError::Refused(refused.message)),
@@ -133,17 +134,31 @@ impl Module {
                     "{}'s module answered nothing for {kind}",
                     self.app
                 ))),
-                Err(error) => Err(ModuleError::Call(format!("{}: {error}", self.app))),
+                // A trap is a panic in the model: what it said to the log before it is why.
+                Err(error) if logged.is_empty() => {
+                    Err(ModuleError::Call(format!("{}: {error}", self.app)))
+                }
+                Err(error) => Err(ModuleError::Call(format!(
+                    "{}: {error} (it said: {logged})",
+                    self.app
+                ))),
             },
         }
     }
 }
 
-/// One call into a module: the request to hand it, and where its answer is kept.
+/// What one call answered and said. A trapped model's last words are the only account of why.
+#[derive(Default)]
+struct Saying {
+    answered: Option<Answered>,
+    logged: Vec<String>,
+}
+
+/// One call into a module: the request to hand it, and what it answered and said.
 struct Call {
     app: String,
     request: Vec<u8>,
-    answered: Rc<RefCell<Option<Answered>>>,
+    state: Rc<RefCell<Saying>>,
 }
 
 impl WasmHost for Call {
@@ -182,7 +197,7 @@ impl WasmHost for Call {
                         self.app
                     ))
                 })?;
-                *self.answered.borrow_mut() = Some(Answered::Success(answer));
+                self.state.borrow_mut().answered = Some(Answered::Success(answer));
                 Ok(GuestAnswer::Nothing)
             }
             "fail" => {
@@ -193,12 +208,14 @@ impl WasmHost for Call {
                         self.app
                     ))
                 })?;
-                *self.answered.borrow_mut() = Some(Answered::Refused(refused));
+                self.state.borrow_mut().answered = Some(Answered::Refused(refused));
                 Ok(GuestAnswer::Nothing)
             }
             "log" => {
                 let bytes = read(memory, args)?;
-                tracing::debug!(app = %self.app, "{}", String::from_utf8_lossy(&bytes));
+                let line = String::from_utf8_lossy(&bytes).into_owned();
+                tracing::debug!(app = %self.app, "{line}");
+                self.state.borrow_mut().logged.push(line);
                 Ok(GuestAnswer::Nothing)
             }
             other => Err(HostFail::Trap(format!(

@@ -5,11 +5,80 @@
 //! the actions it can invoke. For every action, flow and view the metadata lists the actions it
 //! can reach, its own and other packages', each with its class. Granting, keeping and updating
 //! code are decided against that list (authority.md).
+//!
+//! [`Effect`] is the other axis: what a body reads that a replay cannot compute again, which its
+//! `uses` clause declares and its invocation records.
 
 use crate::ir::{ActionRef, FuncKind, Module};
 use crate::meta::Reach;
 use crate::types::EffectClass;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// What an action or flow reads that a replay cannot compute again: what its `uses` clause
+/// declares and what its invocation records (convergence.md, "Actions").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Effect {
+    /// A service outside Tilo: a request and the answer it got.
+    Web,
+    /// A draw: a number, a choice, an order.
+    Random,
+    /// The clock and the person's zone: `now`, a day of a moment, a wall time of day.
+    Time,
+}
+
+impl Effect {
+    /// Every effect, in the order a message lists them.
+    pub const ALL: &'static [Self] = &[Self::Web, Self::Random, Self::Time];
+
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Web => "web",
+            Self::Random => "random",
+            Self::Time => "time",
+        }
+    }
+
+    /// What reading it is, in a message: what a replay cannot compute again.
+    pub const fn what(self) -> &'static str {
+        match self {
+            Self::Web => "a service outside Tilo",
+            Self::Random => "a draw",
+            Self::Time => "the clock and the person's zone",
+        }
+    }
+
+    /// The effect a `uses` clause names, if it names one.
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|e| e.word() == name)
+    }
+}
+
+/// The effects `funcs` reach: each function's own, and those of the code it calls, iterated to
+/// a fixed point. An action inlines its callees into its own change, so it makes their reads.
+pub fn reached(funcs: &[crate::ir::Func]) -> Vec<BTreeSet<Effect>> {
+    let mut out: Vec<BTreeSet<Effect>> = funcs.iter().map(|f| f.facts.effects.clone()).collect();
+    loop {
+        let mut changed = false;
+        for (i, f) in funcs.iter().enumerate() {
+            let callees = f.facts.inline_actions.iter().chain(f.facts.calls.iter());
+            for callee in callees {
+                let Some(there) = out.get(*callee).cloned() else {
+                    continue;
+                };
+                for e in there {
+                    if let Some(slot) = out.get_mut(i)
+                        && slot.insert(e)
+                    {
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            return out;
+        }
+    }
+}
 
 /// The result of the analysis, indexed like [`Module::funcs`].
 pub struct Effects {

@@ -1,11 +1,12 @@
-//! The query words of agents' programs (agents.md, "Querying" and "Reading and describing"):
-//! `grep` over the text of every app the program may read, `find` typed by a type and its
-//! filters, `read` of what matches or of one page, `describe`, `print` with the fields to show,
-//! `me`, and the chaining functions `count_by`, `group`, `take`, `each` and `single`.
+//! The agent library's words ([`crate::agent`]) as the checker lowers them (agents.md,
+//! "Querying" and "Reading and describing"): `grep` over the text of every app the code may
+//! read, `find` typed by a type and its filters, `read` of what matches or of one page,
+//! `describe`, `print` with the fields to show and `me`; and the chaining functions
+//! `count_by`, `group`, `take`, `each` and `single`, which are methods of any list.
 //!
-//! An app the program's host does not hold is read through the platform: the checker names it
-//! by its id, from the apps the session says the program may read ([`crate::resolve::Env::sources`]),
-//! and the runtime asks that app's host. Its resources are `host.Resource`s.
+//! An app the host does not hold is read through the platform: the checker names it by its id,
+//! from the apps the session says the code may read ([`crate::resolve::Env::sources`]), and the
+//! runtime asks that app's host. Its resources are `host.Resource`s.
 
 use serde_json::json;
 
@@ -16,12 +17,55 @@ use crate::diag::Span;
 use crate::ir::{Ek, Stmt};
 use crate::types::{Ty, TypeKey};
 
-/// The kinds of block `grep(not: ...)` leaves out.
-pub const BLOCK_KINDS: &[&str] = &["paragraph", "heading", "quote", "list", "code", "field"];
-
 impl Checker<'_> {
-    /// The apps a program may name as sources, each by the name it calls it and its id: the
-    /// packages it holds, then those the session reads through the platform.
+    /// The library word `name` called with `args`: `grep`, `find`, `read`, `describe` or
+    /// `print`; `None` for any other name, which the caller reports as it does for any name.
+    pub(super) fn agent_call(&mut self, name: &str, args: &[ast::Arg], span: Span) -> Option<Ex> {
+        Some(match name {
+            "print" => self.builtin_print(args),
+            "find" => self.builtin_find(args, span),
+            "read" => self.builtin_read(args, span),
+            "grep" => self.builtin_grep(args, span),
+            "describe" => self.builtin_describe(args, span),
+            _ => return None,
+        })
+    }
+
+    /// `me`: the person the session acts for, the agent library's one name for them.
+    pub(super) fn agent_me() -> Ex {
+        Ex::host(Imp::Me, vec![], Ty::Principal)
+    }
+
+    /// `agent.me` where a package names the library's `me`: the same person a session's bare
+    /// `me` is.
+    pub(super) fn agent_me_field(&self, base: &ast::Expr, name: &str) -> Option<Ex> {
+        (name == crate::agent::ME && self.names_import_app(base, crate::agent::APP))
+            .then(Self::agent_me)
+    }
+
+    /// Whether `e` names `me`: bare in a session, `agent.me` in a package.
+    fn is_agent_me(&self, e: &ast::Expr) -> bool {
+        match &e.kind {
+            ExprKind::Ident(name) => name == crate::agent::ME && self.env.session,
+            ExprKind::Field { base, name } => self.agent_me_field(base, &name.name).is_some(),
+            _ => false,
+        }
+    }
+
+    /// Whether `e` names the package `app` (and not a variable of that name).
+    pub(super) fn names_import_app(&self, e: &ast::Expr, app: &str) -> bool {
+        let Some(path) = super::expr::dotted(e) else {
+            return false;
+        };
+        let path = path.join(".");
+        if self.lookup(&path).is_some() {
+            return false;
+        }
+        self.env.find_import(&path).is_some_and(|i| i.app == app)
+    }
+
+    /// The apps code may name as sources, each by the name it calls it and its id: the packages
+    /// it imports, then those a session reads through the platform.
     pub(super) fn source_apps(&self) -> Vec<(String, String)> {
         let mut apps: Vec<(String, String)> = self
             .env
@@ -30,6 +74,7 @@ impl Checker<'_> {
             .filter(|i| {
                 i.app != crate::host::HOST_APP
                     && i.app != crate::toolkit::UI_APP
+                    && i.app != crate::agent::APP
                     && i.alias != "std"
             })
             .map(|i| (i.alias.clone(), i.app.clone()))
@@ -182,14 +227,17 @@ impl Checker<'_> {
                 }
                 "not" => self.block_kinds(&a.value, &mut not),
                 "changed" => changed = self.when_text("changed", &a.value),
-                "mentions" => match &a.value.kind {
-                    ExprKind::Ident(w) if w == "me" => mentions = Some("me".to_owned()),
-                    _ => self.err(
-                        "E106",
-                        a.value.span,
-                        "`mentions:` takes `me`: the person this task acts for",
-                    ),
-                },
+                "mentions" => {
+                    if self.is_agent_me(&a.value) {
+                        mentions = Some(crate::agent::ME.to_owned());
+                    } else {
+                        self.err(
+                            "E106",
+                            a.value.span,
+                            "`mentions:` takes `me`: the person this task acts for",
+                        );
+                    }
+                }
                 other => {
                     let hint = crate::diag::suggestion(
                         other,
@@ -234,7 +282,7 @@ impl Checker<'_> {
     /// `not: .quote` or `not: [.quote, .code]`: the kinds of block to leave out.
     fn block_kinds(&mut self, e: &ast::Expr, out: &mut Vec<String>) {
         match &e.kind {
-            ExprKind::Variant { name, args: None } if BLOCK_KINDS.contains(&name.name.as_str()) => {
+            ExprKind::Variant { name, args: None } if crate::agent::BLOCK_KINDS.contains(&name.name.as_str()) => {
                 out.push(name.name.clone());
             }
             ExprKind::List(items) => {
@@ -243,14 +291,14 @@ impl Checker<'_> {
                 }
             }
             ExprKind::Variant { name, .. } => {
-                let hint = crate::diag::suggestion(&name.name, BLOCK_KINDS.iter().copied());
+                let hint = crate::diag::suggestion(&name.name, crate::agent::BLOCK_KINDS.iter().copied());
                 self.err(
                     "E106",
                     name.span,
                     format!(
                         "`.{}` is no kind of block{hint}; kinds: .{}",
                         name.name,
-                        BLOCK_KINDS.join(", .")
+                        crate::agent::BLOCK_KINDS.join(", .")
                     ),
                 );
             }
@@ -259,7 +307,7 @@ impl Checker<'_> {
                 e.span,
                 format!(
                     "`not:` takes kinds of block: `not: .quote`, `not: [.quote, .code]`; kinds: .{}",
-                    BLOCK_KINDS.join(", .")
+                    crate::agent::BLOCK_KINDS.join(", .")
                 ),
             ),
         }

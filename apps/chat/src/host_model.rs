@@ -80,19 +80,19 @@ impl ChatApp {
         let mut label = format!("{author}: {}", message.text);
         // A shared file is the message, or part of it: name it, so a
         // screen reader hears more than who posted.
-        if let Some(attachment) = &message.attachment {
+        for file in message.files() {
             if !message.text.is_empty() {
                 label.push('\n');
             }
-            label.push_str(attachment.name());
+            label.push_str(file.label());
         }
         // A shared window: what it is and how it stands, as its card says.
         if let Some(share) = &message.share {
             if !message.text.is_empty() {
                 label.push('\n');
             }
-            if let Some(reference) = &message.reference {
-                label.push_str(&reference.label);
+            if let Some(at) = message.resource() {
+                label.push_str(&at.reference.label);
                 label.push('\n');
             }
             if share.ended {

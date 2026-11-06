@@ -72,6 +72,11 @@ tilolang-tilo = { path = "../../platform/tilolang-tilo" }
 # The toolkit's words, which what a package the session runs publishes reads through.
 tilo-ui-host = { path = "../../platform/tilo-ui-host" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
+# A Rust app's records: its model runs as the app's own WebAssembly module in the session,
+# never linked into it (docs/architecture/apps.md §1–§2).
+tilo-model-host = { path = "../../sdk/tilo-model-host" }
+tilo-model-abi = { path = "../../sdk/tilo-model-abi" }
+tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 tilo-desktop = { path = "../desktop" }
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-surface = { path = "../desktop-surface" }
@@ -147,6 +152,9 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # What a door's invitation is verified as before a workspace is joined: only
 # a grant signed for this person's key joins it.
 tilo-workspace-join = { path = "../../collab/workspace-join" }
+# The address an invitation names, signed: this device's own endpoint, for a
+# link it makes into a workspace it holds.
+tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # The models an agent may plan with: the person's own provider settings.
 agent-provider-config = { path = "../../agent/provider-config" }

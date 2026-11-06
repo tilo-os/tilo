@@ -512,9 +512,7 @@ fn windows_stand_clear_of_the_desktop_edges_at_both_ends_of_the_strip() {
                     tab: entries[target].route.tab.clone(),
                 })
                 .unwrap();
-            for _ in 0..40 {
-                frame.relayout();
-            }
+            play_frames(&mut frame, 40);
             let row = frame.root::<DesktopSurface>().shown_row_ref().unwrap();
             let rect = row.groups[target].get_rect();
             inside(
@@ -1082,6 +1080,248 @@ fn a_sideways_spin_pans_an_overflowing_strip_and_focus_follows_it() {
     }
 }
 
+/// A laid-out desk of `windows` windows, its strip overflowed so it can pan.
+fn laid_out(windows: usize) -> (ui::headless::FrameHarness, DesktopHandle) {
+    let (surface, handle) = desktop(windows);
+    let mut frame = ui::headless::FrameHarness::for_root_with(
+        ui::state::State::new(),
+        surface,
+        (1280, 800),
+        ui::headless::FrameOptions::default(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    assert!(
+        frame
+            .root::<DesktopSurface>()
+            .shown_row_ref()
+            .unwrap()
+            .pan_max_scroll_x()
+            > 2000.0,
+        "five windows overflow the strip"
+    );
+    (frame, handle)
+}
+
+fn strip_offset(frame: &ui::headless::FrameHarness) -> f64 {
+    frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .unwrap()
+        .scroll_x()
+}
+
+/// Frames at 60 Hz from `t` until nothing on the desktop is moving, handing
+/// each frame's strip offset to `watch`.
+fn settle_frames(
+    frame: &mut ui::headless::FrameHarness,
+    t: ui::time::Instant,
+    mut watch: impl FnMut(f64),
+) -> f64 {
+    let mut at = t;
+    for _ in 0..600 {
+        let offset = ui::time::testing::with_monotonic_time(at, || {
+            frame.relayout();
+            strip_offset(frame)
+        });
+        watch(offset);
+        if !frame.frame_schedule().needs_animation_frame {
+            // The pass that brings the strip to rest may queue the change it
+            // leaves: the frames after it apply that.
+            for step in 1..=3u64 {
+                let later = at.checked_add(Duration::from_millis(step)).unwrap_or(at);
+                ui::time::testing::with_monotonic_time(later, || frame.relayout());
+            }
+            return strip_offset(frame);
+        }
+        at = at.checked_add(Duration::from_millis(17)).unwrap_or(at);
+    }
+    panic!("the strip is still moving after ten seconds of frames");
+}
+
+/// Three fingers on the pad carry the strip shown: one pixel of their travel
+/// is one of its own from the first report on, past either end against the
+/// rubber band, and a strip whose windows all fit steps focus by their travel.
+#[test]
+fn three_fingers_carry_the_strip_under_them() {
+    let (mut frame, _handle) = laid_out(5);
+    let start = strip_offset(&frame);
+    let t = ui::time::now();
+    let mut surface = frame.root_mut::<DesktopSurface>();
+    // The gesture reports its total travel, frame by frame.
+    for (i, travel) in [0.0, 12.0, 40.0, 75.0, 96.0].into_iter().enumerate() {
+        let took = ui::time::testing::with_monotonic_time(ms(t, 16 * i as u64), || {
+            surface.carry_strip(travel, i == 0)
+        });
+        if travel > 0.0 {
+            assert!(took, "the fingers carry the strip at {travel} px");
+        }
+        assert!(
+            (surface.shown_row_ref().unwrap().scroll_x() - start - travel).abs() < 0.5,
+            "the strip is where the fingers are, {travel} px along it: {}",
+            surface.shown_row_ref().unwrap().scroll_x()
+        );
+    }
+    // Reversing inside the gesture follows them back.
+    for (i, travel) in [70.0, 30.0, 0.0].into_iter().enumerate() {
+        ui::time::testing::with_monotonic_time(ms(t, 80 + 16 * i as u64), || {
+            surface.carry_strip(travel, false)
+        });
+        assert!(
+            (surface.shown_row_ref().unwrap().scroll_x() - start - travel).abs() < 0.5,
+            "the strip follows the fingers back to {travel} px"
+        );
+    }
+    drop(surface);
+
+    // Past the end the strip pulls against the rubber band: the fingers
+    // still move it, by less, and letting go springs it back to the end.
+    let max = frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .unwrap()
+        .pan_max_scroll_x();
+    let mut surface = frame.root_mut::<DesktopSurface>();
+    let pull = |surface: &mut DesktopSurface, at: u64, travel: f64, began: bool| {
+        ui::time::testing::with_monotonic_time(ms(t, at), || surface.carry_strip(travel, began));
+        surface.shown_row_ref().unwrap().scroll_x()
+    };
+    let stretched = pull(&mut surface, 200, 4000.0, true);
+    assert!(
+        stretched > max + 100.0,
+        "the pull shows past the end: {stretched} of {max}"
+    );
+    let further = pull(&mut surface, 216, 6000.0, false);
+    assert!(
+        further > stretched,
+        "the pull goes on: {stretched} -> {further}"
+    );
+    assert!(
+        further - stretched < 2000.0,
+        "and the band resists: {stretched} -> {further}"
+    );
+    ui::time::testing::with_monotonic_time(ms(t, 232), || surface.release_strip(false));
+    drop(surface);
+    let rested = settle_frames(&mut frame, ms(t, 250), |_| {});
+    assert!(
+        (rested - max).abs() < 0.5,
+        "and letting go springs it back to its end: {rested} of {max}"
+    );
+}
+
+/// Letting go of three fingers leaves the strip coasting at the speed they
+/// let go at and then resting, with focus on the window it left in view; the
+/// hand taken back throws it nowhere.
+#[test]
+fn letting_go_of_three_fingers_coasts_the_strip_and_focus_follows() {
+    for cancelled in [false, true] {
+        let (mut frame, handle) = laid_out(5);
+        let start = strip_offset(&frame);
+        let t = ui::time::now();
+        let mut surface = frame.root_mut::<DesktopSurface>();
+        // A flick, its last frames fast enough to carry on past the window
+        // the fingers let go of.
+        for (i, travel) in [150.0, 500.0, 900.0, 1300.0].into_iter().enumerate() {
+            ui::time::testing::with_monotonic_time(ms(t, 16 * i as u64), || {
+                surface.carry_strip(travel, i == 0)
+            });
+        }
+        let carried = surface.shown_row_ref().unwrap().scroll_x();
+        assert!(
+            (carried - start - 1300.0).abs() < 0.5,
+            "carried to {carried}"
+        );
+        drop(surface);
+        // The frame that shows the last report, and the fingers lifting in
+        // it.
+        let left = ui::time::testing::with_monotonic_time(ms(t, 64), || {
+            frame.relayout();
+            let released = frame.root_mut::<DesktopSurface>().release_strip(cancelled);
+            assert!(released, "the fingers were holding the strip");
+            strip_offset(&frame)
+        });
+        let rested = settle_frames(&mut frame, ms(t, 80), |_| {});
+        if cancelled {
+            assert!(
+                (rested - left).abs() < 0.5,
+                "the hand taken back leaves the strip where it let it: {rested} of {left}"
+            );
+        } else {
+            assert!(
+                rested > left + 20.0,
+                "the flick coasts on from {left} to {rested}"
+            );
+        }
+        let focused = handle.snapshot("g", vec![]).active.unwrap();
+        let first = handle.snapshot("g", vec![]).entries[0].route.clone();
+        assert_ne!(
+            focused.group, first.group,
+            "focus followed the strip past the first window ({cancelled})"
+        );
+        let rect = frame
+            .root::<DesktopSurface>()
+            .shown_row_ref()
+            .and_then(|row| {
+                row.groups
+                    .iter()
+                    .find(|group| group.id.to_string() == focused.group)
+                    .map(ui::Widget::get_rect)
+            })
+            .expect("the focused window is drawn");
+        assert!(
+            rect.x0 >= -0.5 && rect.x1 <= 1280.5,
+            "and it is wholly in view where the strip rests: {rect:?} ({cancelled})"
+        );
+    }
+}
+
+/// Focusing a window past the edge of the screen slides the strip to it over
+/// the toolkit's motion rather than cutting to it, and leaves it in view.
+#[test]
+fn focusing_a_window_off_screen_slides_the_strip_into_frame() {
+    let (mut frame, handle) = laid_out(5);
+    let start = strip_offset(&frame);
+    let last = handle
+        .snapshot("g", vec![])
+        .entries
+        .last()
+        .unwrap()
+        .route
+        .clone();
+    handle
+        .dispatch(DeskEffect::Focus {
+            tab: last.tab.clone(),
+        })
+        .unwrap();
+    let t = ui::time::now();
+    let mut offsets = Vec::new();
+    let rested = settle_frames(&mut frame, t, |offset| offsets.push(offset));
+    assert_eq!(handle.snapshot("g", vec![]).active.as_ref(), Some(&last));
+    assert!(
+        rested > start + 100.0,
+        "the strip went to the window: {start} to {rested}"
+    );
+    let slid = offsets
+        .iter()
+        .any(|&offset| offset > start + 5.0 && offset < rested - 5.0);
+    assert!(slid, "the strip slid rather than cut: {offsets:?}");
+    let rect = frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .and_then(|row| {
+            row.groups
+                .iter()
+                .find(|group| group.id.to_string() == last.group)
+                .map(ui::Widget::get_rect)
+        })
+        .expect("the focused window is drawn");
+    assert!(
+        rect.x0 >= -0.5 && rect.x1 <= 1280.5,
+        "and the focused window is wholly in view: {rect:?}"
+    );
+}
+
 #[test]
 fn a_sideways_gesture_belongs_to_the_content_that_takes_it() {
     let (mut surface, handle) = desktop(1);
@@ -1516,13 +1756,29 @@ fn notes_opened_out_of_sight() -> (ui::headless::FrameHarness, TabId) {
     (frame, notes)
 }
 
+thread_local! {
+    /// The desk's monotonic clock once a test has started stepping frames.
+    static CLOCK: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `step` on the frame clock moved on by `after`: these tests' frames
+/// last exactly as long as a 60 Hz display's, however fast or loaded the
+/// machine running them is.
+fn on_clock<T>(after: Duration, step: impl FnOnce() -> T) -> T {
+    let at = CLOCK
+        .get()
+        .unwrap_or_else(ui::time::now)
+        .checked_add(after)
+        .unwrap();
+    CLOCK.set(Some(at));
+    ui::time::testing::with_monotonic_time(at, step)
+}
+
 /// `count` frames of a 60 Hz display, each presented, on the clock motion
 /// runs by.
 fn play_frames(frame: &mut ui::headless::FrameHarness, count: usize) {
-    let mut at = ui::time::now();
     for _ in 0..count {
-        at = at.checked_add(Duration::from_millis(16)).unwrap();
-        ui::time::testing::with_monotonic_time(at, || {
+        on_clock(Duration::from_millis(16), || {
             assert!(frame.poll_frame().is_ok(), "{:?}", frame.poll_frame());
         });
     }
@@ -1563,9 +1819,7 @@ fn a_window_someone_else_opens_out_of_sight_is_pointed_at_from_the_edge() {
 
     let at = notes_hint.center();
     frame.click_at(at.x, at.y);
-    for _ in 0..40 {
-        frame.relayout();
-    }
+    play_frames(&mut frame, 60);
     let surface = frame.root::<DesktopSurface>();
     let row = surface.shown_row_ref().unwrap();
     let shown = row

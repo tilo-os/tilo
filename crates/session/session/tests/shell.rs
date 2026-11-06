@@ -1217,7 +1217,7 @@ struct Apps {
 }
 
 impl tilo_session::AppActions for Apps {
-    fn published(&self) -> Vec<tilo_desktop_search::providers::PublishedActions> {
+    fn published(&self, _: &str) -> Vec<tilo_desktop_search::providers::PublishedActions> {
         Vec::new()
     }
 

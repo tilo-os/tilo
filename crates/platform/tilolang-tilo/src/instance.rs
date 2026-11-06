@@ -104,7 +104,7 @@ pub trait Publication {
 
 mod platform;
 
-pub use platform::{Platform, PlatformWords};
+pub use platform::{Platform, PlatformWeb, PlatformWords};
 
 /// How an instance starts.
 pub struct Config {
@@ -542,11 +542,34 @@ impl Instance {
     /// the time ever wakes the instance.
     #[must_use]
     pub fn wakes_in(&self) -> Option<std::time::Duration> {
-        let views = self.views_wake_in();
-        match (views, self.held_in()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
+        [self.views_wake_in(), self.held_in(), self.trigger_in()]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    /// How long until a trigger of this app next has something to run: what a window that runs
+    /// the app's triggers waits for. `None` when no trigger will come due, or this replica does
+    /// not run them.
+    fn trigger_in(&self) -> Option<std::time::Duration> {
+        if !self.origin || self.mode != Mode::Live {
+            return None;
         }
+        let now = self.now()?;
+        let at = self.host()?.next_trigger(now)?;
+        Some(std::time::Duration::from_secs(
+            u64::try_from(at.saturating_sub(now)).unwrap_or(0),
+        ))
+    }
+
+    /// The platform's clock now, in seconds since the epoch.
+    fn now(&self) -> Option<i64> {
+        let clock = self.platform.now();
+        let now = tilolang::calendar::instant(&clock);
+        if now.is_none() {
+            tracing::error!(clock, "the platform's clock reads no time");
+        }
+        now
     }
 
     /// How long until the time a view read (`today` in a query) next reads differently.
@@ -556,12 +579,7 @@ impl Instance {
             .flatten()
             .filter_map(|shown| shown.view.borrow().wakes_at())
             .min()?;
-        let clock = self.platform.now();
-        let Some(now) = tilolang::calendar::instant(&clock) else {
-            // The runtime read the same clock to answer the view: it could not have.
-            tracing::error!(clock, "the platform's clock reads no time");
-            return None;
-        };
+        let now = self.now()?;
         Some(std::time::Duration::from_secs(
             u64::try_from(at.saturating_sub(now)).unwrap_or(0),
         ))
@@ -754,6 +772,8 @@ impl Instance {
             .set_shown_host(PlatformShown(Rc::clone(&self.platform)));
         let platform = Rc::clone(&self.platform);
         host.set_clock(move || platform.now());
+        host.runtime()
+            .set_web(PlatformWeb(Rc::clone(&self.platform)));
         let platform = Rc::clone(&self.platform);
         host.runtime().set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);
@@ -2262,6 +2282,15 @@ impl Instance {
                 self.loading = true;
                 self.out.push(ToUi::Loading);
             }
+        }
+        // Only the origin runs the packages' triggers: every change is ordered there, and each
+        // run records what it did, so a trigger runs once across the workspace's devices.
+        if self.origin
+            && self.mode == Mode::Live
+            && let Some(now) = self.now()
+            && host.run_triggers(now) > 0
+        {
+            self.moved = true;
         }
         if self.staged.is_some() {
             self.run_staged(&host);

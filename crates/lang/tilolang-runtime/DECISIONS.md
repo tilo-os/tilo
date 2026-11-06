@@ -71,6 +71,15 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - **Journaled reads.** A flow journals every read of a resource and map, and a replay returns the
   journaled values. This closes the earlier v1 deviation: a replayed flow takes the branches it
   took the first time, even though approved actions changed the resources meanwhile.
+- **A draw is answered from the journal first.** `random.rs` holds the one primitive every
+  `random.*` import counts draws of: a number in `0..upto`. It answers the invocation's next
+  entry when that entry is a `Random` with the same bound, so a resumed flow reads the number it
+  drew before it waited; a different bound or another entry's kind traps ("the invocation
+  diverged from its journal"), as a replayed read does. Otherwise it draws from `getrandom` on
+  the device running the invocation, rejecting values at or above the largest multiple of the
+  bound, records `JournalEntry::Random { upto, value }` (an action's in its change note, a
+  flow's in its journal, saved after each draw), and answers that. No frame with effects (a
+  view, a block) traps: only an invocation has a journal to record into.
 - **Dangling references.** A reference read from a field whose target is gone is still a reference
   (it compares equal); only a target of another type is refused. `ref_lit` stays strict.
 - **Set of Int/Float order.** Elements are keyed by their text form, so they iterate in text order.

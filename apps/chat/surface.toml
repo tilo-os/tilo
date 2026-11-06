@@ -624,7 +624,7 @@ fields = [
 [[resources]]
 kind = "chat.messages"
 label = "Messages"
-version = 3
+version = 4
 fields = [
   { path = "messages", type = { collection = { named = "Message" } }, readonly = true, stored = "collection" },
   { path = "messages.*.channel", type = "text", readonly = true },
@@ -637,16 +637,7 @@ fields = [
   { path = "messages.*.parent", type = { option = "text" }, readonly = true },
   { path = "messages.*.reactions", type = "reactions", readonly = true },
   { path = "messages.*.mentions", type = { list = { named = "Mention" } }, readonly = true },
-  { path = "messages.*.reference", type = { option = { named = "ResourceRef" } }, readonly = true, stored = "record" },
-  { path = "messages.*.reference.kind", type = "text" },
-  { path = "messages.*.reference.id", type = "text" },
-  { path = "messages.*.reference.label", type = "text" },
-  { path = "messages.*.reference.span", type = { option = { named = "Span" } }, stored = "record" },
-  { path = "messages.*.reference.span.start", type = "int" },
-  { path = "messages.*.reference.span.end", type = "int" },
-  { path = "messages.*.reference.span.unit", type = { named = "SpanUnit" } },
-  { path = "messages.*.source_provider", type = { option = "text" }, readonly = true },
-  { path = "messages.*.attachment", type = { option = { named = "Attachment" } }, readonly = true },
+  { path = "messages.*.attachments", type = { list = { named = "Attached" } }, readonly = true },
   { path = "messages.*.pinned", type = "bool", readonly = true },
   { path = "messages.*.work", type = { option = { named = "Work" } }, readonly = true, stored = "record" },
   { path = "messages.*.work.stream", type = { option = { named = "ProviderStream" } }, stored = "record" },
@@ -691,7 +682,7 @@ params = [
   { name = "text", type = "text", required = true, schema = { type = "string" } },
   { name = "parent", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "body", type = { option = { list = "any" } }, required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } } },
-  { name = "attachment", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, height = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string" }, size = { type = "integer", minimum = 0 }, width = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "blob"] } },
+  { name = "attachments", type = { list = "any" }, required = false, schema = { type = "array", items = { oneOf = [{ type = "object", additionalProperties = false, properties = { anchor = { oneOf = [{ type = "null" }, { oneOf = [{ type = "object", additionalProperties = false, properties = { Item = { type = "object", additionalProperties = false, properties = { id = { type = "string" } }, required = ["id"] } }, required = ["Item"] }, { type = "object", additionalProperties = false, properties = { Items = { type = "object", additionalProperties = false, properties = { ids = { type = "array", items = { type = "string" } } }, required = ["ids"] } }, required = ["Items"] }, { type = "object", additionalProperties = false, properties = { Text = { type = "object", additionalProperties = false, properties = { path = { type = "string" }, end = { type = "string" }, start = { type = "string" } }, required = ["path", "start", "end"] } }, required = ["Text"] }] }] }, at = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] }, kind = { type = "string", const = "resource" }, label = { type = "string" } }, required = ["kind", "at", "label"] }, { type = "object", additionalProperties = false, properties = { from = { type = ["object", "null"], properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] }, kind = { type = "string", const = "text" }, text = { type = "string" } }, required = ["kind", "text"] }, { type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, h = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string", const = "image" }, w = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "blob", "w", "h"] }, { type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, h = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string", const = "video" }, size = { type = "integer", minimum = 0 }, w = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "blob", "w", "h", "size"] }, { type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, kind = { type = "string", const = "file" }, size = { type = "integer", minimum = 0 } }, required = ["kind", "name", "blob", "size"] }] } } },
   { name = "mentions", type = { option = { list = "any" } }, required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
   { name = "written", type = { option = "int" }, required = false, schema = { type = ["integer", "null"] } },
 ]
@@ -705,7 +696,7 @@ params = [
   { name = "content", type = "text", required = true, schema = { type = "string", content = true } },
   { name = "name", type = "text", required = true, schema = { type = "string" } },
   { name = "text", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "attachment", type = { option = { named = "AttachmentUpdate" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, height = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string" }, size = { type = "integer", minimum = 0 }, width = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "blob"] } },
+  { name = "attachment", type = { option = { named = "Attached" } }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "object", additionalProperties = false, properties = { anchor = { oneOf = [{ type = "null" }, { oneOf = [{ type = "object", additionalProperties = false, properties = { Item = { type = "object", additionalProperties = false, properties = { id = { type = "string" } }, required = ["id"] } }, required = ["Item"] }, { type = "object", additionalProperties = false, properties = { Items = { type = "object", additionalProperties = false, properties = { ids = { type = "array", items = { type = "string" } } }, required = ["ids"] } }, required = ["Items"] }, { type = "object", additionalProperties = false, properties = { Text = { type = "object", additionalProperties = false, properties = { path = { type = "string" }, end = { type = "string" }, start = { type = "string" } }, required = ["path", "start", "end"] } }, required = ["Text"] }] }] }, at = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] }, kind = { type = "string", const = "resource" }, label = { type = "string" } }, required = ["kind", "at", "label"] }, { type = "object", additionalProperties = false, properties = { from = { type = ["object", "null"], properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] }, kind = { type = "string", const = "text" }, text = { type = "string" } }, required = ["kind", "text"] }, { type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, h = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string", const = "image" }, w = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "blob", "w", "h"] }, { type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, h = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string", const = "video" }, size = { type = "integer", minimum = 0 }, w = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "blob", "w", "h", "size"] }, { type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, kind = { type = "string", const = "file" }, size = { type = "integer", minimum = 0 } }, required = ["kind", "name", "blob", "size"] }] }] } },
   { name = "mentions", type = { option = { list = { named = "Mention" } } }, required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
 ]
 
@@ -715,9 +706,8 @@ incoming_message = true
 kind = "undoable"
 params = [
   { name = "channel", type = "text", required = true, schema = { type = "string" } },
-  { name = "reference", type = { named = "SharedReference" }, required = true, schema = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, span = { type = ["object", "null"], additionalProperties = false, properties = { end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, unit = { type = "string" } }, required = ["start", "end", "unit"] } }, required = ["kind", "id", "label"] } },
+  { name = "attached", required = true, schema = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } },
   { name = "text", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "source_provider", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "mentions", type = { option = { list = { named = "Mention" } } }, required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
 ]
 
@@ -727,8 +717,7 @@ incoming_message = true
 kind = "undoable"
 params = [
   { name = "channel", type = "text", required = true, schema = { type = "string" } },
-  { name = "reference", type = { named = "SharedReference" }, required = true, schema = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, span = { type = ["object", "null"], additionalProperties = false, properties = { end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, unit = { type = "string" } }, required = ["start", "end", "unit"] } }, required = ["kind", "id", "label"] } },
-  { name = "source_provider", type = "text", required = true, schema = { type = "string" } },
+  { name = "attached", required = true, schema = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } },
   { name = "access", type = { option = { named = "ShareAccess" } }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "view" }, { type = "string", const = "edit" }] }] } },
   { name = "text", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "mentions", type = { option = { list = { named = "Mention" } } }, required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
@@ -874,22 +863,21 @@ cases = [
 ]
 
 [[resources.types]]
-name = "Attachment"
+name = "Anchor"
 cases = [
-  { name = "image", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "w", type = "int" }, { name = "h", type = "int" }] },
-  { name = "video", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "w", type = "int" }, { name = "h", type = "int" }, { name = "size", type = "int" }] },
-  { name = "file", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "size", type = "int" }] },
+  { name = "item", fields = [{ name = "id", type = "text" }] },
+  { name = "items", fields = [{ name = "ids", type = { list = "text" } }] },
+  { name = "text", fields = [{ name = "path", type = "text" }, { name = "start", type = "text" }, { name = "end", type = "text" }] },
 ]
 
 [[resources.types]]
-name = "AttachmentUpdate"
-fields = [
-  { name = "kind", type = "text" },
-  { name = "name", type = "text" },
-  { name = "blob", type = "text" },
-  { name = "width", type = "int" },
-  { name = "height", type = "int" },
-  { name = "size", type = "int" },
+name = "Attached"
+cases = [
+  { name = "resource", fields = [{ name = "at", type = { named = "ResourceAt" } }, { name = "anchor", type = { option = { named = "Anchor" } } }, { name = "label", type = "text" }] },
+  { name = "text", fields = [{ name = "text", type = "text" }, { name = "from", type = { option = { named = "ResourceAt" } } }] },
+  { name = "image", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "w", type = "int" }, { name = "h", type = "int" }] },
+  { name = "video", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "w", type = "int" }, { name = "h", type = "int" }, { name = "size", type = "int" }] },
+  { name = "file", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "size", type = "int" }] },
 ]
 
 [[resources.types]]
@@ -951,9 +939,7 @@ fields = [
   { name = "parent", type = { option = "text" } },
   { name = "reactions", type = "reactions" },
   { name = "mentions", type = { list = { named = "Mention" } } },
-  { name = "reference", type = { option = { named = "ResourceRef" } } },
-  { name = "source_provider", type = { option = "text" } },
-  { name = "attachment", type = { option = { named = "Attachment" } } },
+  { name = "attachments", type = { list = { named = "Attached" } } },
   { name = "pinned", type = "bool" },
   { name = "work", type = { option = { named = "Work" } } },
   { name = "appearance", type = { option = { named = "ShownAs" } } },
@@ -969,6 +955,14 @@ fields = [
   { name = "progress", type = "text" },
   { name = "finish", type = { option = { named = "AgentFinish" } } },
   { name = "detail", type = "text" },
+]
+
+[[resources.types]]
+name = "ResourceAt"
+fields = [
+  { name = "app", type = "text" },
+  { name = "record", type = { option = "text" } },
+  { name = "reference", type = { named = "ResourceRef" } },
 ]
 
 [[resources.types]]
@@ -992,23 +986,6 @@ name = "ShareAccess"
 cases = [
   { name = "view" },
   { name = "edit" },
-]
-
-[[resources.types]]
-name = "SharedReference"
-fields = [
-  { name = "kind", type = "text" },
-  { name = "id", type = "text" },
-  { name = "label", type = "text" },
-  { name = "span", type = { option = { named = "SharedSpan" } } },
-]
-
-[[resources.types]]
-name = "SharedSpan"
-fields = [
-  { name = "start", type = "int" },
-  { name = "end", type = "int" },
-  { name = "unit", type = "text" },
 ]
 
 [[resources.types]]

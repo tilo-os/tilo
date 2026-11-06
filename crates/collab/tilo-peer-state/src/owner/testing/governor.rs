@@ -603,7 +603,12 @@ impl TestGovernor {
             certified_roster: self.peer.certificates(),
             revocations: self.peer.revocations(),
             records: self.peer.rows(),
-            governance_messages: self.outgoing.clone(),
+            // A join is answered with the workspace's committed document alone:
+            // record publications reach the member through the workspace's sync.
+            governance_messages: vec![
+                postcard::to_stdvec(&self.peer.workspace_message())
+                    .map_err(|error| error.to_string())?,
+            ],
             generation: self.generation,
         };
         self.completions.insert(request_id, bootstrap.clone());

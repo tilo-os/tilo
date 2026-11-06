@@ -165,7 +165,7 @@ fn a_filed_report_reads_as_its_message_with_its_picture() {
         message.text,
         "Saving does nothing\n1. The “Save” button in Files"
     );
-    let attachment = message.attachment.expect("its picture");
+    let attachment = message.attachments.first().expect("its picture");
     assert_eq!(attachment.blob, picture);
     assert_eq!(attachment.name, "report.png");
     assert!(tilo::person(&read, &message.author).is_some(), "{read}");

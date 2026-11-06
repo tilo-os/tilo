@@ -14,6 +14,8 @@ use crate::fixtures::Replica;
 
 const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const CHAT_APP: &str = "so.tilo.lang.chat";
@@ -160,7 +162,11 @@ fn workspace() -> (Replica, ResourceRef, ResourceRef) {
     let (mut ada, _) = Replica::new(
         "ada",
         AutoCommit::new(),
-        &[(CHAT, CHAT_IDS), (TASKS, TASKS_IDS)],
+        &[
+            (CHAT, CHAT_IDS),
+            (DISCUSSION, DISCUSSION_IDS),
+            (TASKS, TASKS_IDS),
+        ],
     );
     // Both roots exist, as they do once each app's window was opened in the workspace.
     let all = Value::resource(&ada.host.root_of(CHAT_APP).unwrap());

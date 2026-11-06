@@ -123,6 +123,46 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - A record-typed field must be `Option<T>` unless every value is always set: reading an unset
   reference traps (there is no value to return). A removed target stays a readable reference
   (it compares equal); reading its fields fails.
+- **`uses web, random, time` is written after the signature, before `proposal` and the options**
+  (`action snooze(t: Thread, until: Time) uses time (icon: .clock) { ... }`). It reads as part of
+  what the declaration is, and the canonical form keeps it there. The words are ordinary names,
+  not keywords, as `require` is: `web` and `time` stay usable as identifiers.
+- **What an effect is, and what is not one.** An effect is what a replay cannot compute again,
+  so it is recorded on the invocation that read it: the clock and the person's zone (`now`,
+  `today`, a time of no zone, `t.day()`, `t.time_of_day()`, a text parsed near a moment,
+  `next_at`, `at`), a draw and a service outside Tilo. A filter's `today` is
+  the query's input, read where the view is drawn: the query is answered again when the day
+  turns (`ViewState::changes_at`), nothing is replayed, and the checker does not ask an action
+  for `uses time` because a view it shows filters by a day. `t.day()` in a view is the same
+  kind of read — what the person's zone makes of a value that is drawn — and is not refused
+  there. `now` alone is refused outside an action or flow (E049): it is the time of an
+  invocation, and a view has none.
+- **A scenario uses every effect.** Its code is seed data, run where a developer runs it and
+  never replayed, so it declares nothing and reads anything; `as who at time` gives its actions
+  their time.
+- **The journal is kept beside the change.** An action's effects go into the change note the
+  store keeps with the change (`ChangeNote::effects`), in the order it read them, so history can
+  say what a change was made of ("fetched … 304"). A flow's go into its `Journal`, saved as it
+  goes, so a run resumed tomorrow reads the moment it started. One entry per invocation holds
+  the moment and the zone; a draw keeps its bound and its value; a fetch keeps the request and
+  the answer.
+- **A draw is one primitive: a number below a bound.** `random.int(lo, hi)`, `random.float()`,
+  `random.choice(xs)`, `random.shuffle(xs)` and `random.id()` compile to imports `random_int`,
+  `random_float`, `random_choice`, `random_shuffle` and `random_id`, and each is a count of
+  draws of `0..upto` the host records: the die is one of six (the host adds `lo`), a float one
+  below `2^53` over `2^53`, a choice and each step of a shuffle one below the number of items
+  left, an id four below `2^32` written as eight hex digits each. So a draw's entry in the
+  journal is the primitive, not the number a person would name: `random.int(1, 6)` records a
+  draw of `0..6` whose value is the die minus one. A choice of an empty list draws nothing and
+  records nothing, so it returns `.none`.
+- **A draw happens where the invocation is.** Only an action or a flow draws, and only one that
+  declares `uses random`; a `fn` does not: it computes from the values it is given, and a view or
+  a block that called it would be drawing. A view or a block does not, since neither has a
+  journal. `random` is a module of draws and nothing else: an unknown member is E014, and a
+  choice or shuffle of something that is not a list of values is E020. A range is drawn uniformly
+  by drawing again at or above the largest multiple of its width, so no number comes up likelier
+  than another; `random.int` traps when its range holds more numbers than a draw's bound
+  (`hi - lo + 1` past `i64`).
 - Pinned references (`@kind:id@version`) parse but compile to E070: `ref_lit` has no version.
 - Integer division and remainder trap on zero, as in wasm.
 - `proposal view` may also be written `proposal view(a, b)`, naming action parameters.
@@ -308,6 +348,39 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   tool (the host binary, with `run`); the compiler crate's own binary is `tilolangc`, also
   built as `tlc`, from the same `main.rs`, so neither clashes with `target/<profile>/tilolang`.
 
+## The standard library is a package
+
+- **`std` is `tilo.std`, compiled from its source** (`stdlib.rs`, `std/app.tl`, `std/app.ids`).
+  It names its app like any package, locks its ids like any package, and reaches every module
+  through the same `Env::add_import` a `use` goes through: there is no views-only parse, and no
+  second path by which its names become code's. A package sees its types, enums, functions,
+  actions and views as `std.X`.
+- **Its own module is not an import of itself.** Compiling `std` registers the alias `std` for
+  its own app, so its views call each other by their plain names and see its own declarations.
+- **Every package depends on it.** `meta.uses` carries `tilo.std`, and a bundle carries the
+  library's module before the packages the app `use`s, so the package id its declarations
+  belong to is loaded wherever a record of one of its types is read or written.
+- **What a library declares is the library's.** A resource type declared in a library package
+  is rooted under that package's id: the records its actions write are ordinary workspace
+  records under it, and a package that uses the library writes them through the library's
+  actions, under the authority of whoever applied them.
+
+## Template views
+
+- **A template view expands where it is called** (`checker/template.rs`). Its name is taken at
+  the call, its body checked there, and what it builds is the caller's: its nodes, its reads,
+  its view state, under the caller's authority. Its type parameters, state, function and view
+  parameters come from the call.
+- **`template view v(...)` declares one.** A view is a template when it is written that way, or
+  when it takes type parameters, or when a parameter takes view state (`State<E>`), a function
+  or a view. A template has no function of its own and appears in no `meta` view list: it is
+  expanded by the compiler, and only from the source the compiler has.
+- **View state inside a template is the caller's.** A `state` declaration at the top of a
+  template body becomes state of the view the template expands in, keyed by that view's id, the
+  template's name and the state's: the same template called twice in one view keeps two states.
+- **Every view of `std` is a template.** The library builds the caller's frames; it runs no
+  views of its own. A test holds that (`stdlib.rs`).
+
 ## Deviations to report
 
 - E072 (a block with no value) is defined but cannot be reached from source today.
@@ -484,12 +557,15 @@ literals only, written `7d` in a query and nowhere else.
   elsewhere): the moment is recorded with the change, so replaying a change computes the same
   days. `Date.parse`/`Time.parse` take the moment in words are read against as an argument
   (`near:`), which is what keeps them pure.
-- **The entry keeps reading words, not the language.** A typed entry's `Text (entry)` is filled
-  by the runtime's own scanner (`Core::entry_fill`, `natural`), so the phrase filling an action's
-  day and moment does not need the language; `Date.parse`/`Time.parse` are for code that reads
-  words itself and names the moment it reads them at. `dated(text, now)` (which answered the
-  rest of the text with its day and moment) and `day_of(t)` (which `t.day()` is) are removed
-  with no alias.
+- **The entry keeps reading words, not the language.** An action's one `Text` parameter is what
+  a typed entry fills: a call of the action leaves it for the words, and the runtime's own
+  scanner (`Core::entry_fill`, `natural`) titles it. The parameter carries no marker of its own
+  (`(entry)` is removed); a view that offers the entry names the action as its `entry:`, and an
+  action with none or several `Text` parameters takes no words (E068). The scanner fills it, so
+  the phrase filling an action's day and moment does not need the language; `Date.parse`/
+  `Time.parse` are for code that reads words itself and names the moment it reads them at.
+  `dated(text, now)` (which answered the rest of the text with its day and moment) and
+  `day_of(t)` (which `t.day()` is) are removed with no alias.
 
 ## Search
 
@@ -506,12 +582,11 @@ search.md, "What a type declares" and "Types, references and paths".
   field), E101 (a type no filter compares), E102 (a named filter the index cannot keep), E103
   (an order the field does not have), E104 (repeated, hidden and filtered, a reserved key),
   each naming the type with its doc comment's first line.
-- **A filter's options are declared** with the annotation enum cases and actions take:
-  `filter done (icon: .circle_check)`, `filter "Today" = due <= today (icon: .star, count:
-  true)`. After a named filter's predicate the parenthesis would read as a call; one that names
-  only options is the filter's options. `icon:` is what its control shows beside its label, and
-  `count:` whether the place it makes shows how many items it holds. A filter that declares
-  neither has no icon and shows no count.
+- **A filter's option is declared** with the annotation enum cases and actions take:
+  `filter done (icon: .circle_check)`, `filter "Today" = due <= today (icon: .star)`. After a
+  named filter's predicate the parenthesis would read as a call; one that names only options is
+  the filter's options. `icon:` is what its control shows beside its label. A filter that
+  declares none has no icon.
 - **Named filters are predicates of the existing vocabulary.** They read fields with `not`,
   `and`, `or`, comparisons, `.len()` and `.is_empty()`. search.md's
   `attachments.count > 0` is written `not attachments.is_empty()` or
@@ -542,10 +617,9 @@ search.md, "What a type declares" and "Types, references and paths".
   view's metadata. `std.list`'s `window query: Text` holds the place chosen, as people type
   it in search (`is:done`); its places are `filters(T)`'s toggles after all of the items
   (`all`, named `everything:`, by default from the type's plural noun, `host.Meta.plural`: "All notes"); `place:` is
-  the place a window starts on, the state's default (Letters starts on `is:drafts`). A place shows a
-  count only where its filter declares `count: true` (`items.matching(p.query).len()`), never the
-  all place, a project's or one that declares none. The `filter:` and `count:` parameters are
-  gone.
+  the place a window starts on, the state's default (Letters starts on `is:drafts`). Its places
+  draw no badge: a count is a query of the app's own (`items.matching(p.query).len()`), which a
+  view that counts writes. The `filter:` and `count:` parameters are gone.
 - **A list groups by the key its caller gives.** `std.rows(group:)` takes `(T) -> Option<K>` and
   heads each run of items naming the same key with the key itself, as the platform presents a
   value of its kind — a day as Today, Tomorrow, a weekday; a word as it is written. Items that
@@ -572,24 +646,22 @@ search.md, "What a type declares" and "Types, references and paths".
   version of a resource says it: `created(r)?.from`, an `Option<host.Resource>`. It is not a
   field anyone declares or writes — every type has it, and an action writes none. A store
   without a record of changes keeps it nowhere and answers nothing.
-- **A scenario's `as` block is a change of its own.** `as who at time { ... }` commits what came
-  before, then the block, as `who` at `time`; history names the scenario as the action, since
-  seed data is the scenario's doing. Rolling back on a failure undoes the last block only.
-- **`made from r { ... }` says what a scenario's seed data was made from.** The block runs as a
-  change made from `r`, the way an invocation on `r` is, so what it creates records it
-  (`created(r)?.from`) and what links to `r` names them, as a person's make from `r` does. It is
-  a change of its own for the same reason `as` is: what the block makes is made from `r`, while
-  what came before is not. Only a scenario writes it, since seed data is what shows a
-  provenance feature in `layout-check`.
-- **A scenario seeds the view state its window stands on.** `window place = Task.done` (and
-  `lens picked = ...`) in a scenario names a state the view declares, with an optional view
-  (`window home.place = ...`) where two declare one name, and the value is checked as the
-  declaration's type is. It sets the declaration, not an instance: the host reads a declared
-  state as the person's slot, then the scenario's seed, then the declaration's default, so a
-  window that opens later stands on it too, and the seed is a generation bump so an open window
-  draws again. A person's own choice is their slot and wins over the seed, and the seed is
-  never written as their change — a capture can show a place no one picked without recording
-  that anyone did. Only a scenario writes it: production code cannot stage a person's place.
+- **`invoke(call, by: who, at: time, from: r)` runs an action as a person, at a time, from a
+  resource.** It gives what the call gives, and each one is a change of its own: what came
+  before commits first, so history names each change as the person who made it, at their time,
+  and rolling back on a failure undoes the last one only. `by` defaults to `invoker`, `at` to
+  now, `from` to nothing; a call made from `r` records it as an invocation on `r` is
+  (`created(r)?.from`). Only a scenario writes it, since seed data is what shows a provenance
+  feature in a capture; elsewhere an action runs as whoever invokes it, now.
+- **A run stages the view state its windows stand on.** `layout-check --state place=Task.done`
+  names a state a view declares, and the value as the app's own code writes it: a filter of the
+  type the state queries, a case of its enum, or a literal a day, a time, a number, a truth or
+  a text takes. It sets the declaration, not an instance: the host reads a declared state as
+  the person's pick, then what the run staged, then the declaration's default, so a window that
+  opens later stands on it too. A person's own choice wins over it, and what a run stages is
+  never written as their change — a capture shows a place no one picked without recording that
+  anyone did. It is no language construct: laying out a window at a state is a run's option,
+  not a scenario's, so app code cannot stage a person's place.
 - **`a.then(b)` joins actions.** It is a method of action values, so it means the same wherever
   one is written; `b` runs once `a` is done. A composer sends its lens draft and clears it with
   `send(c, draft).then(set(draft, ""))`; a button presents the first action.
@@ -672,16 +744,6 @@ search.md, "What a type declares" and "Types, references and paths".
   `.at(due, at)` places a reminder: from the instant of a timed item, or from the start of the
   due day for one without a time, so `PT9H` is 09:00 and `-PT15M` a quarter of an hour before
   midnight, both in the person's zone.
-- **`std.complete(item, done)` advances a repeating item in place.** An app writes one call and
-  its own `done` line (`let again = std.complete(t, done)` then `t.done = done and not again`):
-  the helper adds the completion day to the item's add-wins `Set<Date>` and moves the due day and
-  the time of day to the next occurrence, answering whether it repeats. The type's shape is the
-  contract, as `set`/`open` read their fields: one `std.Repeat` or `Option<std.Repeat>`, one
-  `Set<Date>` of the days it was completed, one `Date` or `Option<Date>` of the day it is due,
-  and at most one `Option<Time>` of the time of day. A type without them gets E118 naming the
-  field to declare, and a view or a function cannot call it (E040). Nothing happens for an item
-  that repeats nowhere or for `done = false`, so a check that does not repeat is the app's own
-  `done` write.
 - **A place the view supplies, and the commands only a view can offer.** An action parameter
   written `above: Option<T> (above)` is a *place*: the view offering the action fills it with
   what it shows there — `std.rows` and `std.outline` pass the item just over this one in its
@@ -712,3 +774,86 @@ search.md, "What a type declares" and "Types, references and paths".
   map is its merge) and no role marker (`(title)` and the rest read one value of the record).
   This is not the window's state: `window` and `lens` are the person looking's arrangement of a
   window, and a personal field is a value about a record anyone sharing it may read.
+- **An app's costs are counted in the language's own terms, at the line it is written on.** A
+  profile attributes fuel, calls, host reads and published offers to the *unit* that ran — a
+  view, a row view, an action, a requirement, an `applies`, an at-event argument, a filter, a
+  standard library part — and names each by the line its declaration starts on, so an author
+  reads a table of their own source. Fuel is metered by the engine in each call's frame, with
+  nested calls counted into their caller as well (inclusive), and reads are the store's own
+  counters taken across the frame. The units are the exports the module already has, written by
+  the compiler into the module's `tilolang.lines` section beside its metadata, so naming costs
+  nothing until a run asks for it; what a package costs to open is what it costs to open
+  (`tilolang profile`, `Runtime::record_costs`, `assert_costs`), in counts that do not depend on
+  the machine, rather than in seconds, which measure the runner as much as the app.
+
+## Web requests
+
+effects.md, "Web". A request is an effect whose answer is kept, so the language needs a value for
+what came back and a rule for when it is sent.
+
+- **`web.get` and `web.post` answer a `Response`, and `Response.body` is a `Bytes`.** `Bytes` is
+  the buffer itself (`len()`, and `text()` decoding it as UTF-8 with the bad bytes replaced); a
+  `Response` answers `ok`, `status`, `status_text`, `headers` and `body`, and `text()` reads the
+  body's text, so `web.get(url).text()` is one call. Both are values a call answers, not types a
+  field may hold or an action may take (E118, "cannot be stored"): the answer belongs to the run
+  that made it, and a program keeps what it read by writing it into a record's `Text`.
+- **A request is sent once, where the invocation runs, and its answer is journalled.** The first
+  run asks the invoking device's transport; the `Web { request, response }` entry it writes is
+  what every later run and every resume answers from, so a replay makes no request. The journal
+  keeps the request whole — method, URL, headers, body, `if_none_match` — and a run that reaches
+  the effect with a different request than its journal recorded traps: it diverged from the
+  journal, and answering the recorded reply would answer a question nobody asked.
+- **A failure is a value.** A refused host, a timeout, a network error and a reply over the limit
+  all answer a `Response` with `ok` false and status 0 (the recorded error in `status_text`), so
+  an app decides what to do with it like any other outcome. Determinism comes from the journal
+  entry, not from the transport: replaying a failed entry fails the same way.
+- **The hosts are declared by the package, and the workspace may revoke one.** The app header's
+  `(web: ["example.com", "*.rss.org"])` is the grant: `PackageMeta.web`, checked at the build and
+  kept in the manifest, so an install shows the hosts before the app runs. The runtime refuses a
+  request to a host the calling package did not declare, as a value, and records it. `*.suffix`
+  covers subdomains only (not `suffix` itself), and only `http` and `https` URLs reach a
+  transport. Revocation is `Authority::may_fetch`, which the platform answers from the grants it
+  installed minus the hosts the workspace revoked (`TiloAuthority::revoke_web`), so a revoked
+  host is refused the same way without editing the package.
+- **Limits are fixed, not negotiated.** One request waits at most 30 seconds and answers at most
+  2 MiB; a longer body is refused with a status-0 `Response` naming the limit. Streaming and
+  redirect policy beyond the transport's own are not part of this effect.
+
+## Triggers
+
+An action the app runs by itself is declared with `trigger` (README.md, "Triggers"). The
+language only describes it; the host runs it, so the choices are about what the declaration
+holds and what the host reads from it.
+
+- **`trigger name(r: T) every <duration>: action(r)`, or `at r.field`.** A trigger names exactly
+  one record type — the records it runs for — and exactly one action of its own package. The
+  action's arguments are the record it runs for (`r`) or a root (`root Board`); anything else
+  would have the host compute a value without running the package. An action parameter the
+  trigger does not give must have a default.
+- **`every` is pinned to the epoch, not to when the app started.** `every 30m` runs at the start
+  of each half hour on the wall clock, so every device that runs a trigger agrees on its
+  periods, and the period a run belongs to is the same everywhere it is later read.
+- **`at` reads a `Time` or `Option<Time>` field of the record, and the record is the mark.** The
+  trigger fires once when the stored instant has come; the host records the instant it fired at,
+  so the same instant does not fire again, and a changed instant (a later one, or an earlier one
+  that has already passed) fires once more. The field is read by the host, never by the package,
+  so a time in a field of some other shape is refused by the compiler (E133).
+- **The run is recorded in the change it makes, in the same edit.** The host writes what the
+  trigger last did for the record (the period it ran in, or the instant it fired at) into the
+  record's `$triggers` map, in the same change as the action's own writes (`DynEdit::TriggerRan`),
+  and the change is committed under the app's own principal, `trigger:<app>`. A second run of the
+  same period or instant is refused where changes are applied in order, so two devices cannot
+  both count a run.
+- **One device runs them: the workspace's origin.** Only the replica that governs the workspace
+  (the same one that runs migrations) invokes triggers, so nothing has to be elected and no
+  device depends on being asked. A device that opens the app later reads the marks and finds
+  nothing due.
+- **Runs missed while every device was off happen once, at the next turn.** `every` compares the
+  period `now` is in against the mark, not the number of periods that passed; `at` compares the
+  instant the field holds against the mark. Five hours off is one run, not ten.
+- **Nothing polls.** The host waits until the next instant a trigger is due (the next period's
+  start, or a record's time still to come) and wakes then; it never returns an instant already
+  passed, so a refused run is not retried in a loop.
+- **A trigger runs for the package's records, as the platform stores them:** the resources of
+  the trigger's type at the top of the app's tree (what migrations and publication see), not
+  items inside a collection.

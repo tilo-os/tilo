@@ -49,6 +49,7 @@ mod capture_grants;
 mod capture_io;
 mod capture_send;
 mod capture_studio;
+mod cards;
 mod certification;
 mod channels;
 mod chrome;
@@ -98,6 +99,7 @@ mod identity_admin;
 mod import_readiness;
 mod input_method;
 mod input_sources;
+mod invite;
 pub mod keyboard;
 mod keyboard_shortcuts;
 mod keys;
@@ -131,6 +133,7 @@ mod questions;
 pub mod quick_settings;
 mod records;
 pub mod recovery;
+mod reminders;
 mod rotation;
 pub mod run;
 mod run_programs;
@@ -239,6 +242,7 @@ use tilo_sheets::Seat as _;
 use tilo_sheets::directory::DirectorySeat;
 use tilo_sheets::display_confirm::ConfirmSeat;
 use tilo_sheets::file_picker::FilePickerSeat;
+use tilo_sheets::invite::InviteSeat;
 use tilo_sheets::portal::PortalSeat;
 use tilo_sheets::power::PowerSeat;
 use tilo_sheets::workspace_settings::WorkspaceSettingsSeat;
@@ -392,6 +396,10 @@ struct Shared {
     display_confirm: Option<ConfirmSeat>,
     /// The workspaces this computer may join or open.
     directory: Option<DirectorySeat>,
+    /// Inviting people: the sheet a link into the workspace in front is made
+    /// from, and what it made in this opening.
+    invite: Option<InviteSeat>,
+    invite_made: RefCell<invite::Made>,
     /// What the sites this computer knows list as public workspaces, read
     /// on a worker of its own.
     directory_store: directory::Store,
@@ -440,6 +448,9 @@ struct Shared {
     /// The daemon's notifications on the desktop, as the session publishes
     /// the centre they are kept in.
     notifications: Rc<RefCell<notifications::SessionNotifications>>,
+    /// The reminders the person's workspaces hold for them, as this session
+    /// tells them, whether or not a window of the app that set them is open.
+    reminders: reminders::Reminders,
     /// What the services ask the person, on the sheets.
     asker: questions::Asker,
     /// Who is here: this session's membership of each workspace, when it
@@ -499,6 +510,10 @@ struct Shared {
     /// The monitors of the displays a fullscreen window owns, which the
     /// bars read.
     fullscreen: Rc<RefCell<Vec<String>>>,
+    /// Whether the person may invite someone into the workspace in front, as
+    /// the loop last answered it: the bar's invite button and the roster's
+    /// footer are offered on it.
+    invitable: Rc<Cell<bool>>,
     /// The person's "hide the top bar until the pointer is near it", as the
     /// settings watch last read it.
     hide_top_bar: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -695,6 +710,8 @@ impl Shared {
             self.workspace_settings.as_ref(),
             &self.workspace_settings_feed(),
         );
+        self.follow_invite();
+        self.refresh_invite();
         self.follow_boot_join();
         // A program of this login asking to work as an agent is a question
         // of the person's: their answer admits it, and the client is served
@@ -1340,9 +1357,15 @@ impl Session {
         // A timer starting in the background must reach the bar on the next
         // frame, not the next minute.
         live_activities.set_host_wake(options.wake.handle());
-        let activities = Rc::new(chrome::Activities::new(std::sync::Arc::clone(
-            &live_activities,
-        )));
+        // The cards apps draw themselves, over the desk: the session
+        // authorises what each presents, and the floating layer's place is
+        // where the desk stands its window.
+        let cards = crate::cards::Cards::new();
+        desktop.with_policy(|policy| policy.use_cards(cards.placements()));
+        let activities = Rc::new(chrome::Activities::new(
+            std::sync::Arc::clone(&live_activities),
+            cards.clone(),
+        ));
         // An application's tray item registering, changing or going away is
         // read off the loop: it must reach the bar on the next frame.
         let tray = options
@@ -1355,6 +1378,10 @@ impl Session {
         // The displays a fullscreen window owns, which the loop takes from
         // the compositor every pass: the bar there steps aside for it.
         let fullscreen: Rc<RefCell<Vec<String>>> = Rc::default();
+        // Whether the person may invite someone into the workspace in front,
+        // which the loop answers every pass: the bar offers its invite button
+        // and the roster its footer from it.
+        let invitable: Rc<Cell<bool>> = Rc::default();
         // The windows this session shares with its workspaces: a share's
         // encoder wakes the loop when it has a frame, and the bar reads them.
         // A window another device shares is decoded on the same waker, so a
@@ -1373,12 +1400,17 @@ impl Session {
         // and the bar says each display's number and name on it.
         let numbers = display_identify::Numbers::default();
         let published_displays = shared_displays::Publisher::default();
+        // One table for the keys the session answers and the guide that
+        // explains them: a chord that works is a chord the guide and the
+        // menus show, and a person's rebinding reaches every one of them.
+        let shortcuts = Rc::new(RefCell::new(std::mem::take(&mut options.config.shortcuts)));
         let chrome = Rc::new(RefCell::new(chrome::host(
             &handle,
             &options,
             chrome::ChromeWiring {
                 intents: Rc::clone(&intents),
                 asks: Rc::clone(&asks),
+                shortcuts: Rc::clone(&shortcuts),
                 feeds: chrome::BarFeeds {
                     signals: Rc::clone(&notice_signals),
                     readings: Rc::clone(&readings),
@@ -1389,6 +1421,7 @@ impl Session {
                     shares: Rc::clone(&window_shares),
                     reveals: Rc::clone(&reveals),
                     identify: numbers.ask(),
+                    invitable: Rc::clone(&invitable),
                 },
             },
             sync.clone(),
@@ -1465,7 +1498,15 @@ impl Session {
         };
         // Who is here, over the windows: the roster the bar's faces open and
         // where everyone else's pointer is.
-        let people = people::mount(&mut compositor, &mut doors, &options, &handle, sync.clone());
+        let people = people::mount(
+            &mut compositor,
+            &mut doors,
+            &options,
+            &handle,
+            sync.clone(),
+            Rc::clone(&intents),
+            Rc::clone(&invitable),
+        );
 
         // What the floating layer keeps clear of: the banners' stack while a
         // banner shows, and the readout's band while it stands.
@@ -1475,6 +1516,7 @@ impl Session {
             &mut compositor,
             &mut doors,
             &activities,
+            &cards,
             banner_stack.clone(),
             readout_band.clone(),
             &options,
@@ -1495,6 +1537,7 @@ impl Session {
             portal,
             file_picker,
             directory,
+            invite,
             display_confirm,
             displays: display_seat,
             shortcut_guide: guide_seat,
@@ -1523,9 +1566,6 @@ impl Session {
             capture_notes,
         );
 
-        // One table for the keys the session answers and the guide that
-        // explains them: a chord that works is a chord the guide shows.
-        let shortcuts = Rc::new(RefCell::new(std::mem::take(&mut options.config.shortcuts)));
         // The desktop's own chords win over every app's: the portal's
         // bindings step aside for the table the session answers first.
         let portal_shortcuts = options
@@ -1554,7 +1594,7 @@ impl Session {
             mount_controls(
                 &mut compositor,
                 &mut doors,
-                shortcuts,
+                Rc::clone(&shortcuts),
                 portal_shortcuts,
                 guide_keys,
                 KeyContext {
@@ -1743,6 +1783,7 @@ impl Session {
         let tabs = mount::app_tabs::AppTabs::start(
             std::sync::Arc::clone(&options.launches),
             options.wake.handle(),
+            cards,
         )
         .map_err(|error| tracing::warn!(%error, "the shell-ui service does not run"))
         .ok();
@@ -1791,7 +1832,7 @@ impl Session {
             )));
         // The shell's own readings and verbs, on the same door every other
         // service answers on.
-        mount::shell::Shell::mount(&services, &handle, overlays.clone());
+        mount::shell::Shell::mount(&services, &handle, overlays.clone(), Rc::clone(&shortcuts));
         services
             .borrow_mut()
             .add(Box::new(lock_service::LockService::new(lock.clone())));
@@ -1884,6 +1925,8 @@ impl Session {
             fs_authority: fs_authority::Publisher::for_session(),
             workspace_emoji,
             directory,
+            invite,
+            invite_made: RefCell::default(),
             directory_store,
             boot_join: RefCell::new(boot_join),
             community: RefCell::new(community),
@@ -1916,6 +1959,11 @@ impl Session {
                 notice_signals,
                 options.power.clone(),
             ))),
+            reminders: reminders::Reminders::start(
+                cli::data_home(),
+                &options.person,
+                options.wake.handle(),
+            ),
             asker,
             agent_door: RefCell::new(agent_door),
             session_doors,
@@ -1940,6 +1988,7 @@ impl Session {
             chrome,
             people,
             fullscreen,
+            invitable,
             hide_top_bar,
             controller,
             controller_keys,
@@ -2203,6 +2252,7 @@ impl Session {
     fn warm(&mut self) -> Result<(), Error> {
         self.follow_displays()?;
         self.follow_fullscreen();
+        self.shared.follow_invitable();
         for surface in &self.surface_apps {
             // The lock screen is started when the session locks, the
             // on-screen keyboard when the person may need it and quick
@@ -2689,6 +2739,10 @@ impl Session {
     /// shortcut the chrome leaves to the session); a few rounds settle any
     /// chain.
     fn settle_asks(&mut self) -> Result<(), Error> {
+        // Who may invite whom into the workspace in front is the workspace's
+        // answer, and moves while the session runs: the bar's invite button
+        // and the roster's footer follow it.
+        self.shared.follow_invitable();
         for _ in 0..4 {
             self.shared.follow_asks(&mut crate::look::look(
                 &mut self.compositor,

@@ -44,13 +44,16 @@ pub struct Attachment {
     pub size: Option<u64>,
 }
 
-/// The thing a message shares (`Message.reference`): the address Chat
+/// The record a message shares, and the part of it: the address Chat
 /// keeps, never its content.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Reference {
     pub kind: String,
     pub id: String,
     pub label: String,
+    /// The record it lives in (`record:<app>:<record>`), its record empty
+    /// for the app's own one.
+    pub provider: Option<String>,
 }
 
 /// A window shared live into a message (`Message.share`).
@@ -75,14 +78,13 @@ pub struct Message {
     pub reactions: Vec<Reaction>,
     /// `(user, byte start, byte len)` of each mention in `text`.
     pub mentions: Vec<(String, usize, usize)>,
-    pub attachment: Option<Attachment>,
+    /// The files it carries, which go across as Discord attachments.
+    pub attachments: Vec<Attachment>,
     /// The name the message shows instead of its author's, when a bot posted
     /// it for someone (`Message.appearance`).
     pub appearance_name: Option<String>,
-    /// What it shares, when it was written by sharing something.
+    /// The record it shares, when it was written by sharing something.
     pub reference: Option<Reference>,
-    /// The record the reference lives in (`record:<app>:<record>`).
-    pub source_provider: Option<String>,
     /// The live share of a window it carries.
     pub share: Option<Share>,
 }
@@ -220,32 +222,46 @@ fn reactions(value: &Value) -> Vec<Reaction> {
         .collect()
 }
 
-fn attachment(value: &Value) -> Option<Attachment> {
-    let attachment = json_field(value, "attachment");
-    let object = attachment.as_object()?;
-    // A stored data enum names its variant beside its fields
-    // (`{"$variant": "image", "blob": …}`); a record from before kept serde's
-    // externally tagged form (`{"Image": {…}}`) as JSON text.
-    let inner = if object.contains_key("$variant") {
-        &attachment
-    } else {
-        object.values().next()?
-    };
-    Some(Attachment {
-        blob: text(inner, "blob"),
-        name: text(inner, "name"),
-        size: inner.get("size").and_then(Value::as_u64),
-    })
+/// What a message carries besides its words: the files it posts, and the
+/// record it shares. A data enum names its variant beside its fields
+/// (`{"$variant": "image", "blob": …}`); a record from before kept serde's
+/// externally tagged form (`{"Image": {…}}`) as JSON text.
+fn carried(value: &Value) -> (Vec<Attachment>, Option<Reference>) {
+    let mut files = Vec::new();
+    let mut shared = None;
+    let attached = json_field(value, "attachments");
+    for item in attached.as_array().into_iter().flatten() {
+        match variant(item).as_deref() {
+            Some("image" | "video" | "file") => files.push(Attachment {
+                blob: text(item, "blob"),
+                name: text(item, "name"),
+                size: item.get("size").and_then(Value::as_u64),
+            }),
+            Some("resource") if shared.is_none() => {
+                let at = json_field(item, "at");
+                let reference = json_field(&at, "reference");
+                let Some(id) = opt_text(&reference, "id") else {
+                    continue;
+                };
+                shared = Some(Reference {
+                    kind: text(&reference, "kind"),
+                    label: opt_text(&reference, "label").unwrap_or_else(|| id.clone()),
+                    id,
+                    provider: provider(&at),
+                });
+            }
+            _ => {}
+        }
+    }
+    (files, shared)
 }
 
-fn reference(value: &Value) -> Option<Reference> {
-    let reference = json_field(value, "reference");
-    let id = opt_text(&reference, "id")?;
-    Some(Reference {
-        kind: text(&reference, "kind"),
-        label: opt_text(&reference, "label").unwrap_or_else(|| id.clone()),
-        id,
-    })
+/// The `record:<app>:<record>` provider of the record `at` names, its
+/// record empty for the app's own one.
+fn provider(at: &Value) -> Option<String> {
+    let app = opt_text(at, "app")?;
+    let record = opt_text(at, "record").unwrap_or_default();
+    Some(format!("record:{app}:{record}"))
 }
 
 /// A stored data enum's variant, lower case: as a plain string, as
@@ -302,6 +318,7 @@ pub fn message(chat: &Value, id: &str) -> Option<Message> {
         _ => Vec::new(),
     };
     let appearance = json_field(&v, "appearance");
+    let (attachments, reference) = carried(&v);
     Some(Message {
         id,
         channel: text(&v, "channel"),
@@ -319,10 +336,9 @@ pub fn message(chat: &Value, id: &str) -> Option<Message> {
         parent: opt_text(&v, "parent"),
         reactions: reactions(&v),
         mentions,
-        attachment: attachment(&v),
+        attachments,
         appearance_name: opt_text(&appearance, "name"),
-        reference: reference(&v),
-        source_provider: opt_text(&v, "source_provider"),
+        reference,
         share: share(&v),
     })
 }
@@ -374,7 +390,7 @@ mod tests {
                   "reactions": [{"emoji": "👍", "by": "u_bo", "at": 1},
                                 {"emoji": "👍", "by": "bot:i", "persona": "discord/d7", "name": "Dee", "at": 2}],
                   "mentions": "[{\"user\":\"u_bo\",\"start\":3,\"len\":3,\"is_agent\":false}]",
-                  "attachment": "{\"File\":{\"name\":\"a.txt\",\"blob\":\"ff\",\"size\":5}}"}}
+                  "attachments": [{"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5}]}}
             ],
             "people": [{"id": "u_ada", "name": "Ada", "agent": false, "avatar": "aa"}]
         })
@@ -412,15 +428,15 @@ mod tests {
         );
         assert_eq!(m.reactions[1].persona.as_deref(), Some("discord/d7"));
         assert_eq!(m.reactions[1].name.as_deref(), Some("Dee"));
-        assert_eq!(m.attachment.unwrap().size, Some(5));
+        assert_eq!(m.attachments[0].size, Some(5));
         assert_eq!(
             person(&chat(), "u_ada").unwrap().avatar.as_deref(),
             Some("aa")
         );
     }
 
-    /// A message as the chat stores it now: its mentions, attachment and
-    /// shown name as values, the attachment naming its variant.
+    /// A message as the chat stores it now: its mentions, attachments and
+    /// shown name as values, each attachment naming its variant.
     #[test]
     fn reads_a_message_with_model_fields() {
         let chat = json!({
@@ -428,13 +444,13 @@ mod tests {
                 {"id": "m2", "value": {"channel": "c_general", "author": "bot:i", "text": "hi @Bo", "parent": null,
                   "reactions": [],
                   "mentions": [{"user": "u_bo", "start": 3, "len": 3, "is_agent": false}],
-                  "attachment": {"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5},
+                  "attachments": [{"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5}],
                   "appearance": {"name": "Bo"}}}
             ]
         });
         let m = message(&chat, "m2").unwrap();
         assert_eq!(m.mentions, [("u_bo".to_owned(), 3, 3)]);
-        let attachment = m.attachment.unwrap();
+        let attachment = &m.attachments[0];
         assert_eq!((attachment.blob.as_str(), attachment.size), ("ff", Some(5)));
         assert_eq!(m.appearance_name.as_deref(), Some("Bo"));
     }
@@ -446,11 +462,14 @@ mod tests {
         let chat = json!({
             "messages": [
                 {"id": "m3", "value": {"channel": "c_general", "author": "u_ada", "text": "Plan", "parent": null,
-                  "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Plan", "span": null},
-                  "source_provider": "record:so.tilo.notes:plan",
+                  "attachments": [{"$variant": "resource", "label": "Plan",
+                    "at": {"app": "so.tilo.notes", "record": "plan",
+                           "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Plan", "span": null}}}],
                   "share": {"access": {"$variant": "edit"}, "open": true, "ended": false}}},
                 {"id": "m4", "value": {"channel": "c_general", "author": "u_ada", "text": "Plan", "parent": null,
-                  "reference": "{\"kind\":\"notes.page\",\"id\":\"notes.page:1\",\"label\":\"Plan\"}",
+                  "attachments": [{"$variant": "resource", "label": "Plan",
+                    "at": {"app": "so.tilo.notes",
+                           "reference": "{\"kind\":\"notes.page\",\"id\":\"notes.page:1\",\"label\":\"Plan\"}"}}],
                   "share": {"access": "View", "open": false, "ended": true}}}
             ]
         });
@@ -460,12 +479,9 @@ mod tests {
             Some(Reference {
                 kind: "notes.page".into(),
                 id: "notes.page:1".into(),
-                label: "Plan".into()
+                label: "Plan".into(),
+                provider: Some("record:so.tilo.notes:plan".into()),
             })
-        );
-        assert_eq!(
-            live.source_provider.as_deref(),
-            Some("record:so.tilo.notes:plan")
         );
         assert_eq!(
             live.share,
@@ -476,7 +492,11 @@ mod tests {
             })
         );
         let ended = message(&chat, "m4").unwrap();
-        assert_eq!(ended.reference.unwrap().label, "Plan");
+        let reference = ended.reference.unwrap();
+        assert_eq!(
+            (reference.label.as_str(), reference.provider),
+            ("Plan", Some("record:so.tilo.notes:".into()))
+        );
         let share = ended.share.unwrap();
         assert_eq!((share.access.as_str(), share.ended), ("view", true));
         assert_eq!(message(&self::chat(), "m1").unwrap().share, None);

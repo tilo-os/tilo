@@ -347,12 +347,7 @@ pub fn message_row(id: &Id, message: &crate::record::Message) -> Message {
         parent: message.parent.as_ref().map(ToString::to_string),
         reactions,
         mentions: message.mentions.clone(),
-        reference: message.reference.clone(),
-        source_provider: message
-            .source_provider
-            .as_ref()
-            .map(|provider| provider.0.clone()),
-        attachment: message.attachment.clone(),
+        attachments: message.attachments.clone(),
         pinned: message.pinned,
         work: message.work.as_ref().and_then(work_row),
         appearance: message.appearance.clone().map(Into::into),

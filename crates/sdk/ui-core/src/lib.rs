@@ -271,6 +271,7 @@ pub mod workspace_sync;
 /// resolves a key press through, the native shell and a browser page alike.
 pub mod shortcut_table {
     pub use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
+    pub use settings_store::keyboard_shortcuts::ShortcutHome;
 }
 /// The desk widgets and the screen edges things kept at the screen's edges
 /// wait at, as the settings document keeps them: what every desktop host

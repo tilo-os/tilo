@@ -19,6 +19,7 @@
 //! Nothing here knows Wayland: windows are plain ids, places are rects in
 //! the surface's logical coordinates.
 
+pub mod cards;
 pub mod displays;
 pub mod floating;
 
@@ -404,6 +405,9 @@ pub struct DesktopPolicy {
     floating: BTreeMap<u64, Option<u64>>,
     /// The displays, primary first, a mirror set as one.
     displays: Vec<Display>,
+    /// The app-drawn cards floating over the desk, as the session placed
+    /// them.
+    cards: cards::Placements,
 }
 
 impl DesktopPolicy {
@@ -458,6 +462,7 @@ impl DesktopPolicy {
             placed: BTreeSet::new(),
             floating: BTreeMap::new(),
             displays: Vec::new(),
+            cards: cards::Placements::new(),
         };
         (policy, surface)
     }
@@ -566,10 +571,58 @@ impl DesktopPolicy {
         self.handle.display_of(group)
     }
 
-    /// Whether `window` is a dialog floating over its parent.
+    /// Whether `window` is a dialog floating over its parent, or a card an
+    /// app draws over the desk.
     #[must_use]
     pub fn is_floating(&self, window: u64) -> bool {
         self.floating.contains_key(&window)
+    }
+
+    /// Place the cards the session authorises: where the floating layer puts
+    /// each one is the session's to say, and this desk's to lay out.
+    pub fn use_cards(&mut self, cards: cards::Placements) {
+        self.cards = cards;
+    }
+
+    /// The cards, as the session places them.
+    #[must_use]
+    pub fn cards(&self) -> cards::Placements {
+        self.cards.clone()
+    }
+
+    /// Whether `window` is a card an app draws, drawn or suspended.
+    #[must_use]
+    pub fn draws_card(&self, window: u64) -> bool {
+        self.cards.draws(window)
+    }
+
+    /// Where the layer puts the card `window`, while it shows it.
+    #[must_use]
+    pub fn card_place(&self, window: u64) -> Option<Rect> {
+        self.cards.card_of(window).map(|(_, at)| at)
+    }
+
+    /// The size the app asked for the card `window`.
+    #[must_use]
+    pub fn card_size(&self, window: u64) -> Option<(i32, i32)> {
+        self.cards.size_of(window)
+    }
+
+    /// Whether `app` has a window shown on the desk now: the activity it
+    /// runs draws there, and its floating card is suspended until it does
+    /// not.
+    #[must_use]
+    pub fn shows(&self, app: &str) -> bool {
+        let shown: BTreeSet<u64> = self.layout().shown.into_iter().map(|(id, _)| id).collect();
+        self.handle.read(|tree| {
+            tabs(tree)
+                .filter(|tab| foreign(tab).is_some_and(|window| shown.contains(&window)))
+                .filter_map(|tab| match &tab.tile {
+                    TileContent::Foreign { app_id, .. } => Some(app_id.clone()),
+                    _ => tilo_desktop_model::apps::canonical_app_id(&tab.tile),
+                })
+                .any(|shown| app_ids_match(&shown, app))
+        })
     }
 
     /// Give `window` its place: a dialog ([`floating::floats`]) floats over
@@ -581,6 +634,16 @@ impl DesktopPolicy {
     /// # Errors
     /// The desktop has no workspace or strip to open it in.
     pub fn map(&mut self, window: Window) -> Result<(), String> {
+        // A window carrying a card's token is the app's card: it floats where
+        // the layer puts it and never takes a tab. One carrying a token this
+        // session granted to nobody is no card and gets no place at all.
+        if let Some(token) = cards::Placements::token_of(window.app_id.as_deref()) {
+            if self.cards.draws_token(token) {
+                self.cards.mapped(token, window.id);
+                self.floating.insert(window.id, None);
+            }
+            return Ok(());
+        }
         let display = self
             .working_display()
             .map(|display| (display.width, display.height));
@@ -969,6 +1032,7 @@ impl DesktopPolicy {
     /// `window` went away: its tab closes, and focus goes back to the
     /// window the person had in front before it.
     pub fn unmap(&mut self, window: u64) {
+        self.cards.gone(window);
         // Its dialogs float on, over the display.
         for parent in self.floating.values_mut() {
             if *parent == Some(window) {

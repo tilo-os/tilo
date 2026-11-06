@@ -145,7 +145,7 @@ fn a_picked_report_reads_out_its_picks_notes_actions_and_timings() {
         ]
     );
     assert_eq!(row.body.len(), lines.len(), "a paragraph per line");
-    assert!(row.attachment.is_none());
+    assert!(row.attachments.is_empty());
     // The record keeps the structured report the person reviewed, not the
     // sentences read out of it.
     assert_eq!(
@@ -172,13 +172,13 @@ fn a_pick_from_an_app_with_no_known_name_is_the_part_alone_never_the_apps_id() {
 fn the_masked_picture_is_the_report_messages_image() {
     let (doc, submission) = picked(true);
     assert_eq!(
-        rows(&doc, &submission)[0].attachment,
-        Some(crate::model::Attachment::Image {
+        rows(&doc, &submission)[0].attachments,
+        vec![tilo_reference::Attached::Image {
             name: super::PICTURE_NAME.into(),
             blob: "ab".repeat(32),
             w: 640,
             h: 360,
-        })
+        }]
     );
 }
 

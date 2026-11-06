@@ -1376,6 +1376,57 @@ fn the_workspace_primary_opens_in_a_second_window_and_across_a_quick_relaunch() 
         .expect("a reopen after everything closed opens");
 }
 
+/// A record the workspace's people share — a person's own state of an app,
+/// which the app's window writes and the session's own parts do too — is held
+/// by every writer of the workspace at once, as the workspace's document is.
+/// A record of one window's own keeps its one owner.
+#[test]
+fn a_shared_workspace_record_opens_beside_another_writer_and_an_ordinary_one_does_not() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("state");
+    let shared = RecordCheckout::new(
+        RecordId::parse(&collab_types::workspace_record_id("tilo.workspace.emoji")).unwrap(),
+        RecordKind::new("tilo.workspace.emoji"),
+    );
+    let ordinary = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+
+    let mut first_owners = RecordOwners::new(root.clone());
+    let first = first_owners
+        .open("so.tilo.chat", "shared-workspace")
+        .unwrap();
+    for want in [&shared, &ordinary] {
+        first
+            .reserve_record(want)
+            .unwrap()
+            .initialize(|_| Ok(()))
+            .unwrap();
+        first.try_open_record(want).unwrap();
+    }
+
+    // A second writer of the workspace: its own process, so its own owners
+    // and store. It joins the shared record and is refused the ordinary one.
+    let mut second_owners = RecordOwners::new(root.clone());
+    let second = second_owners
+        .open("so.tilo.chat", "shared-workspace")
+        .unwrap();
+    tilo_test_env::wait_until("the second writer opens the shared record", || match second
+        .try_open_record(&shared)
+    {
+        Ok(_) => true,
+        Err(RecordOpenError::MissingRecord) => false,
+        Err(other) => panic!("a second writer must share the record: {other}"),
+    });
+    assert!(
+        matches!(
+            second.try_open_record(&ordinary),
+            Err(RecordOpenError::Store(
+                app_state::StoreError::WriterBusy { .. }
+            ))
+        ),
+        "a record of one window's own keeps its one owner"
+    );
+}
+
 #[test]
 fn strict_generic_shape_guard_preserves_valid_package_primary() {
     let temp = tempfile::tempdir().unwrap();

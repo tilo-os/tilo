@@ -37,6 +37,90 @@ pub enum JournalEntry {
     /// replayed flow sees what it saw the first time and takes the same branches, even after
     /// the actions it approved have changed the resources.
     Read { value: Value },
+    /// The clock and the person's zone, read once per invocation (convergence.md, "Actions").
+    Clock(Clock),
+    /// A draw: `value` was one of `0..upto`.
+    Random { upto: i64, value: i64 },
+    /// A request to a service outside Tilo, and the answer it got.
+    Web {
+        request: WebRequest,
+        response: WebResponse,
+    },
+}
+
+/// The clock and the person's zone, as an invocation read them: what it pinned at its first
+/// read, and what a replay answers from instead of asking the host again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Clock {
+    /// The moment, ISO-8601 UTC text with the seconds (`2026-06-30T13:40:00Z`).
+    pub now: String,
+    /// The person's zone as its IANA name, when the host named one this build knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
+    /// How many seconds their clock is ahead of UTC, which is what reads a day where the host
+    /// named no zone.
+    #[serde(default)]
+    pub offset: i64,
+}
+
+/// A request to a service outside Tilo, as it was made.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WebRequest {
+    /// `GET` or `POST`.
+    pub method: String,
+    pub url: String,
+    /// The headers asked for, each `Name: value`, as `web.get` and `web.post` write them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<String>,
+    /// A `POST`'s body, as the text the language gave.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// The tag a `GET` sent as `If-None-Match`, so an unchanged answer comes back as a `304`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_none_match: Option<String>,
+}
+
+/// What the service answered.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WebResponse {
+    /// The status the service answered with; 0 when none answered (a timeout, no network, a
+    /// refused host), and `status_text` then says why.
+    pub status: u16,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub status_text: String,
+    /// The headers it sent, each `Name: value`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<String>,
+    /// The body: a JSON string when it read as text, `{"base64": "..."}` when it did not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<serde_json::Value>,
+}
+
+impl WebResponse {
+    /// Whether the service answered success (`200..=299`).
+    #[must_use]
+    pub fn ok(&self) -> bool {
+        (200..=299).contains(&self.status)
+    }
+
+    /// The body as bytes.
+    #[must_use]
+    pub fn bytes(&self) -> Vec<u8> {
+        match &self.body {
+            Some(serde_json::Value::String(text)) => text.as_bytes().to_vec(),
+            Some(serde_json::Value::Object(map)) => map
+                .get("base64")
+                .and_then(serde_json::Value::as_str)
+                .map(|text| {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::STANDARD
+                        .decode(text)
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// Everything needed to replay a run.

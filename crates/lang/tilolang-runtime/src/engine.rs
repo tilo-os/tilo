@@ -118,21 +118,6 @@ pub enum GuestAnswer {
     },
 }
 
-/// A signature [`Host::guest_abi`] writes, as the parameters and the result each one's signs.
-pub(crate) fn signs(signature: &'static str) -> (Vec<u8>, Vec<u8>) {
-    let bytes = signature.as_bytes();
-    let split = bytes
-        .iter()
-        .position(|sign| !sign.is_ascii_alphabetic())
-        .unwrap_or(bytes.len());
-    let (params, _) = bytes.split_at(split);
-    // The result names the sign it is, and nothing after it.
-    (
-        params.to_vec(),
-        bytes.get(split).copied().into_iter().collect(),
-    )
-}
-
 /// Why a call into a module failed.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CallError {
@@ -356,6 +341,9 @@ pub struct EngineProfile {
 struct Cx {
     host: Rc<dyn Host>,
     profile: Option<Rc<Cell<EngineProfile>>>,
+    /// What each unit costs, while a profile is on: the fuel a call spends is charged to the
+    /// unit that made it.
+    costs: Option<Rc<crate::cost::Recorder>>,
 }
 
 /// An engine, as the rest of this module uses it. Everything above it is written once.
@@ -920,6 +908,8 @@ pub struct Engine {
     pooled: Pooled,
     limits: EngineLimits,
     profile: RefCell<Option<Rc<Cell<EngineProfile>>>>,
+    /// What each unit costs, while a profile is on.
+    costs: RefCell<Option<Rc<crate::cost::Recorder>>>,
 }
 
 impl Engine {
@@ -946,6 +936,7 @@ impl Engine {
             pooled,
             limits,
             profile: RefCell::new(None),
+            costs: RefCell::new(None),
         })
     }
 
@@ -1003,6 +994,12 @@ impl Engine {
     /// What the profile counted since it started.
     pub fn profiled(&self) -> Option<EngineProfile> {
         self.profile.borrow().as_ref().map(|p| p.get())
+    }
+
+    /// Charge the fuel of every call to the unit that made it, as `costs` counts them; cheap
+    /// while its profile is off.
+    pub(crate) fn watch_costs(&self, costs: Rc<crate::cost::Recorder>) {
+        *self.costs.borrow_mut() = Some(costs);
     }
 
     fn count(&self, f: impl FnOnce(&mut EngineProfile)) {
@@ -1063,7 +1060,17 @@ impl Engine {
     ) -> Result<Option<Wasm>, CallError> {
         let profile = self.profile.borrow().clone();
         let started = profile.as_ref().map(|_| Instant::now());
-        let cx = Cx { host, profile };
+        let costs = self
+            .costs
+            .borrow()
+            .as_ref()
+            .filter(|costs| costs.on())
+            .map(Rc::clone);
+        let cx = Cx {
+            host,
+            profile,
+            costs,
+        };
         let outcome =
             on_engine!(&self.pooled, pools => pools.call(module, export, args, &self.limits, cx));
         if let Some(started) = started {

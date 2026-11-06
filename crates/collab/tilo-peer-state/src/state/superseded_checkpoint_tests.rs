@@ -229,3 +229,65 @@ fn superseded_checkpoint_after_newer_admitted_is_skipped_idempotently() {
     );
     assert_eq!(heads(&receiver), heads(&author));
 }
+
+/// One checkpoint governs a route: the one its coverage row names. Another of
+/// the owner's devices publishing the record as it holds it is that device's
+/// own change — taken in and merged, with no coverage row of its own — never
+/// refused against a coverage that is not about it.
+#[test]
+fn a_checkpoint_of_another_of_the_owners_devices_is_merged_not_refused() {
+    let (mut receiver, first_key, second_key, _, now) = crate::admission_tests::seeded();
+    receiver.select_admission_v5().unwrap();
+    let later = now.checked_add(Duration::from_secs(301)).unwrap();
+    let route = Route {
+        app: "test.app".into(),
+        record: "tab:1".into(),
+    };
+    let origin = |key: &SigningKey| TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+
+    let mut first = receiver.clone();
+    let covered = snapshot(&mut first, &first_key, later, "covered");
+    // A second device of the same owner, holding what the first published,
+    // publishes the record as it holds it: no row of its own to govern.
+    let mut second = first.clone();
+    let theirs = snapshot(&mut second, &second_key, later, "second");
+    assert_eq!(
+        second.governed_coverage(&route).unwrap().unwrap().author,
+        first_key.verifying_key().to_bytes(),
+        "another of the owner's devices wrote coverage of its own"
+    );
+
+    receiver
+        .receive_from_report(origin(&first_key), first.workspace_message(), later)
+        .unwrap();
+    let governed = receiver
+        .receive_from_report(origin(&first_key), covered, later)
+        .unwrap();
+    assert!(
+        matches!(governed.primary(), InputDisposition::Accepted(_)),
+        "the covered checkpoint was not admitted: {:?}",
+        governed.primary()
+    );
+
+    receiver
+        .receive_from_report(origin(&second_key), second.workspace_message(), later)
+        .unwrap();
+    let merged = receiver
+        .receive_from_report(origin(&second_key), theirs, later)
+        .unwrap();
+    assert!(
+        matches!(merged.primary(), InputDisposition::Accepted(_)),
+        "another device's checkpoint was refused: {:?}",
+        merged.primary()
+    );
+    assert_eq!(
+        receiver.governed_coverage(&route).unwrap().unwrap().author,
+        first_key.verifying_key().to_bytes(),
+        "the route's coverage changed hands"
+    );
+    assert_eq!(
+        heads(&receiver),
+        heads(&second),
+        "the other device's checkpoint was not merged"
+    );
+}

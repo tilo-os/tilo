@@ -149,6 +149,7 @@ impl MapsApp {
             panel_collapsed: false,
             traffic: TrafficData::default(),
             pending_floating: None,
+            presented_navigation: false,
             navigation_placement: ui::floating_surface::FloatingPlacement::attached(nav_card_size),
             navigation_drag_handle: Rect::ZERO,
             navigation_end_rect: Rect::ZERO,

@@ -76,6 +76,18 @@ ed25519-dalek = { workspace = true, features = ["serde"] }
 tempfile.workspace = true
 # Drives a peer's asynchronous calls.
 pollster.workspace = true
+# CPU instructions per per-channel operation, deterministic across machines.
+iai-callgrind = "=0.16.1"
+
+[[bench]]
+name = "per_channel"
+path = "benches/per_channel.rs"
+harness = false
+
+[[bench]]
+name = "instructions"
+path = "benches/instructions.rs"
+harness = false
 
 [[test]]
 name = "it"

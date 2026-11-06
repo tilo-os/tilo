@@ -1151,6 +1151,13 @@ impl Compositor {
         self.data.state.mark_redraw_all();
     }
 
+    /// Lay the windows out again, as the policy asks: for a card an app
+    /// draws, whose place the floating layer moved.
+    pub fn rearrange(&mut self) {
+        self.data.state.rearrange();
+        self.data.state.mark_redraw_all();
+    }
+
     /// The windows that closed and are still drawn from the last buffer
     /// they showed, with the place each one stood at, front first. A window
     /// stays here until the desktop lets it go with

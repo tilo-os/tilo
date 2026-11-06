@@ -40,6 +40,29 @@ impl LiveRow {
         }
     }
 
+    /// A row of the declared type `R` (a resource type of `R`'s kind), whose
+    /// noun its type publishes, of the app the type is declared in: its
+    /// `id`, its `label`, and the [`ResourceType`](tilo_actions::ResourceType)
+    /// search matches "videos of …" against. A row an app declares an item of
+    /// a `#[resource]` type publishes (`Video`, `Channel`) is one of these,
+    /// so what it is is the type's and the search's, nothing the app writes.
+    pub fn typed<R: tilo_resource::words::RowType>(
+        id: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Self {
+        Self {
+            resource: std::rc::Rc::new(ResourceSpec::new(id, R::KIND, label).with_type(R::words())),
+        }
+    }
+
+    /// This row's type, saying what it is as people name it ([`Self::typed`]);
+    /// a row made with [`Self::new`] says nothing.
+    #[must_use]
+    pub fn with_type(mut self, words: tilo_actions::ResourceType) -> Self {
+        std::rc::Rc::make_mut(&mut self.resource).resource_type = Some(words);
+        self
+    }
+
     /// Attach the stable source-domain identity used to find this row across
     /// live dispatch aliases. It is descriptive metadata only and grants no
     /// permission or authority. Invalid identities are omitted at this

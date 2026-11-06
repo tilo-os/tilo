@@ -549,19 +549,12 @@ impl NativeWorkspaceOwner {
 /// Admit the workspace's governance from `bootstrap` into `peer`, in the order
 /// the host published it, and answer how many app messages it left out.
 ///
-/// Becoming a member takes the workspace's governance alone: its membership,
-/// roles and policy, and the certificates they import, which are everything
-/// an app message is authorized against. An app message is not part of it.
-/// A host's bootstrap carries its own record publications as well (every
-/// checkpoint it published since its last full one), and a device that does
-/// not hold the workspace yet cannot decide many of them: the app surface a change
-/// names is read from the workspace's own content, and a sealed write needs its
-/// record's checkpoint. Admitted here, each one waited in the peer's bounded
-/// prerequisite queue, so a busy workspace's bootstrap overflowed it and the join
-/// failed however often it was tried. The host retains every one of those
-/// publications on its record's channel, and the workspace's sync delivers them
-/// once the workspace is installed, where each is authorized exactly as any later
-/// write is.
+/// Becoming a member takes the workspace's governance alone: its committed
+/// document, holding its membership, roles and policy and the certificates
+/// they import, which are everything an app message is authorized against. An
+/// app message is not part of it: a host's record publications reach the
+/// device through the workspace's sync once the workspace is installed, where
+/// each is authorized exactly as any later write is.
 pub(crate) fn install_governance(
     peer: &mut StatePeer,
     bootstrap: &crate::join::JoinBootstrap,

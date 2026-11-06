@@ -2655,68 +2655,70 @@ fn cost(session: &mut Session, label: &'static str, input: impl FnOnce(&mut Sess
 
 /// The budgets each interaction is held to (see the note above), from what the interactions
 /// cost on this workspace when they were measured, with the room a slower machine, a loaded one
-/// and a heavier workspace take: a step's CPU time at three times its measured p50, and the
-/// instance's evaluation and layout likewise, because this runs beside every other test on the
-/// machine that builds the workspace
+/// and a heavier workspace take: a step's CPU time twice its measured p50, and the instance's
+/// evaluation and layout likewise, because this runs beside every other test on the machine that
+/// builds the workspace. A session at rest costs 60-100 us a frame; anything a person waits on
+/// costs tens of milliseconds to seconds, which is what these hold down.
 ///
 /// A person's hand sends a keystroke every 30-100 ms, so every one of these is felt as it comes:
 /// the numbers are what a window of ten thousand tasks costs today, and the budgets hold it
 /// there, so a change that makes one interaction read the whole workspace again fails this
 /// test rather than a person's day.
 ///
-/// What is not yet held to what a person would call instant is publishing what a record offers:
-/// opening a workspace of ten thousand tasks reads each of its items' requirements, and a change
-/// to one item reads them again, so opening and adding a task pay seconds and the rest pay
-/// milliseconds. Their budgets are what that costs now, measured as they are, so that the cost is
-/// counted here and cannot grow while it is brought down.
+/// What a person would call instant is 8 ms a keystroke and 16 ms for each of the rest. Where
+/// this is not that yet, the cause is measured: opening a workspace builds the window's index
+/// over its ten thousand items (four to seven seconds of an open, on disk once kept), publishing
+/// it sends every item's row to the window's palette (a second and more a publication, the row of
+/// an action the person asked about answered on demand), and adding a task pays both. The
+/// budgets count what that costs today, so it cannot grow while it is brought down.
 const BUDGETS: &[(&str, Budget)] = &[
     (
         "open",
         Budget {
-            step_us: 45_000_000,
-            eval_layout_us: 45_000_000,
+            step_us: 16_000_000,
+            eval_layout_us: 16_000_000,
         },
     ),
     (
         "entry keystroke",
         Budget {
-            step_us: 200_000,
-            eval_layout_us: 150_000,
+            step_us: 120_000,
+            eval_layout_us: 100_000,
         },
     ),
     (
         "entry enter",
         Budget {
-            step_us: 12_000_000,
-            eval_layout_us: 12_000_000,
+            step_us: 4_000_000,
+            eval_layout_us: 4_000_000,
         },
     ),
     (
         "check a task",
         Budget {
-            step_us: 1_500_000,
-            eval_layout_us: 1_500_000,
+            step_us: 1_400_000,
+            eval_layout_us: 1_400_000,
         },
     ),
     (
         "switch place",
         Budget {
-            step_us: 600_000,
-            eval_layout_us: 450_000,
+            step_us: 400_000,
+            eval_layout_us: 350_000,
         },
     ),
     (
         "open a task page",
         Budget {
-            step_us: 350_000,
-            eval_layout_us: 300_000,
+            step_us: 250_000,
+            eval_layout_us: 200_000,
         },
     ),
     (
         "scroll",
         Budget {
-            step_us: 700_000,
-            eval_layout_us: 700_000,
+            step_us: 300_000,
+            eval_layout_us: 300_000,
         },
     ),
 ];

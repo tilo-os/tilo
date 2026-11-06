@@ -1,8 +1,9 @@
 //! An agent's program (agents.md, "One language, one tool"): statements run as a flow written by
 //! the agent, over every mounted app. It reads, finds, loops and applies actions like a flow, and
-//! adds the three words a session needs: `print` says something back, `find` takes the palette's
-//! query string, `read` gives a resource as text. Its top-level `let`s are kept for the next
-//! program of the session ([`ProgramResult::lets`]).
+//! its top-level `let`s are kept for the next program of the session ([`ProgramResult::lets`]).
+//! The words a session adds to the language are the agent library's ([`crate::agent`]), in scope
+//! without a `use`; this module lowers what only a program does: kept `let`s, the last line's
+//! value, and a field set on a resource at the app that holds it.
 
 use super::{Checker, Ctx, Ex, FnState, Written, conv, store_op};
 use crate::abi::Imp;
@@ -11,9 +12,6 @@ use crate::diag::{Diagnostic, Span};
 use crate::ir::{self, Ek, FuncKind, Stmt};
 use crate::resolve::{Env, ParamInfo, TypeInfo};
 use crate::types::{Ty, TypeKey};
-
-/// The words only a program has.
-pub(crate) const PROGRAM_BUILTINS: &[&str] = &["print", "find", "read", "grep", "describe"];
 
 pub use crate::host::RESOURCE_TYPE_NAME;
 
@@ -52,6 +50,8 @@ pub fn check_program(
         words: Vec::new(),
         offers: Vec::new(),
         last_writes: Vec::new(),
+        at: None,
+        outer_at: None,
     };
     c.begin(Ctx::Flow, params, Ty::Unit, export);
     c.st.written = Written::Program;
@@ -114,36 +114,6 @@ fn echoes(e: &ast::Expr) -> bool {
 }
 
 impl Checker<'_> {
-    /// The words only a program has, when the code being checked is a program.
-    pub(super) fn program_builtins(&self) -> impl Iterator<Item = &'static str> {
-        let words: &[&str] = if self.st.written == Written::Program {
-            PROGRAM_BUILTINS
-        } else {
-            &[]
-        };
-        words.iter().copied()
-    }
-
-    /// `print`, `find` or `read` in a program; `None` for any other name or code.
-    pub(super) fn program_builtin(
-        &mut self,
-        name: &str,
-        args: &[ast::Arg],
-        span: Span,
-    ) -> Option<Ex> {
-        if self.st.written != Written::Program {
-            return None;
-        }
-        Some(match name {
-            "print" => self.builtin_print(args),
-            "find" => self.builtin_find(args, span),
-            "read" => self.builtin_read(args, span),
-            "grep" => self.builtin_grep(args, span),
-            "describe" => self.builtin_describe(args, span),
-            _ => return None,
-        })
-    }
-
     /// `r.f = v` in a program: the resource's field edit, which the host invokes at the app
     /// that holds `r` as the program's change (agents.md, "How a program runs"). Only a whole
     /// value is set: a collection changes through the app's actions, a counter by what an
@@ -191,7 +161,7 @@ impl Checker<'_> {
     }
 
     /// A tuple of values already checked, as `print` hands them to the host.
-    fn tuple_of(&mut self, items: Vec<Ex>) -> Ex {
+    pub(super) fn tuple_of(&mut self, items: Vec<Ex>) -> Ex {
         let tmp = self.fresh(Ty::Error);
         let count = i32::try_from(items.len()).unwrap_or(i32::MAX);
         let mut stmts = vec![Stmt::Set(
@@ -222,7 +192,7 @@ impl Checker<'_> {
 
     /// Print `values` on one line, separated by spaces, each as its type shows; a list of a
     /// type's resources alone prints a row per resource with the type's filter fields.
-    fn print_values(&mut self, mut values: Vec<Ex>) -> Ex {
+    pub(super) fn print_values(&mut self, mut values: Vec<Ex>) -> Ex {
         if values.len() == 1
             && let Some(list) = values.pop()
         {
@@ -246,7 +216,7 @@ impl Checker<'_> {
 
     /// `print(a, b, ...)`: one line of output, its values separated by spaces; `print(xs,
     /// fields: [.a, .b])` a row per item.
-    fn builtin_print(&mut self, args: &[ast::Arg]) -> Ex {
+    pub(super) fn builtin_print(&mut self, args: &[ast::Arg]) -> Ex {
         let fields = args
             .iter()
             .find(|a| a.name.as_ref().is_some_and(|n| n.name == "fields"));
@@ -294,7 +264,7 @@ impl Checker<'_> {
     /// `find("Note launch video")`: the resources the palette's query finds. A query that
     /// starts with a type's name finds resources of that type, a `List<T>`; any other finds
     /// resources of every app, a `List<host.Resource>` that `.of(T)` narrows.
-    fn builtin_find(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+    pub(super) fn builtin_find(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         // `find(Note, pinned: true)`: typed, its arguments the type's filters, as a query's.
         if args
             .first()
@@ -334,7 +304,7 @@ impl Checker<'_> {
 
     /// The type a query's first word names (`Note`, `notes.Note`), when it names one. A first
     /// word written like a type's name that names none is an error that lists the types.
-    fn query_type(&mut self, text: &str, span: Span) -> Result<Option<TypeInfo>, ()> {
+    pub(super) fn query_type(&mut self, text: &str, span: Span) -> Result<Option<TypeInfo>, ()> {
         let Some(first) = text.split_whitespace().next() else {
             return Ok(None);
         };
@@ -402,7 +372,7 @@ impl Checker<'_> {
     }
 
     /// `read(r)`: the resource as text, each field on a line.
-    fn builtin_read(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+    pub(super) fn builtin_read(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some((what, options)) = args.split_first().filter(|(what, _)| what.name.is_none())
         else {
             self.err("E022", span, "`read` takes a resource: `read(n)`");

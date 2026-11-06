@@ -432,6 +432,8 @@ impl Checker<'_> {
             }
         }
         body(self);
+        // Its line is the declaration it is written in: a loop body has none of its own.
+        self.at = self.outer_at;
         let mut f = self.end(FuncKind::View, &format!("{owner} row"), &format!("v_{id}"));
         f.nparams = params.len();
         self.st = outer;
@@ -777,10 +779,6 @@ pub(super) fn names_in(e: &ast::Expr, out: &mut BTreeSet<String>) {
             }
         }
         ExprKind::Block(b) => names_in_block(b, out),
-        ExprKind::MadeFrom { of, body } => {
-            names_in(of, out);
-            names_in_block(body, out);
-        }
         ExprKind::Match { scrutinee, arms } => {
             names_in(scrutinee, out);
             for arm in arms {
@@ -812,9 +810,7 @@ pub(super) fn names_in(e: &ast::Expr, out: &mut BTreeSet<String>) {
 fn names_in_block(b: &ast::Block, out: &mut BTreeSet<String>) {
     for s in &b.stmts {
         match &s.kind {
-            StmtKind::Let { value, .. }
-            | StmtKind::Expr(value)
-            | StmtKind::SeedState { value, .. } => names_in(value, out),
+            StmtKind::Let { value, .. } | StmtKind::Expr(value) => names_in(value, out),
             StmtKind::Assign { place, value, .. } => {
                 if let Some(first) = place.segs.first() {
                     out.insert(first.name.clone());
@@ -823,13 +819,6 @@ fn names_in_block(b: &ast::Block, out: &mut BTreeSet<String>) {
             }
             StmtKind::For { iter, body, .. } => {
                 names_in(iter, out);
-                names_in_block(body, out);
-            }
-            StmtKind::As { who, at, body } => {
-                names_in(who, out);
-                if let Some(at) = at {
-                    names_in(at, out);
-                }
                 names_in_block(body, out);
             }
             StmtKind::Return(value) => {

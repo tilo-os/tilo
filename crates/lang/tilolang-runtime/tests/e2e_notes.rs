@@ -14,6 +14,7 @@ mod cases {
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/notes/app.tl");
+    const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 
     struct Notes {
         rt: Runtime,
@@ -23,8 +24,10 @@ mod cases {
 
     impl Notes {
         fn new() -> Self {
-            let app = App::compile(SOURCE, &[]);
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let discussion = App::compile(DISCUSSION, &[]);
+            discussion.load(&rt);
+            let app = App::compile(SOURCE, &[discussion.meta().clone()]);
             app.load(&rt);
             let nb = rt.create("Notes").unwrap();
             Self { rt, app, nb }
@@ -270,10 +273,13 @@ mod cases {
 
     #[test]
     fn concurrent_body_edits_on_two_replicas_converge() {
-        let app = App::compile(SOURCE, &[]);
+        let discussion = App::compile(DISCUSSION, &[]);
+        let app = App::compile(SOURCE, &[discussion.meta().clone()]);
         let (mut store_a, mut store_b) = (AmStore::new(), AmStore::new());
         let rt_a = Runtime::new(store_a.clone(), SimpleAuthority::new()).unwrap();
         let rt_b = Runtime::new(store_b.clone(), SimpleAuthority::new()).unwrap();
+        discussion.load(&rt_a);
+        discussion.load(&rt_b);
         app.load(&rt_a);
         app.load(&rt_b);
         let nb = rt_a.create("Notes").unwrap();

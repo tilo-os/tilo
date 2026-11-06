@@ -1,6 +1,8 @@
-//! Every old `tilo-<name>` still works: run as a link to `tilo`, it runs its
-//! program from Tilo's program directory with the arguments it was given,
-//! `--help` included, and adds nothing of its own.
+//! Every old `tilo-<name>` of a VM-wide component still works: run as a link
+//! to `tilo`, it runs its program from Tilo's program directory with the
+//! arguments it was given, `--help` included, and adds nothing of its own. A
+//! session component's names link to their programs directly instead, so
+//! nothing of `tilo` runs at all.
 
 #![allow(
     clippy::unwrap_used,
@@ -34,7 +36,7 @@ fn every_old_name_runs_its_help_through_the_alias() {
     std::fs::create_dir_all(&libexec).unwrap();
     std::fs::create_dir_all(&bin).unwrap();
     let moved = moved();
-    assert!(moved.len() > 20, "{moved:?}");
+    assert!(moved.len() > 10, "{moved:?}");
     for name in &moved {
         let program = libexec.join(name);
         std::fs::write(&program, "#!/bin/sh\nprintf '%s|%s\\n' \"$0\" \"$*\"\n").unwrap();

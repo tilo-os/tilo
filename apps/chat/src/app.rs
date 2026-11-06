@@ -312,6 +312,9 @@ pub struct ChatApp {
     /// measured by the paint pass.
     pub(crate) huddle_chip_rows: usize,
     pub(crate) pending_floating: Option<ui::floating_surface::FloatingSurfaceRequest>,
+    /// The channel whose call this app already asked the shell to draw as a
+    /// card: presenting is the app's request, the place is the shell's.
+    presented_call: Option<String>,
     /// Authoritative combined-output bounds supplied by the shell. Standalone
     /// app/test hosts leave this empty and fall back to the app rect.
     pub(crate) floating_surface_bounds: Rect,
@@ -743,6 +746,7 @@ impl ChatApp {
             speaking: crate::call::SpeakingRings::default(),
             huddle_chip_rows: 0,
             pending_floating: None,
+            presented_call: None,
             floating_surface_bounds: Rect::ZERO,
             places: NavFeed::new(),
             bar: None,
@@ -840,6 +844,46 @@ impl ChatApp {
             host_focused: true,
             external_services: true,
         }
+    }
+
+    /// Show the running call as the shell's live activity, and ask it once
+    /// per call to draw the call as a card of the app's own: the activity is
+    /// what the bar's pill reads, and the card's body is the live call while
+    /// the shell shows it over the desk.
+    fn publish_call(&mut self) {
+        let title = self
+            .channel(&self.call.channel)
+            .map_or_else(|| crate::i18n::t("chat-call-untitled"), |c| c.name.clone());
+        let subtitle = self.call_count_label();
+        let published = crate::live::published(&self.call, &title, &subtitle, ui::time::now());
+        crate::live::publish(&published);
+        self.present_call_card();
+    }
+
+    /// Ask the shell for the call's card, once per call: whether it stands,
+    /// and where, is the shell's to decide — while Chat's own window shows
+    /// the call, Chat draws it there.
+    fn present_call_card(&mut self) {
+        if !self.call.active || self.call.channel.is_empty() {
+            // A call that ended asks for its card again when the next one
+            // starts.
+            self.presented_call = None;
+            return;
+        }
+        if self.presented_call.as_deref() == Some(self.call.channel.as_str()) {
+            return;
+        }
+        let video = self.call_video_rect();
+        if video.width() <= 0.0 || video.height() <= 0.0 {
+            return;
+        }
+        let panel = self.huddle_panel().inflate(8.0, 8.0);
+        let Some(mut request) = self.call.floating_request(panel, video) else {
+            return;
+        };
+        request.presentation_rect = Some(panel);
+        self.pending_floating = Some(request);
+        self.presented_call = Some(self.call.channel.clone());
     }
 
     /// Whether a call action is permitted, routed through the real OS
@@ -1366,15 +1410,23 @@ impl ChatApp {
         // the timeline and the open thread panel.
         for m in &self.messages {
             let _ = self.shown_avatar(m);
-            match &m.attachment {
+            for file in m.files() {
                 // Never hydrate the bytes of an embed this peer isn't granted.
-                Some(crate::model::Attachment::Image { blob, .. }) if self.embed_allowed(blob) => {
-                    let _ = self.images.get(&crate::images::blob_key(blob));
+                let Some(blob) = file.blob() else { continue };
+                if !self.embed_allowed(blob) {
+                    continue;
                 }
-                Some(crate::model::Attachment::Video { blob, .. }) if self.embed_allowed(blob) => {
-                    let _ = self.video_poster(blob);
+                match file {
+                    tilo_reference::Attached::Image { .. } => {
+                        let _ = self.images.get(&crate::images::blob_key(blob));
+                    }
+                    tilo_reference::Attached::Video { .. } => {
+                        let _ = self.video_poster(blob);
+                    }
+                    tilo_reference::Attached::File { .. }
+                    | tilo_reference::Attached::Resource { .. }
+                    | tilo_reference::Attached::Text { .. } => {}
                 }
-                _ => {}
             }
         }
         // Also warm any thumbnails visible in an open attachment picker.
@@ -1649,6 +1701,29 @@ impl Widget for ChatApp {
     }
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
+        // A control pressed on the call's card or the bar's pill stands in
+        // for the one the person would press in Chat's own window.
+        for command in crate::live::take_commands() {
+            match command {
+                crate::live::Command::Mute => {
+                    let channel = self
+                        .native_voice
+                        .channel
+                        .clone()
+                        .unwrap_or_else(|| self.call.channel.clone());
+                    if let Err(error) = self.native_voice_command(
+                        &channel,
+                        ui::native_media::Command::SetMuted {
+                            muted: !self.call.muted,
+                        },
+                    ) {
+                        self.media_error = Some(error);
+                    }
+                }
+                crate::live::Command::Leave => self.leave_voice(),
+            }
+        }
+        self.publish_call();
         if self.thread_open.is_some() {
             self.thread_scroll.sync(doc, path);
         }
@@ -2311,7 +2386,8 @@ impl Widget for ChatApp {
     /// mid-slide, an overlay being dragged, or attachment images still
     /// decoding in the background. A live-but-static call does **not** force
     /// continuous redraws (the roster/rings are static), so an idle call
-    /// no longer pins a core.
+    /// no longer pins a core: it wakes once a second for the reading its card
+    /// and the bar's pill show, and not again until that.
     fn update(&mut self, _doc: &AppModel, _path: &ModelPath) -> bool {
         let model_changed = self.pump_model();
         let workspace_changed = self.take_workspace();
@@ -2350,11 +2426,22 @@ impl Widget for ChatApp {
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        let now = ui::time::now();
+        // A call's card reads the time it has run, which changes each
+        // second: the window wakes once a second while the call is live,
+        // and never otherwise.
+        let call_tick = self.call.started.map(|started| {
+            started
+                + ui::time::Duration::from_secs(
+                    now.saturating_duration_since(started).as_secs() + 1,
+                )
+        });
         // An attachment on its way steps its placeholder on at its
         // deadline; its bytes arriving wake the window themselves.
         self.native_voice
-            .next_deadline(ui::time::now())
+            .next_deadline(now)
             .into_iter()
+            .chain(call_tick)
             .chain(self.arriving_wake.get())
             .min()
     }

@@ -7,7 +7,7 @@ use ui::serde_json::json;
 use ui::tilo_resource::{Replica, Slot, evolution};
 
 use crate::agent_stream::AgentFinish;
-use crate::model::{AgentReasoning, AgentRoute, AgentStepOutcome, AgentWorkState, Attachment};
+use crate::model::{AgentReasoning, AgentRoute, AgentStepOutcome, AgentWorkState};
 use crate::parts::ChatPart;
 use crate::record::{Chat, Revision, ShownAs, Transition};
 
@@ -186,14 +186,14 @@ fn a_message_part_of_version_one_opens_with_every_message_value() {
         }]
     );
     assert_eq!(message.mentions[0].user, "u_bo");
-    assert_eq!(message.reference, None);
     assert_eq!(
-        message.attachment,
-        Some(Attachment::File {
+        message.attachments,
+        [tilo_reference::Attached::File {
             name: "a.txt".into(),
             blob: "ff".into(),
             size: 5,
-        })
+        }],
+        "the file it carried moved to its attachments"
     );
     assert_eq!(
         message.appearance,
@@ -403,6 +403,126 @@ fn a_chat_of_version_one_or_two_keeps_every_message_draft_and_read_count() {
     }
 }
 
+/// A part of the chat's messages of version 3: a message written by sharing
+/// a record keeps the record it names, as the attachment it now carries.
+#[test]
+fn a_message_part_of_version_three_keeps_the_record_it_was_written_by() {
+    let mut replica = Replica::<ChatPart>::new();
+    let doc = replica.doc_mut();
+    evolution::fixture(
+        doc,
+        &ROOT,
+        &json!({
+            "messages": {
+                "m1": {
+                    "k": "a",
+                    "v": {
+                        "channel": "c_general",
+                        "author": "ada",
+                        "ts": 10,
+                        "text": "Discuss resource",
+                        "body": "[]",
+                        "reactions": {},
+                        "mentions": "[]",
+                        "reference": {
+                            "kind": "notes.page",
+                            "id": "notes.page:1",
+                            "label": "Plan",
+                            "span": {"start": 6, "end": 9, "unit": "chars"},
+                        },
+                        "source_provider": "record:so.tilo.notes:plan",
+                        "share": {"access": "view", "ended": false, "open": true},
+                    },
+                },
+            },
+        }),
+    )
+    .unwrap();
+    at_version(doc, 3);
+    doc.commit();
+    let mut old = doc.fork();
+    assert!(
+        evolution::read_checked::<ChatPart>(&old).is_err(),
+        "unmigrated"
+    );
+    assert!(evolution::migrate::<ChatPart>(&mut old).unwrap());
+    let part = evolution::read_checked::<ChatPart>(&old).unwrap();
+    let message = part.messages.values().next().unwrap();
+    let reference = tilo_reference::ResourceRef::ranged(
+        "notes.page",
+        "notes.page:1",
+        "Plan",
+        tilo_reference::Span::chars(6, 9),
+    );
+    assert_eq!(
+        message.attachments,
+        [tilo_reference::Attached::resource(
+            tilo_reference::ResourceAt {
+                app: "so.tilo.notes".into(),
+                record: Some("plan".into()),
+                reference,
+            },
+            None,
+            "Plan",
+        )],
+        "the record it named is what it carries"
+    );
+    assert_eq!(
+        message.share.as_ref().map(|share| share.access),
+        Some(crate::record::ShareAccess::View),
+        "its live share is untouched"
+    );
+}
+
+/// A part of the chat's messages of version 3: a message written by sharing
+/// a record whose app was never known keeps its words, quoted, rather than
+/// an address nothing could open.
+#[test]
+fn a_message_part_of_version_three_keeps_the_words_of_a_record_it_cannot_address() {
+    let mut replica = Replica::<ChatPart>::new();
+    let doc = replica.doc_mut();
+    evolution::fixture(
+        doc,
+        &ROOT,
+        &json!({
+            "messages": {
+                "m1": {
+                    "k": "a",
+                    "v": {
+                        "channel": "c_general",
+                        "author": "ada",
+                        "ts": 10,
+                        "text": "Discuss resource",
+                        "body": "[]",
+                        "reactions": {},
+                        "mentions": "[]",
+                        "reference": {
+                            "kind": "notes.page",
+                            "id": "notes.page:1",
+                            "label": "Plan",
+                            "span": {"start": 6, "end": 9, "unit": "chars"},
+                        },
+                    },
+                },
+            },
+        }),
+    )
+    .unwrap();
+    at_version(doc, 3);
+    doc.commit();
+    let mut old = doc.fork();
+    assert!(evolution::migrate::<ChatPart>(&mut old).unwrap());
+    let part = evolution::read_checked::<ChatPart>(&old).unwrap();
+    let message = part.messages.values().next().unwrap();
+    assert_eq!(
+        message.attachments,
+        [tilo_reference::Attached::Text {
+            text: "Plan".into(),
+            from: None,
+        }]
+    );
+}
+
 /// Each kept message: its id, author, time and text.
 fn kept(doc: &ui::tilo_resource::Doc) -> Vec<(String, String, i64, String)> {
     crate::record::kept_messages(doc)
@@ -583,13 +703,13 @@ fn a_message_part_of_version_two_opens_with_its_variants_stored_by_variant() {
     let part = evolution::read_checked::<ChatPart>(&old).unwrap();
     let message = part.messages.values().next().unwrap();
     assert_eq!(
-        message.attachment,
-        Some(Attachment::Image {
+        message.attachments,
+        [tilo_reference::Attached::Image {
             name: "a.png".into(),
             blob: "ff".into(),
             w: 2,
             h: 3,
-        })
+        }]
     );
     let work = message.work.as_ref().unwrap();
     assert_eq!(
@@ -608,16 +728,16 @@ fn a_message_part_of_version_two_opens_with_its_variants_stored_by_variant() {
             why: "no such page".into(),
         })
     );
-    assert_eq!(
-        keys_at(&old, &["messages", "m1", "v", "attachment"]),
-        [
-            "$field/image/blob",
-            "$field/image/h",
-            "$field/image/name",
-            "$field/image/w",
-            "$variant"
-        ],
-        "the attachment's fields are stored by its variant"
+    let fields = keys_at(&old, &["messages", "m1", "v"]);
+    assert!(
+        fields.iter().any(|key| key == "attachments"),
+        "the file moved to the message's attachments: {fields:?}"
+    );
+    assert!(
+        !fields
+            .iter()
+            .any(|key| matches!(key.as_str(), "attachment" | "reference" | "source_provider")),
+        "the fields it replaced are gone: {fields:?}"
     );
     assert_eq!(
         keys_at(

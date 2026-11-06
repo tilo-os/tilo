@@ -305,17 +305,20 @@ fn a_tree_view_reads_its_nodes_and_reports_the_resource_a_node_shows() {
     assert_eq!(props.nodes.len(), 3);
     let host = harness(crate::widget::DescribedTreeView::from_props("files", props));
     let root = host.root::<crate::widget::DescribedTreeView>();
-    // A node's id follows the resource it stands for, not where it stands: the rows coming in
-    // another order leave each of them its id.
-    let root_id = root.id_of("doc/dir:root").expect("the root's id");
-    assert_ne!(root_id, root.id_of("doc/file:main").expect("the file's id"));
+    // A node's stable name follows the resource it stands for, not where it stands: the rows
+    // coming in another order leave each of them its name.
+    let root_key = root.row_key("doc/dir:root").expect("the root's key");
+    assert_ne!(
+        root_key,
+        root.row_key("doc/file:main").expect("the file's key")
+    );
     let mut other = Node::new("TreeView", "files", &queue)
         .prop("name", text("Files"))
         .holding("nodes", node_part("src", None, "doc/dir:src"))
         .holding("nodes", node_part("Project", None, "doc/dir:root"));
     let props = crate::widget::TreeViewProps::from_source(&mut other).unwrap();
     let other = crate::widget::DescribedTreeView::from_props("files", props);
-    assert_eq!(other.id_of("doc/dir:root"), Some(root_id));
+    assert_eq!(other.row_key("doc/dir:root"), Some(root_key));
     assert_eq!(
         root.item_of("doc/file:main").map(|i| i.0.as_str()),
         Some("doc/file:main")
@@ -360,8 +363,12 @@ fn a_tree_view_takes_its_expansion_and_selection_in_place() {
     );
     let props = crate::widget::TreeViewProps::from_source(&mut next).unwrap();
     assert!(tree.set_props(props), "the state is taken in place");
-    let root_id = tree.id_of("doc/dir:root").expect("the root's id");
-    assert!(tree.tree().is_expanded(root_id));
+    assert!(tree.is_open("doc/dir:root"), "the given branch is open");
+    assert_eq!(
+        tree.selected(),
+        ["doc/dir:src"],
+        "the given node is selected"
+    );
 }
 
 #[test]

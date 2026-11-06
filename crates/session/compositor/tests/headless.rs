@@ -12,6 +12,8 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+#[path = "headless/framing.rs"]
+mod framing;
 #[path = "headless/harness.rs"]
 mod harness;
 #[path = "headless/idle_inhibit.rs"]
@@ -1172,43 +1174,6 @@ fn a_window_keeps_its_corners_and_shadow_when_its_effect_scales_it() {
         luma(pixel(320, 344)) < luma(BACKGROUND),
         "the shadow is twice as far below the grown window: {:?}",
         pixel(320, 344)
-    );
-}
-
-#[test]
-fn a_window_framed_square_is_drawn_as_its_buffer_is() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
-    let (info, _) = compositor.windows()[0].clone();
-    // A window that fills the display stands on it: no corners, no shadow.
-    compositor.set_window_frame(WindowFrame::square());
-    compositor.draw_frame().expect("a frame");
-    let frame = compositor.screenshot("HEADLESS-1").unwrap();
-    let pixel = |x, y| frame.pixel(x, y).expect("on the output");
-    assert_eq!(pixel(221, 191), [255, 0, 0, 255], "the corner is square");
-    assert_eq!(pixel(220, 190), [255, 0, 0, 255], "its first pixel");
-    assert!(
-        luma(pixel(320, 292)) == luma(BACKGROUND),
-        "and nothing is cast below it"
-    );
-
-    // A window can say so itself, leaving the rest of the desktop framed.
-    compositor.set_window_frame(WindowFrame::default());
-    compositor.set_window_frame_for(info.id, Some(WindowFrame::square()));
-    compositor.draw_frame().expect("a frame");
-    let frame = compositor.screenshot("HEADLESS-1").unwrap();
-    assert_eq!(
-        frame.pixel(221, 191),
-        Some([255, 0, 0, 255]),
-        "square again"
-    );
-    compositor.set_window_frame_for(info.id, None);
-    compositor.draw_frame().expect("a frame");
-    let frame = compositor.screenshot("HEADLESS-1").unwrap();
-    assert_ne!(
-        frame.pixel(221, 191),
-        Some([255, 0, 0, 255]),
-        "and round again"
     );
 }
 

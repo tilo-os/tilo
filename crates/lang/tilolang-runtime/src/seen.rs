@@ -12,8 +12,10 @@
 //! marks here is queued for the host to keep
 //! ([`crate::Runtime::take_seen`]).
 //!
-//! Which versions are marked at all: every version made in a task run or by an agent, and none
-//! the person made themselves. People's changes are not marked (§4, the default).
+//! Which versions are marked at all: every version made in a task run or by an agent, and
+//! another person's that made a record from the resource (a comment about it changed it as an
+//! edit does), and none the person made themselves. People's changes are not marked otherwise
+//! (§4, the default).
 
 use serde::{Deserialize, Serialize};
 
@@ -73,11 +75,15 @@ pub fn runs_key(person: &str) -> StateKey {
 
 /// Whether `version` is one the host marks for `person`: made in a task run or by an agent,
 /// and not by `person`; or made by another person, when the version's type declares `mark
-/// others` (a conversation marking what people say in it).
+/// others` (a conversation marking what people say in it), or when it made a record from
+/// another (what someone made from `r` changed `r`, as a comment under a task changes it).
 #[must_use]
 pub fn is_marked(version: &Version, person: &str, mark_others: bool) -> bool {
     version.who != person
-        && (mark_others || version.task.is_some() || version.who.starts_with("agent:"))
+        && (mark_others
+            || version.task.is_some()
+            || version.who.starts_with("agent:")
+            || version.from.is_some())
 }
 
 /// Which of `versions` (oldest first) `person` has not seen, oldest first: those after their
@@ -189,5 +195,20 @@ mod tests {
         // Still not one's own: Ben's own newest change bounds what he has seen, so the
         // agent's later change is all he has not.
         assert_eq!(changes(unseen(&versions, "ben", None, &[], true)), ["c4"]);
+    }
+
+    #[test]
+    fn a_record_made_from_another_is_a_marked_change_to_it() {
+        let mut comment = version("ben", "2026-10-30T09:02:00Z", "c3", false);
+        comment.resource = "comment".to_owned();
+        comment.from = Some(crate::value::ResourceRef::parse_id("task", "Task").unwrap());
+        // Ben said it about the task: Ada has not seen the task change, nor what he said.
+        let changes = |list: Vec<Version>| list.into_iter().map(|v| v.change).collect::<Vec<_>>();
+        assert_eq!(
+            changes(unseen(&[comment.clone()], "ada", None, &[], false)),
+            ["c3"]
+        );
+        // Not something Ben has to read back: it was his own change.
+        assert!(unseen(&[comment], "ben", None, &[], false).is_empty());
     }
 }

@@ -1,8 +1,8 @@
 //! One issue and what it holds: its thread and its links.
 
 use serde::{Deserialize, Serialize};
-use tilo_rich_text::RichText;
-use ui::tilo_resource::{self, Atom, Collection, Id, JsonSchema, Model, Refusal, Set};
+use tilo_document::RichText;
+use tilo_resource::{self, Atom, Collection, Id, JsonSchema, Model, Refusal, Set};
 
 use crate::model::run::{Area, Budget, ModelChoice, Run};
 

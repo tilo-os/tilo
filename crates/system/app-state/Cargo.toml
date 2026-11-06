@@ -42,8 +42,14 @@ same-file = "1.0.6"
 durable-store = { path = "../durable-store", features = ["conformance"] }
 tempfile.workspace = true
 serial_test.workspace = true
-tilo-automerge.workspace = true
+# The counting allocator behind `heap::held`: what one unit and one document hold.
+tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tilo-test-env = { path = "../../dev/test-env" }
+
+[[bench]]
+name = "record_cost"
+path = "benches/record_cost.rs"
+harness = false
 
 [lints]
 workspace = true

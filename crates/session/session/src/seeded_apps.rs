@@ -25,7 +25,16 @@ struct Seed {
     locales: &'static [(&'static str, &'static str)],
 }
 
-const APPS: [Seed; 4] = [
+const APPS: [Seed; 5] = [
+    Seed {
+        app: "so.tilo.lang.discussion",
+        source: include_str!("../../../../apps/tl/discussion/app.tl"),
+        ids: include_str!("../../../../apps/tl/discussion/app.ids"),
+        locales: &[(
+            "en-US",
+            include_str!("../../../../apps/tl/discussion/locales/en-US.ftl"),
+        )],
+    },
     Seed {
         app: "so.tilo.lang.notes",
         source: include_str!("../../../../apps/tl/notes/app.tl"),
@@ -70,8 +79,8 @@ const APPS: [Seed; 4] = [
     },
 ];
 
-/// Notes, tasks, chat and mail in one workspace record of `person`'s, each app's root made and
-/// filled by its first scenario as `person`'s steps, published for them.
+/// Discussion, notes, tasks, chat and mail in one workspace record of `person`'s, each app's
+/// root made and filled by its first scenario as `person`'s steps, published for them.
 ///
 /// # Errors
 /// An app does not compile or load, or its scenario does not run.
@@ -80,6 +89,7 @@ pub fn seeded(person: &str) -> Result<RecordService, String> {
     let host = Host::new(&record, Principal::new(person), || None).map_err(|e| e.to_string())?;
     host.set_words(crate::i18n::PackageWords);
     let mut scenarios = Vec::new();
+    let mut imports = Vec::new();
     for seed in &APPS {
         let source = PackageSource::single(seed.source).with_locales(
             seed.locales
@@ -87,11 +97,12 @@ pub fn seeded(person: &str) -> Result<RecordService, String> {
                 .map(|(locale, text)| ((*locale).to_owned(), (*text).to_owned())),
         );
         let ids = IdsLock::parse(seed.ids).map_err(|error| format!("{}: {error}", seed.app))?;
-        let compiled = compile_package_source(&source, &ids, &[])
+        let compiled = compile_package_source(&source, &ids, &imports)
             .map_err(|diagnostics| format!("{}: {diagnostics:?}", seed.app))?;
         let package = host
             .load_compiled(&compiled)
             .map_err(|error| format!("{}: {error}", seed.app))?;
+        imports.push(package.meta.clone());
         scenarios.push((seed.app, package.meta.scenarios.first().cloned()));
     }
     for (app, scenario) in scenarios {

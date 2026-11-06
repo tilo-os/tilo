@@ -136,6 +136,11 @@ label = "Apps put their controls, search included, in the window bar's slots"
 run = "python3 tools/policy/check_app_toolbars.py"
 
 [[step]]
+name = "live-rows"
+label = "Live rows are items of declared resource types"
+run = "python3 tools/policy/check_live_rows.py"
+
+[[step]]
 name = "host-data-apps"
 label = "Apps that show the machine declare it and are captured only from scenarios"
 run = "python3 tools/policy/check_host_data_apps.py"

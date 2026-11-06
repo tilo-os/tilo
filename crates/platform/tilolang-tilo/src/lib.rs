@@ -44,6 +44,7 @@ pub mod store;
 pub mod surface;
 pub mod task;
 pub mod task_records;
+pub mod triggers;
 pub mod upgrade;
 pub mod views;
 

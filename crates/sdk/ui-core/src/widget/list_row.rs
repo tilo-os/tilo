@@ -76,8 +76,9 @@ pub enum RowLeading<'a> {
     /// art shows the generated placeholder seeded with the title's initials.
     Media(MediaArt<'a>, MediaAspect),
     /// A selection checkbox (a multi-select list). Hit-test it with
-    /// [`ListRowFace::leading_rect`].
-    Checkbox { checked: bool },
+    /// [`ListRowFace::leading_rect`]. `icon` stands after the box, for a row that is checked off
+    /// and still shows what kind of thing it is (a task and its priority).
+    Checkbox { checked: bool, icon: Option<Icon> },
     /// A colour that is the row's content (a calendar's colour, a label).
     Swatch(Color),
     /// How strong a radio signal is (a Wi-Fi network): the
@@ -100,9 +101,10 @@ impl std::fmt::Debug for RowLeading<'_> {
             Self::Badge(badge) => f.debug_tuple("Badge").field(badge).finish(),
             Self::Thumbnail(_) => f.write_str("Thumbnail"),
             Self::Media(_, aspect) => f.debug_tuple("Media").field(aspect).finish(),
-            Self::Checkbox { checked } => f
+            Self::Checkbox { checked, icon } => f
                 .debug_struct("Checkbox")
                 .field("checked", checked)
+                .field("icon", icon)
                 .finish(),
             Self::Swatch(colour) => f.debug_tuple("Swatch").field(colour).finish(),
             Self::Signal(level) => f.debug_tuple("Signal").field(level).finish(),
@@ -445,6 +447,9 @@ pub struct ListRowFace<'a> {
     status: Option<RowStatus<'a>>,
     change: Option<RowChange<'a>>,
     struck: bool,
+    /// The title reads in the weaker ink, as a subordinate row of a tree does: not struck
+    /// through, just quiet.
+    quiet: bool,
     disclosure: bool,
     /// How far the chevron has turned towards pointing down, 0 to 1: a row
     /// that opens in place rather than onto a page.
@@ -481,6 +486,9 @@ pub struct ListRowFace<'a> {
     /// The row as a dense row: one quiet line at the caption's size, for a reference that
     /// stands among content or a list that shows a lot at once.
     dense: bool,
+    /// The row's own height, where it is not the list's row height: an outline's row token.
+    /// The row stands at it, taller only when what it holds needs more.
+    row_height: Option<f64>,
 }
 
 impl<'a> ListRowFace<'a> {
@@ -511,6 +519,7 @@ impl<'a> ListRowFace<'a> {
             status: None,
             change: None,
             struck: false,
+            quiet: false,
             disclosure: false,
             disclosure_turn: 0.0,
             checked: None,
@@ -531,6 +540,7 @@ impl<'a> ListRowFace<'a> {
             check_pose: None,
             card: false,
             dense: false,
+            row_height: None,
         }
     }
 
@@ -548,6 +558,14 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn dense(mut self) -> Self {
         self.dense = true;
+        self
+    }
+
+    /// Stand the row `px` tall, rather than the list's row height for what it holds: a tree's
+    /// own row token, shorter than a list's. What the row holds still fits inside it.
+    #[must_use]
+    pub fn row_height(mut self, px: f32) -> Self {
+        self.row_height = Some(f64::from(px));
         self
     }
 
@@ -783,6 +801,14 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
+    /// The row reads as subordinate to the rows around it: its title in the weaker ink, as an
+    /// outline's quieter branch does.
+    #[must_use]
+    pub fn quiet(mut self, quiet: bool) -> Self {
+        self.quiet = quiet;
+        self
+    }
+
     /// Where the face of an unseen change sits in `rect`, when the row shows one.
     #[must_use]
     pub fn change_rect(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> Option<Rect> {
@@ -981,7 +1007,9 @@ impl<'a> ListRowFace<'a> {
             .flatten(),
         );
         let checked = match (self.checked, self.leading) {
-            (Some(checked), _) | (None, Some(RowLeading::Checkbox { checked })) => Some(checked),
+            (Some(checked), _) | (None, Some(RowLeading::Checkbox { checked, .. })) => {
+                Some(checked)
+            }
             _ => None,
         };
         let mut state = AccessState::new()
@@ -1044,6 +1072,8 @@ enum Leading {
     Checkbox {
         checked: bool,
         on_toggle: Box<dyn FnMut(bool)>,
+        /// A glyph after the box: what kind of thing the row is.
+        icon: Option<Icon>,
     },
     Swatch(Color),
     Signal(crate::widget::SignalLevel),
@@ -1241,6 +1271,8 @@ pub struct ListRow {
     change: Option<Changed>,
     /// It stands for a removed item ([`Self::struck`]).
     struck: bool,
+    /// Its title reads in the weaker ink ([`Self::quiet`]).
+    quiet: bool,
     disclosure: bool,
     checked: Option<bool>,
     emphasized: bool,
@@ -1294,6 +1326,9 @@ pub struct ListRow {
     card_lines: u8,
     /// The row is a dense row ([`ListRowFace::dense`]): one quiet line at the caption's size.
     dense: bool,
+    /// The row's own height ([`ListRowFace::row_height`]), where it is not the list's row
+    /// height.
+    row_height: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1345,6 +1380,7 @@ impl ListRow {
             status: None,
             change: None,
             struck: false,
+            quiet: false,
             disclosure: false,
             checked: None,
             emphasized: false,
@@ -1377,6 +1413,7 @@ impl ListRow {
             card: false,
             card_lines: 1,
             dense: false,
+            row_height: None,
         }
     }
 
@@ -1396,6 +1433,15 @@ impl ListRow {
     #[must_use]
     pub fn dense(mut self) -> Self {
         self.set_dense();
+        self
+    }
+
+    /// Stand the row `px` tall, rather than the list's row height for what it holds
+    /// ([`ListRowFace::row_height`]).
+    #[must_use]
+    pub fn row_height(mut self, px: f32) -> Self {
+        self.row_height = Some(f64::from(px));
+        self.dirty = true;
         self
     }
 
@@ -1631,58 +1677,6 @@ impl ListRow {
         self
     }
 
-    #[must_use]
-    pub fn icon(mut self, icon: Icon) -> Self {
-        self.leading = Some(Leading::Icon(icon));
-        self
-    }
-
-    /// See [`RowLeading::Badge`].
-    #[must_use]
-    pub fn badge(mut self, badge: impl Into<String>) -> Self {
-        self.leading = Some(Leading::Badge(badge.into()));
-        self
-    }
-
-    /// What the leading badge or icon stands for ("Retrieves the resource"
-    /// for `GET`, "SSH" for a terminal glyph): the tooltip when the pointer
-    /// rests on it, and the row's accessible description.
-    #[must_use]
-    pub fn leading_tooltip(mut self, tooltip: impl Into<String>) -> Self {
-        self.leading_tooltip = Some(tooltip.into());
-        self
-    }
-
-    /// See [`RowLeading::Thumbnail`].
-    #[must_use]
-    pub fn thumbnail(mut self, image: ImageData) -> Self {
-        self.leading = Some(Leading::Thumbnail(image));
-        self
-    }
-
-    /// See [`RowLeading::Media`]: art from `source` at `aspect`, the
-    /// placeholder with the title's initials until it loads.
-    #[must_use]
-    pub fn media(mut self, source: MediaSource, aspect: MediaAspect) -> Self {
-        self.leading = Some(Leading::Media {
-            source,
-            aspect,
-            loaded: None,
-        });
-        self
-    }
-
-    /// See [`RowLeading::Checkbox`]: a selection checkbox. Pressing it (or
-    /// Space on the focused row) runs `on_toggle` with the new state.
-    #[must_use]
-    pub fn checkbox(mut self, checked: bool, on_toggle: impl FnMut(bool) + 'static) -> Self {
-        self.leading = Some(Leading::Checkbox {
-            checked,
-            on_toggle: Box::new(on_toggle),
-        });
-        self
-    }
-
     /// Play the row's own motion — its mark, its coming and going in a list — at `feel` rather
     /// than the theme's pace.
     #[must_use]
@@ -1716,26 +1710,8 @@ impl ListRow {
         self.leading = Some(Leading::Checkbox {
             checked,
             on_toggle: Box::new(on_toggle),
+            icon: None,
         });
-        self
-    }
-
-    /// See [`RowLeading::Swatch`].
-    #[must_use]
-    pub fn swatch(mut self, colour: Color) -> Self {
-        self.leading = Some(Leading::Swatch(colour));
-        self
-    }
-
-    /// See [`RowLeading::Signal`]: the row leads with how strong its
-    /// signal is, and is described by the meter's name ("Strong signal")
-    /// unless a tooltip already says more.
-    #[must_use]
-    pub fn signal(mut self, level: crate::widget::SignalLevel) -> Self {
-        self.leading = Some(Leading::Signal(level));
-        if self.leading_tooltip.is_none() {
-            self.leading_tooltip = Some(level.name());
-        }
         self
     }
 
@@ -1816,6 +1792,14 @@ impl ListRow {
     #[must_use]
     pub fn struck(mut self) -> Self {
         self.struck = true;
+        self
+    }
+
+    /// The row reads as subordinate to the rows around it: its title in the weaker ink
+    /// ([`ListRowFace::quiet`]).
+    #[must_use]
+    pub fn quiet(mut self) -> Self {
+        self.quiet = true;
         self
     }
 
@@ -2313,6 +2297,9 @@ impl ListRow {
         if self.dense {
             face = face.dense();
         }
+        if let Some(height) = self.row_height {
+            face.row_height = Some(height);
+        }
         if let Some(family) = &self.title_family {
             face = face.title_family(family);
         }
@@ -2392,7 +2379,10 @@ impl ListRow {
                     },
                     *aspect,
                 ),
-                Leading::Checkbox { checked, .. } => RowLeading::Checkbox { checked: *checked },
+                Leading::Checkbox { checked, icon, .. } => RowLeading::Checkbox {
+                    checked: *checked,
+                    icon: *icon,
+                },
                 Leading::Swatch(colour) => RowLeading::Swatch(*colour),
                 Leading::Signal(level) => RowLeading::Signal(*level),
             });
@@ -2403,6 +2393,7 @@ impl ListRow {
         face = face.struck(
             self.struck || matches!(&self.leading, Some(Leading::Checkbox { checked: true, .. })),
         );
+        face = face.quiet(self.quiet);
         if let Some(change) = &self.change {
             face = face.change(RowChange {
                 identity: &change.identity,
@@ -2536,7 +2527,10 @@ impl ListRow {
     }
 
     fn toggle_checkbox(&mut self) -> bool {
-        if let Some(Leading::Checkbox { checked, on_toggle }) = &mut self.leading {
+        if let Some(Leading::Checkbox {
+            checked, on_toggle, ..
+        }) = &mut self.leading
+        {
             *checked = !*checked;
             let now = *checked;
             self.dirty = true;
@@ -3355,6 +3349,7 @@ impl crate::widget::ResourceOperations for ListRow {
             if let Some(Leading::Checkbox {
                 checked: shown,
                 on_toggle,
+                ..
             }) = &mut self.leading
             {
                 *shown = checked;
@@ -3477,6 +3472,8 @@ mod kept;
 use kept::KeptRow;
 
 mod geometry;
+
+mod leading;
 
 mod paint;
 pub(crate) use paint::paint_code_badge;

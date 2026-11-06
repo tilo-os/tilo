@@ -30,6 +30,9 @@ view contact_row(c: Contact) {
 ```
 
 - Props, slots and events are checked against the real widget, with its doc text in errors.
+- A view's fit follows it into a slot: `fill`, `min:`, `max:` and `aspect:` written on the
+  call hold in a component's body slot as in a `stack`'s, so `ui.Card { body: { mail.inbox(m,
+  fill) } }` is the card's height, not one line (`layout.md` §2).
 - Props are the language's values: `List<T>` and `Set<T>` take a list or a set of what they
   hold; `Map<Text, V>` takes a map field read whole (`ui.Reactions(reactions: m.reactions)`).
   An action list is the host's, filled from the type's declarations, and a view never reads one

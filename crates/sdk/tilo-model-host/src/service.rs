@@ -18,12 +18,16 @@
 //! and both are session services the same door reaches.
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use serde_json::{Map, Value as Json};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_resource::{Doc, Kinds};
+use tilo_resource::Doc;
 use tilo_service::{Service, Started};
+use tilolang_runtime::engine::{Engine, EngineLimits};
 
+use crate::module::Module;
 use crate::record::{Invoker, Record, RecordError};
 
 /// One record the host keeps, and where it is published.
@@ -32,12 +36,46 @@ struct Held {
     record: Record,
 }
 
+/// The app modules the host runs, and the engine they run on.
+struct Modules {
+    /// The engine every module runs on: the one the session's packages run on too.
+    engine: Rc<Engine>,
+    /// Each app's module, by the app's id.
+    loaded: BTreeMap<String, Arc<Module>>,
+}
+
+impl Modules {
+    fn new() -> Result<Self, String> {
+        Ok(Self {
+            engine: Rc::new(Engine::new(EngineLimits::default())?),
+            loaded: BTreeMap::new(),
+        })
+    }
+
+    /// `app`'s module, loaded from `wasm` the first time it is asked for.
+    fn get(&mut self, app: &str, wasm: &[u8]) -> Result<Arc<Module>, RecordError> {
+        if let Some(module) = self.loaded.get(app) {
+            return Ok(Arc::clone(module));
+        }
+        let module = Arc::new(
+            Module::load(app, wasm, Rc::clone(&self.engine))
+                .map_err(|error| RecordError::Module(error.to_string()))?,
+        );
+        self.loaded.insert(app.to_owned(), Arc::clone(&module));
+        Ok(module)
+    }
+}
+
 /// The records the document host keeps for one workspace's apps, published
 /// to the session's door.
+///
+/// An app's model runs in **its own WebAssembly module** (`docs/architecture/apps.md` §1), not
+/// linked into the session: the app's code is about as trustworthy as a random web page's, and
+/// this host is privileged. `ModelService` loads a module, asks it to open, read and change the
+/// record, and keeps only what it checked.
 pub struct ModelService {
-    /// The resource types the host links, by kind: the model crates the
-    /// session runs.
-    kinds: Kinds,
+    /// The modules the host runs.
+    modules: Modules,
     /// Every record, by the app it belongs to and the resource address it is
     /// published at.
     records: Vec<Held>,
@@ -51,34 +89,36 @@ pub struct ModelService {
 }
 
 impl ModelService {
-    /// A host with the models `kinds` links, over no record yet, for
-    /// `person`'s changes.
-    #[must_use]
-    pub fn new(kinds: Kinds, person: impl Into<String>) -> Self {
-        Self {
-            kinds,
+    /// A host that runs the apps' modules, over no record yet, for `person`'s changes.
+    ///
+    /// # Errors
+    /// The process's wasm engine could not be made.
+    pub fn new(person: impl Into<String>) -> Result<Self, String> {
+        Ok(Self {
+            modules: Modules::new()?,
             records: Vec::new(),
             owners: BTreeMap::new(),
             person: person.into(),
             moved: true,
-        }
+        })
     }
 
-    /// Keep the record of `kind` that `app` keeps at `address`, over `doc`:
-    /// the genesis when `doc` holds nothing yet. What the record held keeps
-    /// its ids and history ([`Record::open`]).
+    /// Keep the record of `kind` that `app` keeps at `address`, over `doc`, whose model runs in
+    /// `wasm` — the app's own module. What the record held keeps its ids and history; a
+    /// document that holds nothing gets the model's genesis.
     ///
     /// # Errors
-    /// The kind names no model this host links, or the document does not read
-    /// as the model.
+    /// The module does not load or does not serve the kind, or it refused the record.
     pub fn open(
         &mut self,
         app: &str,
         kind: &str,
         address: &str,
         doc: Doc,
+        wasm: &[u8],
     ) -> Result<bool, RecordError> {
-        let opened = Record::open(&self.kinds, kind, address, doc)?;
+        let module = self.modules.get(app, wasm)?;
+        let opened = Record::open(app, kind, address, doc, module)?;
         self.owners.insert(address.to_owned(), app.to_owned());
         self.records.push(Held {
             address: address.to_owned(),
@@ -88,19 +128,19 @@ impl ModelService {
         Ok(opened.created)
     }
 
-    /// Keep a brand-new record of `kind` that `app` keeps at `address`.
+    /// Keep a brand-new record of `kind` that `app` keeps at `address`, its model running in
+    /// `wasm`: the module writes its genesis.
     ///
     /// # Errors
-    /// As [`Record::genesis`].
-    pub fn genesis(&mut self, app: &str, kind: &str, address: &str) -> Result<(), RecordError> {
-        let record = Record::genesis(&self.kinds, kind, address)?;
-        self.owners.insert(address.to_owned(), app.to_owned());
-        self.records.push(Held {
-            address: address.to_owned(),
-            record,
-        });
-        self.moved = true;
-        Ok(())
+    /// As [`Self::open`].
+    pub fn genesis(
+        &mut self,
+        app: &str,
+        kind: &str,
+        address: &str,
+        wasm: &[u8],
+    ) -> Result<(), RecordError> {
+        self.open(app, kind, address, Doc::new(), wasm).map(|_| ())
     }
 
     /// The record published at `address`, for a host that checks what it holds.

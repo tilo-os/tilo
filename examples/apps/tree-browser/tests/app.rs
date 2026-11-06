@@ -23,7 +23,7 @@ fn the_detail_pane_follows_the_selection_and_edits_its_own_section() {
         );
     }
     harness
-        .perform_semantic_named("section-tree", Some("node:4"), &Action::Activate)
+        .perform_semantic_named("section-tree", Some("key:node:4"), &Action::Activate)
         .expect("select the meetings section");
     harness
         .expect(
@@ -43,7 +43,7 @@ fn the_detail_pane_follows_the_selection_and_edits_its_own_section() {
         )
         .expect("the preview shares the resource binding");
     harness
-        .perform_semantic_named("section-tree", Some("node:3"), &Action::Activate)
+        .perform_semantic_named("section-tree", Some("key:node:3"), &Action::Activate)
         .expect("switch to another section");
     harness
         .expect(
@@ -70,7 +70,7 @@ fn the_detail_pane_follows_the_selection_and_edits_its_own_section() {
 
     let harness = app.harness();
     harness
-        .perform_semantic_named("section-tree", Some("node:4"), &Action::Activate)
+        .perform_semantic_named("section-tree", Some("key:node:4"), &Action::Activate)
         .expect("return to the first section");
     harness
         .expect(
@@ -102,7 +102,7 @@ fn compact_windows_navigate_between_full_width_panes() {
         .expect(&SemanticExpectation::named("section-tree").role(Role::Tree))
         .expect("compact navigation shows the full-width tree pane");
     harness
-        .perform_semantic_named("section-tree", Some("node:4"), &Action::Activate)
+        .perform_semantic_named("section-tree", Some("key:node:4"), &Action::Activate)
         .expect("choose a compact navigation row");
     harness
         .expect(

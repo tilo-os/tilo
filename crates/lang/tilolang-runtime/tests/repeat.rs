@@ -1,7 +1,6 @@
 //! Repeats and reminders at runtime: a rule expands from the due day or from the day it was
-//! done, a wall time survives a DST change in the person's zone, a reminder reads off the due
-//! moment, and `std.complete` advances a repeating item in place so two people completing the
-//! same task agree on its next day.
+//! done, a wall time survives a DST change in the person's zone, and a reminder reads off the
+//! due moment.
 
 #[cfg(test)]
 #[path = "common/mod.rs"]
@@ -18,15 +17,6 @@ mod cases {
 
     const SOURCE: &str = r#"app so.tilo.repeats "Repeats"
 
-type Item {
-    title: Text (title)
-    done: Bool = false
-    due: Option<Date> = .none
-    at: Option<Time> = .none
-    repeats: Option<std.Repeat> (repeats: due) = .none
-    completed: Set<Date>
-}
-
 type Probe {
     said: Text = ""
     when: Option<Time> = .none
@@ -39,19 +29,19 @@ type Every {
     lead: std.Reminder (reminds: due) = std.Reminder("PT9H")
 }
 
-root Item
+root Probe
 
-default view items for Item
+default view probe for Probe
 
-view items(i: Item) {
-    ui.Text(i.title)
+view probe(p: Probe) {
+    ui.Text(p.said)
 }
 
 action next(probe: Probe, rule: std.Repeat, from: Date, done_on: Date) {
     probe.day = .some(rule.next(from, done_on))
 }
 
-action next_at(probe: Probe, rule: std.Repeat, at: Time, day: Date) {
+action next_at(probe: Probe, rule: std.Repeat, at: Time, day: Date) uses time {
     probe.when = .some(rule.next_at(at, day))
 }
 
@@ -63,41 +53,23 @@ action say_reminder(probe: Probe, reminder: std.Reminder) {
     probe.said = reminder.label()
 }
 
-action remind(probe: Probe, reminder: std.Reminder, due: Date, at: Option<Time>) {
+action remind(probe: Probe, reminder: std.Reminder, due: Date, at: Option<Time>) uses time {
     probe.when = .some(reminder.at(due, at))
-}
-
-action set_rule(item: Item, rule: std.Repeat) {
-    item.repeats = .some(rule)
-}
-
-action seed(item: Item, due: Date) {
-    item.due = .some(due)
-}
-
-action seed_at(item: Item, at: Time) {
-    item.at = .some(at)
-}
-
-action check(item: Item, done: Bool) {
-    let again = std.complete(item, done)
-    item.done = done and not again
 }
 "#;
 
     struct Workspace {
         rt: Runtime,
         app: App,
-        item: ResourceRef,
         probe: ResourceRef,
     }
 
     impl Workspace {
         fn new() -> Self {
-            Self::on(&AmStore::new(), None)
+            Self::on(&AmStore::new())
         }
 
-        fn on(store: &AmStore, of: Option<&ResourceRef>) -> Self {
+        fn on(store: &AmStore) -> Self {
             // Every device runs the same compiled package.
             thread_local! {
                 static COMPILED: tilolang::Compiled = App::compile(SOURCE, &[]).compiled;
@@ -107,14 +79,8 @@ action check(item: Item, done: Bool) {
             };
             let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
             app.load(&rt);
-            let item = of.cloned().unwrap_or_else(|| rt.create("Item").unwrap());
             let probe = rt.create("Probe").unwrap();
-            Self {
-                rt,
-                app,
-                item,
-                probe,
-            }
+            Self { rt, app, probe }
         }
 
         fn at(now: &str, zone: i64) -> Self {
@@ -193,37 +159,6 @@ action check(item: Item, done: Bool) {
                     Value::Text(t) => t,
                     other => panic!("{field} reads as {other:?}"),
                 },
-                other => panic!("{field} reads as {other:?}"),
-            }
-        }
-
-        fn seed(&self, due: &str) {
-            self.call("seed", vec![Value::resource(&self.item), Value::text(due)]);
-        }
-
-        fn check(&self, done: bool) {
-            self.call(
-                "check",
-                vec![Value::resource(&self.item), Value::Bool(done)],
-            );
-        }
-
-        fn done(&self) -> bool {
-            match self.rt.read(&self.item, "done").unwrap() {
-                Value::Bool(b) => b,
-                other => panic!("done reads as {other:?}"),
-            }
-        }
-
-        fn dates(&self, item: &ResourceRef, field: &str) -> Vec<String> {
-            match self.rt.read(item, field).unwrap() {
-                Value::List(l) => l
-                    .iter()
-                    .map(|v| match v {
-                        Value::Text(t) => t.clone(),
-                        other => panic!("{field} holds {other:?}"),
-                    })
-                    .collect(),
                 other => panic!("{field} reads as {other:?}"),
             }
         }
@@ -435,72 +370,6 @@ action check(item: Item, done: Bool) {
             ],
         );
         assert_eq!(w.read(&w.probe, "when"), "2026-03-31T21:45:00Z");
-    }
-
-    #[test]
-    fn completing_a_repeating_task_advances_it_and_records_the_day() {
-        let w = Workspace::in_zone("2026-04-01T10:00:00Z", "Europe/Berlin");
-        w.call(
-            "set_rule",
-            vec![Value::resource(&w.item), Value::text("FREQ=DAILY")],
-        );
-        w.seed("2026-04-01");
-        w.call(
-            "seed_at",
-            vec![
-                Value::resource(&w.item),
-                Value::text("2026-04-01T08:00:00Z"),
-            ],
-        );
-        w.check(true);
-        // The next one is tomorrow, at the same wall time, and the task is open again.
-        assert_eq!(w.read(&w.item, "due"), "2026-04-02");
-        assert_eq!(w.read(&w.item, "at"), "2026-04-02T08:00:00Z");
-        // The task is open again: the next occurrence is what it is about now.
-        assert!(!w.done());
-        assert_eq!(w.dates(&w.item, "completed"), ["2026-04-01"]);
-    }
-
-    #[test]
-    fn completing_a_task_that_does_not_repeat_leaves_it_alone() {
-        let w = Workspace::at("2026-04-01T10:00:00Z", 0);
-        w.seed("2026-04-01");
-        w.check(true);
-        assert_eq!(w.read(&w.item, "due"), "2026-04-01");
-        assert!(w.dates(&w.item, "completed").is_empty());
-        assert!(w.done());
-        // Un-completing changes nothing either.
-        w.check(false);
-        assert_eq!(w.read(&w.item, "due"), "2026-04-01");
-        assert!(w.dates(&w.item, "completed").is_empty());
-    }
-
-    #[test]
-    fn two_people_completing_the_same_task_record_that_day_once() {
-        let store = AmStore::new();
-        let one = Workspace::on(&store, None);
-        one.rt.set_clock(|| "2026-04-01T10:00:00Z".to_owned());
-        let two = Workspace::on(&store, Some(&one.item));
-        two.rt.set_clock(|| "2026-04-01T12:00:00Z".to_owned());
-        one.seed("2026-04-01");
-        one.call(
-            "set_rule",
-            vec![Value::resource(&one.item), Value::text("FREQ=DAILY")],
-        );
-        // Both saw the same open task and both complete it on the same day.
-        let action = one.app.action("check");
-        let args = || vec![Value::resource(&one.item), Value::Bool(true)];
-        one.rt
-            .invoke_action(&me(), (action.as_str(), args()))
-            .unwrap();
-        two.rt
-            .invoke_action(&me(), (action.as_str(), args()))
-            .unwrap();
-        let three = Workspace::on(&store, Some(&one.item));
-        // Each completion steps one occurrence on, and the day both people recorded stays one
-        // entry: the field is an add-wins set, so the two writes of the same day are one.
-        assert_eq!(three.read(&three.item, "due"), "2026-04-03");
-        assert_eq!(three.dates(&three.item, "completed"), ["2026-04-01"]);
     }
 
     #[test]

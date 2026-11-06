@@ -13,7 +13,7 @@
 //! by the framework to collaborators, not kept in a field.
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Collection, Id, JsonSchema, Model, Refusal};
+use tilo_resource::{self, Collection, Id, JsonSchema, Model, Refusal};
 
 /// The longest name a project keeps.
 pub const MAX_NAME_CHARS: usize = 120;

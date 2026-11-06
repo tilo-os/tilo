@@ -194,7 +194,7 @@ impl ResourceRef {
 /// action parameter that picks one takes ([`tilo_actions::Pick::Resource`]).
 /// A person picks it from the palette by the title its app publishes; an
 /// agent passes the same reference. Nobody types its id.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 pub struct ResourceAt {
     /// The app that keeps the resource.
     pub app: String,

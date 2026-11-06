@@ -10404,7 +10404,8 @@ mod tests {
         }
     }
 
-    use crate::widget::{Button, CodeEditor, Column, TextInput, TreeNode, TreeView};
+    use crate::widget::items_tree;
+    use crate::widget::{Button, CodeEditor, Column, TextInput};
 
     struct StructureReplacingEditor {
         current: Box<dyn Widget>,
@@ -11308,7 +11309,7 @@ mod tests {
                            {"expect":{"target":"result","role":"static_text","name_contains":"Done","busy":false,"timeout_ms":1000}},
                            {"perform":{"target":"name","action":"set_value","value":"Ada"}},
                            {"perform":{"target":"name","action":"set_selection","anchor":0,"focus":3}},
-                           {"perform":{"target":"workspace-tree","semantic_target":"node:2","action":"expand"}}]}"#,
+                           {"perform":{"target":"workspace-tree","semantic_target":"key:node:2","action":"expand"}}]}"#,
         )
         .expect("spec parses");
             assert_eq!(spec.viewport, Some((800, 600)));
@@ -11354,7 +11355,7 @@ mod tests {
                     target,
                     semantic_target: Some(semantic_target),
                     action: tilo_headless_schema::SemanticAction::Expand,
-                } if target == "workspace-tree" && semantic_target == "node:2"
+                } if target == "workspace-tree" && semantic_target == "key:node:2"
             ));
         }
 
@@ -11703,20 +11704,22 @@ mod tests {
         }
 
         {
-            let root = TreeNode::branch(1, "Root", (), vec![TreeNode::leaf(2, "Child", ())]);
-            let tree = TreeView::new(root).with_expanded([1]).with_id("items-tree");
-            let mut driver = FrameHarness::new(State::new(), Box::new(tree), (500, 300));
+            let mut driver = FrameHarness::new(
+                State::new(),
+                Box::new(items_tree("items-tree", None, true)),
+                (500, 300),
+            );
             driver
                 .perform_semantic_named(
                     "items-tree",
-                    Some("node:2"),
+                    Some("key:node:2"),
                     &crate::a11y::Action::Activate,
                 )
                 .expect("select child row");
             driver
                 .expect(
                     &SemanticExpectation::named("items-tree")
-                        .semantic_target("node:2")
+                        .semantic_target("key:node:2")
                         .role(crate::a11y::Role::TreeItem)
                         .name("Child")
                         .selected(true)
@@ -11727,7 +11730,7 @@ mod tests {
             let error = driver
                 .expect(
                     &SemanticExpectation::named("items-tree")
-                        .semantic_target("node:2")
+                        .semantic_target("key:node:2")
                         .name("Wrong")
                         .selected(false),
                 )
@@ -11741,7 +11744,7 @@ mod tests {
             let timeout = driver
                 .expect(
                     &SemanticExpectation::named("items-tree")
-                        .semantic_target("node:2")
+                        .semantic_target("key:node:2")
                         .name("Still wrong")
                         .within(crate::time::Duration::from_millis(2)),
                 )
@@ -11752,22 +11755,30 @@ mod tests {
         }
 
         {
-            let root = TreeNode::branch(1, "Root", (), vec![TreeNode::leaf(2, "Child", ())]);
-            let tree = TreeView::new(root)
-                .with_id("items-tree")
-                .with_accessible_name("Items");
-            let mut driver = FrameHarness::new(State::new(), Box::new(tree), (640, 360));
+            let mut driver = FrameHarness::new(
+                State::new(),
+                Box::new(items_tree("items-tree", Some("Items"), false)),
+                (640, 360),
+            );
 
             driver
-                .perform_semantic_named("items-tree", Some("node:1"), &crate::a11y::Action::Focus)
+                .perform_semantic_named(
+                    "items-tree",
+                    Some("key:node:1"),
+                    &crate::a11y::Action::Focus,
+                )
                 .expect("focus root row");
             driver
-                .perform_semantic_named("items-tree", Some("node:1"), &crate::a11y::Action::Expand)
+                .perform_semantic_named(
+                    "items-tree",
+                    Some("key:node:1"),
+                    &crate::a11y::Action::Expand,
+                )
                 .expect("expand root row");
             driver
                 .perform_semantic_named(
                     "items-tree",
-                    Some("node:2"),
+                    Some("key:node:2"),
                     &crate::a11y::Action::Activate,
                 )
                 .expect("activate child row");
@@ -11776,27 +11787,25 @@ mod tests {
             let root = semantics
                 .children
                 .iter()
-                .find(|node| node.action_target.as_deref() == Some("node:1"))
+                .find(|node| node.action_target.as_deref() == Some("key:node:1"))
                 .expect("root semantic row");
             let child = semantics
                 .children
                 .iter()
-                .find(|node| node.action_target.as_deref() == Some("node:2"))
+                .find(|node| node.action_target.as_deref() == Some("key:node:2"))
                 .expect("child semantic row");
             assert_eq!(root.state.expanded, Some(true));
             assert!(child.state.selected);
-            assert_eq!(semantics.value.as_deref(), Some("Child"));
 
             driver
                 .perform_semantic_named(
                     "items-tree",
-                    Some("node:1"),
+                    Some("key:node:1"),
                     &crate::a11y::Action::Collapse,
                 )
                 .expect("collapse root row");
             let semantics = driver.inspection().root.semantics.expect("tree semantics");
             assert_eq!(semantics.children[0].state.expanded, Some(false));
-            assert_eq!(semantics.value.as_deref(), Some("Child"));
         }
     }
 
@@ -11836,11 +11845,11 @@ mod tests {
         }
 
         {
-            let root = TreeNode::branch(1, "Root", (), vec![TreeNode::leaf(2, "Child", ())]);
-            let tree = TreeView::new(root)
-                .with_expanded([1])
-                .with_accessible_name("Items");
-            let driver = FrameHarness::new(State::new(), Box::new(tree), (640, 360));
+            let driver = FrameHarness::new(
+                State::new(),
+                Box::new(items_tree("items", Some("Items"), true)),
+                (640, 360),
+            );
             let inspection = driver.inspection();
             let semantics = inspection.root.semantics.expect("tree semantics");
 
@@ -11852,7 +11861,7 @@ mod tests {
             assert_eq!(semantics.children[0].role, crate::a11y::Role::TreeItem);
             assert_eq!(
                 semantics.children[0].action_target.as_deref(),
-                Some("node:1")
+                Some("key:node:1")
             );
             assert!(
                 semantics.children[0].bounds.is_some(),

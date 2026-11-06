@@ -39,7 +39,7 @@ fn published() -> Vec<ResourceSpec> {
         facts: Vec::new(),
     }];
     vec![
-        chrome_resource(),
+        chrome_resource(&ui::shortcut_table::ShortcutConfig::default()),
         desk_resource(
             &windows,
             &[8],

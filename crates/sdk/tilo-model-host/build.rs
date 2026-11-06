@@ -1,0 +1,213 @@
+//! The model module a host test runs: `tasks-model` built for `wasm32-unknown-unknown`, in
+//! this crate's `OUT_DIR`.
+//!
+//! `docs/architecture/apps.md` §1 makes an app's model and verbs a WebAssembly module the
+//! document host runs. A test that proved the host on a linked-in model would prove nothing
+//! about that, so the fixture is the app's own crate, compiled the way an app's module is.
+//!
+//! The build has a target directory of its own under `OUT_DIR`: a build script that shared
+//! the outer run's target directory would ask cargo to build while cargo is building, and the
+//! two would wait on each other.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+fn main() {
+    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets it"));
+    let model = manifest.join("../../../apps/tasks-model");
+    // The guest crate the module is built with, and the ABI it is built against: a module of an
+    // older guest is not the module this host reads.
+    let sources = [
+        model.join("src"),
+        model.join("Cargo.toml"),
+        manifest.join("../tilo-model-guest/src"),
+        manifest.join("../tilo-model-guest/Cargo.toml"),
+        manifest.join("../tilo-model-abi/src"),
+    ];
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets it"));
+    let module = out.join("tasks_model.wasm");
+    // Every source the module is built from: cargo watches a directory's own entry only, so a
+    // file changed under it is not seen.
+    for watched in sources.iter().chain(std::iter::once(&module)) {
+        println!("cargo::rerun-if-changed={}", watched.display());
+    }
+    println!("cargo::rerun-if-env-changed=TILO_MODEL_FIXTURE_OFFLINE");
+    // The crate reads this build's `OUT_DIR` to find the module, or nothing when there is
+    // none; it is set before any path that might return.
+    println!("cargo::rustc-env=TILO_MODEL_FIXTURE_DIR={}", out.display());
+    if sources.iter().all(|source| fresh(&module, source)) {
+        return;
+    }
+    if let Err(error) = build(&model, &out) {
+        // A host that cannot be tested without a module still builds; the test that needs one
+        // says so itself, rather than every build of this crate failing on a wasm toolchain.
+        println!("cargo::warning=the model module fixture was not built: {error}");
+        return;
+    }
+}
+
+/// Build `model` for `wasm32-unknown-unknown` into `out/target`, and copy the module beside it.
+fn build(model: &Path, out: &Path) -> Result<(), String> {
+    let target = out.join("target");
+    // A toolchain that can build a module, not whatever `cargo` is first on PATH: a wrapper may
+    // hand the build to another machine, which cannot build one here, and a system Rust may
+    // have no wasm32 target installed.
+    let rustc = module_toolchain().ok_or_else(|| {
+        "no Rust toolchain here has the wasm32-unknown-unknown target (rustup target add \
+         wasm32-unknown-unknown)"
+            .to_owned()
+    })?;
+    let cargo = std::path::Path::new(&rustc).join("bin").join("cargo");
+    let mut command = Command::new(&cargo);
+    // The cargo's own `rustc`, not the one this build found on `PATH`: a system Rust may be a
+    // different toolchain, without the target.
+    command.env(
+        "RUSTC",
+        std::path::Path::new(&rustc).join("bin").join("rustc"),
+    );
+    command
+        .arg("build")
+        .arg("--package")
+        .arg("tasks-model")
+        .arg("--target")
+        .arg("wasm32-unknown-unknown")
+        .arg("--target-dir")
+        .arg(&target)
+        .current_dir(model)
+        // The module's entropy is the host's, through the import `tilo-model-guest` answers:
+        // getrandom's custom backend, as the host that runs the module provides it. The build's
+        // own flags stay: the cfg's are added to them, not put in their place.
+        .env("CARGO_ENCODED_RUSTFLAGS", module_flags())
+        .env_remove("CARGO_TARGET_DIR");
+    if std::env::var_os("TILO_MODEL_FIXTURE_OFFLINE").is_some()
+        || std::env::var_os("CARGO_NET_OFFLINE").is_some_and(|value| value == "true")
+    {
+        command.arg("--offline");
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("could not run cargo: {error}"))?;
+    if !output.status.success() {
+        // Only the errors: a failed build's stderr is mostly the workspace's warnings.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // The errors, and what the linker says after them: a link failure's cause is in its
+        // notes, not its first line.
+        let errors: Vec<&str> = stderr
+            .lines()
+            .filter(|line| {
+                line.starts_with("error")
+                    || line.contains(": error")
+                    || line.contains("undefined symbol")
+                    || line.contains("rust-lld:")
+            })
+            .collect();
+        // The errors, or, when none names itself, the tail of what the tool said.
+        return Err(if errors.is_empty() {
+            stderr.lines().rev().take(12).collect::<Vec<_>>().join("\n")
+        } else {
+            errors.join("\n")
+        });
+    }
+    let built = target
+        .join("wasm32-unknown-unknown")
+        .join("debug")
+        .join("tasks_model.wasm");
+    std::fs::copy(&built, out.join("tasks_model.wasm"))
+        .map_err(|error| format!("could not copy {}: {error}", built.display()))?;
+    Ok(())
+}
+
+/// The sysroot of a toolchain that can build `wasm32-unknown-unknown`: the one running this
+/// build when it has the target, else the newest rustup toolchain that has it, else the
+/// system's.
+fn module_toolchain() -> Option<String> {
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    candidates(rustc)
+        .into_iter()
+        .find(|sysroot| has_wasm(sysroot))
+}
+
+/// The sysroots to try, in order: the running toolchain, then every rustup one.
+fn candidates(rustc: std::ffi::OsString) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(output) = Command::new(&rustc).arg("--print").arg("sysroot").output() {
+        out.push(String::from_utf8_lossy(&output.stdout).trim().to_owned());
+    }
+    let home = std::env::var_os("RUSTUP_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::home_dir().map(|home| home.join(".rustup")));
+    if let Some(toolchains) = home.map(|home| home.join("toolchains"))
+        && let Ok(entries) = std::fs::read_dir(toolchains)
+    {
+        for entry in entries.flatten() {
+            let sysroot = entry.path();
+            if sysroot
+                .join("lib")
+                .join("rustlib")
+                .join("wasm32-unknown-unknown")
+                .is_dir()
+            {
+                out.push(sysroot.display().to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Whether `module` is newer than every `.rs` file under `sources`: a module built from the
+/// sources as they are now.
+fn fresh(module: &Path, sources: &Path) -> bool {
+    let Ok(built) = std::fs::metadata(module).and_then(|meta| meta.modified()) else {
+        return false;
+    };
+    !newest(sources).is_some_and(|modified| modified > built)
+}
+
+/// The modification time of the newest `.rs` file under `dir`.
+fn newest(dir: &Path) -> Option<std::time::SystemTime> {
+    let mut newest = None;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let entries = std::fs::read_dir(&path).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs")
+                && let Ok(modified) = entry.metadata().and_then(|meta| meta.modified())
+                && newest.is_none_or(|newest| modified > newest)
+            {
+                newest = Some(modified);
+            }
+        }
+    }
+    newest
+}
+
+/// The flags a model module builds with: the two that make it a host module — no JavaScript
+/// page to ask for anything (`tilo_no_js`), and getrandom's backend the host's
+/// (`getrandom_backend`) — and nothing of the outer build's.
+///
+/// The outer build's flags are not inherited: they harden and relocate a Linux executable
+/// (`-z relro`, `--compress-debug-sections`, the x86-64 baseline), and `rust-lld` refuses them
+/// for a wasm module, which is not an ELF at all. A module is data the host loads, not a
+/// program of this machine.
+fn module_flags() -> String {
+    [
+        "--cfg",
+        "getrandom_backend=\"custom\"",
+        "--cfg",
+        "tilo_no_js",
+    ]
+    .join("\u{1f}")
+}
+
+/// Whether `sysroot` has the wasm32 target's standard library.
+fn has_wasm(sysroot: &str) -> bool {
+    std::path::Path::new(sysroot)
+        .join("lib")
+        .join("rustlib")
+        .join("wasm32-unknown-unknown")
+        .join("lib")
+        .is_dir()
+}

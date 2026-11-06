@@ -31,12 +31,14 @@ use tilo_desktop_surface::{DesktopHandle, HostActionSource};
 use tilo_resource::Effect;
 use ui::presence::PresenceCtx;
 use ui::search::Scope;
-use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
+use ui::shortcut_table::ShortcutAction;
 use ui::widget::{AppModel, EventCtx, ModelPath, Stack, TaffyTreeExt as _, Widget};
 use ui::{TextRenderer, Theme};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+
+mod shortcut_actions;
 
 use crate::about::{TiloMenu, TiloMenuAction};
 use crate::chrome::{ChromeIntent, TopBarPresence};
@@ -774,8 +776,9 @@ pub struct DesktopChrome {
     handle: DesktopHandle,
     generation: String,
     rules: Rc<dyn DesktopRules>,
-    /// The desktop's shortcut table.
-    shortcuts: ShortcutConfig,
+    /// The desktop's shortcut table, shared with the session: the chords
+    /// the desk answers and the ones its rows show are one table.
+    shortcuts: crate::shortcuts::Shared,
     /// Chords read the host's stand-in for Super as a Mac's.
     mac: bool,
     /// The pointer, in logical pixels.
@@ -906,7 +909,7 @@ impl DesktopChrome {
             handle,
             generation,
             rules,
-            shortcuts: ShortcutConfig::default(),
+            shortcuts: crate::shortcuts::Shared::default(),
             mac,
             cursor: None,
             content: Rect::ZERO,
@@ -966,7 +969,7 @@ impl DesktopChrome {
     }
 
     /// Use `shortcuts` for the desktop's chords (the person's bindings).
-    pub fn set_shortcuts(&mut self, shortcuts: ShortcutConfig) {
+    pub fn set_shortcuts(&mut self, shortcuts: crate::shortcuts::Shared) {
         self.shortcuts = shortcuts;
     }
 
@@ -1832,7 +1835,7 @@ impl DesktopChrome {
             return false;
         }
         let action = page_shortcut_action(
-            &self.shortcuts,
+            &self.shortcuts.borrow(),
             &event.logical_key,
             event.physical_key,
             *modifiers,
@@ -2014,59 +2017,6 @@ impl DesktopChrome {
         };
         if let Some(navigation) = navigation {
             self.apply_navigation(navigation);
-        }
-        true
-    }
-
-    /// Perform a desktop shortcut: false for one the desktop has no part
-    /// in (locking the device, the magnifier, dictation, …), which then
-    /// reaches the window as an ordinary key.
-    pub fn shortcut(&mut self, action: ShortcutAction) -> bool {
-        match action {
-            ShortcutAction::WorkspaceOverview => self.toggle_overview(),
-            ShortcutAction::EmojiPicker => self.toggle_emoji(),
-            ShortcutAction::FocusPreviousWindow | ShortcutAction::FocusNextWindow => {
-                let step = if action == ShortcutAction::FocusPreviousWindow {
-                    -1
-                } else {
-                    1
-                };
-                if let Some(tab) = self.window_tab(Some(step), None) {
-                    self.handle.focus_tab(tab);
-                }
-            }
-            ShortcutAction::PreviousStrip => self.step_strip(-1),
-            ShortcutAction::NextStrip => self.step_strip(1),
-            ShortcutAction::PreviousWorkspace => {
-                self.apply_intent(ChromeIntent::SwitchWorkspace(-1));
-            }
-            ShortcutAction::NextWorkspace => self.apply_intent(ChromeIntent::SwitchWorkspace(1)),
-            ShortcutAction::MaximizeWindow => self.maximize_focused(Some(true)),
-            ShortcutAction::RestoreWindow => self.maximize_focused(Some(false)),
-            // The window the person closed last in the shown workspace comes
-            // back where it was. Nothing closed is no reason to leave the
-            // chord to whatever holds the keyboard: the desktop answers it
-            // either way, as the shell it replaces did.
-            ShortcutAction::ReopenClosedTab => {
-                self.dispatch(ChromeEffect::ReopenClosed);
-            }
-            // A window covers the display it stands on by covering the whole
-            // strip, bar's room included: the chord and the window menu's
-            // row are the same request.
-            ShortcutAction::ToggleMaximize => self.maximize_focused(None),
-            ShortcutAction::ToggleFullscreen => self.toggle_fullscreen(),
-            ShortcutAction::ReportProblem => self.asks.borrow_mut().push(DesktopAsk::ReportProblem),
-            other => {
-                if let Some(index) = other.focus_strip_index() {
-                    self.go_to_strip(|_| Some(index));
-                } else if let Some(index) = other.focus_group_index() {
-                    if let Some(tab) = self.window_tab(None, Some(index)) {
-                        self.handle.focus_tab(tab);
-                    }
-                } else {
-                    return false;
-                }
-            }
         }
         true
     }
@@ -2314,9 +2264,9 @@ impl DesktopChrome {
                 ) else {
                     return Ok(false);
                 };
-                if !self.shortcut(action) {
-                    self.asks.borrow_mut().push(DesktopAsk::Shortcut(action));
-                }
+                // The desk carries out its own and asks its host for the
+                // rest, once: the shortcut's own answer is the whole of it.
+                self.shortcut(action);
                 return Ok(true);
             }
             _ => return Ok(false),
@@ -2438,7 +2388,7 @@ impl DesktopChrome {
 
 impl ui::resources::PublishesResources for DesktopChrome {
     fn resources(&self, _: &ui::automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        vec![chrome_resource()]
+        vec![chrome_resource(&self.shortcuts.borrow())]
     }
 }
 
@@ -2712,7 +2662,7 @@ impl Widget for DesktopChrome {
             let own = matches!(event, WindowEvent::KeyboardInput { event: key, .. }
                 if key.state == ElementState::Pressed
                     && page_shortcut_action(
-                        &self.shortcuts,
+                        &self.shortcuts.borrow(),
                         &key.logical_key,
                         key.physical_key,
                         *ctx.modifiers,

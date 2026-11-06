@@ -340,8 +340,8 @@ pub mod prelude {
         Filtered, FindBar, FindMatch, FindOptions, FindScope, Findable, FloatingSurfaceProvider,
         FullscreenProvider, ModelView, NativeViewLifecycle, NavItem, NavList, NavMode, NavPane,
         NavSection, NavShell, NumberInput, QrWidget, Row, Scrollable, SearchField,
-        SearchResultsView, Slider, Spacer, Spinner, Stack, Text, TextInput, Toggle, TreeNode,
-        TreeView, Widget, labeled_check, labeled_field,
+        SearchResultsView, Slider, Spacer, Spinner, Stack, Text, TextInput, Toggle, Widget,
+        labeled_check, labeled_field,
     };
     pub use ui_core::{
         LatestRequest, LatestTask, LocalState, PresenceCtx, SearchRegistry, State, TextRenderer,
