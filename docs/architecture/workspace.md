@@ -166,6 +166,29 @@ second record of who belongs.
   reads the whole history locally. It grows with membership changes, never
   with content.
 
+**One group per reader set.** A group belongs to a key scope, not to a
+record: `workspace_scope(workspace)` is one MLS group and one content keyring
+for every storage unit whose readers are the workspace's participants. A unit
+— one record's channel — seals under its scope's keys while its payload still
+names the unit, so content stays bound to the record and artifact it was
+written for and every stored and wire format is unchanged. Membership is
+still decided per record: a Read Deny on a record, on its app or on a pattern
+over it narrows that unit's readers, and the unit is then carried by a group
+of its own whose key no denied device ever gets.
+
+What a scope buys is that membership costs what the *reader set* costs, not
+what the workspace holds: one admission, one removal and one commit per scope,
+however many units it carries. Before scopes, every record had a group, so a
+workspace of a thousand records paid about two seconds and 3 MiB of
+governance frames to admit one device, and repeated it on every change, on
+every device.
+
+Units sealed before scopes keep their groups. A device that holds one reads
+its history as before, merging that group's keys with the scope's; new
+content for those units seals under the scope, so a device has to hold both,
+and a device that never held the old group reads the old content once it is
+re-sealed under the scope.
+
 A store never enters the group and never holds a key. It keeps and forwards
 sealed ops, and refuses ones that are not signed by a member's device. To
 tell, it reads the one part of `workspace.members` that is not sealed: the
@@ -260,22 +283,38 @@ scope, `tilo-app-state`'s `record_cost` for a unit and its document, and
 x86_64 development container, three samples; instruction counts repeat on any
 machine, times are that container's.
 
-**One key scope per channel** (one MLS group per record route, three devices in
-each channel), per channel:
+**One group per channel** (one MLS group per record route, three devices in
+each channel), per channel — the cost a workspace paid before key scopes:
 
 | channels | join | per channel | join bytes | removal | removal bytes | device state |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 1.94 ms | 1.94 ms | 3.1 KiB | 0.84 ms | 700 B | 761 B |
-| 10 | 20.0 ms | 2.00 ms | 3.1 KiB | 8.0 ms | 700 B | 760 B |
-| 100 | 193 ms | 1.93 ms | 3.1 KiB | 77 ms | 700 B | 761 B |
-| 1000 | 1963 ms | 1.96 ms | 3.1 KiB | 883 ms | 700 B | 761 B |
+| 1 | 1.99 ms | 1.99 ms | 3.1 KiB | 0.84 ms | 700 B | 757 B |
+| 10 | 22.0 ms | 2.20 ms | 3.1 KiB | 0.77 ms | 700 B | 763 B |
+| 100 | 197 ms | 1.97 ms | 3.1 KiB | 0.75 ms | 700 B | 760 B |
+| 1000 | 1989 ms | 1.99 ms | 3.1 KiB | 0.77 ms | 700 B | 760 B |
 
-The cost is flat per group and does not shrink as a workspace grows: 1.96 ms
+The cost is flat per group and does not shrink as a workspace grows: 2.0 ms
 and 3.1 KiB of governance frames per channel to admit one device, 0.8 ms and
 700 B per channel for one removal, and 760 B of sealed peer state per channel
-on the device. A user joining a workspace of 1000 records pays about two
+on the device. A user joining a workspace of 1000 records paid about two
 seconds and 3 MiB before reading anything, and every membership change after
-that repeats it — once per channel, on every device.
+that repeated it — once per channel, on every device.
+
+**One key scope per reader set** (one MLS group carrying every unit whose
+readers are the same devices, three devices), by the units it carries:
+
+| units | join | per unit | join bytes | removal | removal bytes |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 2.02 ms | 2.02 ms | 3.1 KiB | 0.97 ms | 700 B |
+| 10 | 1.95 ms | 195 us | 3.1 KiB | 0.77 ms | 700 B |
+| 100 | 1.87 ms | 18.7 us | 3.1 KiB | 0.74 ms | 700 B |
+| 1000 | 1.88 ms | 1.9 us | 3.1 KiB | 0.76 ms | 700 B |
+
+Flat in the units carried: a workspace of 1000 records costs 1.9 ms and 3.1
+KiB to admit a device and 0.76 ms and 700 B to remove one, instead of 1.99 s
+and 3.1 MiB and 0.77 s and 700 KiB. Each unit's content still seals and opens
+under the scope's keys, named for the unit: 4.8 us per unit at one unit, 2.4 us
+at 1000 (`unit_content`), which is what it was per channel before.
 
 **One storage unit** (one record: its own Automerge file, route and index
 row), per unit:

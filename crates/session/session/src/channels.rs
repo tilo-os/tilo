@@ -407,6 +407,25 @@ impl ChannelDirectory for Directory {
         )
     }
 
+    /// The scope the record on `route` seals under: the workspace's
+    /// participants while they all may read it, the record's own channel when
+    /// a Read Deny narrows its readers, so a unit's group holds exactly the
+    /// devices its record's policy names.
+    fn unit_scope(
+        &self,
+        workspace: ModelWorkspaceId,
+        route: &ChannelRoute,
+        now: u64,
+    ) -> Option<ChannelId> {
+        let at = UNIX_EPOCH.checked_add(Duration::from_secs(now))?;
+        self.engine
+            .owner()
+            .with_current(workspace, |view| {
+                view.peer().governance().unit_scope(at, route)
+            })
+            .ok()
+    }
+
     /// Announced whenever a workspace's governance moves, so a group re-checks
     /// on
     /// the change itself rather than on a clock; without the announcements

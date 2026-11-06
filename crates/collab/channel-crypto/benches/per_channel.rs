@@ -3,12 +3,13 @@
 //! member applying that commit), a member leaving, and a device's state file
 //! per channel on disk.
 //!
-//! Each channel in the fixture is one storage unit today: one record route,
-//! one MLS group (see `README.md`, "Granularity: per channel"). A workspace of
-//! `n` channels is `n` groups, so a cost that is per group is `n` times the
-//! per-channel number here. A membership change is the same operation as a
-//! device add at this layer — one commit per group, each commit delivered to
-//! every member of that group — so both are measured by the join.
+//! Three kinds of row: a group per channel — one MLS group per record route,
+//! the cost a workspace paid before key scopes — a group per reader set (one
+//! key scope carrying `n` units, see `README.md`, "Granularity: per reader
+//! set"), and the content work a unit does under its scope's keys. A
+//! membership change is the same operation as a device add at this layer —
+//! one commit per group, each commit delivered to every member of that group
+//! — so both are measured by the join.
 //!
 //! Bytes are the postcard-encoded governance frames and access requests that
 //! leave and reach a device; a time is one whole pass over the channels of a
@@ -43,7 +44,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use channel_crypto::{Access, ChannelPeer, VaultKey};
-use collab_types::{ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceFrame};
+use collab_types::{
+    ArtifactId, ChannelId, ContentRetention, Ed25519PublicKey, MlsAccessRequestV1,
+    MlsGovernanceFrame,
+};
 use ed25519_dalek::SigningKey;
 
 /// Existing members every channel of the fixture starts with: the devices the
@@ -365,8 +369,139 @@ fn main() {
             file_bytes = dir_bytes(&dir);
             let _ = std::fs::remove_dir_all(&dir);
         }
+
         row("state_file", n, 0, samples, 0, file_bytes);
+
+        // A workspace whose `n` units share one reader set: one key scope, so a
+        // device joining takes part once for the whole workspace, and a member
+        // leaving costs one commit for all of it.
+        let mut samples = Vec::new();
+        let mut totals = Totals::default();
+        for _ in 0..sizes.samples {
+            let mut scope = scope_group(&vault);
+            let started = Instant::now();
+            let mut joiner = Device::waiting(0x7a, scope.channel, &vault);
+            let (request, request_bytes) = joiner.ask(&vault);
+            totals.add(request_bytes, 1);
+            let members = &mut scope.members;
+            members[0]
+                .peer
+                .learn_request(request, &vault)
+                .expect("learn");
+            let allowed = {
+                let mut names = allowed(&members.iter().collect::<Vec<_>>());
+                names.insert(joiner.public());
+                names
+            };
+            members[0]
+                .peer
+                .reconcile_now(&allowed, &vault)
+                .expect("admit");
+            let frames = members[0].take(&vault);
+            for frame in &frames {
+                totals.add(frame_bytes(frame), 1);
+                if frame.added().contains(&joiner.public()) {
+                    joiner.receive(frame, &allowed, &vault);
+                }
+                for other in members.iter_mut().skip(1) {
+                    other.receive(frame, &allowed, &vault);
+                }
+            }
+            samples.push(ms(started.elapsed()));
+        }
+        row(
+            "key_scope_join",
+            n,
+            MEMBERS,
+            samples,
+            totals.frames / sizes.samples as u64,
+            totals.bytes / sizes.samples,
+        );
+
+        let mut samples = Vec::new();
+        let mut totals = Totals::default();
+        for _ in 0..sizes.samples {
+            let mut scope = scope_group(&vault);
+            let started = Instant::now();
+            let members = &mut scope.members;
+            let allowed = {
+                let names: Vec<&Device> = members
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != 1)
+                    .map(|(_, device)| device)
+                    .collect();
+                allowed(&names)
+            };
+            members[0]
+                .peer
+                .reconcile_now(&allowed, &vault)
+                .expect("remove");
+            let frames = members[0].take(&vault);
+            for frame in &frames {
+                totals.add(frame_bytes(frame), 1);
+                for (index, survivor) in members.iter_mut().enumerate() {
+                    if index != 1 {
+                        survivor.receive(frame, &allowed, &vault);
+                    }
+                }
+            }
+            samples.push(ms(started.elapsed()));
+        }
+        row(
+            "key_scope_removal",
+            n,
+            MEMBERS,
+            samples,
+            totals.frames / sizes.samples as u64,
+            totals.bytes / sizes.samples,
+        );
+
+        // What one scope's keys carry: each of `n` units seals under them and
+        // opens what it sealed, its content named for the unit. This work is
+        // the same per unit with or without scopes; it is here so the join
+        // rows above are not read as the whole cost of a unit.
+        let scope = scope_group(&vault);
+        let keys = scope
+            .members
+            .first()
+            .and_then(|device| device.peer.content_keys())
+            .expect("a founded scope has keys");
+        let mut samples = Vec::new();
+        for _ in 0..sizes.samples {
+            let started = Instant::now();
+            for _ in 0..n {
+                let unit = ChannelId::new();
+                let named = keys.for_unit(unit);
+                let artifact = ArtifactId::new();
+                let (metadata, sealed) = named
+                    .seal_content(artifact, ContentRetention::Delta, b"a unit's content")
+                    .expect("seal");
+                named
+                    .open_content(artifact, &metadata, &sealed)
+                    .expect("open");
+            }
+            samples.push(ms(started.elapsed()));
+        }
+        row("unit_content", n, MEMBERS, samples, 0, 0);
     }
+}
+
+/// One key scope with `MEMBERS` devices: the reader set every unit of a
+/// workspace shares.
+fn scope_group(vault: &VaultKey) -> Group {
+    let seeds: Vec<u8> = (0..MEMBERS)
+        .map(|i| 11 + 17 * u8::try_from(i).unwrap_or(0))
+        .collect();
+    let channel = ChannelId::new();
+    let mut members = vec![Device::creating(seeds[0], channel, vault)];
+    for seed in &seeds[1..] {
+        let mut joiner = Device::waiting(*seed, channel, vault);
+        let (request, _) = joiner.ask(vault);
+        admit(&mut members, &mut joiner, request, vault);
+        members.push(joiner);
+    }
+    Group { channel, members }
 }
 
 fn ms(elapsed: Duration) -> f64 {

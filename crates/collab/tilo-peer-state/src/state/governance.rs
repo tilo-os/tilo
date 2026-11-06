@@ -105,12 +105,13 @@ impl PeerGovernance<'_> {
             .is_ok()
     }
 
-    /// The devices that may read `channel`, one of the workspace's record
-    /// channels, at `now`: the projection of the workspace's membership a
-    /// channel's MLS group follows. `route` is the channel's record when the
-    /// caller knows it ([`Self::withheld_record_readers`]). `None` when
-    /// neither `route` nor a grant names the record: who may read it is then
-    /// unknown, not no one.
+    /// The devices that may read `channel` at `now`: the projection of the
+    /// workspace's membership a channel's MLS group follows. `channel` is the
+    /// workspace's key scope ([`collab_types::workspace_scope`]) — read by
+    /// every participant — or one unit's own channel, a record whose readers
+    /// a Read Deny narrows. `route` is that record when the caller knows it
+    /// ([`Self::withheld_record_readers`]). `None` when neither `route` nor a
+    /// grant names the record: who may read it is then unknown, not no one.
     ///
     /// # Errors
     ///
@@ -121,6 +122,13 @@ impl PeerGovernance<'_> {
         channel: collab_types::ChannelId,
         route: Option<&collab_types::ChannelRoute>,
     ) -> Result<Option<BTreeSet<[u8; 32]>>, String> {
+        // The scope that carries the units whose readers are the workspace's
+        // participants is read by exactly them: it is named by the workspace
+        // itself, so every participant can decide it without knowing a record.
+        if channel == collab_types::workspace_scope(&self.peer.core.workspace) {
+            let access = self.peer.governance().governed_access(now)?;
+            return Ok(Some(access.member_devices.into_iter().collect()));
+        }
         let routes: Vec<collab_types::ChannelRoute> = route.cloned().into_iter().collect();
         let readers = self
             .peer
@@ -136,6 +144,40 @@ impl PeerGovernance<'_> {
                 .filter(|device| !withheld.contains(device))
                 .collect(),
         ))
+    }
+
+    /// The key scope the storage unit on `route` seals under: the workspace's
+    /// ([`collab_types::workspace_scope`]) while every device that may read
+    /// the workspace may read the record too, the record's own channel when a
+    /// Read Deny (or the record being a person's own) narrows its readers.
+    /// The two reader sets never share a key: a narrowed record's group holds
+    /// only the devices its own policy admits.
+    ///
+    /// # Errors
+    ///
+    /// The workspace's governance is missing or cannot be read.
+    pub fn unit_scope(
+        self,
+        now: SystemTime,
+        route: &collab_types::ChannelRoute,
+    ) -> Result<collab_types::ChannelId, String> {
+        let readers = self
+            .peer
+            .governance()
+            .withheld_record_readers(now, std::slice::from_ref(route))?;
+        let unit =
+            collab_types::document_channel_id(&route.app, &self.peer.core.workspace, &route.record);
+        Ok(
+            if readers
+                .withheld
+                .get(&unit)
+                .is_some_and(|denied| !denied.is_empty())
+            {
+                unit
+            } else {
+                collab_types::workspace_scope(&self.peer.core.workspace)
+            },
+        )
     }
 
     /// The governed member devices a Read Deny keeps out of a record's

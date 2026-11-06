@@ -21,9 +21,9 @@ impl ChannelKeyAccess {
         let ciphertext =
             collab_types::sealed_ciphertext(envelope).map_err(|error| error.to_string())?;
         let keys = self
-            .run(|service| service.existing_keys(workspace, metadata.channel))
+            .run(|service| service.record_keys(workspace, metadata.channel, None))
             .ok_or("channel service unavailable")?
-            .ok_or("this device holds no existing key for the history's channel")?;
+            .ok_or("this device holds no existing key for the history's channel")??;
         keys.open_content(envelope.artifact, &metadata, &ciphertext)
             .map(|plaintext| plaintext.to_vec())
             .map_err(|error| error.to_string())
@@ -45,9 +45,9 @@ impl ChannelKeyAccess {
         cleartext: &[u8],
     ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
         let name = workspace.to_string();
-        let channel = collab_types::document_channel_id(app, &name, record);
         let artifact = collab_types::document_artifact_id(app, &name, record);
-        let (access, _) = self.access(workspace, channel);
+        let route = collab_types::ChannelRoute::new(app, record);
+        let (access, _) = self.access_record(workspace, &route);
         let ChannelAccess::Ready(keys) = access else {
             return Err("this device holds no current key for the record's channel".into());
         };
