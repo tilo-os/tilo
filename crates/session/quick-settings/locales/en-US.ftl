@@ -237,7 +237,6 @@ qs-nothing-plays = Nothing is playing that can do this
 qs-now-playing-player = Player
 qs-now-playing-output = Plays on
 qs-now-playing-offer = From { $device }: { $title }, resumes at { $position }
-qs-now-playing-source = Plays in { $app }
 qs-now-playing-open = Show { $app }
 qs-now-playing-previous = Previous song
 qs-now-playing-play = Play

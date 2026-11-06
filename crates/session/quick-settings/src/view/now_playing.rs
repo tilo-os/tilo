@@ -1,8 +1,10 @@
 //! The now-playing row on the controls page: the cover, what plays and the
 //! controls that steer it, and what another of the person's devices hands
-//! over, with, where there is a choice, the player the row steers and where
-//! its sound goes. Every control is one of the panel's effects, so a person,
-//! an agent and a script reach the player through the same door.
+//! over. The song's name is the way back to the player that plays it, and a
+//! picker appears only where there is something to pick: another player to
+//! steer, or another place to hear it. Every control is one of the panel's
+//! effects, so a person, an agent and a script reach the player through the
+//! same door.
 
 use ui::LocalState;
 use ui::TextRole;
@@ -268,9 +270,9 @@ fn transport(cx: &ViewCx<QuickSettings>, steps: &[Step]) -> Row {
     controls
 }
 
-/// What the row offers under the song: the handoff to continue here, the app
-/// that plays when there is nothing to choose, and the choices when there
-/// are.
+/// What the row offers under the song: the handoff to continue here, and the
+/// pickers where there is a choice. One player and one place to hear it need
+/// no picker: the row itself is the way to both.
 fn choices_below(cx: &ViewCx<QuickSettings>, choices: &Choices) -> Vec<Element> {
     let actions = cx.actions();
     let mut below: Vec<Element> = Vec::new();
@@ -281,16 +283,6 @@ fn choices_below(cx: &ViewCx<QuickSettings>, choices: &Choices) -> Vec<Element> 
                 request: request.clone(),
             },
         )));
-    }
-    if choices.players.len() <= 1 && !choices.source.is_empty() {
-        below.push(Box::new(
-            Text::new(&t_args(
-                "qs-now-playing-source",
-                &[("app", choices.source.clone().into())],
-            ))
-            .with_role(TextRole::Caption)
-            .with_id("qs-now-playing-source"),
-        ));
     }
     if choices.players.len() > 1 {
         let mut players =
@@ -306,7 +298,7 @@ fn choices_below(cx: &ViewCx<QuickSettings>, choices: &Choices) -> Vec<Element> 
             actions.bind_effect(players, QsEffect::CHOOSE_PLAYER),
         ));
     }
-    if !choices.outputs.is_empty() {
+    if choices.outputs.len() > 1 {
         let mut outputs =
             Dropdown::from_state(Vec::new(), &LocalState::new(choices.output.clone()))
                 .with_id("qs-now-playing-output")

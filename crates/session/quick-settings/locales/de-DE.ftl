@@ -238,7 +238,6 @@ qs-nothing-plays = Es wird nichts abgespielt, das das kann
 qs-now-playing-player = Player
 qs-now-playing-output = Spielt auf
 qs-now-playing-offer = Von { $device }: { $title }, geht weiter bei { $position }
-qs-now-playing-source = Spielt in { $app }
 qs-now-playing-open = { $app } anzeigen
 qs-now-playing-previous = Vorheriger Titel
 qs-now-playing-play = Abspielen
