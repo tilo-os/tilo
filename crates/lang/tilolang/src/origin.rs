@@ -74,6 +74,29 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
         "Sends a message from a mail account of the workspace's settings: (account, to, cc, \
          subject, body, the Message-ID it answers, the References it continues).",
     ),
+    (
+        "youtube.search",
+        "Searches YouTube's catalogue for the query, as typed: (the query). The channels, \
+         playlists and videos it answers are written where the search's field says.",
+    ),
+    (
+        "youtube.channel",
+        "Asks YouTube for a channel's videos: (the channel's key).",
+    ),
+    (
+        "youtube.subscriptions",
+        "Asks YouTube for the newest videos of the channels the person follows: (how many \
+         channels), so a feed of a person with none asks nothing.",
+    ),
+    (
+        "youtube.trending",
+        "Asks YouTube for the videos it lists as trending: (nothing).",
+    ),
+    (
+        "youtube.stream",
+        "Asks YouTube where a video's bytes play from: (the video's key). The address is written \
+         into the video's `stream`, which the player opens.",
+    ),
 ];
 
 /// Every kind of every origin the platform has.
@@ -767,6 +790,78 @@ pub const KINDS: &[OriginKind] = &[
             people("unread", "Bool", "Whether it is unread."),
             people("flagged", "Bool", "Whether it is flagged."),
             people("mailbox", "Text", "The key of the mailbox it is in."),
+        ],
+    },
+    OriginKind {
+        name: "youtube.channel",
+        doc: "A channel on YouTube, as the service says it is.",
+        derived: false,
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "The channel's id: what everything of the channel names it by.",
+            ),
+            field("name", "Text", "Its name, as the service writes it."),
+            field("handle", "Text", "The handle it is known by (`@mkbhd`)."),
+            field("subscribers", "Int", "How many people follow it."),
+            field(
+                "avatar",
+                "Text",
+                "The address of its picture, empty for none.",
+            ),
+            field(
+                "banner",
+                "Text",
+                "The address of its banner, empty for none.",
+            ),
+            field("description", "Text", "What it says about itself."),
+            field("verified", "Bool", "Whether the service marks it verified."),
+        ],
+    },
+    OriginKind {
+        name: "youtube.video",
+        doc: "A video on YouTube, as the service says it is.",
+        derived: false,
+        fields: &[
+            field("key", "Text", "The video's id."),
+            field("title", "Text", "Its title."),
+            field(
+                "channel_key",
+                "Text",
+                "The id of the channel that published it.",
+            ),
+            field("channel_name", "Text", "The channel's name."),
+            field(
+                "channel_avatar",
+                "Text",
+                "The address of the channel's picture, as the service names it beside the video.",
+            ),
+            field("views", "Int", "How many times it was watched."),
+            field("published", "Time", "When it was published."),
+            field("duration", "Int", "How long it runs, in seconds."),
+            field("description", "Text", "What its page says about it."),
+            field("likes", "Int", "How many people liked it."),
+            field("thumbnail", "Text", "The address of its still."),
+            field(
+                "stream",
+                "Text",
+                "The address its bytes play from, empty until the service is asked.",
+            ),
+            field("live", "Bool", "Whether it is a live stream."),
+        ],
+    },
+    OriginKind {
+        name: "youtube.playlist",
+        doc: "A playlist on YouTube, as the service says it is.",
+        derived: false,
+        fields: &[
+            field("key", "Text", "The playlist's id."),
+            field("title", "Text", "Its title."),
+            field("channel_key", "Text", "The id of the channel that made it."),
+            field("channel_name", "Text", "The channel's name."),
+            field("video_count", "Int", "How many videos it lists."),
+            field("thumbnail", "Text", "The address of its cover."),
         ],
     },
 ];

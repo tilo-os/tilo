@@ -1,7 +1,7 @@
 //! The tilolang apps a development session starts with (`tilo-session --seed-apps`, honoured by
-//! development builds only): notes, tasks, chat and mail, loaded from `apps/tl` into one
-//! workspace record, each filled by its first scenario (the seed data its shots and tests start
-//! from), and published as the session publishes a room's records
+//! development builds only): notes, tasks, chat, mail and the YouTube client, loaded from
+//! `apps/tl` into one workspace record, each filled by its first scenario (the seed data its
+//! shots and tests start from), and published as the session publishes a room's records
 //! ([`tilolang_tilo::records_service::RecordService`]): every note, task, channel and mailbox is
 //! a resource the session's `find` finds, an arrangement places and an agent reads and changes
 //! through its actions.
@@ -25,7 +25,7 @@ struct Seed {
     locales: &'static [(&'static str, &'static str)],
 }
 
-const APPS: [Seed; 4] = [
+const APPS: [Seed; 5] = [
     Seed {
         app: "so.tilo.lang.notes",
         source: include_str!("../../../../apps/tl/notes/app.tl"),
@@ -66,6 +66,15 @@ const APPS: [Seed; 4] = [
         locales: &[(
             "en-US",
             include_str!("../../../../apps/tl/mail/locales/en-US.ftl"),
+        )],
+    },
+    Seed {
+        app: "so.tilo.lang.tube",
+        source: include_str!("../../../../apps/tl/tube/app.tl"),
+        ids: include_str!("../../../../apps/tl/tube/app.ids"),
+        locales: &[(
+            "en-US",
+            include_str!("../../../../apps/tl/tube/locales/en-US.ftl"),
         )],
     },
 ];
