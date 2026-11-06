@@ -258,20 +258,25 @@ impl ChatApp {
                 self.thread_open = None;
                 self.call.join("c_huddle");
                 self.call.expanded = false;
-                if scenario == "floating-call-muted" {
-                    // The microphone off: the card's mute control wears its
-                    // engaged face and names what the click takes back.
-                    self.call.muted = true;
-                }
+                // A person joining starts muted; a capture of the resting
+                // card is a call already under way with the microphone on, so
+                // its mute control and the muted card's differ.
+                self.call.muted = scenario == "floating-call-muted";
                 self.stage_connected_call();
                 if scenario == "floating-call-crowd" {
-                    // A call with two people beside this one, one of them
+                    // A call with four people beside this one, one of them
                     // muted, as the workspace reports them: the card's hero
-                    // stacks their faces beside their names.
+                    // stacks three of their faces and counts the rest.
                     let me = self.me.id.clone();
                     self.native_voice.snapshot.rosters = vec![ui::native_media::Roster {
                         channel_id: self.call.channel.clone(),
-                        people: vec![me, "u_aria".to_owned(), "u_milo".to_owned()],
+                        people: vec![
+                            me,
+                            "u_aria".to_owned(),
+                            "u_milo".to_owned(),
+                            "u_sora".to_owned(),
+                            "u_devon".to_owned(),
+                        ],
                         muted: vec!["u_milo".to_owned()],
                         ..Default::default()
                     }];
