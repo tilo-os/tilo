@@ -4721,7 +4721,7 @@
        "wait": 1.0
       }
      ],
-     "capture": "the notifications section",
+     "capture": "the centre the notifications row opens",
      "measure": [
       "the one list it opens",
       "where it opens"

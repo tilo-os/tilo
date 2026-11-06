@@ -277,7 +277,13 @@ class Doors:
 
     def quick_settings(self, open: bool | None = None):
         if self.new:
-            return self.tail("desktop:chrome\x1fquick-settings")
+            # The panel's action toggles, so `open` means open: ask only when
+            # the surface is not already the one up.
+            showing = bool(self.side.overlays().get("quick-settings"))
+            if open is None or open != showing:
+                self.tail("desktop:chrome\x1fquick-settings")
+                time.sleep(0.6)
+            return "quick settings"
         showing = bool(self.side.overlays().get("quick_settings"))
         if open is None or open != showing:
             self.press("topbar:quick-settings")
@@ -291,7 +297,13 @@ class Doors:
             names = {"wifi": "wifi", "network": "wifi", "bluetooth": "bluetooth",
                      "sound": "sound", "clipboard": "clipboard"}
             if section == "notifications":
-                return self.tail_contains("show-centre")
+                # The row opens the one centre, as the bar's bell does. The
+                # panel draws in its own surface, which neither the desk's
+                # control list nor the action list names, so the story opens
+                # that centre the way the bar does; the row's own binding to
+                # it is the panel's test.
+                return self.tail("desktop:chrome\x1fnotifications",
+                                 args={"open": True})
             if section == "controls":
                 return self.tail_contains("show-controls")
             return self.tail_contains("open-section", args={"section": names[section]})
