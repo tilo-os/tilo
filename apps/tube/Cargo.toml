@@ -26,6 +26,10 @@ tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-youtube-engine = { path = "../../crates/runtime/engines/youtube", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# A channel's page as a described-components view, drawn by the shell like any app's
+# (one-app-model.md §2).
+tilo-view = { path = "../../crates/platform/tilo-view" }
+tilo-view-macros = { path = "../../crates/sdk/view-macros" }
 # Shared streaming and playback layer. The watch-page `VideoPlayer` uses the
 # same `media::MediaEngine` as the local player and editor preview.
 media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }

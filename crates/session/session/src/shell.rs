@@ -373,9 +373,15 @@ impl Shell {
                     packages.insert(app.to_owned(), module);
                 }
             }
-            // A resource of an app no package is published of any more is followed no more.
-            self.reading
-                .retain(|_, ty| app_of(ty).is_some_and(|app| packages.contains_key(app)));
+            // A resource of an app no package is published of any more is followed no more, and
+            // neither is one of an app whose views draw it as a Rust app when none of its views
+            // is linked here any more.
+            let rust_views = tilo_surface_host::shell_part::readings::rust_view_apps();
+            self.reading.retain(|_, ty| {
+                app_of(ty).is_some_and(|app| {
+                    packages.contains_key(app) || rust_views.iter().any(|held| held == app)
+                })
+            });
             self.link.publish_packages(packages);
             for (id, ty) in placed {
                 if !self.reading.contains_key(&id) {
@@ -385,8 +391,13 @@ impl Shell {
             }
         }
         for (id, ty) in wanted {
-            let shown = tilo_surface_host::shell_part::readings::app_of(&ty)
-                .is_some_and(|app| self.link.package_apps().iter().any(|held| held == app));
+            let app = tilo_surface_host::shell_part::readings::app_of(&ty);
+            let shown = app.is_some_and(|app| {
+                self.link.package_apps().iter().any(|held| held == app)
+                    || tilo_surface_host::shell_part::readings::rust_view_apps()
+                        .iter()
+                        .any(|held| held == app)
+            });
             if shown && !self.reading.contains_key(&id) {
                 self.reading.insert(id.clone(), ty.clone());
                 fresh.push((id, ty));

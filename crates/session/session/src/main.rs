@@ -588,6 +588,12 @@ fn start(
             Ok(apps) => options.services.push(Box::new(apps)),
             Err(error) => eprintln!("tilo-session: the seeded apps did not load: {error}"),
         }
+        // A Rust app's sample resources and views, so a shell draws them live: a development
+        // shot of a Rust view on the canvas builds with `dev-rust-views`.
+        #[cfg(feature = "dev-rust-views")]
+        options
+            .services
+            .push(Box::new(tilo_session::dev_rust_views::RustApps::new()));
     }
     // A signal ends the loop rather than the process, so the session drops
     // what it holds as it does when it ends on its own.

@@ -67,6 +67,9 @@ mod desk_migration;
 mod desk_resource;
 mod desk_restore;
 pub mod desktop_services;
+/// A Rust app's sample resources and views, in a development session only.
+#[cfg(feature = "dev-rust-views")]
+pub mod dev_rust_views;
 mod device_actions;
 mod devices;
 mod diagnostics;
