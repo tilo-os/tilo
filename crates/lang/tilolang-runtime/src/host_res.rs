@@ -114,6 +114,7 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         | Ty::Result(..)
         | Ty::Bytes
         | Ty::Response
+        | Ty::Json
         | Ty::Error => {
             return Err("the field has no value yet and no default".to_owned());
         }
@@ -614,6 +615,32 @@ impl Core {
     }
 
     fn res_get(&self, rh: i32, fh: i32) -> HResult<Value> {
+        // A record value (one `json.decode` read) has its fields where it was built, not in the
+        // store: a read of one is that value, or what the type declares for a field text left
+        // out. Its id comes when it is put in a collection.
+        if self.with_val(rh, |v| Ok(matches!(v, Value::Rec(_))))? {
+            let field = self.text(fh)?;
+            return self.with_val(rh, |v| {
+                let Value::Rec(rec) = v else {
+                    return trap("expected a record");
+                };
+                let registry = self.registry.borrow();
+                let Some((_, info)) = registry.type_info(&rec.ty) else {
+                    return trap(format!(
+                        "`{}` is not declared by any loaded package",
+                        rec.ty
+                    ));
+                };
+                let f = field_in(&info, &field)?.clone();
+                match rec.fields.get(&f.id) {
+                    Some(held) => Ok(whole_map(f.kind, held.clone())),
+                    None => match declared_default(&f.ty, f.default.as_ref()) {
+                        Ok(v) => Ok(whole_map(f.kind, v)),
+                        Err(why) => trap(why),
+                    },
+                }
+            });
+        }
         let in_flow = self.frames.borrow().flow().is_some();
         if in_flow {
             // A flow's reads go through its journal, which takes the frames to record them.
@@ -1108,6 +1135,7 @@ impl Core {
             | Imp::MapSetAdd
             | Imp::MapSetRemove => self.set_map_import(imp, a),
             Imp::MapGetH | Imp::MapKeys => self.map_read_import(imp, a),
+            Imp::MapGetValue | Imp::MapKeysValue => self.map_value_import(imp, a),
             Imp::RecNew | Imp::RecSetI | Imp::RecSetF | Imp::RecSetH => self.rec_import(imp, a),
             Imp::RefLit => self.ref_lit(a),
             Imp::RefEq => {

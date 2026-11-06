@@ -913,6 +913,32 @@ impl Runtime {
             })
     }
 
+    /// As [`Runtime::refusal`], with what a view's offer of the action reads: whether the action
+    /// can apply to `subject` where it is offered at all, and the first reason it cannot.
+    ///
+    /// # Errors
+    ///
+    /// The conditions trap, or answer something else than a text.
+    pub fn applies_reading(
+        &self,
+        action: &str,
+        subject: &ResourceRef,
+        viewer: &Principal,
+    ) -> Result<(Option<String>, Reading), RuntimeError> {
+        let subject = crate::value::RefValue {
+            target: Rc::new(subject.clone()),
+            author: None,
+        };
+        self.core
+            .applies_reading(action, &subject, viewer)
+            .map_err(|error| match error {
+                crate::engine::HostFail::Trap(message) => RuntimeError::Package(message),
+                crate::engine::HostFail::Suspend => {
+                    RuntimeError::Package("an applies condition waited on a decision".into())
+                }
+            })
+    }
+
     /// Signatures of every loaded package, for discovery ([`catalogue`](mod@crate::catalogue)).
     pub fn catalogue(&self) -> Vec<Signature> {
         let pkgs = self.core.registry.borrow().packages();

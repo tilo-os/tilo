@@ -1,127 +1,77 @@
-//! A pick for today is a value each person has their own of, on a task everyone shares: it
-//! stands in their Today and nowhere else's, another person reads on the task's page that they
-//! picked it, and letting it go takes it out of theirs alone.
+//! The Today place is one filter of the app's own: what is due today or late, and what the
+//! person looking holds, whenever it is due.
 
 use tilolang_runtime::{Principal, Value};
 
 use crate::fixtures::Replica;
 use crate::tasks::{
-    APP, PACKAGES, call, count, go_to, home_list_titles, page_commands, places, task_page, texts,
-    workspace,
+    APP, PACKAGES, call, count, create, go_to, home_list_titles, places, workspace,
 };
 
-/// Ada's week and Ben's copy of it: a bill due today nobody holds, a report due today that is
-/// Ben's, and a call she picked for her Today, with no day of its own.
-fn week() -> (Replica, Replica, Value) {
+/// Ada's week and Ben's copy of it: a task each of them holds with no day of its own, a bill due
+/// today nobody holds, a task due today that is done, and one due later.
+fn week() -> (Replica, Replica) {
     let (mut ada, root) = workspace();
-    let called = call(
-        &ada,
-        "new_task",
-        crate::tasks::create(&root, "Call the landlord"),
-    );
-    let bill = call(
-        &ada,
-        "new_task",
-        crate::tasks::create(&root, "Pay the electricity bill"),
-    );
-    let report = call(
-        &ada,
-        "new_task",
-        crate::tasks::create(&root, "Send the report"),
-    );
+    let held = call(&ada, "new_task", create(&root, "Call the landlord"));
+    let bill = call(&ada, "new_task", create(&root, "Pay the electricity bill"));
+    let report = call(&ada, "new_task", create(&root, "Send the report"));
+    let bins = call(&ada, "new_task", create(&root, "Take the bins out"));
+    let present = call(&ada, "new_task", create(&root, "Order a present"));
     ada.commit();
-    for task in [&bill, &report] {
+    for (task, who) in [(&held, "ada"), (&report, "ben")] {
+        call(
+            &ada,
+            "assign",
+            vec![
+                task.clone(),
+                Value::some(Value::Principal(Principal::new(who))),
+            ],
+        );
+    }
+    for (task, day) in [(&bill, "2026-10-29"), (&bins, "2026-10-29")] {
         call(
             &ada,
             "schedule",
-            vec![task.clone(), Value::some(Value::text("2026-10-29"))],
+            vec![task.clone(), Value::some(Value::text(day))],
         );
     }
     call(
         &ada,
-        "assign",
-        vec![report, Value::some(Value::Principal(Principal::new("ben")))],
+        "schedule",
+        vec![present, Value::some(Value::text("2026-10-30"))],
     );
-    call(&ada, "pick", vec![called.clone(), Value::Bool(true)]);
+    call(&ada, "check", vec![bins]);
     ada.commit();
     let ben = ada.fork("ben", PACKAGES);
     ben.host.sync_from(&ben.doc);
-    (ada, ben, called)
+    ben.host
+        .runtime()
+        .set_clock(|| "2026-10-29T10:00:00Z".to_owned());
+    (ada, ben)
 }
 
 #[test]
-fn a_pick_stands_in_the_pickers_today_and_in_no_one_elses() {
-    let (mut ada, mut ben, called) = week();
+fn today_is_what_is_due_and_what_the_person_looking_holds() {
+    let (ada, ben) = week();
     let mut view = ada.view(APP);
     view.set_lazy_rows(false).unwrap();
     go_to(&mut view, "Today");
     assert_eq!(
         home_list_titles(&ada, &mut view),
         ["Pay the electricity bill", "Call the landlord"],
-        "what is due stands under its day; her pick with no day after it, and the report is Ben's"
+        "the day's work stands under its day, then the undated task Ada holds: not the one she \
+         finished, not the one due later, and not the one Ben holds"
     );
     assert_eq!(count(&view, "Today"), Some(2), "{:?}", places(&view));
+
+    // Ben's Today holds the same days, with the task he holds in place of hers.
     let mut theirs = ben.view(APP);
     theirs.set_lazy_rows(false).unwrap();
     go_to(&mut theirs, "Today");
     assert_eq!(
         home_list_titles(&ben, &mut theirs),
         ["Pay the electricity bill", "Send the report"],
-        "Ben's Today holds what is due and his; Ada's pick is not in it"
+        "a task nobody holds is due for everyone; what each holds stands in their own Today"
     );
     assert_eq!(count(&theirs, "Today"), Some(2), "{:?}", places(&theirs));
-
-    // Letting it go takes it out of hers, and leaves his Today as it was.
-    call(&ada, "pick", vec![called, Value::Bool(false)]);
-    ada.commit();
-    ada.sync_with(&mut ben);
-    go_to(&mut view, "Inbox");
-    go_to(&mut view, "Today");
-    assert_eq!(
-        home_list_titles(&ada, &mut view),
-        ["Pay the electricity bill"],
-        "the pick is gone from her Today"
-    );
-    assert_eq!(count(&view, "Today"), Some(1), "{:?}", places(&view));
-    go_to(&mut theirs, "Inbox");
-    go_to(&mut theirs, "Today");
-    assert_eq!(
-        home_list_titles(&ben, &mut theirs),
-        ["Pay the electricity bill", "Send the report"],
-        "his Today never held it"
-    );
-}
-
-#[test]
-fn everyone_reads_who_picked_a_shared_task() {
-    let (ada, ben, called) = week();
-    // The command follows the person looking's value: hers offers to let it go, his to pick it.
-    let page = task_page(&ada, &called);
-    assert!(
-        page_commands(&page)
-            .iter()
-            .any(|command| command.label == "Let go"),
-        "Ada picked it, and the page offers to let it go: {:?}",
-        page_commands(&page)
-    );
-    assert!(
-        !texts(page.tree())
-            .iter()
-            .any(|text| text.ends_with("'s today")),
-        "Ada reads no one else's pick on her own: {:?}",
-        texts(page.tree())
-    );
-    let page = task_page(&ben, &called);
-    assert!(
-        page_commands(&page)
-            .iter()
-            .any(|command| command.label == "Pick for today"),
-        "Ben did not pick it, and his page offers to pick it: {:?}",
-        page_commands(&page)
-    );
-    assert!(
-        texts(page.tree()).iter().any(|text| text == "ada's today"),
-        "Ben reads that Ada picked it: {:?}",
-        texts(page.tree())
-    );
 }

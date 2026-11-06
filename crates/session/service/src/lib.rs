@@ -399,7 +399,19 @@ impl Services {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Option<Result<Started, DoorError>> {
-        self.route(resource, action, arguments, false)
+        self.route(resource, action, arguments, false, None)
+    }
+
+    /// [`Self::invoke`] as `invoker` (an agent, a script), behind the same confirmation:
+    /// what the change it makes is attributed to, where the door's caller is not the person.
+    pub fn invoke_by(
+        &mut self,
+        invoker: &tilo_actions::ActionInvoker,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Option<Result<Started, DoorError>> {
+        self.route(resource, action, arguments, false, Some(invoker))
     }
 
     /// [`Self::invoke`] after the person confirmed it.
@@ -409,7 +421,7 @@ impl Services {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Option<Result<Started, DoorError>> {
-        self.route(resource, action, arguments, true)
+        self.route(resource, action, arguments, true, None)
     }
 
     fn route(
@@ -418,6 +430,7 @@ impl Services {
         action: &str,
         arguments: &Map<String, Value>,
         confirmed: bool,
+        invoker: Option<&tilo_actions::ActionInvoker>,
     ) -> Option<Result<Started, DoorError>> {
         let address = ActionAddress::new(resource, action);
         let (index, asks) = self
@@ -436,10 +449,11 @@ impl Services {
         if asks && !confirmed {
             return Some(Err(DoorError::ConfirmationRequired));
         }
-        let started = self
-            .started
-            .get_mut(index)?
-            .invoke(resource, action, arguments);
+        let service = self.started.get_mut(index)?;
+        let started = match invoker {
+            Some(invoker) => service.invoke_as(invoker, resource, action, arguments),
+            None => service.invoke(resource, action, arguments),
+        };
         if let Some(stirred) = self.stirred.get_mut(index) {
             *stirred = true;
         }

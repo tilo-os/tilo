@@ -588,18 +588,7 @@ fn build_meta(
                     app: app.to_string(),
                     name: a.name.name.clone(),
                 };
-                if let Some(info) = env.type_info(&key) {
-                    meta.types.push(TypeMeta {
-                        id: info.id.clone(),
-                        name: info.key.name.clone(),
-                        doc: doc(&a.doc),
-                        fields: info.fields.iter().map(|f| field_meta(f, app)).collect(),
-                        search: info.search.clone(),
-                        holder: true,
-                        origin: None,
-                        attached: false,
-                    });
-                } else if let Some((_, ty)) = env.aliases.iter().find(|(k, _)| *k == key) {
+                if let Some((_, ty)) = env.aliases.iter().find(|(k, _)| *k == key) {
                     meta.aliases.push(crate::meta::AliasMeta {
                         name: key.name.clone(),
                         ty: ty.meta_text(app),
@@ -674,7 +663,6 @@ fn build_meta(
                     doc: doc(&t.doc),
                     fields,
                     search: info.search.clone(),
-                    holder: false,
                     origin: info.origin.clone(),
                     attached: t.attached,
                 });

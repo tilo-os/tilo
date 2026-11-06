@@ -561,7 +561,7 @@ impl ReadoutPlace {
     }
 
     /// The caret the person types at, when there is one.
-    fn caret(&self) -> Option<Rect> {
+    pub(crate) fn caret(&self) -> Option<Rect> {
         self.caret
     }
 

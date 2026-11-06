@@ -592,6 +592,12 @@ fn start(
             Ok(apps) => options.services.push(Box::new(apps)),
             Err(error) => eprintln!("tilo-session: the seeded apps did not load: {error}"),
         }
+        // A Rust app's sample resources and views, so a shell draws them live: a development
+        // shot of a Rust view on the canvas builds with `dev-rust-views`.
+        #[cfg(feature = "dev-rust-views")]
+        options
+            .services
+            .push(Box::new(tilo_session::dev_rust_views::RustApps::new()));
     }
     // A signal ends the loop rather than the process, so the session drops
     // what it holds as it does when it ends on its own.
@@ -893,8 +899,9 @@ fn device_options(
         // The lock screen, the on-screen keyboard and quick settings are the
         // session's own apps: the screen is started when the session locks,
         // the keyboard whenever the person may want it, under the hands they
-        // type with, and quick settings while the stack has its popover up.
-        surfaces: surfaces(owned),
+        // type with, and quick settings for the session's life, shown while
+        // the stack has its popover up.
+        surfaces: surfaces(),
         user: tilo_session::unlock::login_user(),
         verifier: tilo_session::unlock::installed(),
         state: tilo_paths::state_dir(),
@@ -909,21 +916,19 @@ fn device_options(
 }
 
 /// The surface apps the session starts itself: its lock screen, its on-screen
-/// keyboard, and, on a machine of its own, quick settings. Each runs when what
+/// keyboard, and quick settings. Each runs when what
 /// it shows is wanted; a machine without one loses that surface, never the
 /// session.
 #[cfg(target_os = "linux")]
-fn surfaces(owned: bool) -> Vec<tilo_session::surfaces::Surface> {
+fn surfaces() -> Vec<tilo_session::surfaces::Surface> {
     let mut surfaces = lock_screen();
     match tilo_session::keyboard::surface() {
         Ok(keyboard) => surfaces.push(keyboard),
         Err(error) => eprintln!("tilo-session: no on-screen keyboard: {error}"),
     }
-    if owned {
-        match tilo_session::quick_settings::surface() {
-            Ok(panel) => surfaces.push(panel.person(tilo_session::unlock::login_user())),
-            Err(error) => eprintln!("tilo-session: no quick settings: {error}"),
-        }
+    match tilo_session::quick_settings::surface() {
+        Ok(panel) => surfaces.push(panel.person(tilo_session::unlock::login_user())),
+        Err(error) => eprintln!("tilo-session: no quick settings: {error}"),
     }
     surfaces
 }

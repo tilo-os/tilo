@@ -591,6 +591,28 @@ impl JoinLedger {
         invitations
     }
 
+    /// The signed invitation still redeemable at `now` that names only
+    /// `person`, as the workspace issued it: what a workspace that takes
+    /// people by invitation answers its door with when the person it
+    /// invited asks. `None` while no such invitation stands.
+    ///
+    /// The invitation the workspace's own inviter made is the whole answer:
+    /// its role and lifetime are the inviter's decision, and a door handing
+    /// it back mints nothing.
+    #[must_use]
+    pub fn invitation_for(&self, person: [u8; 32], now: u64) -> Option<IssuedInvitation> {
+        self.invitations
+            .iter()
+            .filter(|record| {
+                record.cancellation.is_none()
+                    && record.grant.expires_at_ns > now
+                    && record.grant.recipient_user_public_key == Some(person)
+                    && !self.redeemed(record.issued.invite_id)
+            })
+            .max_by_key(|record| record.grant.expires_at_ns)
+            .map(|record| record.issued.clone())
+    }
+
     /// The invitation `signed_invitation`, verified against what this workspace
     /// issued and has not cancelled.
     ///

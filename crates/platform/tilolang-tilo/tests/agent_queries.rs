@@ -34,20 +34,22 @@ type Entry {
     body: Text (body)
 }
 
-type Entries = Collection<Entry>
+type Journal {
+    items: Collection<Entry>
+}
 
-root entries: Entries
+root entries: Journal
 
-default view journal for entries
+default view journal for Journal
 
-view journal(all: Entries) {
+view journal(all: Journal) {
     page {
         text("Journal")
     }
 }
 
-action write(all: Entries, title: Text, body: Text) -> Entry {
-    all.insert(Entry(title: title, body: body))
+action write(all: Journal, title: Text, body: Text) -> Entry {
+    all.items.insert(Entry(title: title, body: body))
 }
 "#;
 
@@ -456,7 +458,7 @@ fn a_task_reads_each_record_anew_for_every_program_and_after_changing_it() {
     // A note the program makes is found by the same program: the record is read again after
     // the change.
     let out = printed(&task.run(
-        "let n = notes.new_note(notes.notes)\nn.title = \"Coffee order\"\nfind(\"coffee\")",
+        "let n = notes.new_note(notes.notebook)\nn.title = \"Coffee order\"\nfind(\"coffee\")",
         true,
         &tilolang_tilo::runtime::Principal::new("agent:task-1"),
     ));

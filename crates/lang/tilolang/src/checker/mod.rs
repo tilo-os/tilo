@@ -23,7 +23,6 @@ mod call;
 mod component;
 mod enums;
 mod expr;
-mod holder;
 mod methods;
 mod native;
 mod optional;
@@ -865,7 +864,6 @@ impl Checker<'_> {
             StmtKind::Assign { place, op, value } => self.assign(place, *op, value, s.span),
             StmtKind::For { var, iter, body } => {
                 let list = self.expr(iter, None);
-                let list = self.unhold(list, iter.span);
                 let Some(elem) = self.element_of(&list.ty, iter.span) else {
                     return;
                 };

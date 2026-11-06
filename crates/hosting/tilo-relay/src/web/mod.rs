@@ -681,10 +681,22 @@ const ALLOWED_HEADERS: &str = "content-type, x-tilo-session, x-tilo-live-session
 /// Whether `path` is part of the public directory: a listing anyone may read,
 /// and a door anyone may ask, from any site.
 fn public_directory_route(path: &str) -> bool {
-    path.strip_prefix(API_PREFIX).is_some_and(|route| {
-        route == tilo_relay_protocol::directory::DIRECTORY_PATH
-            || tilo_relay_protocol::directory::door_route(route).is_some()
-    })
+    directory_route(path).is_some()
+}
+
+/// The public directory's route a site names, below the listener's own paths.
+///
+/// A relay's own routes live below [`API_PREFIX`]. A site names its directory
+/// in its `entry.json` and hangs each door off that address
+/// ([`tilo_relay_protocol::directory`]), so the same routes answer at the
+/// site's own paths — `/directory` and `/directory/<workspace>/join` — for a
+/// host a site's person reaches without the prefix: the ingress in front of
+/// it sends the site's paths to the relay.
+fn directory_route(path: &str) -> Option<&str> {
+    let route = path.strip_prefix(API_PREFIX).unwrap_or(path);
+    (route == tilo_relay_protocol::directory::DIRECTORY_PATH
+        || tilo_relay_protocol::directory::door_route(route).is_some())
+    .then_some(route)
 }
 
 /// CORS for the public directory: any origin, no credentials, and the
@@ -829,7 +841,14 @@ async fn route(
     request: Request<hyper::body::Incoming>,
 ) -> Result<Response<Body>, Response<Body>> {
     let path = request.uri().path().to_owned();
-    let Some(route) = path.strip_prefix(API_PREFIX) else {
+    // A site's own paths for the public directory — `/directory` and each
+    // door below it — reach the same routes as their versions below the
+    // prefix, so a host a site's person dials by the address its `entry.json`
+    // names answers without being reached under the prefix.
+    let Some(route) = path
+        .strip_prefix(API_PREFIX)
+        .or_else(|| directory_route(&path))
+    else {
         return Err(status(StatusCode::NOT_FOUND, "not found"));
     };
     let session = token(&request);

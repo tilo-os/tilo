@@ -454,11 +454,6 @@ impl Checker<'_> {
                         self.entry_action(a.value.span, &a.value);
                     }
                     let v = self.expr(&a.value, (!want.is_error()).then_some(&want));
-                    let v = if matches!(&te.kind, TypeExprKind::Generic(..)) {
-                        self.unhold(v, a.value.span)
-                    } else {
-                        v
-                    };
                     if !Self::unify(te, &v.ty, &params, &mut types) {
                         let (w, f) = (self.show(&want), self.show(&v.ty));
                         self.err(
@@ -1079,7 +1074,7 @@ impl Checker<'_> {
         body: &[UiStmt],
         parent: LocalId,
     ) -> bool {
-        let ExprKind::Call { callee, args } = &iter.kind else {
+        let ExprKind::Call { callee, args, .. } = &iter.kind else {
             return false;
         };
         if !matches!(&callee.kind, ExprKind::Ident(n) if n == "cases" && self.lookup(n).is_none()) {

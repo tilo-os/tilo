@@ -51,7 +51,7 @@ impl Checker<'_> {
     pub(super) fn sort_key(&self, elem: &Ty, param: &str, body: &ast::Expr) -> Option<SortKey> {
         let is_param = |e: &ast::Expr| matches!(&e.kind, ExprKind::Ident(p) if p == param);
         match &body.kind {
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call { callee, args, .. } => {
                 let ExprKind::Ident(name) = &callee.kind else {
                     return None;
                 };

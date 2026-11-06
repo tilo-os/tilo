@@ -337,9 +337,6 @@ pub struct TypeMeta {
     /// defaults when it has none.
     #[serde(default, skip_serializing_if = "SearchMeta::is_empty")]
     pub search: SearchMeta,
-    /// `type Notes = Collection<Note>`: a resource that is its one field.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub holder: bool,
     /// `(origin: imap.message)`: the kind of an outside service's resource the type holds,
     /// which the system keeps in step with the service (`crate::origin`).
     #[serde(default, skip_serializing_if = "Option::is_none")]

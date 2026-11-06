@@ -114,7 +114,7 @@ view note_list(nb: Notebook) {
     stack { for n in nb.notes.sort_by(n -> sort.key(n)) { note_row(n) } }
 }
 
-root Notebook
+root notebook: Notebook
 default view note_editor for Note
 ```
 

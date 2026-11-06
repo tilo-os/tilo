@@ -233,6 +233,24 @@ fn tap(session: &mut Session, keycode: u32) {
     key(session, keycode, false);
 }
 
+/// One click delivered in one go: the button down and up before the session
+/// carries out what the press asked, as a quick tap of a trackpad does.
+fn quick_click(session: &mut Session, x: f64, y: f64) {
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x, y })
+        .expect("the pointer");
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::PointerButton {
+                button: 0x110,
+                pressed,
+            })
+            .expect("the button");
+    }
+}
+
 /// A press at `(x, y)` on the desk, wherever that lands.
 fn press(session: &mut Session, x: f64, y: f64) {
     session
@@ -435,6 +453,60 @@ fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
 }
 
 #[test]
+fn the_panel_stands_hidden_between_openings_and_the_next_opening_starts_nothing() {
+    let (mut session, _panel) = session_with_quick_settings();
+    open(&mut session, "quick-settings", None);
+    assert!(
+        session.surfaces().running("quick-settings"),
+        "the app draws the panel"
+    );
+    assert_eq!(
+        session
+            .compositor()
+            .layer_shown(quick_settings::SURFACE_NAMESPACE),
+        Some(true),
+        "and the compositor shows it"
+    );
+
+    // Closed: the app keeps running, hidden, so the next opening draws the
+    // panel instead of starting it.
+    session
+        .invoke(
+            tilo_desktop::desk_verbs::CHROME_RESOURCE,
+            "quick-settings",
+            &args(&json!({})),
+        )
+        .expect("the bar asks for the panel");
+    session.step(REFRESH).expect("a turn of the session");
+    assert!(!session.quick_settings_open());
+    assert!(
+        session.surfaces().running("quick-settings"),
+        "the panel's app is resident"
+    );
+    assert_eq!(
+        session
+            .compositor()
+            .layer_shown(quick_settings::SURFACE_NAMESPACE),
+        Some(false),
+        "and hidden, drawing nothing and keeping no room"
+    );
+
+    open(&mut session, "quick-settings", None);
+    assert!(session.quick_settings_open());
+    assert!(
+        session.surfaces().running("quick-settings"),
+        "the opening started nothing"
+    );
+    assert_eq!(
+        session
+            .compositor()
+            .layer_shown(quick_settings::SURFACE_NAMESPACE),
+        Some(true),
+        "the surface it stands on is shown again"
+    );
+}
+
+#[test]
 fn a_press_outside_the_popover_closes_it_and_one_inside_it_does_not() {
     let (mut session, _panel) = session_with_quick_settings();
     open(&mut session, "quick-settings", None);
@@ -513,4 +585,27 @@ fn a_dismissing_press_does_not_reopen_what_it_closed() {
         .expect("the bar asks for the panel");
     session.step(REFRESH).expect("a turn of the session");
     assert!(session.quick_settings_open(), "a press of its own opens it");
+}
+
+#[test]
+fn a_quick_click_on_the_bar_closes_the_panel_and_leaves_it_closed() {
+    let (mut session, _panel) = session_with_quick_settings();
+    open(&mut session, "quick-settings", None);
+
+    // The person taps the status cluster's button, at the bar's trailing
+    // end: the click comes up before the session has carried out the toggle
+    // its press raised, and the press that closed the panel still does not
+    // open it again.
+    let button = (f64::from(WIDTH) - 30.0, f64::from(TOPBAR_HEIGHT_PX) / 2.0);
+    quick_click(&mut session, button.0, button.1);
+    session.step(REFRESH).expect("a turn of the session");
+    assert!(
+        !session.quick_settings_open(),
+        "the click that closed the panel did not open it again"
+    );
+
+    // The next click is its own: it opens the panel again.
+    quick_click(&mut session, button.0, button.1);
+    session.step(REFRESH).expect("a turn of the session");
+    assert!(session.quick_settings_open(), "a click of its own opens it");
 }

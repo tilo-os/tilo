@@ -132,6 +132,8 @@ imports! {
     MapSetRemove = "map_set_remove" ([H, H, H, H] -> []);
     MapGetH = "map_get_h" ([H, H, H] -> [H]);
     MapKeys = "map_keys" ([H, H] -> [H]);
+    MapGetValue = "map_get_value" ([H, H] -> [H]);
+    MapKeysValue = "map_keys_value" ([H] -> [H]);
     RecNew = "rec_new" ([H] -> [H]);
     RecSetI = "rec_set_i" ([H, H, I64] -> []);
     RecSetF = "rec_set_f" ([H, H, F64] -> []);
@@ -155,6 +157,9 @@ imports! {
     WebBody = "web_body" ([H] -> [H]);
     WebText = "web_text" ([H] -> [H]);
     BytesLength = "bytes_length" ([H] -> [I64]);
+    JsonParse = "json_parse" ([H] -> [H]);
+    JsonDecode = "json_decode" ([H, H, H] -> [H]);
+    JsonEncode = "json_encode" ([H] -> [H]);
     TimeShift = "time_shift" ([H, I64, I32] -> [H]);
     WallClock = "wall_clock" ([H] -> [H]);
     PrincipalNamed = "principal_named" ([H] -> [H]);

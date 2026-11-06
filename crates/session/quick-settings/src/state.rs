@@ -4,14 +4,6 @@ use connectivity::model::{Bluetooth, Network, Vpn};
 
 use crate::{PowerProfile, QsLevel};
 
-/// Where clipboard history was summoned to paste: the focused field's caret
-/// and the focused window, in desktop coordinates, either unknown.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct PasteOrigin {
-    pub caret: Option<ui::vello::kurbo::Rect>,
-    pub window: Option<ui::vello::kurbo::Rect>,
-}
-
 /// One monitor's brightness control in Quick Settings.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DisplayBrightness {
@@ -94,11 +86,6 @@ pub struct QuickSettingsState {
     /// The section whose page replaces the controls (Wi-Fi's networks,
     /// Bluetooth's devices, a VPN's profiles, the battery); at most one.
     pub section: Option<crate::QsSection>,
-    /// Set while clipboard history is open to paste (Super+V): where it was
-    /// summoned from, so it opens there instead of under the tray and a
-    /// choice is pasted into that field. `None` when history is browsed from
-    /// Quick Settings. Cleared whenever Quick Settings opens another way.
-    pub paste_origin: Option<PasteOrigin>,
     /// The form for joining a network that broadcasts no name; `None`
     /// except while it is up.
     pub wifi_hidden: Option<crate::HiddenNetworkPrompt>,
@@ -187,7 +174,6 @@ impl Default for QuickSettingsState {
             rotation_lock: settings_store::hardware::ROTATION_LOCK.get(),
             nav_stack: vec![QsLevel::Root],
             section: None,
-            paste_origin: None,
             wifi_hidden: None,
             wifi_joining: None,
             wifi_password: None,
@@ -313,21 +299,11 @@ impl QuickSettingsState {
 
     /// Replace stale drill-in history with one authoritative destination.
     pub fn show_level(&mut self, level: QsLevel) {
-        self.paste_origin = None;
         self.nav_stack.clear();
         self.nav_stack.push(QsLevel::Root);
         if level != QsLevel::Root {
             self.nav_stack.push(level);
         }
-    }
-
-    /// Clipboard history opened to paste (Super+V): the Clipboard section
-    /// alone, at the caret, and a choice goes into the field.
-    #[must_use]
-    pub fn pasting(&self) -> bool {
-        self.paste_origin.is_some()
-            && self.section == Some(crate::QsSection::Clipboard)
-            && self.current_level() == &crate::QsLevel::Root
     }
 
     /// Open `section`'s page, closing any other: one section is open at a

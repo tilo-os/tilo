@@ -24,7 +24,7 @@ d-v7cub7aw = Notes
        *[other] notebooks
     }
 
-d-tmqqtkeb = Items
+d-tmqqtkeb = Notes
 
 d-qef5yqkq = Note order
     .doc = The order a notebook lists its notes in.

@@ -578,7 +578,6 @@ pub fn host_meta() -> PackageMeta {
                 ),
             ],
             search: crate::meta::SearchMeta::default(),
-            holder: false,
             origin: None,
             attached: false,
         })
@@ -588,7 +587,6 @@ pub fn host_meta() -> PackageMeta {
             doc: "Any resource of the workspace, of whichever app: what `find` and `grep` answer across apps. `.of(T)` keeps those of one type.".to_owned(),
             fields: Vec::new(),
             search: crate::meta::SearchMeta::default(),
-            holder: false,
             origin: None,
             attached: false,
         }))
@@ -613,7 +611,6 @@ pub fn host_meta() -> PackageMeta {
                     })
                     .collect(),
                 search: crate::meta::SearchMeta::default(),
-                holder: false,
                 origin: None,
                 attached: false,
             }

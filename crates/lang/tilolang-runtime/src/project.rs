@@ -37,6 +37,7 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
             serde_json::Number::from_f64(*f).map_or_else(|| json!(f.to_string()), Json::Number)
         }
         Value::Bool(b) => json!(b),
+        Value::Json(json) => (**json).clone(),
         Value::Text(s) => project_text(s, opts),
         // As the person the agent acts for reads it: never a title they cannot read.
         Value::Rich(r) => project_text(&core.read_rich(r, false), opts),

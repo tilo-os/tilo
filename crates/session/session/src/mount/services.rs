@@ -96,8 +96,9 @@ impl Published for ServiceDoor {
         }
     }
 
-    /// An agent's or a script's invocation, attributed to it: the actor the session's door was
-    /// given is what the service records the change as, not the person seated here.
+    /// An agent's or a script's invocation reaches the service as theirs, so
+    /// the change a record's model makes is attributed to them, not to the
+    /// person the service runs for.
     fn invoke_as(
         &mut self,
         actor: &str,
@@ -105,16 +106,21 @@ impl Published for ServiceDoor {
         arguments: &serde_json::Map<String, serde_json::Value>,
         _look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
+        // An agent is named `agent:<id>`, as the agent door names it.
         let invoker = tilo_actions::ActionInvoker::actor(actor);
-        match self.services.borrow_mut().invoke_as(
+        let invoker = if actor.starts_with("agent:") {
+            invoker.with_kind(tilo_actions::ActorKind::Agent)
+        } else {
+            invoker
+        };
+        match self.services.borrow_mut().invoke_by(
             &invoker,
             &address.resource,
             &address.action,
             arguments,
         ) {
-            Ok(Started::Done(output)) => Ok(ResourceOperationStart::Completed(output)),
-            Ok(Started::Accepted) => Ok(ResourceOperationStart::Accepted),
-            Err(error) => Err(error),
+            Some(started) => started.map(answered),
+            None => Err(DoorError::Unknown(address.clone())),
         }
     }
 

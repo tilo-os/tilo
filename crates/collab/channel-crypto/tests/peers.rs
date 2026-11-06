@@ -192,6 +192,76 @@ fn any_participant_admits_and_late_joiners_read_all_past_content() {
     assert!(bob.opens(&after).is_none());
 }
 
+/// A group adopts the keys of a legacy group this device holds for a unit
+/// the group now carries: one commit hands them to every member, a device
+/// admitted afterwards reads the old content through its key history, and
+/// adopting again queues nothing a second time.
+#[test]
+fn a_group_hands_a_legacy_groups_keys_to_every_member_and_joiner() {
+    let channel = ChannelId::new();
+    let legacy = ChannelId::new();
+    let mut alice = Device::creating(1, channel);
+    let mut bob = Device::waiting(2, channel);
+    let mut members = allowed(&[&alice, &bob]);
+    let request = bob.ask(false);
+    alice.peer.learn_request(request, &vault()).unwrap();
+    alice.peer.reconcile_now(&members, &vault()).unwrap();
+    let frames = alice.take();
+    deliver(&frames, &mut [&mut bob], &members);
+    assert_eq!(bob.epoch(), Some(1));
+
+    // Alice's group for the unit, from before key scopes, with the unit's
+    // history sealed under it.
+    let old = Device::creating(1, legacy);
+    let before = old.seal("before key scopes");
+    let old_keys = old.peer.keyring().unwrap().clone();
+    let named_for_the_unit = |keys: &channel_crypto::ChannelContentKeys| keys.for_unit(legacy);
+
+    // Alice hands the old group's keys to the group: one commit, and the
+    // keys are queued once.
+    assert!(alice.peer.adopt(&old_keys));
+    assert!(
+        !alice.peer.adopt(&old_keys),
+        "adoption queues nothing twice"
+    );
+    assert!(alice.peer.holds_unshared_keys());
+    assert!(
+        alice
+            .peer
+            .reconcile_now(&members, &vault())
+            .unwrap()
+            .history,
+        "the commit that hands the keys over changes no member"
+    );
+    let frames = alice.take();
+    deliver(&frames, &mut [&mut bob], &members);
+    assert!(!alice.peer.holds_unshared_keys());
+    let keys = named_for_the_unit(&bob.peer.content_keys().unwrap());
+    assert_eq!(
+        keys.open_content(before.0, &before.1, &before.2)
+            .unwrap()
+            .as_slice(),
+        b"before key scopes",
+        "the member reads what the old group sealed, by the unit's channel"
+    );
+
+    // A device admitted afterwards receives them with its key history.
+    let mut carol = Device::waiting(3, channel);
+    members = allowed(&[&alice, &bob, &carol]);
+    let request = carol.ask(false);
+    alice.peer.learn_request(request, &vault()).unwrap();
+    alice.peer.reconcile_now(&members, &vault()).unwrap();
+    let frames = alice.take();
+    deliver(&frames, &mut [&mut carol], &members);
+    let keys = named_for_the_unit(&carol.peer.content_keys().unwrap());
+    assert_eq!(
+        keys.open_content(before.0, &before.1, &before.2)
+            .unwrap()
+            .as_slice(),
+        b"before key scopes"
+    );
+}
+
 #[test]
 fn a_commit_the_membership_does_not_back_is_refused() {
     let channel = ChannelId::new();

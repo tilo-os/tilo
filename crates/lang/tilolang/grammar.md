@@ -17,8 +17,8 @@ app_id     = ident { "." ident } ;
 item       = { doc } ( use | type_decl | alias | enum_decl | root | default_view | row_view
                      | views | [ role ] action | flow | view | fn | scenario | trigger ) ;
 use        = "use" app_id [ "as" ident ] ;
-root       = "root" [ ident ":" ] type ;                      (* `root notes: Notes` *)
-alias      = "type" Ident "=" type ;                          (* a container named so is a resource *)
+root       = "root" [ ident ":" ] type ;                      (* `root notebook: Notebook`, a record type *)
+alias      = "type" Ident "=" type ;                          (* another name for a type *)
 default_view = "default" "view" ident "for" ( type | ident ) ;   (* a type, or a root by name *)
 row_view   = "row" "view" ident "for" type ;
 views      = "views" ident { "," ident } "for" type ;   (* what a window of the type switches between *)
@@ -84,6 +84,7 @@ add        = mul { ( "+" | "-" ) mul } ;
 mul        = unary { ( "*" | "/" | "%" ) unary } ;
 unary      = ( "-" | "try" ) unary | postfix ;
 postfix    = primary { "." ident | "?." ident [ "(" [ arg { "," arg } ] ")" ]
+                     | "<" type { "," type } ">"                  (* the types a call takes *)
                      | "(" [ arg { "," arg } ] ")" } ;
 arg        = [ ident ":" ] expr ;                       (* `invoke(act(args), by: who, at: time, from: r)` in a scenario *)
 primary    = int | float | length | duration | calendar | string | "true" | "false" | reference
@@ -127,6 +128,8 @@ Tokens:
   `@version` (`@so.tilo.todo.Todo:01J8/3K`). An older reference's `/field:item` steps still
   read, as the item of its last step.
 - `.name` where a lambda goes is a key path, the lambda `x -> x.name` (`sort_by(.due)`).
+- `<` after a name is a call's type arguments when the `<types>` is followed by `(` and the name
+  is a call (`json.decode<List<Entry>>(text)`); anywhere else it is the less-than of a comparison.
 - `//` starts a comment to the end of the line; the canonical form keeps it above the
   declaration, field, statement or match arm it was written over. `///` is a doc comment: it
   belongs to the declaration that follows, is kept in the metadata, and is what agents read.

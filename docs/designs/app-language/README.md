@@ -62,7 +62,7 @@ type Notebook {
     notes: Collection<Note>
 }
 
-root Notebook
+root notebook: Notebook
 
 /// Starts a note.
 primary action new_note(nb: Notebook) -> Note (icon: .plus) {

@@ -47,7 +47,8 @@ pub const ORIGIN: &str = "session";
 pub const DESK_RESOURCE: &str = "session:desk";
 /// The resource the session's chrome actions are published on.
 pub const CHROME_RESOURCE: &str = "desktop:chrome";
-/// The resource the person's arrangement is published on.
+/// The resource the person's arrangement is published on: what a composed view's open becomes a
+/// place on (`place`).
 pub const ARRANGEMENT_RESOURCE: &str = "shell:arrangement";
 
 /// The shell's own record: the package's named root `shell` (`root shell: Shell`), reached in
@@ -2053,12 +2054,6 @@ impl ShellPart {
             Box::new(app_end),
         );
         instance.set_standing(Rc::new(shell_standing(app, person)));
-        // The Rust apps' views linked into this process: a place showing a resource of one of
-        // their types draws that app's own view, exactly as it draws a tilolang package's
-        // (one-app-model.md §2).
-        if let Some(host) = instance.host() {
-            host.declare_rust_views();
-        }
         let origin = Rc::new(RefCell::new(SessionOrigin::new(link)));
         instance.add_origin(Rc::clone(&origin) as tilolang_tilo::origin::SharedOrigin);
         {
@@ -2092,6 +2087,15 @@ impl ShellPart {
             part.seed();
         }
         part.turn();
+        // The Rust apps' views linked into this process: a place showing a resource of one of
+        // their types draws that app's own view, exactly as it draws a tilolang package's
+        // (one-app-model.md §2). The runtime is up after the first turn, when the host is made.
+        if let Some(host) = part.instance.host() {
+            host.declare_rust_views();
+        }
+        // What a composed view opens is a place on the canvas, never a lane of the shell's own
+        // window.
+        part.instance.place_opens(true);
         part
     }
 
@@ -2568,6 +2572,10 @@ impl ShellPart {
                 self.origin.borrow().link.want_packages(packages);
             }
         }
+        // What a composed view opened (a video row pressed on a channel's page): a place the
+        // session arranges on the canvas, one step of the person's, never a detail lane of the
+        // shell's own window (one-app-model.md §2, shell.md §8).
+        self.place_opens();
         // The exchanges ran until neither side had more to say, unless they ran out first:
         // then the next frame goes on.
         self.again = !quiet;
@@ -2750,6 +2758,29 @@ impl ShellPart {
             arguments,
             from: None,
         });
+    }
+
+    /// What a composed view opened since the last turn, each placed on the canvas through the
+    /// arrangement's own `place`, one arranging step of the person's: a video row pressed on a
+    /// channel's page stands the video beside it (one-app-model.md §2, shell.md §8).
+    fn place_opens(&mut self) {
+        let opened = self.instance.take_opens_to_place();
+        if opened.is_empty() {
+            return;
+        }
+        for (target, view, _front) in opened {
+            let mut arguments = BTreeMap::new();
+            arguments.insert("resource".to_owned(), target.id_string());
+            if let Some(view) = view {
+                arguments.insert("view".to_owned(), view);
+            }
+            self.origin.borrow().link.ask(Ask {
+                resource: ARRANGEMENT_RESOURCE.to_owned(),
+                action: "place".to_owned(),
+                arguments,
+                from: None,
+            });
+        }
     }
 
     /// Draw a frame of the part's widget tree when it owes one, and say whether it drew or

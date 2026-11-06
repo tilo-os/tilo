@@ -600,7 +600,12 @@ fn a_press_outside_the_panel_closes_it() {
     // goes with the slot it was placed in.
     press(session, 40.0, f64::from(HEIGHT) / 2.0);
     let deadline = Instant::now() + OPENING;
-    while session.quick_settings_open() || session.surfaces().running("quick-settings") {
+    while session.quick_settings_open()
+        || session
+            .compositor()
+            .layer_shown(tilo_session::quick_settings::SURFACE_NAMESPACE)
+            != Some(false)
+    {
         assert!(
             Instant::now() < deadline,
             "the panel stayed up: {:?}",

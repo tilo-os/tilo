@@ -7,19 +7,21 @@ type Note {
 }
 
 /// The notebook's notes.
-type Notes = Collection<Note>
+type Notebook {
+    notes: Collection<Note>
+}
 
-root notes: Notes
+root notebook: Notebook
 
-default view notebook for notes
+default view notebook for Notebook
 
 default view note_editor for Note
 
 row view note_row for Note
 
 /// Starts a note. Its title starts empty: what is typed first names it.
-primary action new_note(notes: Notes) -> Note (icon: .plus) {
-    notes.insert(Note(title: ""))
+primary action new_note(nb: Notebook) -> Note (icon: .plus) {
+    nb.notes.insert(Note(title: ""))
 }
 
 /// A note's title as a row shows it.
@@ -28,8 +30,8 @@ fn name_of(n: Note) -> Text {
 }
 
 /// The notebook's window: its notes, each opening in a window of its own.
-view notebook(notes: Notes) {
-    std.list(notes, notes, empty: "No notes yet")
+view notebook(nb: Notebook) {
+    std.list(nb, nb.notes, empty: "No notes yet")
 }
 
 /// One note in a list: its title, and the start of its body.

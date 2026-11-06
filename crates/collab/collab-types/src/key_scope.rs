@@ -18,6 +18,11 @@
 //! channel as its scope when a Read Deny narrows its readers: that group is a
 //! reader set of its own, and its keys never reach a device the record's
 //! policy excludes.
+//!
+//! Units sealed before key scopes keep their own groups, and their content
+//! keys are handed to the scope that carries them now, so every scope member
+//! reads their history whether or not it ever held the old group. A unit a
+//! Read Deny narrows is never handed to the broader scope.
 
 use crate::channel::ChannelId;
 use crate::op::derived_uuid;

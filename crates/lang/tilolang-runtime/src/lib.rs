@@ -34,6 +34,7 @@ mod host_rich;
 mod host_ui;
 mod host_values;
 pub mod ids;
+mod json;
 mod live;
 mod marks;
 pub mod members;

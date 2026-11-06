@@ -346,7 +346,6 @@ impl Env {
                 doc: t.doc.clone(),
                 fields,
                 search: t.search.clone(),
-                holder: t.holder,
                 origin: t.origin.clone(),
             });
         }
@@ -860,7 +859,7 @@ impl Resolver<'_> {
 
     fn field(&mut self, owner: &str, f: &ast::FieldDecl, lock: &IdsLock) -> FieldInfo {
         let ty = self.resolve_type(&f.ty, true);
-        if matches!(ty, Ty::Action | Ty::View | Ty::Bytes | Ty::Response) {
+        if crate::types::is_transient(&ty) {
             self.err("E023", f.ty.span, format!("a field cannot hold `{ty}`: it is not stored state; fields hold scalars, Text, records, enums, List, Option, Set, Map and Collection"));
         } else if ty == Ty::Duration {
             self.err("E023", f.ty.span, "a field cannot hold a `Duration`: a stored length of time keeps the number the app measures it in (`Int`), and `Duration(n)` reads it as one where a moment moves by it".to_string());
@@ -1503,7 +1502,7 @@ impl Resolver<'_> {
         if let ExprKind::Variant { name, args } = &e.kind {
             return self.variant_default(ty, name, args.as_ref(), e.span);
         }
-        if let ExprKind::Call { callee, args } = &e.kind
+        if let ExprKind::Call { callee, args, .. } = &e.kind
             && let ExprKind::Ident(kind) = &callee.kind
             && matches!(kind.as_str(), "Date" | "Time")
         {
@@ -1750,11 +1749,8 @@ impl Resolver<'_> {
             self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, RichText, Bytes, Principal, Date, Time, Duration, Action, View and {known}{held}"));
             return Ty::Error;
         }
-        if let Some(ty) = std_text_ty(&dotted) {
+        if let Some(ty) = crate::types::named(&dotted) {
             return ty;
-        }
-        if dotted == ["std", "RichText"] {
-            return Ty::RichText;
         }
         let (prefix, name) = dotted.split_at(dotted.len().saturating_sub(1));
         let prefix = prefix.join(".");

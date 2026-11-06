@@ -2241,6 +2241,21 @@ impl Compositor {
             .collect()
     }
 
+    /// Show the session's layer surface `namespace` (`tilo-quick-settings`),
+    /// or hide it: a surface whose app the session keeps running between
+    /// openings stands hidden instead — drawing nothing, taking no input and
+    /// keeping no room — so opening it again costs no start.
+    pub fn show_layer(&mut self, namespace: &str, shown: bool) {
+        self.data.state.set_layer_shown(namespace, shown);
+    }
+
+    /// Whether the session shows its layer surface `namespace`, hid it, or
+    /// never said (shown).
+    #[must_use]
+    pub fn layer_shown(&self, namespace: &str) -> Option<bool> {
+        self.data.state.layer_shown(namespace)
+    }
+
     /// The mapped windows and their logical rectangles `(x, y, w, h)`,
     /// bottom first.
     pub fn windows(&self) -> Vec<(WindowInfo, (i32, i32, i32, i32))> {

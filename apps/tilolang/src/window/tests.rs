@@ -686,7 +686,7 @@ fn activating_a_row_shows_the_item_in_the_next_column_and_back_returns_to_the_li
 #[test]
 fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_the_door() {
     let mut workspace = Workspace::new("notes");
-    assert_eq!(workspace.items_of("so.tilo.lang.notes", "items"), 0);
+    assert_eq!(workspace.items_of("so.tilo.lang.notes", "notes"), 0);
     // An empty notebook says one sentence, and its primary action stands once, in the window's
     // bar: the empty state has no button of its own.
     let empty = slot_of(&workspace.composed(), "overview")
@@ -702,7 +702,7 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
     );
     workspace.header_action("New note");
     assert_eq!(
-        workspace.items_of("so.tilo.lang.notes", "items"),
+        workspace.items_of("so.tilo.lang.notes", "notes"),
         1,
         "the action inserted a note"
     );
@@ -720,7 +720,9 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
 fn new_note_on_the_door() -> (String, String) {
     let descriptor = Workspace::surveyed()
         .into_iter()
-        .find(|d| d.resource_kind == "tl.so.tilo.lang.notes.Notes" && d.action_label == "New note")
+        .find(|d| {
+            d.resource_kind == "tl.so.tilo.lang.notes.Notebook" && d.action_label == "New note"
+        })
         .expect("the notebook publishes New note");
     (descriptor.address.resource, descriptor.address.action)
 }
@@ -733,7 +735,7 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
     workspace
         .applies_as(Some(task()), &notebook, &new_note, &Json::Null)
         .unwrap();
-    assert_eq!(workspace.items_of("so.tilo.lang.notes", "items"), 1);
+    assert_eq!(workspace.items_of("so.tilo.lang.notes", "notes"), 1);
     assert_eq!(
         workspace.window.detail_target(),
         None,
@@ -744,7 +746,7 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
     workspace
         .applies_as(Some(script), &notebook, &new_note, &Json::Null)
         .unwrap();
-    assert_eq!(workspace.items_of("so.tilo.lang.notes", "items"), 2);
+    assert_eq!(workspace.items_of("so.tilo.lang.notes", "notes"), 2);
     assert_eq!(
         workspace.window.detail_target(),
         None,
@@ -752,7 +754,7 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
     );
     // The person pressing New note in the window opens what it made, whatever was made before.
     workspace.header_action("New note");
-    assert_eq!(workspace.items_of("so.tilo.lang.notes", "items"), 3);
+    assert_eq!(workspace.items_of("so.tilo.lang.notes", "notes"), 3);
     let opened = workspace
         .window
         .detail_target()
@@ -809,7 +811,7 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
     // header does not show the same one twice; its button comes back with the first channel.
     let empty = workspace.key_of("ui.EmptyState", "title", "No channels yet");
     workspace.fire(&empty, "act", None);
-    assert_eq!(workspace.items_of("so.tilo.lang.chat", "items"), 1);
+    assert_eq!(workspace.items_of("so.tilo.lang.chat", "channels"), 1);
     let shell = workspace.composed();
     let item = node_with(&shell, "ui.NavItem", "label", "new-channel")
         .expect("the new channel is in the sidebar, no message written");
@@ -891,8 +893,8 @@ fn a_filter_case_from_the_sidebar_narrows_the_list_and_titles_it() {
 fn a_destructive_row_action_runs_through_the_menu_and_offers_undo() {
     // A thread's menu keeps Delete on the row itself, outside the runs of commands it groups.
     let mut workspace = Workspace::seeded("mail");
-    let before = workspace.rows().len();
-    let (key, _) = workspace.rows().remove(0);
+    let before = workspace.rows();
+    let (key, title) = before.first().cloned().expect("mail has threads");
     let list = workspace.list();
     assert!(list.list_mut().unwrap().reveal(&key));
     let area = list.menu_area_mut().expect("the rows share one menu");
@@ -917,21 +919,44 @@ fn a_destructive_row_action_runs_through_the_menu_and_offers_undo() {
         .unwrap();
     area.choose(delete);
     workspace.settle();
-    assert_eq!(workspace.rows().len(), before - 1);
     assert!(
         workspace.shell().toast_text().is_some(),
         "the shell offers undo"
+    );
+    // The thread went to the trash, and its row stands where it stood, drawn in its new state,
+    // until the person leaves the place the query chose them for.
+    let kept = workspace.rows();
+    assert_eq!(kept.len(), before.len(), "no row moves: {kept:?}");
+    assert_eq!(
+        kept.first(),
+        Some(&(key.clone(), title)),
+        "the row still presents the thread it presented"
+    );
+    // Leaving the place settles the list: the inbox does not hold the trashed thread.
+    let all = workspace.key_of("ui.NavItem", "label", "All mail");
+    workspace.fire(&all, "select", None);
+    let inbox = workspace.key_of("ui.NavItem", "label", "All inboxes");
+    workspace.fire(&inbox, "select", None);
+    let settled = workspace.rows();
+    assert_eq!(
+        settled.len(),
+        before.len() - 1,
+        "the thread left the inbox: {settled:?}"
+    );
+    assert!(
+        !settled.iter().any(|(row, _)| *row == key),
+        "and its row went with it"
     );
 }
 
 #[test]
 fn a_scenario_stages_exactly_its_data_however_many_frames_run() {
     let mut workspace = Workspace::seeded("notes");
-    let staged = workspace.items_of("so.tilo.lang.notes", "items");
+    let staged = workspace.items_of("so.tilo.lang.notes", "notes");
     for _ in 0..6 {
         workspace.settle();
     }
-    assert_eq!(workspace.items_of("so.tilo.lang.notes", "items"), staged);
+    assert_eq!(workspace.items_of("so.tilo.lang.notes", "notes"), staged);
     assert_eq!(workspace.rows().len(), staged);
     let records = tilolang_tilo::action::resource_ids(&workspace.doc, "so.tilo.lang.notes");
     assert_eq!(records.len(), 1, "one notebook");
@@ -970,7 +995,10 @@ fn the_published_tree_has_the_host_and_every_record() {
     let resources = Workspace::resources();
     let kinds: Vec<&str> = resources.iter().map(|r| r.kind.as_str()).collect();
     assert!(kinds.contains(&"tl.host"), "{kinds:?}");
-    assert!(kinds.contains(&"tl.so.tilo.lang.notes.Notes"), "{kinds:?}");
+    assert!(
+        kinds.contains(&"tl.so.tilo.lang.notes.Notebook"),
+        "{kinds:?}"
+    );
 }
 
 // ----- the door ----------------------------------------------------------------------------
@@ -1356,7 +1384,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         .instance
         .set_standing(Rc::new(move || Some(standing.clone())));
     let todos = workspace.items_of("so.tilo.lang.tasks", "items");
-    let notes = workspace.items_of("so.tilo.lang.notes", "items");
+    let notes = workspace.items_of("so.tilo.lang.notes", "notes");
     let args = cleanup_args(&workspace);
     let waiting = workspace
         .agent_invokes(HOST, "run-flow", &args)
@@ -1391,7 +1419,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         "the finished ones went, once"
     );
     assert_eq!(
-        workspace.items_of("so.tilo.lang.notes", "items"),
+        workspace.items_of("so.tilo.lang.notes", "notes"),
         notes + 1,
         "and one note says so"
     );
@@ -1404,7 +1432,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         workspace.items_of("so.tilo.lang.tasks", "items"),
         todos - finished
     );
-    assert_eq!(workspace.items_of("so.tilo.lang.notes", "items"), notes + 1);
+    assert_eq!(workspace.items_of("so.tilo.lang.notes", "notes"), notes + 1);
 }
 
 #[test]
@@ -1412,7 +1440,7 @@ fn a_person_presses_morning_cleanup_and_the_finished_todos_go() {
     let (mut workspace, finished) = today_workspace();
     let before = todo_titles(&workspace);
     let todos = workspace.items_of("so.tilo.lang.tasks", "items");
-    let notes = workspace.items_of("so.tilo.lang.notes", "items");
+    let notes = workspace.items_of("so.tilo.lang.notes", "notes");
     let morning = node_with(
         &workspace.composed(),
         "ui.Button",
@@ -1441,7 +1469,7 @@ fn a_person_presses_morning_cleanup_and_the_finished_todos_go() {
     );
     assert_the_finished_tasks_went(&workspace, &before);
     assert_eq!(
-        workspace.items_of("so.tilo.lang.notes", "items"),
+        workspace.items_of("so.tilo.lang.notes", "notes"),
         notes + 1,
         "and one note says so"
     );
@@ -1646,7 +1674,7 @@ fn a_board_scenario_shows_the_apps_it_attaches_filled_by_their_own_scenarios() {
         "the list holds its scenario"
     );
     assert!(
-        workspace.items_of("so.tilo.lang.notes", "items") >= 12,
+        workspace.items_of("so.tilo.lang.notes", "notes") >= 12,
         "and the notebook its"
     );
 }

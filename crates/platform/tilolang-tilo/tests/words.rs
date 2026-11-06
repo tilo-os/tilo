@@ -87,7 +87,12 @@ fn types_of(host: &Host, package: &Package) -> ActionTypes {
 
 /// The notes package's one notebook, as it publishes it to the workspace's search.
 fn notebook(host: &Host, package: &Package) -> tilo_actions::ResourceSpec {
-    publish_record(&types_of(host, package), "Notes", "tl.notes/root", "Notes")
+    publish_record(
+        &types_of(host, package),
+        "Notebook",
+        "tl.notes/root",
+        "Notes",
+    )
 }
 
 /// Whether a search for `needle` finds the notebook by what it is, as the session's search asks

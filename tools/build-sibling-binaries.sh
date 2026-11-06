@@ -39,6 +39,11 @@ hand() {
 arguments=(build --locked --message-format=json-render-diagnostics)
 bins=()
 for binary; do
+    # PACKAGE:BIN, or PACKAGE:BIN=FEATURE,FEATURE for a binary a package only
+    # builds with those features on (the room service's subcommand is one).
+    features="${binary#*=}"
+    [[ "$features" == "$binary" ]] && features=
+    binary="${binary%%=*}"
     bin=${binary#*:}
     handed=$(printenv "NEXTEST_BIN_EXE_${bin}" || true)
     if [[ -n "$handed" && -x "$handed" ]]; then
@@ -46,6 +51,7 @@ for binary; do
         continue
     fi
     arguments+=(--package "${binary%%:*}" --bin "$bin")
+    [[ -z "$features" ]] || arguments+=(--features "$features")
     bins+=("$bin")
 done
 if [[ ${#bins[@]} -eq 0 ]]; then
