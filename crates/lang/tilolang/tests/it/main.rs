@@ -16,6 +16,7 @@ mod coverage;
 mod effects;
 mod errors;
 mod ids_lock;
+mod json;
 mod language;
 mod layout;
 mod multifile;

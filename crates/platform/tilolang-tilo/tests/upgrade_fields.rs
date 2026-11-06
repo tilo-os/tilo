@@ -54,7 +54,7 @@ fn type_id(replica: &Replica, ty: &str) -> String {
 /// Every note's id, in the order the notebook lists them.
 fn note_ids(replica: &Replica) -> Vec<String> {
     let notes = replica.host.root_of(APP).unwrap();
-    let field = field_id(replica, "Notes", "items");
+    let field = field_id(replica, "Notebook", "notes");
     let spec = FieldSpec {
         id: field,
         kind: FieldKind::Collection,

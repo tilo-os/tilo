@@ -157,6 +157,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
             expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
             inviter_name: Some("Alice".into()),
             wait_list_entry: None,
+            recipient: None,
         },
     )
     .await
@@ -353,6 +354,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
             expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
             inviter_name: None,
             wait_list_entry: None,
+            recipient: None,
         },
         WorkspacesRequest::Requests {
             workspace: created.workspace.clone(),
@@ -420,6 +422,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
             expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
             inviter_name: None,
             wait_list_entry: None,
+            recipient: None,
         },
     )
     .await
@@ -481,6 +484,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
             expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
             inviter_name: None,
             wait_list_entry: None,
+            recipient: None,
         },
     )
     .await
@@ -696,6 +700,7 @@ async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reloa
             expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
             inviter_name: None,
             wait_list_entry: None,
+            recipient: None,
         },
     )
     .await

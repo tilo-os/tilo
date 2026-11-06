@@ -14,7 +14,20 @@ use crate::types::{Ty, TypeKey};
 const RANDOM: &str = "random";
 
 impl Checker<'_> {
-    pub(super) fn call(&mut self, callee: &ast::Expr, args: &[ast::Arg], span: Span) -> Ex {
+    pub(super) fn call(
+        &mut self,
+        callee: &ast::Expr,
+        types: &[ast::TypeExpr],
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Ex {
+        if !types.is_empty() && !names_json(callee) {
+            self.err(
+                "E022",
+                span,
+                "only `json.decode<T>(text)` takes a type between `<` and `>`",
+            );
+        }
         match &callee.kind {
             ExprKind::Ident(name) => self.call_named(name, callee.span, args, span),
             ExprKind::Field { base, name } => {
@@ -50,6 +63,14 @@ impl Checker<'_> {
                     && self.env.find_import("web").is_none()
                 {
                     return self.builtin_web(name, args, span);
+                }
+                // `json.parse`, `json.decode<T>` and `json.encode`: reading and writing JSON
+                // text, which is no effect: it reaches nothing outside the values it is given.
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == "json")
+                    && self.lookup("json").is_none()
+                    && self.env.find_import("json").is_none()
+                {
+                    return self.builtin_json(name, types, args, span);
                 }
                 if let Some(key) = self.enum_path(base) {
                     let ty = Ty::Enum(key);
@@ -692,7 +713,7 @@ impl Checker<'_> {
                 let ExprKind::Ident(name) = &callee.kind else {
                     return false;
                 };
-                !self.in_std() && self.env.own_type(name).is_some_and(|t| !t.holder)
+                !self.in_std() && self.env.own_type(name).is_some()
             }
             ast::ExprKind::If { then, els, .. } => {
                 let last = then.stmts.last();
@@ -1309,10 +1330,6 @@ impl Checker<'_> {
             return self.value_method(r, name, args, span);
         }
         let r = self.expr(recv, None);
-        // `notes.insert(n)` of a resource that names a container: that container's method.
-        if let Some((key, f)) = self.held_of(&r.ty) {
-            return self.container_method(r, &key, &f, name, args, span);
-        }
         self.value_method(r, name, args, span)
     }
 
@@ -1654,6 +1671,35 @@ impl Checker<'_> {
         Ex::host(Imp::MapGetH, vec![b, fid, key], ty)
     }
 
+    /// `m.keys()` and `m.get(key)` of a map held as a value, not a field's.
+    fn map_value_method(
+        &mut self,
+        m: Ex,
+        value: &Ty,
+        name: &ast::Ident,
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Ex {
+        if name.name == "keys" {
+            if !self.arity(name, args, 0, span) {
+                return Ex::error();
+            }
+            return Ex::host(Imp::MapKeysValue, vec![m], Ty::List(Box::new(Ty::Text)));
+        }
+        if !self.arity(name, args, 1, span) {
+            return Ex::error();
+        }
+        let Some(k) = args.first() else {
+            return Ex::error();
+        };
+        let key = self.expr_as(&k.value, &Ty::Text);
+        let value = match value {
+            Ty::Set(element) => Ty::List(element.clone()),
+            other => other.clone(),
+        };
+        Ex::host(Imp::MapGetValue, vec![m, key], Ty::Option(Box::new(value)))
+    }
+
     /// The words of `random`, for a message that names them.
     const DRAWS: &'static str = "`random.int(lo, hi)`, `random.float()`, `random.choice(xs)`, `random.shuffle(xs)` and `random.id()`";
 
@@ -1880,6 +1926,138 @@ impl Checker<'_> {
         }
     }
 
+    /// `json.parse(text)`, `json.decode<T>(text)` and `json.encode(value)`: JSON text read into
+    /// a value of a type the caller names, and a value written as text. No effect: it reads no
+    /// clock, draws nothing and reaches no service, so an action that only reads text it was
+    /// given needs no `uses`.
+    fn builtin_json(
+        &mut self,
+        name: &ast::Ident,
+        types: &[ast::TypeExpr],
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Ex {
+        let result = |held: Ty| Ty::Result(Box::new(held), Box::new(Ty::Text));
+        match name.name.as_str() {
+            "parse" => {
+                if let Some(written) = types.first() {
+                    self.err(
+                        "E022",
+                        written.span,
+                        "`json.parse` decides nothing about the shape: it answers a `json.Value`, and `json.decode<T>(text)` reads text into a `T`",
+                    );
+                }
+                let Some(text) = self.json_text_arg("json.parse(text)", args, span) else {
+                    return Ex::error();
+                };
+                Ex::host(Imp::JsonParse, vec![text], result(Ty::Json))
+            }
+            "decode" => {
+                let Some(written) = types.first() else {
+                    self.err(
+                        "E022",
+                        span,
+                        "`json.decode` says what it reads: `json.decode<Item>(text)`, with a record, an enum, a list, an option, a day or a moment",
+                    );
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                };
+                let mut diags = Vec::new();
+                let held = crate::resolve::resolve_type_expr(self.env, written, &mut diags);
+                for diagnostic in diags {
+                    self.err(&diagnostic.code, diagnostic.span, diagnostic.message);
+                }
+                if !held.is_error() && !held.reads_json() {
+                    let t = self.show(&held);
+                    self.err(
+                        "E020",
+                        written.span,
+                        format!(
+                            "`json.decode` reads a value text can make: Int, Float, Bool, Text, Date, Time, a list, an option, an enum or a record; `{t}` is none of them"
+                        ),
+                    );
+                    return Ex::error();
+                }
+                let Some(text) = self.json_text_arg("json.decode<T>(text)", args, span) else {
+                    return Ex::error();
+                };
+                let app = self.env.app.clone();
+                Ex::host(
+                    Imp::JsonDecode,
+                    vec![text, Ex::str(&held.meta_text(&app)), Ex::str(&app)],
+                    result(held),
+                )
+            }
+            "encode" => {
+                if let Some(written) = types.first() {
+                    self.err(
+                        "E022",
+                        written.span,
+                        "`json.encode` writes what its value is; it takes no type",
+                    );
+                }
+                let Some(arg) = args.first().filter(|a| a.name.is_none()) else {
+                    self.err(
+                        "E022",
+                        span,
+                        "`json.encode` writes one value: `json.encode(item)`",
+                    );
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                };
+                let value = self.expr(&arg.value, None);
+                if args.len() > 1 {
+                    for a in &args[1..] {
+                        self.err("E022", a.value.span, "`json.encode` writes one value");
+                        let _ = self.expr(&a.value, None);
+                    }
+                }
+                if !value.ty.is_error() && !value.ty.writes_json() {
+                    let t = self.show(&value.ty);
+                    self.err(
+                        "E020",
+                        arg.value.span,
+                        format!(
+                            "`json.encode` writes a value JSON has: Int, Float, Bool, Text, Date, Time, a list, an option, a map, an enum, a record or a `json.Value`; `{t}` is none of them"
+                        ),
+                    );
+                    return Ex::error();
+                }
+                Ex::host(Imp::JsonEncode, vec![value], Ty::Text)
+            }
+            other => {
+                self.err(
+                    "E022",
+                    name.span,
+                    format!(
+                        "`json` has `parse`, `decode` and `encode`; not `{other}`. `json.parse(text)` reads any shape, `json.decode<T>(text)` reads a `T`, `json.encode(value)` writes text"
+                    ),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                Ex::error()
+            }
+        }
+    }
+
+    /// The one text argument of `json.parse` and `json.decode<T>`.
+    fn json_text_arg(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Option<Ex> {
+        if args.len() != 1 || args.first().is_some_and(|a| a.name.is_some()) {
+            self.err("E022", span, format!("{what} takes one text: `{what}`"));
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return None;
+        }
+        let text = self.expr_as(&args[0].value, &Ty::Text);
+        Some(text)
+    }
+
     /// A method that stands on a type instead of a value: `Date.parse(text, near: now)` and
     /// `Time.parse(text, near: now)`, the day or the moment a text names when people type it
     /// ("tomorrow", "fri 10am", "in 2 weeks"), read at a moment in the person's zone.
@@ -1970,6 +2148,12 @@ impl Checker<'_> {
                 Ex::host(Imp::WebText, vec![r], Ty::Text)
             }
             (Ty::Bytes, "len") if args.is_empty() => Ex::host(Imp::BytesLength, vec![r], Ty::Int),
+            // A map read as a value (a `json.Value`'s object, or one `json.decode` read): its
+            // keys, and the value one key holds.
+            (Ty::Map(t), "get" | "keys") => {
+                let value = t.clone();
+                self.map_value_method(r, &value, name, args, span)
+            }
             // A day read as people read it: the day of the week it is, the day, month and year
             // it names, and the first day of the week it stands in.
             (Ty::Date, "weekday") if args.is_empty() => {
@@ -2672,4 +2856,9 @@ fn parse_ty(name: &str) -> Option<Ty> {
         "Time" => Some(Ty::Time),
         _ => None,
     }
+}
+
+/// Whether the callee is `json.X`: the one module whose calls take a type argument.
+fn names_json(callee: &ast::Expr) -> bool {
+    matches!(&callee.kind, ExprKind::Field { base, .. } if matches!(&base.kind, ExprKind::Ident(ns) if ns == "json"))
 }

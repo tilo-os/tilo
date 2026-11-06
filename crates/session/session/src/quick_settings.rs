@@ -1,12 +1,13 @@
 //! Quick settings, as the session keeps it: the app that draws the panel runs
-//! while the stack has its slot up, standing where the stack places it, and
-//! shows what the session's services publish.
+//! for the session's life, standing where the stack places it, shown while the
+//! stack has its slot up and hidden between openings, and shows what the
+//! session's services publish.
 //!
 //! The panel is a process of its own, so nothing here crosses an `Rc` between
 //! the two: what it shows of the device is the services' readings, and what a
 //! press does is the services' actions, both reached over the broker as any
 //! app of the session reaches them. What is left to the session is where the
-//! popover stands and when it runs, which only the overlay stack knows.
+//! popover stands and whether it shows, which only the overlay stack knows.
 //!
 //! Opening Settings from the panel, and from the dictation card that sends the
 //! person there, is the session's too: it is the desk's own search, and the
@@ -27,6 +28,10 @@ pub const SURFACE: &str = "quick-settings";
 
 /// Its program, as it is installed beside the session's own.
 const PROGRAM: &str = "tilo-quick-settings";
+
+/// The name its layer surface asks the compositor for, which the session
+/// shows and hides as its slot opens and closes.
+pub const SURFACE_NAMESPACE: &str = "tilo-quick-settings";
 
 /// How many times the panel's app is started for the same place before it is
 /// given up on: one that will not stay up leaves the device's controls to
@@ -88,13 +93,15 @@ pub enum Run {
 }
 
 impl crate::Session {
-    /// Follow quick settings: run its app while the stack has the slot up,
-    /// standing where the stack places it, and ask it for the page the keys
-    /// asked for.
+    /// Follow quick settings: its app runs for the session's life, standing
+    /// where the stack places it, shown while the stack has the slot up and
+    /// hidden between openings, and is asked for the page the keys asked
+    /// for.
     ///
     /// The popover's place is the stack's: the app is started again when the
-    /// place moved under it — another display, or one that changed shape — as
-    /// the on-screen keyboard is.
+    /// place moved under it — the caret that opened it, another display, or
+    /// one that changed shape — as the on-screen keyboard is. Opening it
+    /// where it already stands costs no start.
     pub(crate) fn follow_quick_settings(&mut self) {
         if !self.shared.quick_settings {
             // No app of this session draws the panel: what the stack holds is
@@ -103,7 +110,7 @@ impl crate::Session {
         }
         let open = self.shared.overlays.is_open(Slot::QuickSettings);
         if !open {
-            self.stop_quick_settings();
+            self.hide_quick_settings();
             // Asked again when the panel opens again, a panel that would not
             // stay up is tried afresh.
             self.quick_settings_starts = 0;
@@ -173,6 +180,16 @@ impl crate::Session {
             tracing::debug!(%output, ?size, "quick settings stands");
             self.quick_settings_run = standing;
         }
+        // Up, where it stands: the surface is shown rather than started, so
+        // an opening the panel already stands for costs nothing.
+        if self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(true) {
+            self.compositor.show_layer(SURFACE_NAMESPACE, true);
+            // An opening nobody asked a page of shows the controls, not the
+            // page the panel was left on.
+            if self.shared.panel_asks.borrow().is_empty() {
+                self.shared.panel_asks.borrow_mut().push("show-controls");
+            }
+        }
         // What the keys asked the panel to show, which it can only be told
         // while it runs.
         let asked = std::mem::take(&mut *self.shared.panel_asks.borrow_mut());
@@ -191,7 +208,13 @@ impl crate::Session {
         }
     }
 
-    /// Stop quick settings' app, if it runs.
+    /// Hide the panel: its app keeps running, and opening it again shows the
+    /// surface it already stands on.
+    fn hide_quick_settings(&mut self) {
+        self.compositor.show_layer(SURFACE_NAMESPACE, false);
+    }
+
+    /// Stop quick settings' app, if it runs: it stands somewhere else now.
     pub(crate) fn stop_quick_settings(&mut self) {
         if self.quick_settings_run != Run::Down {
             self.quick_settings_run = Run::Down;

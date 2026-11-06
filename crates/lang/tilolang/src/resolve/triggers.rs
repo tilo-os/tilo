@@ -140,7 +140,7 @@ impl Resolver<'_> {
                     TriggerWhen::At(field.id.clone())
                 }
             };
-            let ast::ExprKind::Call { callee, args } = &t.call.kind else {
+            let ast::ExprKind::Call { callee, args, .. } = &t.call.kind else {
                 self.err(
                     "E134",
                     t.call.span,

@@ -159,12 +159,14 @@ enum NoteOrder {
     title
 }
 
-type Notes = Collection<Note>          // a resource that is a collection
+type Notebook {                        // a resource holding a collection
+    notes: Collection<Note>
+}
 type Channel = TextChannel | Thread    // a resource of either type
 
-root notes: Notes                      // one per room; the launcher opens it
-default view notebook for notes       // what a window of the root shows
-default view note_editor for Note     // what a window of a Note shows
+root notebook: Notebook                // one per workspace; the launcher opens it
+default view notebook for Notebook     // what a window of the root shows
+default view note_editor for Note      // what a window of a Note shows
 ```
 
 **Enums** are plain named cases. A value is a dot literal resolved from the type the context
@@ -210,12 +212,13 @@ them too (`filter "Today" = today and not done`), so the same task stands in one
 and not another's. `others(t.today)` is the people other than the one looking whose value is set
 (`List<Principal>`), which is how a view shows that someone else picked a task.
 
-**Type names and roots.** `type Name = T` names any type. A name for a collection, set or map is
-a resource of its own that code uses as that container (`notes.insert(n)`, `for n in notes`,
-`std.list(notes, notes)`); its one field is `Name.items` in the ids lock, so renaming an old
-`type Notebook { notes: Collection<Note> }` to it (`tilolang ids --rename`) keeps its records. A
-root names one such resource per room: `root notes: Notes` is `notes` in the package and
-`alias.notes` in a package that uses it.
+**Type names and roots.** `type Name = T` names any type and nothing else: `type Names =
+List<Note>` is a name for a list. A name for a `Collection`, `Set` or `Map` is refused (E013):
+it would read as a resource where the container goes. A resource is a `type` with fields, so
+what holds a collection says so, `type Notebook { notes: Collection<Note> }`, and code reads
+it as a field (`nb.notes.insert(n)`, `for n in nb.notes`, `std.list(nb, nb.notes)`). A root
+names one resource per workspace: `root notebook: Notebook` is `notebook` in the package and
+`alias.notebook` in a package that uses it, its collection `alias.notebook.notes`.
 
 **`if` and blocks.** There is one `if`: `if cond { ... } else { ... }`. Used as a value its branches
 agree on a type and the value is each block's last expression; as a statement it needs no
@@ -406,6 +409,75 @@ flow resumed tomorrow, answer from the record and do not ask again. What can go 
 never a trap: a host the package did not declare, a host the workspace revoked, a timeout (30
 seconds) and no network each answer `ok == false` with `status == 0` and a `status_text` that
 says why, and the invocation carries on. A reply's body may be up to 2 MiB; nothing streams.
+
+**JSON.** Text a service sent reads into the type the code names, and a value writes back as
+text, with no effect to declare: the work is in the text and the value, nothing outside them.
+
+```
+action refresh(feed: Feed) uses web {
+    let response = web.get(feed.url)
+    match json.decode<List<Entry>>(response.text()) {
+        .ok(entries) => {
+            for entry in entries {
+                feed.entries.insert(entry)
+            }
+        }
+        .err(why) => { feed.trouble = why }
+    }
+}
+```
+
+`json.decode<T>(text)` reads `Int`, `Float`, `Bool`, `Text` (and what holds text: `Date`, `Time`,
+`std.Identifier`), a `List`, an `Option`, an enum and a record, matching a record's fields by
+name; a record's field may hold a `Map`, a short list of text keys to values. A field the text leaves out is none when it is an `Option`, or the value the type
+declares for it; a required one it leaves out is an error at that field's path. Names the type
+has no field for are ignored, so a service that adds one breaks no reader.
+
+A number reads as an `Int` when it is a whole one that fits (`5` and `5.0`), as a `Float`
+otherwise; a field declared `Float` reads any number. An enum reads from its case's name.
+
+What can go wrong is a value, never a trap: text that is no JSON, and a value whose shape is not
+the type's, answer `.err(why)`, and `why` names the JSON path of the value that did not fit:
+`$.entries[2].title is not a Text, as text: 5`. A whole decode fails at the first value that does
+not fit, so a message names one path, not each.
+
+A record a decode answers is a record value: it has no id, and no store holds it until it is put
+in a collection (`feed.entries.insert(entry)`), which is what a record value is for; its fields
+read as the text gave them. A record field that holds a resource (a record, a collection, a set)
+cannot be made from text, so text carrying one is an error naming that field's path: read the
+list and insert what it holds.
+
+`json.encode(value)` writes the fields a record's type declares, by their names, an enum as its
+case's name, a list as an array, a `Map` as an object, an `Option` as its value or `null`, and a
+`json.Value` as it was read. Writing a stored resource (a reference) traps: its fields are what to
+write, and a resource's JSON is not one document — a `personal` field's value is the looking
+person's, and two resources may point at each other. Read the text into values, or write the
+fields it should carry into a record, and encode those.
+
+A service whose shape the code does not know is read as a `json.Value` and taken apart as the
+code asks, with `json.parse(text)`:
+
+```
+match json.parse(response.text()) {
+    .ok(value) => match value {
+        .object(fields) => { feed.keys = fields.keys().len() }
+        .array(items) => { feed.keys = items.len() }
+        .string(text) => { feed.trouble = text }
+        .number(number) => { feed.trouble = number.to_text() }
+        .bool(flag) => { feed.trouble = if flag { "yes" } else { "no" } }
+        .null => { feed.trouble = "nothing" }
+    }
+    .err(why) => { feed.trouble = why }
+}
+```
+
+`object` binds a `Map<json.Value>` (`fields.keys()`, `fields.get("name")`), `array` a
+`List<json.Value>`, `string` a `Text`, `number` a `Float` (JSON has no integers of its own),
+`bool` a `Bool`, and `null` nothing. A match over one names all six kinds, as a match over an
+enum names all its cases. Like a `Response`, a `json.Value` belongs to the run that read it, so
+it is no field's type (E023): a program keeps what it found by writing it into a record.
+
+The type between `<` and `>` is what makes a decode typed; only `json.decode` takes one.
 
 **Parameter defaults.** An action parameter may have a default written in terms of the
 parameters before it. An invocation that leaves the argument out gets it, computed when it is

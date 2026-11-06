@@ -660,7 +660,7 @@ impl Checker<'_> {
             match &e.kind {
                 ExprKind::Ident(w) if self.lookup(w).is_none() && w == "today" => Some("today"),
                 ExprKind::Ident(w) if self.lookup(w).is_none() && w == "now" => Some("now"),
-                ExprKind::Call { callee, args } if args.is_empty() => match &callee.kind {
+                ExprKind::Call { callee, args, .. } if args.is_empty() => match &callee.kind {
                     ExprKind::Ident(w) if w == "today" => Some("today"),
                     _ => None,
                 },

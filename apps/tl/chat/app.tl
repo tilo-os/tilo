@@ -2,9 +2,11 @@ app so.tilo.lang.chat "Chat" (icon: .message_circle, category: .network)
 
 /// The workspace's conversations in the sidebar's order: channels outside any category, the
 /// categories each with its own, and the direct messages, in the list as people.
-type Channels = Collection<Category | TextChannel | Direct>
+type Conversations {
+    channels: Collection<Category | TextChannel | Direct>
+}
 
-root channels: Channels
+root conversations: Conversations
 
 /// A named group of channels in the sidebar.
 type Category {
@@ -85,7 +87,7 @@ type Part {
     body: Text
 }
 
-default view sidebar for channels
+default view sidebar for Conversations
 
 default view channel for TextChannel
 
@@ -94,19 +96,19 @@ default view direct for Direct
 default view thread for Thread
 
 /// Adds a text channel to the sidebar.
-primary action new_channel(all: Channels, name: Text = "new-channel") -> TextChannel (
+primary action new_channel(all: Conversations, name: Text = "new-channel") -> TextChannel (
     icon: .plus,
     label: "New channel",
 ) {
-    all.insert(TextChannel(name: name))
+    all.channels.insert(TextChannel(name: name))
 }
 
 /// Adds a category to the sidebar.
-action new_category(all: Channels, name: Text = "New category") -> Category (
+action new_category(all: Conversations, name: Text = "New category") -> Category (
     icon: .folder_plus,
     label: "New category",
 ) {
-    all.insert(Category(name: name))
+    all.channels.insert(Category(name: name))
 }
 
 /// Adds a text channel to a category.
@@ -119,13 +121,13 @@ action add_channel(c: Category, name: Text = "new-channel") -> TextChannel (
 
 /// Opens the direct message with `who`, in the sidebar, or the one already open with them: a
 /// person has one conversation, not a new empty one each time.
-action message_person(all: Channels, who: Principal) -> Direct (
+action message_person(all: Conversations, who: Principal) -> Direct (
     icon: .message_circle,
     label: "Message",
 ) {
     // The one already open with them, else a new one in the sidebar: a person has one
     // conversation, not a new empty one each time.
-    for item in all {
+    for item in all.channels {
         match item {
             c: Category => {}
             ch: TextChannel => {}
@@ -136,7 +138,7 @@ action message_person(all: Channels, who: Principal) -> Direct (
             }
         }
     }
-    let d = all.insert(Direct(name: who.name(), person: who))
+    let d = all.channels.insert(Direct(name: who.name(), person: who))
     // Its fields written, so the record holds the conversation from its first press: an item
     // stored by its id alone is found only once it says something.
     d.name = who.name()
@@ -233,12 +235,12 @@ action start_thread(c: TextChannel | Direct, m: Message, name: Text = m.body.exc
 /// The sidebar: channels outside any category first, then each category with its channels.
 /// Choosing one shows it beside the sidebar.
 /// TODO(language): a resource's own key for a navigation item; the category and name stand in.
-view sidebar(all: Channels) {
+view sidebar(all: Conversations) {
     lens shown: Text = ""
     ui.NavShell(content_kind: .page, sidebar_title: "Channels") {
         sidebar: {
             ui.NavList(selected: shown) {
-                for item in all {
+                for item in all.channels {
                     match item {
                         c: Category => {
                             ui.NavSection(c.name, collapsible: true) {
@@ -315,7 +317,7 @@ view sidebar(all: Channels) {
             }
         }
         content: {
-            if all.is_empty() {
+            if all.channels.is_empty() {
                 ui.EmptyState("No channels yet", icon: .hash, action: "New channel") {
                     on act: new_channel(all)
                 }
@@ -575,15 +577,15 @@ scenario "a team's channels" -> TextChannel {
     let mia = person("Mia")
     let leo = person("Leo")
     let ada = person("Ada")
-    let general = new_channel(channels, "general")
+    let general = new_channel(conversations, "general")
     general.topic = "Anything, really"
-    new_channel(channels, "random")
-    let team = new_category(channels, "Team")
+    new_channel(conversations, "random")
+    let team = new_category(conversations, "Team")
     let design = add_channel(team, "design")
     design.topic = "Reviews and critique"
     add_channel(team, "release")
     add_channel(team, "planning")
-    let social = new_category(channels, "Social")
+    let social = new_category(conversations, "Social")
     add_channel(social, "weekend")
     add_channel(social, "books")
     invoke(
@@ -637,14 +639,14 @@ scenario "a team's channels" -> TextChannel {
         by: leo,
         at: 2026-06-29T08:30Z,
     )
-    let dm = message_person(channels, leo)
+    let dm = message_person(conversations, leo)
     invoke(
         send(dm, RichText("Are we still on for the walk on Saturday?")),
         by: leo,
         at: 2026-06-30T09:02Z,
     )
     // The conversation with yourself: your notes, which the sidebar labels as yours.
-    let notes = message_person(channels, invoker)
+    let notes = message_person(conversations, invoker)
     send(notes, RichText("Ask Leo about the walk on Saturday."))
     design
 }
@@ -652,7 +654,7 @@ scenario "a team's channels" -> TextChannel {
 /// A message made from another: the one it was made from draws the made message as a card, as
 /// picking the message a menu's Make is open on makes it.
 scenario "a message made from another" -> TextChannel {
-    let design = new_channel(channels, "design")
+    let design = new_channel(conversations, "design")
     let ask = send(design, RichText("Can we move the account step to the end?"))
     invoke(
         send(design, RichText("Then let them in first and ask once they save something.")),
@@ -665,7 +667,7 @@ scenario "a message made from another" -> TextChannel {
 scenario "a thread" -> Thread {
     let mia = person("Mia")
     let leo = person("Leo")
-    let design = new_channel(channels, "design")
+    let design = new_channel(conversations, "design")
     let ask = send(design, RichText("Can we move the account step to the end?"))
     let t = start_thread(design, ask, "Account step")
     let first = invoke(

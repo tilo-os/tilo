@@ -1836,7 +1836,7 @@ action a_strip(a: Arrangement, row: Text, name: Text, width: Int) -> Text {
 
 /// Adds a place showing the note at `index` of the notebook to `strip`, and returns its key.
 action a_note_place(a: Arrangement, strip: Text, index: Int) -> Text {
-    let chosen = notes.notes.take(index + 1)
+    let chosen = notes.notebook.notes.take(index + 1)
     if let n = chosen.last() {
         let p = a.places.insert(
             ArrangementPlace(
@@ -1899,7 +1899,7 @@ scenario "a desk of places" -> Arrangement {
     let day_b = a_strip(a, row, "Afternoon", 667)
     let day_c = a_strip(a, row, "Evening", 667)
     let i = 0
-    for n in notes.notes.take(12) {
+    for n in notes.notebook.notes.take(12) {
         let held = if i < 4 { day_a } else if i < 8 { day_b } else { day_c }
         a.places.insert(
             ArrangementPlace(
@@ -2003,7 +2003,7 @@ scenario "a canvas of spaces" -> Arrangement {
         held.placed = true
     }
     let i = 0
-    for n in notes.notes.take(6) {
+    for n in notes.notebook.notes.take(6) {
         let p = a.places.insert(
             ArrangementPlace(
                 key: "c-{i}",
@@ -2049,7 +2049,7 @@ scenario "resources standing as content" -> Arrangement {
         held.placed = true
     }
     let i = 0
-    for n in notes.notes.take(4) {
+    for n in notes.notebook.notes.take(4) {
         a.places.insert(
             ArrangementPlace(
                 key: "x-{i}",
@@ -2147,8 +2147,8 @@ scenario "the traditional desktop" {
     s.dock_items.insert(DockItem(key: "chat", title: "Chat", icon: "message-square", running: true))
     s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
     apply(s, .windows_desktop)
-    let pinned = notes.notes.filter(n -> n.pinned)
-    let rest = notes.notes.filter(n -> not n.pinned)
+    let pinned = notes.notebook.notes.filter(n -> n.pinned)
+    let rest = notes.notebook.notes.filter(n -> not n.pinned)
     let note = pinned.first() ?? rest.first()
     let beside = pinned.last() ?? rest.last()
     let channel = channel_named("design")
@@ -2366,7 +2366,7 @@ scenario "the agents on the bar" {
 
 /// The text channel named `name` in the chat's sidebar, standing alone or in a category.
 fn channel_named(name: Text) -> Option<chat.TextChannel> {
-    for x in chat.channels {
+    for x in chat.conversations.channels {
         match x {
             c: chat.Category => {
                 if let t = c.channels.find(t -> t.name == name) {

@@ -2159,6 +2159,34 @@ impl Core {
         subject: &RefValue,
         viewer: &Principal,
     ) -> HResult<(Option<String>, Reading)> {
+        self.decided(
+            action,
+            &self.subject_args(action, subject),
+            viewer,
+            Decides::Requirement,
+        )
+    }
+
+    /// Why the action `action` cannot apply to `subject` where a view offers it, as its
+    /// `applies` conditions say: the first that does not hold, in `viewer`'s words, or `None`
+    /// when it can.
+    pub(crate) fn applies_reading(
+        &self,
+        action: &str,
+        subject: &RefValue,
+        viewer: &Principal,
+    ) -> HResult<(Option<String>, Reading)> {
+        self.decided(
+            action,
+            &self.subject_args(action, subject),
+            viewer,
+            Decides::Applies,
+        )
+    }
+
+    /// What a condition of `action` is decided on: its subject, and the places after it left to
+    /// their own.
+    fn subject_args(&self, action: &str, subject: &RefValue) -> Vec<Value> {
         let places = {
             let registry = self.registry.borrow();
             registry
@@ -2168,7 +2196,7 @@ impl Core {
         };
         let mut args = vec![Value::Ref(subject.clone())];
         args.extend((0..places).map(|_| Value::none()));
-        self.decided(action, &args, viewer, Decides::Requirement)
+        args
     }
 
     /// Why the action `action` cannot do what `which` asks — run on the item now, or apply to

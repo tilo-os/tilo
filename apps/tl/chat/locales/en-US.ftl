@@ -1,14 +1,14 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
-d-lmdoxbnn = Channels
+d-lmdoxbnn = Conversations
     .doc = The workspace's conversations in the sidebar's order: channels outside any category, the categories each with its own, and the direct messages, in the list as people.
     .noun = { $count ->
-        [one] channels
-       *[other] channelses
+        [one] conversations
+       *[other] conversationses
     }
 
-d-5kzdptyg = Items
+d-5kzdptyg = Channels
 
 d-fe2st4jb = Category
     .doc = A named group of channels in the sidebar.

@@ -400,6 +400,10 @@ pub enum Value {
     Bytes(Rc<Vec<u8>>),
     /// What `web.get` and `web.post` answered (see [`crate::flow::WebResponse`]).
     Response(Rc<crate::flow::WebResponse>),
+    /// A JSON document as `json.parse` read it, before code says what its shape is: the six
+    /// kinds of `json.Value` are its kinds. `json.decode<T>` builds a `T` from one; a value
+    /// `json.encode` writes keeps it as it was read.
+    Json(Box<Json>),
 }
 
 impl Value {
@@ -465,6 +469,7 @@ impl Value {
             Self::Picture(_) => "picture",
             Self::Bytes(_) => "bytes",
             Self::Response(_) => "web response",
+            Self::Json(_) => "json value",
             Self::AtEvent { .. } => "argument computed at the event",
         }
     }
@@ -543,6 +548,8 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         Value::Principal(p) => tagged("principal", Json::String(p.0.clone())),
         Value::Error(msg) => tagged("error", Json::String(msg.clone())),
         Value::Picture(src) => tagged("picture", Json::String(src.clone())),
+        // Text read as a document, which is what it is.
+        Value::Json(json) => (**json).clone(),
         Value::Node(_)
         | Value::Rec(_)
         | Value::Coll(_)

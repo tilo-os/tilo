@@ -88,7 +88,7 @@ impl Checker<'_> {
             )) => {
                 lets.iter().all(|s| matches!(s.kind, UiKind::Let { .. }))
                     && match &c.call.kind {
-                        ExprKind::Call { callee, args } => match &callee.kind {
+                        ExprKind::Call { callee, args, .. } => match &callee.kind {
                             ExprKind::Ident(n) => {
                                 n == "row" && self.titled(args) && c.block.is_none()
                             }
@@ -167,7 +167,6 @@ impl Checker<'_> {
             return n;
         };
         let list = self.expr(items, None);
-        let list = self.unhold(list, items.span);
         let Some(Ty::Record(key)) = list.ty.element().cloned() else {
             if !list.ty.is_error() {
                 let t = self.show(&list.ty);
@@ -735,7 +734,7 @@ impl Checker<'_> {
                     _ => None,
                 }
             }
-            ExprKind::Call { callee, args } if args.is_empty() => {
+            ExprKind::Call { callee, args, .. } if args.is_empty() => {
                 let ExprKind::Field { base, name } = &callee.kind else {
                     return None;
                 };
@@ -1714,7 +1713,7 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
             mentions(operand, names)
         }
         ExprKind::Binary { lhs, rhs, .. } => mentions(lhs, names).or_else(|| mentions(rhs, names)),
-        ExprKind::Call { callee, args } => {
+        ExprKind::Call { callee, args, .. } => {
             mentions(callee, names).or_else(|| args.iter().find_map(|a| mentions(&a.value, names)))
         }
         ExprKind::Variant { args, .. } => args

@@ -28,9 +28,11 @@ type Conversation {
 }
 
 /// The workspace's conversations.
-type Conversations = Collection<Conversation>
+type BlockChat {
+    items: Collection<Conversation>
+}
 
-root conversations: Conversations
+root conversations: BlockChat
 
 default view chats for conversations
 
@@ -39,13 +41,13 @@ default view thread for Conversation
 row view conversation_row for Conversation
 
 /// Starts a conversation with a title.
-action start(all: Conversations, title: Text) -> Conversation {
-    all.insert(Conversation(title: title))
+action start(all: BlockChat, title: Text) -> Conversation {
+    all.items.insert(Conversation(title: title))
 }
 
 /// Starts a conversation.
-primary action new_chat(all: Conversations) -> Conversation (icon: .plus) {
-    all.insert(Conversation(title: "New chat"))
+primary action new_chat(all: BlockChat) -> Conversation (icon: .plus) {
+    all.items.insert(Conversation(title: "New chat"))
 }
 
 /// Posts a message as the invoker: a text part when `text` is not empty, then a block part
@@ -71,8 +73,8 @@ action send(c: Conversation, text: Text) (icon: .send, label: "Send") {
 
 /// The chat's window: its conversations, the latest active first, each opening in a window of
 /// its own. A post is a change of its conversation; an edit of a message, or a draft, is not.
-view chats(all: Conversations) {
-    std.list(all, all.sort_by(c -> updated(c), desc), empty: "No conversations yet")
+view chats(all: BlockChat) {
+    std.list(all, all.items.sort_by(c -> updated(c), desc), empty: "No conversations yet")
 }
 
 /// What a message says in a line: its text, or that it holds a block.
@@ -123,7 +125,7 @@ scenario "a busy workspace" -> Conversation {
     let mia = person("Mia")
     let leo = person("Leo")
     let ada = person("Ada")
-    let plans = conversations.insert(Conversation(title: "Weekend plans"))
+    let plans = conversations.items.insert(Conversation(title: "Weekend plans"))
     invoke(
         post(plans, "Is everyone still up for the walk on Saturday?", ""),
         by: mia,
@@ -145,7 +147,7 @@ scenario "a busy workspace" -> Conversation {
     // Each conversation is started when its first message is posted, so the list's order,
     // the latest activity first, is that of their last messages.
     let release = invoke(
-        conversations.insert(Conversation(title: "Release checklist")),
+        conversations.items.insert(Conversation(title: "Release checklist")),
         by: leo,
         at: 2026-06-30T06:40Z,
     )
@@ -160,7 +162,7 @@ scenario "a busy workspace" -> Conversation {
         at: 2026-06-30T07:15Z,
     )
     let flat = invoke(
-        conversations.insert(Conversation(title: "Flat hunting")),
+        conversations.items.insert(Conversation(title: "Flat hunting")),
         at: 2026-06-29T15:10Z,
     )
     invoke(post(flat, "The one on Elm Street has a balcony.", ""), at: 2026-06-29T15:10Z)
@@ -170,7 +172,7 @@ scenario "a busy workspace" -> Conversation {
         at: 2026-06-29T16:45Z,
     )
     let books = invoke(
-        conversations.insert(Conversation(title: "Book club: Piranesi")),
+        conversations.items.insert(Conversation(title: "Book club: Piranesi")),
         by: ada,
         at: 2026-06-28T19:30Z,
     )
@@ -180,7 +182,7 @@ scenario "a busy workspace" -> Conversation {
         at: 2026-06-28T19:30Z,
     )
     let design = invoke(
-        conversations.insert(Conversation(title: "Design review")),
+        conversations.items.insert(Conversation(title: "Design review")),
         by: leo,
         at: 2026-06-27T10:05Z,
     )
@@ -191,7 +193,7 @@ scenario "a busy workspace" -> Conversation {
     )
     invoke(post(design, "Agreed, I'll look at the thresholds.", ""), by: leo, at: 2026-06-27T10:12Z)
     let birthday = invoke(
-        conversations.insert(Conversation(title: "Sam's birthday")),
+        conversations.items.insert(Conversation(title: "Sam's birthday")),
         by: mia,
         at: 2026-06-26T18:00Z,
     )
@@ -201,13 +203,13 @@ scenario "a busy workspace" -> Conversation {
         at: 2026-06-26T18:00Z,
     )
     let garden = invoke(
-        conversations.insert(Conversation(title: "Garden allotment")),
+        conversations.items.insert(Conversation(title: "Garden allotment")),
         by: leo,
         at: 2026-06-25T08:30Z,
     )
     invoke(post(garden, "The tomatoes need water by Thursday.", ""), by: leo, at: 2026-06-25T08:30Z)
     let running = invoke(
-        conversations.insert(Conversation(title: "Running group")),
+        conversations.items.insert(Conversation(title: "Running group")),
         by: ada,
         at: 2026-06-24T06:15Z,
     )
@@ -217,7 +219,7 @@ scenario "a busy workspace" -> Conversation {
         at: 2026-06-24T06:15Z,
     )
     let importer = invoke(
-        conversations.insert(Conversation(title: "Importer bugs")),
+        conversations.items.insert(Conversation(title: "Importer bugs")),
         by: leo,
         at: 2026-06-22T13:40Z,
     )
@@ -227,7 +229,7 @@ scenario "a busy workspace" -> Conversation {
         at: 2026-06-22T13:40Z,
     )
     let recipes = invoke(
-        conversations.insert(Conversation(title: "Recipes")),
+        conversations.items.insert(Conversation(title: "Recipes")),
         by: mia,
         at: 2026-06-20T17:55Z,
     )
@@ -237,7 +239,7 @@ scenario "a busy workspace" -> Conversation {
         at: 2026-06-20T17:55Z,
     )
     let interviews = invoke(
-        conversations.insert(Conversation(title: "Interview loop")),
+        conversations.items.insert(Conversation(title: "Interview loop")),
         at: 2026-06-18T09:00Z,
     )
     invoke(
@@ -249,13 +251,13 @@ scenario "a busy workspace" -> Conversation {
         by: ada,
         at: 2026-06-18T09:20Z,
     )
-    conversations.insert(Conversation(title: "Holiday in August"))
+    conversations.items.insert(Conversation(title: "Holiday in August"))
     plans
 }
 
 /// One conversation with a sum worked out inline.
 scenario "a sum worked out inline" {
-    let c = conversations.insert(Conversation(title: "Quick sums"))
+    let c = conversations.items.insert(Conversation(title: "Quick sums"))
     post(c, "What is a week of standups, at fifteen minutes each?", "")
     post(c, "Here it is in minutes:", "5 * 15")
 }

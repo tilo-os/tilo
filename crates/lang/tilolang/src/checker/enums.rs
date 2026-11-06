@@ -24,6 +24,9 @@ pub(super) enum Shape {
     Enum(EnumInfo),
     /// A built-in enum of the platform: the variant's index.
     Choice(&'static str),
+    /// `json.Value`: the shape JSON read, as an enum of its six kinds, tested and read like a
+    /// declared enum's cases.
+    Json,
 }
 
 /// One variant as the lowering sees it: its name, the id the host knows it by, and its payload
@@ -43,6 +46,7 @@ impl Shape {
             Ty::Result(t, e) => Self::Result((**t).clone(), (**e).clone()),
             Ty::Enum(key) => Self::Enum(checker.env.enum_info(key)?.clone()),
             Ty::Choice(kind) => Self::Choice(kind),
+            Ty::Json => Self::Json,
             _ => return None,
         })
     }
@@ -103,6 +107,44 @@ impl Shape {
             Self::Choice(kind) => prims::choice(kind)
                 .map(|c| c.variants.iter().map(|v| plain(v)).collect())
                 .unwrap_or_default(),
+            // The six kinds JSON has, in the order `json.Value` answers them.
+            Self::Json => vec![
+                VariantShape {
+                    name: "object".into(),
+                    id: "object".into(),
+                    fields: vec![(
+                        "fields".into(),
+                        "fields".into(),
+                        Ty::Map(Box::new(Ty::Json)),
+                    )],
+                    defaults: vec![None],
+                },
+                VariantShape {
+                    name: "array".into(),
+                    id: "array".into(),
+                    fields: vec![("items".into(), "items".into(), Ty::List(Box::new(Ty::Json)))],
+                    defaults: vec![None],
+                },
+                VariantShape {
+                    name: "string".into(),
+                    id: "string".into(),
+                    fields: vec![("text".into(), "text".into(), Ty::Text)],
+                    defaults: vec![None],
+                },
+                VariantShape {
+                    name: "number".into(),
+                    id: "number".into(),
+                    fields: vec![("number".into(), "number".into(), Ty::Float)],
+                    defaults: vec![None],
+                },
+                VariantShape {
+                    name: "bool".into(),
+                    id: "bool".into(),
+                    fields: vec![("flag".into(), "flag".into(), Ty::Bool)],
+                    defaults: vec![None],
+                },
+                plain("null"),
+            ],
         }
     }
 
@@ -110,7 +152,7 @@ impl Shape {
         match self {
             Self::Result(..) => RESULT_TYPE.to_string(),
             Self::Enum(info) => info.id.clone(),
-            Self::Option(_) | Self::Choice(_) => String::new(),
+            Self::Option(_) | Self::Choice(_) | Self::Json => String::new(),
         }
     }
 }
@@ -321,6 +363,14 @@ impl Checker<'_> {
                 None => Ex::host(Imp::NoneV, Vec::new(), ty.clone()),
                 Some(x) => Self::some(x, ty),
             },
+            Shape::Json => {
+                self.err(
+                    "E020",
+                    span,
+                    "a `json.Value` is what `json.parse` read; code does not make one — use `json.decode<T>(text)` to read the value it declares",
+                );
+                Ex::error()
+            }
             Shape::Result(..) | Shape::Enum(_) => {
                 let tmp = self.fresh(ty.clone());
                 let mut stmts = vec![Stmt::Set(
@@ -371,7 +421,7 @@ impl Checker<'_> {
                 ),
                 Ty::Bool,
             ),
-            Shape::Result(..) | Shape::Enum(_) => {
+            Shape::Result(..) | Shape::Enum(_) | Shape::Json => {
                 Ex::host(Imp::EnumIs, vec![value, Ex::str(&v.id)], Ty::Bool)
             }
         }

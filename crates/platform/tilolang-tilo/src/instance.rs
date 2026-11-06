@@ -26,6 +26,7 @@ mod person_state;
 #[cfg(feature = "record")]
 pub mod record;
 pub mod rows;
+mod shown;
 pub mod wire;
 
 use std::cell::{Cell, RefCell};

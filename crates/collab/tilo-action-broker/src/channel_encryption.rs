@@ -690,6 +690,70 @@ impl ChannelEncryption {
         ChannelAccess::Ready(keys)
     }
 
+    /// Make the content keys of legacy per-record groups available under the
+    /// key scope that now carries their units. A device that holds such a
+    /// group hands its keys to the scope's members with the scope's next
+    /// commit, and every later admission passes them on, so a device that
+    /// joined after key scopes reads the unit's whole history and the holders
+    /// of the old group can go offline once one of them has done it.
+    ///
+    /// Only units the workspace's scope carries: one a Read Deny narrows is
+    /// sealed under a group of its own, whose keys no denied device gets, and
+    /// those are never handed to the broader scope. A unit whose record this
+    /// device has not learned the readers of waits for a policy re-check,
+    /// which resolves it.
+    fn hand_over_legacy_keys(&mut self, wall: u64, recheck: bool) {
+        let mut handing = Vec::new();
+        let mut unresolved = Vec::new();
+        for (unit, entry) in &self.peers {
+            let scope = Self::workspace_scope(entry.workspace);
+            if *unit == scope {
+                continue;
+            }
+            match self.units.get(unit) {
+                Some(carried) if *carried == scope => handing.push((*unit, scope)),
+                Some(_) => {}
+                None => {
+                    if let Some(route) = &entry.route {
+                        unresolved.push((*unit, entry.workspace, route.clone()));
+                    }
+                }
+            }
+        }
+        if recheck {
+            for (unit, workspace, route) in unresolved {
+                let scope = self.resolve_scope(workspace, &route, wall);
+                if scope == Some(Self::workspace_scope(workspace)) {
+                    handing.push((unit, Self::workspace_scope(workspace)));
+                }
+            }
+        }
+        let mut adopted = Vec::new();
+        for (unit, scope) in handing {
+            let [Some(scope_entry), Some(unit_entry)] =
+                self.peers.get_disjoint_mut([&scope, &unit])
+            else {
+                continue;
+            };
+            if scope_entry.workspace != unit_entry.workspace
+                || !matches!(scope_entry.peer.access(), Access::Ready { .. })
+            {
+                continue;
+            }
+            let Some(keys) = unit_entry.peer.keyring() else {
+                continue;
+            };
+            if scope_entry.peer.adopt(keys) {
+                // The scope's commit is due now: it is what hands the keys out.
+                scope_entry.dirty = true;
+                adopted.push(scope);
+            }
+        }
+        for scope in adopted {
+            self.bump(scope);
+        }
+    }
+
     /// Keep `route`, proven to be `channel`'s in `workspace`, with the channel's
     /// state, durably, and re-check the channel's readers with it.
     fn learn_route(&mut self, workspace: WorkspaceId, channel: ChannelId, route: &ChannelRoute) {
@@ -699,13 +763,20 @@ impl ChannelEncryption {
         let Some(store) = &self.store else {
             return;
         };
+        let mut learned = false;
         if let Some(entry) = self.peers.get_mut(&channel)
             && entry.workspace == workspace
             && entry.route.is_none()
         {
             entry.route = Some(route.clone());
             entry.dirty = true;
+            learned = true;
             save_route(&route_path(&store.root, workspace, channel), route);
+        }
+        // The scope a unit seals under is read from its record, so a route
+        // that arrives after the channel was opened resolves it now.
+        if learned {
+            self.resolve_scope(workspace, route, tilo_clock::unix_now());
         }
     }
 
@@ -888,6 +959,9 @@ impl ChannelEncryption {
             .is_some_and(|due| due <= now);
         let channels: Vec<ChannelId> = self.peers.keys().copied().collect();
         let mut reconciled = false;
+        // Before the groups reconcile, so the hand-over commit is written in
+        // this pass.
+        self.hand_over_legacy_keys(wall, reconcile_due);
         for channel in channels {
             let due = reconcile_due || self.peers.get(&channel).is_some_and(|entry| entry.dirty);
             self.found(channel, now, wall);

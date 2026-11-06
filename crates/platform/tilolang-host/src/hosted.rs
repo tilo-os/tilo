@@ -555,6 +555,28 @@ impl Hosted {
         self.search_index_from = Some(generation);
     }
 
+    /// Fill what can run now on the resources the window shows ([`Instance::shown_resources`]):
+    /// the rows its palette offers are the actions on what it draws, and a condition is the
+    /// app's to answer for them. Every other row is answered when a caller asks about it
+    /// ([`Self::answer_directory`]), so nothing carries a condition's answer for every item a
+    /// query could name.
+    fn answer_what_the_window_shows(&self, descriptors: &mut [ActionDescriptor]) {
+        let Some(host) = self.instance.host() else {
+            return;
+        };
+        let shown = self.instance.shown_resources();
+        for descriptor in descriptors {
+            if !shown.contains(&descriptor.address.resource) {
+                continue;
+            }
+            if let Some(availability) =
+                host.availability(&descriptor.address.resource, &descriptor.address.action)
+            {
+                descriptor.contract.availability = availability;
+            }
+        }
+    }
+
     /// Offer the instance's action directory on its connection, once it is connected, and
     /// answer what was asked of it since the last frame from what the instance published.
     fn answer_directory(&mut self) {
@@ -568,8 +590,8 @@ impl Hosted {
             self.catch_up_directory();
         }
         // What an action can run for is its app's to say, and it says it for the rows a caller
-        // asks about: the surface carries what exists and what it offers, never a requirement's
-        // answer for every item.
+        // asks about: the surface carries what exists and what it offers, and a requirement's
+        // answer only for what the window shows.
         let Some(host) = self.instance.host() else {
             for request in requests {
                 self.directory.answer(request);
@@ -964,7 +986,8 @@ impl Hosted {
             return;
         }
         self.refused.clear();
-        let descriptors = tilo_actions::door::survey(&resources);
+        let mut descriptors = tilo_actions::door::survey(&resources);
+        self.answer_what_the_window_shows(&mut descriptors);
         self.offer(&descriptors);
         // The directory is built when a caller asks for it: what the surface holds is the
         // snapshot's input, not the answer to a question nobody asked.

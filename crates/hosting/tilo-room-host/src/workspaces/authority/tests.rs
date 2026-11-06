@@ -271,6 +271,7 @@ fn list_entry(workspace: &str, entry: [u8; 32]) -> WorkspacesRequest {
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
         inviter_name: None,
         wait_list_entry: Some(entry),
+        recipient: None,
     }
 }
 
@@ -449,6 +450,7 @@ async fn an_address_mailed_its_invitation_takes_itself_off_with_the_mail_s_remov
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
         inviter_name: None,
         wait_list_entry: Some(wait_list_entry),
+        recipient: None,
     };
     // Not invited yet: nothing to mail. An invitation for an entry not on
     // the list is refused.
@@ -545,6 +547,7 @@ async fn assert_uncertain_invitation_mail(
                     expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
                     inviter_name: None,
                     wait_list_entry: Some(cy),
+                    recipient: None,
                 }
             )
             .await,
