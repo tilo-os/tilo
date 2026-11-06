@@ -27,7 +27,29 @@ row view post_row for Post
 
 /// The board: its posts.
 view board(b: Board) {
-    std.list(b, b.posts, empty: "No posts yet")
+    ui.NavShell(
+        content_kind: .document,
+        overview_title: .some(meta(Board).title),
+        overview_count: .some(b.posts.len()),
+    ) {
+        overview: {
+            if b.posts.is_empty() {
+                ui.EmptyState("No posts yet", icon: .message_circle)
+            } else {
+                std.list(b.posts) { (p, at) ->
+                    ui.ListItem(item: p, presence: at) {
+                        post_row(p)
+                    }
+                }
+            }
+        }
+        content: {
+            ui.EmptyState(
+                phrase("tilolang-none-selected", kind: meta(Post).noun),
+                icon: .message_circle,
+            )
+        }
+    }
 }
 
 /// A post: what it says, each reference as the reader's inline view of it.

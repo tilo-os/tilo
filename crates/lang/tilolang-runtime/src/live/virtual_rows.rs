@@ -264,6 +264,15 @@ impl Virtual {
         }
         self.rows.key(&self.template, index)
     }
+
+    /// The items of the rows built now (the visible rows and the overscan): what the window
+    /// shows of this list.
+    pub(super) fn shown_items(&self, core: &Core) -> Vec<Value> {
+        self.built
+            .iter()
+            .filter_map(|(index, _)| self.rows.item(core, *index))
+            .collect()
+    }
 }
 
 impl Live {

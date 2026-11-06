@@ -50,6 +50,8 @@ struct Row {
     label: String,
     enabled: bool,
     reason: Option<String>,
+    /// The chord that does the same thing, as the session's table binds it.
+    shortcut: Option<String>,
 }
 
 impl Reading {
@@ -69,6 +71,10 @@ impl Reading {
                     label: row.get("label")?.as_str()?.to_owned(),
                     enabled: row.get("enabled")?.as_bool()?,
                     reason: row.get("reason").and_then(Value::as_str).map(str::to_owned),
+                    shortcut: row
+                        .get("shortcut")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
                 })
             })
             .collect::<Option<Vec<Row>>>()?;
@@ -227,6 +233,9 @@ impl WindowMenuSurface {
         self.ids = Vec::with_capacity(self.reading.rows.len());
         for row in &self.reading.rows {
             let mut item = MenuItem::selection(row.label.clone());
+            if let Some(shortcut) = &row.shortcut {
+                item = item.with_shortcut(shortcut.as_str());
+            }
             if !row.enabled {
                 item = item.with_enabled(false);
                 if let Some(reason) = &row.reason {
@@ -430,6 +439,39 @@ mod tests {
             "in the order the session lists them"
         );
         assert_eq!(surface.ids, ["window-normal", "window-move-workspace"]);
+    }
+
+    /// A menu where one row has a shortcut and the other has none.
+    const WITH_A_CHORD: &str = r#"{
+        "tab": "20",
+        "anchor": { "x": 40, "y": 50 },
+        "rows": [
+            {
+                "id": "window-fullscreen",
+                "label": "Full screen",
+                "enabled": true,
+                "shortcut": "Super+F"
+            },
+            { "id": "window-rename", "label": "Rename", "enabled": true }
+        ]
+    }"#;
+
+    #[test]
+    fn a_row_a_shortcut_does_shows_its_chord() {
+        let surface = WindowMenuSurface::showing(WITH_A_CHORD);
+        let conventions = ui::platform::PlatformConventions::new(ui::platform::Platform::Linux);
+        let chords: Vec<Option<String>> = surface
+            .menu
+            .items()
+            .iter()
+            .map(|item| item.shortcut().map(|chord| chord.label(conventions)))
+            .collect();
+        let expected = ui::platform::Shortcut::from("Super+F").label(conventions);
+        assert_eq!(
+            chords,
+            [Some(expected), None],
+            "the chord the session sends stands at the row's end"
+        );
     }
 
     #[test]

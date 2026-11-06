@@ -68,11 +68,6 @@ pub(crate) struct Panel {
     pub(crate) chosen: Option<u64>,
 }
 
-/// The app and record `provider` names (`record:<app>:<record>`).
-pub(crate) fn app_and_record(provider: &str) -> Option<(&str, &str)> {
-    provider.strip_prefix("record:")?.split_once(':')
-}
-
 /// What the people a window is shared with may do, as a card says it.
 pub(crate) fn access_label(access: ShareAccess) -> String {
     crate::i18n::t(match access {
@@ -221,14 +216,9 @@ impl ChatApp {
         };
         let theme = paint.theme;
         let parts = self.share_card_parts(m, Point::new(x, *y), width, paint.text, theme);
-        let reference = m.reference.as_ref();
-        let label = reference.map_or("", |reference| reference.label.as_str());
-        let app = m
-            .source_provider
-            .as_deref()
-            .and_then(app_and_record)
-            .map(|(app, _)| app.to_owned())
-            .unwrap_or_default();
+        let shared = m.resource();
+        let label = shared.map_or("", |at| at.reference.label.as_str());
+        let app = shared.map_or_else(String::new, |at| at.app.clone());
         let hovered = !share.ended && self.hovered(parts.card);
         let mut face = CardFace::new();
         if !share.ended {
@@ -338,7 +328,7 @@ impl ChatApp {
     /// What a live share's card says under its title, to this reader: why
     /// opening it failed, that they may edit it anyway, or the share's access.
     pub(crate) fn share_caption(&self, m: &Message, share: &crate::record::WindowShare) -> String {
-        if let Some(Err(why)) = self.resource_navigation.status(&m.id) {
+        if let Some(Err(why)) = self.resource_navigation.status(&m.id, 0) {
             // Why pressing it opened nothing, where the access stood.
             why.clone()
         } else if share.access == ShareAccess::View
@@ -421,7 +411,6 @@ impl ChatApp {
         view: Rect,
         clip: Rect,
     ) {
-        let record = m.source_provider.as_deref().and_then(app_and_record);
         let state = ui::window_share::state(&m.id);
         let note = match (&state, ui::window_share::drawn()) {
             (Some(EmbedState::Showing), _) => None,
@@ -440,20 +429,16 @@ impl ChatApp {
             .badges(badges.as_slice())
             .paint(paint, view);
         let shown = view.intersect(clip);
-        if let Some((app, record)) = record
+        if let Some(at) = m.resource()
             && shown.width() > 0.0
             && shown.height() > 0.0
         {
             self.live_shares.embeds.borrow_mut().push(Embed {
                 key: m.id.clone(),
                 view: ResourceView {
-                    app: app.to_owned(),
-                    record: record.to_owned(),
-                    resource: m
-                        .reference
-                        .as_ref()
-                        .map(|reference| reference.id.clone())
-                        .unwrap_or_default(),
+                    app: at.app.clone(),
+                    record: at.record.clone().unwrap_or_default(),
+                    resource: at.reference.id.clone(),
                 },
                 rect: view,
                 clip,
@@ -493,7 +478,7 @@ impl ChatApp {
             .is_some_and(|share| !share.ended)
         {
             self.live_shares.grants.ask_again(message);
-            self.open_shared_resource(message);
+            self.open_shared_resource(message, 0);
         }
     }
 
@@ -557,7 +542,7 @@ impl ChatApp {
             .item
             .as_deref()
             .and_then(ui::tilo_resource::items::item_kind);
-        let reference = crate::record::SharedReference {
+        let reference = tilo_reference::ResourceRef {
             kind: match item_kind {
                 Some(kind) => kind,
                 None if window.kind.is_empty() => "tilo.window".into(),
@@ -571,8 +556,11 @@ impl ChatApp {
             doc,
             ChatPart::SHARE_WINDOW.with(chat_part::ShareWindow {
                 channel: ui::tilo_resource::Id::from_raw(self.active_channel.clone()),
-                reference,
-                source_provider: format!("record:{}:{}", window.app, window.record),
+                attached: tilo_reference::ResourceAt {
+                    app: window.app.clone(),
+                    record: (!window.record.is_empty()).then(|| window.record.clone()),
+                    reference,
+                },
                 access: Some(access),
                 text: None,
                 mentions: None,
@@ -644,15 +632,15 @@ impl ChatApp {
             .iter()
             .filter(|m| self.is_my_live_share(m))
             .filter_map(|m| {
-                let (app, record) = app_and_record(m.source_provider.as_deref()?)?;
+                let at = m.resource()?;
                 let place = self
                     .channel(&m.channel)
                     .map(|channel| channel.kind.label(&channel.name))
                     .unwrap_or_default();
                 Some((
                     m.id.clone(),
-                    app.to_owned(),
-                    record.to_owned(),
+                    at.app.clone(),
+                    at.record.clone().unwrap_or_default(),
                     place,
                     m.share.as_ref().is_some_and(|share| share.open),
                 ))

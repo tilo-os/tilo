@@ -152,7 +152,7 @@ struct WorkspaceRecord {
     peer: Vec<peer_parts::PeerPart>,
     generation: u64,
     /// The complete committed publication: the last full checkpoint and every
-    /// change after it. A joining member's bootstrap carries all of it.
+    /// change after it. Members receive it over the workspace's sync.
     outgoing: Vec<Publication>,
     /// How much of `outgoing` the relay has retained, as of the workspace's last
     /// write. Publishing does not write the workspace again: after a crash the
@@ -244,15 +244,6 @@ struct GovernedWorkspace {
     /// The session each of those hosts last opened here that this host
     /// answered ([`Workspaces::answer_host`]), by the host's device.
     answered: HashMap<[u8; 32], hosts::Answer>,
-}
-
-impl WorkspaceRecord {
-    fn governance_messages(&self) -> Vec<Vec<u8>> {
-        self.outgoing
-            .iter()
-            .map(|publication| publication.bytes.clone())
-            .collect()
-    }
 }
 
 /// The people `peer`'s governance admits now.
@@ -385,8 +376,12 @@ impl GovernedWorkspace {
         device: Option<&DeviceKeys>,
     ) -> Result<Self, String> {
         let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
-        let (version, _) =
-            postcard::take_from_bytes::<u32>(&bytes).map_err(|error| error.to_string())?;
+        let (version, _) = postcard::take_from_bytes::<u32>(&bytes).map_err(|error| {
+            format!(
+                "{}: a workspace record names its version first: {error}",
+                path.display()
+            )
+        })?;
         // An older record comes up before it is read: a version 2 record's
         // grants are in the invitation layout they were written in, which
         // [`record_format`] reads by the invitation's own version. A newer
@@ -394,8 +389,13 @@ impl GovernedWorkspace {
         let bytes = record_format::FORMAT
             .bring_up(&path, bytes, version)
             .map_err(|error| error.to_string())?;
-        let record: WorkspaceRecord =
-            postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
+        let record: WorkspaceRecord = postcard::from_bytes(&bytes).map_err(|error| {
+            format!(
+                "{}: {} version {version}: {error}",
+                path.display(),
+                record_format::FORMAT.name
+            )
+        })?;
         // The record must have been governed by this host's device. What
         // makes a device that device is its key and what the certificate
         // lets it do; a certificate's `device_label` is a human-readable
@@ -604,6 +604,13 @@ impl GovernedWorkspace {
 
     fn collaboration(&self) -> &collaboration::CollaborationState {
         &self.record.collaboration
+    }
+
+    /// The signed invitation the workspace issued `person` that is still
+    /// redeemable at `now_ns`: the door of a workspace that takes people by
+    /// invitation hands that one back rather than minting one.
+    fn invitation_for(&self, person: [u8; 32], now_ns: u64) -> Option<IssuedInvitation> {
+        self.collaboration().invitation_for(person, now_ns)
     }
 
     /// Take off the wait list everyone who joined with an invitation sent

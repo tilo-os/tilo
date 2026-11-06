@@ -13,12 +13,13 @@
  *    wave:{seq, target:hex}|null,
  *    layout:{size:[w,h], windows:[{app, record:hex16, rect:[x0,y0,x1,y1], focused}]}|null,
  *    following:hex|null}
- * `pointer` is over one tab of the workspace, `tab` its id, `at` a point in
- * that tile's logical pixels: the same point every member's view of the tab
+ * `pointer` is over one tab of the workspace, `tab` its id as a decimal
+ * string (it can pass 2^53), `at` a point in that tile's logical pixels: the same point every member's view of the tab
  * shows, whatever their window's size or their own strips. Each member
  * places it in their own layout (the runtime's `remote_pointers`); `at`
- * interpolates while it stays over the same tab. `place` is where within its focus the publisher is (on a desktop, the
- * strip it shows). `chat` is what the publisher is saying beside its pointer
+ * interpolates while it stays over the same tab. `place` is where within
+ * its focus the publisher is (on a desktop, the strip it shows). `chat` is
+ * what the publisher is saying beside its pointer
  * (cursor chat); `reaction` its latest reaction, new when its `seq` is;
  * `wave` its latest wave at the member whose publisher is `target`, new
  * when its `seq` is. `layout` is where the publisher's windows are on its
@@ -74,12 +75,17 @@ function finitePair(value, name) {
   }
   return [value[0], value[1]];
 }
+/** The id of the tab a pointer is over, as a decimal string: a tab id can
+ * pass 2^53, which a JavaScript number cannot hold exactly. */
+function pointerTab(value) {
+  const tab = typeof value === 'string' ? value : Number.isSafeInteger(value) ? String(value) : '';
+  if (!/^(?:0|[1-9][0-9]*)$/.test(tab)) throw new TypeError('a pointer is over a tab of the workspace: {tile: {tab}, at}, its id a decimal string');
+  return tab;
+}
 function normalizePointer(value) {
   const at = finitePair(value.at ?? null, 'pointer at');
   if (!at) throw new TypeError('a pointer has a point');
-  const tab = Number(value.tile?.tab);
-  if (!Number.isSafeInteger(tab) || tab < 0) throw new TypeError('a pointer is over a tab of the workspace: {tile: {tab}, at}');
-  return {tile: {tab}, at};
+  return {tile: {tab: pointerTab(value.tile?.tab)}, at};
 }
 const unit = value => Math.min(10000, Math.max(0, Math.round(Number(value) || 0)));
 const side = value => Math.min(65535, Math.max(0, Math.round(Number(value) || 0)));

@@ -8,9 +8,10 @@ use tilolang_tilo::action::{ACTION_TYPE, DynAction, register_actions};
 use tilolang_tilo::publish::{
     ActionTypes, PlanRequest, Planner, publish_package, publish_record, resource_id,
 };
+use tilolang_tilo::record::DynValue;
 use tilolang_tilo::surface::{HOST_KIND, host_surface, package_surfaces, surface_toml};
 
-use crate::fixtures::{COUNTER, Replica, TODO};
+use crate::fixtures::{COUNTER, Replica, TODO, field_id};
 
 fn counter() -> Meta {
     let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(COUNTER, "")]);
@@ -303,4 +304,108 @@ fn a_scenarios_action_is_never_published_or_on_a_surface() {
     let planner: Arc<dyn Planner> = Arc::new(Recording);
     let package = publish_package(meta, &planner, &SourceWords);
     assert!(package.actions.iter().all(|spec| spec.id != scenario.id));
+}
+
+/// An action's requirement is the app's to answer, and the app answers it for the one resource
+/// a caller names: a door planning the action against an item whose rule does not hold is
+/// refused with the rule's reason, where before the answer had to be published for every item
+/// of every record.
+#[test]
+fn a_requirement_refuses_the_invocation_whose_rule_does_not_hold() {
+    const CHORES: &str = r#"app so.tilo.chores "Chores"
+
+    type Task {
+      title: Text merge text
+      done: Bool
+    }
+
+    type Tasks {
+      tasks: Collection<Task>
+    }
+
+    action add(t: Tasks, title: Text) { t.tasks.insert(Task(title: title, done: false)) }
+
+    action finish(t: Task) { t.done = true }
+
+    action due(t: Task) (label: "Due") {
+      require not t.done "It is done already"
+      t.title = t.title
+    }
+
+    root Tasks
+
+    default view main for Tasks
+
+    view main(t: Tasks) {
+      page {
+        for task in t.tasks {
+          text(task.title)
+        }
+      }
+    }
+    "#;
+    let (mut replica, packages) = Replica::new("ada", AutoCommit::new(), &[(CHORES, "")]);
+    let meta = packages[0].meta.clone();
+    let app = meta.app.clone();
+    replica.host.root_of(&app).unwrap();
+    replica.commit();
+    let root = replica.host.root_of(&app).unwrap().doc;
+    let plan = |replica: &mut Replica, name: &str, at: Option<&str>, args: serde_json::Value| {
+        let action = meta.actions.iter().find(|a| a.name == name).unwrap();
+        let args = args.as_object().cloned().unwrap_or_default();
+        replica.host.plan(&PlanRequest {
+            app: &app,
+            kind: "tl.so.tilo.chores.Tasks",
+            action_id: &action.id,
+            resource: at,
+            args: &args,
+            caller: None,
+            from: None,
+        })
+    };
+    for title in ["milk", "bread"] {
+        let planned = plan(&mut replica, "add", Some(&root), json!({ "title": title })).unwrap();
+        replica.apply(&planned);
+    }
+    let tasks = field_id(&meta, "Tasks", "tasks");
+    let tasks_ty = meta.types.iter().find(|t| t.name == "Tasks").unwrap();
+    let item_ty = meta.types.iter().find(|t| t.name == "Task").unwrap();
+    let ids: Vec<String> = match replica.root(&app).get(&tasks) {
+        Some(DynValue::Collection(items)) => {
+            items.iter().map(|(id, _)| id.as_str().to_owned()).collect()
+        }
+        other => panic!("no tasks: {other:?}"),
+    };
+    let items: Vec<String> = ids
+        .iter()
+        .map(|id| {
+            tilolang_runtime::value::ResourceRef::root(&root, tasks_ty.id.clone())
+                .item(id, item_ty.id.clone())
+                .id_string()
+        })
+        .collect();
+    let first = items[0].clone();
+    let finished = plan(&mut replica, "finish", Some(&first), json!({})).unwrap();
+    replica.apply(&finished);
+    let due = meta.actions.iter().find(|a| a.name == "due").unwrap();
+    assert_eq!(
+        replica.host.availability(&first, &due.id),
+        Some(tilo_actions::Availability::Unavailable {
+            code: "unmet".to_owned(),
+            reason: "It is done already".to_owned(),
+        }),
+        "the app says of the item that its rule does not hold"
+    );
+    let refused = plan(&mut replica, "due", Some(&first), json!({}));
+    let Err(why) = &refused else {
+        panic!("the item is due only while it is not done: {refused:?}");
+    };
+    assert!(why.contains("It is done already"), "{why}");
+    let open = items[1].clone();
+    assert_eq!(
+        replica.host.availability(&open, &due.id),
+        Some(tilo_actions::Availability::Available)
+    );
+    plan(&mut replica, "due", Some(&open), json!({}))
+        .expect("the rule holds for the task that is not done");
 }

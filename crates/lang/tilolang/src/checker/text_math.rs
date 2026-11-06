@@ -1,7 +1,7 @@
 //! The pure surface of `Text` and of numbers: the methods every value of those types has and
 //! what each lowers to, and the text and number methods a list has (`join`, `sum`, `avg`,
 //! `contains`). Every one is a host call over a value: none of them changes anything, reads a
-//! clock or leaves the workspace, so a view, an action and a flow may all write them.
+//! clock or leaves the workspace, so a view and an action may both write them.
 //!
 //! What a text counts, finds and cuts in — graphemes — is [`crate::text`]'s, the same reading the
 //! index and search's identifier patterns use; the names a message lists are

@@ -230,6 +230,13 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Text",
                 "Who proposed the action the change made, as a sentence names them, when the person making it accepted their suggestion; empty for a change made on its own.",
             ),
+            (
+                "count",
+                "Int",
+                "How many items the change was made over: `1` for an action applied to its \
+                 subject, and for one action applied to many items at once (`many`), as many \
+                 as the items it changed.",
+            ),
         ],
     },
     ValueType {
@@ -268,10 +275,10 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Whether the person looking made it, outside any task run.",
             ),
             (
-                "unseen",
-                "Bool",
-                "Whether the person looking has not seen it: history draws the line where \
-                 what they saw ends, over the steps since they last looked.",
+                "changes",
+                "Int",
+                "How many changes it folds: one for one command, however many items it \
+                 changed at once, and more for a step of several.",
             ),
         ],
     },
@@ -444,12 +451,6 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Bool",
                 "Whether it is on or off: a place of a list, a chip of search.",
             ),
-            (
-                "counts",
-                "Bool",
-                "Whether the place it makes shows how many items it holds: whether it declares \
-                 `count: true`.",
-            ),
         ],
     },
     ValueType {
@@ -556,7 +557,7 @@ pub fn host_meta() -> PackageMeta {
             name: "Invocation".to_string(),
             doc: "An action a block applied, and what became of it.".to_string(),
             fields: vec![
-                field("action", "Text", "The id of the action or flow."),
+                field("action", "Text", "The id of the action."),
                 field("name", "Text", "Its name."),
                 field("app", "Text", "The app that declares it."),
                 field("args", "Text", "The arguments, as JSON."),
@@ -584,7 +585,6 @@ pub fn host_meta() -> PackageMeta {
                 ),
             ],
             search: crate::meta::SearchMeta::default(),
-            holder: false,
             origin: None,
         })
         .chain(std::iter::once(TypeMeta {
@@ -593,7 +593,6 @@ pub fn host_meta() -> PackageMeta {
             doc: "Any resource of the workspace, of whichever app: what `find` and `grep` answer across apps. `.of(T)` keeps those of one type.".to_owned(),
             fields: Vec::new(),
             search: crate::meta::SearchMeta::default(),
-            holder: false,
             origin: None,
         }))
         .chain(VALUE_TYPES.iter().map(|value| {
@@ -616,9 +615,8 @@ pub fn host_meta() -> PackageMeta {
                     })
                     .collect(),
                 search: crate::meta::SearchMeta::default(),
-                holder: false,
                 origin: None,
-            }
+                }
         }))
         .collect(),
         enums: HOST_ENUMS

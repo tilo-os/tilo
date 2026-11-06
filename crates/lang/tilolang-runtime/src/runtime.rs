@@ -11,10 +11,10 @@ use crate::core::{Core, ModelHost, OutsideSink};
 use crate::engine::EngineLimits;
 use crate::error::RuntimeError;
 use crate::exec::InvokeOutcome;
-use crate::flow::{FlowOutcome, Resolution};
 use crate::ids::{DocId, ModuleHash, PackageId, Principal, RunId};
 use crate::meta::Meta;
 use crate::project::{ProjectOptions, project};
+use crate::run::Resolution;
 use crate::settle::{AgentBlock, InvocationRecord};
 use crate::store::{ChangeNote, OutboxEntry, Store, StoreError, Version};
 use crate::value::{ActionRef, ResourceRef, Value};
@@ -84,7 +84,7 @@ impl OutsideSink for MemorySink {
     }
 }
 
-/// The tilolang runtime: loads packages and runs their actions, flows and views.
+/// The tilolang runtime: loads packages and runs their actions, programs and views.
 pub struct Runtime {
     pub(crate) core: Rc<Core>,
 }
@@ -131,8 +131,9 @@ impl Runtime {
         let hash = self.core.engine.compile(wasm)?;
         self.add_catalogues(wasm);
         self.check_exports(&hash, &meta)?;
-        let pkg =
-            crate::registry::Package::new(hash.clone(), meta).map_err(RuntimeError::Package)?;
+        let lines = tilolang::meta::lines_from_wasm(wasm);
+        let pkg = crate::registry::Package::with_lines(hash.clone(), meta, &lines)
+            .map_err(RuntimeError::Package)?;
         self.core
             .registry
             .borrow_mut()
@@ -156,8 +157,9 @@ impl Runtime {
         // were translated reads them, not the ones it was loaded with before.
         self.add_catalogues(wasm);
         self.check_exports(&hash, &meta)?;
-        let pkg =
-            crate::registry::Package::new(hash.clone(), meta).map_err(RuntimeError::Package)?;
+        let lines = tilolang::meta::lines_from_wasm(wasm);
+        let pkg = crate::registry::Package::with_lines(hash.clone(), meta, &lines)
+            .map_err(RuntimeError::Package)?;
         self.core
             .registry
             .borrow_mut()
@@ -181,7 +183,6 @@ impl Runtime {
             .iter()
             .map(|a| format!("a_{}", a.id))
             .chain(meta.views.iter().map(|v| format!("v_{}", v.id)))
-            .chain(meta.flows.iter().map(|f| format!("f_{}", f.id)))
             .chain(meta.fns.iter().map(|f| format!("n_{}", f.id)))
             .chain(
                 meta.at_event
@@ -349,6 +350,27 @@ impl Runtime {
         self.core.foreign.borrow().take_waiting();
     }
 
+    /// The reading of `target`, a resource of an app this runtime does not run, whole, with the
+    /// generation it was read at: what a Rust app's view is handed of the resource it shows.
+    ///
+    /// `None` before a reading arrived (the host is asked to publish one, as a field read does),
+    /// and for a resource this runtime holds: its own records run from here.
+    #[must_use]
+    pub fn reading(&self, target: &ResourceRef) -> Option<(serde_json::Value, u64)> {
+        if !crate::foreign::is_foreign(target) {
+            return None;
+        }
+        self.core.foreign.borrow_mut().whole(target)
+    }
+
+    /// Tell the runtime the views of a Rust app: its registry, so a `show` of a resource of one of
+    /// its types draws that app's view inline, as it draws a tilolang package's view
+    /// ([`crate::rust_views`]). The host that runs the app calls this once.
+    pub fn set_rust_views(&self, views: std::rc::Rc<dyn crate::rust_views::RustViews>) {
+        let app = views.app().to_owned();
+        self.core.rust_views.borrow_mut().insert(app, views);
+    }
+
     /// The reading of `target`, a resource of an app this runtime does not run, as the
     /// session's watch last saw it: the JSON its service read. Views that read a field of it
     /// run again at the next poll. Whether it differs from the reading held before: `false`
@@ -503,7 +525,7 @@ impl Runtime {
         invoker: &Principal,
         action: &str,
         args: Vec<Value>,
-        suggestion: &crate::flow::Suggestion,
+        suggestion: &crate::run::Suggestion,
     ) -> Result<ResourceRef, RuntimeError> {
         let aref = ActionRef {
             action: action.to_owned(),
@@ -665,6 +687,34 @@ impl Runtime {
         self.core.complete_args(action, given)
     }
 
+    /// Fills the parameters `given` leaves out of `action` from `text`, the one line a person
+    /// typed for it: the entry parameter with the words nothing else took, and the parameters
+    /// their types read (a day, a moment, a person, a record). A parameter given is kept.
+    /// [`crate::Runtime::complete_args`] then defaults the rest. Returns the arguments as the
+    /// call carries them — as long as the action's parameters, what the call left out
+    /// [`None`] — and `None` when the line names nothing, as an entry's text that is only
+    /// space and what other parameters take makes no item.
+    ///
+    /// # Errors
+    ///
+    /// A text naming something the action does not take, or a value that does not fit.
+    pub fn fill_entry(
+        &self,
+        action: &str,
+        given: Vec<Option<Value>>,
+        text: &str,
+    ) -> Result<Option<Vec<Option<Value>>>, RuntimeError> {
+        self.core
+            .entry_fill_given(action, given, text)
+            .map_err(|fail| match fail {
+                crate::engine::HostFail::Trap(message) => RuntimeError::Package(message),
+                // Filling arguments reads the text and the workspace, never asks a question.
+                crate::engine::HostFail::Suspend => {
+                    RuntimeError::Package("reading what was typed asked for a decision".to_owned())
+                }
+            })
+    }
+
     /// The default of the parameter `at` of `action`, computed now over the arguments before
     /// it: what its form starts filled in with. `None` when it has none.
     ///
@@ -694,20 +744,6 @@ impl Runtime {
         tilolang::natural::dated(text, now, offset)
     }
 
-    /// Run a flow. It finishes, or suspends on a suggestion waiting for a decision.
-    ///
-    /// # Errors
-    ///
-    /// An unknown flow, arguments that do not fit, or a trap.
-    pub fn run_flow(
-        &self,
-        principal: &Principal,
-        flow: &str,
-        args: Vec<Value>,
-    ) -> Result<FlowOutcome, RuntimeError> {
-        self.core.start_flow(principal, flow, args, Vec::new())
-    }
-
     /// Answer the suggestion a run waits on and continue the run.
     ///
     /// # Errors
@@ -718,7 +754,7 @@ impl Runtime {
         run: &RunId,
         approver: &Principal,
         resolution: Resolution,
-    ) -> Result<FlowOutcome, RuntimeError> {
+    ) -> Result<crate::run::RunOutcome, RuntimeError> {
         self.core.resolve(run, approver, resolution)
     }
 
@@ -743,9 +779,9 @@ impl Runtime {
         )
     }
 
-    /// Open a view for `principal` in the window `window`: its `window` state is how their
-    /// window shows the resource and its `lens` state where they are in it, both that person's
-    /// own, so another person looking at the same window is not moved by either.
+    /// Open a view for `principal` in the window `window`: the state it declares is how their
+    /// window shows the resource and where they are in it, that person's own, so another person
+    /// looking at the same window is not moved by it.
     ///
     /// # Errors
     ///
@@ -862,11 +898,43 @@ impl Runtime {
             })
     }
 
+    /// As [`Runtime::refusal`], with what a view's offer of the action reads: whether the action
+    /// can apply to `subject` where it is offered at all, and the first reason it cannot.
+    ///
+    /// # Errors
+    ///
+    /// The conditions trap, or answer something else than a text.
+    pub fn applies_reading(
+        &self,
+        action: &str,
+        subject: &ResourceRef,
+        viewer: &Principal,
+    ) -> Result<(Option<String>, Reading), RuntimeError> {
+        let subject = crate::value::RefValue {
+            target: Rc::new(subject.clone()),
+            author: None,
+        };
+        self.core
+            .applies_reading(action, &subject, viewer)
+            .map_err(|error| match error {
+                crate::engine::HostFail::Trap(message) => RuntimeError::Package(message),
+                crate::engine::HostFail::Suspend => {
+                    RuntimeError::Package("an applies condition waited on a decision".into())
+                }
+            })
+    }
+
     /// Signatures of every loaded package, for discovery ([`catalogue`](mod@crate::catalogue)).
     pub fn catalogue(&self) -> Vec<Signature> {
         let pkgs = self.core.registry.borrow().packages();
         let metas: Vec<&Meta> = pkgs.iter().map(|p| &p.meta).collect();
         catalogue(&metas)
+    }
+
+    /// Where `web.get` and `web.post` reach: the network of the device whose code makes the
+    /// request, which runs each request once, and whose journal entry a replay answers from.
+    pub fn set_web(&self, transport: impl crate::web::WebTransport + 'static) {
+        *self.core.web.borrow_mut() = Some(Box::new(transport));
     }
 
     /// Where `model_call` goes.
@@ -877,6 +945,12 @@ impl Runtime {
     /// How views show a principal's name. Until it is set, a principal is its id.
     pub fn set_name_host(&self, host: impl crate::core::NameHost + 'static) {
         *self.core.names.borrow_mut() = Some(Box::new(host));
+    }
+
+    /// How a day or a time of day reads in a sentence (a row's line, a notice) rather than in a
+    /// view node. Until it is set, its stored text.
+    pub fn set_shown_host(&self, host: impl crate::core::ShownHost + 'static) {
+        *self.core.shown.borrow_mut() = Some(Box::new(host));
     }
 
     /// What `now` reads: the current time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. The
@@ -1038,16 +1112,40 @@ impl Runtime {
         std::mem::take(&mut *self.core.seen_writes.borrow_mut())
     }
 
-    /// The window and lens state the person set in views since last asked, for the host to
+    /// The view state the person set in views since last asked, for the host to
     /// keep in their own record: one entry per slot, as it is now.
     pub fn take_view_writes(&self) -> Vec<(crate::view_state::StateKey, Value)> {
         self.core.view_states.borrow_mut().take_writes()
     }
 
-    /// Put back a slot of window or lens state the person's record keeps: what they picked
+    /// Put back a slot of view state the person's record keeps: what they picked
     /// here before, or on another device of theirs. A slot already holding it is left alone.
     pub fn set_view_state(&self, key: crate::view_state::StateKey, value: Value) -> bool {
         self.core.view_states.borrow_mut().restore(key, value)
+    }
+
+    /// Stage the value the view state `state` of the app `app` starts from, before anyone
+    /// picks there: `text` names the value as the app's own code writes it (`Task.today`,
+    /// `Side.right`), read against the state's declared type. A window that reads the state
+    /// shows it until its person picks there, and it is no one's change to keep.
+    ///
+    /// # Errors
+    ///
+    /// A message when the app declares no such state, or the state takes no such value.
+    pub fn stage_view_state(&self, app: &str, state: &str, text: &str) -> Result<(), String> {
+        let (id, value) = {
+            let reg = self.core.registry.borrow();
+            let pkg = reg
+                .packages()
+                .into_iter()
+                .find(|pkg| pkg.meta.app == app)
+                .ok_or_else(|| format!("no loaded package is the app `{app}`"))?;
+            let declared = crate::staging::declared_state(&pkg.meta, app, state)?;
+            let value = crate::staging::state_value(&reg, app, &pkg.meta, &declared.ty, text)?;
+            (declared.id, value)
+        };
+        self.core.view_states.borrow_mut().seed(&id, value);
+        Ok(())
     }
 
     /// The workspace's members now, from its membership, and how its grants decide who of
@@ -1232,6 +1330,34 @@ impl Runtime {
     /// This runtime's engine: its instances, its limits and its profile.
     pub fn engine(&self) -> &crate::engine::Engine {
         &self.core.engine
+    }
+
+    /// Count what each unit of the packages' code costs from here on: the fuel each call
+    /// spends, what it reads of the store, and the offers it publishes, by the unit that ran
+    /// ([`crate::cost`]). Cheap while off, which it is until asked: a window opened after this
+    /// is what [`Self::costs`] then reports.
+    pub fn record_costs(&self, on: bool) {
+        self.core.costs.record(on);
+        if on {
+            self.reset_costs();
+        }
+    }
+
+    /// Forget what the units cost, keeping [`Self::record_costs`] as it is: what separates one
+    /// interaction from the next.
+    pub fn reset_costs(&self) {
+        let reads = self.core.store.borrow().reads();
+        self.core.costs.reset(reads);
+    }
+
+    /// What the units cost since [`Self::record_costs`] turned it on or [`Self::reset_costs`]
+    /// last cleared it, the one that cost the most fuel first; `None` while nothing is counted.
+    #[must_use]
+    pub fn costs(&self) -> Option<crate::cost::Costs> {
+        self.core
+            .costs
+            .on()
+            .then(|| self.core.costs.costs(self.core.store.borrow().reads()))
     }
 
     /// How many references to collection items views and code built so far: what reading

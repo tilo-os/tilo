@@ -167,6 +167,10 @@ pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
 pub mod channel_settings;
 #[cfg(feature = "broker-transport")]
+pub mod commit_log;
+#[cfg(feature = "broker-transport")]
+pub mod commits;
+#[cfg(feature = "broker-transport")]
 pub mod external_moderation;
 pub mod handoff;
 mod history;
@@ -505,6 +509,11 @@ pub enum CollabRequest {
         mutation: DocumentMutation,
         /// Host-local original contributor custody; never serialized on the wire.
         authorization: Option<std::sync::Arc<dyn DocumentCustody>>,
+        /// The action this mutation is one part of, when the caller made it
+        /// as part of an action that writes more than one unit: every part
+        /// carries the same commit, and a peer applies them all together or
+        /// not at all. `None` publishes a commit for this unit alone.
+        commit: Option<collab_types::WorkspaceCommit>,
     },
     /// Ask the broker to select one existing holder of this exact route as a
     /// snapshot responder. Safe to retry while no holder is available.
@@ -685,6 +694,7 @@ impl CollabRequest {
         Self::Document {
             mutation: DocumentMutation::Snapshot(data),
             authorization: None,
+            commit: None,
         }
     }
 
@@ -692,6 +702,22 @@ impl CollabRequest {
         Self::Document {
             mutation: DocumentMutation::Incremental(data),
             authorization: None,
+            commit: None,
+        }
+    }
+
+    /// One part of the action `commit` names: the changes this unit made,
+    /// carrying the action across every unit it wrote, so a peer applies all
+    /// of it or none. The commit's device is stamped by the transport that
+    /// signs the frame.
+    pub fn document_action(
+        mutation: DocumentMutation,
+        commit: collab_types::WorkspaceCommit,
+    ) -> Self {
+        Self::Document {
+            mutation,
+            authorization: None,
+            commit: Some(commit),
         }
     }
 }
@@ -1142,6 +1168,23 @@ impl CollaborationManager {
     #[must_use]
     pub fn sync_lost(&self) -> bool {
         self.sync_expected && matches!(self.state(), CollaborationState::Offline(_))
+    }
+
+    /// Every complete action this endpoint has seen in `workspace`, oldest
+    /// first: one entry per action, naming its author, its time, what it ran
+    /// and every unit change it made. Empty for a manager with no broker
+    /// connection.
+    #[cfg(feature = "broker-transport")]
+    #[must_use]
+    pub fn action_history(&self, workspace: &str) -> Vec<crate::commits::CommitHistory> {
+        let Backend::Transport(transport) = &self.backend else {
+            return Vec::new();
+        };
+        transport
+            .as_any()
+            .and_then(|any| any.downcast_ref::<broker::BrokerTransport>())
+            .map(|channel| channel.action_history(workspace))
+            .unwrap_or_default()
     }
 
     /// The current state when it differs from the one this method last
@@ -2177,6 +2220,7 @@ mod portable_transport_tests {
             mutation: collab_types::DocumentMutation::Snapshot(vec![1]),
 
             authorization: None,
+            commit: None,
         });
         assert!(!manager.is_connected());
         assert!(manager.poll().is_empty());
@@ -2190,6 +2234,7 @@ mod portable_transport_tests {
         manager.send(CollabRequest::Document {
             mutation: collab_types::DocumentMutation::Snapshot(vec![1]),
             authorization: None,
+            commit: None,
         });
         assert!(manager.sync_lost());
     }

@@ -11,15 +11,19 @@ added only where a pattern is common, awkward otherwise, and no existing mechani
    the whole value. `enum` is only for plain named cases without data (`enum NoteOrder { created,
    title }`).
 2. **Reflection.** The log already records every change with its author, time and action, so
-   views and code can read it: `created(r)` and `updated(r)` (when, and by whom) and
-   `history(r)` (versions, each with who, when and which action). Apps stop storing their own
+   views and code can read it: `created(r)` and `updated(r)` (when, and by whom), `changed(r,
+   .field)` (the version that last changed one of its fields) and `history(r)` (versions, each
+   with who, when and which action). Apps stop storing their own
    timestamps; Chat's `at: Time = Time("1970-01-01T00:00:00Z")` placeholder goes, and detail
    views show "edited when, by whom" from it. Lists sort by them like by a field
-   (`sort_by(c -> updated(c), desc)`), answered by the index. Code can't rewrite the log, but undo, redo, restoring a version and reverting someone's
+   (`sort_by(c -> updated(c), desc)`), answered by the index; so does `changed` for a field
+   (`group: t -> changed(t, .done)?.at.day()`). Code can't rewrite the log, but undo, redo,
+   restoring a version and reverting someone's
    changes are ordinary actions on it: attributed, permission-checked and themselves undoable.
-3. **Scenarios set recorded inputs.** `as mia at 2026-06-29T07:02Z { post(...) }` runs the
-   block with that time as `now`. Seed data stops overwriting fields after the fact.
-4. **Typing is personal.** Text being composed is lens state in the view (`lens draft: Text`),
+3. **Scenarios set recorded inputs.** `invoke(post(...), by: mia, at: 2026-06-29T07:02Z)` runs
+   the call as mia at that time, so `now` and `invoker` are what the data was made with. Seed
+   data stops overwriting fields after the fact.
+4. **Typing is personal.** Text being composed is view state in the view (`state draft: Text`),
    passed to the action as an argument. A shared `draft` field on a conversation or list is a
    bug: two people typing overwrite each other.
 5. **Positions are recorded by neighbour.** A move names a neighbour (`after:`, `before:`) or a
@@ -30,11 +34,11 @@ added only where a pattern is common, awkward otherwise, and no existing mechani
    to the item, so storage no longer shows in the language: a card moves between columns with
    `move` on the column it goes to and stays the same card, instead of an app keeping a
    `column` field beside one collection of every card.
-7. **Roots are named values of any type.** `type Notes = Collection<Note>`, `root notes: Notes`;
-   `type Channels = Collection<Category | Channel>`, `root channels: Channels`. No wrapper type
-   named after the app. Other code reaches a root by the app's alias and the root's name
-   (`notes.notes`) wherever authority allows, so a dashboard needs no `attach` action or optional
-   fields. Views attach with `default view chat for channels`.
+7. **Roots are named records.** `type Notebook { notes: Collection<Note> }`,
+   `root notebook: Notebook`; `type Conversations { channels: Collection<Category | Channel> }`,
+   `root conversations: Conversations`. Other code reaches a root by the app's alias and the
+   root's name (`notes.notebook.notes`) wherever authority allows, so a dashboard needs no
+   `attach` action or optional fields. Views attach with `default view sidebar for Conversations`.
 
 ## Syntax
 
@@ -63,9 +67,9 @@ terse views make agent answers cheaper and more reliable.
    task_row(x) }` gives the `row: (T) -> View` parameter a block that the tree draws once per
    node it shows, so a view written in `std` names the item's parts without the caller
    repeating them.
-9. **An item block names the values it draws with:** `std.rows(...) { (x, parent) -> row(x,
-   parent) }` for a parameter typed `(T, Option<T>) -> View`. The item and the item it stands
-   under reach the row, so a child leaves out the fact its parent already states.
+9. **An item block names the values it draws with:** `std.list(items) { (x, at) -> row(x,
+   at) }` for a parameter typed `(T, Option<Principal>) -> View`. The item and who else is at
+   it reach the row; the item it stands under the row says itself, as the list item's `parent:`.
 
 Values present themselves: a `Time`, a person or an amount passed to a component renders in the
 platform's format (relative times, avatar and name, localized money), never formatted by hand.

@@ -5,7 +5,7 @@
 //! these effects names the tracker wherever it is read from. The Tasks app
 //! answers them; nothing here touches another app.
 
-use ui::prelude::*;
+use tilo_resource::{Effect, Id};
 
 /// The app that keeps the workspace's notes.
 pub const NOTES: &str = "so.tilo.notes";

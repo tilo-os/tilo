@@ -213,10 +213,10 @@ impl Order {
 #[must_use]
 pub fn store_pred(pred: &Pred<String>, ty: &TypeMeta, app: &str) -> Option<crate::store::Pred> {
     pred.resolve(&mut |id: &String| {
-        let field = ty.fields.iter().find(|f| f.id == *id)?;
+        let field = ty.fields.iter().find(|f| f.id == **id)?;
         let parsed = crate::meta::parse_ty(&field.ty, app).ok()?;
         let kind = crate::meta::field_kind(field, &parsed);
-        crate::store::FieldRead::of(&field.id, kind, &parsed, field.default.as_ref())
+        crate::store::FieldRead::of(id, kind, &parsed, field.default.as_ref())
     })
 }
 

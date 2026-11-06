@@ -659,39 +659,7 @@ pub enum Readers {
     Granted,
 }
 
-/// What one of something is called and what several are, in a sentence:
-/// `mailbox` and `mailboxes`, `person` and `people`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct Noun {
-    pub one: String,
-    pub many: String,
-}
-
-impl Noun {
-    #[must_use]
-    pub fn new(one: impl Into<String>, many: impl Into<String>) -> Self {
-        Self {
-            one: one.into(),
-            many: many.into(),
-        }
-    }
-}
-
-/// What a resource is, in the words people use for it: its type's noun, the
-/// name of the app whose type it is, and whether it is that app's root.
-/// What search matches a query naming what something is ("my mails",
-/// "notes") against, rather than its title.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct ResourceType {
-    /// Its type: `mailbox`, `mailboxes`.
-    pub noun: Noun,
-    /// Its app, as people call it: `Mail`, `mails`.
-    pub app: Noun,
-    /// The app's root: its one resource of the type, which a search naming
-    /// the app means ("my mails" is Mail's root, drawn as its default view).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub root: bool,
-}
+pub use crate::noun::{Noun, ResourceType, in_words, plural, singular};
 
 /// Whether `kind` names a control the window already draws, or an
 /// operation of the host it runs on: nodes published so a caller can
@@ -1762,6 +1730,16 @@ impl ActionSpec {
         }
     }
 
+    /// The parameter one line of typed text fills, when the action is a
+    /// capture: it declares one ([`ActionParam::entry`]).
+    #[must_use]
+    pub fn entry_param(&self) -> Option<&str> {
+        self.params()
+            .iter()
+            .find(|param| param.entry)
+            .map(|param| param.name.as_ref())
+    }
+
     /// `text` as this action's typed arguments, when it is a prompted action.
     pub fn prompt_arguments(
         &self,
@@ -2719,12 +2697,13 @@ fn parse_argument(name: &str, ty: ParamType, text: &str) -> Vec<(String, ArgValu
         .unwrap_or_default()
 }
 
-/// The parameter one line of palette text binds to: the first required one,
-/// else the first.
+/// The parameter one line of palette text binds to: the one that takes an
+/// entry, else the first required one, else the first.
 fn primary_param(params: &[ActionParam]) -> Option<&ActionParam> {
     params
         .iter()
-        .find(|p| p.required)
+        .find(|p| p.entry)
+        .or_else(|| params.iter().find(|p| p.required))
         .or_else(|| params.first())
 }
 

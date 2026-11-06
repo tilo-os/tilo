@@ -469,12 +469,35 @@ impl Core {
                 (name.clone(), r)
             })
             .collect();
+        // A `show` of a resource whose type a Rust app's views draw: that view's tree stands here,
+        // rendered inline as its own boundary (one-app-model.md §2). What the app's view built is
+        // kept as the runtime's nodes, wired to the runtime's actions, so the host draws it as it
+        // draws a tilolang view and a press goes through the same door.
+        if n.kind == SHOW
+            && let Some(node) =
+                self.rust_show(cx, n, &key, &events, walk, acc, hook.as_deref_mut())?
+        {
+            return Ok(node);
+        }
         // A call of another package's view: its boundary renders it where it stands, and this
         // node is the fragment the boundary's tree goes in.
         if let Some(boundaries) = hook.as_deref_mut()
             && let Some(call) = self.view_call(&n.kind, &n.props, cx.offer, acc)
         {
-            return Self::foreign_view(cx, n, key, events, call?, walk, boundaries);
+            match call {
+                Ok(call) => {
+                    return Self::foreign_view(cx, n, key, events, call, walk, boundaries);
+                }
+                // A view call of an app whose package this runtime does not hold: the session
+                // publishes it, and until it comes the call waits where it stands, so the
+                // rest of the view draws. A call that failed for anything else is the
+                // caller's to report.
+                Err(error) if self.read_waited(&error) => {
+                    let waiting = self.waiting_rendered();
+                    return Ok(Self::waiting_view(n, key, events, acc, waiting));
+                }
+                Err(error) => return Err(error),
+            }
         }
         // A view call's keys are the same at every call site, so they go under the call's key.
         let calls = n.kind == "fragment" || n.kind.starts_with(FOREIGN_VIEW) || n.kind == SHOW;
@@ -572,6 +595,30 @@ impl Core {
             anchor: n.anchor.clone(),
             children,
         })
+    }
+
+    /// The fragment a view call waiting on another app's package stands for: its props without
+    /// the arguments passed, and the toolkit's waiting state where its tree would go. The call
+    /// runs again when the package arrives ([`crate::foreign::packages_key`]), which the
+    /// waiting state notes as read.
+    fn waiting_view(
+        n: &NodeBuild,
+        key: String,
+        events: std::collections::BTreeMap<String, Retained>,
+        acc: &mut Acc,
+        waiting: Rendered,
+    ) -> UiNode {
+        let mut props = n.props.clone();
+        props.retain(|name, _| !name.starts_with(ARG_PREFIX) && name != SHOWN);
+        UiNode {
+            kind: "fragment".to_owned(),
+            key,
+            props,
+            binding: n.binding.clone(),
+            events,
+            anchor: n.anchor.clone(),
+            children: vec![acc.absorb(waiting)],
+        }
     }
 
     /// The children of `n`, its loops' rows in their places, and how many there are: a
@@ -873,6 +920,85 @@ impl Core {
         Ok((vt, vec![Value::Ref(shown.clone())]))
     }
 
+    /// A `show` of a resource whose type a Rust app draws: that view's tree, made the runtime's and
+    /// keyed where the `show` node stands, so the host builds it as it builds a tilolang view.
+    /// `None` when no Rust app draws the resource's type, so the node resolves as a package's view
+    /// does.
+    fn rust_show(
+        &self,
+        cx: &Build<'_>,
+        n: &NodeBuild,
+        key: &str,
+        events: &std::collections::BTreeMap<String, Retained>,
+        _walk: Walk<'_>,
+        acc: &mut Acc,
+        _hook: Option<&mut (dyn Boundaries + '_)>,
+    ) -> Result<Option<UiNode>, RuntimeError> {
+        let Some(Value::Ref(shown)) = n.props.get(SHOWN) else {
+            return Ok(None);
+        };
+        let views = crate::rust_views::app_of(&self.rust_views, &shown.target.ty);
+        let Some(app) = views else {
+            return Ok(None);
+        };
+        let named = match n.props.get(SHOWN_AS) {
+            Some(Value::Text(view)) if !view.is_empty() => view.clone(),
+            _ => String::new(),
+        };
+        let Some(decl) = crate::rust_views::view_for(&app, &shown.target.ty, &named) else {
+            return Ok(None);
+        };
+        let kind = crate::rust_views::kind_of(&app, &shown.target.ty);
+        let resource = crate::rust_views::RustResource {
+            id: shown.target.id_string(),
+            kind: kind.clone(),
+        };
+        // The reading, whole, and the slot that moves when it does, so the boundary runs again.
+        let reading = self.foreign.borrow_mut().whole(&shown.target);
+        if let Some((_, generation)) = &reading {
+            let state_key = crate::foreign::reading_key(&shown.target);
+            acc.state_reads.push((state_key.clone(), *generation));
+            if let Some(seen) = self.view_states.borrow().get(&state_key).cloned() {
+                acc.state_seen.push((state_key, seen));
+            }
+        }
+        let rendered = app.render(
+            &kind,
+            &decl.name,
+            &resource,
+            reading.as_ref().map(|(json, _)| json),
+            cx.offer.viewer,
+            cx.offer.window,
+        );
+        let author = crate::ids::ModuleHash::principal(app.app());
+        let root = {
+            let mut retained = Vec::new();
+            let mut retain = |value: Value| {
+                let r = self.frames.borrow_mut().retain(value);
+                retained.push(r);
+                r
+            };
+            let root = rendered
+                .tree
+                .into_ui(&rendered.events, &shown.target, &author, &mut retain)
+                .map_err(RuntimeError::Package)?;
+            acc.retained.extend(retained);
+            root
+        };
+        let mut node = UiNode {
+            kind: "fragment".to_owned(),
+            key: key.to_owned(),
+            props: std::collections::BTreeMap::new(),
+            binding: n.binding.clone(),
+            events: events.clone(),
+            anchor: n.anchor.clone(),
+            children: vec![scope(key, root)],
+        };
+        node.props
+            .retain(|name, _| !name.starts_with(ARG_PREFIX) && name != SHOWN);
+        Ok(Some(node))
+    }
+
     /// The view a window's own boundary shows its resource through, and the state it read to
     /// know: the one the bar's view switch chose among the views of the resource's type, when
     /// there is one and it is not the view the window opened on. `None` when the type offers a
@@ -897,7 +1023,7 @@ impl Core {
         if views.len() < 2 {
             return (None, None);
         }
-        let key = StateKey::window(
+        let key = StateKey::view(
             offer.window,
             offer.viewer.0.clone(),
             format!("{VIEW_STATE}{}", resource.target.id_string()),
@@ -920,12 +1046,12 @@ impl Core {
     }
 
     /// The view a `show` node draws its resource through: the one a person chose in the bar's
-    /// view switch (the tab of [`surfaces`](Core::surfaces), kept in the window state slot
+    /// view switch (the tab of [`surfaces`](Core::surfaces), kept in the view state slot
     /// [`VIEW_STATE`] names for the resource, read here so the window runs again when it
     /// changes). `None` while nobody chose, or the choice names a view the resource's type does
     /// not offer any more.
     fn chosen_view(&self, resource: &RefValue, offer: Offer<'_>, acc: &mut Acc) -> Option<ViewId> {
-        let key = StateKey::window(
+        let key = StateKey::view(
             offer.window,
             offer.viewer.0.clone(),
             format!("{VIEW_STATE}{}", resource.target.id_string()),
@@ -947,7 +1073,8 @@ impl Core {
     }
 
     /// The view a `view:<app>:<view id>` node applies and its arguments, from the node's
-    /// `arg.<name>` properties.
+    /// `arg.<name>` properties. A view of an app whose package this runtime does not hold is
+    /// the ask for that package, and the call waits on it ([`Core::missing_view`]).
     pub(crate) fn call_of(
         &self,
         target: &str,
@@ -956,7 +1083,9 @@ impl Core {
         let (app, view) = target
             .split_once(':')
             .ok_or_else(|| RuntimeError::Package(format!("malformed view node `{target}`")))?;
-        let vt = self.view_target(view)?;
+        let vt = self
+            .view_target(view)
+            .map_err(|_: RuntimeError| self.missing_view(app, view))?;
         let pkg: std::rc::Rc<Package> = self
             .registry
             .borrow()

@@ -447,6 +447,7 @@ impl Session {
                 .directory
                 .as_ref()
                 .map(tilo_sheets::Seat::presentation),
+            shared.invite.as_ref().map(tilo_sheets::Seat::presentation),
             shared.portal.as_ref().map(tilo_sheets::Seat::presentation),
             shared
                 .file_picker

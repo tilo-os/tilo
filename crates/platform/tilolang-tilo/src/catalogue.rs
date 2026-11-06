@@ -554,7 +554,6 @@ impl Reader<'_> {
                     doc: named.doc.clone(),
                     fields,
                     search: SearchMeta::default(),
-                    holder: false,
                     origin: None,
                 });
             }
@@ -588,7 +587,6 @@ impl Reader<'_> {
             },
             fields,
             search: SearchMeta::default(),
-            holder: false,
             origin: None,
         });
     }
@@ -660,6 +658,8 @@ impl Reader<'_> {
             frequent: false,
             guard: false,
             applies: false,
+            uses: Vec::new(),
+            invokes: false,
         });
     }
 

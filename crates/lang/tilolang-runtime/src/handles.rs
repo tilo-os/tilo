@@ -10,8 +10,8 @@
 
 use std::collections::HashMap;
 
-use crate::flow::Journal;
 use crate::ids::{ModuleHash, Principal, RunId};
+use crate::run::{Clock, Journal, JournalEntry};
 use crate::space::Space;
 use crate::store::Txn;
 use crate::value::{ActionRef, ResourceRef, Value};
@@ -46,18 +46,27 @@ pub struct ActionState {
     pub queued: Vec<QueuedBlock>,
     /// Set for a scenario's action, the only one that may act as a named person.
     pub scenario: bool,
-    /// The people a scenario acts as (`as who at time { ... }`), innermost last, each with the
-    /// time it acts at when it names one; `invoker` and `now` read the last one, or `invoker`
-    /// and the invocation's time when there is none.
-    pub acting_as: Vec<(Principal, Option<String>)>,
-    /// What a scenario makes resources from (`from r { ... }`), innermost last: the change it
-    /// commits records it as what they were made from, as an action invoked from `r` does.
-    pub made_from: Vec<ResourceRef>,
-    /// What the change records about its cause; a scenario commits each `as` block under it,
-    /// as the person and at the time the block names.
+    /// The invocations a scenario runs in (`invoke(act(args), by: mia, at: time, from: r)`),
+    /// innermost last: `invoker` and `now` read the last one, or the invocation's own principal
+    /// and time when it names none.
+    pub invocations: Vec<Invocation>,
+    /// What the change records about its cause; a scenario commits each invocation under it, as
+    /// the person and at the time it names.
     pub note: Box<crate::store::ChangeNote>,
     /// The resources the transaction changed, as [`ResourceRef::id_string`] writes them.
     pub touched: std::collections::BTreeSet<String>,
+    /// The run this action is: its journal, where a call to another action leaves it. An action
+    /// that calls nothing completes in one attempt and commits one change.
+    pub run: Box<RunState>,
+}
+
+/// One invocation a scenario runs: who acts, when, and the resource what it makes was made
+/// from, each where the scenario names one.
+#[derive(Clone, Debug)]
+pub struct Invocation {
+    pub who: Principal,
+    pub at: Option<String>,
+    pub from: Option<ResourceRef>,
 }
 
 /// A block an action asked the host to run after it commits.
@@ -68,22 +77,48 @@ pub struct QueuedBlock {
     pub source: String,
 }
 
-pub struct FlowState {
+/// The run the code now executing is part of: an action's, or an agent program's. Its journal
+/// is what a suspension and the resumption that follows replay, and where the reads of a run
+/// that may suspend are recorded.
+pub struct RunState {
     pub run: RunId,
     pub journal: Journal,
     pub cursor: usize,
     pub invoker: Principal,
     /// Who proposed the run, when the person running it accepted a suggestion.
     pub suggested_by: Option<Principal>,
+    /// The clock and the person's zone, read once per run: a run resumed tomorrow reads the
+    /// moment it started ([`JournalEntry::Clock`]).
+    pub clock: Option<Clock>,
+    /// Whether the code may invoke another action, and so may suspend and be run again: only
+    /// then are its reads journaled. An action that calls nothing reads what it likes and
+    /// commits one change.
+    pub journaled: bool,
+}
+
+impl RunState {
+    /// The entry the run recorded for the read it is making now, when it made it before: a
+    /// replay's answer.
+    pub fn next_entry(&mut self) -> Option<JournalEntry> {
+        let entry = self.journal.entries.get(self.cursor)?.clone();
+        self.cursor = self.cursor.saturating_add(1);
+        Some(entry)
+    }
+
+    /// Records an entry for the run to replay.
+    pub fn push(&mut self, entry: JournalEntry) {
+        self.journal.entries.push(entry);
+        self.cursor = self.cursor.saturating_add(1);
+    }
 }
 
 #[derive(Default)]
 pub struct ViewState {
     /// The space this run of the view was offered.
     pub space: Space,
-    /// The window the view runs in: what its `window` and `lens` state is kept under.
+    /// The window the view runs in: what its `state` is kept under.
     pub window: String,
-    /// The person looking: whose `window` and `lens` state the view reads.
+    /// The person looking: whose `state` the view reads.
     pub viewer: Principal,
     /// Every view state slot read, with its generation at the time.
     pub state_reads: Vec<(StateKey, u64)>,
@@ -110,7 +145,9 @@ pub struct ViewState {
 pub enum FrameKind {
     Pure,
     Action(ActionState),
-    Flow(Box<FlowState>),
+    /// An agent's program: a run whose changes are all made through the host's invoker, so it
+    /// opens no transaction of its own.
+    Program(Box<RunState>),
     View(ViewState),
     /// The frame of a call into another package's `fn`: it runs as that package's own code, so
     /// what it creates is authored there, and what it reads is what the view that called it
@@ -268,13 +305,13 @@ impl Frames {
     /// The state of the view being run, looking past the frames of pure code and of calls into
     /// other packages' code: those read what the view showed, and the view runs again when what
     /// they read changes, as if it had read it itself. None when the code running was not called
-    /// from a view (an action's, a flow's, a block's).
+    /// from a view (an action's, a program's, a block's).
     pub fn view(&self) -> Option<&ViewState> {
         for frame in self.stack.iter().rev() {
             match &frame.kind {
                 FrameKind::Call | FrameKind::Pure => {}
                 FrameKind::View(vs) => return Some(vs),
-                FrameKind::Action(_) | FrameKind::Flow(_) => return None,
+                FrameKind::Action(_) | FrameKind::Program(_) => return None,
             }
         }
         None
@@ -286,34 +323,48 @@ impl Frames {
             match &mut frame.kind {
                 FrameKind::Call | FrameKind::Pure => {}
                 FrameKind::View(vs) => return Some(vs),
-                FrameKind::Action(_) | FrameKind::Flow(_) => return None,
+                FrameKind::Action(_) | FrameKind::Program(_) => return None,
             }
         }
         None
     }
 
-    /// The state of the flow being run, looking past the frames of calls into other packages'
-    /// code: what such a call reads the flow read, and a run that is replayed reads it again
-    /// from the journal it made then, rather than from a store the flow itself has since
-    /// changed. None when the code running is not part of a flow.
-    pub fn flow(&self) -> Option<&FlowState> {
+    /// The run the code running is part of, looking past the frames of pure code and of calls
+    /// into other packages' code: what such a call reads the run read, and a run that is run
+    /// again reads it from the journal it made then, rather than from a store the run itself has
+    /// since changed. None in a view or outside one, which read the host live.
+    pub fn run(&self) -> Option<&RunState> {
         for frame in self.stack.iter().rev() {
             match &frame.kind {
-                FrameKind::Call => {}
-                FrameKind::Flow(fs) => return Some(fs),
-                FrameKind::Pure | FrameKind::Action(_) | FrameKind::View(_) => return None,
+                FrameKind::Call | FrameKind::Pure => {}
+                FrameKind::Action(a) => return Some(a.run.as_ref()),
+                FrameKind::Program(p) => return Some(p),
+                FrameKind::View(_) => return None,
             }
         }
         None
     }
 
-    /// [`Self::flow`], to journal a read in.
-    pub fn flow_mut(&mut self) -> Option<&mut FlowState> {
+    /// Whether the code running is an agent's program rather than an app's action.
+    pub fn program(&self) -> bool {
+        for frame in self.stack.iter().rev() {
+            match &frame.kind {
+                FrameKind::Call | FrameKind::Pure => {}
+                FrameKind::Action(_) | FrameKind::View(_) => return false,
+                FrameKind::Program(_) => return true,
+            }
+        }
+        false
+    }
+
+    /// [`Self::run`], to journal a read in.
+    pub fn run_mut(&mut self) -> Option<&mut RunState> {
         for frame in self.stack.iter_mut().rev() {
             match &mut frame.kind {
-                FrameKind::Call => {}
-                FrameKind::Flow(fs) => return Some(fs),
-                FrameKind::Pure | FrameKind::Action(_) | FrameKind::View(_) => return None,
+                FrameKind::Call | FrameKind::Pure => {}
+                FrameKind::Action(a) => return Some(a.run.as_mut()),
+                FrameKind::Program(p) => return Some(p),
+                FrameKind::View(_) => return None,
             }
         }
         None

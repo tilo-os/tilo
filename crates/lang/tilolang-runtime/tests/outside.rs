@@ -168,14 +168,22 @@ root Desk
 default view desk for Desk
 
 view desk(desk: Desk) {
-    std.list(desk, desk.drafts, empty: "No drafts") { d -> row(d.to) }
+    std.list(desk.drafts) { (d, at) ->
+        ui.ListItem(item: d, presence: at) {
+            draft_line(d)
+        }
+    }
+}
+
+view draft_line(d: Draft) {
+    row(d.to)
 }
 
 action address(d: Draft, to: Text) (icon: .user) {
     d.to = to
 }
 
-primary action send(d: Draft) (icon: .send) {
+primary action send(d: Draft) uses time (icon: .send) {
     d.sent = true
     outside("post", (d.to,), at: now + 10s)
 }

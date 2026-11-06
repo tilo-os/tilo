@@ -180,8 +180,10 @@ pub struct ChannelPeer {
     requests: BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>,
     /// Frames to publish, written before they were queued.
     outbox: Vec<MlsGovernanceFrame>,
-    /// Content keys of group states this device left behind that the group
-    /// it is in may lack: handed to the members with its next commit.
+    /// Content keys the group this device is in may lack: those of group
+    /// states it left behind, and those of legacy per-record groups it holds
+    /// for units this group now carries ([`Self::adopt`]). Handed to the
+    /// members with its next commit.
     orphaned: ContentKeyring,
     /// `None` for a peer kept in memory.
     path: Option<PathBuf>,
@@ -725,6 +727,44 @@ impl ChannelPeer {
             // A full keyring keeps what it holds; the rest is lost as before.
             self.orphaned.merge(group.keyring()).ok();
         }
+    }
+
+    /// Every content key this device's group holds, or `None` while it is in
+    /// none.
+    pub fn keyring(&self) -> Option<&ContentKeyring> {
+        match &self.record {
+            MemberRecord::Joined(group) => Some(group.keyring()),
+            MemberRecord::Waiting(_) | MemberRecord::Removed => None,
+        }
+    }
+
+    /// Hand this group's members the content keys in `earlier`, those of a
+    /// legacy group this device holds for a unit this group now carries. The
+    /// keys travel with this group's next commit — [`Self::reconcile`]
+    /// writes one for them alone where the group does not otherwise differ —
+    /// and every later admission passes them on in the joiner's key history,
+    /// so a device that joined after key scopes reads the unit's whole
+    /// history with no holder of the old group online.
+    ///
+    /// Idempotent: keys the group already holds or already queued are not
+    /// queued again, and calling it after the commit changes nothing. The
+    /// commit is signed like every frame, so the handover is attributed to
+    /// the device that made it.
+    ///
+    /// Whether the keys may be handed over is the caller's decision: they
+    /// are the keys of a unit whose readers are exactly this group's.
+    ///
+    /// Returns whether any key was queued.
+    pub fn adopt(&mut self, earlier: &ContentKeyring) -> bool {
+        let MemberRecord::Joined(group) = &self.record else {
+            return false;
+        };
+        let missing = earlier.missing_from(group.keyring());
+        if missing.is_empty() || missing.missing_from(&self.orphaned).is_empty() {
+            return false;
+        }
+        // A full keyring keeps what it holds; nothing is handed over then.
+        self.orphaned.merge(&missing).is_ok()
     }
 
     /// Forget the orphaned keys the group now holds.

@@ -5,9 +5,10 @@ ten minutes. A tilolang program on the door must be at least as terse, and bette
 the shell guesses, with authorship, history, permissions and undo. Today's `tilo_*` tools already
 work even with cheap models; tilolang has to beat them, measured (§9).
 
-Everything here is ordinary tilolang, not an agent dialect: `grep`, the chaining functions,
-assignments that compile to actions, and the typed decisions in §5 are available to every
-program (apps, shortcuts, flows, views). Agents just use them most. Calls that use a model
+Everything here is ordinary tilolang, not an agent dialect: `grep` and the words beside it are
+the agent library (`tilo.agent`), which a session has in scope and any package `use`s like a
+library; the chaining functions are methods of any list; assignments compile to actions; the
+typed decisions in §5 are ordinary declarations. Agents just use them most. Calls that use a model
 declare it like any effect (`uses model`, like `uses web`), and their answers are recorded.
 
 ## 1. One tool, programs, sessions
@@ -18,6 +19,10 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
   is allowed. Anything else is a compile error that names what is allowed, so nothing denied is
   ever attempted.
 - A session keeps its `let` values between calls.
+- A session's words come from the agent library (`tilo.agent`): `grep`, `find`, `read`,
+  `describe`, `print` and `me`, typed tilolang declarations whose implementations are host
+  imports. A session has them in scope with no `use`; a package writes `use tilo.agent as
+  agent` and calls `agent.grep(...)`.
 - A program runs sandboxed as the task, in a tilolang host whose author is that task.
 - **A task is many programs.** Exploring, dead ends, failures, asks, intermediate results: each
   call is one step; the task is the session of steps, with its trail and pending asks. You can
@@ -45,9 +50,10 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
    edit, a method to its type's declared action; each is a broker invocation, a child of the
    task, decided at the action's own node (action-system.md step 3). A program never writes a
    record directly.
-6. **Steps:** one call is one run group for undo; atomic within one origin, flow steps across
-   origins (convergence.md). A preview is a provisional run of those invocations; `confirm`
-   sends the same program again.
+6. **Steps:** one call is one run group for undo. Its changes each commit at their own door,
+   and a change that calls another action runs that call as a change of its own: nothing is
+   atomic across origins (convergence.md, "Calls"). A preview is a provisional run of those
+   invocations; `confirm` sends the same program again.
 
 ### Reading records outside their app
 
@@ -127,8 +133,8 @@ opens them. The task host is not an app, so it gets its own admission instead of
 
 The session's first message says where it is: the workspace, who it acts for, the task's limits,
 and what the person was pointing at if they pointed (canvas.md). There is no `look` call. Words
-for the obvious things: `me`, `this` (what the person pointed at), `here` (what `this` is in),
-and times like `today`, `-7d`.
+for the obvious things: `me` (the agent library's, the person the session acts for), `this`
+(what the person pointed at), `here` (what `this` is in), and times like `today`, `-7d`.
 
 It also lists one line per app the task can use; `describe` gives the detail on demand.
 
@@ -146,8 +152,10 @@ Three familiar shapes:
 - **Chaining with key paths** for everything after: `filter`, `map`, `sort_by`, `count_by`,
   `group`, `take`, `each`, `single` (exactly one, or an error listing the candidates).
 
-Sources are values: other apps' roots combine (`chat.messages + mail.messages + notes`), and
-relationships are system fields (`replies`, backlinks, `created.by`, `written_by`).
+`grep` and `find` are the agent library's (§1); a package reads through `agent.grep(...)` and
+`agent.find(...)` the same way. Sources are values: other apps' roots combine (`chat.messages +
+mail.messages + notes`), and relationships are system fields (`replies`, backlinks, `created.by`,
+`written_by`).
 
 Every result says what it couldn't cover: "38 match; 54 have no place; 12 have unnamed faces".
 An agent can see when an answer is incomplete and widen the search in the same program.
@@ -165,9 +173,10 @@ grep(/^- \[ \] (.*launch.*)/i, in: docs + notes, changed: -14d)
 - Assignments and methods read like ordinary code (`n.title = …`, `t.done = true`,
   `hits.replace("Tilo")`) and compile to the type's real actions: field edits, text splices,
   declared actions. Permissions, attribution and undo apply; nothing bypasses them.
-- **One call is one step.** Changes to workspace resources in one call commit together, at one
-  origin, all or nothing. Calls to outside origins (a mail server, YouTube) can't be atomic with
-  the workspace; they run as flow steps in order (convergence.md, "Flows").
+- **One call is one step.** Changes to workspace resources in one call commit at the door of the
+  action that makes each, in order. Calls to outside origins (a mail server, YouTube) can't be
+  atomic with the workspace; they run as calls in order, each a change of its own (convergence.md,
+  "Calls").
 - **Preview is a property of the call.** When a program would change many resources or destroy
   something, the door answers with a preview instead of applying it; the agent sends the same
   program again with `confirm`.
@@ -192,6 +201,8 @@ asks.where("asks me to do something", above: 0.8)
 stays reproducible and undoable.
 
 ## 6. Reading and describing
+
+`read`, `describe` and `print` are the agent library's words, as `grep` and `find` are (§1).
 
 - `read(r, matching:, around:)` returns text with anchors; big content is paged and states its
   size first. Reading never marks anything read for the person.

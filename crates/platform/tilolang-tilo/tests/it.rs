@@ -12,11 +12,13 @@
 
 mod agent_queries;
 mod bundle;
+mod capture;
 mod chained;
 mod chat;
 mod collab;
 mod columns;
 mod composer;
+mod discussion;
 mod done_days;
 mod engines;
 mod fixtures;
@@ -30,6 +32,7 @@ mod items;
 mod lanes;
 mod legacy;
 mod legibility;
+mod library;
 mod links;
 mod make_from;
 mod marks;
@@ -54,11 +57,12 @@ mod sync;
 mod task;
 mod task_door;
 mod tasks;
+mod tasks_today;
+mod triggers;
 #[cfg(feature = "record")]
 mod undo_own;
 mod unions;
 mod unsaved;
-mod unseen;
 mod upgrade;
 mod views_migration;
 mod words;

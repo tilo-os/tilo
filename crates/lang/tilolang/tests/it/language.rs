@@ -191,7 +191,7 @@ const TALK: &str = "type Talk {\n    draft: Text\n    lines: Collection<Line>\n}
 #[test]
 fn typing_in_a_composer_is_personal() {
     let ok_src = format!(
-        "app t.x \"X\"\n{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    std.transcript(t, t.lines, row: line) {{\n        composer: {{\n            row {{\n                input(bind: draft, fill)\n                button(send(t, draft).then(set(draft, \"\")), icon_only: true)\n            }}\n        }}\n    }}\n}}\n"
+        "app t.x \"X\"\n{TALK}view talk(t: Talk) {{\n    state draft: Text\n    std.transcript(t, t.lines, row: line) {{\n        composer: {{\n            row {{\n                input(bind: draft, fill)\n                button(send(t, draft).then(set(draft, \"\")), icon_only: true)\n            }}\n        }}\n    }}\n}}\n"
     );
     let compiled = crate::common::compile_with(&ok_src, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
     validate(&compiled.wasm);
@@ -211,7 +211,7 @@ fn typing_in_a_composer_is_personal() {
 
 #[test]
 fn an_item_inserted_into_a_collection_of_a_union_is_of_its_own_type() {
-    let src = "app t.x \"X\"\ntype A {\n    a: Text\n}\ntype B {\n    b: Text\n}\ntype Both = Collection<A | B>\nroot both: Both\ndefault view shown for both\nview shown(all: Both) {\n    text(\"{all.len()}\")\n}\naction add_a(all: Both) -> A {\n    all.insert(A(a: \"x\"))\n}\naction named(all: Both) -> Text {\n    let b = all.insert(B(b: \"y\"))\n    b.b\n}\n";
+    let src = "app t.x \"X\"\ntype A {\n    a: Text\n}\ntype B {\n    b: Text\n}\ntype Both {\n    all: Collection<A | B>\n}\nroot both: Both\ndefault view shown for Both\nview shown(both: Both) {\n    text(\"{both.all.len()}\")\n}\naction add_a(both: Both) -> A {\n    both.all.insert(A(a: \"x\"))\n}\naction named(both: Both) -> Text {\n    let b = both.all.insert(B(b: \"y\"))\n    b.b\n}\n";
     let compiled = crate::common::compile_with(src, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
     validate(&compiled.wasm);
 }
@@ -220,12 +220,12 @@ fn an_item_inserted_into_a_collection_of_a_union_is_of_its_own_type() {
 fn an_item_block_names_the_other_slots_beside_the_row() {
     // The row sees the item and the view's state; the composer beside it sees the state only.
     let src = format!(
-        "app t.x \"X\"\n{TALK}view said(t: Talk, l: Line, draft: State<Text>) {{\n    text(l.said)\n}}\nview talk(t: Talk) {{\n    lens draft: Text\n    std.transcript(t, t.lines) {{ l ->\n        said(t, l, draft)\n        composer: {{\n            input(bind: draft, fill)\n        }}\n    }}\n}}\n"
+        "app t.x \"X\"\n{TALK}view said(t: Talk, l: Line, draft: State<Text>) {{\n    text(l.said)\n}}\nview talk(t: Talk) {{\n    state draft: Text\n    std.transcript(t, t.lines) {{ l ->\n        said(t, l, draft)\n        composer: {{\n            input(bind: draft, fill)\n        }}\n    }}\n}}\n"
     );
     let compiled = crate::common::compile_with(&src, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
     validate(&compiled.wasm);
     let item_in_composer = format!(
-        "{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    std.transcript(t, t.lines) {{ l ->\n        text(l.said)\n        composer: {{\n            text(l.said)\n        }}\n    }}\n}}"
+        "{TALK}view talk(t: Talk) {{\n    state draft: Text\n    std.transcript(t, t.lines) {{ l ->\n        text(l.said)\n        composer: {{\n            text(l.said)\n        }}\n    }}\n}}"
     );
     assert!(
         !codes(&item_in_composer).is_empty(),
@@ -237,14 +237,14 @@ fn an_item_block_names_the_other_slots_beside_the_row() {
 fn an_action_a_view_applies_takes_its_view_state_as_it_is_at_the_press() {
     // Given as itself, view state is read when the event fires.
     let pressed = format!(
-        "app t.x \"X\"\n{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    lens n: Int = 1\n    stack {{\n        input(bind: draft)\n        button(send(t, draft).then(set(draft, \"\")))\n        button(\"More\", on: set(n, n))\n    }}\n}}"
+        "app t.x \"X\"\n{TALK}view talk(t: Talk) {{\n    state draft: Text\n    state n: Int = 1\n    stack {{\n        input(bind: draft)\n        button(send(t, draft).then(set(draft, \"\")))\n        button(\"More\", on: set(n, n))\n    }}\n}}"
     );
     let compiled = crate::common::compile_with(&pressed, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
     validate(&compiled.wasm);
     // An argument computed from view state is a function of the module, run at the press on
     // the view state as it is then: a toggle, a count, a draft with more around it.
     let computed = format!(
-        "app t.x \"X\"\n{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    lens open: Bool = false\n    lens n: Int = 1\n    stack {{\n        input(bind: draft)\n        button(send(t, \"{{draft}}!\"))\n        button(\"Toggle\", on: set(open, not open))\n        button(\"More\", on: set(n, n + 1))\n    }}\n}}"
+        "app t.x \"X\"\n{TALK}view talk(t: Talk) {{\n    state draft: Text\n    state open: Bool = false\n    state n: Int = 1\n    stack {{\n        input(bind: draft)\n        button(send(t, \"{{draft}}!\"))\n        button(\"Toggle\", on: set(open, not open))\n        button(\"More\", on: set(n, n + 1))\n    }}\n}}"
     );
     let compiled = crate::common::compile_with(&computed, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
     validate(&compiled.wasm);
@@ -271,14 +271,14 @@ fn an_action_a_view_applies_takes_its_view_state_as_it_is_at_the_press() {
     );
     // Its discipline is a fn's, as a parameter default's: it computes, it changes nothing.
     let acting = format!(
-        "{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    button(send(t, said(t, draft)))\n}}\naction said(t: Talk, d: Text) -> Text {{\n    d\n}}"
+        "{TALK}view talk(t: Talk) {{\n    state draft: Text\n    button(send(t, said(t, draft)))\n}}\naction said(t: Talk, d: Text) -> Text {{\n    d\n}}"
     );
     assert!(
         codes(&acting).iter().any(|c| c == "E043"),
         "{:?}",
         codes(&acting)
     );
-    // A flow or an action reads its own arguments as they are.
+    // An action reads its own arguments as they are.
     ok(
         "action a(c: C, t: Text) {\n    c.t = t\n}\naction b(c: C) {\n    let t = c.t\n    a(c, t)\n}",
     );
@@ -308,7 +308,7 @@ fn a_moment_reads_as_the_day_it_falls_on() {
     // `t.day()` is the day a moment falls on for the person, as `today` is the day it is: a day
     // a list groups its rows by, and a date a row shows.
     ok("fn f(c: C) -> Date {\n    let at = c.at ?? 2026-06-29T07:02Z\n    at.day()\n}");
-    ok("action a(c: C) {\n    c.due = now.day()\n    c.at = now\n}");
+    ok("action a(c: C) uses time {\n    c.due = now.day()\n    c.at = now\n}");
     ok(
         "view w(c: C) {\n    ui.VirtualList {\n        for x in c.items {\n            let heading: Option<Date> = if let at = x.at { .some(at.day()) } else { .none }\n            ui.ListItem(item: x, group: heading) {\n            }\n        }\n    }\n}",
     );
@@ -349,7 +349,7 @@ fn descendants_and_ancestors_follow_the_parent_an_item_names() {
 
 #[test]
 fn a_ui_let_writes_the_type_its_value_is_read_as() {
-    // What `std.rows` writes: a heading of the key the caller groups by, absent when the item
+    // What a row writes: a heading of the key the app groups by, absent when the item
     // names none.
     ok(
         "view w(c: C) {\n    ui.VirtualList {\n        let heading: Option<Date> = if let d = c.due { d } else { .none }\n        ui.ListItem(item: c, group: heading) {\n        }\n    }\n}",

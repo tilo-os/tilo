@@ -147,6 +147,7 @@ suites = [
   "os/tests/bootc_transient_state.sh",
   "os/tests/dnf_layer_repro.sh",
   "os/tests/test_local_image_epoch.py",
+  "os/tests/os_image_gc_sandbox.sh",
   "os/tests/security_audit_kconfig.sh",
   "os/tests/env_runtime_fingerprint.sh",
   "os/tests/boot_chain_source.sh",
@@ -732,7 +733,6 @@ readers = [
   "apps/tilolang/src/packages.rs",
   "apps/tilolang/tests/board.rs",
   "apps/tilolang/tests/history_undo.rs",
-  "apps/tilolang/tests/hosted.rs",
   "apps/tilolang/tests/opening.rs",
   "apps/tilolang/tests/support.rs",
 ]
@@ -778,10 +778,11 @@ readers = [
   "crates/lang/tilolang-runtime/tests/e2e_notes.rs",
   "crates/lang/tilolang-runtime/tests/e2e_todo.rs",
   "crates/lang/tilolang-runtime/tests/programs.rs",
+  "crates/lang/tilolang-runtime/tests/multi_select.rs",
   "crates/lang/tilolang-runtime/tests/provenance.rs",
   "crates/lang/tilolang-runtime/tests/rich_text.rs",
   "crates/lang/tilolang-runtime/tests/window_bar.rs",
-  "crates/lang/tilolang-runtime/tests/window_state_seed.rs",
+  "crates/lang/tilolang-runtime/tests/view_state_seed.rs",
   "crates/lang/tilolang-runtime/tests/written_views.rs",
 ]
 
@@ -799,13 +800,16 @@ inputs = [
   "apps/settings/surface.toml",
 ]
 readers = [
+  "crates/platform/tilolang-tilo/src/bench.rs",
   "crates/platform/tilolang-tilo/src/native.rs",
   "crates/platform/tilolang-tilo/src/platform_apps.rs",
   "crates/platform/tilolang-tilo/src/task.rs",
   "crates/platform/tilolang-tilo/tests/agent_queries.rs",
   "crates/platform/tilolang-tilo/tests/budgets.rs",
   "crates/platform/tilolang-tilo/tests/bundle.rs",
+  "crates/platform/tilolang-tilo/tests/capture.rs",
   "crates/platform/tilolang-tilo/tests/chat.rs",
+  "crates/platform/tilolang-tilo/tests/discussion.rs",
   "crates/platform/tilolang-tilo/tests/done_days.rs",
   "crates/platform/tilolang-tilo/tests/fixtures.rs",
   "crates/platform/tilolang-tilo/tests/history_views.rs",
@@ -825,7 +829,6 @@ readers = [
   "crates/platform/tilolang-tilo/tests/task.rs",
   "crates/platform/tilolang-tilo/tests/tasks.rs",
   "crates/platform/tilolang-tilo/tests/undo_own.rs",
-  "crates/platform/tilolang-tilo/tests/unseen.rs",
   "crates/platform/tilolang-tilo/tests/upgrade_fields.rs",
   "crates/platform/tilolang-tilo/tests/views_migration.rs",
   "crates/platform/tilolang-tilo/tests/words.rs",
@@ -1450,6 +1453,11 @@ inputs = [
   # fails if the list grows.
   "apps/*/Cargo.toml",
   "crates/session/session/tests/baselines/app-side-records.txt",
+  # The app's model, its module and the ABI the host answers: the fixture the record test runs
+  # is that model built for wasm32, so a change to any of them is a change to what it proves.
+  "crates/sdk/tilo-model-abi/",
+  "crates/sdk/tilo-model-guest/",
+  "crates/sdk/tilo-model-host/",
 ]
 readers = [
   "crates/session/session/src/channels/vault.rs",
@@ -1543,6 +1551,10 @@ reason = "needs the built web entry image"
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-image.sh"
 reason = "needs the built Lounge image"
+
+[[unrequired]]
+suite = "os/containers/tilo-lounge/test-integration.sh"
+reason = "starts the built Lounge image and drives its web entry, so it needs both the image and the desktop bundle"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"

@@ -1,9 +1,9 @@
 //! The tracker: every issue of the workspace, and the verbs on them.
 
-use tilo_rich_text::RichText;
-use ui::tilo_actions::ActorKind;
-use ui::tilo_reference::{ProgramStep, ResourceAt};
-use ui::tilo_resource::{
+use tilo_actions::ActorKind;
+use tilo_document::RichText;
+use tilo_reference::{ProgramStep, ResourceAt};
+use tilo_resource::{
     self, ActionCx, Collection, Counter, Id, Model, NonBlank, Refusal, Set, resource,
 };
 
@@ -324,7 +324,7 @@ fn start_run(issue: &mut Issue, starter: String, now: i64) -> Result<u64, Refusa
         .and_then(|previous| previous.delegation.clone());
     issue.run = Some(Run {
         epoch,
-        agent: ui::tilo_resource::Atom(agent),
+        agent: tilo_resource::Atom(agent),
         starter,
         delegation,
         model,
@@ -391,7 +391,7 @@ impl Tracker {
             title: title.into_string(),
             body: RichText::from_markdown(body.unwrap_or_default()),
             status: status.unwrap_or_default(),
-            assignee: assignee.map(ui::tilo_resource::Atom),
+            assignee: assignee.map(tilo_resource::Atom),
             parent,
             author,
             created_ms: cx.now_ms(),
@@ -538,7 +538,7 @@ impl Tracker {
         target.assignee = assignee
             .map(|assignee| assignee.trim().to_owned())
             .filter(|assignee| !assignee.is_empty())
-            .map(ui::tilo_resource::Atom);
+            .map(tilo_resource::Atom);
         run_when_a_person_assigns(target, cx, now)
     }
 

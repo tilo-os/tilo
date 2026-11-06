@@ -30,8 +30,10 @@ use tilo_desktop_model::TabId;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::active_route;
 use tilo_desktop_surface::surface::WindowMenuRow;
+use tilo_desktop_surface::surface::window_menu;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
+use ui::shortcut_table::{KeyChord, ShortcutAction};
 
 /// The window menu's resource in the session's catalogue.
 pub const WINDOW_MENU: &str = "desktop:window-menu";
@@ -77,6 +79,7 @@ fields = [
   { name = "label", type = "text" },
   { name = "enabled", type = "bool" },
   { name = "reason", type = { option = "text" } },
+  { name = "shortcut", type = { option = "text" } },
 ]
 
 [[resources.verbs]]
@@ -226,6 +229,10 @@ struct Row {
     enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+    /// The chord that does the same thing, as the desktop's table binds it
+    /// now: what a person sees at the row's end.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shortcut: Option<String>,
 }
 
 impl From<WindowMenuRow> for Row {
@@ -235,6 +242,7 @@ impl From<WindowMenuRow> for Row {
             label: row.label,
             enabled: row.enabled,
             reason: row.reason,
+            shortcut: None,
         }
     }
 }
@@ -305,29 +313,38 @@ pub struct Shell {
     /// The surfaces over the desk: what stands where, which holds the
     /// keyboard, and what a press outside one closes.
     overlays: Overlays,
+    /// The desktop's one shortcut table, so a menu row shows the chord a
+    /// press doing the same thing would be, as the person binds it now.
+    shortcuts: crate::mount::panels::Shortcuts,
 }
 
 impl Shell {
     /// The shell over `handle`, publishing the surfaces in `overlays`.
     #[must_use]
-    pub fn new(handle: DesktopHandle, overlays: Overlays) -> Self {
+    pub(crate) fn new(
+        handle: DesktopHandle,
+        overlays: Overlays,
+        shortcuts: crate::mount::panels::Shortcuts,
+    ) -> Self {
         Self {
             handle,
             state: ShellState::default(),
             overlays,
+            shortcuts,
         }
     }
 
     /// Mount it as one of the session's services, publishing the surfaces in
     /// `overlays`.
-    pub fn mount(
+    pub(crate) fn mount(
         services: &Rc<std::cell::RefCell<tilo_service::Services>>,
         handle: &DesktopHandle,
         overlays: Overlays,
+        shortcuts: crate::mount::panels::Shortcuts,
     ) {
         services
             .borrow_mut()
-            .add(Box::new(Self::new(handle.clone(), overlays)));
+            .add(Box::new(Self::new(handle.clone(), overlays, shortcuts)));
     }
 
     /// The tab of the window in front: the active group's, in the strip on
@@ -567,23 +584,74 @@ impl Service for Shell {
 impl Shell {
     /// The window menu as the desk offers it now.
     fn window_menu(&self) -> Reading {
-        let Some(menu) = &self.state.menu else {
+        let Some(open) = &self.state.menu else {
             return Reading {
                 tab: None,
                 anchor: None,
                 rows: Vec::new(),
             };
         };
-        let tab = menu.tab;
+        let tab = open.tab;
         Reading {
             tab: Some(tab.to_string()),
-            anchor: self.anchor(tab, menu.anchor),
-            rows: self
-                .handle
-                .window_menu(tab)
-                .into_iter()
-                .map(Row::from)
-                .collect(),
+            anchor: self.anchor(tab, open.anchor),
+            rows: self.rows(tab),
         }
     }
+
+    /// The rows the window showing `tab` offers, each carrying the chord that
+    /// does the same thing.
+    fn rows(&self, tab: TabId) -> Vec<Row> {
+        self.handle
+            .window_menu(tab)
+            .into_iter()
+            .map(|row| Row {
+                shortcut: self.row_shortcut(&row.id),
+                ..Row::from(row)
+            })
+            .collect()
+    }
+
+    /// The chord a press doing what row `id` does would be, as the desktop's
+    /// table binds it now: the person sees the key they would press. A row no
+    /// shortcut runs says nothing, rather than a key that would do something
+    /// else.
+    fn row_shortcut(&self, id: &str) -> Option<String> {
+        if let Some(fixed) = fixed_row_shortcut(id) {
+            return ui::shortcut_table::fixed_shortcut(fixed).map(|fixed| {
+                fixed
+                    .chords()
+                    .iter()
+                    .map(KeyChord::display)
+                    .collect::<Vec<_>>()
+                    .join("  /  ")
+            });
+        }
+        let action = match id {
+            window_menu::FULLSCREEN | window_menu::EXIT_FULLSCREEN => {
+                ShortcutAction::ToggleFullscreen
+            }
+            window_menu::MAXIMIZE => ShortcutAction::MaximizeWindow,
+            window_menu::RESTORE => ShortcutAction::RestoreWindow,
+            window_menu::SPLIT_RIGHT => ShortcutAction::DetachTab,
+            window_menu::WIDER => ShortcutAction::ResizeWider,
+            window_menu::NARROWER => ShortcutAction::ResizeNarrower,
+            _ => return None,
+        };
+        self.shortcuts
+            .borrow()
+            .bindings
+            .get(&action)
+            .map(KeyChord::display)
+    }
+}
+
+/// The fixed shortcut whose chord does what row `id` does, for the rows a
+/// chord that Settings cannot rebind carries.
+fn fixed_row_shortcut(id: &str) -> Option<&'static str> {
+    Some(match id {
+        window_menu::CLOSE => "fixed-close-tab",
+        window_menu::NEW_TAB => "fixed-duplicate-tab",
+        _ => return None,
+    })
 }

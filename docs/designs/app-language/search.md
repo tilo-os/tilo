@@ -199,11 +199,12 @@ known by (the registry's keywords: "youtube" for an app called Tube) are not par
   lane's header says the cards it drew for the cards it holds, and a workspace's list of
   everything shows the most it can hold rather than read itself.
 - **Versions are indexed too.** Per resource the list index keeps its first and last version
-  (who, when, which action: `created(r)`, `updated(r)`), taken change by change from the log,
-  and per collection a column of each by time. `items.sort_by(x -> updated(x), desc)` then
-  opens by reading one page, and a view showing "edited when, by whom" reads no history. The
-  first and last are the earliest and latest by recorded time (then by change), so every
-  replica holding the same changes agrees whatever order they arrived in.
+  (who, when, which action: `created(r)`, `updated(r)`) and the last change of each of its
+  fields (`changed(r, .field)`), taken change by change from the log, and per collection a
+  column of each by time. `items.sort_by(x -> updated(x), desc)` then opens by reading one
+  page, and a view showing "edited when, by whom" or grouping by the day a field last changed
+  reads no history. The first and last are the earliest and latest by recorded time (then by
+  change), so every replica holding the same changes agrees whatever order they arrived in.
 - Published entries gain typed facets, so the system can filter, sort and count across
   everything without anything running.
 

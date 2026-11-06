@@ -8,10 +8,10 @@ use serde_json::Value as Json;
 use tilolang::derived::Derived;
 use tilolang::types::FieldRole;
 
-use crate::ids::{ActionId, FlowId, ModuleHash, TypeId, ViewId};
+use crate::ids::{ActionId, ModuleHash, TypeId, ViewId};
 use crate::meta::{
-    ActionMeta, EnumMeta, FieldKind, FlowMeta, FnMeta, Meta, StateMeta, Ty, TypeKey, TypeMeta,
-    ViewMeta, field_kind, parse_ty,
+    ActionMeta, EnumMeta, FieldKind, FnMeta, Meta, StateMeta, Ty, TypeKey, TypeMeta, ViewMeta,
+    field_kind, parse_ty,
 };
 use crate::store::{FieldSpec, NewRecord};
 use crate::value::EnumValue;
@@ -75,6 +75,9 @@ pub struct Package {
     pub hash: ModuleHash,
     pub meta: Meta,
     pub types: Vec<Rc<TypeInfo>>,
+    /// Each function the module exports, as a profile names it: from the metadata the package
+    /// was loaded with, and the lines its module says its declarations are written on.
+    units: std::collections::BTreeMap<String, Rc<crate::cost::Unit>>,
     /// A package of an app this runtime does not run: its records are that app's, read from the
     /// readings it publishes, and its actions are invoked at its own door (`crate::delegate`).
     pub foreign: bool,
@@ -88,18 +91,40 @@ impl Package {
     ///
     /// A message naming the field whose type or merge kind is not understood.
     pub fn new(hash: ModuleHash, meta: Meta) -> Result<Self, String> {
+        Self::with_lines(hash, meta, &[])
+    }
+
+    /// [`Package::new`], with the lines the module says its declarations are written on
+    /// (`tilolang.lines`): what a profile names a unit's place by.
+    ///
+    /// # Errors
+    ///
+    /// As [`Package::new`].
+    pub fn with_lines(
+        hash: ModuleHash,
+        meta: Meta,
+        lines: &[tilolang::meta::Line],
+    ) -> Result<Self, String> {
         let types = meta
             .types
             .iter()
             .map(|t| type_info(t, &meta.app).map(Rc::new))
             .collect::<Result<Vec<_>, _>>()?;
+        let units = crate::cost::units_of(&meta, lines);
         Ok(Self {
             hash,
             meta,
             types,
+            units,
             foreign: false,
             code: true,
         })
+    }
+
+    /// The unit `export` names; one no declaration names (an agent block) has none.
+    #[must_use]
+    pub fn unit(&self, export: &str) -> Option<Rc<crate::cost::Unit>> {
+        self.units.get(export).map(Rc::clone)
     }
 
     /// The description of an app this runtime does not run: its types, actions and views, and
@@ -145,10 +170,6 @@ impl Package {
 
     pub fn view(&self, id: &str) -> Option<&ViewMeta> {
         self.meta.views.iter().find(|v| v.id == id)
-    }
-
-    pub fn flow(&self, id: &str) -> Option<&FlowMeta> {
-        self.meta.flows.iter().find(|f| f.id == id)
     }
 
     pub fn fn_(&self, id: &str) -> Option<&FnMeta> {
@@ -203,7 +224,6 @@ pub struct Registry {
     types: HashMap<TypeId, ModuleHash>,
     actions: HashMap<ActionId, ModuleHash>,
     views: HashMap<ViewId, ModuleHash>,
-    flows: HashMap<FlowId, ModuleHash>,
     fns: HashMap<String, ModuleHash>,
 }
 
@@ -226,9 +246,6 @@ impl Registry {
         }
         for v in &pkg.meta.views {
             Self::claim(&mut self.views, &v.id, &hash, "view")?;
-        }
-        for f in &pkg.meta.flows {
-            Self::claim(&mut self.flows, &f.id, &hash, "flow")?;
         }
         for f in &pkg.meta.fns {
             Self::claim(&mut self.fns, &f.id, &hash, "fn")?;
@@ -265,7 +282,6 @@ impl Registry {
             self.types.clone(),
             self.actions.clone(),
             self.views.clone(),
-            self.flows.clone(),
             self.fns.clone(),
         );
         for hash in &old {
@@ -275,7 +291,6 @@ impl Registry {
                 &mut self.types,
                 &mut self.actions,
                 &mut self.views,
-                &mut self.flows,
                 &mut self.fns,
             ] {
                 map.retain(|_, owner| owner != hash);
@@ -288,7 +303,6 @@ impl Registry {
                 self.types,
                 self.actions,
                 self.views,
-                self.flows,
                 self.fns,
             ) = saved;
         })
@@ -304,7 +318,7 @@ impl Registry {
     }
 
     /// Remove every package of the app `app` this runtime does not run (its records are that
-    /// app's): its types, actions, views and flows are declared here no more. Whether one was.
+    /// app's): its types, actions and views are declared here no more. Whether one was.
     pub fn remove_foreign(&mut self, app: &str) -> bool {
         let gone: Vec<ModuleHash> = self
             .order
@@ -323,7 +337,6 @@ impl Registry {
                 &mut self.types,
                 &mut self.actions,
                 &mut self.views,
-                &mut self.flows,
                 &mut self.fns,
             ] {
                 map.retain(|_, owner| owner != hash);
@@ -387,10 +400,6 @@ impl Registry {
         self.package(self.views.get(id)?)
     }
 
-    pub fn flow_package(&self, id: &str) -> Option<Rc<Package>> {
-        self.package(self.flows.get(id)?)
-    }
-
     pub fn fn_package(&self, id: &str) -> Option<Rc<Package>> {
         self.package(self.fns.get(id)?)
     }
@@ -436,7 +445,7 @@ impl Registry {
         }
     }
 
-    /// The `window` or `lens` declaration with this id.
+    /// The `state` declaration with this id.
     pub fn state_meta(&self, id: &str) -> Option<StateMeta> {
         self.packages().iter().find_map(|p| {
             p.meta

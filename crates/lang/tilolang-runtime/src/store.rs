@@ -4,17 +4,17 @@
 //! operations below onto its own documents. So that the host can keep the store while guest
 //! code runs, a transaction is an owned token ([`Txn`]), the operations are methods of the
 //! store, and the store speaks in mutations and field values, not documents. A store also keeps
-//! flow journals, so a suspended flow survives a restart.
+//! run journals, so a suspended run survives a restart.
 
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
-use crate::flow::Journal;
 use crate::ids::{AppId, DocId, FieldId, ItemId, RunId, TypeId};
 use crate::meta::FieldKind;
 use crate::registry::TypeInfo;
+use crate::run::Journal;
 use crate::value::ResourceRef;
 
 #[derive(Debug, thiserror::Error)]
@@ -237,11 +237,14 @@ pub enum Mutation {
         field: FieldId,
         value: crate::rich::RichValue,
     },
-    /// Insert a new item with a fresh id; `index` of `None` appends.
+    /// Insert a new item; `index` of `None` appends.
     CollInsert {
         field: FieldId,
         item: NewRecord,
         index: Option<usize>,
+        /// The id the item takes, or `None` for a fresh one. A run that is run again after it
+        /// waited names the id it gave before, so the change it makes is the one it was making.
+        id: Option<ItemId>,
     },
     /// Remove the item, with every item in it ([`crate::place`]).
     CollRemove {
@@ -331,7 +334,7 @@ pub struct ChangeNote {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_by: Option<String>,
     /// When it was made: the invocation's time, recorded like an argument (convergence.md,
-    /// "Actions"); a scenario's `as who at time` sets it.
+    /// "Actions"); a scenario's `invoke(..., at: time)` sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<String>,
     /// The resources it changed in the document it is a change of, as
@@ -347,6 +350,27 @@ pub struct ChangeNote {
     /// ([`Version::from`], [`Store::linked`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<ResourceRef>,
+    /// What the action read that a replay cannot compute again, in the order it read them: the
+    /// moment and zone it ran at, what it fetched and what it drew (convergence.md, "Actions").
+    /// Kept with the change, so history says what the change was made of.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<crate::run::JournalEntry>,
+    /// How many items the change was made over: one for an action applied to its subject, and
+    /// for one action applied to many items at once (`many`), as many as the items.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub count: u32,
+}
+
+fn one() -> u32 {
+    1
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "`skip_serializing_if` calls it with the field by reference"
+)]
+fn is_one(count: &u32) -> bool {
+    *count == 1
 }
 
 /// The action id of the change that made a resource, when the host made it.
@@ -393,6 +417,9 @@ pub struct Version {
     /// Who proposed the action, for a change made by accepting a suggestion, so history says
     /// who proposed it; `None` for a change made on its own.
     pub suggested_by: Option<String>,
+    /// How many items the change was made over ([`ChangeNote::count`]): more than one for one
+    /// action applied to many items at once.
+    pub count: u32,
 }
 
 /// Where a removed item stood ([`Version::left`]).
@@ -524,15 +551,34 @@ impl LinkHow {
 /// them is told of, and what a store with an index keeps to answer them from.
 pub const LINKS: &str = "$links";
 
+/// What the pseudo-field holding when a field of a resource last changed begins with; the
+/// field's id follows, so `$changed.done` holds the version that last changed `done`
+/// ([`Store::field_changed`]).
+pub const CHANGED: &str = "$changed.";
+
+/// The pseudo-field holding when the field `field` of a resource last changed.
+#[must_use]
+pub fn changed_field(field: &str) -> String {
+    format!("{CHANGED}{field}")
+}
+
+/// The action a change is a version by when it is a step on the record rather than a package
+/// action's: an undo, or a revert from History. A step takes changes back instead of making
+/// one, so it names no field's last change.
+pub const STEP_ACTION: &str = "$history";
+
 /// The version of a resource an order or a key reads, beside its fields: its first
-/// (`created(r)`) or its last (`updated(r)`), ordered by their time. Named in an [`Order`] by
-/// the pseudo-field ids `$created` and `$updated`, which no declared field has.
+/// (`created(r)`), its last (`updated(r)`), or the one that last changed one of its fields
+/// (`changed(r, .field)`), ordered by their time. Named in an [`Order`] by the pseudo-field
+/// ids `$created`, `$updated` and `$changed.<field>`, which no declared field has.
 ///
 /// [`Order`]: crate::query::Order
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reflected {
     Created,
     Updated,
+    /// The last change of the field it names.
+    Changed(String),
 }
 
 impl Reflected {
@@ -545,18 +591,15 @@ impl Reflected {
         match field {
             Self::CREATED => Some(Self::Created),
             Self::UPDATED => Some(Self::Updated),
-            _ => None,
+            _ => field_of_changed(field).map(|field| Self::Changed(field.to_owned())),
         }
     }
+}
 
-    /// The pseudo-field naming it.
-    #[must_use]
-    pub const fn field(self) -> &'static str {
-        match self {
-            Self::Created => Self::CREATED,
-            Self::Updated => Self::UPDATED,
-        }
-    }
+/// The field whose last change the pseudo-field `id` names, when it names one.
+#[must_use]
+pub fn field_of_changed(id: &str) -> Option<&str> {
+    id.strip_prefix(CHANGED).filter(|field| !field.is_empty())
 }
 
 /// The versions of `at` among a document's change notes, oldest first: the changes whose
@@ -599,9 +642,25 @@ pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
                 // What it was made from is a fact of the change that made it.
                 from: made.then(|| note.from.clone()).flatten(),
                 suggested_by: note.suggested_by.clone(),
+                count: note.count.max(1),
             }
         })
         .collect()
+}
+
+/// The last version of `versions` (oldest first) that changed the field `field`
+/// ([`Store::field_changed`]): the one that made the resource when none after it names the
+/// field, since making it set them. `None` for a resource the log holds no version of.
+#[must_use]
+pub fn last_change_of(versions: Vec<Version>, field: &str) -> Option<Version> {
+    let made = versions.first().cloned();
+    versions
+        .into_iter()
+        .rev()
+        .find(|version| {
+            version.action != STEP_ACTION && version.fields.iter().any(|held| held == field)
+        })
+        .or(made)
 }
 
 /// Who made the changes `newest_first` of `at`, each once, at most `limit` of them
@@ -1050,6 +1109,13 @@ impl DeliveryState {
 }
 
 pub trait Store {
+    /// What the store has read so far, counted: work that does not depend on the machine or
+    /// its load, which a profile charges to the unit that read it. A store that counts none
+    /// reads 0.
+    fn reads(&self) -> crate::cost::Reads {
+        crate::cost::Reads::default()
+    }
+
     /// A fresh id, unique across replicas and restarts.
     fn fresh_id(&mut self, prefix: &str) -> String;
 
@@ -1211,6 +1277,9 @@ pub trait Store {
             let mut keys = Vec::with_capacity(levels.len());
             for level in &levels {
                 let value = match Reflected::of(&level.field) {
+                    Some(Reflected::Changed(changed)) => self
+                        .field_changed(&target, &changed)?
+                        .map_or(Lit::Absent, |version| Lit::Time(version.at)),
                     Some(end) => self
                         .version_end(&target, end == Reflected::Updated)?
                         .map_or(Lit::Absent, |v| Lit::Time(v.at)),
@@ -1288,19 +1357,6 @@ pub trait Store {
         Ok(versions_in(&self.history(&at.doc)?, at))
     }
 
-    /// The resources `person` made a version of that someone else changed after, oldest first:
-    /// what a place counts as changed under their hands since they last looked, beside what
-    /// they looked at. A store with an index answers it from the log it keeps per person; this
-    /// one has none.
-    ///
-    /// # Errors
-    ///
-    /// A store that cannot answer it.
-    fn changed_since(&self, person: &str) -> Result<Vec<String>, StoreError> {
-        let _ = person;
-        Ok(Vec::new())
-    }
-
     /// The first version of the resource `at` (`created(r)`), or its last (`updated(r)`,
     /// `last`). A store with an index keeps both per resource, so a view showing them, or a
     /// list sorted by them, reads no history.
@@ -1315,6 +1371,19 @@ pub trait Store {
         } else {
             versions.into_iter().next()
         })
+    }
+
+    /// The last version of the resource `at` that changed the field `field` (`changed(r,
+    /// .field)`), or the version that made it when none after it changed that field; `None`
+    /// while the log of `at` is not at hand, and for a store whose versions name no fields.
+    /// A store with an index keeps it per field, so a list groups or sorts by when a field
+    /// last changed without reading the history of any row.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::versions`].
+    fn field_changed(&self, at: &ResourceRef, field: &str) -> Result<Option<Version>, StoreError> {
+        Ok(last_change_of(self.versions(at)?, field))
     }
 
     /// Every resource of the document `doc` (it and its items) with its versions, oldest

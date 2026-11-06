@@ -26,7 +26,9 @@ use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join::MemberRole;
-use tilo_peer_state::join::invitations::{CancelInvitationRequest, PendingInvitation};
+use tilo_peer_state::join::invitations::{
+    CancelInvitationRequest, IssueInvitationRequest, PendingInvitation,
+};
 use tilo_peer_state::owner::{
     Change, DocumentRead, FileHost, NativeWorkspaceOwner, open_file_with, owner_file_of,
 };
@@ -54,6 +56,20 @@ pub struct Person {
     pub role: MemberRole,
     /// Whether the workspace removed them.
     pub removed: bool,
+}
+
+/// An invitation this device made: the link a person hands over, the part it
+/// brings whoever redeems it in at, and when it stops working.
+#[derive(Clone, Debug)]
+pub(crate) struct Issued {
+    /// The invitation's id, as the workspace's own records name it.
+    pub(crate) invite: String,
+    /// The text a device joins with.
+    pub(crate) link: String,
+    /// The part it brings the person in at.
+    pub(crate) role: MemberRole,
+    /// When it stops working, in nanoseconds since the Unix epoch.
+    pub(crate) expires_at_ns: u64,
 }
 
 /// The workspace id each workspace on the desk is held under, as the engine's
@@ -233,7 +249,13 @@ impl Engine {
             return Ok(None);
         }
         let reader = self.identity.device_cert.device_public_key;
-        let keys = &self.keys;
+        // Taken before the workspace's view is held: the channel service's
+        // pump settles the groups under its own lock and reads the
+        // workspace's governance there, so a read that asked it for keys
+        // while holding the view would wait on it as it waits on the view.
+        let history = self.keys.get().and_then(|keys| {
+            keys.history_keys(workspace, &collab_types::ChannelRoute::new(app, record))
+        });
         self.owner.with_current(workspace, |view| {
             match view.read_document_with_history(
                 reader,
@@ -242,9 +264,12 @@ impl Engine {
                 MAX_DOCUMENT_BYTES,
                 SystemTime::now(),
                 &mut |write| {
-                    keys.get()
+                    let keys = history
+                        .as_ref()
                         .ok_or("this session's channel service is not running")?
-                        .open_history_write(workspace, write)
+                        .as_ref()
+                        .map_err(Clone::clone)?;
+                    keys.open(write)
                 },
             )? {
                 DocumentRead::Captured(document) => Ok(Some(document.bytes)),
@@ -285,12 +310,15 @@ impl Engine {
     /// The keys this device seals writes of `record` of `app` with in
     /// `workspace`, a workspace whose records are its members' sealed
     /// channels: `Ok(None)` while the record's channel keys are not here yet,
-    /// and the answer arrives as the workspace's other messages do.
+    /// and the answer arrives as the workspace's other messages do. That
+    /// includes a channel the workspace's governance does not name this device
+    /// in yet, as it does on the first look after a session starts: the device
+    /// waits for the answer rather than being told it will never get one.
     ///
     /// # Errors
     /// This session has no channel service, this device has no secret store,
-    /// or it takes part in no channel of the record: it holds no keys, and
-    /// none are coming.
+    /// or the workspace removed it from the record's channel: it holds no
+    /// keys, and none are coming.
     pub(crate) fn seal_keys(
         &self,
         workspace: WorkspaceId,
@@ -303,15 +331,14 @@ impl Engine {
         let route = collab_types::ChannelRoute::new(app, record);
         match keys.access_record(workspace, &route).0 {
             ChannelAccess::Ready(keys) => Ok(Some(keys)),
-            ChannelAccess::Waiting => Ok(None),
+            // Asked and not admitted yet, or admitted nowhere the governance
+            // here can name: either way the keys are not here yet.
+            ChannelAccess::Waiting | ChannelAccess::Unavailable => Ok(None),
             ChannelAccess::Removed => Err(format!(
                 "the workspace removed this device from {record}'s channel"
             )),
             ChannelAccess::NoSecretStore => {
                 Err("this device has no secret store, so it holds no channel keys".to_owned())
-            }
-            ChannelAccess::Unavailable => {
-                Err("this device takes part in no channel of the record".to_owned())
             }
         }
     }
@@ -427,6 +454,18 @@ impl Engine {
             .unwrap_or(false)
     }
 
+    /// The name `workspace` knows `person` by, when it knows one: what an
+    /// invitation made for them records as its invitee.
+    pub(crate) fn name_of(&self, workspace: &str, person: [u8; 32]) -> Option<String> {
+        let person = hex::encode(person);
+        self.people(workspace)
+            .ok()?
+            .into_iter()
+            .find(|member| member.person == person)
+            .map(|member| member.name)
+            .filter(|name| !name.is_empty())
+    }
+
     /// The invitations into `workspace` this device's person issued that are
     /// still redeemable: the links they made, listed where they made them,
     /// since a link is answered by the device that signed it.
@@ -468,6 +507,137 @@ impl Engine {
             &identity.device_signing_key,
             now,
         )
+    }
+
+    /// Whether this device's person may invite into `workspace`, as the
+    /// workspace's own governance answers it: a current member whose part
+    /// there grants inviting. What the surfaces that offer inviting are told;
+    /// [`Self::issue_invitation`] asks again, with the part its link hands
+    /// out.
+    #[must_use]
+    pub fn may_invite(&self, workspace: &str) -> bool {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return false;
+        };
+        let identity = self.identity();
+        self.owner
+            .with_current(workspace, |view| {
+                Ok(view
+                    .peer()
+                    .governance()
+                    .may_invite(&identity.device_signing_key, SystemTime::now()))
+            })
+            .unwrap_or(false)
+    }
+
+    /// The parts this device's person may hand out in an invitation into
+    /// `workspace`, from the least to the most: what the surfaces offering a
+    /// part to grant list. Empty when the person may not invite at all, since
+    /// no part is theirs to hand out then.
+    #[must_use]
+    pub(crate) fn invitable_roles(&self, workspace: &str) -> Vec<MemberRole> {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return Vec::new();
+        };
+        let identity = self.identity();
+        self.owner
+            .with_current(workspace, |view| {
+                let now = SystemTime::now();
+                Ok([
+                    MemberRole::Viewer,
+                    MemberRole::Commenter,
+                    MemberRole::Editor,
+                    MemberRole::Moderator,
+                ]
+                .into_iter()
+                .filter(|role| {
+                    view.peer().governance().may_invite_role(
+                        &identity.device_signing_key,
+                        (*role).into(),
+                        now,
+                    )
+                })
+                .collect())
+            })
+            .unwrap_or_default()
+    }
+
+    /// An invitation into `workspace` this device's person makes, at the part
+    /// `role` names, redeemable until `expires_in_seconds` from `now` through
+    /// the endpoint this session serves: the link to hand to whoever is being
+    /// invited, in the text their device joins with.
+    ///
+    /// The invitation names this device, which answers its redemption as it
+    /// answers any join of a workspace it holds: a link is worth as much as
+    /// the device that signed it being reachable. When `recipient_user_public_key`
+    /// names someone, only a device certified for that person may redeem it;
+    /// otherwise whoever holds the link may.
+    ///
+    /// # Errors
+    /// The workspace is not held here, this device's person may not invite
+    /// into it or hand out that part, or the workspace cannot be published.
+    pub(crate) fn issue_invitation(
+        &self,
+        workspace: &str,
+        role: MemberRole,
+        invitee_name: Option<String>,
+        recipient_user_public_key: Option<[u8; 32]>,
+        expires_in_seconds: u64,
+        endpoint: iroh::EndpointAddr,
+        now: SystemTime,
+    ) -> Result<Issued, String> {
+        let room = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
+        let workspace_id = tilo_peer_state::join::room_workspace_id(workspace)
+            .map_err(|error| error.to_string())?;
+        let identity = self.identity();
+        // What the joiner dials: this device's endpoint, signed by the device
+        // the grant names, as a host of its own workspace.
+        let packet_relay_url = endpoint
+            .relay_urls()
+            .next()
+            .map_or_else(|| "iroh:direct".to_owned(), ToString::to_string);
+        let hint = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
+            version: 1,
+            mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+            room: workspace.to_owned(),
+            workspace_id,
+            endpoint_addr: endpoint,
+            host_user_public_key: identity.device_cert.user_public_key,
+            host_device_certificate: identity.device_cert.clone(),
+            packet_relay_url,
+        }
+        .transport_hint(&identity.device_signing_key)
+        .map_err(|error| error.to_string())?;
+        let now_ns: u64 = now
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_nanos()
+            .try_into()
+            .map_err(|_| "this clock is past what an invitation records".to_owned())?;
+        let expires_at_ns = now_ns.saturating_add(expires_in_seconds.saturating_mul(1_000_000_000));
+        let mut request_id = [0; 32];
+        getrandom::fill(&mut request_id).map_err(|error| error.to_string())?;
+        let issued = self.owner.issue_invitation(
+            room,
+            &identity.device_cert,
+            IssueInvitationRequest {
+                request_id,
+                role,
+                recipient_user_public_key,
+                invitee_name,
+                expires_at_ns,
+                inviter_name: None,
+            },
+            vec![hint],
+            &identity.device_signing_key,
+            now,
+        )?;
+        Ok(Issued {
+            invite: hex::encode(issued.invite_id),
+            link: tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation),
+            role,
+            expires_at_ns,
+        })
     }
 
     /// The revocations the workspace's governance records, as it last admitted

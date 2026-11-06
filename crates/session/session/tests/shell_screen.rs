@@ -354,6 +354,78 @@ fn the_preset_switch_and_the_strips_stand_apart_and_each_placed_note_is_on_scree
     }
 }
 
+/// A note placed in the strips preset stands as a window of the desk's height, and the body the
+/// notes app draws in it has room of its own: its title field and its running text are laid out
+/// a whole line tall, under the window's bar, rather than flat. A view that says `fill` fills
+/// the slot it is put in, for a described component's body as for a `stack`'s, so no shell
+/// writes a height to make a place's app the window's.
+#[test]
+fn a_placed_notes_body_stands_at_the_desks_height_under_one_bar() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, note) = session();
+    until(&mut session, "the bar's preset menu", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+
+    place(&mut session, &note);
+    let shown = shown_as(&session, NOTE_TITLE);
+    until(&mut session, "the placed note's window", |session| {
+        on_screen(session, &shown).is_some()
+    });
+    // The window is the desk's height under the bar and the dock, not a line.
+    let window = within(&session, &shown, WIDTH, HEIGHT).expect("the window is on the display");
+    assert!(
+        window.3 > f64::from(HEIGHT) / 2.0,
+        "the placed window is the desk's height, not a line: {window:?}"
+    );
+
+    // The notes app's own body: its title field and the running text under it, each a whole
+    // line tall and standing inside its window.
+    let title = until_bounds(&mut session, "Untitled");
+    let body = until_bounds(&mut session, "Block text");
+    for (what, rect) in [("title", title), ("body", body)] {
+        assert!(
+            rect.3 >= 19.0,
+            "the note's {what} is laid out a whole line tall, not flat: {rect:?}"
+        );
+        assert!(
+            rect.0 >= window.0
+                && rect.1 >= window.1
+                && rect.0 + rect.2 <= window.0 + window.2 + 1.0
+                && rect.1 + rect.3 <= window.1 + window.3 + 1.0,
+            "the note's {what} stands inside its window: {rect:?} in {window:?}"
+        );
+    }
+    // Under the window's bar: the bar is its tabs and the controls, and the app's body stands
+    // below it rather than on its line.
+    let controls = on_screen(&session, "This window").expect("the window's controls stand");
+    assert!(
+        title.1 >= controls.1 + controls.3,
+        "the note's title stands under the window's bar: {title:?} under {controls:?}"
+    );
+    assert!(
+        body.1 > title.1,
+        "the note's body follows its title: {body:?} under {title:?}"
+    );
+    assert!(
+        body.1 + body.3 < f64::from(HEIGHT),
+        "the note's body stands on the display: {body:?}"
+    );
+}
+
+/// Where the control or text `name` of the shell stands, once the app showing it has laid it
+/// out: where it stands on the display, and how tall it is.
+fn until_bounds(session: &mut Session, name: &str) -> (f64, f64, f64, f64) {
+    let mut found = None;
+    until(session, name, |session| {
+        found = session
+            .shell_control(name)
+            .or_else(|| session.shell_text_bounds(name));
+        found.is_some()
+    });
+    found.expect("the app's control stands in the shell's tree")
+}
+
 /// Where the switch between the presets stands: the bar's own menu, which names the preset the
 /// desk shows (`showing`).
 fn preset_switch(session: &Session, showing: &str) -> (f64, f64, f64, f64) {

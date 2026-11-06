@@ -192,7 +192,7 @@ root Day
 
 default view day for Day
 
-action finish(d: Day) {
+action finish(d: Day) uses time {
     d.done_at = now
     d.start = Date("2026-10-25")
     d.due = .some(Date("2026-11-01"))
@@ -301,18 +301,14 @@ scenario "a conversation" {
     let t = root Thread
     let mia = person("Mia")
     let leo = person("Leo")
-    as mia {
-        post(t, "Hi Leo")
-    }
-    as leo {
-        post(t, "Hi Mia")
-    }
+    invoke(post(t, "Hi Leo"), by: mia)
+    invoke(post(t, "Hi Mia"), by: leo)
     post(t, "Hi both")
 }
 "#;
 
 // A scenario seeds a conversation between named people: what they post is stored as theirs,
-// and outside an `as` the scenario runs as whoever runs it.
+// and what it runs outside `invoke` is stored as whoever runs it.
 #[test]
 fn a_scenario_posts_as_two_people_and_the_stored_authors_differ() {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(THREAD, "")]);

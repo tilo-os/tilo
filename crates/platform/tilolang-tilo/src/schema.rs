@@ -377,14 +377,6 @@ impl TypeSchema {
         })
     }
 
-    /// The column of the field `id`.
-    #[must_use]
-    pub fn column_of(&self, id: &str) -> Option<&ColumnSchema> {
-        self.columns
-            .iter()
-            .find(|column| column.field.as_deref() == Some(id))
-    }
-
     /// The field saying its records are finished, by id (`done: Bool (done)`), when it declares
     /// one: what a place leaves out of its count and folds into its foot.
     #[must_use]

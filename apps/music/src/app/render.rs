@@ -743,6 +743,7 @@ impl Widget for Music {
         // projection on top of the just-reloaded shared library.
         self.advance_downloads(state);
         self.drain_mpris(state);
+        self.drain_activity(state);
         self.drain_cover_pick(state);
         self.drain_local_file_pick();
         self.drain_cover_embed(state);
@@ -750,6 +751,7 @@ impl Widget for Music {
         self.deliver_effect_replies();
         self.publish_mpris();
         self.publish_handoff();
+        self.publish_activity();
     }
 
     fn build_layout(

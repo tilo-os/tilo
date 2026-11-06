@@ -1,4 +1,4 @@
-//! The cleanup flow of one package invoking another package's action: it asks, then replays.
+//! The cleanup action of one package invoking another package's action: it asks, then replays.
 
 #[cfg(test)]
 #[path = "common/mod.rs"]
@@ -8,7 +8,7 @@ mod common;
 mod cases {
     use super::common::*;
     use tilolang_runtime::{
-        AmStore, FlowOutcome, InvokeOutcome, Resolution, ResourceRef, Runtime, SimpleAuthority,
+        AmStore, InvokeOutcome, Resolution, ResourceRef, RunOutcome, Runtime, SimpleAuthority,
         Value,
     };
 
@@ -92,28 +92,33 @@ mod cases {
                 .count()
         }
 
-        fn start(&self) -> FlowOutcome {
-            let flow = self.cleanup.flow("clear_done");
+        fn start(&self) -> InvokeOutcome {
             self.rt
-                .run_flow(&me(), &flow, vec![Value::resource(&self.list)])
+                .invoke_action(
+                    &me(),
+                    (
+                        self.cleanup.action("clear_done"),
+                        vec![Value::resource(&self.list)],
+                    ),
+                )
                 .unwrap()
         }
     }
 
     #[test]
-    fn the_flow_asks_for_each_foreign_removal_and_replays_without_repeating_work() {
+    fn the_action_asks_for_each_foreign_removal_and_replays_without_repeating_work() {
         let w = world();
         w.add("a", true);
         w.add("b", false);
         w.add("c", true);
 
-        let FlowOutcome::Suspended(first) = w.start() else {
+        let InvokeOutcome::Suggested(first) = w.start() else {
             panic!("a foreign action from an untrusted package asks");
         };
         assert_eq!(first.action, w.todo.action("remove"));
         assert_eq!(w.titles(), ["a", "b", "c"], "asking changes nothing");
 
-        let FlowOutcome::Suspended(second) =
+        let RunOutcome::Suspended(second) =
             w.rt.resolve(&first.run, &me(), Resolution::Approve)
                 .unwrap()
         else {
@@ -125,7 +130,7 @@ mod cases {
         let out =
             w.rt.resolve(&second.run, &me(), Resolution::Approve)
                 .unwrap();
-        assert_eq!(out, FlowOutcome::Done(Value::Int(2)));
+        assert_eq!(out, RunOutcome::Done(Value::Int(2)));
         assert_eq!(w.titles(), ["b"]);
         assert_eq!(
             w.removes(),
@@ -135,14 +140,14 @@ mod cases {
     }
 
     #[test]
-    fn a_declined_removal_leaves_the_item_and_the_flow_goes_on() {
+    fn a_declined_removal_leaves_the_item_and_the_run_goes_on() {
         let w = world();
         w.add("a", true);
-        let FlowOutcome::Suspended(s) = w.start() else {
+        let InvokeOutcome::Suggested(s) = w.start() else {
             panic!("expected a suggestion");
         };
         let out = w.rt.resolve(&s.run, &me(), Resolution::Decline).unwrap();
-        assert!(matches!(out, FlowOutcome::Done(Value::Int(1))), "{out:?}");
+        assert!(matches!(out, RunOutcome::Done(Value::Int(1))), "{out:?}");
         assert_eq!(w.titles(), ["a"]);
     }
 
@@ -152,12 +157,12 @@ mod cases {
         w.add("a", true);
         w.add("b", false);
         w.auth.trust(&w.cleanup_id);
-        assert_eq!(w.start(), FlowOutcome::Done(Value::Int(1)));
+        assert_eq!(w.start(), InvokeOutcome::Done(Value::Int(1)));
         assert_eq!(w.titles(), ["b"]);
     }
 
     #[test]
-    fn the_cleanup_view_button_runs_the_flow_as_an_action() {
+    fn the_cleanup_view_button_runs_the_action() {
         let w = world();
         w.add("a", true);
         let view =
@@ -169,11 +174,11 @@ mod cases {
             .unwrap();
         let button = of_kind(view.tree(), "ui.Button")[0].key.clone();
         let InvokeOutcome::Suggested(s) = view.press(&button).unwrap() else {
-            panic!("the flow asks before it removes");
+            panic!("the action asks before it removes");
         };
         assert_eq!(s.action, w.todo.action("remove"));
         let out = w.rt.resolve(&s.run, &me(), Resolution::Approve).unwrap();
-        assert_eq!(out, FlowOutcome::Done(Value::Int(1)));
+        assert_eq!(out, RunOutcome::Done(Value::Int(1)));
         assert!(w.titles().is_empty());
     }
 }

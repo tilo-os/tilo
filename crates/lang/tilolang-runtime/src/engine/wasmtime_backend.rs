@@ -12,8 +12,8 @@ use wasmtime::{
 };
 
 use super::{
-    Backend, CallError, Cx, EngineKind, EngineLimits, GROWTH_LIMITED, OUT_OF_FUEL, Unwind, Wasm,
-    import, trap_text,
+    Backend, CallError, Cx, EngineKind, EngineLimits, GROWTH_LIMITED, HostFail, Imports,
+    OUT_OF_FUEL, Unwind, Wasm, guest_answer, guest_import, import, trap_text,
 };
 use crate::abi::{self, IMPORTS};
 
@@ -182,6 +182,55 @@ fn run_import(
     }
 }
 
+fn run_guest_import(
+    module: &str,
+    name: &str,
+    params: &str,
+    mut caller: Caller<'_, Slot>,
+    values: &mut [MaybeUninit<ValRaw>],
+) -> wasmtime::Result<()> {
+    let args: Vec<Wasm> = params
+        .bytes()
+        .zip(values.iter())
+        // SAFETY: wasmtime writes every parameter of the import's type before calling it.
+        .map(|(ty, value)| wasm(ty, unsafe { value.assume_init() }))
+        .collect();
+    let answer = {
+        let bytes: &[u8] = caller
+            .data()
+            .memory
+            .as_ref()
+            .map_or(&[][..], |m| m.data(&caller));
+        guest_import(caller.data().cx.as_ref(), module, name, bytes, &args)
+            .map_err(|fail| wasmtime::Error::new(Unwind(fail)))?
+    };
+    let (value, written) = guest_answer(answer);
+    if let Some((offset, bytes)) = written {
+        let Some(memory) = caller.data().memory else {
+            return Err(wasmtime::Error::new(Unwind(HostFail::Trap(
+                "the module has no memory to answer in".into(),
+            ))));
+        };
+        let data = memory.data_mut(&mut caller);
+        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+        let end = start
+            .checked_add(bytes.len())
+            .filter(|&end| end <= data.len())
+            .ok_or_else(|| {
+                wasmtime::Error::new(Unwind(HostFail::Trap(
+                    "the answer does not fit the module's memory".into(),
+                )))
+            })?;
+        data.get_mut(start..end)
+            .unwrap_or_default()
+            .copy_from_slice(&bytes);
+    }
+    if let (Some(slot), Some(w)) = (values.first_mut(), value) {
+        *slot = MaybeUninit::new(to_raw(w));
+    }
+    Ok(())
+}
+
 fn classify(e: &wasmtime::Error) -> CallError {
     if let Some(unwind) = e.downcast_ref::<Unwind>() {
         return unwind.into();
@@ -209,7 +258,7 @@ impl Backend for Wasmtime {
         module.exports().map(|e| e.name().to_owned()).collect()
     }
 
-    fn linker(&self) -> Result<Linker<Slot>, String> {
+    fn linker(&self, imports: &[Imports]) -> Result<Linker<Slot>, String> {
         let mut linker = Linker::<Slot>::new(&self.engine);
         for (id, (_, name, params, result)) in IMPORTS.iter().enumerate() {
             let ty = FuncType::new(
@@ -232,6 +281,25 @@ impl Backend for Wasmtime {
                 )
             }
             .map_err(|e| format!("defining import {name}: {e}"))?;
+        }
+        for &(module, name, params, result) in imports.get(IMPORTS.len()..).unwrap_or_default() {
+            let ty = FuncType::new(
+                &self.engine,
+                params.bytes().map(val_type),
+                result.bytes().map(val_type),
+            );
+            // SAFETY: as above, for the import of the host's own ABI.
+            unsafe {
+                linker.func_new_unchecked(
+                    module,
+                    name,
+                    ty,
+                    move |caller: Caller<'_, Slot>, values: &mut [MaybeUninit<ValRaw>]| {
+                        run_guest_import(module, name, params, caller, values)
+                    },
+                )
+            }
+            .map_err(|e| format!("defining import {module}::{name}: {e}"))?;
         }
         Ok(linker)
     }
@@ -277,7 +345,13 @@ impl Backend for Wasmtime {
     ) -> Result<Option<Wasm>, CallError> {
         pooled.store.data_mut().cx = Some(cx);
         let outcome = run(pooled, export, args, fuel);
-        pooled.store.data_mut().cx = None;
+        // What the call spent, charged to the unit that made it: a call that ran out spent it
+        // all.
+        let spent = fuel.saturating_sub(pooled.store.get_fuel().unwrap_or(0));
+        let cx = pooled.store.data_mut().cx.take();
+        if let Some(costs) = cx.and_then(|cx| cx.costs) {
+            costs.fuel(spent);
+        }
         outcome
     }
 }

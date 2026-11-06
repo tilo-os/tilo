@@ -371,7 +371,30 @@ pub struct Swap {
     /// the daemon falls back to its own manifest, then to session scope.
     #[serde(default)]
     pub info: Option<ComponentInfo>,
+    /// The next generation of a slot this swap moves together with, when the
+    /// two are one matched set (a session cohort and the VM-wide runtime
+    /// services it reads). The interface check judges this swap against that
+    /// generation instead of the slot's current one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partner: Option<Partner>,
 }
+
+/// A slot's next generation: what a swap that moves together with it leaves
+/// that slot reading.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Partner {
+    pub slot: String,
+    /// Component name to layer hash.
+    pub components: std::collections::BTreeMap<String, String>,
+}
+
+/// The interface every runtime service speaks to apps.
+pub const RUNTIME: &str = "runtime";
+
+/// The runtime services apps reach that run VM-wide, outside any slot's
+/// session set: swapped into the `vm` slot and shared by every slot. Each
+/// speaks the runtime interface alone.
+pub const VM_RUNTIME_SERVICES: &[&str] = &["fs"];
 
 /// The canonical matched session components, in layer precedence order.
 /// VM-wide managers and boot components deliberately remain separate.
@@ -1613,6 +1636,7 @@ mod tests {
                     component: "c".into(),
                     layer: "h".into(),
                     info: None,
+                    partner: None,
                 }
                 .into(),
                 Control {

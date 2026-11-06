@@ -41,8 +41,12 @@ tilo-desktop-model = { version = "0.1.0", path = "../desktop-model" }
 tilo-desktop-search = { version = "0.1.0", path = "../desktop-search" }
 # Whether a grant an app holds is live now is a question about the clock.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
-hex.workspace = true
+# The locator another device hands over, which a now-playing card offers to
+# continue here. The portable decode only: a browser builds this too, and the
+# media stack's realtime part is the native section's.
+tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", default-features = false }
 serde.workspace = true
+hex.workspace = true
 serde_json.workspace = true
 # The workspace history pane reads causal documents and draws with the
 # toolkit's renderer and input types.
@@ -87,6 +91,10 @@ tilo-color-pipeline = { version = "0.1.0", path = "../color-pipeline", optional 
 tilo-window-share = { version = "0.1.0", path = "../window-share", default-features = false, optional = true }
 # The input a viewer sends back is the wire's own encoding.
 postcard = { workspace = true, optional = true }
+# What the players on the session bus are, as the audio service publishes
+# them: the now-playing reading is made from it. No browser has that bus, and
+# no browser build links it.
+audio = { package = "tilo-audio-service", path = "../audio-service", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # Search's palette is drawn and answered by the chrome over the windows: the

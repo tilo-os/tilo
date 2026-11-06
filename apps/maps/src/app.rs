@@ -373,6 +373,10 @@ pub struct MapsApp {
     /// One-shot request emitted by the overflow action and drained by the
     /// shared shell floating-surface host.
     pending_floating: Option<ui::floating_surface::FloatingSurfaceRequest>,
+    /// Whether the running route's card was asked for: asked once per trip,
+    /// and asked again when the next trip starts. Whether it stands, and
+    /// where, is the shell's to decide.
+    presented_navigation: bool,
     /// One geometry/drag state for the attached and shell-presented live turn
     /// card. Ownership changes; the Maps widget and route data never do.
     navigation_placement: ui::floating_surface::FloatingPlacement,
@@ -454,6 +458,39 @@ fn on_panel(theme: &Theme) -> Theme {
 /// A travel time read as a clock: `10:57` or `10:57 AM`.
 fn clock_label(at: chrono::DateTime<chrono::Local>) -> String {
     ui::clock::time_of_day(&at)
+}
+
+// ===========================================================================
+// The route as the shell's live activity
+// ===========================================================================
+impl MapsApp {
+    /// Say what the route reads as, and ask for its card: whether the card
+    /// stands, and where, is the shell's to decide — while Maps' own window
+    /// shows the directions, Maps draws them there and the card waits.
+    fn publish_navigation(&mut self) {
+        crate::live::publish(&crate::live::published(self.model.route.as_ref()));
+        self.present_navigation_card();
+    }
+
+    /// Ask the shell for the route's card, once per trip: the request is the
+    /// route's geometry as Maps lays it out, and its place on the desk is the
+    /// shell's.
+    fn present_navigation_card(&mut self) {
+        if self.model.route.is_none() {
+            self.presented_navigation = false;
+            return;
+        }
+        if self.presented_navigation {
+            return;
+        }
+        let card = self.navigation_rect();
+        if card.width() <= 0.0 || card.height() <= 0.0 {
+            // The window has no size yet; the next frame asks with one.
+            return;
+        }
+        self.pending_floating = self.active_navigation_request_from(card.inflate(8.0, 8.0));
+        self.presented_navigation = true;
+    }
 }
 
 // ===========================================================================
@@ -568,6 +605,13 @@ impl FloatingSurfaceProvider for MapsApp {
             let app = self.rect;
             let desktop = self.desktop_floating_bounds();
             self.navigation_placement.reattach_to_app(app, desktop);
+            // The card's window went away: the route asks for it again.
+            if matches!(
+                message,
+                ui::floating_surface::FloatingSurfaceHostMessage::Reattach { .. }
+            ) {
+                self.presented_navigation = false;
+            }
             return;
         }
         if matches!(
@@ -587,6 +631,13 @@ impl Widget for MapsApp {
     );
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        // A control pressed on the route's card or pill stands in for the
+        // press the person would make in Maps' own window.
+        for command in crate::live::take_commands() {
+            match command {
+                crate::live::Command::End => self.clear_route(),
+            }
+        }
         // Pull any background network results into the model first.
         self.drain_net();
         // Fold in a device-location fix if the portal worker has one.
@@ -628,6 +679,7 @@ impl Widget for MapsApp {
             self.apply_endpoint_effect(effect);
         }
         self.publish_status();
+        self.publish_navigation();
     }
 
     fn build_layout(

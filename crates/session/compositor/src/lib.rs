@@ -1151,6 +1151,13 @@ impl Compositor {
         self.data.state.mark_redraw_all();
     }
 
+    /// Lay the windows out again, as the policy asks: for a card an app
+    /// draws, whose place the floating layer moved.
+    pub fn rearrange(&mut self) {
+        self.data.state.rearrange();
+        self.data.state.mark_redraw_all();
+    }
+
     /// The windows that closed and are still drawn from the last buffer
     /// they showed, with the place each one stood at, front first. A window
     /// stays here until the desktop lets it go with
@@ -2232,6 +2239,21 @@ impl Compositor {
             .into_iter()
             .map(|rect| (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
             .collect()
+    }
+
+    /// Show the session's layer surface `namespace` (`tilo-quick-settings`),
+    /// or hide it: a surface whose app the session keeps running between
+    /// openings stands hidden instead — drawing nothing, taking no input and
+    /// keeping no room — so opening it again costs no start.
+    pub fn show_layer(&mut self, namespace: &str, shown: bool) {
+        self.data.state.set_layer_shown(namespace, shown);
+    }
+
+    /// Whether the session shows its layer surface `namespace`, hid it, or
+    /// never said (shown).
+    #[must_use]
+    pub fn layer_shown(&self, namespace: &str) -> Option<bool> {
+        self.data.state.layer_shown(namespace)
     }
 
     /// The mapped windows and their logical rectangles `(x, y, w, h)`,

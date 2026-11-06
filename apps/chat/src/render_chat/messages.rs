@@ -34,7 +34,7 @@ use super::{
     header_row_h, media_face, media_meta, paint_field, paint_file_card, thread_bar_h,
 };
 use crate::app::{ChatApp, Hit};
-use crate::model::{self, AgentWork, Attachment, Message};
+use crate::model::{self, AgentWork, Message};
 use crate::paint::{line_in, line_of, text, width_of};
 
 impl ChatApp {
@@ -544,9 +544,10 @@ impl ChatApp {
             // its own last line.
             self.layout_body(m, Point::ZERO, text_w, theme, tr)
         };
-        let att_h = m.attachment.as_ref().map_or(0.0, |attachment| {
-            self.attachment_flow_height(attachment, f64::from(text_w), tr, theme)
-        });
+        let att_h: f64 = m
+            .files()
+            .map(|file| self.attachment_flow_height(file, f64::from(text_w), tr, theme))
+            .sum();
         let work_h = if editing {
             0.0
         } else {
@@ -615,8 +616,8 @@ impl ChatApp {
             },
             resource_h: if !editing && m.share.is_some() {
                 self.share_card_height(m, f64::from(text_w), tr, theme)
-            } else if !editing && m.reference.is_some() && m.source_provider.is_some() {
-                2.0 * (ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2))
+            } else if !editing && m.carries_a_chip() {
+                Self::resource_controls_height(m, theme)
             } else if !editing && self.report_recordings.contains_key(&m.id) {
                 ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2)
             } else {
@@ -859,45 +860,85 @@ impl ChatApp {
         } = paint;
         let gap = f64::from(theme.tokens.spacing.s2);
         let height = ButtonFace::height(ControlSize::Regular, theme);
-        self.resource_navigation.shown(&m.id);
         let width = f64::from(column.text_width);
-        // The resource as a reference chip, centred in a control's row so it
-        // keeps a control's pointer target.
-        *y += gap;
-        let label = m
-            .reference
-            .as_ref()
-            .map_or("", |reference| reference.label.as_str());
-        let lead = ui::framework::reference::LEAD;
-        let chip_w = ChipFace::intrinsic_width(label, lead, false, tr, theme).min(width);
-        let row = Rect::new(column.text_x, *y, column.text_x + chip_w, *y + height);
-        let chip_h = ChipFace::height(theme).min(height);
-        let chip = Rect::new(
-            row.x0,
-            row.center().y - chip_h / 2.0,
-            row.x1,
-            row.center().y + chip_h / 2.0,
-        );
-        ChipFace::new(chip, label)
-            .lead(lead)
-            .hovered(self.hovered(row))
-            .paint(scene, tf, tr, theme);
-        ChatApp::push_hit(hits, row, Hit::OpenResource(m.id.clone()));
-        *y += height + gap;
-        let caption = self.resource_navigation.label(&m.id, false);
-        let button_w = ButtonFace::new(Rect::ZERO, &caption)
-            .intrinsic_width(tr, theme)
-            .min(width);
-        let rect = Rect::new(column.text_x, *y, column.text_x + button_w, *y + height);
-        Button::paint(
-            scene,
-            tf,
-            tr,
-            theme,
-            &ButtonFace::new(rect, &caption).hovered(self.hovered(rect)),
-        );
-        ChatApp::push_hit(hits, rect, Hit::CopyResourceLink(m.id.clone()));
-        *y += height;
+        for (index, attached) in m
+            .attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, attached)| attached.is_chip())
+        {
+            let opens = attached.at().is_some();
+            let label = attached.label();
+            // The resource as a reference chip, centred in a control's row so
+            // it keeps a control's pointer target.
+            *y += gap;
+            let lead = ui::framework::reference::LEAD;
+            let chip_w = ChipFace::intrinsic_width(label, lead, false, tr, theme).min(width);
+            let row = Rect::new(column.text_x, *y, column.text_x + chip_w, *y + height);
+            let chip_h = ChipFace::height(theme).min(height);
+            let chip = Rect::new(
+                row.x0,
+                row.center().y - chip_h / 2.0,
+                row.x1,
+                row.center().y + chip_h / 2.0,
+            );
+            ChipFace::new(chip, label)
+                .lead(lead)
+                .hovered(opens && self.hovered(row))
+                .paint(scene, tf, tr, theme);
+            *y += height;
+            if !opens {
+                continue;
+            }
+            ChatApp::push_hit(
+                hits,
+                row,
+                Hit::OpenResource {
+                    msg: m.id.clone(),
+                    attachment: index,
+                },
+            );
+            *y += gap;
+            let caption = self.resource_navigation.label(&m.id, index, false);
+            let button_w = ButtonFace::new(Rect::ZERO, &caption)
+                .intrinsic_width(tr, theme)
+                .min(width);
+            let rect = Rect::new(column.text_x, *y, column.text_x + button_w, *y + height);
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::new(rect, &caption).hovered(self.hovered(rect)),
+            );
+            ChatApp::push_hit(
+                hits,
+                rect,
+                Hit::CopyResourceLink {
+                    msg: m.id.clone(),
+                    attachment: index,
+                },
+            );
+            *y += height;
+        }
+    }
+
+    /// The height of the chip and "Copy link" a message's resource
+    /// attachments take: a control's row each, with their gaps.
+    fn resource_controls_height(m: &Message, theme: &Theme) -> f64 {
+        let height = ButtonFace::height(ControlSize::Regular, theme);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        m.attachments
+            .iter()
+            .filter(|attached| attached.is_chip())
+            .map(|attached| {
+                if attached.at().is_some() {
+                    gap + height + gap + height
+                } else {
+                    gap + height
+                }
+            })
+            .fold(0.0, |total, row| total + row)
     }
 
     /// A message group's header: avatar, author and time. Advances `*y`
@@ -1072,27 +1113,33 @@ impl ChatApp {
             *y += rm.edited_h;
         }
 
-        if let Some(att) = &m.attachment {
+        for (index, file) in m
+            .attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, attached)| attached.blob().is_some())
+        {
             let card = self.draw_attachment(
                 PaintCtx::new(scene, tf, tr, theme),
-                att,
+                file,
                 Point::new(text_x, *y),
                 f64::from(text_w),
             );
             // A shared picture opens: a card nobody can enlarge is a card
             // that answers nothing ([`crate::attachment_view`]). Recorded
             // after the row's menu target, so a click on the card opens it.
-            if self.embed_allowed(att.blob()) {
+            if self.embed_allowed(file.blob().unwrap_or_default()) {
                 ChatApp::push_hit(
                     hits,
                     card,
                     Hit::Attachment {
                         msg: m.id.clone(),
+                        attachment: index,
                         action: ui::widget::conversation::AttachmentAction::OpenFullSize,
                     },
                 );
             }
-            *y += rm.att_h;
+            *y += self.attachment_flow_height(file, f64::from(text_w), tr, theme);
         }
 
         if !m.reactions.is_empty() {
@@ -1361,13 +1408,15 @@ impl ChatApp {
     /// including the gap before what follows it.
     pub(super) fn attachment_flow_height(
         &self,
-        att: &Attachment,
+        att: &tilo_reference::Attached,
         max_w: f64,
         tr: &mut TextRenderer,
         theme: &Theme,
     ) -> f64 {
         let gap = f64::from(theme.tokens.spacing.s2);
-        if !self.embed_allowed(att.blob()) || matches!(att, Attachment::File { .. }) {
+        if !self.embed_allowed(att.blob().unwrap_or_default())
+            || matches!(att, tilo_reference::Attached::File { .. })
+        {
             return file_card_height(tr, theme) + gap;
         }
         let meta = media_meta(att);
@@ -1378,7 +1427,7 @@ impl ChatApp {
     pub(super) fn draw_attachment(
         &self,
         paint: PaintCtx<'_>,
-        att: &Attachment,
+        att: &tilo_reference::Attached,
         origin: Point,
         max_w: f64,
     ) -> Rect {
@@ -1392,20 +1441,20 @@ impl ChatApp {
         // Permission boundary: an embed this peer has not been granted never
         // requests its shared bytes; it shows what it is and says why it
         // cannot open.
-        if !self.embed_allowed(att.blob()) {
+        if !self.embed_allowed(att.blob().unwrap_or_default()) {
             let icon = attachment_icon(att);
             let card = paint_file_card(
                 &mut ctx,
                 origin,
                 max_w,
                 icon,
-                att.name(),
+                att.label(),
                 &crate::i18n::t("chat-attachment-no-access"),
             );
             return card;
         }
         match att {
-            Attachment::File { name, size, .. } => {
+            tilo_reference::Attached::File { name, size, .. } => {
                 let card = paint_file_card(
                     &mut ctx,
                     origin,
@@ -1417,7 +1466,7 @@ impl ChatApp {
                 self.paint_attachment_open(&mut ctx, att, card);
                 card
             }
-            Attachment::Image { blob, .. } => {
+            tilo_reference::Attached::Image { blob, .. } => {
                 let image = self.images.get(&crate::images::blob_key(blob));
                 let mut meta = media_meta(att);
                 let step = (image.is_none() && !blob.starts_with(crate::images::DEMO_SCHEME))
@@ -1435,7 +1484,12 @@ impl ChatApp {
                 self.paint_attachment_open(&mut ctx, att, card);
                 card
             }
-            Attachment::Video { blob, .. } => {
+            // A chip is drawn by the row above; a record or quote holding no
+            // bytes leaves no card here.
+            tilo_reference::Attached::Resource { .. } | tilo_reference::Attached::Text { .. } => {
+                Rect::new(origin.x, origin.y, origin.x, origin.y)
+            }
+            tilo_reference::Attached::Video { blob, .. } => {
                 // A frame needs the media engine's decoder, so the card shows
                 // the poster the image store resolves for the clip (the demo
                 // recording ships one) and the generated art otherwise.
@@ -1455,7 +1509,12 @@ impl ChatApp {
     }
 
     /// The badge that says a card opens, on the card the pointer is over.
-    fn paint_attachment_open(&self, paint: &mut PaintCtx<'_>, att: &Attachment, card: Rect) {
+    fn paint_attachment_open(
+        &self,
+        paint: &mut PaintCtx<'_>,
+        att: &tilo_reference::Attached,
+        card: Rect,
+    ) {
         let summary = self.attachment_summary(att);
         ui::widget::conversation::attachment::AttachmentFace::new(&summary).paint_open_badge(
             paint,

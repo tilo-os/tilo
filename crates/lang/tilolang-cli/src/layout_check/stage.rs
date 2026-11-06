@@ -6,16 +6,16 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
+use serde_json::Value as Json;
 use tilo_render_protocol::patch::local::pair;
 use tilo_render_protocol::patch::{ResourceRef, ToApp, Value};
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
+use tilolang_tilo::publish::{COMMIT, HOST_RESOURCE};
 use tilolang_tilo::tilolang::Compiled;
-// `DynAction::apply` is the action protocol's.
 use ui::headless::FrameHarness;
 use ui::interaction::InteractionEnvironment;
-use ui::tilo_actions::Action as _;
 
 /// The compiled packages an instance loads: the app and what it uses, the app last; and the
 /// packages it uses as metadata: the native apps' it calls (`use so.tilo.session as session`),
@@ -101,6 +101,12 @@ impl Platform for Packages {
         ui::time::local_zone_name()
     }
 
+    /// A day or a time of day in a sentence, as the toolkit's lists show them, so a row's line
+    /// and a notice carry no stored text.
+    fn shown(&self, kind: &str, value: &str) -> String {
+        tilo_ui_host::date::shown_text(kind, value)
+    }
+
     fn waker(&self) -> tilolang_tilo::background::Waker {
         Arc::new(|| {})
     }
@@ -116,32 +122,79 @@ pub struct Staged {
 /// is: the rows a list shows, then the rows those rows show.
 const EXCHANGES: usize = 8;
 
+/// What a window is staged over and for, beyond its app, its packages and its size: the
+/// workspace it opens over, the layer it shows, the scenario staged into it, and whether what
+/// its units run is counted.
+#[derive(Default)]
+pub struct Staging {
+    /// The scenario to stage; none stages none.
+    pub scenario: Option<String>,
+    /// The layer a package with more than one root shows (`Desk`, `Arrangement`).
+    pub root: Option<String>,
+    /// The workspace record it opens over; an empty one when none.
+    pub record: Option<ui::automerge::AutoCommit>,
+    /// Whether what the app's units run is counted
+    /// ([`tilolang_tilo::runtime::cost`]).
+    pub costs: bool,
+    /// The view states the run stages, as the app's own code names them
+    /// (`place=Task.today`), as `layout-check --state` takes them: which place a window
+    /// stands on before anyone picks.
+    pub states: Vec<String>,
+}
+
 impl Staged {
     /// The app `app` of `packages` with `scenario` staged, its window laid out at `viewport`,
     /// showing the layer `root` names rather than the package's first root: a package with more
     /// than one root (the shell's `Desk` beside its `Arrangement`) shows each, and each is laid
-    /// out as a person sees it.
+    /// out as a person sees it. `states` are the view states the run stages (`place=Task.today`),
+    /// as `layout-check --state` takes them: which place a window stands on before anyone picks.
     pub fn over(
         app: &str,
         packages: &Rc<Packages>,
         scenario: &str,
         viewport: (u32, u32),
-        mut theme: ui::Theme,
+        theme: ui::Theme,
         root: Option<&str>,
+        states: &[String],
+    ) -> Result<Self, String> {
+        Self::over_workspace(
+            app,
+            packages,
+            viewport,
+            theme,
+            Staging {
+                scenario: Some(scenario.to_owned()),
+                root: root.map(str::to_owned),
+                states: states.to_vec(),
+                ..Staging::default()
+            },
+        )
+    }
+
+    /// As [`Self::over`], staged as `staging` says: its scenario, its layer, over the workspace
+    /// it brings (a seeded one, as a person with ten thousand items has it), counting what the
+    /// app's units run ([`tilolang_tilo::runtime::cost`]) when it says so.
+    pub fn over_workspace(
+        app: &str,
+        packages: &Rc<Packages>,
+        viewport: (u32, u32),
+        mut theme: ui::Theme,
+        staging: Staging,
     ) -> Result<Self, String> {
         // Layout at rest: what changes land at once rather than moving there.
         theme.reduce_motion = true;
         let (app_end, window_end) = pair();
+        let me = "ada".to_owned();
         let mut instance = Instance::new(
             Config {
                 app: app.to_owned(),
-                me: "ada".to_owned(),
+                me: me.clone(),
                 mode: Mode::Live,
                 device: None,
                 index_dir: None,
                 record_loader: None,
                 root: tilolang_tilo::host::RootView {
-                    root: root.map(str::to_owned),
+                    root: staging.root.clone(),
                     view: None,
                 },
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
@@ -152,16 +205,27 @@ impl Staged {
             Rc::new(tilolang_tilo::names::Unnamed),
             Box::new(app_end),
         );
-        let mut record = ui::automerge::AutoCommit::new();
+        let mut record = staging.record.unwrap_or_default();
 
         instance.sync(Some(&record));
+        // The window is laid out for a still picture: no frame comes to take in the indexes
+        // its load builds off the frame, so they are waited for, as a host without frames
+        // waits for them. Until then the window would show the platform's loading state.
+        if let Some(host) = instance.host() {
+            host.wait_index();
+        }
+        // Counted from the first frame: a workspace's opening is what it costs to open.
+        if staging.costs
+            && let Some(host) = instance.host()
+        {
+            host.runtime().record_costs(true);
+        }
         // The package's own root resources — every layer it has (the shell's `Desk` beside its
         // arrangement) and a person's record kept beside them (`root shell: Shell`) — are made
-        // and its migrations run, as the live session does when a window opens: a scenario
-        // that seeds another layer than the one laid out, or seeds a root through a migration,
-        // shows them. Making a root queues a change; `sync` after the origin's say-so runs the
-        // migrations, and each queued change is committed into the record as the door commits
-        // an app's.
+        // and its migrations run, as the live session does when it loads the package: a
+        // scenario that seeds another layer than the one laid out, or seeds a root through a
+        // migration, shows them. Making a root queues a change, which `settle` writes down as
+        // the door writes a session's.
         if let Some(host) = instance.host() {
             let meta = host.package(app).map(|package| package.meta);
             let roots = meta.iter().flat_map(|meta| {
@@ -176,26 +240,48 @@ impl Staged {
             }
         }
         instance.set_origin(true);
+        // The capture has no door over the workspace, so it stands where the door stands: it
+        // takes each step the instance hands over, writes it down and answers it, as a
+        // session's door does. The store reads the record's changes back, so what it tells of a
+        // change — the versions of a resource, and the marks and history drawn from them — is a
+        // session's, never a workspace staged but never written down.
         let settle = |instance: &mut Instance, record: &mut ui::automerge::AutoCommit| {
             instance.sync(Some(record));
             instance.commit_planned();
-            if let Some(host) = instance.host() {
-                for committed in host.take_committed() {
-                    committed
-                        .action
-                        .apply(record)
-                        .map_err(|error| format!("a change could not be committed: {error}"))?;
+            let Some(host) = instance.host() else {
+                return Ok::<(), String>(());
+            };
+            while let Some((invocation, _)) = instance.take_invocation() {
+                let address = invocation.address.clone();
+                if address.resource == HOST_RESOURCE && address.action == COMMIT {
+                    let ticket = invocation.arguments.get("ticket").and_then(Json::as_u64);
+                    if let Some(action) = ticket.and_then(|ticket| host.store().committed(ticket)) {
+                        commit(&host, &me, record, &action)?;
+                    }
                 }
+                instance.answered(&address, None);
             }
-            record.commit();
             instance.sync(Some(record));
             Ok::<(), String>(())
         };
         settle(&mut instance, &mut record)?;
-        instance.stage(Some(scenario));
+        if let Some(host) = instance.host() {
+            for state in &staging.states {
+                let (name, text) = state.split_once('=').ok_or_else(|| {
+                    format!("--state {state} names no value: write `--state place=Task.today`")
+                })?;
+                host.runtime()
+                    .stage_view_state(app, name.trim(), text.trim())
+                    .map_err(|error| format!("--state {state}: {error}"))?;
+            }
+        }
+        instance.stage(staging.scenario.as_deref());
         settle(&mut instance, &mut record)?;
         if let Some(why) = instance.take_stage_failure() {
-            return Err(format!("the scenario \"{scenario}\" failed: {why}"));
+            return Err(format!(
+                "the scenario \"{}\" failed: {why}",
+                staging.scenario.as_deref().unwrap_or_default()
+            ));
         }
         instance.update();
         let mut window = AppWindow::new(Box::new(window_end), Vec::new());
@@ -258,6 +344,19 @@ impl Staged {
     /// window, as a person at the keyboard does.
     pub fn key(&mut self, key: &str) {
         self.harness.key(key);
+    }
+
+    /// What the app's units ran since the last [`Self::reset_costs`], by unit
+    /// ([`tilolang_tilo::runtime::cost`]), when the costs are being counted.
+    pub fn costs(&self) -> Option<tilolang_tilo::runtime::Costs> {
+        self.instance.host()?.runtime().costs()
+    }
+
+    /// Count from here, forgetting what was run before: one interaction's cost.
+    pub fn reset_costs(&self) {
+        if let Some(host) = self.instance.host() {
+            host.runtime().reset_costs();
+        }
     }
 
     pub fn harness(&self) -> &FrameHarness {
@@ -466,5 +565,86 @@ impl Staged {
         self.window()
             .map(|window| window.broken_components())
             .unwrap_or_default()
+    }
+}
+
+/// Apply `action` to `record` as the door applies one for a session: encoded, as the person's
+/// step, with the context a step on the record carries, so what the store tells of the change —
+/// who made it, when, and the version it is of each resource — reads as a session's.
+fn commit(
+    host: &Host,
+    person: &str,
+    record: &mut ui::automerge::AutoCommit,
+    action: &tilolang_tilo::action::DynAction,
+) -> Result<(), String> {
+    use ui::tilo_actions::{ActionContext, ActionInvoker, apply_local_with_context};
+    // A resource its origin derives — the shell's desk and arrangement, a session's desk —
+    // lives in the store's unsaved layer and is never the workspace record's to have, so its
+    // steps stay there: what the store holds of it, the window is laid out with. A step that
+    // touches one and the record both writes its record part, its author's and its moment's,
+    // and leaves the derived part as the store wrote it.
+    let Some(action) = only_the_record(action, host) else {
+        return Ok(());
+    };
+    // The step is its author's, the person the scenario ran it as, and the change commits
+    // under their actor: a gesture's continuation is written as the actor's, so a step of
+    // another person's committed under this one would be read as a continuation of their
+    // gesture, and its versions, which marks and history draw, would not be written down.
+    let author = if action.authorship.invoker.is_empty() {
+        person.to_owned()
+    } else {
+        action.authorship.invoker.clone()
+    };
+    let invoker = ActionInvoker::actor(author.clone());
+    let context = ActionContext::for_resource(
+        action.resources().first().copied().unwrap_or("workspace"),
+        &action.kind,
+        &action.kind,
+    )
+    .with_invoker(invoker);
+    let encoded = action.encode().map_err(|error| error.to_string())?;
+    let actor = author.as_bytes().to_vec();
+    host.with_schemas(|| apply_local_with_context(record, &action, encoded, Some(&actor), context))
+        .map_err(|error| error.to_string())?;
+    record.commit();
+    Ok(())
+}
+
+/// The step `action` as the workspace record takes it: its edits of the resources the record
+/// holds, `None` when it has none. What its origin derives is the store's unsaved layer, and
+/// the record never holds it.
+fn only_the_record(
+    action: &tilolang_tilo::action::DynAction,
+    host: &Host,
+) -> Option<tilolang_tilo::action::DynAction> {
+    let edits: Vec<_> = action
+        .edits
+        .iter()
+        .filter(|edit| !host.store().derives(resource_of(edit)))
+        .cloned()
+        .collect();
+    if edits.is_empty() {
+        return None;
+    }
+    let mut kept = action.clone();
+    kept.edits = edits;
+    Some(kept)
+}
+
+/// The resource `edit` writes.
+fn resource_of(edit: &tilolang_tilo::action::DynEdit) -> &str {
+    use tilolang_tilo::action::DynEdit;
+    match edit {
+        DynEdit::Create { id, .. }
+        | DynEdit::Edit { id, .. }
+        | DynEdit::Insert { id, .. }
+        | DynEdit::Place { id, .. }
+        | DynEdit::Remove { id }
+        | DynEdit::OutboxPush { id, .. }
+        | DynEdit::OutboxSettle { id, .. }
+        | DynEdit::OutboxMark { id, .. }
+        | DynEdit::Migrated { id, .. }
+        | DynEdit::TriggerRan { id, .. } => id,
+        DynEdit::In { edit, .. } => resource_of(edit),
     }
 }

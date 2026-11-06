@@ -5,7 +5,7 @@
     reason = "in a test these are the assertion"
 )]
 
-use ui::tilo_resource::{Id, NonBlank, Replica};
+use tilo_resource::{Id, NonBlank, Replica};
 
 use crate::model::{
     Imported, ImportedMessage, MessageKind, Question, Run, RunOutcome, RunPhase, SpendLimits,
@@ -282,7 +282,7 @@ fn an_agents_run_is_approved_by_a_person_reported_by_its_agent_and_steered_in_th
                 action: "send".into(),
                 resource: "mail.account".into(),
                 arguments_digest: "digest".into(),
-                draft: ui::serde_json::json!({ "to": "team" }),
+                draft: serde_json::json!({ "to": "team" }),
                 preview: None,
             },
         }))
@@ -711,10 +711,10 @@ fn a_run_lists_every_resource_it_looked_up_on_its_task() {
     let read = |resource: &str, label: &str| {
         Tracker::RECORD_READ.with(tracker::RecordRead {
             issue: issue.clone(),
-            resource: ui::tilo_reference::ResourceAt {
+            resource: tilo_reference::ResourceAt {
                 app: "so.tilo.notes".into(),
                 record: None,
-                reference: ui::tilo_reference::ResourceRef::whole("notes.page", resource, label),
+                reference: tilo_reference::ResourceRef::whole("notes.page", resource, label),
             },
         })
     };
@@ -748,7 +748,7 @@ fn a_run_lists_every_resource_it_looked_up_on_its_task() {
         .values()
         .filter(|message| message.kind == MessageKind::Lookup)
         .map(|message| {
-            let read: ui::tilo_reference::ResourceAt =
+            let read: tilo_reference::ResourceAt =
                 serde_json::from_str(&message.lookup).expect("a lookup names what it read");
             (
                 format!("{}#{}", read.app, read.reference.id),
@@ -907,7 +907,7 @@ fn the_task_is_published_with_its_verbs_and_its_changes_carry_the_task() {
         .expect("the run's spend is a version with what it did");
     let invoker = spent.invoker.as_ref().expect("the change names its actor");
     assert_eq!(invoker.actor, AGENT);
-    assert_eq!(invoker.kind, ui::tilo_actions::ActorKind::Agent);
+    assert_eq!(invoker.kind, tilo_actions::ActorKind::Agent);
     assert_eq!(invoker.on_behalf_of.as_deref(), Some("ada"));
 }
 

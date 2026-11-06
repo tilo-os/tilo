@@ -27,6 +27,21 @@ IOSchedulingClass=idle
 UMask=0022
 # bootc writes the physical root and the ESP, so the file system is not
 # sandboxed; everything else is.
+#
+# No RestrictSUIDSGID=: on this systemd it installs a filter that fails
+# openat2() with ENOSYS, and bootc's containers/image resolves every path that
+# way without falling back, so the collection died before listing an image:
+#
+#   Pruning: Listing images: Loading global authfile: Opening runtime auth
+#   file: Function not implemented (os error 38)
+#
+# at every run, with or without images to remove. Measured on the shipped
+# systemd (259) with the unit's own properties: the probe in
+# os/tests/os_image_gc_sandbox.sh makes the one call and the unit's sandbox
+# answers ENOSYS. Nothing here needs the setuid/setgid bits instead — this unit
+# runs bootc and nothing else, the ESP it makes writable for that one call
+# holds no executable the collection runs, and NoNewPrivileges= already keeps
+# any exec from gaining privilege.
 ProtectHome=yes
 PrivateTmp=yes
 PrivateNetwork=yes
@@ -39,5 +54,4 @@ ProtectHostname=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RestrictRealtime=yes
-RestrictSUIDSGID=yes
 SystemCallArchitectures=native

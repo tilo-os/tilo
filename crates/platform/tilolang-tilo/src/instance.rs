@@ -26,6 +26,8 @@ mod person_state;
 #[cfg(feature = "record")]
 pub mod record;
 pub mod rows;
+mod shown;
+mod views;
 pub mod wire;
 
 use std::cell::{Cell, RefCell};
@@ -43,10 +45,10 @@ use crate::publish::{COMMIT, HOST_RESOURCE};
 use crate::runtime::meta::{Meta, TypeMeta};
 use crate::runtime::{
     ActionRef, BindTarget, Binding, EditOutcome, InvokeOutcome, NameHost, OutsideSink, Patch,
-    Principal, Resolution, ResourceRef, Suggestion, UiNode, Value, ViewEvent, ViewInstance,
+    Principal, Resolution, ResourceRef, Suggestion, UiNode, Value, ViewInstance,
 };
 use crate::upgrade::Upgrade;
-use rows::{FIRST_ROWS, ListRows};
+use rows::ListRows;
 use wire::Convert;
 
 /// What an instance runs as.
@@ -104,7 +106,7 @@ pub trait Publication {
 
 mod platform;
 
-pub use platform::{Platform, PlatformWords};
+pub use platform::{Platform, PlatformWeb, PlatformWords};
 
 /// How an instance starts.
 pub struct Config {
@@ -160,6 +162,15 @@ struct SharedNames(Rc<dyn NameHost>);
 impl NameHost for SharedNames {
     fn name(&self, who: &Principal) -> String {
         self.0.name(who)
+    }
+}
+
+/// How the platform reads a day or a time of day in a sentence, as the runtime asks for it.
+struct PlatformShown(Rc<dyn Platform>);
+
+impl crate::runtime::ShownHost for PlatformShown {
+    fn shown(&self, kind: &str, value: &str) -> String {
+        self.0.shown(kind, value)
     }
 }
 
@@ -251,6 +262,12 @@ pub struct Instance {
     in_flight: VecDeque<u64>,
     door_work: Rc<Cell<bool>>,
     open_requests: Rc<RefCell<Vec<crate::effects::OpenEffect>>>,
+    /// Whether the view of a shell places what it opens on the canvas, rather than opening a
+    /// detail lane of the shell's own window ([`Instance::place_opens`]).
+    place_opens: bool,
+    /// The resources a view of a shell opened since the last turn: the places the session
+    /// arranges on the canvas.
+    opens_to_place: Vec<(ResourceRef, Option<String>, bool)>,
     /// What a person's press of a primary action made, to open as they asked for it.
     pressed_opens: Vec<String>,
     ask: Option<Suggestion>,
@@ -339,6 +356,8 @@ impl Instance {
             in_flight: VecDeque::new(),
             door_work: Rc::default(),
             open_requests: Rc::default(),
+            place_opens: false,
+            opens_to_place: Vec::new(),
             pressed_opens: Vec::new(),
             ask: None,
             settle_due: false,
@@ -525,11 +544,34 @@ impl Instance {
     /// the time ever wakes the instance.
     #[must_use]
     pub fn wakes_in(&self) -> Option<std::time::Duration> {
-        let views = self.views_wake_in();
-        match (views, self.held_in()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
+        [self.views_wake_in(), self.held_in(), self.trigger_in()]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    /// How long until a trigger of this app next has something to run: what a window that runs
+    /// the app's triggers waits for. `None` when no trigger will come due, or this replica does
+    /// not run them.
+    fn trigger_in(&self) -> Option<std::time::Duration> {
+        if !self.origin || self.mode != Mode::Live {
+            return None;
         }
+        let now = self.now()?;
+        let at = self.host()?.next_trigger(now)?;
+        Some(std::time::Duration::from_secs(
+            u64::try_from(at.saturating_sub(now)).unwrap_or(0),
+        ))
+    }
+
+    /// The platform's clock now, in seconds since the epoch.
+    fn now(&self) -> Option<i64> {
+        let clock = self.platform.now();
+        let now = tilolang::calendar::instant(&clock);
+        if now.is_none() {
+            tracing::error!(clock, "the platform's clock reads no time");
+        }
+        now
     }
 
     /// How long until the time a view read (`today` in a query) next reads differently.
@@ -539,12 +581,7 @@ impl Instance {
             .flatten()
             .filter_map(|shown| shown.view.borrow().wakes_at())
             .min()?;
-        let clock = self.platform.now();
-        let Some(now) = tilolang::calendar::instant(&clock) else {
-            // The runtime read the same clock to answer the view: it could not have.
-            tracing::error!(clock, "the platform's clock reads no time");
-            return None;
-        };
+        let now = self.now()?;
         Some(std::time::Duration::from_secs(
             u64::try_from(at.saturating_sub(now)).unwrap_or(0),
         ))
@@ -733,8 +770,12 @@ impl Instance {
         }
         host.runtime()
             .set_name_host(SharedNames(Rc::clone(&self.names)));
+        host.runtime()
+            .set_shown_host(PlatformShown(Rc::clone(&self.platform)));
         let platform = Rc::clone(&self.platform);
         host.set_clock(move || platform.now());
+        host.runtime()
+            .set_web(PlatformWeb(Rc::clone(&self.platform)));
         let platform = Rc::clone(&self.platform);
         host.runtime().set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);
@@ -748,6 +789,11 @@ impl Instance {
                 rest: sink,
             });
         }
+        if self.mode != Mode::Past {
+            // The app's index is owed a frame as soon as it is built: the window shows what it
+            // can until the package's load has it, which builds it off the frame.
+            host.set_index_waker(self.platform.waker());
+        }
         self.generation = self.platform.load(&host);
         if self.platform.follows_updates() && self.mode != Mode::Past && !self.follows {
             self.follows = true;
@@ -756,7 +802,6 @@ impl Instance {
         if self.mode != Mode::Past {
             // What is published and found of the workspace is read off the frame the first time;
             // the instance takes it in when it is ready.
-            host.set_index_waker(self.platform.waker());
             self.publication = self.platform.publish(&host, self.platform.waker());
         }
         *self.host.borrow_mut() = Some(host.clone());
@@ -873,409 +918,7 @@ impl Instance {
         self.host_for(Some(doc))
     }
 
-    // ----- the views -----------------------------------------------------------------------
-
-    /// Open the package's root view.
-    fn open_root(&mut self, host: &Host) {
-        let target = match host.root_of_layer(&self.app, &self.root_view) {
-            Ok(target) => target,
-            Err(error) => {
-                tracing::warn!(app = self.app, %error, "the app has no root to open");
-                return;
-            }
-        };
-        match host.open_layer(&self.app, &self.root_view) {
-            Ok(view) => {
-                self.root = Some(Shown::new(target, self.spaced(Lane::Root, view)));
-                if self.detail.take().is_some() {
-                    self.out.push(ToUi::Close);
-                }
-                self.send_open(Lane::Root, None);
-                self.commit_planned();
-            }
-            Err(error) => {
-                tracing::warn!(app = self.app, %error, "the app did not open");
-                self.notice(Words::phrase("tilolang-open-failed"), ui::NoticeKind::Error);
-            }
-        }
-    }
-
-    /// Show `target` in the detail view: what `open(r)` asked for, or a row. With `front`, a
-    /// narrow window brings it to the front.
-    /// Open what the reference `reference` (a `mention` mark's value) in rich text refers to:
-    /// a resource of a package here that the viewer holds, in the detail lane.
-    fn open_reference(&mut self, reference: &str) {
-        use crate::runtime::Store as _;
-        let Some(reference) = crate::runtime::rich::Reference::of_mark(reference) else {
-            return;
-        };
-        let Some(host) = self.host() else {
-            return;
-        };
-        let Some(mut target) = referenced_resource(&host, &reference) else {
-            return;
-        };
-        let Ok(ty) = host.store().type_of(&target) else {
-            return;
-        };
-        target.ty = ty;
-        self.open_detail(&target, None, Some(ui::Front::Input));
-    }
-
-    fn open_detail(&mut self, target: &ResourceRef, with: Option<&str>, front: Option<ui::Front>) {
-        let Some(host) = self.host() else {
-            return;
-        };
-        if self
-            .detail
-            .as_ref()
-            .is_some_and(|detail| detail.target == *target && with.is_none())
-        {
-            if let Some(front) = front {
-                self.out.push(ToUi::Front(front));
-            }
-            return;
-        }
-        match host.open_resource(target, with) {
-            Ok(view) => {
-                let mut view = Shown::new(target.clone(), self.spaced(Lane::Detail, view));
-                view.with = with.map(str::to_owned);
-                if let Some(shown) = self.detail.replace(view) {
-                    self.seen_in_window(&shown.target);
-                }
-                self.lenses_changed = true;
-                self.send_open(Lane::Detail, front);
-                self.commit_planned();
-            }
-            Err(error) => {
-                tracing::warn!(%error, "a resource did not open");
-                self.notice(Words::phrase("tilolang-open-failed"), ui::NoticeKind::Error);
-            }
-        }
-    }
-
-    /// Show `resource` in the detail lane with the view `view` (an id) rather than its type's
-    /// window: what `open(r, with: v)` asks for, for a view the system shows on a surface of
-    /// its own (a row view as a search result, a proposal view in its card), which
-    /// `tilolang layout-check` lays out as it lays out a window.
-    pub fn open_with(&mut self, resource: &ui::ResourceRef, view: &str) {
-        if let Some(target) = wire::runtime_resource(resource) {
-            self.open_detail(&target, Some(view), None);
-        }
-    }
-
-    /// Close the detail view: Back.
-    pub fn close_detail(&mut self) {
-        if let Some(shown) = self.detail.take() {
-            self.seen_in_window(&shown.target);
-            self.lenses_changed = true;
-            self.out.push(ToUi::Close);
-        }
-    }
-
-    /// The person had `target` open in a window of its own, and goes elsewhere: what it showed
-    /// is seen (task-legibility §4). While the window is open its marks stay, so the person
-    /// sees what changed where it changed.
-    fn seen_in_window(&mut self, target: &ResourceRef) {
-        let Some(host) = self.host() else {
-            return;
-        };
-        let person = host.viewer().0.clone();
-        if let Err(error) = host.runtime().mark_seen(&person, target) {
-            tracing::warn!(%error, "what a window showed could not be marked seen");
-            self.notice(Words::phrase("tilolang-seen-failed"), ui::NoticeKind::Error);
-        }
-    }
-
-    /// Send the window the view of `lane` as it is now: its tree, and the first rows of its
-    /// virtual lists.
-    fn send_open(&mut self, lane: Lane, front: Option<ui::Front>) {
-        let Some(host) = self.host() else {
-            return;
-        };
-        let names = Rc::clone(&self.names);
-        let Some(view) = self.lane_mut(lane) else {
-            return;
-        };
-        view.lists.clear();
-        view.bound.clear();
-        let tree = {
-            let instance = view.view.borrow();
-            convert_with(&host, &*names, &instance, |convert| {
-                convert.node(instance.tree())
-            })
-        };
-        view.sent = Some(tree.clone());
-        let target = wire::resource(&view.target);
-        self.out.push(ToUi::Open {
-            lane,
-            target,
-            tree,
-            front,
-        });
-        self.track_lists(lane);
-        self.send_bound(lane);
-    }
-
-    /// Keep the rows of every virtual list of the view of `lane`, sending the window the first
-    /// rows of each new one, and drop those of lists gone.
-    fn track_lists(&mut self, lane: Lane) {
-        let Some(host) = self.host() else {
-            return;
-        };
-        let names = Rc::clone(&self.names);
-        let Some(view) = self.lane_mut(lane) else {
-            return;
-        };
-        let lists = virtual_lists(view.view.borrow().tree());
-        let handle = Rc::clone(&view.view);
-        view.lists
-            .retain(|key, rows| lists.contains(key) && rows.reads(&handle, key));
-        let mut sent = Vec::new();
-        for list in lists {
-            if view.lists.contains_key(&list) {
-                continue;
-            }
-            let mut rows = ListRows::of(&handle, &list);
-            let first = 0..FIRST_ROWS.min(rows.len());
-            let requested = rows.request(first);
-            sent.push(rows_message(
-                &host, &*names, &handle, lane, &list, requested,
-            ));
-            view.lists.insert(list, rows);
-        }
-        self.out.extend(sent);
-    }
-
-    /// Whether a view has something to run again: a reading it took moved, the time it read
-    /// passed, or a record it shows changed ([`ViewInstance::is_stale`]). A slot the host fills
-    /// moves one — the person's own state, given back when their window opens or kept on another
-    /// device of theirs, and what they have seen — so the frame runs the views that read it
-    /// rather than waiting for a change of the person's here.
-    fn views_stale(&self) -> bool {
-        [Lane::Root, Lane::Detail]
-            .into_iter()
-            .filter_map(|lane| self.lane(lane))
-            .any(|shown| shown.view.borrow().is_stale())
-    }
-
-    /// Re-run the views whose reads changed, and send the window what changed: their trees'
-    /// patches, and the changes of their virtual lists' rows. Whether anything did.
-    fn poll_views(&mut self) -> bool {
-        let Some(host) = self.host() else {
-            return false;
-        };
-        let names = Rc::clone(&self.names);
-        let mut changed = false;
-        for lane in [Lane::Root, Lane::Detail] {
-            let Some(view) = self.lane_mut(lane) else {
-                continue;
-            };
-            let patches = match view.view.borrow_mut().poll_patches() {
-                Ok(patches) => patches,
-                Err(error) => {
-                    tracing::warn!(%error, "a view failed to run");
-                    continue;
-                }
-            };
-            if patches.is_empty() {
-                continue;
-            }
-            changed = true;
-            let lists = virtual_list_paths(view.view.borrow().tree());
-            let sorted = sort(patches, &lists);
-            let mut messages = Vec::new();
-            let handle = Rc::clone(&view.view);
-            for (list, changes) in sorted.lists {
-                let Some(rows) = view.lists.get_mut(&list) else {
-                    continue;
-                };
-                let row_changes = if changes.reread {
-                    rows.reread()
-                } else {
-                    let mut structural = rows.apply(&changes.structure);
-                    let changed = rows.changed(&changes.rows);
-                    let instance = handle.borrow();
-                    convert_with(&host, &*names, &instance, |convert| {
-                        structural.extend(changed.iter().map(|row| ui::RowChange::Changed {
-                            row: convert.node(row),
-                        }));
-                    });
-                    structural
-                };
-                if row_changes.is_empty() {
-                    continue;
-                }
-                let len = u32::try_from(rows.len()).unwrap_or(u32::MAX);
-                messages.push(ToUi::RowsChanged {
-                    lane,
-                    list,
-                    len,
-                    changes: row_changes,
-                });
-            }
-            if sorted.content {
-                // A list inside the content may have rows the view has not rendered yet.
-                show_content_rows(&mut view.view.borrow_mut());
-                // Only what changed is converted, where it can be: a clock's minute converts
-                // the clock's text, not the window.
-                let in_place = match (&mut view.sent, &sorted.changed) {
-                    (Some(sent), Some(changed)) => {
-                        let instance = view.view.borrow();
-                        convert_with(&host, &*names, &instance, |convert| {
-                            patch_in_place(sent, instance.tree(), changed, convert)
-                        })
-                    }
-                    _ => None,
-                };
-                let patches = in_place.unwrap_or_else(|| {
-                    let tree = {
-                        let instance = view.view.borrow();
-                        convert_with(&host, &*names, &instance, |convert| {
-                            convert.node(instance.tree())
-                        })
-                    };
-                    let mut patches = Vec::new();
-                    match &view.sent {
-                        Some(sent) => wire::diff(sent, &tree, &mut patches),
-                        None => patches.push(ui::Patch::SetRoot(tree.clone())),
-                    }
-                    view.sent = Some(tree);
-                    patches
-                });
-                if !patches.is_empty() {
-                    self.out.push(ToUi::Patch { lane, patches });
-                }
-            }
-            self.out.extend(messages);
-            if sorted.content {
-                self.track_lists(lane);
-            }
-        }
-        if changed {
-            self.send_bound(Lane::Root);
-            self.send_bound(Lane::Detail);
-        }
-        changed
-    }
-
-    /// The opens the views asked for.
-    fn follow_opens(&mut self) {
-        let mut opens = Vec::new();
-        for view in [self.root.as_ref(), self.detail.as_ref()]
-            .into_iter()
-            .flatten()
-        {
-            opens.extend(view.view.borrow_mut().poll_events());
-        }
-        for event in opens {
-            match event {
-                ViewEvent::Open {
-                    target,
-                    view,
-                    front,
-                } => {
-                    // A selection the keyboard moves shows the item beside the list without
-                    // bringing it to the front of a narrow window; an activation does.
-                    let front = front.then_some(ui::Front::Input);
-                    self.open_detail(&target, view.as_deref(), front);
-                }
-                // The run's log is the system's: the window's host shows it.
-                ViewEvent::Review { run, .. } => self.out.push(ToUi::ShowRun { run }),
-                // An undo a view applied is the record's, carried out as the window's undo is.
-                ViewEvent::Undo(tilolang_runtime::UndoAsk::Step { change, .. }) => {
-                    self.history.push(HistoryAsk::UndoStep(change));
-                }
-                ViewEvent::Undo(tilolang_runtime::UndoAsk::Run { run }) => {
-                    self.history.push(HistoryAsk::UndoRun(run));
-                }
-            }
-        }
-    }
-
-    /// Send the window what each bound control of the view of `lane` (and of the rows it
-    /// shows) holds now, where that changed.
-    fn send_bound(&mut self, lane: Lane) {
-        let Some(view) = self.lane_mut(lane) else {
-            return;
-        };
-        let instance = Rc::clone(&view.view);
-        let instance = instance.borrow();
-        let mut now: Vec<(String, ui::Value)> = Vec::new();
-        bound_values(instance.tree(), &instance, &mut now);
-        for rows in view.lists.values() {
-            for key in rows.shown() {
-                if let Some(row) = instance.find(key) {
-                    bound_values(row, &instance, &mut now);
-                }
-            }
-        }
-        let mut sent = Vec::new();
-        for (key, value) in now {
-            if view.bound.get(&key) == Some(&value) {
-                continue;
-            }
-            view.bound.insert(key.clone(), value.clone());
-            let acked = view.acked.get(&key).copied().unwrap_or(0);
-            sent.push(ToUi::Bound {
-                lane,
-                key,
-                value,
-                acked,
-            });
-        }
-        drop(instance);
-        self.out.extend(sent);
-    }
-
-    /// Whether the detail view's bound controls hold anything, and where: a draft being typed
-    /// in a conversation. Only whether, never what it says: presence carries "composing",
-    /// never the words.
-    #[must_use]
-    pub fn composing_in(&self) -> Option<&ResourceRef> {
-        let detail = self.detail.as_ref()?;
-        // The view's own controls, as the bound values it holds: any text or rich text with
-        // something in it is a draft under way.
-        let holds = self.lane(Lane::Detail).is_some_and(|shown| {
-            shown
-                .bound
-                .keys()
-                .filter_map(|key| shown.view.borrow().bound_value(key))
-                .any(|value| match value {
-                    crate::runtime::Value::Text(text) => !text.trim().is_empty(),
-                    crate::runtime::Value::Rich(rich) => !rich.written_text().trim().is_empty(),
-                    _ => false,
-                })
-        });
-        holds.then_some(&detail.target)
-    }
-
-    /// Tell the window what the bound control `key` of `lane` holds now that the edit it sent
-    /// is applied: the value the app holds is what its next frame draws, and the control shows
-    /// it until then only as the person's own touch, which a frame from the app replaces.
-    fn shown_by_window(&mut self, lane: Lane, key: &str) {
-        let Some(value) = self
-            .view(lane)
-            .and_then(|view| view.borrow().bound_value(key))
-        else {
-            return;
-        };
-        let shown = plain(&NoNames).value(&value);
-        let Some(view) = self.lane_mut(lane) else {
-            return;
-        };
-        if view.bound.get(key) == Some(&shown) {
-            return;
-        }
-        view.bound.insert(key.to_owned(), shown.clone());
-        let acked = view.acked.get(key).copied().unwrap_or(0);
-        self.out.push(ToUi::Bound {
-            lane,
-            key: key.to_owned(),
-            value: shown,
-            acked,
-        });
-    }
+    // ----- presence ------------------------------------------------------------------------
 
     /// Bring the lenses the views read up to date with presence: who else is at each resource
     /// (`peers`, by resource id), and the person themselves at the detail view's resource.
@@ -2224,6 +1867,15 @@ impl Instance {
                 self.out.push(ToUi::Loading);
             }
         }
+        // Only the origin runs the packages' triggers: every change is ordered there, and each
+        // run records what it did, so a trigger runs once across the workspace's devices.
+        if self.origin
+            && self.mode == Mode::Live
+            && let Some(now) = self.now()
+            && host.run_triggers(now) > 0
+        {
+            self.moved = true;
+        }
         if self.staged.is_some() {
             self.run_staged(&host);
         }
@@ -2920,7 +2572,7 @@ mod tests {
     fn a_bound_control_is_not_named_by_a_name_in_the_code() {
         let state = Binding {
             target: BindTarget::State {
-                key: crate::runtime::StateKey::lens("w", "person:me", "draft"),
+                key: crate::runtime::StateKey::view("w", "person:me", "draft"),
                 name: "draft".to_owned(),
                 ty: "Text".to_owned(),
             },

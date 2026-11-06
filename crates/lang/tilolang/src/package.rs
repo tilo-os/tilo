@@ -9,7 +9,7 @@ use crate::hash::sha256_hex;
 use crate::ids::{Entropy, IdsLock, OsEntropy, SeededEntropy, declared_names};
 use crate::ir;
 use crate::meta::{
-    ActionMeta, AnchorMeta, DefaultViewMeta, EnumMeta, FieldMeta, FlowMeta, FnMeta, PackageMeta,
+    ActionMeta, AnchorMeta, DefaultViewMeta, EnumMeta, FieldMeta, FnMeta, Line, PackageMeta,
     ParamMeta, ProposalMeta, ScenarioMeta, StateMeta, TypeMeta, VariantMeta, ViewMeta,
 };
 use crate::parser::{ParsedFile, parse_expr_source, parse_file_at, parse_module, parse_ui_source};
@@ -236,9 +236,36 @@ pub fn compile_package_source_with(
     rng: &mut dyn Entropy,
 ) -> Result<Compiled, Vec<Diagnostic>> {
     let a = analyze_package(source, ids, imports, rng)?;
+    let lines = lines_of(&a.ir, &placed(source));
     let mut compiled = emit_package(a);
     crate::meta::append_locales(&mut compiled.wasm, &locales_of(source, &compiled.meta));
+    crate::meta::append_lines(&mut compiled.wasm, &lines);
     Ok(compiled)
+}
+
+/// Where each of `ir`'s functions is written, in the package source `files` placed in the shared
+/// span space; the functions no declaration is written for (a block) have no line.
+fn lines_of(ir: &ir::Module, files: &[Placed<'_>]) -> Vec<Line> {
+    ir.funcs
+        .iter()
+        .filter_map(|f| {
+            let at = f.at?;
+            let file = files.iter().rev().find(|file| {
+                at >= file.base && at < file.base.saturating_add(file.text.len() + 1)
+            })?;
+            let before = file.text.get(..at.saturating_sub(file.base))?;
+            Some(Line {
+                export: f.export.clone(),
+                file: file.path.to_owned(),
+                line: line_number(before),
+            })
+        })
+        .collect()
+}
+
+/// The line `offset` in `text` stands on, counted from 1.
+fn line_number(text: &str) -> u32 {
+    u32::try_from(text.bytes().filter(|b| *b == b'\n').count() + 1).unwrap_or(u32::MAX)
 }
 
 /// The catalogues a module built from `source` carries: the source language's written from the
@@ -300,7 +327,20 @@ pub fn compile_package_with(
     rng: &mut dyn Entropy,
 ) -> Result<Compiled, Vec<Diagnostic>> {
     let a = analyze(source, ids, imports, rng)?;
-    Ok(emit_package(a))
+    let lines: Vec<Line> =
+        a.ir.funcs
+            .iter()
+            .filter_map(|f| {
+                Some(Line {
+                    export: f.export.clone(),
+                    file: String::from("/"),
+                    line: line_number(source.get(..f.at?)?),
+                })
+            })
+            .collect();
+    let mut compiled = emit_package(a);
+    crate::meta::append_lines(&mut compiled.wasm, &lines);
+    Ok(compiled)
 }
 
 /// Reports every error of a package, or an empty list when it is fine.
@@ -334,6 +374,11 @@ fn result_meta(ty: &Ty, app: &str) -> Option<String> {
     (!matches!(ty, Ty::Unit)).then(|| ty.meta_text(app))
 }
 
+/// The effects a declaration uses, as its metadata spells them.
+fn uses_meta(uses: &std::collections::BTreeSet<crate::effects::Effect>) -> Vec<String> {
+    uses.iter().map(|e| e.word().to_string()).collect()
+}
+
 fn field_meta(f: &crate::resolve::FieldInfo, app: &str) -> FieldMeta {
     FieldMeta {
         id: f.id.clone(),
@@ -361,8 +406,7 @@ fn at_event_fns(ir: &crate::ir::Module, app: &str) -> Vec<FnMeta> {
         .collect()
 }
 
-/// The `window` and `lens` declarations a view holds, as the host reads them to answer a
-/// `bind`.
+/// The `state` declarations a view holds, as the host reads them to answer a `bind`.
 fn state_meta<'a>(
     states: impl Iterator<Item = &'a crate::resolve::StateInfo>,
     app: &str,
@@ -371,7 +415,6 @@ fn state_meta<'a>(
         .map(|s| StateMeta {
             id: s.id.clone(),
             name: s.name.clone(),
-            layer: s.layer.word().to_string(),
             ty: s.ty.meta_text(app),
         })
         .collect()
@@ -421,6 +464,7 @@ fn build_meta(
         category: module.app.category.clone(),
         previously: module.app.previously.clone(),
         own_records: module.app.own_records,
+        web: module.app.web.clone(),
         ..PackageMeta::default()
     };
     let type_id =
@@ -440,6 +484,11 @@ fn build_meta(
             _ => None,
         })
         .collect();
+    // Every module is compiled with the standard library, so its code may call into it: a
+    // bundle is handed the library as the package it uses, like any it `use`s.
+    if env.app != crate::stdlib::APP {
+        meta.uses.push(crate::stdlib::APP.to_string());
+    }
     meta.named_roots = env
         .named_roots
         .iter()
@@ -463,6 +512,35 @@ fn build_meta(
     };
     meta.default_views = views_meta(&env.default_views);
     meta.row_views = views_meta(&env.row_views);
+    meta.triggers = env
+        .triggers
+        .iter()
+        .map(|t| crate::meta::TriggerMeta {
+            id: t.id.clone(),
+            name: t.name.clone(),
+            doc: t.doc.clone(),
+            action: t.action.clone(),
+            ty: t.ty.clone(),
+            args: t
+                .args
+                .iter()
+                .map(|arg| match arg {
+                    crate::resolve::TriggerArg::Subject => crate::meta::TriggerArgMeta::Subject,
+                    crate::resolve::TriggerArg::Root(ty) => {
+                        crate::meta::TriggerArgMeta::Root(ty.clone())
+                    }
+                })
+                .collect(),
+            when: match &t.when {
+                crate::resolve::TriggerWhen::Every(secs) => {
+                    crate::meta::TriggerWhenMeta::Every(*secs)
+                }
+                crate::resolve::TriggerWhen::At(field) => {
+                    crate::meta::TriggerWhenMeta::At(field.clone())
+                }
+            },
+        })
+        .collect();
     meta.views_of = env
         .views_of
         .iter()
@@ -500,23 +578,14 @@ fn build_meta(
             | Item::Root(_)
             | Item::DefaultView(_)
             | Item::RowView(_)
-            | Item::Views(_) => {}
+            | Item::Views(_)
+            | Item::Trigger(_) => {}
             Item::Alias(a) => {
                 let key = crate::types::TypeKey {
                     app: app.to_string(),
                     name: a.name.name.clone(),
                 };
-                if let Some(info) = env.type_info(&key) {
-                    meta.types.push(TypeMeta {
-                        id: info.id.clone(),
-                        name: info.key.name.clone(),
-                        doc: doc(&a.doc),
-                        fields: info.fields.iter().map(|f| field_meta(f, app)).collect(),
-                        search: info.search.clone(),
-                        holder: true,
-                        origin: None,
-                    });
-                } else if let Some((_, ty)) = env.aliases.iter().find(|(k, _)| *k == key) {
+                if let Some((_, ty)) = env.aliases.iter().find(|(k, _)| *k == key) {
                     meta.aliases.push(crate::meta::AliasMeta {
                         name: key.name.clone(),
                         ty: ty.meta_text(app),
@@ -537,11 +606,13 @@ fn build_meta(
                     class: class_of(idx),
                     proposal: None,
                     reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),
+                    invokes: fx.invokes.get(idx).copied().unwrap_or(false),
                     label: c.present.label.clone(),
                     icon: None,
                     role: None,
                     scenario: true,
                     did: None,
+                    uses: uses_meta(&c.uses),
                     present: None,
                     toggles: None,
                     key: None,
@@ -590,7 +661,6 @@ fn build_meta(
                     doc: doc(&t.doc),
                     fields,
                     search: info.search.clone(),
-                    holder: false,
                     origin: info.origin.clone(),
                 });
             }
@@ -620,11 +690,13 @@ fn build_meta(
                     class: class_of(idx),
                     proposal,
                     reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),
+                    invokes: fx.invokes.get(idx).copied().unwrap_or(false),
                     label: c.present.label.clone(),
                     icon: c.present.icon.clone(),
                     role: c.present.role.clone(),
                     scenario: false,
                     did: c.present.did.clone(),
+                    uses: uses_meta(&c.uses),
                     present: c.present.view.clone(),
                     toggles: toggled_field(env, a, &c.params),
                     key: c.present.key.clone(),
@@ -657,21 +729,6 @@ fn build_meta(
                         row_of: None,
                     });
                 }
-            }
-            Item::Flow(f) => {
-                let Some(c) = env.own_callable(&f.name.name) else {
-                    continue;
-                };
-                let Some(idx) = c.func else { continue };
-                meta.flows.push(FlowMeta {
-                    id: c.id.clone(),
-                    name: c.name.clone(),
-                    doc: doc(&f.doc),
-                    params: params_meta(&c.params, app),
-                    result: result_meta(&c.result, app),
-                    class: class_of(idx),
-                    reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),
-                });
             }
             Item::View(v) => {
                 let Some(c) = env.own_callable(&v.name.name) else {
@@ -821,19 +878,19 @@ pub struct Binding {
     pub ty: String,
 }
 
-/// A compiled program: a module whose one flow takes the session's bindings, in order.
+/// A compiled program: a module whose one action takes the session's bindings, in order.
 #[derive(Clone, Debug)]
 pub struct CompiledProgram {
     pub wasm: Vec<u8>,
     pub meta: PackageMeta,
-    /// The id of its flow.
-    pub flow: String,
+    /// The id of its action.
+    pub action: String,
     /// What its top-level `let`s bound, to keep for the next program of the session.
     pub lets: Vec<Binding>,
 }
 
 /// Compiles an agent's program (agents.md, "One language, one tool"): statements over every visible
-/// app, run as a flow whose parameters are the names a session bound before (`bound`).
+/// app, run as an action whose parameters are the names a session bound before (`bound`).
 ///
 /// # Errors
 /// The diagnostics, located in `source`.
@@ -871,9 +928,12 @@ pub fn compile_program_reading(
     let key = sha256_hex(fingerprint.as_bytes());
     let short = key.get(..16).unwrap_or(&key);
     let app = format!("{PROGRAM_APP_PREFIX}{short}");
-    let flow = format!("program-{short}");
+    let action = format!("program-{short}");
     let host = crate::host::host_meta();
     let mut env = agent_env(&app, &host, visible);
+    // A session's code has the agent library's words in scope, as every package has `std`.
+    env.add_agent();
+    env.session = true;
     for (alias, source) in sources {
         if !env.sources.iter().any(|(_, known)| known == source) {
             env.sources.push((alias.clone(), source.clone()));
@@ -898,7 +958,7 @@ pub fn compile_program_reading(
     if !parse_diags.is_empty() {
         return Err(finish(parse_diags, source));
     }
-    let result = checker::check_program(&env, &stmts, &params, &format!("f_{flow}"), &mut diags);
+    let result = checker::check_program(&env, &stmts, &params, &format!("a_{action}"), &mut diags);
     if !diags.is_empty() {
         return Err(finish(diags, source));
     }
@@ -913,14 +973,29 @@ pub fn compile_program_reading(
     let mut meta = PackageMeta {
         app: app.clone(),
         title: "Program".to_owned(),
-        flows: vec![FlowMeta {
-            id: flow.clone(),
+        actions: vec![ActionMeta {
+            id: action.clone(),
             name: "main".to_owned(),
             doc: String::new(),
             params: params_meta(&params, &app),
             result: None,
             class: crate::types::EffectClass::Undoable,
+            proposal: None,
             reaches: Vec::new(),
+            label: String::new(),
+            icon: None,
+            role: None,
+            scenario: false,
+            did: None,
+            present: None,
+            toggles: None,
+            key: None,
+            group: None,
+            frequent: false,
+            uses: Vec::new(),
+            guard: false,
+            applies: false,
+            invokes: false,
         }],
         ..PackageMeta::default()
     };
@@ -930,7 +1005,7 @@ pub fn compile_program_reading(
     Ok(CompiledProgram {
         wasm,
         meta,
-        flow,
+        action,
         lets,
     })
 }

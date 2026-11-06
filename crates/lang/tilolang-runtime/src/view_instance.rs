@@ -1,7 +1,7 @@
 //! A live view: its tree, the fields and view state it depends on, and the events it can take.
 //!
-//! A view runs in a window (workspace-model.md, "Windows") for one person. Its `window` state
-//! is how that person's window shows the resource, `lens` state where they are in it; both are
+//! A view runs in a window (workspace-model.md, "Windows") for one person. The state it
+//! declares is how that person's window shows the resource and where they are in it; it is
 //! kept per person and window, so nobody else's view of the same window moves with them.
 
 use std::cell::RefCell;
@@ -13,7 +13,9 @@ use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
-use crate::host_ui::{OPEN_ACTION, REVIEW_ACTION, SET_ACTION, THEN_ACTION, UNDO_ACTION};
+use crate::host_ui::{
+    KEEP_ACTION, OPEN_ACTION, REVIEW_ACTION, SET_ACTION, THEN_ACTION, UNDO_ACTION,
+};
 use crate::ids::{DocId, ModuleHash, Principal};
 use crate::live::{Live, LiveStats};
 use crate::meta::{EffectClass, FieldKind};
@@ -23,7 +25,7 @@ use crate::space::Space;
 use crate::store::{ChangeNote, ChangeSummary, Mutation, SubId};
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
 use crate::view::{BindTarget, Patch, UiNode};
-use crate::view_state::{StateKey, StateLayer};
+use crate::view_state::StateKey;
 
 /// Something a view asks of the host that the runtime does not do itself.
 #[derive(Clone, Debug, PartialEq)]
@@ -246,6 +248,13 @@ impl ViewInstance {
         self.live.stats()
     }
 
+    /// The resources the window shows now, by [`ResourceRef::id_string`]: the view's subject
+    /// and the items of the rows rendered (the visible rows and the overscan). What a surface
+    /// publishes to a window is bounded by this, not by what the workspace holds.
+    pub fn shown_refs(&self) -> Vec<String> {
+        self.live.shown_refs(&self.core)
+    }
+
     /// Whether rows of lists render only once shown (the default), or with the list. A host
     /// that draws the whole tree, rather than asking for rows, turns this off before the
     /// first poll; rows already left unrendered render at once, into the tree (no patches:
@@ -350,7 +359,7 @@ impl ViewInstance {
             RuntimeError::BadArgs(format!("event `{event}` of `{key}` carries no value"))
         })?;
         self.read_states(&mut aref)?;
-        // What an entry sends with its `submit` fills the `(entry)` parameter of the action it
+        // What an entry sends with its `submit` fills the `Text` parameter of the action it
         // commits, and the parameters the words say: the text is the one typed at the press. An
         // entry whose text is nothing but space and what other parameters take ("fri 10am
         // @bo") makes nothing: it does not fire, and leaves what is typed where it is.
@@ -407,26 +416,26 @@ impl ViewInstance {
         self.run(aref)
     }
 
-    /// The lens state `state` of this view's person in its window, when it was ever set.
+    /// The view state `state` of this view's person in its window, when it was ever set.
     #[must_use]
-    pub fn lens(&self, state: &str) -> Option<Value> {
+    pub fn view_state(&self, state: &str) -> Option<Value> {
         self.core
             .view_states
             .borrow()
-            .get(&self.lens_key(state))
+            .get(&self.state_key(state))
             .cloned()
     }
 
-    /// Set the lens state `state` of this view's person in its window.
-    pub fn set_lens(&self, state: &str, value: Value) {
+    /// Set the view state `state` of this view's person in its window.
+    pub fn set_view_state(&self, state: &str, value: Value) {
         self.core
             .view_states
             .borrow_mut()
-            .set(self.lens_key(state), value);
+            .set(self.state_key(state), value);
     }
 
-    fn lens_key(&self, state: &str) -> StateKey {
-        StateKey::lens(
+    fn state_key(&self, state: &str) -> StateKey {
+        StateKey::view(
             self.live.window.clone(),
             self.live.viewer.0.clone(),
             state.to_owned(),
@@ -520,6 +529,7 @@ impl ViewInstance {
     fn run(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
         match aref.action.as_str() {
             SET_ACTION => self.platform_set(aref),
+            KEEP_ACTION => self.platform_keep(aref),
             OPEN_ACTION => self.platform_open(aref),
             REVIEW_ACTION => {
                 let (Some(Value::Text(run)), Some(Value::Ref(r))) =
@@ -566,24 +576,36 @@ impl ViewInstance {
     /// person's window. A slot belongs to the person it was rendered for; nobody presses
     /// another's controls.
     fn platform_set(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
-        let [window, principal, layer, state, value] = aref.args.as_slice() else {
+        let [window, principal, state, value] = aref.args.as_slice() else {
             return Err(RuntimeError::BadArgs("a malformed `set`".into()));
         };
         let text = |v: &Value| v.as_text().map(str::to_owned);
-        let (Some(window), Some(principal), Some(layer), Some(state)) =
-            (text(window), text(principal), layer.as_int(), text(state))
+        let (Some(window), Some(principal), Some(state)) =
+            (text(window), text(principal), text(state))
         else {
             return Err(RuntimeError::BadArgs("a malformed `set`".into()));
         };
-        let layer = i32::try_from(layer)
-            .ok()
-            .and_then(StateLayer::from_code)
-            .ok_or_else(|| RuntimeError::BadArgs(format!("unknown view state layer {layer}")))?;
-        let key = match layer {
-            StateLayer::Window => StateKey::window(window, principal, state),
-            StateLayer::Lens => StateKey::lens(window, principal, state),
-        };
+        let key = StateKey::view(window, principal, state);
         self.core.view_states.borrow_mut().write(key, value.clone());
+        Ok(InvokeOutcome::Done(Value::Unit))
+    }
+
+    /// What the host wires to a selection it keeps: put what the control reported in this
+    /// window's slot `state`, which is the runtime's reading and not kept in a record: a
+    /// selection is where a person is, not what they set.
+    fn platform_keep(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
+        let [state, value] = aref.args.as_slice() else {
+            return Err(RuntimeError::BadArgs("a malformed `keep`".into()));
+        };
+        let Some(state) = state.as_text() else {
+            return Err(RuntimeError::BadArgs("a malformed `keep`".into()));
+        };
+        let key = StateKey::runtime(
+            self.live.window.clone(),
+            Some(self.live.viewer.0.clone()),
+            state.to_owned(),
+        );
+        self.core.view_states.borrow_mut().set(key, value.clone());
         Ok(InvokeOutcome::Done(Value::Unit))
     }
 
@@ -764,6 +786,7 @@ impl ViewInstance {
             suggested_by: None,
             origin: None,
             from: None,
+            at: None,
         };
         let decision = self.core.decide_with(
             &ctx,
@@ -819,9 +842,11 @@ impl ViewInstance {
             approved_by: None,
             at: Some(self.core.clock_now()),
             touched: vec![target.id_string()],
+            count: 1,
             group: None,
             from: None,
             suggested_by: None,
+            effects: Vec::new(),
         };
         let mut store = self.core.store.borrow_mut();
         let txn = store.begin()?;

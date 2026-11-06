@@ -180,6 +180,8 @@ NOT_CONTROL_CALLBACKS = {
     "publishes the change on the row's resource",
     "on_seek": "reports the position a seek reached: the seek itself reaches the player's engine, "
     "never an edit of the app's resource",
+    "on_selected": "reports which rows a list has chosen: what this window shows, kept where the "
+    "person is rather than in the app's resource, no edit",
     "on_station_view": "answers the stepper's published view action for the station chosen",
     "on_files_view": "answers the drop zone's published view action for the files dropped",
     "on_check_view": "answers the table's published view action for the box turned",

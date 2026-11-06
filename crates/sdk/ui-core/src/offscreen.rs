@@ -1390,39 +1390,61 @@ impl OffscreenRenderer {
         self.backdrop_stats
     }
 
+    /// Copy `size` pixels at `origin` of the target as last drawn into `into`,
+    /// the target's own image: rows of `4 * width` bytes, `height` rows,
+    /// tightly packed as [`Self::readback_current`] returns them. Only that
+    /// part of the target is copied off the GPU, and nothing outside it in
+    /// `into` is touched, so a frame that changed a part costs the part.
     #[allow(
         clippy::expect_used,
         reason = "pixel-test readback cannot recover from a failed GPU mapping"
     )]
-    fn read_target(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<u8> {
+    pub fn readback_into(&mut self, origin: (u32, u32), size: (u32, u32), into: &mut [u8]) {
+        let x = origin.0.min(self.width);
+        let y = origin.1.min(self.height);
+        let width = size.0.min(self.width.saturating_sub(x));
+        let height = size.1.min(self.height.saturating_sub(y));
+        if width == 0 || height == 0 {
+            return;
+        }
+        let stride = (self.width as usize).saturating_mul(4);
+        let rows = height as usize;
+        let row_bytes = (width as usize).saturating_mul(4);
+        if into.len() < stride.saturating_mul(self.height as usize) {
+            return;
+        }
+        let (device, queue) = self.device_queue();
+        let padded = self.padded_bytes_per_row;
         let readback_buf = self.readback_buf.get_or_insert_with(|| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("quick-ui-offscreen-readback"),
-                size: u64::from(self.padded_bytes_per_row.saturating_mul(self.height)),
+                size: u64::from(padded.saturating_mul(self.height)),
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             })
         });
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        // The buffer's rows keep the full width's pitch, so one buffer serves
+        // every region of this target.
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
+                origin: wgpu::Origin3d { x, y, z: 0 },
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {
                 buffer: readback_buf,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(self.padded_bytes_per_row),
-                    rows_per_image: Some(self.height),
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(height),
                 },
             },
             wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );
@@ -1439,18 +1461,35 @@ impl OffscreenRenderer {
             .expect("buffer map failed");
 
         let mapped = slice.get_mapped_range();
-        let row_bytes = (self.width as usize).saturating_mul(4);
-        let mut tight = Vec::with_capacity((self.height as usize).saturating_mul(row_bytes));
-        for row in 0..self.height as usize {
-            let start = row.saturating_mul(self.padded_bytes_per_row as usize);
-            let end = start.saturating_add(row_bytes);
-            let row_slice = mapped
-                .get(start..end)
-                .expect("readback row out of range of the mapped buffer");
-            tight.extend_from_slice(row_slice);
+        for row in 0..rows {
+            let from = row.saturating_mul(padded as usize);
+            let to = (y as usize)
+                .saturating_add(row)
+                .saturating_mul(stride)
+                .saturating_add((x as usize).saturating_mul(4));
+            if let (Some(source), Some(destination)) = (
+                mapped.get(from..from.saturating_add(row_bytes)),
+                into.get_mut(to..to.saturating_add(row_bytes)),
+            ) {
+                destination.copy_from_slice(source);
+            }
         }
         drop(mapped);
         readback_buf.unmap();
+    }
+
+    #[allow(
+        clippy::expect_used,
+        reason = "pixel-test readback cannot recover from a failed GPU mapping"
+    )]
+    fn read_target(&mut self) -> Vec<u8> {
+        let mut tight = vec![
+            0;
+            (self.width as usize)
+                .saturating_mul(self.height as usize)
+                .saturating_mul(4)
+        ];
+        self.readback_into((0, 0), (self.width, self.height), &mut tight);
         tight
     }
 
@@ -1505,7 +1544,7 @@ impl OffscreenRenderer {
         }
         self.last_damage_region_count = Some(0);
 
-        let tight = self.read_target(&device, &queue);
+        let tight = self.read_target();
         let overflowed = self.renderer.settle_bump_budget(&device);
         (tight, overflowed)
     }
@@ -1517,8 +1556,7 @@ impl OffscreenRenderer {
     /// Read the already-rendered retained target without submitting another
     /// Vello frame. Used to verify partial-damage composition pixel-for-pixel.
     pub fn readback_current(&mut self) -> Vec<u8> {
-        let (device, queue) = self.device_queue();
-        self.read_target(&device, &queue)
+        self.read_target()
     }
 
     /// Submit a render and wait for its GPU work without copying the target
@@ -2300,6 +2338,44 @@ mod tests {
             assert!(matches!(built, Err(super::OffscreenError::CannotWait)));
             assert!(matches!(shared, Err(super::OffscreenError::CannotWait)));
         }
+    }
+
+    #[test]
+    fn reading_back_a_part_of_a_frame_reads_that_part_and_nothing_else() {
+        let (width, height) = (64_u32, 48_u32);
+        let mut renderer = OffscreenRenderer::try_new(width, height).expect("a renderer");
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::WHITE,
+            None,
+            &Rect::new(0.0, 0.0, 32.0, 24.0),
+        );
+        let whole = renderer.render(&scene, Color::TRANSPARENT);
+        let mut part = vec![0_u8; (width as usize) * (height as usize) * 4];
+        renderer.readback_into((16, 8), (32, 24), &mut part);
+        let row = (width as usize) * 4;
+        for y in 8..32 {
+            for x in 16..48 {
+                let at = y * row + x * 4;
+                assert_eq!(
+                    part.get(at..at + 4),
+                    whole.get(at..at + 4),
+                    "the part is the frame's pixel at ({x}, {y})"
+                );
+            }
+        }
+        assert_eq!(
+            part.get(0..4).map(<[u8]>::to_vec),
+            Some(vec![0, 0, 0, 0]),
+            "outside is untouched"
+        );
+        assert_eq!(
+            part.get((40 * row + 4)..(40 * row + 8)).map(<[u8]>::to_vec),
+            Some(vec![0, 0, 0, 0]),
+            "and so is the rest of the row the part lies in"
+        );
     }
 
     #[test]

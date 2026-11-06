@@ -37,7 +37,7 @@ fn a_mention_in_a_message_tells_the_person_named_once_and_opens_the_message() {
             text: "@Bo the deploy is green".into(),
             parent: None,
             body: Some(body),
-            attachment: None,
+            attachments: Vec::new(),
             mentions: None,
             written: None,
         },

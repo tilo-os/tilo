@@ -30,11 +30,11 @@ use serde_json::Value as Json;
 use tilo_automerge::ApplyIncoming;
 
 use crate::derived::{Computed, Facts};
-use crate::flow::Journal;
 use crate::ids::{DocId, FieldId, RunId, TypeId};
 use crate::meta::FieldKind;
 use crate::place::{self, AT_KEY, ITEMS_KEY, Place, Placement, Resolved};
 use crate::registry::{FieldInfo, TypeInfo};
+use crate::run::Journal;
 use crate::store::{
     Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Link, LinkHow,
     ListingChange, Mutation, NewRecord, OutboxEntry, OutboxState, Scalar, Settled, Splice, Store,
@@ -721,8 +721,9 @@ impl Inner {
         at: &ResourceRef,
         field: &str,
         (item, index): (&NewRecord, Option<usize>),
+        id: Option<String>,
     ) -> Result<Applied, StoreError> {
-        let id = self.fresh("i");
+        let id = id.unwrap_or_else(|| self.fresh("i"));
         let placement = self.placed_at(at, field, (&id, index), None)?;
         let doc = self
             .docs
@@ -781,8 +782,13 @@ impl Inner {
         };
         let obj = self.locate(at)?;
         match m {
-            Mutation::CollInsert { field, item, index } => {
-                return self.insert_item(at, field, (item, *index));
+            Mutation::CollInsert {
+                field,
+                item,
+                index,
+                id,
+            } => {
+                return self.insert_item(at, field, (item, *index), id.clone());
             }
             Mutation::CollRemove { item, .. } => {
                 self.place(&at.doc.clone(), item, &Placement::Removed)?;

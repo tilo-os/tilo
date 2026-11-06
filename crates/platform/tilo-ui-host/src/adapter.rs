@@ -28,6 +28,7 @@ use ui::component::{
 };
 use ui::widget::Element;
 
+#[cfg(test)]
 use crate::pane::Pane;
 use crate::reconcile::{Reconciler, UiEvent, presence_path};
 
@@ -535,21 +536,15 @@ impl Source for NodeSource<'_> {
     }
 
     /// Each view built: a component as its widget (a header's button stays the button the
-    /// header lays out), anything else in a pane the reconciler reaches again.
+    /// header lays out), anything else in a pane the reconciler reaches again, each carrying
+    /// the fit its node wrote so the component's slot sizes it as the view asked ([`Fitted`]).
     fn children(&mut self, slot: &str) -> Vec<Element> {
         if !self.build_views {
             return Vec::new();
         }
         slot_nodes(self.node, self.description, slot)
             .into_iter()
-            .map(|child| {
-                let built = self.reconciler.build(child);
-                if description_of(child).is_some() {
-                    built
-                } else {
-                    Box::new(Pane::new(built)) as Element
-                }
-            })
+            .map(|child| self.reconciler.slot_view(child))
             .collect()
     }
 

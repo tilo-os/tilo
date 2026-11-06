@@ -77,5 +77,5 @@ Decisions made on the way:
 - How the compositor accepts surfaces the UI host presents for several apps: per-surface
   attribution, only from a render service it started.
 - The UI host's own memory grows with open windows, not with apps.
-- Which view state lives where: lens state (scroll, selection) in the UI host, window state
-  that views read in the app.
+- Which view state lives where: scroll and selection in the UI host, the state views declare
+  with the app's window.

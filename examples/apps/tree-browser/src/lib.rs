@@ -17,8 +17,12 @@ pub const APP_TITLE: &str = "Tree Browser";
 
 pub mod locales;
 
+use std::rc::Rc;
+
 use ui::i18n::I18nManager;
 use ui::prelude::*;
+use ui::selection::KeySelection;
+use ui::widget::{ListRow, TreeMarks, VecListModel, VirtualList};
 
 /// The sections that hold notes, by stable tree node id. The other nodes
 /// only group them.
@@ -153,38 +157,55 @@ impl ResourceApp for App {
         let narrow_screen = cx.local(NavPane::Content);
         let selected_from_tree = selected.clone();
         let screen_from_tree = narrow_screen.clone();
-        let tree = TreeView::new(TreeNode::branch(
-            1,
-            node_label(1),
-            (),
-            vec![
-                TreeNode::branch(
-                    2,
-                    node_label(2),
-                    (),
-                    vec![
-                        TreeNode::leaf(3, node_label(3), ()),
-                        TreeNode::leaf(4, node_label(4), ()),
-                    ],
-                ),
-                TreeNode::branch(
-                    5,
-                    node_label(5),
-                    (),
-                    vec![TreeNode::leaf(6, node_label(6), ())],
-                ),
-            ],
-        ))
-        .with_expanded([1, 2])
-        .with_selected(Some(3))
-        .on_view("section-tree", move |id| {
-            if SECTIONS.contains(&id) {
-                selected_from_tree.set(id);
-            }
-            screen_from_tree.set(NavPane::Content);
-        })
-        .with_viewport(560.0, 36.0)
-        .with_accessible_name("tree-accessible-name");
+        let screen_from_activation = narrow_screen.clone();
+        let chosen_from_tree = selected.clone();
+        // The notebook's own sections, under the nodes that group them.
+        let mut model = VecListModel::empty();
+        for (id, parent, branch) in [
+            (1, None, true),
+            (2, Some(1), true),
+            (3, Some(2), false),
+            (4, Some(2), false),
+            (5, Some(1), true),
+            (6, Some(5), false),
+        ] {
+            let _ = model.push(id, (node_label(id), parent, branch));
+        }
+        let model = model.with_parents(|row| row.1).with_branches(|row| row.2);
+        let marks = Rc::new(TreeMarks::<u64>::default());
+        let row_marks = Rc::clone(&marks);
+        let chosen_row = selected.with(|id| *id);
+        let mut selection = KeySelection::new();
+        selection.toggle(chosen_row);
+        let tree =
+            VirtualList::with_selection_delegate(model, 36.0, move |model, index, key, _| {
+                let label = model
+                    .item(index)
+                    .map_or_else(String::new, |row| row.0.clone());
+                Box::new(ListRow::new(key.to_string(), label).depth(row_marks.depth(key)))
+            })
+            .with_tree(marks)
+            .with_id("section-tree")
+            .with_semantic_key(|key: &u64| format!("node:{key}"))
+            .with_accessible_name("tree-accessible-name")
+            .with_selection(selection)
+            .fitting_rows()
+            .on_select(move |id, chosen| {
+                if chosen && SECTIONS.contains(&id) {
+                    selected_from_tree.set(id);
+                }
+                if chosen {
+                    screen_from_tree.set(NavPane::Content);
+                }
+            })
+            .on_activate(move |id| {
+                if SECTIONS.contains(&id) {
+                    chosen_from_tree.set(id);
+                    // A compact window shows the section it was asked for: a row's
+                    // activation is a choice as its press is.
+                    screen_from_activation.set(NavPane::Content);
+                }
+            });
         let master = ui::column![
             Text::new("tree-navigation-heading").with_role(TextRole::Heading),
             tree,

@@ -55,6 +55,35 @@ impl ChannelContentKeys {
         }
     }
 
+    /// These keys for `unit`, a storage unit of the scope they came from:
+    /// the seal context names the unit while the keys stay the scope's, so
+    /// content is bound to its own record and artifact and a membership
+    /// change costs the scope one commit, not the unit one.
+    #[must_use]
+    pub fn for_unit(&self, unit: ChannelId) -> Self {
+        Self {
+            channel: unit,
+            epoch: self.epoch,
+            keyring: self.keyring.clone(),
+        }
+    }
+
+    /// Keep the keys `earlier`, an earlier group of the same channel, left
+    /// behind: content it sealed opens still, under whichever key its epoch
+    /// names, while the current epoch's key keeps sealing. A unit that moved
+    /// from its own group to the key scope that carries it reads its whole
+    /// history from one keyring.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidState`] when the merged keyring would be full.
+    pub fn with_earlier(mut self, earlier: &Self) -> Result<Self> {
+        if earlier.channel == self.channel {
+            self.keyring.merge(&earlier.keyring)?;
+        }
+        Ok(self)
+    }
+
     pub fn channel_id(&self) -> ChannelId {
         self.channel
     }
@@ -272,6 +301,74 @@ mod tests {
         bytes.push(0);
         assert!(ChannelContentKeys::from_bytes(&bytes).is_err());
         assert!(!format!("{decoded:?}").contains("key:"));
+    }
+
+    /// A scope's keys carry many units: each is named for its own channel, so a
+    /// payload stays bound to the record it was written for, and a unit's
+    /// earlier group's keys keep opening what they sealed.
+    #[test]
+    fn a_scopes_keys_serve_each_unit_and_keep_its_earlier_group_readable() {
+        let scope = ChannelId::new();
+        let group = ChannelGroup::create(scope, MemberKey::generate("owner").unwrap()).unwrap();
+        let scope_keys = group.content_keys().unwrap();
+        let (unit, other) = (ChannelId::new(), ChannelId::new());
+        let unit_keys = scope_keys.for_unit(unit);
+        assert_eq!(unit_keys.channel_id(), unit);
+        assert_eq!(unit_keys.epoch(), scope_keys.epoch());
+
+        // Sealed for the unit, opened by another endpoint of the scope once it
+        // is handed the unit's keys.
+        let artifact = ArtifactId::new();
+        let (metadata, sealed) = unit_keys
+            .seal_content(artifact, ContentRetention::Delta, b"minutes")
+            .unwrap();
+        assert_eq!(metadata.channel, unit);
+        let elsewhere =
+            ChannelContentKeys::from_bytes(&scope_keys.for_unit(unit).to_bytes().unwrap()).unwrap();
+        assert_eq!(
+            elsewhere
+                .open_content(artifact, &metadata, &sealed)
+                .unwrap()
+                .as_slice(),
+            b"minutes"
+        );
+        assert!(
+            scope_keys
+                .for_unit(other)
+                .open_content(artifact, &metadata, &sealed)
+                .is_err(),
+            "another unit's keys refuse the payload"
+        );
+
+        // The unit's own group sealed before key scopes: its keys open what it
+        // sealed, merged behind the scope's.
+        let earlier_group =
+            ChannelGroup::create(unit, MemberKey::generate("owner").unwrap()).unwrap();
+        let earlier = earlier_group.content_keys().unwrap();
+        let (old_metadata, old_sealed) = earlier
+            .seal_content(artifact, ContentRetention::Delta, b"before scopes")
+            .unwrap();
+        let merged = unit_keys.with_earlier(&earlier).unwrap();
+        assert_eq!(merged.epoch(), scope_keys.epoch());
+        assert_eq!(
+            merged
+                .open_content(artifact, &old_metadata, &old_sealed)
+                .unwrap()
+                .as_slice(),
+            b"before scopes"
+        );
+        assert_eq!(
+            merged
+                .open_content(artifact, &metadata, &sealed)
+                .unwrap()
+                .as_slice(),
+            b"minutes"
+        );
+        // Keys of another channel are not merged: they would open nothing here.
+        assert!(matches!(
+            scope_keys.with_earlier(&earlier.for_unit(other)),
+            Ok(keys) if keys.channel_id() == scope
+        ));
     }
 
     #[test]

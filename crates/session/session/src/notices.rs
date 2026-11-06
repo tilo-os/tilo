@@ -170,7 +170,7 @@ impl Notice {
 
     /// Show it to the person, and say which notification went out: a producer
     /// whose notice the person acts on needs its id to know what they meant.
-    fn tell_as(self, notifications: &Notifications) -> u32 {
+    pub(crate) fn tell_as(self, notifications: &Notifications) -> u32 {
         let notification = self.into_notification(notifications);
         let id = notification.id;
         notifications.push(notification);
@@ -623,6 +623,48 @@ pub(crate) fn update_state_notice() -> Notice {
     }
 }
 
+/// The notice that a collaborator's device speaks another peer protocol
+/// version, so the two cannot work together until one of them updates: this
+/// device fetches the newest system when theirs is the newer one, and
+/// otherwise theirs is the one to update. Raised once per device and version
+/// by the clock that finishes the update ([`crate::update_finish`]).
+pub(crate) fn version_mismatch_notice(mismatch: &crate::network::VersionMismatch) -> Notice {
+    let device = mismatch.device.as_str();
+    let (title, body) = if mismatch.theirs_is_newer() {
+        (
+            t_args(
+                "version-mismatch-updating-title",
+                &[("device", device.into())],
+            ),
+            t_args(
+                "version-mismatch-updating-body",
+                &[("device", device.into())],
+            ),
+        )
+    } else {
+        (
+            t_args(
+                "version-mismatch-needs-update-title",
+                &[("device", device.into())],
+            ),
+            t_args(
+                "version-mismatch-needs-update-body",
+                &[("device", device.into())],
+            ),
+        )
+    };
+    Notice {
+        app: t("system-update-app-name"),
+        urgency: 1,
+        title,
+        body,
+        actions: Vec::new(),
+        expires_after: None,
+        machine_wide: true,
+        sound: None,
+    }
+}
+
 /// The notice of a deployment this machine went back from: what did not
 /// start, how many tries it spent, what runs instead, and where the failed
 /// tries left what they found. Raised once per fallback by the update's own
@@ -726,21 +768,81 @@ pub(crate) fn downloaded_apps_notice() -> Notice {
     }
 }
 
+/// Why a device or a workspace did not take a change, in the person's own
+/// words: the rest of the sentence that says the change stays here.
+#[must_use]
+pub(crate) fn reason_in_words(reason: neighbour_wire::RefusalReason) -> String {
+    use neighbour_wire::RefusalReason;
+    t(match reason {
+        RefusalReason::Revoked => "refusal-reason-revoked",
+        RefusalReason::Expired => "refusal-reason-expired",
+        RefusalReason::NotCertified => "refusal-reason-not-certified",
+        RefusalReason::Forbidden => "refusal-reason-forbidden",
+        RefusalReason::Malformed => "refusal-reason-malformed",
+        RefusalReason::MissingDependency => "refusal-reason-waiting",
+        RefusalReason::Conflict => "refusal-reason-conflict",
+        RefusalReason::Full => "refusal-reason-full",
+        RefusalReason::Other => "refusal-reason-other",
+    })
+}
+
 /// The notice that a device stopped taking one of this device's writes, and
 /// why: waiting changes nothing, so the change stays on the devices that took
 /// it and the person hears it once. Raised by the pass that serves the
 /// activity ([`crate::Shared::serve_activity`]).
-pub(crate) fn refused_write_notice(device: &str, reason: &str) -> Notice {
+pub(crate) fn refused_write_notice(device: &str, reason: neighbour_wire::RefusalReason) -> Notice {
     Notice {
         app: t("refused-write-app"),
         urgency: 2,
         title: t_args("refused-write-title", &[("device", device.into())]),
-        body: t_args("refused-write-body", &[("reason", reason.into())]),
+        body: t_args(
+            "refused-write-body",
+            &[("reason", reason_in_words(reason).into())],
+        ),
         actions: Vec::new(),
         expires_after: None,
         machine_wide: true,
         sound: None,
     }
+}
+
+/// The workspace did not take what the person changed on its shared desk: what
+/// they changed stays here.
+pub(crate) fn desk_not_shared_notice(
+    workspace: &str,
+    reason: neighbour_wire::RefusalReason,
+) -> Notice {
+    Notice {
+        app: t("desk-not-shared-app"),
+        urgency: 2,
+        title: t_args("desk-not-shared-title", &[("workspace", workspace.into())]),
+        body: t_args(
+            "desk-not-shared-body",
+            &[("reason", reason_in_words(reason).into())],
+        ),
+        actions: Vec::new(),
+        expires_after: None,
+        machine_wide: true,
+        sound: None,
+    }
+}
+
+/// Tell the person what the workspace did not take of their shared desk: it
+/// is on the desk they used, once, naming the workspace and why.
+pub(crate) fn tell_desk_not_taken(
+    notifications: &std::cell::RefCell<crate::notifications::SessionNotifications>,
+    tree: &tilo_desktop_model::DesktopTree,
+    (room, why): (tilo_desktop_model::WorkspaceId, String),
+) {
+    let workspace = tree
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id() == room)
+        .map_or_else(String::new, |workspace| workspace.name.clone());
+    let reason = neighbour_wire::RefusalReason::of(&why);
+    notifications
+        .borrow()
+        .tell(desk_not_shared_notice(&workspace, reason));
 }
 
 /// Tell the person what the crash records in `dir` say happened before this

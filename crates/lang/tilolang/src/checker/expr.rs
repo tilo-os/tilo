@@ -1,6 +1,6 @@
 //! Expressions: literals, operators, fields, strings and coercions.
 
-use super::{Checker, Ctx, Ex, Written, conv, load_op, store_op};
+use super::{Checker, Ctx, Ex, Invoked, conv, load_op, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, BinOp, ExprKind, StrPart, UnOp};
 use crate::diag::Span;
@@ -34,11 +34,6 @@ impl Checker<'_> {
                 ..ex
             };
             return Self::some(ex, want);
-        }
-        // A resource that names a container is that container where a list goes.
-        if matches!(want, Ty::List(_)) && self.held_of(&ex.ty).is_some() {
-            let read = self.unhold(ex, span);
-            return self.coerce(read, want, span);
         }
         if let Ty::Option(inner) = want
             && ex.ty.same(inner)
@@ -120,7 +115,10 @@ impl Checker<'_> {
                 // A time of no zone is the person's own time of day: the instant it names is
                 // read in their zone where the value is built, so seed data says 09:00 and
                 // shows 09:00 wherever it runs.
-                19 => Ex::host(crate::abi::Imp::WallClock, vec![Ex::str(text)], Ty::Time),
+                19 => {
+                    self.reads(crate::effects::Effect::Time, e.span, "a time of no zone");
+                    Ex::host(crate::abi::Imp::WallClock, vec![Ex::str(text)], Ty::Time)
+                }
                 _ => {
                     self.err("E105", e.span, format!("a month is the value of a filter (`query(T, due: {text})`); a day is written `{text}-01`"));
                     Ex::error()
@@ -143,7 +141,6 @@ impl Checker<'_> {
                 self.if_value(cond, then, els.as_deref(), exp, e.span)
             }
             ExprKind::Block(b) => self.block_value(b, exp),
-            ExprKind::MadeFrom { of, body } => self.made_from(of, body, e.span, exp),
             ExprKind::Match { scrutinee, arms } => self.match_value(scrutinee, arms, exp, e.span),
             ExprKind::Variant { name, args } => self.variant(name, args.as_deref(), exp, e.span),
             ExprKind::Lambda { .. } => {
@@ -175,7 +172,7 @@ impl Checker<'_> {
                         None => Ex::error(),
                     };
                 }
-                // `notes.notes`: a named root of an imported package.
+                // `notes.notebook`: a named root of an imported package.
                 if let Some(path) = dotted(base)
                     && self.names_import(base)
                     && let Some(import) = self.env.find_import(&path.join("."))
@@ -188,6 +185,10 @@ impl Checker<'_> {
                         .find(|t| t.key.app == import.app && t.id == *ty_id)
                 {
                     return Self::root_ref(&info.key.app, &info.id, &info.key);
+                }
+                // `agent.me`: the person the session acts for, where a package names it.
+                if let Some(ex) = self.agent_me_field(base, &name.name) {
+                    return ex;
                 }
                 if self.names_import(base) {
                     let alias = dotted(base).unwrap_or_default().join(".");
@@ -203,7 +204,12 @@ impl Checker<'_> {
                 let b = self.expr(base, None);
                 self.field_read(b, name)
             }
-            ExprKind::Call { callee, args } => self.call(callee, args, e.span),
+            ExprKind::Call {
+                callee,
+                types,
+                args,
+                ..
+            } => self.call(callee, types, args, e.span),
             ExprKind::Try(inner) => self.try_expr(inner, e.span),
             ExprKind::Suggest(inner) => self.suggest_expr(inner, e.span),
             ExprKind::Root(t) => self.root_of(t, e.span),
@@ -213,12 +219,12 @@ impl Checker<'_> {
     /// `try act(args)`: a `Result` of the action's result (`()` for an action without one) and
     /// the reason, as Text, when the invocation was denied, declined or failed.
     fn try_expr(&mut self, inner: &ast::Expr, span: Span) -> Ex {
-        if self.st.ctx != Ctx::Flow {
+        if !matches!(self.st.ctx, Ctx::Action | Ctx::Program) {
             let who = self.st.ctx.word();
             self.err(
                 "E044",
                 span,
-                format!("`try` invokes an action and only a flow may do that; {who} cannot"),
+                format!("`try` invokes an action and only an action may do that; {who} cannot"),
             );
             return Ex::error();
         }
@@ -231,9 +237,9 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
-        self.st.try_invoke = true;
+        self.st.invoked = Invoked::Try;
         let ex = self.expr(call, None);
-        if std::mem::take(&mut self.st.try_invoke) {
+        if std::mem::replace(&mut self.st.invoked, Invoked::Plain) == Invoked::Try {
             self.err(
                 "E044",
                 span,
@@ -245,19 +251,19 @@ impl Checker<'_> {
     }
 
     /// `suggest act(args)`: records the action as a proposal that waits on the resource it is
-    /// about, instead of applying it. An action or a flow records one where it runs; a block is
+    /// about, instead of applying it. An action records one where it runs; a block is
     /// the proposal itself, the action its value says, and records it when the host runs it.
     fn suggest_expr(&mut self, inner: &ast::Expr, span: Span) -> Ex {
         let value = if self.st.ctx == Ctx::Block && self.st.proposes {
             true
-        } else if matches!(self.st.ctx, Ctx::Action | Ctx::Flow) {
+        } else if matches!(self.st.ctx, Ctx::Action | Ctx::Program) {
             false
         } else {
             let who = self.st.ctx.word();
             self.err(
                 "E044",
                 span,
-                format!("`suggest` proposes an action, and only an action, a flow or an agent's block may do that; {who} cannot"),
+                format!("`suggest` proposes an action, and only an action or an agent's block may do that; {who} cannot"),
             );
             return Ex::error();
         };
@@ -310,7 +316,8 @@ impl Checker<'_> {
             return Ex::error();
         }
         if name == "now" {
-            if self.st.ctx == Ctx::Action {
+            if matches!(self.st.ctx, Ctx::Action | Ctx::Program) {
+                self.reads(crate::effects::Effect::Time, span, "`now`");
                 return Ex::host(Imp::Now, vec![], Ty::Time);
             }
             self.err(
@@ -324,6 +331,7 @@ impl Checker<'_> {
         // filter's `today` reads it.
         if name == "today" {
             if self.st.ctx == Ctx::Action {
+                self.reads(crate::effects::Effect::Time, span, "`today`");
                 return Ex::host(Imp::Today, vec![], Ty::Date);
             }
             self.err(
@@ -333,9 +341,10 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
-        // `me`: the person a program's task acts for (agents.md, "What the agent knows").
-        if name == "me" && self.st.written == Written::Program {
-            return Ex::host(Imp::Me, vec![], Ty::Principal);
+        // `me`: the person the session acts for, the agent library's word for them, in scope as
+        // a session's default import (agents.md, "What the agent knows").
+        if name == crate::agent::ME && self.env.session {
+            return Self::agent_me();
         }
         // A named root of this package: `notes`.
         if let Some(key) = self
@@ -901,6 +910,26 @@ impl Checker<'_> {
     pub(super) fn field_read(&mut self, b: Ex, name: &ast::Ident) -> Ex {
         match b.ty.clone() {
             Ty::Error => Ex::error(),
+            Ty::Response => {
+                let (imp, ty) = match name.name.as_str() {
+                    "ok" => (Imp::WebOk, Ty::Bool),
+                    "status" => (Imp::WebStatus, Ty::Int),
+                    "status_text" => (Imp::WebStatusText, Ty::Text),
+                    "headers" => (Imp::WebHeaders, Ty::List(Box::new(Ty::Text))),
+                    "body" => (Imp::WebBody, Ty::Bytes),
+                    other => {
+                        self.err(
+                            "E021",
+                            name.span,
+                            format!(
+                                "a Response has no field `{other}`; its fields are ok, status, status_text, headers and body, and `.text()` reads the body as text"
+                            ),
+                        );
+                        return Ex::error();
+                    }
+                };
+                Ex::host(imp, vec![b], ty)
+            }
             Ty::Identifier => self.identifier_part(b, name),
             Ty::RichText => self.rich_part(b, name),
             // A filter's fields: what a query names it by, what a control shows, what it asks.

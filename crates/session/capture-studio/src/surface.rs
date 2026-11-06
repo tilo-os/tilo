@@ -259,6 +259,13 @@ impl StudioSurface {
             self.sending = false;
             self.saying = Some((i18n::sent(sent), ui::time::now()));
         }
+        if scene.failed != self.scene.failed
+            && let Some(failed) = &scene.failed
+        {
+            // The capture the person took did not come out: the bar says why
+            // on the thing they touched, and stays up until it is read.
+            self.saying = Some((i18n::failed(&failed.failure), ui::time::now()));
+        }
         self.scene = scene;
         self.dirty = true;
     }
@@ -687,7 +694,10 @@ impl ResourceSurface<Capture, CaptureEffect> for StudioSurface {
 
     fn effect(&mut self, effect: CaptureEffect, _cx: &mut EffectCx<Capture, Self>) -> EffectAnswer {
         match effect {
-            CaptureEffect::Open => {
+            CaptureEffect::Open { mode } => {
+                if let Some(mode) = mode {
+                    self.studio.link().open_on(mode.into());
+                }
                 if self.own {
                     self.widget.open();
                 } else {
@@ -707,7 +717,17 @@ impl ResourceSurface<Capture, CaptureEffect> for StudioSurface {
                 self.studio.link().ask(Ask::StartRecording(take));
             }
             CaptureEffect::StopRecording => self.studio.link().ask(Ask::StopRecording),
-            CaptureEffect::SaveReplay => self.studio.link().ask(Ask::SaveReplay),
+            // The last half minute when a buffer keeps one. With nothing
+            // kept there is nothing to save: the person's chord starts a
+            // recording instead, unless one already runs.
+            CaptureEffect::SaveReplay => {
+                if self.scene.replay.is_some() {
+                    self.studio.link().ask(Ask::SaveReplay);
+                } else if self.scene.recording.is_none() {
+                    self.studio.link().open_on(CaptureMode::Recording);
+                    self.studio.presentation().open(false);
+                }
+            }
         }
         self.dirty = true;
         Ok(Effected::done())
@@ -717,6 +737,43 @@ impl ResourceSurface<Capture, CaptureEffect> for StudioSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bar the session speaks through says what went wrong with the
+    /// capture the person took, where it says what became of a send: on the
+    /// bar itself, not only in a log.
+    #[test]
+    fn a_capture_that_did_not_come_out_is_said_on_the_bar() {
+        use crate::link::{Failed, Failure};
+        let studio = Studio::new();
+        let mut surface = StudioSurface::new(Some(studio.clone()));
+        studio.link().publish(Scene {
+            failed: Some(Failed {
+                number: 1,
+                failure: Failure::NotWritten("no space left on device".to_owned()),
+            }),
+            ..Scene::default()
+        });
+        surface.catch_up();
+        assert_eq!(
+            surface.saying.as_ref().map(|(said, _)| said.as_str()),
+            Some("A screenshot was not written: no space left on device")
+        );
+        // The same capture taken again is news again, not a repeat the bar
+        // keeps quiet about.
+        studio.link().publish(Scene {
+            failed: Some(Failed {
+                number: 2,
+                failure: Failure::NotWritten("no space left on device".to_owned()),
+            }),
+            ..surface.scene.clone()
+        });
+        surface.catch_up();
+        assert_eq!(
+            surface.saying.as_ref().map(|(said, _)| said.as_str()),
+            Some("A screenshot was not written: no space left on device"),
+            "a second attempt that failed the same way is said again"
+        );
+    }
 
     #[test]
     fn a_recording_takes_the_sound_the_person_chose() {

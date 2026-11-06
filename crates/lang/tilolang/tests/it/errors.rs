@@ -41,6 +41,19 @@ fn e003_syntax_error() {
 }
 
 #[test]
+fn e003_flow_is_not_a_declaration() {
+    let err = crate::common::compile_with("app t.x \"X\"\nflow f() {\n    return\n}\n", &[])
+        .expect_err("fails");
+    let d = &err[0];
+    assert_eq!(d.code, "E003");
+    assert!(
+        d.message.contains("Write `action` in its place"),
+        "{}",
+        d.message
+    );
+}
+
+#[test]
 fn e004_number_out_of_range() {
     expect(
         "E004",
@@ -195,14 +208,6 @@ fn e040_mutation_outside_an_action() {
 }
 
 #[test]
-fn e041_action_calls_a_foreign_action() {
-    expect_with(
-        "E041",
-        "use so.tilo.todo as todo\naction a(l: todo.TodoList, t: todo.Todo) {\n    todo.remove(l, t)\n}",
-    );
-}
-
-#[test]
 fn e043_fn_calls_an_action() {
     expect(
         "E043",
@@ -211,10 +216,10 @@ fn e043_fn_calls_an_action() {
 }
 
 #[test]
-fn e044_try_outside_a_flow() {
+fn e044_try_outside_an_action() {
     expect(
         "E044",
-        &with_c("action a(c: C) {\n}\naction b(c: C) {\n    let r = try a(c)\n}"),
+        &with_c("action a(c: C) {\n}\nfn f(c: C) -> Int {\n    let r = try a(c)\n    return 1\n}"),
     );
 }
 
@@ -295,17 +300,17 @@ fn e066_view_state_misuse() {
     // `set` names view state the view declares.
     expect(
         "E066",
-        "view v() {\n    window n: Int = 0\n    button(\"x\", on: set(m, 1))\n}",
+        "view v() {\n    state n: Int = 0\n    button(\"x\", on: set(m, 1))\n}",
     );
     // Only views have state.
     expect(
         "E066",
-        "action a() {\n}\nfn f() -> Int {\n    return 1\n}\nflow g() {\n    set(x, 1)\n}",
+        "action a() {\n}\nfn f() -> Int {\n    return 1\n}\naction g() {\n    set(x, 1)\n}",
     );
     // State is declared at the top of the view body.
     expect(
         "E066",
-        "view v() {\n    stack {\n        lens n: Int = 0\n        text(\"x\")\n    }\n}",
+        "view v() {\n    stack {\n        state n: Int = 0\n        text(\"x\")\n    }\n}",
     );
 }
 
@@ -329,13 +334,11 @@ fn e045_mutating_a_foreign_type() {
 }
 
 #[test]
-fn e046_calling_a_flow() {
-    expect("E046", "flow one() {\n}\nflow two() {\n    one()\n}");
-}
-
-#[test]
 fn e047_builtin_in_the_wrong_form() {
-    expect("E047", "action a() {\n    model_call(\"k\", \"x\")\n}");
+    expect(
+        "E047",
+        "fn f() -> Text {\n    return model_call(\"k\", \"x\")\n}",
+    );
     expect(
         "E047",
         "type C {\n    items: Collection<C>\n}\n/// Adds one.\nprimary action add(c: C) (icon: .plus) {\n    c.items.insert(C())\n}\nview list(c: C) {\n    let offered = actions(c)\n    text(\"{offered.len()}\")\n}",
@@ -680,59 +683,60 @@ fn a_place_a_view_supplies_is_an_option_after_the_subject_and_named_above() {
 }
 
 #[test]
-fn a_parameter_takes_the_text_of_an_entry_last_and_as_text() {
-    let task = "type Task {\n    title: Text (title)\n}\n";
-    let add = |params: &str, body: &str| {
+fn an_entry_fills_the_actions_one_text_parameter() {
+    let task = "type Task {\n    title: Text (title)\n}\n\
+action add(t: Task, title: Text = \"\") {\n    t.title = title\n}\n\
+action twice(t: Task, one: Text = \"\", two: Text = \"\") {\n    t.title = one + two\n}\n\
+action close(t: Task) {\n    t.title = \"x\"\n}\n\
+view places<T>(t: T, entry: Option<Action> = .none) {\n    ui.Text(meta(t).title)\n}\n";
+    let entry = |made: &str| {
         crate::common::codes(&format!(
-            "{task}action add(t: Task, {params}) {{\n{body}\n}}\n"
+            "{task}view home(t: Task) {{\n    places(t, entry: .some({made}))\n}}\n"
         ))
     };
     assert_eq!(
-        add("title: Text (entry) = \"\"", "    t.title = title"),
+        entry("add(t)"),
         Vec::<String>::new(),
-        "an action's last parameter takes the text typed in an entry"
+        "the action's one `Text` parameter is what the words nothing else takes fill"
     );
     assert_eq!(
-        add(
-            "title: Text (entry) = \"\", done: Bool = false",
-            "    t.title = title"
-        ),
+        entry("close(t)"),
         ["E068"],
-        "what a call gives comes before the text of an entry"
+        "an action with no `Text` parameter has nothing for an entry to fill"
     );
     assert_eq!(
-        add("title: Int (entry) = 0", "    t.title = \"x\""),
-        ["E059"]
+        entry("twice(t)"),
+        ["E068"],
+        "an action with two `Text` parameters leaves the words no one of them"
+    );
+    let marked = crate::common::compile_with(
+        &format!("app t.x \"X\"\n{task}action note(t: Task, title: Text (entry) = \"\") {{\n    t.title = title\n}}\n"),
+        &[],
+    )
+    .err()
+    .and_then(|d| d.into_iter().find(|d| d.code == "E003"))
+    .map_or_else(
+        || panic!("the marker says nothing"),
+        |d| d.message,
     );
     assert!(
-        add(
-            "a: Text (entry) = \"\", b: Text (entry) = \"\"",
-            "    t.title = \"x\""
-        )
-        .contains(&"E058".to_owned()),
-        "one entry fills one parameter"
-    );
-    assert_eq!(
-        crate::common::codes(&format!(
-            "{task}view show_task(t: Task (entry)) {{\n    ui.Text(t.title)\n}}\n"
-        )),
-        ["E057"],
-        "an entry fills an action's parameter, not a view's"
+        marked.contains("one `Text` parameter"),
+        "the error says why the marker is gone: {marked}"
     );
 }
 
 #[test]
-fn e094_made_from_runs_only_in_a_scenario() {
+fn e094_invoke_runs_only_in_a_scenario() {
     expect(
         "E094",
-        "type C {\n    t: Text\n}\nfn f(c: C) -> Int {\n    made from c { 1 }\n}\n",
+        "type C {\n    t: Text\n}\naction a(c: C) {\n    c.t = \"x\"\n}\nfn f(c: C) -> Int {\n    invoke(a(c), by: invoker)\n    1\n}\n",
     );
 }
 
 #[test]
-fn e020_made_from_takes_a_resource() {
+fn e020_invoke_from_takes_a_resource() {
     expect(
         "E020",
-        "type C {\n    t: Text\n}\nroot C\nscenario \"a thing\" -> C {\n    made from 1 { root C }\n}\n",
+        "type C {\n    t: Text\n}\nroot C\naction a(c: C) {\n    c.t = \"x\"\n}\nscenario \"a thing\" -> C {\n    invoke(a(root C), from: 1)\n}\n",
     );
 }

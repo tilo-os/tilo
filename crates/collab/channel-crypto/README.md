@@ -74,12 +74,40 @@ history.
   paged in newest-first through the existing scrollback request.
   `collab_types::history::HistoryPager` issues pages as a view nears its
   oldest loaded op, or until an older version or search hit is reached.
-- **Granularity: per channel.** A channel is one document route (app,
-  workspace, record), so per-channel keys are already per-resource. A
-  finer split would add key-management state without narrowing who can read
-  what, because channel membership is the access boundary. Membership is
+- **Granularity: per reader set.** A group belongs to a *key scope*
+  (`collab_types::workspace_scope`), not to a record: one MLS group and one
+  content keyring for every storage unit whose readers are the same devices.
+  A unit seals under its scope's keys while its payload still names the unit
+  (`ChannelContentKeys::for_unit`), so content stays bound to its record and
+  artifact and every stored and wire format is unchanged. Membership is
   decided per record: a Read Deny on a record, its app or any pattern over it
-  keeps the denied devices out of that record's channel alone.
+  narrows its readers, and such a unit is carried by a group of its own (its
+  channel id is the scope), which the denied devices never join.
+
+  Keys per reader set is what makes the cost of membership independent of how
+  much a workspace holds, which `benches/per_channel.rs` measures. With a
+  group per channel, admitting one device costs about 1.9 ms and 3.1 KiB of
+  governance frames per channel and removing one about 0.8 ms and 700 B, flat
+  at 1, 10, 100 and 1000 channels: a workspace of a thousand records pays
+  about two seconds and 3 MiB to join, and repeats it on every change. One
+  group per reader set pays that once (`key_scope_join` and
+  `key_scope_removal` rows, constant in the number of units), while each
+  unit's own seal and open (`unit_content`) is what it always was.
+  `benches/instructions.rs` gives the group operations in CPU instructions,
+  which do not vary with the machine.
+
+  Migration: units sealed before key scopes keep their own group, and a
+  device that holds it reads their history as it always did — the scope's
+  keys are merged with that group's when both are here
+  (`ChannelContentKeys::with_earlier`). New content for those units seals
+  under the scope, so the device has to hold both. A holder of an old group
+  hands its content keys to the scope (`ChannelPeer::adopt`): the scope's
+  next commit carries them to every member, and every admission afterwards
+  passes them on in the joiner's key history, so a device that never held the
+  old group reads the unit's whole history at once — through that commit, or
+  through its own admission — and no holder of the old group has to be online
+  for it. A unit a Read Deny narrows is carried by a group of its own and its
+  keys are never handed to the broader scope.
 
 ### Security properties
 

@@ -23,9 +23,8 @@ use ui::tilo_resource::{self, ActionCx, Atom, Id, JsonSchema, NonBlank, Refusal,
 
 use crate::parts::{self, ChatPart};
 use crate::record::{
-    AttachmentUpdate, Chat, MAX_AGENT_NAME_BYTES, MAX_MESSAGE_TEXT_BYTES, Message, Posting,
-    ProviderStream, Revision, ShareAccess, SharedReference, Step, Transition, WindowShare, Work,
-    WorkUpdate, reply_id,
+    Chat, MAX_AGENT_NAME_BYTES, MAX_MESSAGE_TEXT_BYTES, Message, Posting, ProviderStream, Revision,
+    ShareAccess, Step, Transition, WindowShare, Work, WorkUpdate, reply_id,
 };
 
 fn author(cx: &ActionCx) -> Result<String, Refusal> {
@@ -92,12 +91,12 @@ impl ChatPart {
             return Err(Refusal::new("the message is too long"));
         }
         if posting
-            .attachment
-            .as_ref()
-            .is_some_and(|attachment| !crate::record::valid_attachment(attachment))
+            .attachments
+            .iter()
+            .any(|attached| !crate::record::valid_attached(attached))
         {
             return Err(Refusal::new(
-                "the attachment is not a valid content reference",
+                "an attachment is a bounded address, words worth reading, or a file this workspace holds",
             ));
         }
         if let Some(parent) = &posting.parent {
@@ -111,13 +110,6 @@ impl ChatPart {
                 ));
             }
         }
-        if posting
-            .source_provider
-            .as_deref()
-            .is_some_and(|provider| !crate::record::valid_source_provider(provider))
-        {
-            return Err(Refusal::new("an existing record provider is required"));
-        }
         self.messages.push(
             id.clone(),
             Message {
@@ -128,9 +120,7 @@ impl ChatPart {
                 body: posting.body,
                 parent: posting.parent,
                 mentions: posting.mentions,
-                reference: posting.reference,
-                source_provider: posting.source_provider.map(Atom),
-                attachment: posting.attachment,
+                attachments: posting.attachments,
                 appearance: posting.appearance.map(Into::into),
                 share: posting.share,
                 ..Message::default()
@@ -153,9 +143,10 @@ pub struct NewMessage {
     /// Its paragraphs as written, with their formatting
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<Vec<ClipBlock>>,
-    /// A file, image or video another action put in the store
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attachment: Option<AttachmentUpdate>,
+    /// What it carries besides its words: records and parts of records it
+    /// shares, words it quotes, files another action put in the store
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<tilo_reference::Attached>,
     /// Filled in where it is posted; leave it out
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mentions: Option<Vec<crate::mention::Mention>>,
@@ -173,7 +164,7 @@ pub struct NewMessage {
     params = chat_part,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
-    version = 3,
+    version = 4,
     migrate = crate::record::upgrade_part,
 )]
 impl ChatPart {
@@ -191,19 +182,11 @@ impl ChatPart {
             text,
             parent,
             body,
-            attachment,
+            attachments,
             mentions,
             written,
         } = message;
-        let attachment = match attachment {
-            Some(update) => Some(
-                update
-                    .attachment()
-                    .ok_or_else(|| Refusal::new("an attachment is an image, a video or a file"))?,
-            ),
-            None => None,
-        };
-        if text.trim().is_empty() && attachment.is_none() && parent.is_none() {
+        if text.trim().is_empty() && attachments.is_empty() && parent.is_none() {
             return Err(Refusal::new("a message says something"));
         }
         let id = cx.id();
@@ -219,7 +202,7 @@ impl ChatPart {
                 text,
                 body: body.unwrap_or_default(),
                 parent,
-                attachment,
+                attachments,
                 appearance,
                 mentions: mentions.unwrap_or_default(),
                 ..Posting::default()
@@ -243,15 +226,16 @@ impl ChatPart {
         #[param("The file's name, with its extension", example = "report.pdf")] name: String,
         #[param("Words accompanying it")] text: Option<String>,
         #[param("Filled in from the content where it is posted; leave it out")] attachment: Option<
-            AttachmentUpdate,
+            tilo_reference::Attached,
         >,
         #[param("Filled in where it is posted; leave it out")] mentions: Option<
             Vec<crate::mention::Mention>,
         >,
     ) -> Result<(), Refusal> {
         let attachment = attachment
-            .filter(|attachment| attachment.blob == content && attachment.name == name)
-            .and_then(|attachment| attachment.attachment())
+            .filter(|attachment| {
+                attachment.blob() == Some(content.as_str()) && attachment.label() == name
+            })
             .ok_or("the file is described where it is posted")?;
         let id = cx.id();
         let by = author(cx)?;
@@ -263,7 +247,7 @@ impl ChatPart {
             ts,
             Posting {
                 text: text.unwrap_or_default(),
-                attachment: Some(attachment),
+                attachments: vec![attachment],
                 appearance: cx.appearance(),
                 mentions: mentions.unwrap_or_default(),
                 ..Posting::default()
@@ -281,21 +265,22 @@ impl ChatPart {
         &mut self,
         cx: &mut ActionCx,
         #[param("The channel")] channel: Id,
-        #[param("The thing: its kind, id, label and part")] reference: SharedReference,
+        #[param("The thing: the app and record it lives in, and its kind, id and label")]
+        attached: tilo_reference::ResourceAt,
         #[param("Words accompanying it")] text: Option<String>,
-        #[param("The record it lives in; needed to open or copy a link to it")]
-        source_provider: Option<String>,
         #[param("Filled in where it is posted; leave it out")] mentions: Option<
             Vec<crate::mention::Mention>,
         >,
     ) -> Result<(), Refusal> {
-        let reference = reference.resolved();
-        if !crate::record::valid_reference(&reference) {
-            return Err(Refusal::new("a bounded Tilo resource address is required"));
+        if !crate::record::valid_resource_at(&attached) {
+            return Err(Refusal::new(
+                "the address of a record of an existing app is required",
+            ));
         }
+        let label = attached.reference.label.clone();
         let text = text
             .filter(|text| !text.trim().is_empty())
-            .unwrap_or_else(|| reference.label.clone());
+            .unwrap_or_else(|| label.clone());
         let id = cx.id();
         let by = author(cx)?;
         let ts = seconds(cx);
@@ -306,8 +291,7 @@ impl ChatPart {
             ts,
             Posting {
                 text,
-                reference: Some(reference),
-                source_provider,
+                attachments: vec![tilo_reference::Attached::resource(attached, None, label)],
                 mentions: mentions.unwrap_or_default(),
                 ..Posting::default()
             },
@@ -326,24 +310,20 @@ impl ChatPart {
         &mut self,
         cx: &mut ActionCx,
         #[param("The channel")] channel: Id,
-        #[param("The window's resource: its kind, id and label")] reference: SharedReference,
-        #[param("The record it lives in", example = "record:so.tilo.notes:plan")]
-        source_provider: String,
+        #[param("The window's resource: the app and record it lives in, its kind, id and label")]
+        attached: tilo_reference::ResourceAt,
         #[param("What the people who open it may do: view or edit")] access: Option<ShareAccess>,
         #[param("Words accompanying it")] text: Option<String>,
         #[param("Filled in where it is posted; leave it out")] mentions: Option<
             Vec<crate::mention::Mention>,
         >,
     ) -> Result<(), Refusal> {
-        let reference = reference.resolved();
-        if !crate::record::valid_reference(&reference) || reference.span.is_some() {
+        if !crate::record::valid_resource_at(&attached) || attached.reference.span.is_some() {
             return Err(Refusal::new(
-                "a window is shared as a whole Tilo resource address",
+                "a window is shared as a whole resource of a record",
             ));
         }
-        if !crate::record::valid_source_provider(&source_provider) {
-            return Err(Refusal::new("an existing record provider is required"));
-        }
+        let label = attached.reference.label.clone();
         let id = cx.id();
         let by = author(cx)?;
         let ts = seconds(cx);
@@ -354,8 +334,7 @@ impl ChatPart {
             ts,
             Posting {
                 text: text.unwrap_or_default().trim().to_owned(),
-                reference: Some(reference),
-                source_provider: Some(source_provider),
+                attachments: vec![tilo_reference::Attached::resource(attached, None, label)],
                 share: Some(WindowShare {
                     access: access.unwrap_or_default(),
                     open: true,
@@ -848,7 +827,7 @@ impl Chained for ChatPart {
                     .text
                     .clone()
                     .filter(|text| !text.trim().is_empty())
-                    .unwrap_or_else(|| share.reference.label.clone());
+                    .unwrap_or_else(|| share.attached.reference.label.clone());
                 share.mentions = Some(chat.mentions(&text, &[]));
             }
             ChatPartAction::ShareWindow(share) => {

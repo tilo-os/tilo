@@ -153,14 +153,15 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         kind, "chat.messages.messages",
         "an item of the part keeping it"
     );
-    let reference = serde_json::json!({"id": id, "kind": kind, "label": "Native selection",
+    let part = chat::parts::part(0);
+    let attached = serde_json::json!({"app": "so.tilo.chat", "record": part.as_str(),
+        "id": id, "kind": kind, "label": "Native selection",
         "span": {"start": 6, "end": 7, "unit": "Chars"}});
     let shared = resource_support::on_messages(
         &mut source,
         "share-resource",
-        &serde_json::json!({"channel": channel.id, "reference": reference, "text": "Discuss this resource"}),
+        &serde_json::json!({"channel": channel.id, "attached": attached, "text": "Discuss this resource"}),
     );
-    let part = chat::parts::part(0);
     let shared = source
         .read_record(&part, chat::messages::read_part)
         .unwrap()
@@ -169,7 +170,12 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         .find(|(message, _)| message.as_str() == shared)
         .map(|(_, message)| message.clone())
         .unwrap();
-    assert_eq!(serde_json::to_value(&shared.reference).unwrap(), reference);
+    let shared_at = shared
+        .attachments
+        .iter()
+        .find_map(tilo_reference::Attached::at)
+        .expect("the record it shared");
+    assert_eq!(serde_json::to_value(shared_at).unwrap(), attached);
     let record = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.workspace.clone(),

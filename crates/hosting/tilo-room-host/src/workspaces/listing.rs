@@ -30,7 +30,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::directory::{
     DirectoryEntry, DoorJoin, DoorReport, Face, Listing, MAX_FACES, door_path,
 };
-use tilo_relay_protocol::workspaces::{PreAdmission, WorkspaceNotice};
+use tilo_relay_protocol::workspaces::{PreAdmission, WorkspaceNotice, WorkspaceRole};
 use tilo_relay_session::workspaces::{IssueInvitationRequest, IssuedInvitation};
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
@@ -426,6 +426,19 @@ impl Workspaces {
     /// invitation only they can redeem, and the token of a pre-admission at
     /// the workspace's default role, under the owner's listing. The door answers
     /// them as a [`tilo_relay_protocol::directory::DoorAnswer`].
+    ///
+    /// A workspace that takes people by invitation answers this door only to a
+    /// person it has invited: someone the workspace already has in it (joining
+    /// again from another device of theirs) or one an invitation still names
+    /// [`PendingInvitation::recipient_user_public_key`]. Everyone else is
+    /// turned away with the door's own words.
+    ///
+    /// For a person an invitation still names, the door answers with that
+    /// invitation, and records a grant for it at once so the page that made
+    /// the join redeems it the way every page redeems a door's answer: its
+    /// token is the one the door hands back. The invitation itself is the
+    /// decision — its role and lifetime are the inviter's — and the door
+    /// mints nothing.
     pub async fn admit_listed(
         &self,
         workspace: &str,
@@ -446,21 +459,52 @@ impl Workspaces {
             return Err(DoorRefusal::InvitationOnly);
         }
         let token = hex::encode(rand::random::<[u8; 32]>());
+        let grant = self.door_grant(workspace, listing.default_role, now, &token)?;
+        let issued = self
+            .admit_governed(workspace, join, listing.default_role, user, now, grant)
+            .await?;
+        self.written(workspace, true).await.map_err(refused)?;
+        Ok((issued, token))
+    }
+
+    /// The grant the door records for the token it hands out at `workspace`'s
+    /// door: signed by this host's device key, which the redemption checks
+    /// against the host and the workspace's listing
+    /// ([`Workspaces::pre_admission_signer`]).
+    fn door_grant(
+        &self,
+        workspace: &str,
+        role: WorkspaceRole,
+        now: u64,
+        token: &str,
+    ) -> Result<PreAdmission, DoorRefusal> {
         let mut grant = PreAdmission {
             workspace: workspace.to_owned(),
-            role: listing.default_role,
+            role,
             token_sha256: Sha256::digest(token.as_bytes()).into(),
             label: DOOR_LABEL.to_owned(),
             expires_at_ns: now.saturating_add(DOOR_INVITATION_NS),
             owner_user_public_key: [0; 32],
             signature: [0; 64],
         };
-        // The door's grant is signed by this host's device key, which the
-        // redemption checks against the host and the workspace's listing
-        // ([`Workspaces::pre_admission_signer`]).
-        grant
-            .sign(&self.inner.host.key)
-            .map_err(|error| refused(CollaborationError::new(error.to_string())))?;
+        grant.sign(&self.inner.host.key).map_err(|error| {
+            DoorRefusal::refused(CollaborationError::new(error.to_string()).to_string())
+        })?;
+        Ok(grant)
+    }
+
+    /// The invitation `workspace`'s door answers `join` with, its grant
+    /// recorded for the token the door hands out.
+    async fn admit_governed(
+        &self,
+        workspace: &str,
+        join: &DoorJoin,
+        default_role: WorkspaceRole,
+        user: [u8; 32],
+        now: u64,
+        grant: PreAdmission,
+    ) -> Result<IssuedInvitation, DoorRefusal> {
+        let refused = |error: CollaborationError| DoorRefusal::Refused(error.to_string());
         let issued = {
             let governed = self.workspace(workspace).await.map_err(refused)?;
             let mut governed = governed.lock().await;
@@ -477,6 +521,40 @@ impl Workspaces {
                     "you were removed from this workspace within the day",
                 ));
             }
+            // A person an invitation of the workspace's own names is handed
+            // that invitation, not a new one: the inviter decided its role and
+            // how long it stands, and its consent is the decision. The page
+            // that joined redeems it with a token as it redeems every door's
+            // answer, so the door records a grant for this invitation at once.
+            // An invitation a member already pre-admitted carries that grant,
+            // and the person redeems it with the member's own token; a page
+            // that asks the door without it is handed a fresh invitation as
+            // any guest is.
+            let their_own = self
+                .inner
+                .listings
+                .invites_only(workspace)
+                .then(|| governed.invitation_for(user, now))
+                .flatten()
+                .filter(|issued| !governed.admissions.carries(issued.invite_id));
+            if let Some(issued) = &their_own {
+                governed
+                    .admissions
+                    .record(
+                        issued.invite_id,
+                        grant,
+                        now,
+                        self.inner.host.max_pre_admissions,
+                    )
+                    .map_err(|error| refused(CollaborationError::new(error)))?;
+                // The grant is written before the door answers: the page
+                // redeems with it at once.
+                return {
+                    drop(governed);
+                    self.written(workspace, true).await.map_err(refused)?;
+                    Ok(issued.clone())
+                };
+            }
             if let Some(retry_after_secs) = governed
                 .admissions
                 .full_for(now, self.inner.host.max_pre_admissions)
@@ -490,7 +568,7 @@ impl Workspaces {
                     &host,
                     IssueInvitationRequest {
                         request_id: rand::random(),
-                        role: super::pages::member_role(listing.default_role),
+                        role: super::pages::member_role(default_role),
                         recipient_user_public_key: Some(user),
                         invitee_name: tilo_user_identity::display_name(&join.display_name)
                             .ok()
@@ -512,8 +590,7 @@ impl Workspaces {
                 .map_err(|error| refused(CollaborationError::new(error)))?;
             issued
         };
-        self.written(workspace, true).await.map_err(refused)?;
-        Ok((issued, token))
+        Ok(issued)
     }
 
     /// Whether `workspace`'s door keeps `person` out because moderation removed

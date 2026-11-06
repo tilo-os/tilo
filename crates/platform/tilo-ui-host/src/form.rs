@@ -7,7 +7,7 @@
 //! and Cancel, and the presentation. Only this window waits; the rest of the workspace does not.
 //!
 //! What the person does in a field reaches the app as an edit of that field
-//! ([`ToApp::FormEdit`]); the app keeps it as their lens state and answers with the form as it
+//! ([`ToApp::FormEdit`]); the app keeps it as their view state and answers with the form as it
 //! reads now.
 
 use std::cell::Cell;

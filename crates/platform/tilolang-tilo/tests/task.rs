@@ -9,6 +9,10 @@ use tilolang_tilo::task::TaskSession;
 
 use crate::task_door::Apps;
 
+const DISCUSSION: (&str, &str) = (
+    include_str!("../../../../apps/tl/discussion/app.tl"),
+    include_str!("../../../../apps/tl/discussion/app.ids"),
+);
 const NOTES: (&str, &str) = (
     include_str!("../../../../apps/tl/notes/app.tl"),
     include_str!("../../../../apps/tl/notes/app.ids"),
@@ -33,7 +37,7 @@ fn agent() -> tilolang_tilo::runtime::Principal {
 /// Notes and Todo, each in a host of its own, and a task of them; the policy refuses the
 /// actions `refused`.
 fn task(refused: Vec<&'static str>) -> Task {
-    let mut apps = Apps::new(&[&[NOTES], &[TODO]]);
+    let mut apps = Apps::new(&[&[DISCUSSION, NOTES], &[DISCUSSION, TODO]]);
     apps.refused = refused;
     let door = Rc::new(apps);
     Task {
@@ -58,9 +62,9 @@ impl Task {
 fn seeded() -> Task {
     let task = task(Vec::new());
     for source in [
-        "notes.retitle(notes.new_note(notes.notes), \"Q3 plan\")",
-        "notes.pin(notes.new_note(notes.notes), true)",
-        "tasks.new_task(tasks.tasks, \"milk\")\ntasks.new_task(tasks.tasks, \"bins\")",
+        "notes.retitle(notes.new_note(notes.notebook), \"Q3 plan\")",
+        "notes.pin(notes.new_note(notes.notebook), true)",
+        "tasks.new_task(tasks.tasks, title: \"milk\")\ntasks.new_task(tasks.tasks, title: \"bins\")",
     ] {
         let answer = task.run(source, true);
         assert_eq!(answer["state"], "done", "{source}: {answer:#}");
@@ -73,7 +77,7 @@ fn seeded() -> Task {
 fn one_program_reads_notes_and_todo() {
     let task = seeded();
     assert_eq!(
-        task.said("print(notes.notes.len(), notes.notes.filter(n -> n.pinned).len(), tasks.tasks.items.len())"),
+        task.said("print(notes.notebook.notes.len(), notes.notebook.notes.filter(n -> n.pinned).len(), tasks.tasks.items.len())"),
         "2 1 2"
     );
     let titles = task.run("tasks.tasks.items", false);
@@ -101,7 +105,7 @@ fn a_programs_lets_stay_for_the_next() {
 fn changes_in_two_apps_are_invocations_of_each() {
     let task = seeded();
     let answer = task.run(
-        "for n in notes.notes.filter(n -> n.pinned) {\n    notes.pin(n, false)\n}\ntasks.new_task(tasks.tasks, \"call Ada\")",
+        "for n in notes.notebook.notes.filter(n -> n.pinned) {\n    notes.pin(n, false)\n}\ntasks.new_task(tasks.tasks, title: \"call Ada\")",
         false,
     );
     assert_eq!(answer["state"], "done", "{answer:#}");
@@ -127,7 +131,10 @@ fn changes_in_two_apps_are_invocations_of_each() {
             .starts_with("tl:so.tilo.lang.notes:"),
         "the action is invoked on its subject: {invoked:#?}"
     );
-    assert_eq!(task.said("notes.notes.filter(n -> n.pinned).len()"), "0");
+    assert_eq!(
+        task.said("notes.notebook.notes.filter(n -> n.pinned).len()"),
+        "0"
+    );
     assert_eq!(task.said("tasks.tasks.items.len()"), "3");
 }
 
@@ -153,7 +160,7 @@ fn an_assignment_is_the_resources_field_edit() {
 #[test]
 fn many_changes_are_previewed_and_sent_on_confirm() {
     let task = seeded();
-    let bulk = "for t in [\"a\", \"b\", \"c\", \"d\"] {\n    tasks.new_task(tasks.tasks, t)\n}\nfor n in notes.notes {\n    n.title = \"x\"\n}";
+    let bulk = "for t in [\"a\", \"b\", \"c\", \"d\"] {\n    tasks.new_task(tasks.tasks, title: t)\n}\nfor n in notes.notebook.notes {\n    n.title = \"x\"\n}";
     let previewed = task.run(bulk, false);
     assert_eq!(previewed["state"], "preview", "{previewed:#}");
     assert_eq!(
@@ -187,23 +194,26 @@ fn a_destructive_action_is_previewed_first() {
 #[test]
 fn a_refused_invocation_is_never_done() {
     let task = task(vec!["edit-text"]);
-    let answer = task.run("let n = notes.new_note(notes.notes)\nn.title = \"x\"", true);
+    let answer = task.run(
+        "let n = notes.new_note(notes.notebook)\nn.title = \"x\"",
+        true,
+    );
     assert_eq!(answer["state"], "failed", "{answer:#}");
     assert!(
         answer["detail"].as_str().unwrap().contains("denied"),
         "{answer:#}"
     );
     let tried = task.run(
-        "match try tasks.new_task(tasks.tasks, \"Saturday\") { .ok(t) => print(t.title), .err(why) => print(why) }",
+        "match try tasks.new_task(tasks.tasks, title: \"Read the letter\") { .ok(t) => print(t.title), .err(why) => print(why) }",
         true,
     );
     assert_eq!(tried["state"], "done", "{tried:#}");
-    assert_eq!(tried["output"], json!(["Saturday"]), "{tried:#}");
+    assert_eq!(tried["output"], json!(["Read the letter"]), "{tried:#}");
 }
 
 #[test]
 fn what_cannot_be_read_is_an_error_never_nothing() {
-    let mut apps = Apps::new(&[&[NOTES], &[TODO]]);
+    let mut apps = Apps::new(&[&[DISCUSSION, NOTES], &[DISCUSSION, TODO]]);
     apps.unreachable = vec![(TODO_APP, "todo is not open")];
     let door = Rc::new(apps);
     let session = door.task();
@@ -230,7 +240,7 @@ fn what_cannot_be_read_is_an_error_never_nothing() {
 fn a_refused_action_stops_the_program_unless_it_tries() {
     let task = task(vec!["new_task"]);
     let answer = task.run(
-        "tasks.new_task(tasks.tasks, \"milk\")\nprint(\"went on\")",
+        "tasks.new_task(tasks.tasks, title: \"milk\")\nprint(\"went on\")",
         true,
     );
     assert_eq!(answer["state"], "failed", "{answer:#}");
@@ -248,7 +258,7 @@ fn a_refused_action_stops_the_program_unless_it_tries() {
 fn a_flag_argument_is_sent_as_a_flag() {
     let task = seeded();
     let answer = task.run(
-        "notes.pin(notes.notes.filter(n -> n.title == \"Q3 plan\").single(), false)",
+        "notes.pin(notes.notebook.notes.filter(n -> n.title == \"Q3 plan\").single(), false)",
         true,
     );
     assert_eq!(answer["state"], "done", "{answer:#}");
@@ -284,13 +294,13 @@ const CHAT: (&str, &str) = (
 /// text.
 #[test]
 fn each_argument_is_sent_as_its_published_parameter_takes_it() {
-    let door = Rc::new(Apps::new(&[&[CHAT], &[TODO]]));
+    let door = Rc::new(Apps::new(&[&[CHAT], &[DISCUSSION, TODO]]));
     let task = Task {
         session: door.task(),
         door,
     };
     let answer = task.run(
-        "let ch = chat.new_channel(chat.channels, \"launch\")\n\
+        "let ch = chat.new_channel(chat.conversations, \"launch\")\n\
          let first = chat.send(ch, RichText(\"The launch video is ready for review\"))\n\
          chat.send(ch, RichText(\"Watching it now\"), first)",
         true,

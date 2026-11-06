@@ -382,6 +382,11 @@ pub fn show_preset(session: &mut Session, preset: &str) {
 pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
     let mut record = tilo_resource::Doc::new();
     let host = Host::new(&record, Principal::new(PERSON), || None).unwrap();
+    host.load_builtin(
+        include_str!("../../../../../apps/tl/discussion/app.tl"),
+        include_str!("../../../../../apps/tl/discussion/app.ids"),
+    )
+    .unwrap();
     let notes = host
         .load_builtin(
             include_str!("../../../../../apps/tl/notes/app.tl"),
@@ -421,7 +426,7 @@ pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
     let book = service
         .resources()
         .into_iter()
-        .find(|resource| resource.kind == format!("tl.{NOTES}.Notes"))
+        .find(|resource| resource.kind == format!("tl.{NOTES}.Notebook"))
         .unwrap();
     let mut made = Vec::new();
     for title in titles {

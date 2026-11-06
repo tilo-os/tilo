@@ -6,7 +6,7 @@ use super::native::mentions;
 use super::{Checker, Ctx, Ex};
 use crate::ast::{self, BinOp, ExprKind, UnOp};
 use crate::diag::Span;
-use crate::ir::{self, Ek, FuncKind, LocalId, Stmt};
+use crate::ir::{self, FuncKind, LocalId, Stmt};
 use crate::resolve::Callable;
 use crate::types::Ty;
 
@@ -66,34 +66,8 @@ impl Checker<'_> {
         f
     }
 
-    /// The arguments of an action inlined into another action, the defaults of those left out
-    /// computed there and then: each argument is held in a local, so none is evaluated twice.
-    pub(super) fn inline_args(
-        &mut self,
-        c: &Callable,
-        bound: Vec<Option<Ex>>,
-    ) -> (Vec<Stmt>, Vec<Ex>) {
-        if bound.iter().all(Option::is_some) {
-            return (Vec::new(), bound.into_iter().flatten().collect());
-        }
-        let mut stmts = Vec::new();
-        let mut args: Vec<Ex> = Vec::new();
-        for (slot, p) in bound.into_iter().zip(&c.params) {
-            let value = match (slot, p.default.as_ref().and_then(|d| d.func)) {
-                (Some(v), _) => v,
-                (None, Some(f)) => Ex::new(Ek::Call(f, args.clone()), p.ty.clone()),
-                (None, None) => Ex::error(),
-            };
-            let tmp = self.fresh(p.ty.clone());
-            stmts.push(Stmt::Set(tmp, value));
-            args.push(Ex::local(tmp, p.ty.clone()));
-        }
-        (stmts, args)
-    }
-
-    /// The arguments of an action applied as a value (from a view, a flow or a block): those
-    /// left out at the end are computed by the runtime when it is invoked, on the invoker's
-    /// state. A gap before a given argument is refused, unless the parameter's default is
+    /// The arguments of an action call: those left out at the end are computed by the runtime
+    /// when it is invoked, on the invoker's state. A gap before a given argument is refused, unless the parameter's default is
     /// `.none`: a constant, which needs nothing before it, so the call passes it there. An
     /// optional parameter of a published action is left out wherever it stands.
     pub(super) fn applied_args(
@@ -117,7 +91,7 @@ impl Checker<'_> {
                 }
                 None => {
                     let name = c.params.get(i).map_or("", |p| p.name.as_str());
-                    self.err("E028", span, format!("this leaves out `{name}` of `{}` but gives a parameter after it; an action applied from a view, a flow or a block leaves out only its last parameters, so give `{name}` too", c.name));
+                    self.err("E028", span, format!("this leaves out `{name}` of `{}` but gives a parameter after it; a call leaves out only its last parameters, so give `{name}` too", c.name));
                     out.push(Ex::error());
                 }
             }

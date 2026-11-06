@@ -26,23 +26,25 @@
 use std::collections::HashMap;
 
 use tilo_ui::State;
+use tilo_ui::TextRenderer;
 use tilo_ui::TextRole;
+use tilo_ui::chrome::row_bleed;
+use tilo_ui::component::{Described, ResourceId};
 use tilo_ui::headless::{FrameHarness, InspectionNode};
 use tilo_ui::icons::Icon;
 use tilo_ui::search::{SearchGroup, SearchResult};
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui::widget::{
-    Banner, Button, Chart, Column, Element, SearchResultsView, Section, SectionHeader, Series,
-    StatGroup, StatTile, Text, TreeNode, TreeView, Trend,
+    Banner, Button, Chart, Column, DescribedTreeView, Element, ListRowFace, SearchResultsView,
+    Section, SectionHeader, Series, StatGroup, StatTile, TREE_DISCLOSURE, TREE_INDENT,
+    TREE_ROW_HEIGHT, Text, TreeViewNodeProps, TreeViewProps, Trend,
 };
 use vello::kurbo::Rect;
 
 // Pinned widget defaults the regions below are built from.
 const TABLE_HEADER_H: f64 = 32.0;
 const TABLE_ROW_H: f64 = 24.0;
-const TREE_ROW_H: f64 = 22.0;
-const TREE_DISCLOSURE_W: f64 = 16.0;
 const SEARCH_PAD: f64 = 8.0;
 const SEARCH_HEADER_H: f64 = 26.0;
 const SEARCH_ROW_ONE_LINE: f64 = 38.0;
@@ -219,33 +221,30 @@ fn data_table() -> Element {
 }
 
 fn tree_view() -> Element {
-    let root = TreeNode::branch(
-        1,
-        "crates",
-        (),
-        vec![
+    let item = |label: &str, id: &str, parent: Option<&str>, branch: bool| TreeViewNodeProps {
+        item: ResourceId(id.into()),
+        label: label.into(),
+        parent: parent.map(|parent| ResourceId(parent.into())),
+        branch,
+        ..TreeViewNodeProps::default()
+    };
+    let props = TreeViewProps {
+        hide_root: true,
+        nodes: vec![
+            item("crates", "1", None, true),
             // Cap-height, descender-free label: the second-row probe centres
             // on its ink, and x-height-only text ("src") sits visibly low.
-            TreeNode::branch(
-                2,
-                "Sources",
-                (),
-                vec![
-                    TreeNode::leaf(3, "main.rs", ()),
-                    TreeNode::leaf(4, "lib.rs", ()),
-                ],
-            ),
-            TreeNode::leaf(5, "README.md", ()),
-            TreeNode::branch(6, "tests", (), vec![]),
+            item("Sources", "2", Some("1"), true),
+            item("main.rs", "3", Some("2"), false),
+            item("lib.rs", "4", Some("2"), false),
+            item("README.md", "5", Some("1"), false),
+            item("tests", "6", Some("1"), true),
         ],
-    );
-    Box::new(
-        TreeView::new(root)
-            .with_id("tree")
-            .with_expanded([1_u64, 2_u64])
-            .with_selected(Some(3))
-            .with_viewport(200.0, 22.0),
-    )
+        expanded: Some(vec![ResourceId("1".into()), ResourceId("2".into())]),
+        selection: Some(vec![ResourceId("3".into())]),
+        ..TreeViewProps::default()
+    };
+    Box::new(DescribedTreeView::from_props("tree", props))
 }
 
 fn search_results() -> Element {
@@ -403,24 +402,16 @@ fn data_rows_centre_their_text_and_scale_once() {
         for scale in [1.0, 2.0] {
             let cap = capture("tree_view", tree_view(), (320, 220), scale);
             let tree = rect(find(&cap.harness.inspection().root, "TreeView"));
-            // The fixture's authored 22 px row floors at the `sm` line plus `s1`;
-            // the disclosure column grows to the line so the glyph clears the
-            // label. Both are the pinned constants at 1x.
             let theme = Theme::dark().with_text_scale(scale);
-            let sm = line(&theme.tokens.typography, TextRole::Body);
-            let row_h = band(TREE_ROW_H, sm, f64::from(theme.tokens.spacing.s1));
-            let disclosure_w = band(TREE_DISCLOSURE_W, sm, 0.0);
-            let indent = f64::from(theme.tokens.spacing.s4);
-            assert!(row_h >= TREE_ROW_H && disclosure_w >= TREE_DISCLOSURE_W);
-            if scale > 1.0 {
-                assert!(row_h > TREE_ROW_H && disclosure_w > TREE_DISCLOSURE_W);
-            }
-            let row = Rect::new(
-                tree.x0 + disclosure_w,
-                tree.y0,
-                tree.x0 + 200.0,
-                tree.y0 + row_h,
-            );
+            // The row a tree draws is a list row standing at the tree's own row token, shorter
+            // than a list's row of the same theme.
+            let mut text = TextRenderer::new();
+            let row_h = ListRowFace::new("crates")
+                .row_height(TREE_ROW_HEIGHT)
+                .height(&mut text, &theme);
+            // A chevron hangs in the gutter left of the label column, one indent a depth.
+            let label_x0 = tree.x0 + row_bleed(&theme).max(TREE_INDENT);
+            let row = Rect::new(label_x0, tree.y0, label_x0 + 200.0, tree.y0 + row_h);
             let root_label = ink(&cap.image, row);
             label_ink.push(root_label);
             // The shaped line box is exactly centred; the rasterized lowercase
@@ -428,7 +419,12 @@ fn data_rows_centre_their_text_and_scale_once() {
             // the 2× body size.
             assert_centered("root label", root_label, row, 2.5);
             assert_has_air("root label", root_label, row);
-            let glyph = Rect::new(tree.x0, tree.y0, tree.x0 + disclosure_w, tree.y0 + row_h);
+            let glyph = Rect::new(
+                label_x0 - TREE_INDENT,
+                tree.y0,
+                label_x0 - TREE_INDENT + TREE_DISCLOSURE,
+                tree.y0 + row_h,
+            );
             let glyph_ink = ink(&cap.image, glyph);
             // The down-triangle's rasterized ink is optically bottom-heavy at
             // 2x even though it shares the label's centred line box.
@@ -438,12 +434,13 @@ fn data_rows_centre_their_text_and_scale_once() {
                 "disclosure glyph {glyph_ink:?} must clear the label column starting at {}",
                 row.x0
             );
-            // Second row (`src`, depth 1): centred in its own band, which only
+            // Second row (`Sources`, depth 1): centred in its own band, which only
             // holds if the first row really is `row_h` tall.
+            let second_x0 = label_x0 + TREE_INDENT + TREE_DISCLOSURE;
             let second = Rect::new(
-                tree.x0 + indent + disclosure_w,
+                second_x0,
                 tree.y0 + row_h,
-                tree.x0 + 200.0,
+                second_x0 + 160.0,
                 tree.y0 + 2.0 * row_h,
             );
             let second_label = ink(&cap.image, second);

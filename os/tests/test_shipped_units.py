@@ -49,6 +49,10 @@ PLACED_ELSEWHERE = {
 # link of their own.
 STARTED_BY = {
     "tilo-rollback-harden.service": "tilo-rollback-harden.timer starts it",
+    "tilo-store-volume.service": (
+        "fs.service wants it and tilo-fs-start.timer starts that; "
+        "tilo-store-volume-after-signin.path re-runs it once a person has signed in"
+    ),
     "tilo-board-headless-session@.service": (
         "os/dev/disk-image.sh links the instance into multi-user.target.wants "
         "for the board's account"

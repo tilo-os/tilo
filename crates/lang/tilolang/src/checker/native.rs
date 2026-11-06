@@ -31,6 +31,21 @@ fn concat(a: Ex, b: Ex) -> Ex {
     Ex::host(Imp::StrConcat, vec![a, b], Ty::Text)
 }
 
+/// What an application applies, once the steps that carry it are stripped:
+/// `send(c, d).then(set(d, ""))` is `send`, and `act(x).made_from(r)` is `act` — the button
+/// takes its look and the arguments it reads from it, while what it runs keeps `r` as what it
+/// is made from.
+fn applied_action(e: &ast::Expr) -> &ast::Expr {
+    let mut applied = e;
+    while let ExprKind::Call { callee, .. } = &applied.kind
+        && let ExprKind::Field { base, name } = &callee.kind
+        && matches!(name.name.as_str(), "then" | "made_from")
+    {
+        applied = base;
+    }
+    applied
+}
+
 impl Checker<'_> {
     /// Lowers the primitives whose lowering is their own; `None` for the rest.
     pub(super) fn native(&mut self, p: &Prim, c: &UiCall, args: &[ast::Arg]) -> Option<LocalId> {
@@ -73,7 +88,7 @@ impl Checker<'_> {
             )) => {
                 lets.iter().all(|s| matches!(s.kind, UiKind::Let { .. }))
                     && match &c.call.kind {
-                        ExprKind::Call { callee, args } => match &callee.kind {
+                        ExprKind::Call { callee, args, .. } => match &callee.kind {
                             ExprKind::Ident(n) => {
                                 n == "row" && self.titled(args) && c.block.is_none()
                             }
@@ -152,7 +167,6 @@ impl Checker<'_> {
             return n;
         };
         let list = self.expr(items, None);
-        let list = self.unhold(list, items.span);
         let Some(Ty::Record(key)) = list.ty.element().cloned() else {
             if !list.ty.is_error() {
                 let t = self.show(&list.ty);
@@ -270,7 +284,7 @@ impl Checker<'_> {
         };
         let Some((name, state)) = name.and_then(|n| Some((n, self.state_named(n)?))) else {
             let known = self.state_names();
-            self.err("E097", value.span, format!("`{what}:` takes the name of a `window` or `lens` declaration of this view whose type is an enum, such as `{what}: order`; this view declares: {known}"));
+            self.err("E097", value.span, format!("`{what}:` takes the name of a `state` declaration of this view whose type is an enum, such as `{what}: order`; this view declares: {known}"));
             return None;
         };
         let info = match &state.ty {
@@ -720,7 +734,7 @@ impl Checker<'_> {
                     _ => None,
                 }
             }
-            ExprKind::Call { callee, args } if args.is_empty() => {
+            ExprKind::Call { callee, args, .. } if args.is_empty() => {
                 let ExprKind::Field { base, name } = &callee.kind else {
                     return None;
                 };
@@ -885,7 +899,7 @@ impl Checker<'_> {
                 Some("bind") => {
                     bound = true;
                     if matches!(value.kind, ExprKind::Field { .. }) {
-                        self.err("E098", value.span, "choose a field's value with an action; `choice` binds view state, a `window` or `lens` declaration of an enum type");
+                        self.err("E098", value.span, "choose a field's value with an action; `choice` binds view state, a `state` declaration of an enum type");
                     } else if let Some((state, info)) = self.enum_state("bind", value) {
                         self.state_control(n, ("", "pick."), &state, &info, value.span);
                     }
@@ -920,19 +934,12 @@ impl Checker<'_> {
         n
     }
 
-    /// The declared action or flow a button's first argument applies, when it applies one.
+    /// The declared action a button's first argument applies, when it applies one.
     fn declared_action(&self, args: &[ast::Arg]) -> Option<Callable> {
         let first = args
             .iter()
             .find(|a| a.name.is_none() && !self.is_flag(None, &a.value))?;
-        // `send(c, draft).then(set(draft, ""))` presents as `send`.
-        let mut applied = &first.value;
-        while let ExprKind::Call { callee, .. } = &applied.kind
-            && let ExprKind::Field { base, name } = &callee.kind
-            && name.name == "then"
-        {
-            applied = base;
-        }
+        let applied = applied_action(&first.value);
         let ExprKind::Call { callee, .. } = &applied.kind else {
             return None;
         };
@@ -945,7 +952,7 @@ impl Checker<'_> {
             }
             _ => None,
         }?;
-        matches!(found.kind, CKind::Action | CKind::Flow).then(|| found.clone())
+        matches!(found.kind, CKind::Action).then(|| found.clone())
     }
 
     /// What a button for the application `applied` (`pin(m)`, `move_to(b, card, other)`) shows
@@ -959,13 +966,7 @@ impl Checker<'_> {
         if label.is_none() && icon.is_none() && on.is_none() {
             return;
         }
-        let mut call = applied;
-        while let ExprKind::Call { callee: c, .. } = &call.kind
-            && let ExprKind::Field { base, name } = &c.kind
-            && name.name == "then"
-        {
-            call = base;
-        }
+        let call = applied_action(applied);
         let ExprKind::Call { args, .. } = &call.kind else {
             return;
         };
@@ -1691,10 +1692,8 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
         b.stmts.iter().find_map(|s| match &s.kind {
             StmtKind::Expr(x) | StmtKind::Let { value: x, .. } => mentions(x, names),
             StmtKind::Return(x) => x.as_ref().and_then(|x| mentions(x, names)),
-            StmtKind::Assign { value, .. } | StmtKind::SeedState { value, .. } => {
-                mentions(value, names)
-            }
-            StmtKind::For { iter, .. } | StmtKind::As { who: iter, .. } => mentions(iter, names),
+            StmtKind::Assign { value, .. } => mentions(value, names),
+            StmtKind::For { iter, .. } => mentions(iter, names),
         })
     };
     match &e.kind {
@@ -1714,7 +1713,7 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
             mentions(operand, names)
         }
         ExprKind::Binary { lhs, rhs, .. } => mentions(lhs, names).or_else(|| mentions(rhs, names)),
-        ExprKind::Call { callee, args } => {
+        ExprKind::Call { callee, args, .. } => {
             mentions(callee, names).or_else(|| args.iter().find_map(|a| mentions(&a.value, names)))
         }
         ExprKind::Variant { args, .. } => args
@@ -1727,7 +1726,6 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
             .or_else(|| block(then))
             .or_else(|| els.as_deref().and_then(|x| mentions(x, names))),
         ExprKind::Block(b) => block(b),
-        ExprKind::MadeFrom { of, body } => mentions(of, names).or_else(|| block(body)),
         ExprKind::Match { scrutinee, arms } => mentions(scrutinee, names)
             .or_else(|| arms.iter().find_map(|a| mentions(&a.body, names))),
         ExprKind::Str(parts) => parts.iter().find_map(|p| match p {

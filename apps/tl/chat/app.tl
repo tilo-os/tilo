@@ -2,9 +2,11 @@ app so.tilo.lang.chat "Chat" (icon: .message_circle, category: .network)
 
 /// The workspace's conversations in the sidebar's order: channels outside any category, the
 /// categories each with its own, and the direct messages, in the list as people.
-type Channels = Collection<Category | TextChannel | Direct>
+type Conversations {
+    channels: Collection<Category | TextChannel | Direct>
+}
 
-root channels: Channels
+root conversations: Conversations
 
 /// A named group of channels in the sidebar.
 type Category {
@@ -76,7 +78,7 @@ type Part {
     body: Text
 }
 
-default view sidebar for channels
+default view sidebar for Conversations
 
 default view channel for TextChannel
 
@@ -85,19 +87,19 @@ default view direct for Direct
 default view thread for Thread
 
 /// Adds a text channel to the sidebar.
-primary action new_channel(all: Channels, name: Text = "new-channel") -> TextChannel (
+primary action new_channel(all: Conversations, name: Text = "new-channel") -> TextChannel (
     icon: .plus,
     label: "New channel",
 ) {
-    all.insert(TextChannel(name: name))
+    all.channels.insert(TextChannel(name: name))
 }
 
 /// Adds a category to the sidebar.
-action new_category(all: Channels, name: Text = "New category") -> Category (
+action new_category(all: Conversations, name: Text = "New category") -> Category (
     icon: .folder_plus,
     label: "New category",
 ) {
-    all.insert(Category(name: name))
+    all.channels.insert(Category(name: name))
 }
 
 /// Adds a text channel to a category.
@@ -110,13 +112,13 @@ action add_channel(c: Category, name: Text = "new-channel") -> TextChannel (
 
 /// Opens the direct message with `who`, in the sidebar, or the one already open with them: a
 /// person has one conversation, not a new empty one each time.
-action message_person(all: Channels, who: Principal) -> Direct (
+action message_person(all: Conversations, who: Principal) -> Direct (
     icon: .message_circle,
     label: "Message",
 ) {
     // The one already open with them, else a new one in the sidebar: a person has one
     // conversation, not a new empty one each time.
-    for item in all {
+    for item in all.channels {
         match item {
             c: Category => {}
             ch: TextChannel => {}
@@ -127,7 +129,7 @@ action message_person(all: Channels, who: Principal) -> Direct (
             }
         }
     }
-    let d = all.insert(Direct(name: who.name(), person: who))
+    let d = all.channels.insert(Direct(name: who.name(), person: who))
     // Its fields written, so the record holds the conversation from its first press: an item
     // stored by its id alone is found only once it says something.
     d.name = who.name()
@@ -224,12 +226,12 @@ action start_thread(c: TextChannel | Direct, m: Message, name: Text = m.body.exc
 /// The sidebar: channels outside any category first, then each category with its channels.
 /// Choosing one shows it beside the sidebar.
 /// TODO(language): a resource's own key for a navigation item; the category and name stand in.
-view sidebar(all: Channels) {
-    lens shown: Text = ""
+view sidebar(all: Conversations) {
+    state shown: Text = ""
     ui.NavShell(content_kind: .page, sidebar_title: "Channels") {
         sidebar: {
             ui.NavList(selected: shown) {
-                for item in all {
+                for item in all.channels {
                     match item {
                         c: Category => {
                             ui.NavSection(c.name, collapsible: true) {
@@ -306,7 +308,7 @@ view sidebar(all: Channels) {
             }
         }
         content: {
-            if all.is_empty() {
+            if all.channels.is_empty() {
                 ui.EmptyState("No channels yet", icon: .hash, action: "New channel") {
                     on act: new_channel(all)
                 }
@@ -319,10 +321,10 @@ view sidebar(all: Channels) {
 
 /// A text channel: its messages, and a composer that can answer one of them.
 view channel(c: TextChannel) {
-    lens draft: RichText = RichText("")
-    lens replying: Option<Message> = .none
-    lens editing: Option<Message> = .none
-    lens revised: RichText = RichText("")
+    state draft: RichText = RichText("")
+    state replying: Option<Message> = .none
+    state editing: Option<Message> = .none
+    state revised: RichText = RichText("")
     std.transcript(c, c.messages, unread: first_unseen(c)) { m ->
         channel_message(c, m, replying, editing, revised)
         composer: {
@@ -335,10 +337,10 @@ view channel(c: TextChannel) {
 /// A direct conversation: the same messages and composer as a channel, with the person's name
 /// over it.
 view direct(d: Direct) {
-    lens draft: RichText = RichText("")
-    lens replying: Option<Message> = .none
-    lens editing: Option<Message> = .none
-    lens revised: RichText = RichText("")
+    state draft: RichText = RichText("")
+    state replying: Option<Message> = .none
+    state editing: Option<Message> = .none
+    state revised: RichText = RichText("")
     std.transcript(d, d.messages, unread: first_unseen(d)) { m ->
         direct_message(d, m, replying, editing, revised)
         composer: {
@@ -398,10 +400,10 @@ view channel_message(
 
 /// A thread: its messages and a composer, the same way.
 view thread(t: Thread) {
-    lens draft: RichText = RichText("")
-    lens replying: Option<Message> = .none
-    lens editing: Option<Message> = .none
-    lens revised: RichText = RichText("")
+    state draft: RichText = RichText("")
+    state replying: Option<Message> = .none
+    state editing: Option<Message> = .none
+    state revised: RichText = RichText("")
     std.transcript(t, t.messages) { m ->
         thread_message(m, replying, editing, revised)
         composer: {
@@ -441,18 +443,7 @@ view composer(
     if let r = replying {
         std.reply_banner(r, cancel: set(replying, .none))
     }
-    row {
-        rich_input(bind: draft, placeholder: placeholder, fill) {
-            on submit: send(to, draft, replying)
-                .then(set(draft, RichText("")))
-                .then(set(replying, .none))
-        }
-        ui.Button("Send", icon: .send, icon_only: true) {
-            on press: send(to, draft, replying)
-                .then(set(draft, RichText("")))
-                .then(set(replying, .none))
-        }
-    }
+    std.composer(draft, placeholder, send(to, draft, replying).then(set(replying, .none)))
 }
 
 /// Who is typing here, from the system's presence: the lenses on `of` whose person is
@@ -577,65 +568,76 @@ scenario "a team's channels" -> TextChannel {
     let mia = person("Mia")
     let leo = person("Leo")
     let ada = person("Ada")
-    let general = new_channel(channels, "general")
+    let general = new_channel(conversations, "general")
     general.topic = "Anything, really"
-    new_channel(channels, "random")
-    let team = new_category(channels, "Team")
+    new_channel(conversations, "random")
+    let team = new_category(conversations, "Team")
     let design = add_channel(team, "design")
     design.topic = "Reviews and critique"
     add_channel(team, "release")
     add_channel(team, "planning")
-    let social = new_category(channels, "Social")
+    let social = new_category(conversations, "Social")
     add_channel(social, "weekend")
     add_channel(social, "books")
-    as mia at 2026-06-29T07:02Z {
-        send(design, RichText("The new onboarding build is on the test machines."))
-    }
-    as mia at 2026-06-29T07:03Z {
-        let launch = send(
-            design,
-            RichText("First launch is down to a second and a half on the old ThinkPad."),
-        )
-        as leo at 2026-06-29T07:05Z {
-            react(launch, "🎉")
-        }
-        as ada at 2026-06-29T07:06Z {
-            react(launch, "🎉")
-            react(launch, "🚀")
-            pin(launch)
-        }
-        as invoker at 2026-06-29T07:07Z {
-            react(launch, "👍")
-        }
-    }
-    as leo at 2026-06-29T07:20Z {
-        let ask = send(design, RichText("Can we move the account step to the end?"))
-        as ada at 2026-06-29T07:31Z {
-            let t = start_thread(design, ask, "Account step")
-            send(t, RichText("Sign-in first keeps sync simple, but people bounce there."))
-            as leo at 2026-06-29T07:40Z {
-                send(t, RichText("Then let them in first and ask once they save something."))
-            }
-        }
-        as invoker at 2026-06-29T07:44Z {
-            send(design, RichText("Agreed. I'll update the flow this afternoon."), ask)
-        }
-    }
-    as ada at 2026-06-30T08:10Z {
-        send(design, RichText("Shots of the new sidebar are in the review folder."))
-    }
-    as mia at 2026-06-30T08:12Z {
-        send(design, RichText("The spacing above the categories looks right now."))
-    }
-    as leo at 2026-06-29T08:30Z {
-        send(general, RichText("Coffee machine on the third floor is fixed."))
-    }
-    let dm = message_person(channels, leo)
-    as leo at 2026-06-30T09:02Z {
-        send(dm, RichText("Are we still on for the walk on Saturday?"))
-    }
+    invoke(
+        send(design, RichText("The new onboarding build is on the test machines.")),
+        by: mia,
+        at: 2026-06-29T07:02Z,
+    )
+    let launch = invoke(
+        send(design, RichText("First launch is down to a second and a half on the old ThinkPad.")),
+        by: mia,
+        at: 2026-06-29T07:03Z,
+    )
+    invoke(react(launch, "🎉"), by: leo, at: 2026-06-29T07:05Z)
+    invoke(react(launch, "🎉"), by: ada, at: 2026-06-29T07:06Z)
+    invoke(react(launch, "🚀"), by: ada, at: 2026-06-29T07:06Z)
+    invoke(pin(launch), by: ada, at: 2026-06-29T07:06Z)
+    invoke(react(launch, "👍"), by: mia, at: 2026-06-29T07:07Z)
+    let ask = invoke(
+        send(design, RichText("Can we move the account step to the end?")),
+        by: leo,
+        at: 2026-06-29T07:20Z,
+    )
+    let t = invoke(start_thread(design, ask, "Account step"), by: ada, at: 2026-06-29T07:31Z)
+    invoke(
+        send(t, RichText("Sign-in first keeps sync simple, but people bounce there.")),
+        by: ada,
+        at: 2026-06-29T07:31Z,
+    )
+    invoke(
+        send(t, RichText("Then let them in first and ask once they save something.")),
+        by: leo,
+        at: 2026-06-29T07:40Z,
+    )
+    invoke(
+        send(design, RichText("Agreed. I'll update the flow this afternoon."), ask),
+        by: leo,
+        at: 2026-06-29T07:44Z,
+    )
+    invoke(
+        send(design, RichText("Shots of the new sidebar are in the review folder.")),
+        by: ada,
+        at: 2026-06-30T08:10Z,
+    )
+    invoke(
+        send(design, RichText("The spacing above the categories looks right now.")),
+        by: mia,
+        at: 2026-06-30T08:12Z,
+    )
+    invoke(
+        send(general, RichText("Coffee machine on the third floor is fixed.")),
+        by: leo,
+        at: 2026-06-29T08:30Z,
+    )
+    let dm = message_person(conversations, leo)
+    invoke(
+        send(dm, RichText("Are we still on for the walk on Saturday?")),
+        by: leo,
+        at: 2026-06-30T09:02Z,
+    )
     // The conversation with yourself: your notes, which the sidebar labels as yours.
-    let notes = message_person(channels, invoker)
+    let notes = message_person(conversations, invoker)
     send(notes, RichText("Ask Leo about the walk on Saturday."))
     design
 }
@@ -643,11 +645,12 @@ scenario "a team's channels" -> TextChannel {
 /// A message made from another: the one it was made from draws the made message as a card, as
 /// picking the message a menu's Make is open on makes it.
 scenario "a message made from another" -> TextChannel {
-    let design = new_channel(channels, "design")
+    let design = new_channel(conversations, "design")
     let ask = send(design, RichText("Can we move the account step to the end?"))
-    made from ask {
-        send(design, RichText("Then let them in first and ask once they save something."))
-    }
+    invoke(
+        send(design, RichText("Then let them in first and ask once they save something.")),
+        from: ask,
+    )
     design
 }
 
@@ -655,14 +658,16 @@ scenario "a message made from another" -> TextChannel {
 scenario "a thread" -> Thread {
     let mia = person("Mia")
     let leo = person("Leo")
-    let design = new_channel(channels, "design")
+    let design = new_channel(conversations, "design")
     let ask = send(design, RichText("Can we move the account step to the end?"))
     let t = start_thread(design, ask, "Account step")
-    as mia {
-        let first = send(t, RichText("Sign-in first keeps sync simple, but people bounce there."))
-        as leo {
-            send(t, RichText("Then let them in first and ask once they save something."), first)
-        }
-    }
+    let first = invoke(
+        send(t, RichText("Sign-in first keeps sync simple, but people bounce there.")),
+        by: mia,
+    )
+    invoke(
+        send(t, RichText("Then let them in first and ask once they save something."), first),
+        by: leo,
+    )
     t
 }

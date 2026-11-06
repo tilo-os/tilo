@@ -27,6 +27,7 @@ use tilolang::{BlockKind, CompiledBlock, Diagnostic, INVOCATION_TYPE, Span};
 
 use crate::core::Core;
 use crate::error::RuntimeError;
+use crate::host_ui::shown_node;
 use crate::ids::{ModuleHash, Principal};
 use crate::project::{ProjectOptions, project};
 use crate::registry::Package;
@@ -362,6 +363,7 @@ impl Core {
         let mut props = vec![
             ("state", Value::text(&rec.state)),
             ("action", Value::text(&rec.name)),
+            ("label", Value::text(self.action_label(&rec.name))),
             ("app", Value::text(&rec.app)),
             ("author", Value::Principal(rec.author.clone())),
             ("invocation", Value::resource(inv)),
@@ -385,6 +387,7 @@ impl Core {
                 let target = self.view_target(&view)?;
                 let nested = self.render_at(&target, &view_args, cx.offer.deeper(), None)?;
                 let root = acc.absorb(nested);
+                props.push(("view", Value::Bool(true)));
                 children.push(scope(&card_key, root));
             }
         }
@@ -442,21 +445,27 @@ impl Core {
                 _ => None,
             })
             .unwrap_or_default();
-        // When the action declares no view of what it would do, its arguments say it.
+        // When the action declares no view of what it would do, its arguments say it: the
+        // words a change to them reads with, and each value as its type shows it (a day in
+        // the person's format), so a sentence carries no identifier and no stored text.
         if self.action_facts(&rec.action, &args).2.is_none() {
-            for (i, line) in self.proposal_says(&rec.action, &args).iter().enumerate() {
+            let lines = self.proposal_lines(&rec.action, &args);
+            if lines.is_empty() {
+                card.children.push(text_node(
+                    format!("{key}/says"),
+                    &self.action_label(&rec.action),
+                ));
+            }
+            let phrase = |id: &str| self.words.borrow().word(id, &[], id);
+            for (i, line) in lines.iter().enumerate() {
                 card.children
-                    .push(text_node(format!("{key}/says{i}"), line));
+                    .push(text_node(format!("{key}/says{i}/w"), &line.words));
+                if let Some(value) = &line.value {
+                    card.children
+                        .push(shown_node(&format!("{key}/says{i}/v"), value, &phrase));
+                }
             }
         }
-        let name = self.name_of(&rec.author);
-        let source = format!("suggested by {name}");
-        let said = self.words.borrow().word(
-            "tilolang-suggested-by",
-            &[("name".to_owned(), name)],
-            &source,
-        );
-        card.children.push(text_node(format!("{key}/by"), &said));
         Ok(card)
     }
 
@@ -478,8 +487,7 @@ impl Core {
         node.children = cards;
     }
 
-    /// The app and name of an action or flow by id, and the proposal view with the arguments
-    /// it takes.
+    /// The app and name of an action by id, and the proposal view with the arguments it takes.
     pub(crate) fn action_facts(
         &self,
         action: &str,
@@ -499,11 +507,6 @@ impl Core {
                 (p.view.clone(), shown)
             });
             return (pkg.meta.app.clone(), meta.name.clone(), proposal);
-        }
-        if let Some(pkg) = reg.flow_package(action)
-            && let Some(meta) = pkg.flow(action)
-        {
-            return (pkg.meta.app.clone(), meta.name.clone(), None);
         }
         (String::new(), action.to_owned(), None)
     }

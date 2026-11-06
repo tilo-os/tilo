@@ -32,7 +32,7 @@ use crate::widget::ChangeMarkProps;
 
 /// The height a row is reckoned at before it is laid out: a row with a secondary line.
 // ratchet-allow(pixel_const): a height reckoned before layout measures it, not spacing
-const ROW_ESTIMATE: f32 = 56.0;
+pub(crate) const ROW_ESTIMATE: f32 = 56.0;
 
 /// The height a message of a transcript is reckoned at before it is measured.
 // ratchet-allow(pixel_const): a height reckoned before layout measures it, not spacing
@@ -186,6 +186,10 @@ pub struct VirtualListProps {
     /// last group that names one. The rows keep the order their list gives. `None` leaves them
     /// among the others.
     pub ungrouped_title: Option<String>,
+    /// The list holds more than one selected row: a click with ctrl (or cmd) adds or takes
+    /// away the row it lands on, one with shift takes the range from the last row chosen, and
+    /// Escape puts the selection away. Without it a click chooses the one row the window shows.
+    pub multi_select: bool,
     /// The item a conversation's reader had not seen when they opened it (`first_unseen(c)`):
     /// the "New messages" divider stands over the row that shows it, and while that is above
     /// the view a pill at the foot offers to take the reader back to it. `None` draws neither.
@@ -202,6 +206,10 @@ pub struct VirtualListProps {
     /// The selected rows, by key.
     #[component(state)]
     pub selection: Option<Vec<String>>,
+    /// The items selected, in the order they stand: the selection a host keeps for its person,
+    /// given back so a list built again shows it as they left it.
+    #[component(state)]
+    pub chosen: Option<Vec<ResourceId>>,
     /// How far the list is scrolled, in logical pixels.
     #[component(state)]
     pub scroll: Option<f64>,
@@ -215,6 +223,10 @@ pub struct VirtualListProps {
     /// shows.
     #[component(event(value = ResourceId))]
     pub activate: Event,
+    /// The selection changed: carries the items selected, in the order they stand, and none
+    /// when the selection was put away.
+    #[component(event)]
+    pub selected: Event,
 }
 
 /// The items of a described list: read from a host that renders them as they are shown, or
@@ -626,7 +638,13 @@ impl DescribedList {
 
     /// Select the row that shows the resource `id`, and only it: the item the next column
     /// shows. `None` selects nothing. Whether the selection changed.
+    ///
+    /// A choice of more than one row is the person's own while it holds: what the column
+    /// beside the list shows, or none, says nothing about it.
     pub fn select_presenting(&mut self, id: Option<&str>) -> bool {
+        if self.chosen_rows() > 1 {
+            return false;
+        }
         let Some(list) = self.list_mut() else {
             return false;
         };
@@ -643,11 +661,17 @@ impl DescribedList {
         }
         true
     }
+
+    /// How many rows of the list the person chose.
+    fn chosen_rows(&self) -> usize {
+        self.list()
+            .map_or(0, |list| list.selection().len(list.model().len()))
+    }
 }
 
 /// Whether the selection being made comes from a click or a tap the person just made, rather
 /// than the keyboard or an assistive technology.
-fn by_hand() -> bool {
+pub(crate) fn by_hand() -> bool {
     matches!(
         crate::motion::recent_input(crate::time::now()),
         Some(crate::tokens::MotionSource::Pointer | crate::tokens::MotionSource::Gesture)
@@ -1060,14 +1084,17 @@ impl Described for DescribedList {
             tail_title,
             tree,
             ungrouped_title,
+            multi_select,
             unread,
             mut rows,
             removed,
             selection,
+            chosen,
             scroll,
             motion,
             select,
             activate,
+            selected: selected_changed,
         } = props;
         let face = Face {
             name: name.clone(),
@@ -1129,6 +1156,9 @@ impl Described for DescribedList {
         if selection_follows_focus {
             list = list.selection_follows_focus();
         }
+        if multi_select {
+            list = list.multi_select(true);
+        }
         list = list.with_id(key).with_semantic_key(Clone::clone);
         if let Some(name) = name {
             list = list.with_accessible_name(name);
@@ -1139,6 +1169,16 @@ impl Described for DescribedList {
                 chosen.toggle(key);
             }
             list = list.with_selection(chosen);
+        }
+        // The items a host chose for its person: their rows are the selection.
+        if let Some(items) = chosen {
+            let mut picked = KeySelection::new();
+            for item in &items {
+                if let Some(key) = reader.key_presenting(&item.0) {
+                    picked.toggle(key);
+                }
+            }
+            list = list.with_selection(picked);
         }
         // Each event carries the item its row shows, read from the list's items.
         if !select.is_none() || !activate.is_none() {
@@ -1162,6 +1202,21 @@ impl Described for DescribedList {
                         activate.fire(item_of(&picking, &key));
                     }
                 });
+        }
+        // What is selected now, as the items it is of: a selection a host keeps, so the list
+        // it builds again shows it as the person left it. The list reports what a window keeps
+        // (a choice made by hand, a choice of more than one row, and the way back to one or
+        // none), so whatever arrives here is worth keeping.
+        if !selected_changed.is_none() {
+            let fired = selected_changed.clone();
+            let selecting = reader.reader();
+            list = list.on_selected(move |keys| {
+                let items: Vec<Value> = keys
+                    .iter()
+                    .filter_map(|key| item_of(&selecting, key))
+                    .collect();
+                fired.fire(Some(Value::List(items)));
+            });
         }
         if let Some(offset) = scroll {
             list.set_scroll_offset(offset);
@@ -1192,8 +1247,18 @@ impl Described for DescribedList {
             // the rows it left and arrived at build again.
             if let Some(list) = self.list_mut() {
                 list.set_unread(props.unread.as_ref().map(|item| item.0.clone()));
+                list.set_multi_select(props.multi_select);
                 list.set_tail_title(props.tail_title.clone());
                 list.set_feel(props.motion.unwrap_or(crate::motion::Feel::Standard));
+                // A choice of several rows is the host's while it holds: what the host kept of
+                // it gone, an action over the rows ran and put it away, the list puts its own
+                // away with it. A single row chosen by the keyboard is the list's own, kept
+                // while no record names it.
+                if props.chosen.as_ref().is_some_and(Vec::is_empty)
+                    && list.selection().len(list.model().len()) > 1
+                {
+                    list.selection_mut().clear();
+                }
             }
             return true;
         }

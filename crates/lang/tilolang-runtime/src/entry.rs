@@ -1,8 +1,8 @@
 //! The entry at the end of a list: what the text typed in it will make (`entry_parts`), and the
 //! action it commits, its parameters filled from that text ([`Core::entry_fill`]).
 //!
-//! The action is one a view built but for its `(entry)` parameter: a call of a create action
-//! (`quick_add(tasks, p: project)`). Its parameters are the action's, and their types say what
+//! The action is one a view built but for its `Text` parameter: a call of a create action
+//! (`new_task(tasks, p: project)`). Its parameters are the action's, and their types say what
 //! the words before the text typed take: a `Date` or `Time` from a phrase, a `Principal` from
 //! `@name` among the workspace's members, a record from `#title` among the records the subject's
 //! collection of its type holds. The reader is [`tilolang::entry`], which knows nothing of
@@ -41,7 +41,8 @@ impl Core {
             }
         };
         let text = self.text(a.h(1)?)?;
-        let (parsed, _) = self.read_entry(&aref, &text)?;
+        let given: Vec<Option<Value>> = aref.args.iter().cloned().map(Some).collect();
+        let (parsed, _) = self.read_entry(&aref.action, &given, &text)?;
         let parts = parsed
             .parts
             .into_iter()
@@ -63,11 +64,11 @@ impl Core {
         }
     }
 
-    /// Fills the `(entry)` parameter of the action `aref` runs, and the parameters the text
-    /// says, with what `text` says ("Call the landlord fri 10am @bo"): the words nothing else
-    /// takes title the item, and the rest are its day, its moment, who it is for and what it is
-    /// of. An action with no entry parameter, or whose call gave it, is left as it is, as is
-    /// every action `then` joins to one that is filled.
+    /// Fills the action's one `Text` parameter of the action `aref` runs, and the parameters
+    /// the text says, with what `text` says ("Call the landlord fri 10am @bo"): the words
+    /// nothing else takes title the item, and the rest are its day, its moment, who it is for
+    /// and what it is of. An action with no one `Text` parameter, or whose call gave it, is left
+    /// as it is, as is every action `then` joins to one that is filled.
     ///
     /// Whether the entry makes anything: text that is nothing but space and what the other
     /// parameters take ("fri 10am @bo") names no item, so the action does not run.
@@ -81,25 +82,51 @@ impl Core {
             }
             return Ok(makes);
         }
-        let Some((meta, app)) = self.action_meta(&aref.action) else {
+        let given: Vec<Option<Value>> = aref.args.iter().cloned().map(Some).collect();
+        let Some(given) = self.entry_fill_given(&aref.action, given, text)? else {
+            return Ok(false);
+        };
+        aref.args = self
+            .complete_args(&aref.action, given)
+            .map_err(|e| HostFail::Trap(e.to_string()))?;
+        Ok(true)
+    }
+
+    /// [`Core::entry_fill`] over the arguments of a call not yet made: the parameters `given`
+    /// leaves out are filled from `text`, and the entry parameter with the words the text says
+    /// of nothing else. A parameter a caller gave is left as it is, except the entry one, which
+    /// is what the person typed and so reads as the words other fields did not take.
+    ///
+    /// `None` when the text names no item: text that is nothing but space and what the other
+    /// parameters take ("fri 10am @bo") makes nothing, as it does from a view's entry.
+    ///
+    /// # Errors
+    ///
+    /// A text naming a field the action does not have, or a filled value that does not fit.
+    pub(crate) fn entry_fill_given(
+        &self,
+        action: &str,
+        mut given: Vec<Option<Value>>,
+        text: &str,
+    ) -> HResult<Option<Vec<Option<Value>>>> {
+        let Some((meta, app)) = self.action_meta(action) else {
             // Not a declaration of a loaded package: the run says so.
-            return Ok(true);
+            return Ok(Some(given));
         };
-        let Some((slot, _)) = meta.params.iter().enumerate().find(|(_, p)| p.entry) else {
-            return Ok(true);
+        let Some(slot) = meta.params.iter().position(|p| p.entry) else {
+            return Ok(Some(given));
         };
-        if slot < aref.args.len() {
+        // The call may stop at the entry: what it did not give is the text's to fill.
+        given.resize(meta.params.len(), None);
+        if given.get(slot).is_some_and(Option::is_some) {
             // The call gave it: the entry fills nothing.
-            return Ok(true);
+            return Ok(Some(given));
         }
-        let (parsed, params) = self.read_entry(aref, text)?;
+        let (parsed, params) = self.read_entry(action, &given, text)?;
         if parsed.title.trim().is_empty() {
             // Nothing typed but what other parameters take makes no item.
-            return Ok(false);
+            return Ok(None);
         }
-        let mut given: Vec<Option<Value>> = (0..params.len())
-            .map(|i| aref.args.get(i).cloned())
-            .collect();
         let mut fills = parsed.fills;
         fills.sort_by_key(|(slot, _)| *slot);
         for (slot, filled) in fills {
@@ -107,8 +134,7 @@ impl Core {
                 (params.get(slot), meta.params.get(slot), given.get_mut(slot))
             else {
                 return trap(format!(
-                    "what the entry says of `{}` names a parameter it has not",
-                    aref.action
+                    "what the entry says of `{action}` names a parameter it has not"
                 ));
             };
             let value = self.filled_value(&filled, param)?;
@@ -122,10 +148,7 @@ impl Core {
         if let Some(written) = given.get_mut(slot) {
             *written = Some(Value::Text(parsed.title));
         }
-        aref.args = self
-            .complete_args(&aref.action, given)
-            .map_err(|e| HostFail::Trap(e.to_string()))?;
-        Ok(true)
+        Ok(Some(given))
     }
 
     /// The declaration of the action `id`, and the app that declares it.
@@ -135,12 +158,16 @@ impl Core {
         Some((pkg.action(id)?.clone(), pkg.meta.app.clone()))
     }
 
-    /// What the text says of the action `aref` runs, and what its parameters are.
-    fn read_entry(&self, aref: &ActionRef, text: &str) -> HResult<(Parsed, Vec<Param>)> {
-        let (meta, app) = self.action_meta(&aref.action).ok_or_else(|| {
+    /// What the text says of the action `action`, and what its parameters are.
+    fn read_entry(
+        &self,
+        action: &str,
+        given: &[Option<Value>],
+        text: &str,
+    ) -> HResult<(Parsed, Vec<Param>)> {
+        let (meta, app) = self.action_meta(action).ok_or_else(|| {
             HostFail::Trap(format!(
-                "the entry runs `{}`, which no loaded package declares",
-                aref.action
+                "the entry runs `{action}`, which no loaded package declares"
             ))
         })?;
         let params: Vec<Param> = meta
@@ -150,13 +177,12 @@ impl Core {
             .map(|(i, p)| Param {
                 takes: takes(&p.ty, p.entry, &app),
                 // A call that gave an optional `.none` left it empty: what is typed fills it.
-                given: aref
-                    .args
+                given: given
                     .get(i)
-                    .is_some_and(|v| !matches!(v, Value::Opt(None))),
+                    .is_some_and(|v| v.as_ref().is_some_and(|v| !matches!(v, Value::Opt(None)))),
             })
             .collect();
-        let subject = aref.args.iter().find_map(|arg| match arg {
+        let subject = given.iter().flatten().find_map(|arg| match arg {
             Value::Ref(r) => Some(r.target.as_ref().clone()),
             _ => None,
         });

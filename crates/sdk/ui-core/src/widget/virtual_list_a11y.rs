@@ -182,8 +182,14 @@ impl<M: ListModel> VirtualList<M> {
                 .with_action_target(format!("key:{key}"))
                 .with_semantic_key(key);
         }
-        // The name the row's own widget gives it for assistive technology stands over the key.
-        if let Some(semantic) = child.as_ref().and_then(|node| node.semantic_key.clone()) {
+        // The name the row's own widget gives it for assistive technology stands over the key
+        // when that widget is the row itself (a tree row, which says how deep it stands): a
+        // widget the list draws inside its row names what it draws, not the row, and the list's
+        // own key ([`VirtualList::with_semantic_key`]) names the row it holds.
+        let owns_the_row = child.as_ref().is_some_and(|node| node.level.is_some());
+        if (owns_the_row || self.semantic_key.is_none())
+            && let Some(semantic) = child.as_ref().and_then(|node| node.semantic_key.clone())
+        {
             item.key = Some(crate::a11y::hash_key(&semantic));
             item.semantic_key = Some(semantic);
         }

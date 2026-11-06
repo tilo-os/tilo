@@ -8,7 +8,7 @@ mod common;
 #[cfg(test)]
 mod cases {
     use super::common::*;
-    use tilolang_runtime::{FlowOutcome, InvokeOutcome, Resolution, Value};
+    use tilolang_runtime::{InvokeOutcome, Resolution, RunOutcome, Value};
 
     struct Setup {
         w: World,
@@ -66,7 +66,7 @@ mod cases {
                 Resolution::Approve,
             )
             .unwrap();
-        assert_eq!(out, FlowOutcome::Done(Value::Unit));
+        assert_eq!(out, RunOutcome::Done(Value::Unit));
         assert_eq!(w.rt.read(&c, "value").unwrap(), Value::Int(1));
 
         let notes = w.rt.history(&c.doc).unwrap();
@@ -91,7 +91,7 @@ mod cases {
             panic!("expected a suggestion");
         };
         let out = w.rt.resolve(&s.run, &w.me, Resolution::Decline).unwrap();
-        assert!(matches!(out, FlowOutcome::Done(Value::Error(_))), "{out:?}");
+        assert!(matches!(out, RunOutcome::Done(Value::Error(_))), "{out:?}");
         assert_eq!(w.rt.read(&c, "value").unwrap(), Value::Int(0));
     }
 

@@ -3,6 +3,7 @@
 //! index stamped with older heads catches up; a corrupt one is built anew and never read.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use automerge::AutoCommit;
 use serde_json::{Value as Json, json};
@@ -455,6 +456,67 @@ fn a_store_without_the_record_opens_over_the_index_and_takes_the_record_later() 
         shown(&view)
     );
     assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
+}
+
+#[test]
+fn a_window_opens_over_the_index_an_earlier_window_kept() {
+    // The window that closed wrote its index to the disk as it ended: the next window of the
+    // workspace opens over it, which is read, and nothing is derived from the record again.
+    let (ada, root, lock) = workspace();
+    let dir = TempDir::new("kept-open");
+    let first = kept_in(dir.path(), &ada.doc, &lock);
+    drop(first);
+    let second = Host::open(
+        Opening {
+            record: Some(&ada.doc),
+            index_dir: Some(dir.path().to_owned()),
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    second.load_builtin(TODO, &lock).unwrap();
+    assert!(
+        second.index_ready(),
+        "the second window reads the kept index"
+    );
+    assert_eq!(second.store().stats().builds, 0, "nothing is built anew");
+    assert_eq!(
+        second.store().index_contents(APP).unwrap(),
+        anew(&ada, &lock)
+    );
+    let _ = root;
+}
+
+#[test]
+fn a_window_whose_index_is_not_kept_builds_it_off_the_frame() {
+    // A window with no storage, or one whose index file another window holds, opens over an
+    // index built in memory: the open does not wait for it, the frame after it is built shows
+    // what it holds.
+    let (ada, root, lock) = workspace();
+    let host = Host::open(
+        Opening {
+            record: Some(&ada.doc),
+            index_dir: None,
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    // What an instance does before the app's package loads.
+    host.set_index_waker(Arc::new(|| {}));
+    host.load_builtin(TODO, &lock).unwrap();
+    assert!(!host.index_ready(), "the open does not wait for the index");
+    assert!(
+        host.store().index_contents(APP).is_none(),
+        "nothing reads an index that is not built"
+    );
+    host.wait_index();
+    assert!(host.index_ready(), "the window's frame takes it in");
+    assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
+    let _ = root;
 }
 
 #[test]

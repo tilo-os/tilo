@@ -1,0 +1,670 @@
+//! The YouTube origin: keeps a package's types of the `youtube` kinds (`type Video (origin:
+//! youtube.video)`) in step with YouTube, from the searches, channels and trending lists its
+//! outside effects ask for.
+//!
+//! The origin is native code the instance runs beside the package: it holds the network, which
+//! package code never sees. Each frame the instance polls it; it asks YouTube what an effect
+//! asked for, writes the answer into the package's records as a change of the origin (through
+//! [`tilolang_runtime::Runtime::apply_origin`]), and says what became of the effect.
+//!
+//! **What is kept.** A search's channels, playlists and videos; a channel's videos; the videos
+//! YouTube lists as trending; and where a video's bytes play from. Each is keyed by the
+//! service's own id, so asking again never shows the same channel or video twice.
+
+use std::cell::RefCell;
+use std::collections::{BTreeMap, VecDeque};
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use tilolang_tilo::host::Host;
+use tilolang_tilo::origin::{Origin, OriginCx, OriginType, Polled, origin_types};
+use tilolang_tilo::runtime::origin::OriginWrite;
+use tilolang_tilo::runtime::store::FieldKey;
+use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
+
+use crate::service::{ChannelPage, SearchPage, Service, ServiceError, TrendingPage, VideoItem};
+
+/// What the origin reads of each youtube kind it keeps in step, from the package's metadata.
+struct Types {
+    /// The root's collection of each kind.
+    channels_field: String,
+    videos_field: String,
+    playlists_field: String,
+    channel: OriginType,
+    video: OriginType,
+    playlist: OriginType,
+    root: ResourceRef,
+    /// The root's fields an answer settles, when the package declares them by name: how its
+    /// search and its feed stand, and why the last one failed. An app that names them another
+    /// way writes them itself.
+    status: StatusFields,
+}
+
+/// The root's fields that say how the last fetch stands, by their ids.
+#[derive(Default)]
+struct StatusFields {
+    search_state: Option<String>,
+    search_trouble: Option<String>,
+    feed_state: Option<String>,
+    feed_trouble: Option<String>,
+}
+
+/// A request handed to the service and not answered yet.
+enum Pending {
+    Search { query: String },
+    Channel { key: String },
+    Subscriptions { keys: Vec<String> },
+    Trending,
+    Stream { key: String },
+}
+
+/// What a request came back with.
+enum Answered {
+    Search(SearchPage),
+    Channel(ChannelPage),
+    Trending(TrendingPage),
+    /// The newest videos of each channel asked for, in the order asked.
+    Subscriptions(Vec<ChannelPage>),
+    Stream(String),
+}
+
+struct Waiting {
+    pending: Pending,
+    answered: Option<Result<Answered, ServiceError>>,
+}
+
+/// The origin. See the module docs.
+pub struct YouTubeOrigin {
+    service: Arc<dyn Service>,
+    /// Set when the service has an answer, from the thread it answers on.
+    woken: Arc<AtomicBool>,
+    types: Option<Types>,
+    /// Each request the service has not answered yet, oldest first.
+    waiting: VecDeque<Waiting>,
+    /// What the store changed since the last poll: whether a field a request wrote, or where a
+    /// search's fields, moved.
+    changed: Rc<RefCell<Vec<FieldKey>>>,
+    /// The instance's frame loop, woken whenever an answer is ready.
+    on_answer: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl YouTubeOrigin {
+    /// The origin over `service`, which sets `woken` when it has an answer.
+    #[must_use]
+    pub fn new(service: Arc<dyn Service>, woken: Arc<AtomicBool>) -> Self {
+        Self {
+            service,
+            woken,
+            types: None,
+            waiting: VecDeque::new(),
+            changed: Rc::default(),
+            on_answer: None,
+        }
+    }
+
+    /// The origin with `wake` called whenever an answer is ready: the instance's frame loop,
+    /// woken so the next frame polls it and writes what YouTube said. The service answers on
+    /// the thread the effect was delivered on, so the wake runs there.
+    #[must_use]
+    pub fn waking(
+        origin: Rc<RefCell<Self>>,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    ) -> Rc<RefCell<Self>> {
+        origin.borrow_mut().on_answer = Some(wake);
+        origin
+    }
+
+    /// The kinds and the root's collections, read once: the package's own types.
+    fn types_of(host: &Host, app: &str) -> Option<Types> {
+        let package = host.package(app)?;
+        let found = origin_types(&package.meta, "youtube");
+        let kind = |k: &str| found.iter().find(|t| t.kind == k).cloned();
+        let channel = kind("youtube.channel")?;
+        let video = kind("youtube.video")?;
+        let playlist = kind("youtube.playlist")?;
+        let (_, root_ty) = package.main()?;
+        let root_meta = package.meta.types.iter().find(|t| t.id == root_ty)?;
+        let collection_of = |name: &str| {
+            root_meta
+                .fields
+                .iter()
+                .find(|f| f.ty == format!("Collection<{name}>"))
+                .map(|f| f.id.clone())
+        };
+        let field_of = |name: &str| {
+            root_meta
+                .fields
+                .iter()
+                .find(|f| f.name == name && f.ty == "Text")
+                .map(|f| f.id.clone())
+        };
+        Some(Types {
+            channels_field: collection_of("Channel")?,
+            videos_field: collection_of("Video")?,
+            playlists_field: collection_of("Playlist")?,
+            channel,
+            video,
+            playlist,
+            status: StatusFields {
+                search_state: field_of("search_state"),
+                search_trouble: field_of("search_trouble"),
+                feed_state: field_of("feed_state"),
+                feed_trouble: field_of("feed_trouble"),
+            },
+            // The root as the store made it: its id is the workspace's one resource of its
+            // type, not the type's own id.
+            root: host.root_of(app).ok()?,
+        })
+    }
+
+    fn text(s: &str) -> Value {
+        Value::text(s)
+    }
+
+    /// Hand `pending` to the service, and wake the instance once it has answered.
+    fn ask(&mut self, pending: Pending) {
+        let asked = match &pending {
+            Pending::Search { query } => self.service.search(query).map(Answered::Search),
+            Pending::Channel { key } => self.service.channel(key).map(Answered::Channel),
+            Pending::Trending => self.service.trending().map(Answered::Trending),
+            Pending::Stream { key } => self.service.stream(key).map(Answered::Stream),
+            Pending::Subscriptions { keys } => {
+                let mut pages = Vec::new();
+                let mut failed = None;
+                for key in keys {
+                    match self.service.channel(key) {
+                        Ok(page) => pages.push(page),
+                        Err(error) => {
+                            failed = Some(error);
+                            break;
+                        }
+                    }
+                }
+                failed.map_or_else(|| Ok(Answered::Subscriptions(pages)), Err)
+            }
+        };
+        self.waiting.push_back(Waiting {
+            pending,
+            answered: Some(asked),
+        });
+        self.woken.store(true, Ordering::Release);
+    }
+}
+
+/// Write `items` of the kind `ty` into the collection `field` of the root, keeping the service's
+/// fields only: a field the person changes (a like, a watch-later mark) is theirs, and an answer
+/// never overwrites it.
+fn upsert_items(
+    host: &Host,
+    ty: &OriginType,
+    owner: &ResourceRef,
+    field: &str,
+    key_field: &str,
+    items: &[(String, Vec<(String, Value)>)],
+) {
+    let held: BTreeMap<String, ResourceRef> = items_in(host, owner, field)
+        .into_iter()
+        .map(|item| (read_text(host, &item, ty, key_field), item))
+        .collect();
+    let mut writes = Vec::new();
+    for (key, fields) in items {
+        match held.get(key) {
+            Some(at) => writes.push(OriginWrite::Set {
+                target: (*at).clone(),
+                fields: fields.clone(),
+            }),
+            None => writes.push(OriginWrite::Insert {
+                owner: owner.clone(),
+                field: field.to_owned(),
+                ty: ty.ty.clone(),
+                fields: fields.clone(),
+            }),
+        }
+    }
+    if !writes.is_empty() {
+        let _ = host.runtime().apply_origin("youtube", writes, None);
+    }
+}
+
+fn items_in(host: &Host, at: &ResourceRef, field: &str) -> Vec<ResourceRef> {
+    match host.runtime().read(at, field) {
+        Ok(Value::List(items)) => items
+            .into_iter()
+            .filter_map(|v| match v {
+                Value::Ref(r) => Some((*r.target).clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn read_text(host: &Host, at: &ResourceRef, ty: &OriginType, field: &str) -> String {
+    let Some(id) = ty.field(field) else {
+        return String::new();
+    };
+    match host.runtime().read(at, id) {
+        Ok(Value::Text(t)) => t,
+        _ => String::new(),
+    }
+}
+
+fn put(ty: &OriginType, fields: &mut Vec<(String, Value)>, name: &str, value: impl Into<Value>) {
+    if let Some(id) = ty.field(name) {
+        fields.push((id.to_string(), value.into()));
+    }
+}
+
+impl Origin for YouTubeOrigin {
+    fn name(&self) -> &'static str {
+        "youtube"
+    }
+
+    fn serves(&self, capability: &str) -> bool {
+        matches!(
+            capability,
+            "youtube.search"
+                | "youtube.channel"
+                | "youtube.subscriptions"
+                | "youtube.trending"
+                | "youtube.stream"
+        )
+    }
+
+    fn due(&self) -> bool {
+        self.woken.load(Ordering::Acquire)
+    }
+
+    fn poll(&mut self, cx: &OriginCx<'_>) -> Polled {
+        let mut polled = Polled::default();
+        if self.woken.swap(false, Ordering::AcqRel) {
+            polled.wrote = self.take_answers(cx.host);
+        }
+        let _ = self.changed.take();
+        polled
+    }
+
+    fn deliver(&mut self, capability: &str, payload: &serde_json::Value) -> Delivery {
+        let pending = match capability {
+            "youtube.search" => Pending::Search {
+                query: payload.as_str().unwrap_or_default().to_owned(),
+            },
+            "youtube.channel" => Pending::Channel {
+                key: payload.as_str().unwrap_or_default().to_owned(),
+            },
+            "youtube.trending" => Pending::Trending,
+            "youtube.stream" => Pending::Stream {
+                key: payload.as_str().unwrap_or_default().to_owned(),
+            },
+            "youtube.subscriptions" => Pending::Subscriptions {
+                // The channels the person followed when they asked for the feed: their keys, in
+                // the order the feed lists them.
+                keys: payload
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|key| key.as_str().map(str::to_owned))
+                    .collect(),
+            },
+            _ => return Delivery::Rejected(format!("YouTube serves no `{capability}`")),
+        };
+        self.ask(pending);
+        // The answer is in: wake the instance's frame, which polls and writes it.
+        if let Some(wake) = &self.on_answer {
+            wake();
+        }
+        Delivery::Pending
+    }
+}
+
+impl YouTubeOrigin {
+    /// Write what the service answered since the last poll, and say whether anything changed.
+    fn take_answers(&mut self, host: &Host) -> bool {
+        let Some(types) = self.types.take().or_else(|| {
+            // The first poll after the instance opened: the package is loaded by then.
+            host.packages()
+                .last()
+                .and_then(|package| Self::types_of(host, &package.meta.app))
+        }) else {
+            // Nothing to write yet, and nothing to lose: try again on the next poll.
+            return false;
+        };
+        let mut wrote = false;
+        while let Some(waiting) = self.waiting.pop_front() {
+            let Some(answered) = waiting.answered else {
+                self.waiting.push_front(waiting);
+                break;
+            };
+            // What the app reads back of its own fetch: an answer settles the state it set
+            // while asking, and a failure says why, so a search never reads "searching" for
+            // ever.
+            let (what, trouble) = match &waiting.pending {
+                Pending::Search { .. } => (
+                    types.status.search_state.as_deref(),
+                    types.status.search_trouble.as_deref(),
+                ),
+                Pending::Subscriptions { .. } => (
+                    types.status.feed_state.as_deref(),
+                    types.status.feed_trouble.as_deref(),
+                ),
+                // A channel's page and a video's stream write their own fields, and the
+                // trending list is what it is: none of them has a state to settle.
+                Pending::Channel { .. } | Pending::Trending | Pending::Stream { .. } => {
+                    (None, None)
+                }
+            };
+            match answered {
+                Err(error) => {
+                    let mut fields = Vec::new();
+                    if let Some(id) = what {
+                        fields.push((id.to_owned(), Value::text("failed")));
+                    }
+                    if let Some(id) = trouble {
+                        fields.push((id.to_owned(), Value::text(&error.0)));
+                    }
+                    wrote |= Self::write_fields(host, &types, fields);
+                }
+                Ok(Answered::Search(page)) => {
+                    wrote |= Self::write_search(host, &types, &page);
+                    wrote |= Self::settle(host, &types, what, trouble);
+                }
+                Ok(Answered::Channel(page)) => {
+                    wrote |= Self::write_channel(host, &types, &page);
+                }
+                Ok(Answered::Trending(page)) => {
+                    wrote |= Self::write_trending(host, &types, &page);
+                }
+                Ok(Answered::Subscriptions(pages)) => {
+                    for page in pages {
+                        wrote |= Self::write_channel(host, &types, &page);
+                    }
+                    wrote |= Self::settle(host, &types, what, trouble);
+                }
+                Ok(Answered::Stream(url)) => {
+                    wrote |= Self::write_stream(host, &types, stream_key(&waiting.pending), &url);
+                }
+            }
+        }
+        self.types = Some(types);
+        wrote
+    }
+
+    /// The root's state says its fetch went through, and its trouble field is cleared.
+    fn settle(host: &Host, t: &Types, what: Option<&str>, trouble: Option<&str>) -> bool {
+        let mut fields = Vec::new();
+        if let Some(id) = what {
+            fields.push((id.to_owned(), Value::text("done")));
+        }
+        if let Some(id) = trouble {
+            fields.push((id.to_owned(), Value::text("")));
+        }
+        Self::write_fields(host, t, fields)
+    }
+
+    /// Set `fields` on the root, as one change of the origin.
+    fn write_fields(host: &Host, t: &Types, fields: Vec<(String, Value)>) -> bool {
+        if fields.is_empty() {
+            return false;
+        }
+        host.runtime()
+            .apply_origin(
+                "youtube",
+                vec![OriginWrite::Set {
+                    target: t.root.clone(),
+                    fields,
+                }],
+                None,
+            )
+            .is_ok()
+    }
+
+    fn write_search(host: &Host, t: &Types, page: &SearchPage) -> bool {
+        let query = page.query.clone();
+        let channel_items: Vec<(String, Vec<(String, Value)>)> = page
+            .channels
+            .iter()
+            .map(|c| {
+                let mut fields = Vec::new();
+                put(&t.channel, &mut fields, "key", Self::text(&c.key));
+                put(&t.channel, &mut fields, "name", Self::text(&c.name));
+                put(&t.channel, &mut fields, "handle", Self::text(&c.handle));
+                put(
+                    &t.channel,
+                    &mut fields,
+                    "subscribers",
+                    Value::Int(c.subscribers),
+                );
+                put(&t.channel, &mut fields, "avatar", Self::text(&c.avatar));
+                put(
+                    &t.channel,
+                    &mut fields,
+                    "description",
+                    Self::text(&c.description),
+                );
+                put(&t.channel, &mut fields, "verified", Value::Bool(c.verified));
+                put(&t.channel, &mut fields, "found_for", Self::text(&query));
+                (c.key.clone(), fields)
+            })
+            .collect();
+        upsert_items(
+            host,
+            &t.channel,
+            &t.root,
+            &t.channels_field,
+            "key",
+            &channel_items,
+        );
+        let video_items: Vec<(String, Vec<(String, Value)>)> = page
+            .videos
+            .iter()
+            .map(|v| (v.key.clone(), video_fields(&t.video, v, &query)))
+            .collect();
+        upsert_items(
+            host,
+            &t.video,
+            &t.root,
+            &t.videos_field,
+            "key",
+            &video_items,
+        );
+        let playlist_items: Vec<(String, Vec<(String, Value)>)> = page
+            .playlists
+            .iter()
+            .map(|p| {
+                let mut fields = Vec::new();
+                put(&t.playlist, &mut fields, "key", Self::text(&p.key));
+                put(&t.playlist, &mut fields, "title", Self::text(&p.title));
+                put(
+                    &t.playlist,
+                    &mut fields,
+                    "channel_key",
+                    Self::text(&p.channel_key),
+                );
+                put(
+                    &t.playlist,
+                    &mut fields,
+                    "channel_name",
+                    Self::text(&p.channel_name),
+                );
+                put(
+                    &t.playlist,
+                    &mut fields,
+                    "video_count",
+                    Value::Int(p.video_count),
+                );
+                put(
+                    &t.playlist,
+                    &mut fields,
+                    "thumbnail",
+                    Self::text(&p.thumbnail),
+                );
+                put(&t.playlist, &mut fields, "found_for", Self::text(&query));
+                (p.key.clone(), fields)
+            })
+            .collect();
+        upsert_items(
+            host,
+            &t.playlist,
+            &t.root,
+            &t.playlists_field,
+            "key",
+            &playlist_items,
+        );
+        true
+    }
+
+    fn write_channel(host: &Host, t: &Types, page: &ChannelPage) -> bool {
+        let mut fields = Vec::new();
+        put(
+            &t.channel,
+            &mut fields,
+            "key",
+            Self::text(&page.channel.key),
+        );
+        put(
+            &t.channel,
+            &mut fields,
+            "name",
+            Self::text(&page.channel.name),
+        );
+        put(
+            &t.channel,
+            &mut fields,
+            "handle",
+            Self::text(&page.channel.handle),
+        );
+        put(
+            &t.channel,
+            &mut fields,
+            "subscribers",
+            Value::Int(page.channel.subscribers),
+        );
+        put(
+            &t.channel,
+            &mut fields,
+            "avatar",
+            Self::text(&page.channel.avatar),
+        );
+        put(
+            &t.channel,
+            &mut fields,
+            "banner",
+            Self::text(&page.channel.banner),
+        );
+        put(
+            &t.channel,
+            &mut fields,
+            "description",
+            Self::text(&page.channel.description),
+        );
+        put(
+            &t.channel,
+            &mut fields,
+            "verified",
+            Value::Bool(page.channel.verified),
+        );
+        upsert_items(
+            host,
+            &t.channel,
+            &t.root,
+            &t.channels_field,
+            "key",
+            &[(page.channel.key.clone(), fields)],
+        );
+        let videos: Vec<(String, Vec<(String, Value)>)> = page
+            .videos
+            .iter()
+            .map(|v| (v.key.clone(), video_fields(&t.video, v, "")))
+            .collect();
+        upsert_items(host, &t.video, &t.root, &t.videos_field, "key", &videos);
+        true
+    }
+
+    fn write_trending(host: &Host, t: &Types, page: &TrendingPage) -> bool {
+        let written: Vec<(String, Vec<(String, Value)>)> = page
+            .videos
+            .iter()
+            .map(|v| {
+                let mut fields = video_fields(&t.video, v, "");
+                put(&t.video, &mut fields, "trending", Value::Bool(true));
+                (v.key.clone(), fields)
+            })
+            .collect();
+        upsert_items(host, &t.video, &t.root, &t.videos_field, "key", &written);
+        true
+    }
+
+    fn write_stream(host: &Host, t: &Types, key: &str, url: &str) -> bool {
+        let Some(at) = items_in(host, &t.root, &t.videos_field)
+            .into_iter()
+            .find(|item| read_text(host, item, &t.video, "key") == key)
+        else {
+            return false;
+        };
+        let mut fields = Vec::new();
+        put(&t.video, &mut fields, "stream", Self::text(url));
+        let _ = host.runtime().apply_origin(
+            "youtube",
+            vec![OriginWrite::Set { target: at, fields }],
+            None,
+        );
+        true
+    }
+}
+
+fn stream_key(pending: &Pending) -> &str {
+    match pending {
+        Pending::Stream { key } => key,
+        _ => "",
+    }
+}
+
+/// The fields an answer writes into a video of the kind, the search that found it included.
+fn video_fields(ty: &OriginType, v: &VideoItem, found_for: &str) -> Vec<(String, Value)> {
+    let mut fields = Vec::new();
+    put(ty, &mut fields, "key", YouTubeOrigin::text(&v.key));
+    put(ty, &mut fields, "title", YouTubeOrigin::text(&v.title));
+    put(
+        ty,
+        &mut fields,
+        "channel_key",
+        YouTubeOrigin::text(&v.channel_key),
+    );
+    put(
+        ty,
+        &mut fields,
+        "channel_name",
+        YouTubeOrigin::text(&v.channel_name),
+    );
+    put(
+        ty,
+        &mut fields,
+        "channel_avatar",
+        YouTubeOrigin::text(&v.channel_avatar),
+    );
+    put(ty, &mut fields, "views", Value::Int(v.views));
+    put(
+        ty,
+        &mut fields,
+        "published",
+        YouTubeOrigin::text(&v.published),
+    );
+    put(ty, &mut fields, "duration", Value::Int(v.duration));
+    put(
+        ty,
+        &mut fields,
+        "description",
+        YouTubeOrigin::text(&v.description),
+    );
+    put(ty, &mut fields, "likes", Value::Int(v.likes));
+    put(
+        ty,
+        &mut fields,
+        "thumbnail",
+        YouTubeOrigin::text(&v.thumbnail),
+    );
+    put(ty, &mut fields, "live", Value::Bool(v.live));
+    put(ty, &mut fields, "found_for", YouTubeOrigin::text(found_for));
+    fields
+}

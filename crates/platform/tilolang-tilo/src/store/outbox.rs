@@ -43,6 +43,7 @@ impl TiloStore {
                 at: note.at.clone(),
                 from: note.from.clone(),
                 suggested_by: note.suggested_by.clone(),
+                count: note.count.max(1),
             },
             edits: vec![edit],
         });

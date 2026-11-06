@@ -35,6 +35,10 @@ pub struct AppHeader {
     /// record there, which only that person's devices read; `false` (`.shared`, the default)
     /// keeps them in the workspace's record of the app, which every member reads.
     pub own_records: bool,
+    /// `(web: ["example.com", "*.rss.org"])`: the hosts the app's `uses web` requests may
+    /// reach. A request to any other host is refused as a value, and recorded. `*.rss.org`
+    /// covers its subdomains, not `rss.org` itself.
+    pub web: Vec<String>,
     pub span: Span,
 }
 
@@ -56,8 +60,9 @@ pub enum Item {
     Views(ViewsDecl),
     /// `scenario "name" { ... }`: named seed data, run as a hidden action.
     Scenario(ScenarioDecl),
+    /// `trigger due(t: Task) at t.at: notify_due(t)`: when an action runs by itself.
+    Trigger(TriggerDecl),
     Action(ActionDecl),
-    Flow(FlowDecl),
     View(ViewDecl),
     Fn(FnDecl),
 }
@@ -71,8 +76,8 @@ impl Item {
             Self::Alias(d) => &d.doc,
             Self::Enum(d) => &d.doc,
             Self::Scenario(d) => &d.doc,
+            Self::Trigger(d) => &d.doc,
             Self::Action(d) => &d.doc,
-            Self::Flow(d) => &d.doc,
             Self::View(d) => &d.doc,
             Self::Fn(d) => &d.doc,
             Self::Use(_) | Self::Root(_) | Self::DefaultView(_) | Self::RowView(_) => &[],
@@ -91,8 +96,8 @@ impl Item {
             Self::DefaultView(d) | Self::RowView(d) => d.span,
             Self::Views(d) => d.span,
             Self::Scenario(d) => d.span,
+            Self::Trigger(d) => d.span,
             Self::Action(d) => d.span,
-            Self::Flow(d) => d.span,
             Self::View(d) => d.span,
             Self::Fn(d) => d.span,
         }
@@ -198,7 +203,7 @@ pub struct VariantDecl {
     pub span: Span,
 }
 
-/// `type Notes = Collection<Note>`, `type Channel = TextChannel | Thread`.
+/// `type Notes = List<Note>`, `type Channel = TextChannel | Thread`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AliasDecl {
     pub node: NodeId,
@@ -257,6 +262,36 @@ pub struct ScenarioDecl {
     pub result: Option<TypeExpr>,
     pub body: Block,
     pub span: Span,
+}
+
+/// `trigger due(t: Task) at t.at: notify_due(t)`: when one of the package's actions runs by
+/// itself. The host runs it for each resource of the parameter's type, as the app's own
+/// invocation: once at the instant the resource's field holds, or at each period.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TriggerDecl {
+    pub node: NodeId,
+    pub doc: Vec<String>,
+    pub name: Ident,
+    /// The record the trigger runs for: the resources of its type are the ones it runs on.
+    pub param: Option<Param>,
+    pub when: TriggerWhen,
+    /// The action it runs: the subject, and any roots it passes.
+    pub call: Expr,
+    pub span: Span,
+}
+
+/// When a trigger runs.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TriggerWhen {
+    /// `every 30m`: at each multiple of the length, counted from the epoch, so every device
+    /// agrees on when one comes.
+    Every {
+        amount: i64,
+        unit: &'static str,
+        span: Span,
+    },
+    /// `at t.at`: once at the instant the resource's field holds, and again when it changes.
+    At { expr: Expr, span: Span },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -357,9 +392,6 @@ pub struct Param {
     /// `above: Option<Task> (above)`: the place the view offers the action in supplies it, and
     /// no invocation does: a row of a list gives the row above it in its own visible group.
     pub place: Option<Ident>,
-    /// `title: Text (entry)`: the text of the entry that runs the action is the item's title,
-    /// and the words before it are the other parameters' (`crate::entry`).
-    pub entry: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -421,6 +453,9 @@ pub struct ActionDecl {
     pub name: Ident,
     pub params: Vec<Param>,
     pub result: Option<TypeExpr>,
+    /// `uses web, time`: the effects the action's body has, which it records and replays
+    /// ([`crate::effects::Effect`]). A body that reads one it does not declare is refused.
+    pub uses: Vec<Ident>,
     pub proposal: Option<Proposal>,
     /// `(icon: .plus, label: "New")`, as written.
     pub opts: Vec<ActionOpt>,
@@ -495,21 +530,14 @@ impl ActionDecl {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct FlowDecl {
-    pub node: NodeId,
-    pub doc: Vec<String>,
-    pub name: Ident,
-    pub params: Vec<Param>,
-    pub result: Option<TypeExpr>,
-    pub body: Block,
-    pub span: Span,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub struct ViewDecl {
     pub node: NodeId,
     pub doc: Vec<String>,
     pub name: Ident,
+    /// `template view body(content: View)`: a view that expands where it is called, its nodes
+    /// the caller's, whatever its parameters are. A view whose parameters are written over types,
+    /// state, functions or views is one anyway.
+    pub template: bool,
     /// `view list<T>(...)`: the types its parameters are written over, each taken from what a
     /// call passes.
     pub type_params: Vec<Ident>,
@@ -583,22 +611,6 @@ pub enum StmtKind {
         body: Block,
     },
     Return(Option<Expr>),
-    /// `as who { ... }`: in a scenario, the actions the block calls run with `invoker` = `who`;
-    /// `as who at time { ... }` also with `now` = `time`.
-    As {
-        who: Expr,
-        at: Option<Expr>,
-        body: Block,
-    },
-    /// `window place = Task.done` (or `lens place = x`): in a scenario, the value a window's
-    /// state starts from, as a person picking it in the window leaves it. A name more than one
-    /// view declares is written with its view (`home.place`).
-    SeedState {
-        layer: StateLayer,
-        view: Option<Ident>,
-        name: Ident,
-        value: Expr,
-    },
     Expr(Expr),
 }
 
@@ -723,12 +735,6 @@ pub enum ExprKind {
     },
     /// `{ stmts; expr }`: the value of the last expression.
     Block(Block),
-    /// `made from r { ... }`: in a scenario, the resources the block makes were made from `r`,
-    /// as an action invoked from it makes them; the value of the last expression.
-    MadeFrom {
-        of: Box<Expr>,
-        body: Block,
-    },
     /// `match e { .a => x, .b(p, q) => y }`.
     Match {
         scrutinee: Box<Expr>,
@@ -764,11 +770,14 @@ pub enum ExprKind {
         name: Ident,
         args: Option<Vec<Arg>>,
     },
+    /// `f(args)`, or `json.decode<Item>(text)` with the type arguments its callee takes.
     Call {
         callee: Box<Expr>,
+        /// The types written between `<` and `>` before the arguments, in order.
+        types: Vec<TypeExpr>,
         args: Vec<Arg>,
     },
-    /// `try act(args)`: invokes in a flow; a `Result` of the action's result and the reason
+    /// `try act(args)`: invokes in an action; a `Result` of the action's result and the reason
     /// it failed.
     Try(Box<Expr>),
     /// `suggest act(args)`: proposes the action instead of applying it, as a suggestion that
@@ -838,7 +847,7 @@ pub enum UiKind {
         then: Vec<UiStmt>,
         els: Option<Vec<UiStmt>>,
     },
-    /// `window name: T = default` or `lens name: T = default`.
+    /// `state name: T = default`.
     State(StateDecl),
     /// `"Due": d.due`: a labelled fact, which E098 rejects — a fact is a chip derived from
     /// the field it shows (`facts(of)`), never a label and a value.
@@ -881,36 +890,9 @@ pub struct UiArm {
     pub braced: bool,
 }
 
-/// Which layer of view state a declaration lives in (workspace-model.md, "The pieces").
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum StateLayer {
-    /// How one person's window shows its resource.
-    Window,
-    /// Where one person is in a window: scroll, cursor, selection, a draft.
-    Lens,
-}
-
-impl StateLayer {
-    pub const fn word(self) -> &'static str {
-        match self {
-            Self::Window => "window",
-            Self::Lens => "lens",
-        }
-    }
-
-    /// The layer as the host ABI passes it.
-    pub const fn code(self) -> i32 {
-        match self {
-            Self::Window => 0,
-            Self::Lens => 1,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct StateDecl {
     pub node: NodeId,
-    pub layer: StateLayer,
     pub name: Ident,
     pub ty: TypeExpr,
     pub default: Option<Expr>,

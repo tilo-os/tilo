@@ -1,6 +1,7 @@
 //! What a click on a row of a [`VirtualList`] does: it chooses the row, opens it, or opens its
 //! menu.
 
+use super::Choosing;
 use super::{ListModel, VirtualList};
 
 use vello::kurbo::Point;
@@ -21,7 +22,7 @@ impl<M: ListModel> VirtualList<M> {
             self.activate_key(key);
             return;
         }
-        self.apply_selection(key.clone(), toggle, extend);
+        self.apply_selection(key.clone(), toggle, extend, Choosing::ByHand);
         self.focus_row(key.clone());
         if toggle || extend {
             self.clicks.record(key);
@@ -38,7 +39,7 @@ impl<M: ListModel> VirtualList<M> {
     /// rows open nothing chooses the row instead, as its click does.
     pub(super) fn activate_key(&mut self, key: M::Key) {
         if self.opens.is_none() && self.on_activate.is_none() {
-            self.apply_selection(key, false, false);
+            self.apply_selection(key, false, false, Choosing::ByHand);
             return;
         }
         // Opening the row is one act: the selection it moves onto the way is not

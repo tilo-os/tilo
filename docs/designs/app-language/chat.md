@@ -11,8 +11,10 @@ defaults are right for every app.
 ```
 app so.tilo.lang.chat "Chat" (icon: .message_circle, category: .network)
 
-type Channels = Collection<Category | Channel>
-root channels: Channels
+type Conversations {
+    channels: Collection<Category | Channel>
+}
+root conversations: Conversations
 
 /// A named group of channels in the sidebar.
 type Category {
@@ -124,20 +126,20 @@ view channel_row(ch: Channel) {
 
 /// A text channel: its messages and a composer that can answer one of them.
 view channel(c: TextChannel) {
-    lens draft: RichText
-    lens replying: Option<Message>
+    state draft: RichText = RichText("")
+    state replying: Option<Message> = .none
     conversation(c, draft: draft, replying: replying)
 }
 
 /// A thread, the same way.
 view thread(t: Thread) {
-    lens draft: RichText
-    lens replying: Option<Message>
+    state draft: RichText = RichText("")
+    state replying: Option<Message> = .none
     conversation(t, draft: draft, replying: replying)
 }
 
 /// Messages above, composer below. Shared by channels and threads.
-view conversation(in: TextChannel | Thread, draft: lens RichText, replying: lens Option<Message>) {
+view conversation(in: TextChannel | Thread, draft: Text, replying: Option<Message>) {
     std.transcript(in, in.messages, author: .created.by, time: .created.at) { m ->
         message_row(in, m, replying: replying)
     } composer: {
@@ -150,7 +152,7 @@ view conversation(in: TextChannel | Thread, draft: lens RichText, replying: lens
 }
 
 /// One message, with what you can do to it on hover, swipe and right-click.
-view message_row(in: TextChannel | Thread, m: Message, replying: lens Option<Message>) {
+view message_row(in: TextChannel | Thread, m: Message, replying: Option<Message>) {
     if let r = m.reply_to { quote(r) }
     rich_text(m.body)
     reactions(m.reactions, toggle: e -> react(m, e))
@@ -230,8 +232,8 @@ once, and everything below happens in the window as each key is typed.
   "sending", "delivered" and "seen" are its finality and delivery facts, shown by
   `std.transcript`. Failures show their reason and a retry; offline shows "will send when you're
   back online".
-- **Presence:** "typing" comes from others' lens drafts (never their text); read position is
-  lens state, which gives the unread divider, "jump to unread", badges and read receipts; voice
+- **Presence:** "typing" comes from others' view state (never their text); read position is
+  view state, which gives the unread divider, "jump to unread", badges and read receipts; voice
   participants and who's speaking come from call presence.
 - **Who and when:** author, time, "edited" and edit history come from the log.
 - **Scrolling:** the list is virtual and pages from the index; following new messages at the
@@ -266,10 +268,10 @@ once, and everything below happens in the window as each key is typed.
 
 | Need | Status |
 |---|---|
-| Union types, `Map`, roots as values, `type X = …`, key paths, `if let`, `?.`/`??`, lens parameters | language changes, in progress |
+| Union types, `Map`, roots as values, `type X = …`, key paths, `if let`, `?.`/`??` | language changes, in progress |
 | `RichText` with references | type, storage as tilo-doc rich text, merge, references (one form: the catalogue's resource reference), search and mention notices built; `rich_text` renders each reference as the reader's inline view (no-access shown as only existing, click opens) ; `rich_input` built, with its drawers (next row) |
 | `ui.ContextMenu`, `ui.HoverToolbar`, `ui.Swipe` (attached, run in the UI host) | done |
 | `rich_input` with its completion drawers (`@` this conversation's recent speakers then `members(r)`, and `:` emoji built; `#` index and `/` action sources to wire) | in progress |
 | Transitions, emoji picker, reactions, quote, reply banner, thread chip | to build |
-| Others' lens state (typing, read position) and delivery facts readable by `std` | to build |
+| Others' view state (typing, read position) and delivery facts readable by `std` | to build |
 | `uses call`, `call.participants`, `std.call` over the native call stack | to build |

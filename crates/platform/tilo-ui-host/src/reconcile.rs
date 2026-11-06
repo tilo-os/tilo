@@ -22,8 +22,9 @@ use ui::widget::arrange::{
     Split, Stack,
 };
 use ui::widget::{
-    Button, ButtonRole, Checkbox, Container, Divider, Dropdown, Element, EmptyState, Field,
-    FormSection, Scrollable, Section, Segment, Spacer, Text, Toggle, ToggleGroup, labeled_check,
+    Avatar, AvatarSize, Button, ButtonRole, Checkbox, Container, ControlSize, Divider, Dropdown,
+    Element, EmptyState, Field, FormSection, Scrollable, Section, Segment, Spacer, Text, Toggle,
+    ToggleGroup, labeled_check,
 };
 
 use crate::adapter::{Adapter, NodeSource};
@@ -304,7 +305,7 @@ fn page_once(node: &UiNode) -> UiNode {
 }
 
 /// How a child is sized in its container: `fill`, `min:`, `max:` bound its inline size.
-fn fit_of(node: &UiNode) -> Fit {
+pub(crate) fn fit_of(node: &UiNode) -> Fit {
     let mut fit = number(node, "fill").map_or_else(Fit::hug, Fit::fill);
     // A grid's `min` is its columns' least width, not its own: it takes the width it is given
     // and holds as many such columns as fit, one where none does.
@@ -606,22 +607,26 @@ impl Reconciler {
             .clone()
     }
 
-    /// Show `number` in the control `key`.
-    pub fn set_count(&self, key: &str, number: i64) {
+    /// Show `number` in the control `key`, reporting whether that changed what it shows.
+    pub fn set_count(&self, key: &str, number: i64) -> bool {
         if let Some(state) = self.counts.get(key)
             && state.get() != number
         {
             state.set(number);
+            return true;
         }
+        false
     }
 
-    /// Show `number` in the control `key`.
-    pub fn set_number(&self, key: &str, number: f64) {
+    /// Show `number` in the control `key`, reporting whether that changed what it shows.
+    pub fn set_number(&self, key: &str, number: f64) -> bool {
         if let Some(state) = self.numbers.get(key)
             && state.get().total_cmp(&number).is_ne()
         {
             state.set(number);
+            return true;
         }
+        false
     }
 
     /// The rich text the rich input `key` shows, kept in step with what it is bound to.
@@ -637,13 +642,15 @@ impl Reconciler {
             .clone()
     }
 
-    /// Show `rich` in the rich input `key`.
-    pub fn set_rich(&self, key: &str, rich: &tilo_render_protocol::patch::rich::RichText) {
+    /// Show `rich` in the rich input `key`, reporting whether that changed what it shows.
+    pub fn set_rich(&self, key: &str, rich: &tilo_render_protocol::patch::rich::RichText) -> bool {
         if let Some(state) = self.riches.get(key)
             && state.with(|shown| shown != rich)
         {
             state.set(rich.clone());
+            return true;
         }
+        false
     }
 
     /// The handle on the split of the view that collapses to one pane at a time, when it has one.
@@ -657,22 +664,27 @@ impl Reconciler {
         self.navigation = None;
     }
 
-    /// Show `text` in the input or text node `key`, whatever widget shows it.
-    pub fn set_text(&self, key: &str, text: &str) {
+    /// Show `text` in the input or text node `key`, whatever widget shows it, reporting whether
+    /// that changed what it shows.
+    pub fn set_text(&self, key: &str, text: &str) -> bool {
         if let Some(state) = self.texts.get(key)
             && state.with(|shown| shown != text)
         {
             state.set(text.to_owned());
+            return true;
         }
+        false
     }
 
-    /// Show `checked` in the checkbox `key`.
-    pub fn set_flag(&self, key: &str, checked: bool) {
+    /// Show `checked` in the checkbox `key`, reporting whether that changed what it shows.
+    pub fn set_flag(&self, key: &str, checked: bool) -> bool {
         if let Some(state) = self.flags.get(key)
             && state.get() != checked
         {
             state.set(checked);
+            return true;
         }
+        false
     }
 
     /// The widgets of the tree under `node`.
@@ -807,12 +819,7 @@ impl Reconciler {
         }
         for (index, &child) in new.iter().enumerate() {
             let Some(at) = held.iter().position(|old| old.key == child.key) else {
-                let built = self.build(child);
-                let view = if crate::adapter::description_of(child).is_some() {
-                    built
-                } else {
-                    Box::new(Pane::new(built)) as Element
-                };
+                let view = self.slot_view(child);
                 views.insert(index, view);
                 held.insert(index, child);
                 continue;
@@ -828,6 +835,33 @@ impl Reconciler {
             let Some(view) = views.view_mut(index) else {
                 continue;
             };
+            // The view carries the fit its node asks for, so a view that comes to say `fill`
+            // asks for the room the component gives it from the next build on (the slot keeps
+            // the fit it was placed with, as a rule a view's own arguments do not change under
+            // its key). A [`Fitted`] asking for nothing sizes as a bare view does.
+            if let Some(fitted) = view
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<ui::widget::Fitted>())
+            {
+                fitted.set_fit(fit_of(child));
+                let replaced = match fitted
+                    .content_mut()
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<Pane>())
+                {
+                    Some(pane) => {
+                        if let Some(replaced) = self.update_in(pane.content_mut(), before, child) {
+                            pane.replace(replaced);
+                        }
+                        None
+                    }
+                    None => self.update_in(fitted.content_mut(), before, child),
+                };
+                if let Some(replaced) = replaced {
+                    *fitted.content_mut() = replaced;
+                }
+                continue;
+            }
             let replaced = match view.as_any_mut().and_then(|any| any.downcast_mut::<Pane>()) {
                 Some(pane) => {
                     if let Some(replaced) = self.update_in(pane.content_mut(), before, child) {
@@ -841,6 +875,24 @@ impl Reconciler {
                 views.replace(index, replaced);
             }
         }
+    }
+
+    /// `node`, built, as the view a described component's slot holds: a component as its
+    /// widget, a view of another kind in a pane the reconciler reaches again, each in a
+    /// [`ui::widget::Fitted`] carrying the fit its node wrote, so a view that says `fill` fills
+    /// the slot the component puts it in ([`ui::widget::arrange::Slot::new`] takes the fit).
+    pub(crate) fn slot_view(&mut self, node: &UiNode) -> Element {
+        let built = self.build(node);
+        let pane: Element = if crate::adapter::description_of(node).is_some() {
+            built
+        } else {
+            Box::new(Pane::new(built))
+        };
+        let fit = fit_of(node);
+        if fit == Fit::hug() {
+            return pane;
+        }
+        Box::new(ui::widget::Fitted::new(pane, fit))
     }
 
     fn slots(&mut self, node: &UiNode) -> Vec<Slot> {
@@ -1126,19 +1178,18 @@ impl Reconciler {
         )
     }
 
-    /// What became of an action block when it was posted, drawn from the invocation record.
+    /// What became of an action block when it was posted, drawn from the invocation record: a
+    /// proposal waiting on a person is its own block ([`Self::suggestion`]).
     fn invocation_card(&mut self, node: &UiNode) -> Element {
+        if flag(node, "proposed") {
+            return self.suggestion(node);
+        }
         let state = token(node, "state").unwrap_or("pending");
-        let name = crate::date::shown(node, "action").unwrap_or_default();
+        let name = crate::date::shown(node, "label").unwrap_or_default();
         let mut card = Stack::stack()
             .gap(Rhythm::Related)
             .with_id(node.key.clone());
-        // A proposal a person decides reads as suggested, by the person who suggested it.
-        let status = if flag(node, "proposed") {
-            crate::i18n::t("tilolang-invocation-proposed")
-        } else {
-            crate::i18n::t(&format!("tilolang-invocation-{state}"))
-        };
+        let status = crate::i18n::t(&format!("tilolang-invocation-{state}"));
         let header = Row::row()
             .fill_width()
             .gap(Rhythm::Related)
@@ -1146,13 +1197,6 @@ impl Reconciler {
             .push_slot(self.fixed_text(&format!("{}~name", node.key), &name, TextRole::Label))
             .push_slot(self.fixed_text(&format!("{}~state", node.key), &status, TextRole::Caption));
         card = card.push_slot(Slot::new(Box::new(header)));
-        if let Some(app) = crate::date::shown(node, "app") {
-            card = card.push_slot(self.fixed_text(
-                &format!("{}~app", node.key),
-                &app,
-                TextRole::Caption,
-            ));
-        }
         if let Some(result) = crate::date::shown(node, "result") {
             card = card.push_slot(self.fixed_text(
                 &format!("{}~result", node.key),
@@ -1164,35 +1208,143 @@ impl Reconciler {
             card = card.push_slot(slot);
         }
         if state == "suggested" && flag(node, "can_resolve") {
-            let answer = |reconciler: &Self, suffix: &str, label: String, approve: bool| {
-                let sink = Rc::clone(&reconciler.sink);
-                let key = node.key.clone();
-                let role = if approve {
-                    ButtonRole::Primary
-                } else {
-                    ButtonRole::Secondary
-                };
-                Slot::new(Box::new(
-                    Button::new(&format!("{}~{suffix}", node.key), &label)
-                        .role(role)
-                        .on_view(move || {
-                            sink.push(UiEvent::Resolve(key.clone(), approve));
-                        }),
-                ))
-            };
-            // A proposal answers as a suggestion; an ask the authority raised, as a confirmation.
-            let (accept, decline) = if flag(node, "proposed") {
-                ("tilolang-suggestion-accept", "tilolang-suggestion-dismiss")
-            } else {
-                ("tilolang-ask-confirm", "tilolang-ask-decline")
-            };
+            // An ask the authority raised answers as a confirmation.
             let choices = Row::row()
                 .gap(Rhythm::Related)
-                .push_slot(answer(self, "allow", crate::i18n::t(accept), true))
-                .push_slot(answer(self, "decline", crate::i18n::t(decline), false));
+                .push_slot(self.answer(
+                    node,
+                    "allow",
+                    &crate::i18n::t("tilolang-ask-confirm"),
+                    true,
+                    false,
+                ))
+                .push_slot(self.answer(
+                    node,
+                    "decline",
+                    &crate::i18n::t("tilolang-ask-decline"),
+                    false,
+                    false,
+                ));
             card = card.push_slot(Slot::new(Box::new(choices)));
         }
         Box::new(card)
+    }
+
+    /// A proposal waiting on the person: one calm block on the inset surface — who proposes it,
+    /// what it would do, and the answer to it — so it is noticed where it stands among what the
+    /// view draws. What it would do is the action's own proposal view when it declares one, and
+    /// otherwise the words it would say, each value as its type shows it (a day as the day fact).
+    fn suggestion(&mut self, node: &UiNode) -> Element {
+        let (who, identity) = match prop(node, "author") {
+            Some(Value::Principal(who)) => (who.name.clone(), who.id.clone()),
+            Some(other) => {
+                let shown = display(other);
+                (shown.clone(), shown)
+            }
+            None => (String::new(), String::new()),
+        };
+        let says = crate::i18n::word(
+            "tilolang-suggestion-says",
+            &[("name".to_owned(), who.clone())],
+            "{name} suggests:",
+        );
+        let mut sentence = Row::row()
+            .gap(Rhythm::Tight)
+            .wrap()
+            .with_id(format!("{}~says", node.key))
+            .push(Box::new(
+                Avatar::person(who, identity).size(AvatarSize::Small),
+            ))
+            .push_slot(self.fixed_text(&format!("{}~by", node.key), &says, TextRole::Body));
+        let choices = Row::row()
+            .gap(Rhythm::Related)
+            .push_slot(self.answer(
+                node,
+                "allow",
+                &crate::i18n::t("tilolang-suggestion-accept"),
+                true,
+                true,
+            ))
+            .push_slot(self.answer(
+                node,
+                "decline",
+                &crate::i18n::t("tilolang-suggestion-dismiss"),
+                false,
+                true,
+            ));
+        let mut rows: Vec<Element> = Vec::new();
+        if flag(node, "view") {
+            // The action shows what it would do itself: the sentence says who proposes it, the
+            // view stands under it, and the answer beneath.
+            rows.push(Box::new(sentence));
+            for child in &node.children {
+                rows.push(self.build(child));
+            }
+            rows.push(Box::new(choices));
+        } else {
+            // The words the action would say stand in the sentence, after who proposes it.
+            for child in &node.children {
+                sentence = sentence.push(self.build(child));
+            }
+            // The answer stands at the end of the sentence's line when it fits there, and below
+            // it when the room is too narrow.
+            rows.push(Box::new(
+                Row::row()
+                    .fill_width()
+                    .wrap()
+                    .gap(Rhythm::Related)
+                    .distribute(Distribute::Between)
+                    .push(Box::new(sentence))
+                    .push(Box::new(choices)),
+            ));
+        }
+        let mut block = Stack::stack()
+            .fill_width()
+            .gap(Rhythm::Tight)
+            .with_id(node.key.clone());
+        for row in rows {
+            block = block.push(row);
+        }
+        Box::new(
+            Container::new()
+                .with_background()
+                .with_inset(Rhythm::Related)
+                .with_child(Box::new(block)),
+        )
+    }
+
+    /// The button answering the invocation card `node`: allowing it or declining it. The answer
+    /// to a suggestion is compact, so it stands at the end of the sentence's own line.
+    fn answer(
+        &self,
+        node: &UiNode,
+        suffix: &str,
+        label: &str,
+        approve: bool,
+        compact: bool,
+    ) -> Slot {
+        let sink = Rc::clone(&self.sink);
+        let key = node.key.clone();
+        let role = if approve {
+            ButtonRole::Primary
+        } else if compact {
+            ButtonRole::Plain
+        } else {
+            ButtonRole::Secondary
+        };
+        let size = if compact {
+            ControlSize::Small
+        } else {
+            ControlSize::Regular
+        };
+        Slot::new(Box::new(
+            Button::new(&format!("{}~{suffix}", node.key), label)
+                .role(role)
+                .control_size(size)
+                .on_view(move || {
+                    sink.push(UiEvent::Resolve(key.clone(), approve));
+                }),
+        ))
     }
 
     /// A block that did not compile or failed: the diagnostics, as text.

@@ -11,7 +11,7 @@ use ui::{ActionPalette, CommandEntry};
 
 use crate::model::{Hit, SearchStream, Source, Target};
 use crate::providers::{
-    Actions, Answers, AppEntry, Applications, CommandSpec, Commands, Content, Published,
+    Actions, Answers, AppEntry, Applications, Captures, CommandSpec, Commands, Content, Published,
     PublishedActions, Recents, Switches, WebSearch, WindowEntry, Windows,
 };
 use crate::window::WindowSearch;
@@ -22,6 +22,14 @@ use ui::search::system::{KindGroup, ResourceKind};
 /// Row id prefix of the row that lists the rest of a group the palette's
 /// height cut short; `more:{i}` expands `more_rows[i]`.
 const MORE_PREFIX: &str = "more:";
+
+/// The row `id` names when it is a group's "more" row: an id this palette
+/// wrote, so one that does not read as a number is no row here.
+fn more_row(id: &str) -> Option<usize> {
+    let more = id.strip_prefix(MORE_PREFIX)?;
+    // ignored-failure: the id is one this palette wrote, and another row has another
+    more.parse().ok()
+}
 
 /// The row under the apps that lists every one of them, by its name.
 const ALL_APPS_ID: &str = "all-apps";
@@ -84,6 +92,7 @@ struct Sources {
     commands: Arc<Commands>,
     actions: Arc<Actions>,
     published: Arc<Published>,
+    captures: Arc<Captures>,
     content: Content,
     answers: Option<(Arc<Answers>, Arc<WebSearch>)>,
     /// The one window searched, when the search is a window's.
@@ -110,6 +119,7 @@ impl Sources {
                 content: Content::new(Vec::new(), Vec::new()),
                 actions: Arc::new(Actions(Vec::new())),
                 published: Arc::new(Published(Vec::new())),
+                captures: Arc::new(Captures(Vec::new())),
                 answers: None,
                 window: Some(WindowSearch::new(data.resources, data.providers).within(anchor)),
                 host: Vec::new(),
@@ -123,7 +133,8 @@ impl Sources {
             commands: Arc::new(Commands(data.commands)),
             content: Content::new(data.providers, data.resources.clone()).within(anchor),
             actions: Arc::new(Actions(data.resources)),
-            published: Arc::new(Published(data.published)),
+            published: Arc::new(Published(data.published.clone())),
+            captures: Arc::new(Captures(data.published)),
             answers: matches!(data.scope, Scope::Workspace | Scope::Everywhere).then(|| {
                 (
                     Arc::new(Answers {
@@ -234,6 +245,13 @@ pub struct DesktopSearch {
     /// in: a frame that has no room for it yet does not take their choice
     /// away.
     kept_choice: Option<ChosenRow>,
+    /// Where this search stands: the workspace, every workspace, one app's
+    /// own — so a row carried out by the host can be asked again where the
+    /// person was when they chose it.
+    scope: Scope,
+    /// The row the host could not carry out, with why: it keeps the reason
+    /// under its name until another row is chosen or search closes.
+    refusal: Option<(Target, String)>,
 }
 
 impl Default for DesktopSearch {
@@ -274,6 +292,8 @@ impl DesktopSearch {
             rows_room: RowRoom::Guess(0),
             shown_two_lines: false,
             kept_choice: None,
+            scope: Scope::Workspace,
+            refusal: None,
         }
     }
 
@@ -297,6 +317,7 @@ impl DesktopSearch {
 
     /// Open over `data` with an empty query.
     pub fn open(&mut self, mut data: SearchData) {
+        self.scope = data.scope.clone();
         let placeholder = data.placeholder.take().unwrap_or_else(placeholder);
         self.palette.set_query_placeholder(placeholder.as_str());
         // A search over the workspace in front says so at the start of the
@@ -355,6 +376,26 @@ impl DesktopSearch {
     pub fn set_query(&mut self, query: &str) {
         self.palette.set_query(query);
         self.refresh();
+    }
+
+    /// The host could not carry out the row `target` names, for `why`: search
+    /// opens again over the person's query with the reason on that row.
+    pub fn refuse(&mut self, target: Target, why: String) {
+        self.refusal = Some((target, why));
+    }
+
+    /// Why the row `target` names could not be carried out, while it still
+    /// stands under that row: the line the palette draws there.
+    #[must_use]
+    pub fn refusal_for(&self, target: &Target) -> Option<&str> {
+        let (refused, why) = self.refusal.as_ref()?;
+        (refused == target).then_some(why.as_str())
+    }
+
+    /// Where this search stands, for asking it again where it was.
+    #[must_use]
+    pub fn scope(&self) -> Scope {
+        self.scope.clone()
     }
 
     pub fn query(&self) -> &str {
@@ -698,7 +739,14 @@ impl DesktopSearch {
                     // everything lists them whole and scrolls.
                     ui::search::system::trim_groups(groups.clone(), allowed, &self.expanded)
                 };
-                let mut entries = entries_for(&trimmed, browsing, self.catalogue, more, rows);
+                let mut entries = entries_for(
+                    &trimmed,
+                    browsing,
+                    self.catalogue,
+                    self.refusal.as_ref(),
+                    more,
+                    rows,
+                );
                 let shown: usize = trimmed.iter().map(|group| group.results.len()).sum();
                 if dropped {
                     entries.push(all_results_entry(total.saturating_sub(shown)));
@@ -769,11 +817,8 @@ impl DesktopSearch {
     /// an open palette for its edited query.
     pub fn observe(&mut self) -> bool {
         if let Some(outcome) = self.palette.take_outcome() {
-            if let Some(more) = outcome
-                .id
-                .strip_prefix(MORE_PREFIX)
-                .and_then(|more| more.parse().ok())
-            {
+            let more = more_row(&outcome.id);
+            if let Some(more) = more {
                 self.expand(more);
             } else if outcome.id == ALL_RESULTS_ID {
                 self.show_everything();
@@ -812,6 +857,9 @@ impl DesktopSearch {
             return;
         }
         self.remember(&hit);
+        // Trying any row is the answer to the one that did not happen: the
+        // reason it stood under goes with it.
+        self.refusal = None;
         let mut target = hit.target;
         let mut toggles = false;
         match &mut target {
@@ -912,6 +960,7 @@ impl DesktopSearch {
         self.everything = false;
         self.auto_selected = None;
         self.kept_choice = None;
+        self.refusal = None;
         self.shown_query = None;
     }
 }
@@ -947,6 +996,7 @@ fn entries_for(
     groups: &[KindGroup<Hit>],
     browsing: bool,
     catalogue: bool,
+    refusal: Option<&(Target, String)>,
     more: &mut Vec<ResourceKind>,
     rows: &mut Vec<Hit>,
 ) -> Vec<CommandEntry> {
@@ -958,11 +1008,15 @@ fn entries_for(
         let capped = group.is_capped();
         let applications = browsing && !catalogue && group.kind == ResourceKind::Application;
         for hit in &group.results {
-            entries.push(
-                entry_for(hit, format!("hit:{}", rows.len()))
-                    .group(label.clone())
-                    .group_total(group.total),
-            );
+            let mut entry = entry_for(hit, format!("hit:{}", rows.len()));
+            // The row the host could not carry out keeps the reason under its
+            // name, where the person chose it, instead of closing over it.
+            if let Some((target, why)) = refusal
+                && target == &hit.target
+            {
+                entry.description = Some(why.clone());
+            }
+            entries.push(entry.group(label.clone()).group_total(group.total));
             rows.push(hit.clone());
         }
         if capped {
@@ -1045,7 +1099,19 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
         }
         Target::Invoke(invoke) => (
             match &invoke.descriptor {
-                Some(descriptor) => CommandEntry::from_descriptor(id, descriptor),
+                Some(descriptor) => {
+                    let mut entry = CommandEntry::from_descriptor(id, descriptor);
+                    // A row whose one line is already decided — a capture,
+                    // typed as the search itself — runs on Enter instead of
+                    // asking for the line again.
+                    if descriptor
+                        .prompt_param()
+                        .is_some_and(|param| invoke.arguments.contains_key(param))
+                    {
+                        entry = entry.with_preset();
+                    }
+                    entry
+                }
                 None => CommandEntry::new(id, hit.title.clone()),
             },
             hit.icon
@@ -1113,6 +1179,7 @@ fn everywhere<'a>(
         &sources.windows,
         &sources.content,
         &sources.actions,
+        &sources.captures,
         &sources.published,
         &sources.commands,
     ];
@@ -1281,6 +1348,77 @@ mod tests {
         };
         assert_eq!(invoke.app, "so.tilo.chat");
         assert_eq!(invoke.address.action.as_str(), "join-call");
+    }
+
+    /// Tasks' one-line "New task", as the session publishes the app's actions: `title` is the
+    /// entry parameter the typed line fills.
+    fn captures() -> Vec<PublishedActions> {
+        let capture = tilo_actions::ActionSpec::prompted_param(
+            "new_task",
+            "New task",
+            tilo_actions::ActionParam::required(
+                "title",
+                tilo_actions::ParamType::Text,
+                "What to do",
+            )
+            .taking_entry(),
+            "Call the landlord fri 10am",
+            tilo_actions::ExecutionLocus::ClientLocal,
+            |text| tilo_actions::EncodedAction {
+                type_id: "test.action".into(),
+                payload: text.as_bytes().to_vec(),
+            },
+        );
+        let resource =
+            tilo_actions::ResourceSpec::new("tasks", "tl.Tasks.task", "Tasks").with_action(capture);
+        vec![PublishedActions::of("so.tilo.lang.tasks", "", &[resource])]
+    }
+
+    /// A person presses the palette key, types what they want done, and Enter: the row is the
+    /// way to write it down, and choosing it runs it with their words — no action opened, no
+    /// field to fill in again.
+    #[test]
+    fn a_capture_chosen_from_the_palette_runs_with_the_line_typed() {
+        let mut search = DesktopSearch::new();
+        search.open(SearchData {
+            published: captures(),
+            scope: Scope::Workspace,
+            ..data()
+        });
+        settled(&mut search);
+        let line = "Call the landlord fri 10am";
+        search.set_query(line);
+        settled(&mut search);
+        let at = {
+            let entries = search.palette().visible_entries();
+            let at = entries
+                .iter()
+                .position(|entry| entry.label == "New task")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the capture answers the sentence: {:?}",
+                        entries.iter().map(|entry| &entry.label).collect::<Vec<_>>()
+                    )
+                });
+            assert!(
+                entries[at].argument.is_none(),
+                "the row carries the line, so Enter runs it"
+            );
+            at
+        };
+        search.palette_mut().set_cursor(at);
+        search.palette_mut().activate_selected();
+        assert!(search.observe(), "choosing a capture closes search");
+        let Some(Target::Invoke(invoke)) = search.take_choice() else {
+            panic!("the capture runs the app's own action");
+        };
+        assert_eq!(invoke.app, "so.tilo.lang.tasks");
+        assert_eq!(invoke.address.action.as_str(), "new_task");
+        assert_eq!(
+            invoke.arguments.get("title"),
+            Some(&serde_json::Value::String(line.to_owned())),
+            "the task is made from the words the person typed"
+        );
     }
 
     /// With nothing typed the palette lists what is useful now, in that
@@ -1981,6 +2119,49 @@ mod tests {
         assert_eq!(
             action.address(),
             tilo_actions::ActionAddress::new("page-1", "duplicate")
+        );
+    }
+
+    /// The host could not carry out the row the person chose: search opens
+    /// again where it stood, over the same query, and the row keeps the
+    /// reason under its name instead of the search closing over it.
+    #[test]
+    fn a_row_that_did_not_happen_keeps_its_reason_and_the_search_stays_open() {
+        let mut search = DesktopSearch::new();
+        search.open(data());
+        settled(&mut search);
+        search.set_query("notes");
+        settled(&mut search);
+        let target = search
+            .results()
+            .iter()
+            .find(|hit| matches!(hit.target, Target::Window { .. }))
+            .expect("the open window is a row")
+            .target
+            .clone();
+
+        search.open(data());
+        search.refuse(target.clone(), "its app is gone".to_owned());
+        search.set_query("notes");
+        settled(&mut search);
+
+        assert!(search.is_open(), "search stays open on the reason");
+        assert_eq!(search.query(), "notes", "over the query it stood at");
+        assert_eq!(
+            search.refusal_for(&target),
+            Some("its app is gone"),
+            "the row that did not happen is the one that says why"
+        );
+        let entries = search.palette().visible_entries();
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.description.as_deref() == Some("its app is gone")),
+            "the row says why it did not happen: {:?}",
+            entries
+                .iter()
+                .map(|entry| (&entry.label, &entry.description))
+                .collect::<Vec<_>>()
         );
     }
 

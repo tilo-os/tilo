@@ -28,9 +28,11 @@ type Conversation {
 }
 
 /// The workspace's conversations.
-type Conversations = Collection<Conversation>
+type BlockChat {
+    items: Collection<Conversation>
+}
 
-root conversations: Conversations
+root conversations: BlockChat
 
 default view chats for conversations
 
@@ -39,13 +41,13 @@ default view thread for Conversation
 row view conversation_row for Conversation
 
 /// Starts a conversation with a title.
-action start(all: Conversations, title: Text) -> Conversation {
-    all.insert(Conversation(title: title))
+action start(all: BlockChat, title: Text) -> Conversation {
+    all.items.insert(Conversation(title: title))
 }
 
 /// Starts a conversation.
-primary action new_chat(all: Conversations) -> Conversation (icon: .plus) {
-    all.insert(Conversation(title: "New chat"))
+primary action new_chat(all: BlockChat) -> Conversation (icon: .plus) {
+    all.items.insert(Conversation(title: "New chat"))
 }
 
 /// Posts a message as the invoker: a text part when `text` is not empty, then a block part
@@ -71,8 +73,31 @@ action send(c: Conversation, text: Text) (icon: .send, label: "Send") {
 
 /// The chat's window: its conversations, the latest active first, each opening in a window of
 /// its own. A post is a change of its conversation; an edit of a message, or a draft, is not.
-view chats(all: Conversations) {
-    std.list(all, all.sort_by(c -> updated(c), desc), empty: "No conversations yet")
+view chats(all: BlockChat) {
+    let shown = all.items.sort_by(c -> updated(c), desc)
+    ui.NavShell(
+        content_kind: .document,
+        overview_title: .some(meta(BlockChat).title),
+        overview_count: .some(shown.len()),
+    ) {
+        overview: {
+            if shown.is_empty() {
+                ui.EmptyState("No conversations yet", icon: meta(Conversation).icon)
+            } else {
+                std.list(shown) { (c, at) ->
+                    ui.ListItem(item: c, presence: at) {
+                        conversation_row(c)
+                    }
+                }
+            }
+        }
+        content: {
+            ui.EmptyState(
+                phrase("tilolang-none-selected", kind: meta(Conversation).noun),
+                icon: meta(Conversation).icon,
+            )
+        }
+    }
 }
 
 /// What a message says in a line: its text, or that it holds a block.
@@ -94,7 +119,7 @@ view conversation_row(c: Conversation) {
 /// A conversation's window: its messages, the latest at the foot, above the composer. What is
 /// typed there is the person's own until they send it.
 view thread(c: Conversation) {
-    lens draft: Text
+    state draft: Text
     std.transcript(c, c.messages, row: message) {
         composer: {
             row {
@@ -123,86 +148,139 @@ scenario "a busy workspace" -> Conversation {
     let mia = person("Mia")
     let leo = person("Leo")
     let ada = person("Ada")
-    let plans = conversations.insert(Conversation(title: "Weekend plans"))
-    as mia at 2026-06-29T07:02Z {
-        post(plans, "Is everyone still up for the walk on Saturday?", "")
-    }
-    as mia at 2026-06-29T07:03Z {
-        post(plans, "The long loop, round the reservoir and back over the hill.", "")
-    }
-    as leo at 2026-06-29T07:20Z {
-        post(plans, "I can bring sandwiches. The forecast says sun until three.", "")
-    }
-    as invoker at 2026-06-29T07:24Z {
-        post(plans, "Count me in.", "")
-    }
-    as ada at 2026-06-30T07:51Z {
-        post(plans, "Let's meet at the station at ten.", "")
-    }
-    as ada at 2026-06-30T07:52Z {
-        post(plans, "Platform four, by the coffee stand.", "")
-    }
+    let plans = conversations.items.insert(Conversation(title: "Weekend plans"))
+    invoke(
+        post(plans, "Is everyone still up for the walk on Saturday?", ""),
+        by: mia,
+        at: 2026-06-29T07:02Z,
+    )
+    invoke(
+        post(plans, "The long loop, round the reservoir and back over the hill.", ""),
+        by: mia,
+        at: 2026-06-29T07:03Z,
+    )
+    invoke(
+        post(plans, "I can bring sandwiches. The forecast says sun until three.", ""),
+        by: leo,
+        at: 2026-06-29T07:20Z,
+    )
+    invoke(post(plans, "Count me in.", ""), at: 2026-06-29T07:24Z)
+    invoke(post(plans, "Let's meet at the station at ten.", ""), by: ada, at: 2026-06-30T07:51Z)
+    invoke(post(plans, "Platform four, by the coffee stand.", ""), by: ada, at: 2026-06-30T07:52Z)
     // Each conversation is started when its first message is posted, so the list's order,
     // the latest activity first, is that of their last messages.
-    as leo at 2026-06-30T06:40Z {
-        let release = conversations.insert(Conversation(title: "Release checklist"))
-        post(release, "Docs still need the new screenshots.", "")
-        as ada at 2026-06-30T07:15Z {
-            post(release, "I'll take the screenshots after lunch.", "")
-        }
-    }
-    as invoker at 2026-06-29T15:10Z {
-        let flat = conversations.insert(Conversation(title: "Flat hunting"))
-        post(flat, "The one on Elm Street has a balcony.", "")
-        as mia at 2026-06-29T16:45Z {
-            post(flat, "Viewing is Saturday at eleven, bring the deposit papers.", "")
-        }
-    }
-    as ada at 2026-06-28T19:30Z {
-        let books = conversations.insert(Conversation(title: "Book club: Piranesi"))
-        post(books, "Halfway through. The statues are wonderful.", "")
-    }
-    as leo at 2026-06-27T10:05Z {
-        let design = conversations.insert(Conversation(title: "Design review"))
-        post(design, "The sidebar collapses too early at large text.", "")
-        as invoker at 2026-06-27T10:12Z {
-            post(design, "Agreed, I'll look at the thresholds.", "")
-        }
-    }
-    as mia at 2026-06-26T18:00Z {
-        let birthday = conversations.insert(Conversation(title: "Sam's birthday"))
-        post(birthday, "Concert tickets or a kitchen knife?", "")
-    }
-    as leo at 2026-06-25T08:30Z {
-        let garden = conversations.insert(Conversation(title: "Garden allotment"))
-        post(garden, "The tomatoes need water by Thursday.", "")
-    }
-    as ada at 2026-06-24T06:15Z {
-        let running = conversations.insert(Conversation(title: "Running group"))
-        post(running, "Long run on Sunday, fifteen kilometres.", "")
-    }
-    as leo at 2026-06-22T13:40Z {
-        let importer = conversations.insert(Conversation(title: "Importer bugs"))
-        post(importer, "The importer drops tables with merged cells.", "")
-    }
-    as mia at 2026-06-20T17:55Z {
-        let recipes = conversations.insert(Conversation(title: "Recipes"))
-        post(recipes, "The lentil soup needs more lemon than you think.", "")
-    }
-    as invoker at 2026-06-18T09:00Z {
-        let interviews = conversations.insert(Conversation(title: "Interview loop"))
-        post(interviews, "Ask about the last project they were proud of.", "")
-        as ada at 2026-06-18T09:20Z {
-            post(interviews, "I'll take the system design round.", "")
-        }
-    }
-    conversations.insert(Conversation(title: "Holiday in August"))
+    let release = invoke(
+        conversations.items.insert(Conversation(title: "Release checklist")),
+        by: leo,
+        at: 2026-06-30T06:40Z,
+    )
+    invoke(
+        post(release, "Docs still need the new screenshots.", ""),
+        by: leo,
+        at: 2026-06-30T06:40Z,
+    )
+    invoke(
+        post(release, "I'll take the screenshots after lunch.", ""),
+        by: ada,
+        at: 2026-06-30T07:15Z,
+    )
+    let flat = invoke(
+        conversations.items.insert(Conversation(title: "Flat hunting")),
+        at: 2026-06-29T15:10Z,
+    )
+    invoke(post(flat, "The one on Elm Street has a balcony.", ""), at: 2026-06-29T15:10Z)
+    invoke(
+        post(flat, "Viewing is Saturday at eleven, bring the deposit papers.", ""),
+        by: mia,
+        at: 2026-06-29T16:45Z,
+    )
+    let books = invoke(
+        conversations.items.insert(Conversation(title: "Book club: Piranesi")),
+        by: ada,
+        at: 2026-06-28T19:30Z,
+    )
+    invoke(
+        post(books, "Halfway through. The statues are wonderful.", ""),
+        by: ada,
+        at: 2026-06-28T19:30Z,
+    )
+    let design = invoke(
+        conversations.items.insert(Conversation(title: "Design review")),
+        by: leo,
+        at: 2026-06-27T10:05Z,
+    )
+    invoke(
+        post(design, "The sidebar collapses too early at large text.", ""),
+        by: leo,
+        at: 2026-06-27T10:05Z,
+    )
+    invoke(post(design, "Agreed, I'll look at the thresholds.", ""), by: leo, at: 2026-06-27T10:12Z)
+    let birthday = invoke(
+        conversations.items.insert(Conversation(title: "Sam's birthday")),
+        by: mia,
+        at: 2026-06-26T18:00Z,
+    )
+    invoke(
+        post(birthday, "Concert tickets or a kitchen knife?", ""),
+        by: mia,
+        at: 2026-06-26T18:00Z,
+    )
+    let garden = invoke(
+        conversations.items.insert(Conversation(title: "Garden allotment")),
+        by: leo,
+        at: 2026-06-25T08:30Z,
+    )
+    invoke(post(garden, "The tomatoes need water by Thursday.", ""), by: leo, at: 2026-06-25T08:30Z)
+    let running = invoke(
+        conversations.items.insert(Conversation(title: "Running group")),
+        by: ada,
+        at: 2026-06-24T06:15Z,
+    )
+    invoke(
+        post(running, "Long run on Sunday, fifteen kilometres.", ""),
+        by: ada,
+        at: 2026-06-24T06:15Z,
+    )
+    let importer = invoke(
+        conversations.items.insert(Conversation(title: "Importer bugs")),
+        by: leo,
+        at: 2026-06-22T13:40Z,
+    )
+    invoke(
+        post(importer, "The importer drops tables with merged cells.", ""),
+        by: leo,
+        at: 2026-06-22T13:40Z,
+    )
+    let recipes = invoke(
+        conversations.items.insert(Conversation(title: "Recipes")),
+        by: mia,
+        at: 2026-06-20T17:55Z,
+    )
+    invoke(
+        post(recipes, "The lentil soup needs more lemon than you think.", ""),
+        by: mia,
+        at: 2026-06-20T17:55Z,
+    )
+    let interviews = invoke(
+        conversations.items.insert(Conversation(title: "Interview loop")),
+        at: 2026-06-18T09:00Z,
+    )
+    invoke(
+        post(interviews, "Ask about the last project they were proud of.", ""),
+        at: 2026-06-18T09:00Z,
+    )
+    invoke(
+        post(interviews, "I'll take the system design round.", ""),
+        by: ada,
+        at: 2026-06-18T09:20Z,
+    )
+    conversations.items.insert(Conversation(title: "Holiday in August"))
     plans
 }
 
 /// One conversation with a sum worked out inline.
 scenario "a sum worked out inline" {
-    let c = conversations.insert(Conversation(title: "Quick sums"))
+    let c = conversations.items.insert(Conversation(title: "Quick sums"))
     post(c, "What is a week of standups, at fifteen minutes each?", "")
     post(c, "Here it is in minutes:", "5 * 15")
 }

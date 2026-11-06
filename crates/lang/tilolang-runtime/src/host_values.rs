@@ -311,9 +311,14 @@ impl Core {
                 self.list_push(a.h(0)?, v)
             }
             // `len` is the length the store knows without reading the run; `count` is how many
-            // items it holds, read to the run's end where the store cannot say.
-            Imp::ListLen | Imp::CollCount => match self.list_or_coll(a.h(0)?)? {
+            // items it holds, read to the run's end where the store cannot say; whether it
+            // holds nothing reads the first item, not the run.
+            Imp::ListLen | Imp::CollCount | Imp::CollEmpty => match self.list_or_coll(a.h(0)?)? {
+                ListOrColl::Len(len) if imp == Imp::CollEmpty => ret_i32(i32::from(len == 0)),
                 ListOrColl::Len(len) => ret_i64(len_to_i64(len)),
+                ListOrColl::Coll(coll) if imp == Imp::CollEmpty => {
+                    ret_i32(i32::from(self.coll_empty(&coll)?))
+                }
                 ListOrColl::Coll(coll) => {
                     let count = imp == Imp::CollCount;
                     ret_i64(len_to_i64(self.coll_len_or_count(&coll, count)?))
@@ -443,6 +448,8 @@ impl Core {
                 let variant = self.text(a.h(1)?)?;
                 self.with_val(a.h(0)?, |v| match v {
                     Value::Enum(e) => ret_i32(i32::from(e.variant == variant)),
+                    // A `json.Value` has a case per kind of JSON (`json.parse`).
+                    Value::Json(json) => ret_i32(i32::from(crate::json::kind_of(json) == variant)),
                     other => trap(format!("expected an enum value, got {}", other.kind_name())),
                 })
             }
@@ -451,6 +458,15 @@ impl Core {
                 let item = self.with_val(a.h(0)?, |v| match v {
                     Value::Enum(e) => e.fields.get(&field).cloned().map_or_else(
                         || trap(format!("variant `{}` has no field `{field}`", e.variant)),
+                        Ok,
+                    ),
+                    Value::Json(json) => crate::json::payload_of(json, &field).map_or_else(
+                        || {
+                            trap(format!(
+                                "a json {} has no `{field}`",
+                                crate::json::kind_of(json)
+                            ))
+                        },
                         Ok,
                     ),
                     other => trap(format!("expected an enum value, got {}", other.kind_name())),
@@ -465,6 +481,26 @@ impl Core {
         }
     }
 
+    /// `Map<T>.keys()` and `Map<T>.get(key)` on a map the code holds as a value (one
+    /// `json.decode<Map<T>>` read, or a `json.Value` object's fields), as against the map a
+    /// record's field is.
+    pub(crate) fn map_value_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let Value::Map(entries) = self.val(a.h(0)?)? else {
+            return trap("expected a map");
+        };
+        if imp == Imp::MapKeysValue {
+            return self.ret_h(Value::List(
+                entries.into_iter().map(|(key, _)| key).collect(),
+            ));
+        }
+        let key = self.text(a.h(1)?)?;
+        let found = entries
+            .into_iter()
+            .find(|(held, _)| held.as_text() == Some(key.as_str()))
+            .map(|(_, value)| Box::new(value));
+        self.ret_h(Value::Opt(found))
+    }
+
     fn enum_set(&self, e: i32, field: i32, item: Value) -> HResult<Option<Wasm>> {
         let field = self.text(field)?;
         let mut frames = self.frames.borrow_mut();
@@ -477,7 +513,9 @@ impl Core {
         ret_void()
     }
 
-    fn list_items(&self, h: i32) -> HResult<Vec<Value>> {
+    /// The items of the list behind `h`, as values: what an import that draws one of them or
+    /// reorders them works on.
+    pub(crate) fn list_items(&self, h: i32) -> HResult<Vec<Value>> {
         match self.val_whole(h)? {
             Value::List(items) => Ok(items),
             other => trap(format!("expected a list, got {}", other.kind_name())),

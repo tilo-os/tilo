@@ -1,4 +1,4 @@
-//! What a person keeps of a window and a workspace of their own: the window and lens state they
+//! What a person keeps of a window and a workspace of their own: the view state they
 //! picked in views, and what they have seen, as the runtime holds it for them.
 //!
 //! A window is given the person's entries of the workspace's record of them when it opens, and
@@ -36,7 +36,7 @@ impl Instance {
             .unwrap_or_default()
     }
 
-    /// Give the runtime the window and lens state the person's entries of the record keep: the
+    /// Give the runtime the view state the person's entries of the record keep: the
     /// place they picked in an app shows again, on this device and on theirs.
     pub fn set_view_states(
         &mut self,
@@ -58,7 +58,7 @@ impl Instance {
         changed
     }
 
-    /// What the person changed of the window and lens state since last asked, for the host to
+    /// What the person changed of the view state since last asked, for the host to
     /// keep in the record.
     pub fn take_view_writes(
         &mut self,

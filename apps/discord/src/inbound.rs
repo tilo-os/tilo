@@ -400,25 +400,35 @@ pub fn plan_created(
     for file in files {
         // Chat lays an image out by its size, so one Discord gives no size
         // for is posted as a plain file, as Chat's own import does.
-        let kind = if file.content_type.starts_with("image/") && file.width > 0 && file.height > 0 {
-            "image"
-        } else if file.content_type.starts_with("video/") {
-            "video"
-        } else {
-            "file"
-        };
+        let name = file.name.clone();
+        let attachment =
+            if file.content_type.starts_with("image/") && file.width > 0 && file.height > 0 {
+                InAttachment::Image {
+                    name,
+                    blob: String::new(),
+                    w: file.width,
+                    h: file.height,
+                }
+            } else if file.content_type.starts_with("video/") {
+                InAttachment::Video {
+                    name,
+                    blob: String::new(),
+                    w: file.width,
+                    h: file.height,
+                    size: file.size,
+                }
+            } else {
+                InAttachment::File {
+                    name,
+                    blob: String::new(),
+                    size: file.size,
+                }
+            };
         plan.files.push(FilePost {
             fetch: FetchAssetOp {
                 url: file.url.clone(),
                 max_bytes: MAX_FETCH_BYTES,
-                attachment: Some(InAttachment {
-                    kind: kind.into(),
-                    name: file.name.clone(),
-                    blob: String::new(),
-                    width: file.width,
-                    height: file.height,
-                    size: file.size,
-                }),
+                attachment: Some(attachment),
                 inline: false,
             },
             post: post(text.take().unwrap_or_default()),

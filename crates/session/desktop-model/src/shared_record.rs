@@ -420,11 +420,25 @@ impl Parts {
 /// when it holds no workspace there.
 #[must_use]
 pub fn read(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
-    if crate::desktop_doc::holds(doc) {
-        return desk_of(doc, heads);
+    let mut desktop = if crate::desktop_doc::holds(doc) {
+        desk_of(doc, heads)?
+    } else {
+        Parts::of(&At { doc, heads }).assemble()?
+    };
+    for (_, record) in &mut desktop.records {
+        if record == LEGACY_PRIMARY_RECORD {
+            // The same record as the primary's route, which is empty: one
+            // window has one record, so its route is what the desk holds.
+            record.clear();
+        }
     }
-    Parts::of(&At { doc, heads }).assemble()
+    Some(desktop)
 }
+
+/// The custody key of a package's primary record, as a page that predates
+/// routes wrote it where a window's route belongs: not a route, so a desk
+/// holding it holds the primary under a spelling that names nothing.
+const LEGACY_PRIMARY_RECORD: &str = "@tilo:package-primary";
 
 /// The desk the desk's own document ([`crate::desktop_doc`]) holds at
 /// `heads`, as [`read`] gives a record: read with the document's own reader,

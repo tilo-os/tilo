@@ -14,7 +14,7 @@ tilolang-ask-confirm = Erlauben
 tilolang-ask-decline = Ablehnen
 tilolang-suggestion-accept = Übernehmen
 tilolang-suggestion-dismiss = Verwerfen
-tilolang-suggested = Vorgeschlagen
+tilolang-suggestion-says = { $name } schlägt vor:
 tilolang-suggested-by = vorgeschlagen von { $name }
 tilolang-ask-always = Immer erlauben
 tilolang-ask-denied = Diese Änderung ist hier nicht erlaubt.
@@ -37,6 +37,7 @@ tilolang-did-set = hat { $field } gesetzt auf
 tilolang-did-cleared = hat { $field } geleert
 tilolang-did-set-date = hat das Datum { $field } gesetzt auf
 tilolang-did-cleared-date = hat das Datum { $field } geleert
+tilolang-did-many = hat { $count } { $kind } geändert
 tilolang-did-set-time = hat die Uhrzeit { $field } gesetzt auf
 tilolang-did-cleared-time = hat die Uhrzeit { $field } geleert
 tilolang-did-and = und
@@ -44,7 +45,6 @@ tilolang-did-and = und
 tilolang-invocation-pending = Wartet
 tilolang-invocation-done = Erledigt
 tilolang-invocation-suggested = Wartet auf Bestätigung
-tilolang-invocation-proposed = Vorgeschlagen
 tilolang-invocation-declined = Abgelehnt
 tilolang-invocation-failed = Fehlgeschlagen
 tilolang-invocation-denied = Nicht erlaubt
@@ -64,6 +64,11 @@ tilolang-no-date = Kein Datum
 tilolang-all-done = Alles erledigt
 rich-text-reference-unreadable = Nicht mit dir geteilt
 tilolang-none-selected = Nichts ausgewählt
+tilolang-selected = { $count ->
+    [one] 1 ausgewählt
+   *[other] { $count } ausgewählt
+}
+tilolang-clear-selection = Auswahl aufheben
 tilolang-sort = Sortieren
 tilolang-undo = Rückgängig
 tilolang-typing-unplaced = Keine Eingabe hat übernommen, was du getippt hast: „{ $typed }“
@@ -85,7 +90,6 @@ tilolang-empty-value = Leer
 tilolang-yes = Ja
 tilolang-no = Nein
 tilolang-history = Verlauf
-tilolang-since-looked = Seit deinem letzten Blick
 tilolang-history-changes = { $count ->
     [one] 1 Änderung
    *[other] { $count } Änderungen
@@ -165,6 +169,3 @@ tilolang-remind-weeks-after = { $count ->
     [one] 1 Woche nachher
    *[other] { $count } Wochen nachher
 }
-
-tilolang-reminder-late = Verspätet
-tilolang-reminder-open = Öffnen

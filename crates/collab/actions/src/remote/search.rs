@@ -19,7 +19,7 @@ use super::ActionHostError;
 pub struct Found {
     /// The resource's published id: what a caller addresses it by.
     pub resource: String,
-    /// Its kind (`tl.so.tilo.lang.notes.Notes`), as its app publishes it.
+    /// Its kind (`tl.so.tilo.lang.notes.Notebook`), as its app publishes it.
     pub kind: String,
     /// Its label, as the person reads it.
     pub label: String,

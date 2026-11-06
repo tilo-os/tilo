@@ -264,6 +264,11 @@ pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
     } else {
         ActionParam::required_owned(param.name.clone(), ty, description)
     };
+    let built = if param.entry {
+        built.taking_entry()
+    } else {
+        built
+    };
     match present {
         Some(Ty::Record(key)) => built.picking(Pick::Resource {
             kind: record_kind(key),

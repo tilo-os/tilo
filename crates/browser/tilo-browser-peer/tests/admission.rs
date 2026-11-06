@@ -47,7 +47,10 @@ fn the_browser_and_the_broker_give_one_verdict_for_one_gate() {
             (None, cleartext),
             (Some(&sealed), OpAdmission::EncryptionRequired),
         ] {
-            assert_eq!(broker.document_admission(channel, encryption), verdict);
+            assert_eq!(
+                broker.document_admission(&route.cluster_id, channel, encryption),
+                verdict
+            );
             assert_eq!(
                 document_admission(Some(gate), true, false, &route, encryption),
                 verdict

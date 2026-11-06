@@ -46,6 +46,7 @@ mod endpoint_editor;
 mod failure;
 pub mod geo;
 mod hand_laid;
+mod live;
 mod map_controls;
 mod map_info_sheet;
 pub mod model;

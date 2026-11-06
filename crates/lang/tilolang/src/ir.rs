@@ -96,7 +96,6 @@ pub struct ForList {
 pub enum FuncKind {
     Fn,
     Action,
-    Flow,
     View,
     Block,
     /// An action's requirements its subject alone decides: it answers the first reason the
@@ -109,7 +108,7 @@ pub enum FuncKind {
     Applies,
 }
 
-/// An action or flow that code can apply: `app` and `id` name it for the host.
+/// An action that code can apply: `app` and `id` name it for the host.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ActionRef {
     pub app: String,
@@ -127,10 +126,14 @@ pub struct ActionRef {
 pub struct Facts {
     pub mutates: bool,
     pub outside: bool,
-    pub inline_actions: BTreeSet<usize>,
     pub invokes: BTreeSet<ActionRef>,
     pub action_values: BTreeSet<ActionRef>,
     pub views: BTreeSet<usize>,
+    /// The effects the body's own code reads; what it reaches through a call is
+    /// [`crate::effects::reached`]'s.
+    pub effects: BTreeSet<crate::effects::Effect>,
+    /// The module's own functions and actions this one calls.
+    pub calls: BTreeSet<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -145,6 +148,10 @@ pub struct Func {
     pub locals: Vec<Ty>,
     pub body: Vec<Stmt>,
     pub facts: Facts,
+    /// Where the declaration it was lowered from starts, in the package source's span space
+    /// (see [`crate::diag::Placed`]): the line a profile names it by. None for a function no
+    /// declaration is written for, and for a block.
+    pub at: Option<usize>,
 }
 
 #[derive(Clone, Debug, Default)]

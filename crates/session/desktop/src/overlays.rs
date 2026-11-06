@@ -495,6 +495,9 @@ struct SlotState {
 struct Displays {
     outputs: Vec<Rect>,
     focused: Option<Rect>,
+    /// Where the person types, when a field holds the caret: the place a
+    /// surface a key opens for the text stands against.
+    caret: Option<Rect>,
 }
 
 impl Displays {
@@ -591,10 +594,21 @@ impl Overlays {
         if stack.displays.outputs.as_slice() == outputs && stack.displays.focused == focused {
             return;
         }
-        stack.displays = Displays {
-            outputs: outputs.to_vec(),
-            focused,
-        };
+        stack.displays.outputs = outputs.to_vec();
+        stack.displays.focused = focused;
+    }
+
+    /// The caret of the field the person types into, as the desktop last saw
+    /// it: what a surface a key opens for the text stands beside.
+    pub fn set_caret(&self, caret: Option<Rect>) {
+        self.0.borrow_mut().displays.caret = caret;
+    }
+
+    /// The caret a surface a key opens for the text stands beside, when a
+    /// field holds one.
+    #[must_use]
+    pub fn caret(&self) -> Option<Rect> {
+        self.0.borrow().displays.caret
     }
 
     /// Put `slot` up, standing at `anchor` or where the slot stands by
@@ -623,10 +637,22 @@ impl Overlays {
         state.dismissed = true;
     }
 
-    /// The button that press came from is up: the press is over, and what it
-    /// closed may be raised again.
+    /// The button that press came from is up: the press is over. What it
+    /// closed stays down until the asks it raised have been carried out
+    /// ([`Self::settle_press`]), because a quick click delivers its release
+    /// before them.
     pub fn press_ended(&self) {
-        for state in self.0.borrow_mut().slots.values_mut() {
+        self.0.borrow_mut().press_over = true;
+    }
+
+    /// What the press asked has been carried out: what it closed may be
+    /// raised again.
+    pub fn settle_press(&self) {
+        let mut stack = self.0.borrow_mut();
+        if !std::mem::take(&mut stack.press_over) {
+            return;
+        }
+        for state in stack.slots.values_mut() {
             state.dismissed = false;
         }
     }
@@ -714,6 +740,9 @@ impl Overlays {
 struct Stack {
     slots: BTreeMap<Slot, SlotState>,
     displays: Displays,
+    /// Whether the button of the press that dismissed something has come up,
+    /// and what it asked is yet to be carried out.
+    press_over: bool,
 }
 
 impl Stack {
@@ -840,6 +869,24 @@ mod tests {
     }
 
     #[test]
+    fn the_caret_a_key_opens_at_outlives_the_displays_changing() {
+        let overlays = overlays();
+        let caret = Rect::new(600.0, 300.0, 602.0, 320.0);
+        overlays.set_caret(Some(caret));
+        // The outputs came and went while the person typed: where they type
+        // is still where the surface a key opens for the text stands.
+        overlays.set_displays(&[Rect::new(0.0, 0.0, 1000.0, 700.0)], Some(DISPLAY));
+        assert_eq!(overlays.caret(), Some(caret));
+        overlays.open(
+            Slot::QuickSettings,
+            overlays.caret().map(|at| Anchor::Beside { at, gap: 6.0 }),
+        );
+        let place = overlays.place(Slot::QuickSettings).expect("placed");
+        assert_eq!(place.x0, caret.x1 + 6.0, "clear of the caret");
+        assert_eq!(place.y0, caret.y0, "level with it");
+    }
+
+    #[test]
     fn a_surface_is_placed_on_the_display_holding_its_anchor() {
         let left = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let right = Rect::new(1280.0, 0.0, 3840.0, 1440.0);
@@ -932,8 +979,14 @@ mod tests {
         );
         overlays.press_ended();
         assert!(
+            overlays.dismissed_recently(Slot::QuickSettings),
+            "a quick click comes up before what it asked is carried out: \
+             the toggle it raised must not raise it again"
+        );
+        overlays.settle_press();
+        assert!(
             !overlays.dismissed_recently(Slot::QuickSettings),
-            "the button came up: the press is over, and it opens again"
+            "the asks are carried out: the press is over, and it opens again"
         );
 
         overlays.dismiss(Slot::QuickSettings);

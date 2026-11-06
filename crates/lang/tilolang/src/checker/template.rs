@@ -118,7 +118,8 @@ fn kind_of(te: &TypeExpr) -> Kind<'_> {
 /// Whether a view declared with these type parameters and parameters is a template.
 #[must_use]
 pub fn is_template(view: &ast::ViewDecl) -> bool {
-    !view.type_params.is_empty()
+    view.template
+        || !view.type_params.is_empty()
         || view
             .params
             .iter()
@@ -184,7 +185,7 @@ impl Checker<'_> {
 
     /// Whether the code being checked is the standard library's.
     pub(crate) fn in_std(&self) -> bool {
-        self.st.ns.as_deref() == Some(crate::stdlib::NS)
+        self.st.ns.as_deref() == Some(crate::stdlib::APP)
     }
 
     /// The module's own callable `name`, when the code being checked sees the module's names.
@@ -294,6 +295,42 @@ impl Checker<'_> {
         }
     }
 
+    /// `entry: .some(new_task(t))`: the action a view's maybe-action is, which the entry fills.
+    /// An entry fills its action's one `Text` parameter with the words nothing else takes, so
+    /// an action without one (`add(t, done: Bool)`), or with several, is no entry's action:
+    /// E068 where the call that makes the action is written.
+    fn entry_action(&mut self, span: Span, e: &ast::Expr) {
+        let held = match &e.kind {
+            ExprKind::Variant { name, args } if name.name == "some" => match args.as_deref() {
+                Some([one]) => &one.value,
+                _ => return,
+            },
+            _ => e,
+        };
+        let ExprKind::Call { callee, .. } = &held.kind else {
+            return;
+        };
+        let ExprKind::Ident(name) = &callee.kind else {
+            return;
+        };
+        let Some(c) = self.own_callable(name).cloned() else {
+            return;
+        };
+        if c.kind != CKind::Action {
+            return;
+        }
+        let texts = c.params.iter().filter(|p| p.ty == Ty::Text).count();
+        if texts == 1 {
+            return;
+        }
+        let what = if texts == 0 {
+            "no `Text` parameter".to_owned()
+        } else {
+            format!("{texts} `Text` parameters")
+        };
+        self.err("E068", span, format!("`{}` has {what}: an entry fills the action's one `Text` parameter with the words nothing else takes, so the entry needs an action with exactly one", c.name));
+    }
+
     /// Expand the template `t` where the UI call `c` stands: its nodes under `parent`, or,
     /// at a view's top, the one node it makes (a fragment of them when it makes several).
     pub(crate) fn expand(
@@ -305,7 +342,8 @@ impl Checker<'_> {
     ) -> LocalId {
         let span = c.call.span;
         let view = &t.decl;
-        if self.st.expanding.contains(&view.name.name) {
+        let itself = (t.ns.clone(), view.name.name.clone());
+        if self.st.expanding.contains(&itself) {
             self.err(
                 "E061",
                 span,
@@ -412,12 +450,10 @@ impl Checker<'_> {
                 Kind::Value(te) => {
                     let Some(a) = given[i] else { continue };
                     let want = self.type_in(te, &types);
+                    if matches!(&want, Ty::Option(inner) if **inner == Ty::Action) {
+                        self.entry_action(a.value.span, &a.value);
+                    }
                     let v = self.expr(&a.value, (!want.is_error()).then_some(&want));
-                    let v = if matches!(&te.kind, TypeExprKind::Generic(..)) {
-                        self.unhold(v, a.value.span)
-                    } else {
-                        v
-                    };
                     if !Self::unify(te, &v.ty, &params, &mut types) {
                         let (w, f) = (self.show(&want), self.show(&v.ty));
                         self.err(
@@ -452,7 +488,7 @@ impl Checker<'_> {
                         "E022",
                         span,
                         format!(
-                            "`{}` needs `{}`: a `window` or `lens` declaration of this view",
+                            "`{}` needs `{}`: a `state` declaration of this view",
                             view.name.name, p.name.name
                         ),
                     ),
@@ -565,7 +601,7 @@ impl Checker<'_> {
             ui: self.st.ui,
         };
         let saved = self.enter(&scope, HashMap::new());
-        self.st.expanding.push(view.name.name.clone());
+        self.st.expanding.push(itself);
         // The defaults of the values left out, read in the template's scope.
         for (i, p) in view.params.iter().enumerate() {
             let Kind::Value(te) = kind_of(&p.ty) else {
@@ -595,7 +631,7 @@ impl Checker<'_> {
         node
     }
 
-    /// Lowers the `window` and `lens` declarations at the top of a template's body: state of
+    /// Lowers the `state` declarations at the top of a template's body: state of
     /// the view it expands in, kept under that view's id and the template's name
     /// (`<view id>:list.query`), as the view's own is under its name. Returns the rest of the
     /// body.
@@ -620,8 +656,7 @@ impl Checker<'_> {
                 Some(e) => self.expr_as(e, &ty),
                 None => self.zero_of(&ty, d.name.span),
             };
-            let layer = Ex::new(Ek::I32(d.layer.code()), Ty::Bool);
-            let args = vec![layer, Ex::str(&id), Self::handle_of(fallback)];
+            let args = vec![Ex::str(&id), Self::handle_of(fallback)];
             let value = if ty.is_scalar() {
                 let boxed = Ty::Option(Box::new(ty.clone()));
                 Self::unwrap_opt(Ex::host(Imp::StateGet, args, boxed), &ty)
@@ -633,7 +668,6 @@ impl Checker<'_> {
             self.st.states.insert(
                 d.name.name.clone(),
                 StateRef {
-                    layer: d.layer,
                     id: id.clone(),
                     ty: ty.clone(),
                     local,
@@ -645,7 +679,6 @@ impl Checker<'_> {
                     view: self.st.view_id.clone(),
                     name: d.name.name.clone(),
                     id,
-                    layer: d.layer,
                     ty,
                 },
             ));
@@ -670,7 +703,7 @@ impl Checker<'_> {
                 "E066",
                 value.span,
                 format!(
-                    "`{}` of `{}` takes view state by its name, a `window` or `lens` declaration of this view; this view declares: {known}",
+                    "`{}` of `{}` takes view state by its name, a `state` declaration of this view; this view declares: {known}",
                     p.name.name, view.name.name
                 ),
             );
@@ -1038,7 +1071,7 @@ impl Checker<'_> {
         body: &[UiStmt],
         parent: LocalId,
     ) -> bool {
-        let ExprKind::Call { callee, args } = &iter.kind else {
+        let ExprKind::Call { callee, args, .. } = &iter.kind else {
             return false;
         };
         if !matches!(&callee.kind, ExprKind::Ident(n) if n == "cases" && self.lookup(n).is_none()) {

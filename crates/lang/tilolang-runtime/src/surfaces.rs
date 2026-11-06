@@ -14,11 +14,12 @@ use std::collections::BTreeMap;
 
 use crate::core::Core;
 use crate::error::RuntimeError;
+use crate::exec::MANY_ACTION;
 use crate::handles::ViewState;
-use crate::host_ui::{SET_ACTION, VIEW_STATE};
+use crate::host_ui::{KEEP_ACTION, SET_ACTION, THEN_ACTION, VIEW_STATE};
 use crate::value::{ActionRef, RefValue, Value};
 use crate::view::{BindTarget, NodeBuild};
-use crate::view_state::{StateKey, StateLayer};
+use crate::view_state::StateKey;
 
 /// A node whose `item` gets the host's menu: what a person right-clicks, long-presses, or picks
 /// out of with the Menu key.
@@ -52,6 +53,24 @@ const ACTIONS: &str = "actions";
 /// The word a "…" is named by: the one the shell gives its own More button.
 const MORE: &str = "window-toolbar-more";
 
+/// The list whose rows a person chooses more than one of: the one that keeps the choice where
+/// the window's bar reads it.
+const MULTI_SELECT: &str = "multi_select";
+/// The property a multi-selecting list is given back: the items of the person's choice, so the
+/// list it builds again shows them chosen.
+const CHOSEN: &str = "chosen";
+/// The event a multi-selecting list reports its choice with.
+const SELECTION_EVENT: &str = "selected";
+/// The window slot holding what the person chose of what the window shows. It is the window's
+/// own reading, kept for the person looking alone ([`StateKey::runtime`], set by the host), and
+/// what the bar acts on: a selection belongs to where the person is, not to the workspace.
+const SELECTION: &str = "ui:selection";
+/// The words the selection's count reads with, and the way out of it.
+const SELECTED: &str = "tilolang-selected";
+const CLEAR_WORDS: (&str, &str) = ("tilolang-clear-selection", "Clear selection");
+/// The id of the command that leaves a selection, as a surface offers it.
+const CLEAR_ACTION: &str = "ui:clear-selection";
+
 /// What a switch names the view labelled `full` of the type labelled `ty`: the view's label
 /// with the type's name left off, so a Project's views read "List" and "Board" under a strip
 /// the type already names. The full label stands when the type's name is not part of it.
@@ -79,6 +98,7 @@ const FREQUENT: usize = 10;
 const AVAILABLE: usize = 11;
 const REASON: usize = 12;
 const APPLIES: usize = 13;
+const ID: usize = 14;
 
 impl Core {
     /// The host's surfaces for the tree a boundary rendered: each item's menu, and the window's
@@ -100,6 +120,7 @@ impl Core {
         };
         self.item_surfaces(root)?;
         self.subject_menus(root)?;
+        self.list_selections(root)?;
         let Some(subject) = subject else {
             return Ok(());
         };
@@ -116,12 +137,29 @@ impl Core {
             .into_iter()
             .filter(|action| flag(action, APPLIES))
             .collect();
+        self.costs
+            .publish(u64::try_from(acted.len()).unwrap_or(u64::MAX));
         let listed = self
             .props(shell)?
             .get("content_kind")
             .and_then(Value::as_text)
             .is_some_and(|kind| kind == "list");
         let overview = self.slot(shell, OVERVIEW)?.is_some();
+        // A choice of more than one item is the window's own while it holds: the bar offers
+        // what the items offer, once over all of them, and nothing of the window's own subject
+        // takes its place until the choice is put away.
+        let chosen = self.chosen_items()?;
+        if chosen.len() > 1 {
+            let offered = self.selection_actions(&chosen)?;
+            if overview {
+                self.fill_selection_bar(shell, OVERVIEW_ACTIONS, &offered, chosen.len())?;
+            } else if self.has_title(shell, &subject) {
+                self.put_under_title(shell, &subject, &offered, None)?;
+            } else {
+                self.fill_selection_bar(shell, ACTIONS, &offered, chosen.len())?;
+            }
+            return Ok(());
+        }
         let entry = self.declare_entry_key(shell, &acted)?;
         if overview {
             if let Some(switch) = self.view_switch(&subject, shown)? {
@@ -138,6 +176,178 @@ impl Core {
             self.fill_bar(shell, ACTIONS, listed, &acted, entry.as_deref())?;
         }
         Ok(())
+    }
+
+    /// Each list a person may choose more than one row of is given the choice they hold and
+    /// reports every change of a multi-selection back: the choice is the window's, so the bar
+    /// over another boundary reads it, and the list it builds again shows it.
+    fn list_selections(&self, at: usize) -> Result<(), RuntimeError> {
+        let props = self.props(at)?;
+        if crate::view::is_virtual(&self.kind(at)?) && flag_prop(&props, MULTI_SELECT) {
+            let key = self.selection_key()?;
+            let (held, generation) = {
+                let states = self.view_states.borrow();
+                (states.get(&key).cloned(), states.generation(&key))
+            };
+            // A list reads the choice even before there is one: the moment the person makes
+            // one, the list builds again showing it.
+            let chosen = held.unwrap_or_else(|| Value::List(Vec::new()));
+            self.note_state_read(key, generation, &chosen);
+            self.put_prop(at, CHOSEN, chosen)?;
+            let report = ActionRef::new(KEEP_ACTION, vec![Value::text(SELECTION), Value::Event]);
+            self.put_event(at, SELECTION_EVENT, Value::Action(report))?;
+        }
+        for child in self.children(at)? {
+            self.list_selections(child)?;
+        }
+        Ok(())
+    }
+
+    /// The window slot the person's choice is kept in, as the runtime reads it: their window's,
+    /// their own.
+    fn selection_key(&self) -> Result<StateKey, RuntimeError> {
+        let (window, viewer) = self.window_here()?;
+        Ok(StateKey::runtime(window, Some(viewer), SELECTION))
+    }
+
+    /// The window whose surfaces are being worked out, and the person looking.
+    fn window_here(&self) -> Result<(String, String), RuntimeError> {
+        self.with_view(|vs| Ok((vs.window.clone(), vs.viewer.0.clone())))
+            .map_err(trapped)
+    }
+
+    /// The items the person chose of what the window shows, in the order they stand. Reading
+    /// it is what makes the bar run again when the choice moves.
+    fn chosen_items(&self) -> Result<Vec<RefValue>, RuntimeError> {
+        let key = self.selection_key()?;
+        let (held, generation) = {
+            let states = self.view_states.borrow();
+            (states.get(&key).cloned(), states.generation(&key))
+        };
+        // Read even before there is a choice: the bar runs again when the person makes one.
+        let seen = held.clone().unwrap_or_else(|| Value::List(Vec::new()));
+        self.note_state_read(key, generation, &seen);
+        let Some(held) = held else {
+            return Ok(Vec::new());
+        };
+        Ok(match held {
+            Value::List(items) => items
+                .into_iter()
+                .filter_map(|item| match item {
+                    Value::Ref(item) => Some(item),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        })
+    }
+
+    /// What is offered for `items` as one command each: the actions their own menus offer that
+    /// apply to every one of them, in the order the first item's are. Running one applies it
+    /// to all of them as one change (`$many`), and puts the choice away after it; the ways out
+    /// of a choice stand last, so a person leaves it without the keyboard.
+    fn selection_actions(&self, items: &[RefValue]) -> Result<Vec<Value>, RuntimeError> {
+        let mut offered: Vec<Vec<Value>> = Vec::with_capacity(items.len());
+        for item in items {
+            let acted: Vec<Value> = self
+                .actions_on(item, &Value::none())
+                .map_err(trapped)?
+                .into_iter()
+                .filter(|action| flag(action, APPLIES))
+                .collect();
+            offered.push(acted);
+        }
+        let Some(first) = offered.first() else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for action in first {
+            let Some(id) = opt_text(action, ID) else {
+                continue;
+            };
+            let mut runs = Vec::with_capacity(offered.len());
+            let mut every_item_takes_it = true;
+            let mut every_on = true;
+            let mut all_on = true;
+            for held in &offered {
+                let Some(found) = held.iter().find(|held| opt_text(held, ID) == Some(id)) else {
+                    every_item_takes_it = false;
+                    break;
+                };
+                // What one item cannot have done to it is no command over all of them: a
+                // command disabled for one of six items is not offered at all.
+                if !flag(found, AVAILABLE) {
+                    every_item_takes_it = false;
+                    break;
+                }
+                match opt_flag(found, ON) {
+                    Some(on) => all_on = all_on && on,
+                    None => every_on = false,
+                }
+                if let Some(Value::Action(run)) = action_field(found, RUN) {
+                    runs.push(Value::Action(run.clone()));
+                }
+            }
+            if !every_item_takes_it || runs.len() != offered.len() {
+                continue;
+            }
+            let mut shown = action.clone();
+            Self::put_field(&mut shown, PRIMARY, Value::Bool(false));
+            Self::put_field(&mut shown, FREQUENT, Value::Bool(false));
+            Self::put_field(&mut shown, GROUP, Value::none());
+            Self::put_field(&mut shown, AVAILABLE, Value::Bool(true));
+            Self::put_field(&mut shown, REASON, Value::text(""));
+            if every_on {
+                Self::put_field(&mut shown, ON, Value::some(Value::Bool(all_on)));
+            }
+            Self::put_field(&mut shown, RUN, Value::Action(Self::over_a_choice(runs)));
+            out.push(shown);
+        }
+        let mut label = self.words.borrow().word(CLEAR_WORDS.0, &[], CLEAR_WORDS.1);
+        if label.is_empty() {
+            CLEAR_WORDS.1.clone_into(&mut label);
+        }
+        out.push(Value::Tuple(vec![
+            Value::text(&label),
+            Value::some(Value::text("x")),
+            Value::text(""),
+            Value::Bool(false),
+            Value::Bool(false),
+            Value::none(),
+            Value::some(Value::text("Escape")),
+            Value::List(Vec::new()),
+            Value::Action(ActionRef::new(
+                KEEP_ACTION,
+                vec![Value::text(SELECTION), Value::List(Vec::new())],
+            )),
+            Value::none(),
+            Value::Bool(false),
+            Value::Bool(true),
+            Value::text(""),
+            Value::Bool(true),
+            Value::text(CLEAR_ACTION),
+        ]));
+        Ok(out)
+    }
+
+    /// `runs` as one change: an action applied to many items (`$many`), the choice put away
+    /// once it is done.
+    fn over_a_choice(runs: Vec<Value>) -> ActionRef {
+        let many = ActionRef::new(MANY_ACTION, vec![Value::List(runs)]);
+        let clear = ActionRef::new(
+            KEEP_ACTION,
+            vec![Value::text(SELECTION), Value::List(Vec::new())],
+        );
+        ActionRef::new(THEN_ACTION, vec![Value::Action(many), Value::Action(clear)])
+    }
+
+    /// Set the field `at` of an action tuple.
+    fn put_field(action: &mut Value, at: usize, value: Value) {
+        if let Value::Tuple(fields) = action
+            && let Some(field) = fields.get_mut(at)
+        {
+            *field = value;
+        }
     }
 
     /// The window's shell in the tree: the first one met, a view's own frame included.
@@ -194,6 +404,9 @@ impl Core {
         if taken.is_empty() {
             return Ok(());
         }
+        // What publishing the item's offers costs a profile: the actions its menu shows.
+        self.costs
+            .publish(u64::try_from(taken.len()).unwrap_or(u64::MAX));
         let key = self.key(at)?;
         for (index, action) in taken.iter().enumerate() {
             let item = Self::menu_item(action, &format!("{key}~action-{index}"));
@@ -236,10 +449,13 @@ impl Core {
                 .into_iter()
                 .filter(|action| flag(action, APPLIES));
             let key = self.key(at)?;
+            let mut published = 0u64;
             for (index, action) in acted.enumerate() {
                 let item = Self::menu_item(&action, &format!("{key}~item-{index}"));
                 self.put_in_slot(at, ITEMS, item)?;
+                published = published.saturating_add(1);
             }
+            self.costs.publish(published);
         }
         self.each_child(at, |child| self.subject_menus(child))
     }
@@ -291,7 +507,6 @@ impl Core {
                 vec![
                     Value::text(&window),
                     Value::text(&viewer),
-                    Value::Int(i64::from(StateLayer::Window.code())),
                     Value::text(&state),
                     Value::Event,
                 ],
@@ -324,7 +539,7 @@ impl Core {
 
     /// Which of `views` the person's window shows `ty`'s resource through: the view it draws
     /// the resource through now, else the person's choice, else the type's default view, else
-    /// the first. The choice is read from the person's window state, so the bar runs again
+    /// the first. The choice is read from the person's view state, so the bar runs again
     /// when another tab is chosen.
     fn chosen_index(
         &self,
@@ -340,7 +555,7 @@ impl Core {
         if let Some(index) = views.iter().position(|(id, _)| id == shown) {
             return i64::try_from(index).unwrap_or_default();
         }
-        let key = StateKey::window(window, viewer, state.to_owned());
+        let key = StateKey::view(window, viewer, state.to_owned());
         let (held, generation) = {
             let states = self.view_states.borrow();
             (states.get(&key).cloned(), states.generation(&key))
@@ -409,7 +624,43 @@ impl Core {
             )?;
         }
         for (index, action) in by_place.into_iter().flatten().enumerate() {
-            let node = Self::action_button(&action, &format!("{key}~{slot}~action-{index}"), entry);
+            let node = Self::action_button(
+                &action,
+                &format!("{key}~{slot}~action-{index}"),
+                entry,
+                true,
+            );
+            self.put_in_slot(shell, slot, node)?;
+        }
+        Ok(())
+    }
+
+    /// The window's bar while a choice of many items holds: how many items the person chose,
+    /// then what can be done with them once. Every command stands labelled, in the order the
+    /// items' own actions are offered; the shell's own layout folds the ones that do not fit
+    /// into its door. Nothing of the window's own subject stands beside them: the choice is
+    /// what the person is working on.
+    fn fill_selection_bar(
+        &self,
+        shell: usize,
+        slot: &str,
+        acted: &[Value],
+        count: usize,
+    ) -> Result<(), RuntimeError> {
+        let key = self.key(shell)?;
+        // The count reads in the reader's language, and as the count when it has no word for
+        // this store's words.
+        let label = self.words.borrow().word(
+            SELECTED,
+            &[("count".to_owned(), count.to_string())],
+            &format!("{count} selected"),
+        );
+        let mut badge = empty("ui.Badge", &format!("{key}~{slot}~selected"));
+        badge.props.insert("text".to_owned(), Value::text(&label));
+        self.put_in_slot(shell, slot, badge)?;
+        for (index, action) in acted.iter().enumerate() {
+            let node =
+                Self::action_button(action, &format!("{key}~{slot}~action-{index}"), None, false);
             self.put_in_slot(shell, slot, node)?;
         }
         Ok(())
@@ -604,6 +855,18 @@ impl Core {
         })
     }
 
+    /// Set what `at` does on `name`: the action the host runs when the control reports it.
+    fn put_event(&self, at: usize, name: &str, action: Value) -> Result<(), RuntimeError> {
+        self.arena(|view| {
+            let node = view
+                .nodes
+                .get_mut(at)
+                .ok_or_else(|| "unknown ui node".to_owned())?;
+            node.events.insert(name.to_owned(), action);
+            Ok(())
+        })
+    }
+
     fn kind(&self, at: usize) -> Result<String, RuntimeError> {
         self.arena(|view| {
             view.nodes
@@ -769,8 +1032,9 @@ impl Core {
     /// labelled, a frequent command a button of its own, all the rest behind the bar's door.
     /// `entry` is the key the list's entry declares, when the window has one: the primary it
     /// stands for is answered there, so it names the addition plainly rather than a form to
-    /// fill in.
-    fn action_button(action: &Value, key: &str, entry: Option<&str>) -> NodeBuild {
+    /// fill in. A control of a selection's bar (`door` false) stands labelled among the others,
+    /// whatever its place on one item's own bar was.
+    fn action_button(action: &Value, key: &str, entry: Option<&str>, door: bool) -> NodeBuild {
         let primary = flag(action, PRIMARY);
         let destructive = flag(action, DESTRUCTIVE);
         let frequent = flag(action, FREQUENT);
@@ -793,10 +1057,10 @@ impl Core {
         } else if primary {
             node.props.insert("role".to_owned(), Value::text("primary"));
         }
-        if !primary && frequent && icon.is_some() {
+        if door && !primary && frequent && icon.is_some() {
             node.props.insert("icon_only".to_owned(), on_off(true));
         }
-        if !primary && !frequent {
+        if door && !primary && !frequent {
             node.props.insert("in_menu".to_owned(), on_off(true));
             if let Some(group) = opt_text(action, GROUP) {
                 node.props.insert("group".to_owned(), Value::text(group));

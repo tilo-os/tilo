@@ -21,9 +21,9 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use super::model::{NavItemSpec, NavRowData, NavRowKind, NavStatus};
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::chrome::{
-    NavCount, NavRowFace, NavRowStyle, NavSectionFace, SelectionState, nav_badge_column,
-    nav_item_height, nav_rail_item_height, nav_rail_row_height, nav_row_height, nav_row_layout,
-    nav_section_height, nav_section_layout, paint_nav_row, paint_nav_section,
+    NavRowFace, NavRowStyle, NavSectionFace, SelectionState, nav_badge_column, nav_item_height,
+    nav_rail_item_height, nav_rail_row_height, nav_row_height, nav_row_layout, nav_section_height,
+    nav_section_layout, paint_nav_row, paint_nav_section,
 };
 use crate::icons::Icon;
 use crate::interaction::InteractionEnvironment;
@@ -243,7 +243,6 @@ fn plain_face<'a>(spec: &'a NavItemSpec, row: Rect, label: &'a str) -> NavRowFac
     face.under_section = spec.under_section;
     face.icon = spec.icon;
     face.count = spec.count;
-    face.changed = spec.changed.map(NavCount::Changed);
     face.secondary = spec.secondary.as_deref();
     face.meta = spec.meta.as_deref();
     face.status = spec.status.as_ref().map(NavStatus::row_status);

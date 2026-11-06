@@ -194,7 +194,7 @@ impl ResourceRef {
 /// action parameter that picks one takes ([`tilo_actions::Pick::Resource`]).
 /// A person picks it from the palette by the title its app publishes; an
 /// agent passes the same reference. Nobody types its id.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 pub struct ResourceAt {
     /// The app that keeps the resource.
     pub app: String,
@@ -209,6 +209,12 @@ pub struct ResourceAt {
 impl tilo_resource::JsonSchema for ResourceAt {
     fn json_schema() -> serde_json::Value {
         tilo_actions::resource_reference_schema()
+    }
+
+    /// Its type as a surface publishes a verb's parameter: the record it is, named as its
+    /// fields are, so a verb taking a reference is a verb tilolang code calls with one.
+    fn field_type(types: &mut tilo_resource::TypeSet) -> tilo_resource::FieldType {
+        <Self as tilo_resource::Model>::field_type(types)
     }
 }
 
@@ -251,6 +257,17 @@ mod tests {
                 &<ResourceAt as tilo_resource::JsonSchema>::json_schema()
             )
             .is_ok()
+        );
+    }
+
+    /// A verb taking a reference publishes its parameter as the record it is, so tilolang code
+    /// calls it with one and a catalogue names the verb.
+    #[test]
+    fn a_resource_at_publishes_its_type_by_its_name() {
+        let mut types = tilo_resource::TypeSet::new();
+        assert_eq!(
+            <ResourceAt as tilo_resource::JsonSchema>::field_type(&mut types),
+            tilo_resource::FieldType::Named("ResourceAt".to_owned())
         );
     }
 

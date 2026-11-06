@@ -233,7 +233,8 @@ pub fn media(
     let playing = readings
         .borrow()
         .playing()
-        .or_else(|| offered.map(crate::status::Playing::offered))?;
+        .or_else(|| offered.map(tilo_desktop_surface::now_playing::NowPlaying::offered))?;
+    let artwork = lock_artwork(&playing);
     Some(Media {
         title: playing.title,
         subtitle: playing.subtitle,
@@ -241,6 +242,34 @@ pub fn media(
         can_toggle: playing.can_toggle,
         can_previous: playing.can_previous,
         can_next: playing.can_next,
+        artwork,
+    })
+}
+
+/// The cover the lock card shows: the player's, cut down into the picture
+/// address the screen's own process reads. Cut once per song: the screen asks
+/// on every frame it is up, and encoding a picture is not a per-frame cost.
+fn lock_artwork(playing: &tilo_desktop_surface::now_playing::NowPlaying) -> String {
+    thread_local! {
+        static CUT: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
+    }
+    let key = format!("{}|{}", playing.player, playing.title);
+    CUT.with(|cut| {
+        let mut cut = cut.borrow_mut();
+        if let Some((made_for, artwork)) = cut.as_ref()
+            && *made_for == key
+        {
+            return artwork.clone();
+        }
+        let artwork = tilo_desktop_surface::now_playing::artwork_address(&playing.art);
+        if artwork.is_empty() {
+            // Nothing to remember: a player that sends its cover later cuts
+            // it then.
+            cut.take();
+        } else {
+            *cut = Some((key, artwork.clone()));
+        }
+        artwork
     })
 }
 

@@ -241,6 +241,20 @@ type SemanticKey<K> = Box<dyn Fn(&K) -> String>;
 type RowPresence<M> =
     Box<dyn Fn(&M, usize, &<M as ListModel>::Key) -> Option<crate::presence::PresenceKey>>;
 type SelectCallback<K> = Box<dyn FnMut(K, bool)>;
+/// Told the rows selected, in the order they stand: every row of a multi-selection, after
+/// anything changed it.
+type SelectedCallback<K> = Box<dyn FnMut(&[K])>;
+
+/// Whether what the list holds now is a choice the person made by hand, or only the row the
+/// focus moved to: a list whose selection follows the focus moves it on every arrow, and a
+/// row opened onto moves it too, and those are not choices a window keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Choosing {
+    /// A click, a toggle, a range, a select-all, or Escape: the person built the choice.
+    ByHand,
+    /// The choice followed the focus or the row that opened.
+    Following,
+}
 type ReorderValidator<M> =
     Box<dyn FnMut(&M, &<M as ListModel>::Key, &DropTarget<<M as ListModel>::Key>) -> bool>;
 type ReorderCommit<M> = Box<dyn FnMut(&mut M, ReorderDrop<<M as ListModel>::Key>) -> bool>;
@@ -383,6 +397,11 @@ pub struct VirtualList<M: ListModel> {
     /// What has been typed into the focused list ([`ListModel::label`]).
     typing: crate::type_ahead::TypeAhead,
     on_select: Option<SelectCallback<M::Key>>,
+    /// Told the whole selection after it changed, when it can hold more than one row.
+    on_selected: Option<SelectedCallback<M::Key>>,
+    /// What the last report to [`Self::on_selected`] held more than one row: the way back from
+    /// a choice of many to one or none is kept even when it is one row.
+    reported_many: bool,
     /// Choosing a row, published as the list's view action
     /// ([`VirtualList::on_view`]).
     view: Option<(crate::widget::view_choice::ViewChoice, KeyCallback<M::Key>)>,
@@ -606,6 +625,8 @@ impl<M: ListModel> VirtualList<M> {
             focused_group: None,
             typing: crate::type_ahead::TypeAhead::default(),
             on_select: None,
+            on_selected: None,
+            reported_many: false,
             view: None,
             opens: None,
             on_activate: None,
@@ -849,6 +870,19 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
+    /// Select more than one row, or one again.
+    pub fn set_multi_select(&mut self, enabled: bool) {
+        self.multi_select = enabled;
+    }
+
+    /// Told the rows selected, in the order they stand, after anything changed the selection:
+    /// a click with its modifiers, the keyboard, `Escape` clearing it, or a row opened onto.
+    #[must_use]
+    pub fn on_selected(mut self, callback: impl FnMut(&[M::Key]) + 'static) -> Self {
+        self.on_selected = Some(Box::new(callback));
+        self
+    }
+
     /// Select the row the keyboard moves to, as a single-selection list
     /// whose selection is what it shows elsewhere (the open item of a
     /// master-detail window) does. A modifier-extended move still extends.
@@ -862,6 +896,7 @@ impl<M: ListModel> VirtualList<M> {
     #[must_use]
     pub fn with_selection(mut self, mut selection: KeySelection<M::Key>) -> Self {
         selection.reconcile(|key| self.model.index_of(key).is_some());
+        self.reported_many = selection.is_select_all() || selection.stored_keys().count() > 1;
         self.selection = selection;
         self
     }
@@ -1050,6 +1085,16 @@ impl<M: ListModel> VirtualList<M> {
     #[must_use]
     pub fn visible_range(&self) -> std::ops::Range<usize> {
         self.viewport.visible_range()
+    }
+
+    /// The rows the list holds mounted: what is on screen, up to the rows the model
+    /// holds. Rows still arriving add theirs when they land
+    /// ([`ListModel::needs_poll`]); until then there is nothing to mount past them,
+    /// so the list asks for no remount it could never carry out.
+    fn rows_to_hold(&self) -> std::ops::Range<usize> {
+        let near = self.viewport.visible_range();
+        let count = self.model.len();
+        near.start.min(count)..near.end.min(count)
     }
 
     pub fn set_scroll_offset(&mut self, offset: f64) {
@@ -1283,7 +1328,10 @@ impl<M: ListModel> VirtualList<M> {
         })
     }
 
-    fn apply_selection(&mut self, key: M::Key, toggle: bool, extend: bool) {
+    /// Choose `key` as the gesture says: `toggle` adds it to a choice or takes it away, and
+    /// `extend` grows the choice to it. A gesture that only changes a choice does not open
+    /// what it touches, so only a plain choice tells the row's listener it was chosen.
+    fn apply_selection(&mut self, key: M::Key, toggle: bool, extend: bool, choosing: Choosing) {
         let model = &self.model;
         super::rows::choose(
             &mut self.selection,
@@ -1293,7 +1341,10 @@ impl<M: ListModel> VirtualList<M> {
             |key| model.index_of(key),
             |index| model.key_at(index),
         );
-        self.emit_selection(key);
+        if !toggle && !extend {
+            self.emit_selection(key);
+        }
+        self.report_selection(choosing);
     }
 
     /// Move the selection onto `key` without reporting the choice: an action that opens
@@ -1308,6 +1359,7 @@ impl<M: ListModel> VirtualList<M> {
             |key| model.index_of(key),
             |index| model.key_at(index),
         );
+        self.report_selection(Choosing::Following);
     }
 
     fn emit_selection(&mut self, key: M::Key) {
@@ -1321,6 +1373,41 @@ impl<M: ListModel> VirtualList<M> {
         } else if let Some(callback) = &mut self.on_select {
             callback(key, selected);
         }
+    }
+
+    /// Tell a listener which rows are selected now, in the order they stand.
+    ///
+    /// What a window keeps of a choice is a choice the person made by hand, a choice of more
+    /// than one row, and the way back from one of many to one row or none: a selection that
+    /// only followed the focus or the row that opened is the list's own.
+    fn report_selection(&mut self, choosing: Choosing) {
+        if self.on_selected.is_none() {
+            return;
+        }
+        let keys = self.selected_keys();
+        let many = keys.len() > 1;
+        let worth = choosing == Choosing::ByHand || many || self.reported_many;
+        self.reported_many = many;
+        if !worth {
+            return;
+        }
+        if let Some(callback) = &mut self.on_selected {
+            callback(&keys);
+        }
+    }
+
+    /// Every selected row's key, in the order the rows stand: a select-all names all of them.
+    fn selected_keys(&self) -> Vec<M::Key> {
+        let mut keys: Vec<M::Key> = if self.selection.is_select_all() {
+            (0..self.model.len())
+                .filter_map(|index| self.model.key_at(index))
+                .filter(|key| self.selection.is_selected(key))
+                .collect()
+        } else {
+            self.selection.stored_keys().cloned().collect()
+        };
+        keys.sort_by_key(|key| self.model.index_of(key));
+        keys
     }
 
     fn focus_index(&mut self, index: usize, extend: bool) -> bool {
@@ -1337,9 +1424,9 @@ impl<M: ListModel> VirtualList<M> {
     /// moved onto it when the selection follows focus.
     fn select_focused(&mut self, key: M::Key, extend: bool) {
         if extend {
-            self.apply_selection(key, false, true);
+            self.apply_selection(key, false, true, Choosing::ByHand);
         } else if self.follow_focus && !self.selection.is_selected(&key) {
-            self.apply_selection(key, false, false);
+            self.apply_selection(key, false, false, Choosing::Following);
         }
     }
 
@@ -1421,6 +1508,16 @@ impl<M: ListModel> VirtualList<M> {
             }
             _ if self.multi_select && super::rows::is_select_all(key, toggle) => {
                 self.selection.select_all();
+                self.report_selection(Choosing::ByHand);
+                true
+            }
+            // Escape puts a selection away, as it puts away what a window opened over the
+            // list: what was selected stays where it is.
+            Key::Named(NamedKey::Escape)
+                if self.multi_select && !self.selection.is_empty(self.model.len()) =>
+            {
+                self.selection.clear();
+                self.report_selection(Choosing::ByHand);
                 true
             }
             Key::Character(text)
@@ -1657,7 +1754,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         // else reconciles now.
         let scrolled_only = !self.structure_dirty
             && !self.request_dirty
-            && !self.mounted_covers(&self.viewport.visible_range());
+            && !self.mounted_covers(&self.rows_to_hold());
         if !scrolled_only {
             self.reconcile_mounted();
         }
@@ -1922,7 +2019,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         }
         // A scroll brought other rows near: the rebuild mounting them is
         // described by the frame's damage.
-        if !self.mounted_covers(&self.viewport.visible_range()) {
+        if !self.mounted_covers(&self.rows_to_hold()) {
             self.remount = true;
         }
         self.scroll_dirty = false;
@@ -2827,4 +2924,5 @@ mod tree_tests;
 
 #[path = "virtual_list_component.rs"]
 mod component;
+pub(crate) use component::by_hand;
 pub use component::{DescribedList, DescribedRows, ItemRow, ListItemProps, VirtualListProps};

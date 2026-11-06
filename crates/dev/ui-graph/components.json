@@ -1341,13 +1341,6 @@
           "type": {
             "option": "text"
           }
-        },
-        {
-          "name": "label",
-          "doc": "What the line says, where the app marks its own line (a history's \"Since you last looked\"): empty for the toolkit's word for a conversation's new messages.",
-          "type": {
-            "option": "text"
-          }
         }
       ],
       "semantics": {
@@ -2524,6 +2517,11 @@
         {
           "name": "dense",
           "doc": "The row stands dense: one quiet line at the caption's size with the small glyph, as tall as that line and its inset, for a reference under content rather than a list of items.",
+          "type": "bool"
+        },
+        {
+          "name": "quiet",
+          "doc": "The row reads as subordinate to the rows around it: its title in the weaker ink, as an outline's quieter branch does.",
           "type": "bool"
         }
       ],
@@ -5358,6 +5356,11 @@
           }
         },
         {
+          "name": "multi_select",
+          "doc": "The list holds more than one selected row: a click with ctrl (or cmd) adds or takes away the row it lands on, one with shift takes the range from the last row chosen, and Escape puts the selection away. Without it a click chooses the one row the window shows.",
+          "type": "bool"
+        },
+        {
           "name": "unread",
           "doc": "The item a conversation's reader had not seen when they opened it (`first_unseen(c)`): the \"New messages\" divider stands over the row that shows it, and while that is above the view a pill at the foot offers to take the reader back to it. `None` draws neither. The list works out the row as it builds, so the same list keeps its rows and only the two the divider moved between build again.",
           "type": {
@@ -5411,6 +5414,10 @@
           "name": "activate",
           "doc": "A row was activated (a click, Enter, an assistive technology): carries the item it shows.",
           "value": "resource"
+        },
+        {
+          "name": "selected",
+          "doc": "The selection changed: carries the items selected, in the order they stand, and none when the selection was put away."
         }
       ],
       "state": [
@@ -5420,6 +5427,15 @@
           "type": {
             "option": {
               "list": "text"
+            }
+          }
+        },
+        {
+          "name": "chosen",
+          "doc": "The items selected, in the order they stand: the selection a host keeps for its person, given back so a list built again shows it as they left it.",
+          "type": {
+            "option": {
+              "list": "resource"
             }
           }
         },
@@ -6604,13 +6620,6 @@
           }
         },
         {
-          "name": "unseen",
-          "doc": "How many of what it holds changed since the person last looked (`unseen(items)`): a figure in the person's own colour beside the count, so a place says what is new to them apart from what it holds. Zero shows nothing.",
-          "type": {
-            "option": "int"
-          }
-        },
-        {
           "name": "live",
           "doc": "How many things wait for attention (unread, mentions): the list's one filled badge, in the person's colour; zero shows nothing.",
           "type": {
@@ -7002,11 +7011,11 @@
     },
     {
       "name": "TreeViewRow",
-      "doc": "What one row of a tree shows besides its label: a leading glyph, a tone, trailing text and what assistive technology says of it.",
+      "doc": "What one row of a tree shows besides its label: a leading glyph, the tone its title reads in, trailing text and what assistive technology says of it.",
       "props": [
         {
           "name": "icon",
-          "doc": "A leading glyph: the kind of thing it is.",
+          "doc": "A leading glyph: the kind of thing it is. Beside a checkbox it stands after the box, so a checked-off task still says what it is.",
           "type": {
             "option": "icon"
           }

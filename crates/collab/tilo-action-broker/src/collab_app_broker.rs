@@ -7344,7 +7344,11 @@ impl AppBrokerState {
         let broker_channels = self.broker_channels.lock().map_err(|_| {
             BrokerError::failed("collaboration governance state is unavailable".into())
         })?;
-        if !broker_channels.document_encryption_allowed(channel, envelope.encryption.as_ref()) {
+        if !broker_channels.document_encryption_allowed(
+            &route.cluster_id,
+            channel,
+            envelope.encryption.as_ref(),
+        ) {
             return Err(BrokerError::failed(
                 "plaintext document operation rejected after MLS migration".into(),
             ));

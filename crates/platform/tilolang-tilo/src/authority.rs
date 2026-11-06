@@ -1,6 +1,6 @@
 //! [`TiloAuthority`]: who may invoke what on the platform (authority.md).
 //!
-//! The runtime asks before every invocation it makes on its own (a flow's step, an agent's block,
+//! The runtime asks before every invocation it makes on its own (a step of a run, an agent's block,
 //! a press in a view), and the answer is the one `tilo_action_policy` gives every door: the
 //! person's authority in the workspace ([`Standing`]), bounded by whoever acts for them (an agent, by
 //! its delegation and the answers the person gave it) and by every author of the code that led to
@@ -51,12 +51,16 @@ struct State {
     trusted: HashSet<ModuleHash>,
     /// The application each loaded module version is the code of.
     apps: HashMap<ModuleHash, String>,
-    /// The resource kind each action and flow is published under, by its id.
+    /// The resource kind each action is published under, by its id.
     kinds: HashMap<String, String>,
     /// The principals the door admitted as software acting for a person, with that person.
     agents: HashMap<String, Option<String>>,
     /// The packages whose records are each member's own (`records: .own`), by app id.
     own: HashSet<String>,
+    /// The hosts each app's package declares its `uses web` requests may reach, as installed.
+    web: HashMap<String, Vec<String>>,
+    /// The `(app, host)` the workspace took away: a request to one answers as a value.
+    revoked_web: HashSet<(String, String)>,
 }
 
 /// The platform's authority. Clones share their state.
@@ -86,15 +90,60 @@ impl TiloAuthority {
         if meta.own_records {
             state.own.insert(meta.app.clone());
         }
+        if !meta.web.is_empty() {
+            state.web.insert(meta.app.clone(), meta.web.clone());
+        }
         for action in &meta.actions {
             let kind = meta
                 .subject_of(&action.params)
                 .map_or_else(|| meta.package_kind(), |ty| meta.kind_of(&ty.name));
             state.kinds.insert(action.id.clone(), kind);
         }
-        for flow in &meta.flows {
-            state.kinds.insert(flow.id.clone(), meta.package_kind());
-        }
+    }
+
+    /// The hosts each app's code may reach with `uses web`, as its package declares them: what
+    /// an install shows, by app, in the order their names sort. A host the workspace revoked is
+    /// left out.
+    #[must_use]
+    pub fn web_grants(&self) -> Vec<(String, Vec<String>)> {
+        let state = self.state.borrow();
+        let mut apps: Vec<&String> = state.web.keys().collect();
+        apps.sort();
+        apps.into_iter()
+            .map(|app| {
+                let hosts = state
+                    .web
+                    .get(app)
+                    .map(|hosts| {
+                        hosts
+                            .iter()
+                            .filter(|host| {
+                                !state.revoked_web.contains(&(app.clone(), (*host).clone()))
+                            })
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (app.clone(), hosts)
+            })
+            .collect()
+    }
+
+    /// The workspace refuses `app`'s requests to `host` from now on: the request answers as a
+    /// value, saying the workspace revoked the host.
+    pub fn revoke_web(&self, app: &str, host: &str) {
+        self.state
+            .borrow_mut()
+            .revoked_web
+            .insert((app.to_owned(), host.to_ascii_lowercase()));
+    }
+
+    /// The workspace lets `app` reach `host` again, as its package declares it.
+    pub fn grant_web(&self, app: &str, host: &str) {
+        self.state
+            .borrow_mut()
+            .revoked_web
+            .remove(&(app.to_owned(), host.to_ascii_lowercase()));
     }
 
     /// The code of the app `app` runs here no more: its modules are trusted no longer, until a
@@ -158,6 +207,22 @@ pub fn migration_of(id: &str) -> Option<(&str, &str)> {
     id.strip_prefix(MIGRATION_PREFIX)?.split_once('@')
 }
 
+/// The prefix of the principal a trigger runs as: the app acting by itself (`trigger:<app>`).
+pub const TRIGGER_PREFIX: &str = "trigger:";
+
+/// The principal a trigger of `app` runs as: the app's own invocation of one of its actions,
+/// which history names as the app acting by itself.
+#[must_use]
+pub fn trigger_principal(app: &str) -> Principal {
+    Principal::new(format!("{TRIGGER_PREFIX}{app}"))
+}
+
+/// The app a trigger principal names, when `id` is one.
+#[must_use]
+pub fn trigger_of(id: &str) -> Option<&str> {
+    id.strip_prefix(TRIGGER_PREFIX)
+}
+
 /// The subject a principal is in the workspace's policy: an agent by its id, a person by theirs.
 fn principal_subject(id: &str) -> Subject {
     match id.strip_prefix("agent:") {
@@ -180,6 +245,14 @@ const fn decision(answer: Answer) -> Decision {
 }
 
 impl Authority for TiloAuthority {
+    fn may_fetch(&self, app: &str, host: &str) -> bool {
+        !self
+            .state
+            .borrow()
+            .revoked_web
+            .contains(&(app.to_owned(), host.to_ascii_lowercase()))
+    }
+
     fn decide(&self, invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
         let standing = (self.standing)();
         let state = self.state.borrow();
@@ -215,11 +288,12 @@ impl Authority for TiloAuthority {
             Some(standing) if person == self.viewer.0 => standing.person.as_str(),
             _ => person,
         });
-        // A migration is the platform running the package's own update of its records on the
-        // workspace's origin: no person's grants decide it, the package's code still bounds it.
-        let migration = migration_of(&invoker.0).is_some();
+        // A migration is the platform running the package's own update of its records, and a
+        // trigger the app running one of its own actions, both on the workspace's origin: no
+        // person's grants decide them, the package's code still bounds them.
+        let alone = migration_of(&invoker.0).is_some() || trigger_of(&invoker.0).is_some();
         let person_party = match (&standing, person, agent) {
-            _ if migration => Party::default().owning(TreePath::root()),
+            _ if alone => Party::default().owning(TreePath::root()),
             (Some(standing), Some(person), _) => standing.policy.party(person),
             // An agent nobody delegated: only what the workspace grants it.
             (Some(standing), None, _) => standing
@@ -581,6 +655,57 @@ mod tests {
         assert_eq!(
             authority.decide(&me, &[], &info(EffectClass::Undoable, true)),
             Decision::Allow
+        );
+    }
+
+    #[test]
+    fn a_packages_declared_hosts_are_shown_and_the_workspace_may_take_one_back() {
+        let authority = TiloAuthority::new(Principal::new(PERSON), || None);
+        let meta = Meta {
+            app: APP.to_owned(),
+            web: vec!["example.com".to_owned(), "*.rss.org".to_owned()],
+            ..Meta::default()
+        };
+        authority.load(&module(), &meta);
+        // What an install shows: the hosts the package's header declares.
+        assert_eq!(
+            authority.web_grants(),
+            vec![(
+                APP.to_owned(),
+                vec!["example.com".to_owned(), "*.rss.org".to_owned()]
+            )]
+        );
+        let other = Meta {
+            app: "so.tilo.lang.notes".to_owned(),
+            ..Meta::default()
+        };
+        authority.load(&ModuleHash("notes-v1".to_owned()), &other);
+        assert_eq!(
+            authority.web_grants().len(),
+            1,
+            "a package declaring none grants none"
+        );
+        // The workspace takes one host away: the request is refused, and the install says so.
+        assert!(authority.may_fetch(APP, "example.com"));
+        authority.revoke_web(APP, "Example.COM");
+        assert!(!authority.may_fetch(APP, "example.com"));
+        assert_eq!(
+            authority.web_grants(),
+            vec![(APP.to_owned(), vec!["*.rss.org".to_owned()])]
+        );
+        // Declared or not, a host the workspace did not take away is the package's own to refuse.
+        assert!(authority.may_fetch(APP, "not.declared.example"));
+        // Reloading the package keeps the revocation, and the workspace may hand it back.
+        authority.load(&module(), &meta);
+        assert!(!authority.may_fetch(APP, "example.com"));
+        authority.grant_web(APP, "example.com");
+        assert!(authority.may_fetch(APP, "example.com"));
+        assert_eq!(
+            authority.web_grants(),
+            vec![(
+                APP.to_owned(),
+                vec!["example.com".to_owned(), "*.rss.org".to_owned()]
+            )]
         );
     }
 }

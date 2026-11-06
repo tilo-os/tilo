@@ -358,6 +358,7 @@ impl App {
                 component: component.name.clone(),
                 layer: layer.to_owned(),
                 info: Some(component.info.clone()),
+                partner: None,
             })
         })?;
         self.warnings.extend(result.warnings.iter().cloned());

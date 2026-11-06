@@ -81,7 +81,13 @@ impl Pictures {
         if picture.is_empty() {
             return None;
         }
-        self.store.get(&picture.src)
+        if let Some(image) = self.store.get(&picture.src) {
+            return Some(image);
+        }
+        // A picture that carries its own bytes needs no store to load it, so a surface painting
+        // outside the frame that answers its store (the desk's floating cards, drawn once when
+        // they change) shows it on that frame.
+        carried(&picture.src)
     }
 
     /// Whether the picture at `picture`'s address has failed to load: its bytes are not here,
@@ -90,6 +96,30 @@ impl Pictures {
     pub fn failed(&self, picture: &PictureSource) -> bool {
         !picture.is_empty() && self.store.failed(&picture.src)
     }
+}
+
+/// The picture a `data:` address carries, decoded here and kept for the next frame: `None`
+/// for any other address, which only its store loads.
+fn carried(url: &str) -> Option<PenikoImage> {
+    thread_local! {
+        static LAST: std::cell::RefCell<Option<(String, PenikoImage)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let kept = LAST.with(|last| {
+        last.borrow()
+            .as_ref()
+            .filter(|(address, _)| address == url)
+            .map(|(_, image)| image.clone())
+    });
+    if kept.is_some() {
+        return kept;
+    }
+    let bytes = data_bytes(url)?;
+    let decoded = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let (width, height) = decoded.dimensions();
+    let picture = crate::raster::rgba8(decoded.into_raw(), width, height);
+    LAST.with(|last| *last.borrow_mut() = Some((url.to_owned(), picture.clone())));
+    Some(picture)
 }
 
 /// The bytes of the content at `hash`, from the content store this process holds (the

@@ -6,7 +6,6 @@
 //! What an answer depends on is read through the view's reads, so the view runs again when it
 //! moves: an action's label that follows its subject, a title, who is at a resource.
 
-use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::core::{Args, Core, HResult, trap};
@@ -17,8 +16,7 @@ use crate::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 use crate::registry::Package;
 use crate::render::Offer;
 use crate::runtime::Reading;
-use crate::seen::{RUNS_STATE, SeenMark};
-use crate::store::Listing;
+use crate::seen::SeenMark;
 use crate::value::{ActionRef, EnumValue, RefValue, ResourceRef, Value};
 use crate::view_state::StateKey;
 use tilolang::types::Ty;
@@ -28,6 +26,15 @@ use tilolang::types::Ty;
 pub const LENS_WINDOW: &str = "$lenses";
 /// Where the runtime keeps how each resource's outside effects stand (`delivery(r)`).
 pub const DELIVERY_WINDOW: &str = "$delivery";
+
+/// One line of what proposing an action with some arguments says: the words a change to the
+/// field reads with, and the value they speak of as its type shows it, when they speak of one.
+pub(crate) struct Says {
+    /// The words, without the value ("set the due date to").
+    pub(crate) words: String,
+    /// What the words speak of as its type shows it, when they speak of a value.
+    pub(crate) value: Option<Value>,
+}
 
 /// A shown day with the time of day it holds beside it (`value:time`): the two read as one
 /// fact ("Tomorrow 9:00 AM").
@@ -43,25 +50,6 @@ fn with_time(shown: &Value, at: &str) -> Value {
         held.clone(),
         Value::Opt(Some(Box::new(Value::Text(at.to_owned())))),
     ])
-}
-
-/// Whether `id` (`doc/item`, as [`ResourceRef::id_string`] writes it) names one of `items`: an
-/// item of the collection `listing` reads, or a resource of the list.
-fn holds_item(items: &Value, listing: Option<&Listing>, id: &str) -> bool {
-    match items {
-        Value::Coll(coll) => {
-            let (Some((doc, Some(item))), Some(listing)) = (crate::value::split_id(id), listing)
-            else {
-                return false;
-            };
-            doc == coll.target.doc && matches!(listing.position(item), Some(Some(_)))
-        }
-        Value::List(list) => list.iter().any(|item| match item {
-            Value::Ref(reference) => reference.target.id_string() == id,
-            _ => false,
-        }),
-        _ => false,
-    }
 }
 
 /// A name in sentence case: `new_note` and `NewNote` read "New note".
@@ -291,6 +279,9 @@ impl Source {
 /// them, so a workspace nobody has read is not read message by message for a badge.
 const MENTION_SCAN: usize = 64;
 
+/// A suggestion's opening words when the host has no locale string for them.
+const SAYS_FALLBACK: &str = "{name} suggests:";
+
 impl Core {
     /// `delivery(r)` of the document `doc`: how its last outside effect stands, as the host
     /// last said; a view that read it runs again when that moves.
@@ -346,7 +337,12 @@ impl Core {
                 self.note_state_read(key, generation, &value);
                 self.ret_h(value)
             }
-            Imp::Versions | Imp::VersionEnd | Imp::RunChanges | Imp::Unseen | Imp::Steps => {
+            Imp::Versions
+            | Imp::VersionEnd
+            | Imp::FieldChanged
+            | Imp::RunChanges
+            | Imp::Unseen
+            | Imp::Steps => {
                 let value = self.versions_import(imp, a)?;
                 self.ret_h(value)
             }
@@ -356,7 +352,6 @@ impl Core {
             }
             Imp::Mentions => self.mentions_import(a),
             Imp::FirstUnseen => self.first_unseen_import(a),
-            Imp::UnseenCount => self.unseen_count_import(a),
             Imp::MetaOf => {
                 let subject = self.val(a.h(0)?)?;
                 let meta = match subject {
@@ -441,90 +436,6 @@ impl Core {
         self.ret_h(value)
     }
 
-    /// `unseen(items)`: how many of `items` — the items of a collection, or the resources of a
-    /// list — the person looking has not seen: the ones they looked at that someone changed
-    /// after their mark of them.
-    ///
-    /// Answered from the person's marks, never by checking the place's items one by one: what
-    /// they never looked at has nothing unseen for them, so a place of the sidebar costs what
-    /// the person has looked at, never what the place holds.
-    fn unseen_count_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
-        let items = self.val(a.h(0)?)?;
-        let person = self.looking()?;
-        let count = self
-            .unseen_count_of(&person, &items)
-            .map_err(crate::engine::HostFail::Trap)?;
-        crate::core::ret_i64(i64::try_from(count).unwrap_or(i64::MAX))
-    }
-
-    /// How many of `items` carry what `person` has not seen ([`Self::unseen_count_import`]),
-    /// read by the frame running: it runs again when a mark of theirs moves, or when a version
-    /// of an item of the place arrives.
-    pub(crate) fn unseen_count_of(&self, person: &str, items: &Value) -> Result<usize, String> {
-        let marks = self
-            .view_states
-            .borrow()
-            .slots_of(crate::seen::SEEN_WINDOW, person);
-        // The count moves when any of the person's marks does.
-        for (key, value, generation) in &marks {
-            self.note_state_read(key.clone(), *generation, value);
-        }
-        // What the count is made of: what the person looked at, and what changed under their
-        // own hands. A resource they neither looked at nor changed is new to them, not
-        // changed, and the count never walks the place's items to find that out: the bench,
-        // who has neither, counts nothing however much the place holds.
-        let mut candidates: BTreeMap<String, Option<SeenMark>> = self
-            .store
-            .borrow()
-            .changed_since(person)
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .map(|resource| (resource, None))
-            .collect();
-        for (key, value, _) in marks {
-            if key.state == RUNS_STATE {
-                continue;
-            }
-            if let Some(mark) = mark_of(Some(&value)) {
-                candidates.insert(key.state, Some(mark));
-            }
-        }
-        if candidates.is_empty() {
-            return Ok(0);
-        }
-        let listing = match items {
-            Value::Coll(coll) => Some(self.coll_listing(coll)?),
-            _ => None,
-        };
-        let runs = self.seen_runs(person);
-        let mut count: usize = 0;
-        for (resource, mark) in candidates {
-            if !holds_item(items, listing.as_deref(), &resource) {
-                continue;
-            }
-            let Some(at) = ResourceRef::parse_id(&resource, String::new()) else {
-                continue;
-            };
-            // The item's own type, so a change of any field of it is read as one: it may make
-            // the item unseen, or seen.
-            let Ok(ty) = self.store.borrow().type_of(&at) else {
-                continue;
-            };
-            let at = ResourceRef { ty, ..at };
-            let versions = self
-                .store
-                .borrow()
-                .versions(&at)
-                .map_err(|e| e.to_string())?;
-            self.read_versions_of(&at);
-            if crate::seen::unseen(&versions, person, mark.as_ref(), &runs).is_empty() {
-                continue;
-            }
-            count = count.saturating_add(1);
-        }
-        Ok(count)
-    }
-
     /// `workspace.me`: the person the view is shown to, which the frame running carries as the
     /// runtime was opened for them. An action reads `invoker` instead: it acts for someone,
     /// where the viewer only looks.
@@ -534,9 +445,10 @@ impl Core {
     }
 
     /// A version of `of` as a `host.Version`: who, when, what, the task run, its kind, the
-    /// fields it changed by name, the resource, what its action says it does, what it did and
-    /// its icon, and each field it changed with what it held before and after; then the id of
-    /// the action that made it, which `v.is(edit)` compares (`tilolang::host::action_id_at`).
+    /// fields it changed by name, the resource, what its action says it does, what it did, its
+    /// icon, each field it changed with what it held before and after, and how many items the
+    /// change was made over; then the id of the action that made it and of its change, which
+    /// code compares rather than reads (`tilolang::host::action_id_at`).
     fn version_value(&self, v: crate::store::Version, of: &ResourceRef) -> HResult<Value> {
         let task = v.task.as_ref().map(|run| {
             Box::new(Value::Tuple(vec![
@@ -620,16 +532,19 @@ impl Core {
             Value::Opt(icon),
             Value::List(changes),
             Value::Text(suggested),
+            // How many items it changed, read by name; the action and the change it names
+            // stand after the fields code reads by name (`host::action_id_at`).
+            Value::Int(i64::from(v.count)),
             Value::Text(v.action),
             Value::Text(v.change),
         ]))
     }
 
     /// What proposing `action` with `args` would change, in the words history says a change
-    /// with ([`crate::did`]): one sentence per argument it names, over the field of its type
-    /// ("set the due date to Saturday", "assigned this to Bo"). A parameter that names no
-    /// value says nothing.
-    pub(crate) fn proposal_says(&self, action: &str, args: &[Value]) -> Vec<String> {
+    /// with ([`crate::did`]): one line per argument it names, over the field of its type
+    /// ("set the due date to Saturday", "assigned this to Bo"), holding the value the type
+    /// shows it as when the words speak of one. A parameter that names no value says nothing.
+    pub(crate) fn proposal_lines(&self, action: &str, args: &[Value]) -> Vec<Says> {
         let params = {
             let reg = self.registry.borrow();
             let pkg = reg.action_package(action);
@@ -680,21 +595,22 @@ impl Core {
                 None => verbs.source.to_owned(),
             };
             let voices = self.words.borrow().word(verbs.key, &fills, &source);
-            let line = match verbs.shows {
-                crate::did::Shows::After => match self.change_shown(&ty, arg) {
-                    Ok(shown) => format!("{voices} {}", said(&shown)),
-                    Err(_) => voices,
-                },
-                _ => voices,
+            let value = match verbs.shows {
+                crate::did::Shows::After => self.change_shown(&ty, arg).ok(),
+                _ => None,
             };
-            out.push(line);
+            out.push(Says {
+                words: voices,
+                value,
+            });
         }
         out
     }
 
-    /// `proposal_note(r)`: what waits to be proposed of `r`, as one line of text — each
-    /// proposal's arguments in the words a change to them reads with, or the action's name when
-    /// they say nothing; empty when nothing waits.
+    /// `proposal_note(r)`: what waits to be proposed of `r`, as one line of text — who
+    /// proposed it and each proposal's arguments in the words a change to them reads with,
+    /// their values as the person reads them, or the action's name when they say nothing; empty
+    /// when nothing waits.
     pub(crate) fn proposal_note(&self, r: i32) -> HResult<Value> {
         let target = self.ref_arg(r)?;
         let mut says: Vec<String> = Vec::new();
@@ -710,18 +626,29 @@ impl Core {
                     _ => None,
                 })
                 .unwrap_or_default();
-            let lines = self.proposal_says(&rec.action, &args);
+            let mut lines: Vec<String> = self
+                .proposal_lines(&rec.action, &args)
+                .into_iter()
+                .map(|line| match line.value {
+                    Some(value) => format!("{} {}", line.words, self.said(&value)),
+                    None => line.words,
+                })
+                .collect();
             if lines.is_empty() {
-                says.push(self.action_label(&rec.action));
-            } else {
-                says.extend(lines);
+                lines.push(self.action_label(&rec.action));
             }
+            let name = self.name_of(&rec.author);
+            let said = self.words.borrow().word(
+                "tilolang-suggestion-says",
+                &[("name".to_owned(), name)],
+                SAYS_FALLBACK,
+            );
+            says.push(format!("{said} {}", lines.join(", ")));
         }
         if says.is_empty() {
             return Ok(Value::text(""));
         }
-        let lead = self.word("tilolang-suggested", "Suggested");
-        Ok(Value::text(format!("{lead}: {}", says.join(", "))))
+        Ok(Value::text(says.join("; ")))
     }
 
     /// What the workspace calls `who`, as a sentence names them: the person looking as the
@@ -945,7 +872,7 @@ impl Core {
                     .map(|entry| match entry {
                         Value::Tuple(pair) => match pair.as_slice() {
                             [Value::Text(key), held] => {
-                                let shown = said(&self.change_shown(inner, held)?);
+                                let shown = self.said(&self.change_shown(inner, held)?);
                                 Ok(one("text", Value::Text(format!("{key} {shown}")), None))
                             }
                             _ => trap("a map entry is a key and its value"),
@@ -981,7 +908,7 @@ impl Core {
         // runs, and its reading carries none of it: nothing of it is held here.
         if crate::foreign::is_foreign(at) {
             return Ok(match imp {
-                Imp::VersionEnd => Value::none(),
+                Imp::VersionEnd | Imp::FieldChanged => Value::none(),
                 _ => Value::List(Vec::new()),
             });
         }
@@ -991,6 +918,19 @@ impl Core {
                 let end = self.store.borrow().version_end(at, last).map_err(trapped)?;
                 self.read_versions_of(at);
                 match end {
+                    Some(v) => Value::some(self.version_value(v, at)?),
+                    None => Value::none(),
+                }
+            }
+            Imp::FieldChanged => {
+                let field = self.text(a.h(1)?)?;
+                let changed = self
+                    .store
+                    .borrow()
+                    .field_changed(at, &field)
+                    .map_err(trapped)?;
+                self.read_field_of(at, &field);
+                match changed {
                     Some(v) => Value::some(self.version_value(v, at)?),
                     None => Value::none(),
                 }
@@ -1005,58 +945,7 @@ impl Core {
                         .collect::<HResult<_>>()?,
                 )
             }
-            Imp::Steps => {
-                let versions = self.store.borrow().versions(at).map_err(trapped)?;
-                self.read_versions_of(at);
-                // Which of its changes the person has not seen, so a history draws the line
-                // where what they saw ends: the newest steps are the ones since they looked.
-                let person = self.looking()?;
-                let unseen: Vec<String> = self
-                    .unseen_read(&person, at)?
-                    .into_iter()
-                    .map(|v| v.change)
-                    .collect();
-                let mut steps: Vec<Vec<crate::store::Version>> = Vec::new();
-                for v in versions {
-                    match steps.last_mut() {
-                        Some(step) if step.last().is_some_and(|last| same_step(last, &v)) => {
-                            step.push(v);
-                        }
-                        _ => steps.push(vec![v]),
-                    }
-                }
-                let mut out = Vec::with_capacity(steps.len());
-                for step in steps.into_iter().rev() {
-                    let Some(last) = step.last() else {
-                        continue;
-                    };
-                    let who = Value::Principal(Principal(last.who.clone()));
-                    let at_time = Value::Text(last.at.clone());
-                    let task = Value::Opt(last.task.as_ref().map(|run| {
-                        Box::new(Value::Tuple(vec![
-                            Value::Text(run.id.clone()),
-                            Value::Text(run.task().to_owned()),
-                            Value::Text(run.title.clone()),
-                        ]))
-                    }));
-                    let mine = last.task.is_none()
-                        && self.looking_now().as_deref() == Some(last.who.as_str());
-                    let fresh = step.iter().any(|v| unseen.contains(&v.change));
-                    let versions = step
-                        .into_iter()
-                        .map(|v| self.version_value(v, at))
-                        .collect::<HResult<_>>()?;
-                    out.push(Value::Tuple(vec![
-                        who,
-                        at_time,
-                        task,
-                        Value::List(versions),
-                        Value::Bool(mine),
-                        Value::Bool(fresh),
-                    ]));
-                }
-                Value::List(out)
-            }
+            Imp::Steps => self.steps_value(at)?,
             _ => {
                 let versions = self.store.borrow().versions(at).map_err(trapped)?;
                 self.read_versions_of(at);
@@ -1068,6 +957,66 @@ impl Core {
                 )
             }
         })
+    }
+
+    /// `steps(at)`: the changes made to a resource, newest first, each with the versions one
+    /// change made together and the count of changes it folds.
+    fn steps_value(&self, at: &crate::value::ResourceRef) -> HResult<Value> {
+        let trapped = |e: crate::store::StoreError| crate::engine::HostFail::Trap(e.to_string());
+        let versions = self.store.borrow().versions(at).map_err(trapped)?;
+        self.read_versions_of(at);
+        let mut steps: Vec<Vec<crate::store::Version>> = Vec::new();
+        for v in versions {
+            match steps.last_mut() {
+                Some(step) if step.last().is_some_and(|last| same_step(last, &v)) => {
+                    step.push(v);
+                }
+                _ => steps.push(vec![v]),
+            }
+        }
+        let mut out = Vec::with_capacity(steps.len());
+        for step in steps.into_iter().rev() {
+            let Some(last) = step.last() else {
+                continue;
+            };
+            let who = Value::Principal(Principal(last.who.clone()));
+            let at_time = Value::Text(last.at.clone());
+            let task = Value::Opt(last.task.as_ref().map(|run| {
+                Box::new(Value::Tuple(vec![
+                    Value::Text(run.id.clone()),
+                    Value::Text(run.task().to_owned()),
+                    Value::Text(run.title.clone()),
+                ]))
+            }));
+            let mine =
+                last.task.is_none() && self.looking_now().as_deref() == Some(last.who.as_str());
+            // How many changes the step folds: versions of one change are one command over many
+            // items, which history says the count of and Undo takes back together.
+            let changes = {
+                let mut count = 0usize;
+                let mut previous: Option<&str> = None;
+                for v in &step {
+                    if previous != Some(v.change.as_str()) {
+                        count = count.saturating_add(1);
+                    }
+                    previous = Some(v.change.as_str());
+                }
+                count
+            };
+            let versions = step
+                .into_iter()
+                .map(|v| self.version_value(v, at))
+                .collect::<HResult<_>>()?;
+            out.push(Value::Tuple(vec![
+                who,
+                at_time,
+                task,
+                Value::List(versions),
+                Value::Bool(mine),
+                Value::Int(i64::try_from(changes).unwrap_or(i64::MAX)),
+            ]));
+        }
+        Ok(Value::List(out))
     }
 
     /// `changes(of: run)` of the `host.TaskRun` held at `h`: every version it made, oldest
@@ -1131,9 +1080,9 @@ impl Core {
         Ok(match &frame.kind {
             FrameKind::View(view) => view.viewer.0.clone(),
             FrameKind::Action(state) => state
-                .acting_as
+                .invocations
                 .last()
-                .map_or(&state.invoker, |(who, _)| who)
+                .map_or(&state.invoker, |inv| &inv.who)
                 .0
                 .clone(),
             _ => return trap("unseen: only a view or an action has someone looking"),
@@ -1146,25 +1095,34 @@ impl Core {
         mark_of(self.view_states.borrow().get(&key))
     }
 
-    /// `person`'s seen mark that covers `resource`: its own, else the mark of whatever holds
-    /// it, then of whatever holds that. Opening a conversation marks seen what its window
-    /// showed (task-legibility.md §4), and what it showed is the messages in it: items are
-    /// stored flat by id (convergence.md, "Items"), so the collection holding one names its
-    /// holder, never the path down to it.
+    /// `person`'s seen mark that covers `resource`: its own, else the mark of what it was made
+    /// from and of whatever holds it, then of what those were made from or holds. Opening a
+    /// conversation marks seen what its window showed (task-legibility.md §4), and what it
+    /// showed is the messages in it: items are stored flat by id (convergence.md, "Items"), so
+    /// the collection holding one names its holder, never the path down to it. Reading what a
+    /// record was made from reads the record, as a task's page shows the comments under it.
     pub(crate) fn seen_mark_of_tree(&self, person: &str, at: &ResourceRef) -> Option<SeenMark> {
-        if let Some(mark) = self.seen_mark(person, &at.id_string()) {
-            return Some(mark);
-        }
-        let mut holding = at.clone();
-        // A collection of items nests at most a few deep (a board's card, a card's comment).
+        let mut at = at.clone();
+        // A record is made from one record and held by a few containers (a board's card, a
+        // card's comment): the walk up ends either way in a few steps.
         for _ in 0..8 {
-            let Ok(Some((holder, _))) = self.store.borrow().container(&holding) else {
-                return None;
-            };
-            if let Some(mark) = self.seen_mark(person, &holder.id_string()) {
+            if let Some(mark) = self.seen_mark(person, &at.id_string()) {
                 return Some(mark);
             }
-            holding = holder;
+            let from = self
+                .store
+                .borrow()
+                .version_end(&at, false)
+                .ok()
+                .flatten()
+                .and_then(|made| made.from);
+            at = match from {
+                Some(from) => from,
+                None => match self.store.borrow().container(&at) {
+                    Ok(Some((holder, _))) => holder,
+                    _ => return None,
+                },
+            };
         }
         None
     }
@@ -1558,8 +1516,22 @@ impl Core {
         }
     }
 
+    /// Record in a view's frame that it read when the field `field` of `target` last changed: it
+    /// runs again when that field changes, and when a change that set it at creation is taken
+    /// back.
+    pub(crate) fn read_field_of(&self, target: &crate::value::ResourceRef, field: &str) {
+        if let Some(vs) = self.frames.borrow_mut().view_mut() {
+            vs.reads
+                .push((target.id_string(), crate::store::changed_field(field)));
+            vs.reads.push((
+                target.id_string(),
+                crate::store::Reflected::CREATED.to_owned(),
+            ));
+        }
+    }
+
     /// What an action is called where history names it: its label, or what the host did.
-    fn action_label(&self, id: &str) -> String {
+    pub(crate) fn action_label(&self, id: &str) -> String {
         if let Some(found) = self
             .registry
             .borrow()
@@ -1618,6 +1590,23 @@ impl Core {
     /// What the platform shows of the type `ty`, and of the resource `r` of it when there is
     /// one: a `host.Meta`.
     fn type_meta(&self, ty: &str, r: Option<&RefValue>) -> HResult<Value> {
+        // A type a Rust app's views draw has no package declaring it: its metadata comes from the
+        // views the app declared (a place shows a resource of it when its type has a default
+        // view), and the runtime draws it through that view (one-app-model.md §2).
+        if let Some(views) = crate::rust_views::app_of(&self.rust_views, ty) {
+            let kind = crate::rust_views::kind_of(&views, ty);
+            let name = kind.rsplit(['#', '.']).next().unwrap_or(&kind).to_owned();
+            let type_name = sentence(&name);
+            let opens = views.views_of(&kind).iter().any(|view| view.is_default);
+            return Ok(Value::Tuple(vec![
+                Value::Text(type_name.clone()),
+                Value::Text(type_name.clone()),
+                Value::Text(type_name.clone()),
+                Value::Text(type_name),
+                Value::none(),
+                Value::Bool(opens),
+            ]));
+        }
         // Another app's resource names its type `app#Type`, as its readings come in: a type
         // whose package is not loaded here asks for it, and the call runs again when it comes.
         let (pkg, info) = self.type_of_ref(ty)?;
@@ -1856,7 +1845,8 @@ impl Core {
     /// The offer of making what `action` makes from a subject of the `source`'s type: `action`
     /// makes a type its package declares, puts it in the package's root its first parameter
     /// names, and takes the source, when a parameter's type is the source's type, and the title
-    /// its type is called by; what it leaves to default means a menu runs it as it is. Answers
+    /// its type is called by; what it leaves to default means a menu runs it as it is, and an
+    /// optional one before the title is passed `.none`, which is what its default is. Answers
     /// the type it makes, whether the source is a parameter of it, and the offer.
     fn make_offer<'m>(
         &self,
@@ -1909,6 +1899,14 @@ impl Core {
             } else if !title_arg && param.name == title.name && param.ty == "Text" {
                 args.push(Value::Text(source.title.clone()));
                 title_arg = true;
+            } else if param
+                .default
+                .as_ref()
+                .is_some_and(crate::meta::DefaultMeta::is_none)
+            {
+                // A parameter whose default is `.none` needs nothing before it: the offer passes
+                // it there, so the title the action takes after it still stands.
+                args.push(Value::none());
             } else if param.default.is_some() {
                 break;
             } else {
@@ -2111,6 +2109,34 @@ impl Core {
         subject: &RefValue,
         viewer: &Principal,
     ) -> HResult<(Option<String>, Reading)> {
+        self.decided(
+            action,
+            &self.subject_args(action, subject),
+            viewer,
+            Decides::Requirement,
+        )
+    }
+
+    /// Why the action `action` cannot apply to `subject` where a view offers it, as its
+    /// `applies` conditions say: the first that does not hold, in `viewer`'s words, or `None`
+    /// when it can.
+    pub(crate) fn applies_reading(
+        &self,
+        action: &str,
+        subject: &RefValue,
+        viewer: &Principal,
+    ) -> HResult<(Option<String>, Reading)> {
+        self.decided(
+            action,
+            &self.subject_args(action, subject),
+            viewer,
+            Decides::Applies,
+        )
+    }
+
+    /// What a condition of `action` is decided on: its subject, and the places after it left to
+    /// their own.
+    fn subject_args(&self, action: &str, subject: &RefValue) -> Vec<Value> {
         let places = {
             let registry = self.registry.borrow();
             registry
@@ -2120,7 +2146,7 @@ impl Core {
         };
         let mut args = vec![Value::Ref(subject.clone())];
         args.extend((0..places).map(|_| Value::none()));
-        self.decided(action, &args, viewer, Decides::Requirement)
+        args
     }
 
     /// Why the action `action` cannot do what `which` asks — run on the item now, or apply to
@@ -2269,19 +2295,34 @@ fn same_step(last: &crate::store::Version, next: &crate::store::Version) -> bool
     }
 }
 
-/// What a value as `c.before` and `c.after` show it says as text, where it is part of a phrase
-/// (an entry of a map): a person by name, a case by its label, a list one item after another.
-pub(crate) fn said(shown: &Value) -> String {
-    match shown {
-        Value::List(items) => items.iter().map(said).collect::<Vec<_>>().join(", "),
-        Value::Tuple(parts) => match parts.as_slice() {
-            [Value::Text(kind), _, Value::Opt(Some(name))] if kind == "principal" => {
-                said_value(name)
-            }
-            [_, held, _] => said_value(held),
-            _ => String::new(),
-        },
-        other => said_value(other),
+impl Core {
+    /// What a value as `c.before` and `c.after` show it says as text, where it is part of a
+    /// phrase (an entry of a map, a row's line): a person by name, a case by its label, a day
+    /// or a time of day as the host writes it, a list one item after another.
+    pub(crate) fn said(&self, shown: &Value) -> String {
+        match shown {
+            Value::List(items) => items
+                .iter()
+                .map(|item| self.said(item))
+                .collect::<Vec<_>>()
+                .join(", "),
+            Value::Tuple(parts) => match parts.as_slice() {
+                [Value::Text(kind), _, Value::Opt(Some(name))] if kind == "principal" => {
+                    said_value(name)
+                }
+                [Value::Text(kind), held, _] if kind == "date" || kind == "time" => {
+                    let text = said_value(held);
+                    self.shown
+                        .borrow()
+                        .as_ref()
+                        .map_or_else(|| text.clone(), |host| host.shown(kind, &text))
+                }
+                [_, held, _] => said_value(held),
+                _ => String::new(),
+            },
+            Value::Principal(who) => self.name_of(who),
+            other => said_value(other),
+        }
     }
 }
 

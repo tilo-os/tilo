@@ -15,10 +15,10 @@ app_opt    = ( "icon" | "category" ) ":" "." ident
 app_id     = ident { "." ident } ;
 
 item       = { doc } ( use | type_decl | alias | enum_decl | root | default_view | row_view
-                     | views | [ role ] action | flow | view | fn | scenario ) ;
+                     | views | [ role ] action | view | fn | scenario | trigger ) ;
 use        = "use" app_id [ "as" ident ] ;
-root       = "root" [ ident ":" ] type ;                      (* `root notes: Notes` *)
-alias      = "type" Ident "=" type ;                          (* a container named so is a resource *)
+root       = "root" [ ident ":" ] type ;                      (* `root notebook: Notebook`, a record type *)
+alias      = "type" Ident "=" type ;                          (* another name for a type *)
 default_view = "default" "view" ident "for" ( type | ident ) ;   (* a type, or a root by name *)
 row_view   = "row" "view" ident "for" type ;
 views      = "views" ident { "," ident } "for" type ;   (* what a window of the type switches between *)
@@ -50,12 +50,15 @@ one_type   = ident { "." ident }                                  (* Int, Note, 
              "<" type { "," type } ">"
            | "(" [ type { "," type } ] ")" [ "->" type ] ;         (* tuple, (), or a function type *)
 
-action     = "action" ident params [ "->" type ] [ "proposal" ident [ "(" ident { "," ident } ")" ] ]
-             [ opts ] block ;
-flow       = "flow" ident params [ "->" type ] block ;
+action     = "action" ident params [ "->" type ] [ uses ]
+             [ "proposal" ident [ "(" ident { "," ident } ")" ] ] [ opts ] block ;
+uses       = "uses" effect { "," effect } ;                        (* what the body reads that a replay cannot compute again *)
+effect     = "web" | "random" | "time" ;
 fn         = "fn" ident params "->" type block ;
-view       = "view" ident [ "<" Ident { "," Ident } ">" ] params ui_block ;
+view       = [ "template" ] "view" ident [ "<" Ident { "," Ident } ">" ] params ui_block ;
 scenario   = "scenario" string [ "->" type ] block ;
+trigger    = "trigger" Ident params ( "every" duration
+                                   | "at" ident "." ident ) ":" expr ;   (* the action it runs *)
 params     = "(" [ param { "," param } ] ")" ;
 param      = ident ":" type [ "=" expr ] ;                         (* defaults: action parameters only *)
 opts       = "(" ident ":" expr { "," ident ":" expr } ")" ;       (* icon:, label:, on:, key:, did: *)
@@ -64,7 +67,6 @@ block      = "{" { stmt NL } "}" ;
 stmt       = "let" ident [ ":" type ] "=" expr
            | place ( "=" | "+=" | "-=" ) expr
            | "for" ident "in" expr block
-           | "as" expr [ "at" expr ] block                          (* in a scenario: act as a person, at a time *)
            | "return" [ expr ]
            | expr ;
 place      = ident { "." ident } ;
@@ -81,8 +83,9 @@ add        = mul { ( "+" | "-" ) mul } ;
 mul        = unary { ( "*" | "/" | "%" ) unary } ;
 unary      = ( "-" | "try" ) unary | postfix ;
 postfix    = primary { "." ident | "?." ident [ "(" [ arg { "," arg } ] ")" ]
+                     | "<" type { "," type } ">"                  (* the types a call takes *)
                      | "(" [ arg { "," arg } ] ")" } ;
-arg        = [ ident ":" ] expr ;
+arg        = [ ident ":" ] expr ;                       (* `invoke(act(args), by: who, at: time, from: r)` in a scenario *)
 primary    = int | float | length | duration | calendar | string | "true" | "false" | reference
            | ident | "root" type
            | "." ident [ "(" [ arg { "," arg } ] ")" ]             (* enum value: .some(x), .primary *)
@@ -110,10 +113,10 @@ ui_call    = postfix [ ui_block | "{" ident "->" { ui_stmt NL } "}" ] [ "as" ide
 Tokens:
 
 - `Ident` starts with an uppercase letter (types and enums), `ident` with a lowercase one.
-  Keywords: `app use as type enum action flow view fn let if else match for in return and or not
+  Keywords: `app use as type enum action view fn let if else match for in return and or not
   true false try merge proposal`. `window`, `lens`, `root`, `default`, `row`, `scenario`,
-  `primary`, `destructive`, `migration` and `views` are keywords only where the grammar above uses
-  them.
+  `primary`, `destructive`, `migration`, `views` and `template` are keywords only
+  where the grammar above uses them.
 - `length` is a number with `rem`, `dp` or `fr` (`11rem`); `duration` an integer with `s`, `m`,
   `h`, `d` or `w` (`-7d`).
 - `calendar` is a day `2026-06-29` (a Date), an instant `2026-06-29T07:02Z` or
@@ -124,6 +127,8 @@ Tokens:
   `@version` (`@so.tilo.todo.Todo:01J8/3K`). An older reference's `/field:item` steps still
   read, as the item of its last step.
 - `.name` where a lambda goes is a key path, the lambda `x -> x.name` (`sort_by(.due)`).
+- `<` after a name is a call's type arguments when the `<types>` is followed by `(` and the name
+  is a call (`json.decode<List<Entry>>(text)`); anywhere else it is the less-than of a comparison.
 - `//` starts a comment to the end of the line; the canonical form keeps it above the
   declaration, field, statement or match arm it was written over. `///` is a doc comment: it
   belongs to the declaration that follows, is kept in the metadata, and is what agents read.

@@ -17,7 +17,7 @@ default view shell_parts for ShellParts
 
 /// The shell window: each kind in a section of its own page.
 view shell_parts(x: ShellParts) {
-    lens last: Text = ""
+    state last: Text = ""
     std.page(x) {
         ui.Section("Chrome") {
             ui.Chrome(name: "A bar", shape: .square, edge: .top) {

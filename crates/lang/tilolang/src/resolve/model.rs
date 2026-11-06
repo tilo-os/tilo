@@ -2,9 +2,10 @@
 //! callables (actions, functions, views, sorts) with the parameters and presentation they
 //! carry.
 
-use crate::ast::{Expr, StateLayer};
+use crate::ast::Expr;
 use crate::resolve::plain_text;
 use crate::types::{EffectClass, MergeKind, Ty, TypeKey};
+use std::collections::BTreeSet;
 
 #[derive(Clone, Debug)]
 pub struct FieldInfo {
@@ -29,27 +30,11 @@ pub struct TypeInfo {
     pub fields: Vec<FieldInfo>,
     /// Its filters, default order and hidden fields (search.md, "What a type declares").
     pub search: crate::meta::SearchMeta,
-    /// `type Notes = Collection<Note>`: a resource that is its one field, [`HOLDER_FIELD`].
-    /// Code uses it as that container.
-    pub holder: bool,
     /// The kind of an outside service's resource it holds (`crate::origin`).
     pub origin: Option<String>,
 }
 
-/// The name of the one field of a type that names a container (`type Notes =
-/// Collection<Note>`): its ids lock entry is `Notes.items`.
-pub const HOLDER_FIELD: &str = "items";
-
 impl TypeInfo {
-    /// The container a holder type is.
-    pub fn held(&self) -> Option<&FieldInfo> {
-        if self.holder {
-            self.fields.first()
-        } else {
-            None
-        }
-    }
-
     pub fn field(&self, name: &str) -> Option<&FieldInfo> {
         self.fields.iter().find(|f| f.name == name)
     }
@@ -127,13 +112,12 @@ impl EnumInfo {
     }
 }
 
-/// A `window` or `lens` declaration of a view.
+/// A `state` declaration of a view.
 #[derive(Clone, Debug)]
 pub struct StateInfo {
     pub view: String,
     pub name: String,
     pub id: String,
-    pub layer: StateLayer,
     pub ty: Ty,
 }
 
@@ -146,8 +130,9 @@ pub struct ParamInfo {
     /// Whether the view offering the action supplies it (`above: Option<Task> (above)`): the
     /// place the item stands in, as a row of a list gives the row above it.
     pub place: bool,
-    /// Whether the text of an entry fills it (`title: Text (entry)`): what the words left after
-    /// the other parameters take theirs title the item with (`crate::entry`).
+    /// Whether the text of an entry fills it: an action's one `Text` parameter is what the
+    /// words left after the other parameters take theirs title the item with
+    /// (`crate::entry`).
     pub entry: bool,
 }
 
@@ -191,7 +176,6 @@ pub fn default_export(action: &str, param: &str) -> String {
 pub enum CKind {
     Fn,
     Action,
-    Flow,
     View,
 }
 
@@ -200,7 +184,6 @@ impl CKind {
         match self {
             Self::Fn => "fn",
             Self::Action => "action",
-            Self::Flow => "flow",
             Self::View => "view",
         }
     }
@@ -219,13 +202,16 @@ pub struct Callable {
     pub result: Ty,
     /// The class recorded in foreign metadata.
     pub class: Option<EffectClass>,
-    /// How the platform presents an action or flow: its label, icon and role.
+    /// `uses web, time`: the effects its body has, as the declaration says them. An action
+    /// reads nothing else that a replay would compute differently ([`crate::effects::Effect`]).
+    pub uses: BTreeSet<crate::effects::Effect>,
+    /// How the platform presents an action: its label, icon and role.
     pub present: Presentation,
     /// The hidden action of a `scenario`; its name is the scenario's, which source cannot call.
     pub scenario: bool,
 }
 
-/// What a button or a menu shows for an action or flow, from its declaration.
+/// What a button or a menu shows for an action, from its declaration.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Presentation {
     pub label: String,
@@ -292,7 +278,7 @@ pub(super) fn doc_line(doc: &str) -> Option<String> {
     (!line.is_empty()).then(|| line.to_string())
 }
 
-/// An action's or flow's label: its name in sentence case, or its doc's first line when that is
+/// An action's label: its name in sentence case, or its doc's first line when that is
 /// shorter.
 pub fn action_label(name: &str, doc: &str) -> String {
     let named = sentence_case(name);

@@ -9,14 +9,12 @@
 //! requested application.
 pub(crate) type PersonIdentity = (String, (u8, u8, u8));
 
+use durable_store::{DurableStore, StorageKey, WriteOp};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tilo_sort::CompactSort as _;
-
-use durable_store::{DurableStore, StorageKey, WriteOp};
 use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TabId, TileContent, Workspace};
 use tilo_desktop_surface::navigation::Application;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
@@ -350,8 +348,11 @@ pub(crate) struct Shared {
     /// before the record itself arrived, or the tab's application is still
     /// loading.
     waiting: Rc<RefCell<std::collections::HashSet<TabId>>>,
-    /// Record ids of tabs whose application is not loaded yet: the record's
-    /// kind comes with the application, so they are bound once it is.
+    /// The record ids of tabs this page has not bound yet: an application
+    /// whose code has not loaded, one it does not run, or a record it does not
+    /// read. Each is written back to the shared desk under the spelling it
+    /// arrived in, as native keeps the record a window held
+    /// ([`crate::desk_records::adopted`]).
     unbound: Rc<RefCell<HashMap<TabId, String>>>,
     /// The content, by hash, each tab opened with its app is to open: what
     /// another window handed over (a capture, a recording).
@@ -650,13 +651,11 @@ impl Shared {
                 _ => None,
             })?;
         let records = self.records.borrow();
-        let id = &records.get(&tab)?.id;
-        let record = if id.is_package_primary() {
-            String::new()
-        } else {
-            id.as_str().to_owned()
-        };
-        Some((app, record))
+        let checkout = records.get(&tab)?;
+        Some((
+            app,
+            crate::desk_records::wire_record(&checkout.id).to_owned(),
+        ))
     }
 }
 
@@ -828,8 +827,9 @@ impl Tiles {
     fn component(&mut self, tab: &Tab) -> Result<AppComponent, Unready> {
         let app_id = self.ready_app(tab)?;
         let definition = application(app_id).ok_or_else(|| not_in_the_browser(app_id))?;
-        let unbound = self.shared.unbound.borrow_mut().remove(&tab.id);
-        if let Some(id) = unbound.as_deref().and_then(RecordId::parse) {
+        let unbound = self.shared.unbound.borrow().get(&tab.id).cloned();
+        if let Some(id) = unbound.as_deref().and_then(RecordId::from_route) {
+            self.shared.unbound.borrow_mut().remove(&tab.id);
             let checkout = RecordCheckout::new(id, definition.record_kind.clone());
             self.shared.records.borrow_mut().insert(tab.id, checkout);
         }
@@ -1362,7 +1362,8 @@ impl Persistence {
         } else {
             // No workspace holds this desk: what the person changed is this page's
             // change of its own document.
-            let records = live_records(&self.records.borrow(), &self.unbound.borrow(), &tree);
+            let records =
+                crate::desk_records::live(&self.records.borrow(), &self.unbound.borrow(), &tree);
             let authors = live_authors(&self.authors.borrow(), &tree);
             tilo_desktop_model::desktop_doc::write_shared(&mut document, &tree, &records, &authors)
         };
@@ -1473,37 +1474,6 @@ impl Persistence {
     }
 }
 
-/// `(tab, record)` for every tab of `tree` whose component bound a record,
-/// or whose application had not loaded and left the record id it was to
-/// open.
-fn live_records(
-    bindings: &HashMap<TabId, RecordCheckout>,
-    unbound: &HashMap<TabId, String>,
-    tree: &DesktopTree,
-) -> Vec<(TabId, String)> {
-    let mut live = std::collections::HashSet::new();
-    for workspace in &tree.workspaces {
-        for strip in &workspace.strips {
-            for group in &strip.window_groups {
-                live.extend(group.tabs.iter().map(|tab| tab.id));
-            }
-        }
-    }
-    let mut records: Vec<(TabId, String)> = bindings
-        .iter()
-        .filter(|(tab, _)| live.contains(tab))
-        .map(|(tab, checkout)| (*tab, checkout.id.as_str().to_owned()))
-        .chain(
-            unbound
-                .iter()
-                .filter(|(tab, _)| live.contains(tab) && !bindings.contains_key(tab))
-                .map(|(tab, record)| (*tab, record.clone())),
-        )
-        .collect();
-    records.compact_sort();
-    records
-}
-
 /// Who made each strip and opened each window still on `tree`.
 fn live_authors(authors: &BTreeMap<u64, String>, tree: &DesktopTree) -> BTreeMap<u64, String> {
     let mut live = std::collections::HashSet::new();
@@ -1528,7 +1498,8 @@ pub(crate) fn shared_value(
     shared: &Shared,
 ) -> tilo_desktop_model::ownership::SharedDesktop {
     let tree = handle.shared_tree();
-    let records = live_records(&shared.records.borrow(), &shared.unbound.borrow(), &tree);
+    let records =
+        crate::desk_records::live(&shared.records.borrow(), &shared.unbound.borrow(), &tree);
     let authors = live_authors(&shared.authors.borrow(), &tree);
     tilo_desktop_model::ownership::SharedDesktop {
         tree,
@@ -1550,7 +1521,7 @@ pub(crate) fn apply_shared(
         return Err("a desktop needs a workspace".into());
     }
     {
-        let (bound, unbound) = stored_records(&desktop);
+        let (bound, unbound) = adopted_records(&desktop);
         shared.unbound.borrow_mut().extend(unbound);
         let mut authors = shared.authors.borrow_mut();
         for (id, author) in &desktop.authors {
@@ -1609,40 +1580,15 @@ pub(crate) fn return_to(
     apply_shared(handle, shared, value)
 }
 
-/// The record bindings of a stored desktop, for the tabs whose application
-/// the page still registers: bound where the application is loaded, as
-/// record ids where it is not yet.
-fn stored_records(
+/// The record each window of a stored desktop shows, as this page takes it
+/// over: bound where the window's application runs here, and held under the
+/// desk's own spelling otherwise ([`crate::desk_records::adopted`]).
+fn adopted_records(
     desktop: &tilo_desktop_model::ownership::SharedDesktop,
 ) -> (HashMap<TabId, RecordCheckout>, HashMap<TabId, String>) {
-    let mut apps = HashMap::new();
-    for workspace in &desktop.tree.workspaces {
-        for strip in &workspace.strips {
-            for group in &strip.window_groups {
-                for tab in &group.tabs {
-                    if let TileContent::LocalApp { app_id, .. } = &tab.tile {
-                        apps.insert(tab.id, app_id.clone());
-                    }
-                }
-            }
-        }
-    }
-    let mut bound = HashMap::new();
-    let mut unbound = HashMap::new();
-    for (tab, record) in &desktop.records {
-        let Some(app) = apps.get(tab) else { continue };
-        if let Some(definition) = application(app) {
-            if let Some(id) = RecordId::parse(record) {
-                bound.insert(
-                    *tab,
-                    RecordCheckout::new(id, definition.record_kind.clone()),
-                );
-            }
-        } else if known_application(app).is_some() {
-            unbound.insert(*tab, record.clone());
-        }
-    }
-    (bound, unbound)
+    crate::desk_records::adopted(desktop, |app| {
+        application(app).map(|definition| definition.record_kind.clone())
+    })
 }
 
 /// The desk as the desk's own document: `document` when it already is one,
@@ -1768,7 +1714,7 @@ pub(crate) fn mount(
     let history_key = StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "history");
     let document = open_desk(store.as_ref(), &key, &history_key, &inputs.author);
     let tree = if let Some(stored) = tilo_desktop_model::shared_record::read(&document, None) {
-        let (bound, unbound) = stored_records(&stored);
+        let (bound, unbound) = adopted_records(&stored);
         *shared.records.borrow_mut() = bound;
         *shared.unbound.borrow_mut() = unbound;
         *shared.authors.borrow_mut() = stored.authors;

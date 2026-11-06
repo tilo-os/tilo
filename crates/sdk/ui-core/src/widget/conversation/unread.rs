@@ -34,15 +34,10 @@ impl UnreadDividerFace {
     }
 
     /// Paint the divider across `band`, its rule running from `leading` to
-    /// the label, which ends at `trailing` (the message column's edges). `label`
-    /// says what the line marks; the toolkit's "New messages" when empty.
-    pub fn paint(paint: &mut PaintCtx<'_>, band: Rect, leading: f64, trailing: f64, label: &str) {
+    /// the label, which ends at `trailing` (the message column's edges).
+    pub fn paint(paint: &mut PaintCtx<'_>, band: Rect, leading: f64, trailing: f64) {
         let theme = paint.theme;
-        let label = if label.is_empty() {
-            Self::label()
-        } else {
-            label.to_owned()
-        };
+        let label = Self::label();
         let style = theme.text(TextRole::Caption);
         let gap = f64::from(theme.tokens.spacing.s3);
         let room = crate::num::f32_of_f64((trailing - leading).max(0.0));
@@ -82,9 +77,6 @@ impl UnreadDividerFace {
 pub struct UnreadDividerProps {
     /// What it is called, for assistive technology; empty for the toolkit's own word.
     pub name: Option<String>,
-    /// What the line says, where the app marks its own line (a history's "Since you last
-    /// looked"): empty for the toolkit's word for a conversation's new messages.
-    pub label: Option<String>,
 }
 
 /// [`UnreadDividerProps`], built: an unread divider over a row.
@@ -94,8 +86,6 @@ pub struct UnreadDivider {
     /// where it moved.
     drawn: bool,
     name: String,
-    /// What the line says; empty for the toolkit's "New messages".
-    label: String,
 }
 
 impl UnreadDivider {
@@ -105,7 +95,6 @@ impl UnreadDivider {
             rect: Rect::ZERO,
             drawn: false,
             name: String::new(),
-            label: String::new(),
         }
     }
 
@@ -130,7 +119,6 @@ impl crate::component::Described for UnreadDivider {
             rect: Rect::ZERO,
             drawn: false,
             name: props.name.unwrap_or_default(),
-            label: props.label.unwrap_or_default(),
         }
     }
 }
@@ -171,7 +159,6 @@ impl crate::widget::Widget for UnreadDivider {
             self.rect,
             self.rect.x0,
             self.rect.x1,
-            &self.label,
         );
     }
 
@@ -190,11 +177,7 @@ impl crate::widget::Widget for UnreadDivider {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
         let name = if self.name.is_empty() {
-            if self.label.is_empty() {
-                UnreadDividerFace::label()
-            } else {
-                self.label.clone()
-            }
+            UnreadDividerFace::label()
         } else {
             self.name.clone()
         };

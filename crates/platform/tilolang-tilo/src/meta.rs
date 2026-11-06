@@ -236,7 +236,7 @@ fn kind_of_ty(meta: &Meta, ty: &Ty) -> Option<(ColumnKind, Vec<String>)> {
 fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSchema> {
     let mut out = Vec::new();
     for f in &ty.search.filters {
-        // A filter on the time it is asked at, or on the person it is asked for, holds of
+        // A filter on the time it is asked at or on the person it is asked for holds of
         // different items as time passes or for each of them: it is answered from the columns of
         // the fields it reads, never kept as a column of its own.
         if f.pred
@@ -277,9 +277,9 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
                 Ok(Ty::List(_) | Ty::Tuple(_) | Ty::Map(_) | Ty::Result(..))
             ),
             // A counter is a column of its value. A set's members are one run per member
-            // (`columns::values`), so membership and presence are runs of its column without
-            // any `filter` naming it: `boxes.contains("inbox")` finds the conversations in one
-            // box by one run, not one by one.
+            // (`columns::values`), so membership and presence are runs of its column
+            // without any `filter` naming it: `boxes.contains("inbox")` finds the
+            // conversations in one box by one run, not one by one.
             MergeKind::Counter | MergeKind::Set => true,
             _ => false,
         };

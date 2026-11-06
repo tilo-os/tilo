@@ -14,8 +14,9 @@ tilolang-ask-confirm = Allow
 tilolang-ask-decline = Decline
 tilolang-suggestion-accept = Accept
 tilolang-suggestion-dismiss = Dismiss
-# What waits to be proposed of an item, said in a line ("Suggested: set the due date to Sat").
-tilolang-suggested = Suggested
+# Who proposes what waits on an item, said in the line that carries what it would do
+# ("Scout suggests: set the due date to Sat").
+tilolang-suggestion-says = { $name } suggests:
 tilolang-suggested-by = suggested by { $name }
 tilolang-ask-always = Always allow
 tilolang-ask-denied = That change is not allowed here.
@@ -43,13 +44,15 @@ tilolang-did-set-date = set the { $field } date to
 tilolang-did-cleared-date = cleared the { $field } date
 tilolang-did-set-time = set the { $field } time to
 tilolang-did-cleared-time = cleared the { $field } time
+# What a change made over many items at once says: the action's own words are written for one
+# item ("moved this to"), so the sentence counts what it changed.
+tilolang-did-many = changed { $count } { $kind }
 # How one sentence goes on with the next field a change wrote ("… and set priority to High").
 tilolang-did-and = and
 
 tilolang-invocation-pending = Waiting
 tilolang-invocation-done = Done
 tilolang-invocation-suggested = Waiting for approval
-tilolang-invocation-proposed = Suggested
 tilolang-invocation-declined = Declined
 tilolang-invocation-failed = Failed
 tilolang-invocation-denied = Not allowed
@@ -70,6 +73,12 @@ tilolang-all-done = All done
 # A reference in rich text to something the reader cannot read, as its chip says it.
 rich-text-reference-unreadable = Not shared with you
 tilolang-none-selected = No { $kind } selected
+# How many items a person chose, in the bar that acts on them.
+tilolang-selected = { $count ->
+    [one] 1 selected
+   *[other] { $count } selected
+}
+tilolang-clear-selection = Clear selection
 tilolang-sort = Sort
 tilolang-undo = Undo
 # Typed while the window was busy with a press that opened no field, and no field had the keyboard.
@@ -92,7 +101,6 @@ tilolang-empty-value = Empty
 tilolang-yes = Yes
 tilolang-no = No
 tilolang-history = History
-tilolang-since-looked = Since you last looked
 tilolang-history-changes = { $count ->
     [one] 1 change
    *[other] { $count } changes
@@ -173,6 +181,3 @@ tilolang-remind-weeks-after = { $count ->
     [one] 1 week after
    *[other] { $count } weeks after
 }
-
-tilolang-reminder-late = Late
-tilolang-reminder-open = Open

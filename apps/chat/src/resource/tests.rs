@@ -383,13 +383,14 @@ fn shared_space_resource_journey_preserves_address_author_and_viewer_boundary() 
     let mut app = TestApp::<ChatShell>::new().unwrap();
     let _ = general(&app);
     let reference = serde_json::json!({
+        "app": "so.tilo.word-processor", "record": "proposal",
         "kind": "word_processor.block", "id": "word_processor.block:paragraph-7",
         "label": "Proposal", "span": {"start": 2, "end": 9, "unit": "Chars"}
     });
     app.call_on(
         &crate::testing::chain(),
         "share-resource",
-        serde_json::json!({"channel": "c_chat", "reference": reference, "source_provider": "record:so.tilo.word-processor:proposal", "text": "Discuss this paragraph"}),
+        serde_json::json!({"channel": "c_chat", "attached": reference, "text": "Discuss this paragraph"}),
     )
     .unwrap();
     app.settle();
@@ -397,17 +398,16 @@ fn shared_space_resource_journey_preserves_address_author_and_viewer_boundary() 
         .into_iter()
         .find(|m| m.text == "Discuss this paragraph")
         .unwrap();
-    assert_eq!(serde_json::to_value(&message.reference).unwrap(), reference);
+    assert_eq!(
+        serde_json::to_value(message.resource().unwrap()).unwrap(),
+        reference
+    );
     let target = item("messages", &message.id);
     let result = app
         .call_on(&target, "read-message", serde_json::json!({}))
         .unwrap()
         .unwrap();
-    assert_eq!(result["reference"], reference);
-    assert_eq!(
-        result["sourceProvider"],
-        "record:so.tilo.word-processor:proposal"
-    );
+    assert_eq!(result["attachments"][0]["at"], reference);
     assert_eq!(result["author"], message.author);
     app.set_role(ui::permissions::Role::Viewer);
     assert!(
@@ -424,7 +424,7 @@ fn shared_space_resource_journey_preserves_address_author_and_viewer_boundary() 
         .unwrap()
         .unwrap();
     assert_eq!(
-        read["reference"], reference,
+        read["attachments"][0]["at"], reference,
         "viewers can inspect an address, with no grant to its target"
     );
 }
@@ -1012,12 +1012,12 @@ fn a_handed_over_file_posts_as_a_file() {
     let posted = messages(&mut app).pop().unwrap();
     assert_eq!(posted.text, "Here are the minutes");
     assert_eq!(
-        posted.attachment,
-        Some(crate::model::Attachment::File {
+        posted.attachments,
+        [tilo_reference::Attached::File {
             name: "minutes.txt".into(),
             blob: hash,
             size: 22,
-        })
+        }]
     );
     let missing = tilo_content::hash_bytes(b"never stored");
     assert!(

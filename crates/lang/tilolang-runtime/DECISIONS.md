@@ -24,17 +24,18 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   name belongs to the package's own app, a qualified one to the loaded package of that app.
 - **Module identity.** The module hash is the blake3 of the wasm bytes; `module_hash` in the
   metadata (the compiler's SHA-256 of the module without metadata) is not used for identity.
-- **Instances.** One per module, but a call into a module that is already running (a flow
+- **Instances.** One per module, but a call into a module that is already running (an action
   invoking an action of its own module) takes a second instance from the pool. Guests keep no
   state between calls.
 - **Handles.** A handle encodes its frame's serial, so a number from another invocation or module
   is refused. Retained handles (action references in a view tree) live in a separate table.
 - **Authority chain.** Code authors only: for a press, the author of the action reference; for a
-  flow, the chain it started with plus each action reference's author, consecutive duplicates
-  removed. A direct call has no author, so is `own`. For an own action the declaring module
-  counts as trusted, other authors still need trust (minimum along the chain).
-- **Flows.** `invoke` returns an error value for Deny and for an action that trapped (journaled).
-  A standalone suggestion (a press that Asks) is a one-entry journal with no flow;
+  call, the chain of the run that made it plus the called action reference's author, consecutive
+  duplicates removed. A call made by a module is that module's; only a press has no author, so is
+  `own`. For an own action the declaring module counts as trusted, other authors still need trust
+  (minimum along the chain).
+- **Calls.** `invoke` returns an error value for Deny and for an action that trapped (journaled).
+  A standalone suggestion (a press that Asks) is a one-entry journal with no action of its own;
   `resolve(run, approver, Approve|Decline)` handles both. Approval runs the action with the
   original invoker and chain, plus `approved_by`.
 - **Edits.** `ViewInstance::edit` goes through `Authority` as a pseudo action `$edit` (own when
@@ -67,10 +68,32 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - **Blocks.** `Runtime::run_block(principal, &CompiledBlock)` registers the block's module and
   returns a rendered view, an invocation (so a block's action asks unless its module is trusted) or
   a value.
-- **Flows as actions.** An action reference to a flow runs the flow; deciding is by the flow's class.
-- **Journaled reads.** A flow journals every read of a resource and map, and a replay returns the
-  journaled values. This closes the earlier v1 deviation: a replayed flow takes the branches it
-  took the first time, even though approved actions changed the resources meanwhile.
+- **Every call is a change of its own.** An action that calls another action, its own package's
+  or another one's, calls it at its door: the callee's change is committed and attributed before
+  the caller commits, and a call that Asks suspends the caller too. Storage cannot commit across
+  apps — the callee may be another app's, whose change another origin holds — so one commit
+  cannot cover the calls. `many` applies one action to many items as one change, so it refuses
+  an action that calls another: that action makes a change per call.
+- **The caller's writes before a call are committed first.** When a run stops to make a call,
+  what it wrote until then is committed as a change of its own, so a call on a record the caller
+  made in the same action reads it, and the call's change stands on it. Its writes after the
+  call are its next change. A run that has written nothing commits nothing.
+- **Journaled reads and writes.** A run journals every read of a resource and map, every write,
+  and the ids it gives the items it inserts; a replay returns the journaled values and applies
+  no write again. This closes the earlier v1 deviation: a replayed run takes the branches it
+  took the first time, even though approved actions changed the resources meanwhile, does not
+  make what it already wrote a second time, and does not take back what its call wrote on top
+  of it. An action that calls none is one change in one transaction and is never run again, so
+  it journals nothing (`ActionMeta::invokes`).
+- **A draw is answered from the journal first.** `random.rs` holds the one primitive every
+  `random.*` import counts draws of: a number in `0..upto`. It answers the invocation's next
+  entry when that entry is a `Random` with the same bound, so a run that goes on after it
+  waited reads the number it drew before; a different bound or another entry's kind traps
+  ("the run diverged from its journal"), as a replayed read does. Otherwise it draws from
+  `getrandom` on the device running the invocation, rejecting values at or above the largest
+  multiple of the bound, records `JournalEntry::Random { upto, value }` (in the run's journal,
+  saved as it goes), and answers that. Code that is no run (a view, a block) traps: only a run
+  has a journal to record into.
 - **Dangling references.** A reference read from a field whose target is gone is still a reference
   (it compares equal); only a target of another type is refused. `ref_lit` stays strict.
 - **Set of Int/Float order.** Elements are keyed by their text form, so they iterate in text order.
@@ -102,7 +125,7 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   foreign and proposal views are their own package's code.
 - **Action blocks run when posted, never when rendered.** `run_block` queues a step in the
   action frame. After the action commits (`run_action`, so also when it runs as an approved
-  suggestion or inside a flow) the host compiles the block, and when it applies an action runs
+  suggestion or as one call of a run) the host compiles the block, and when it applies an action runs
   it through the authority as the invoker with `[principal:<invoker>]` as the authorship
   chain: it runs, or becomes a suggestion, or is denied. The outcome is created as an
   `Invocation` resource (a host-registered type, `tilo.host`) and stored in the part's
@@ -120,8 +143,8 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   not deny the approver (`decide(approver, [], action)`; an Ask is the decision being made);
   `Denied` otherwise. Approving runs the action once, on that replica, with the poster as its
   invoker, `[principal:<poster>]` as chain and the approver recorded as `approved_by`, then
-  writes `state`, `result` and `run` back. Declining writes `declined`. A flow whose steps
-  suspend again keeps `suggested` with the new local `run`.
+  writes `state`, `result` and `run` back. Declining writes `declined`. A call whose run
+  suspends again keeps `suggested` with the new local `run`.
 - **`outside` payloads are plain JSON** (lists and tuples as arrays, a resource as
   `{ref, type}`), not the tagged form registers use; a sink reads them as is.
 - **Keys of nested trees are scoped.** A view call (`fragment`) and an embed prefix the keys
@@ -130,12 +153,12 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   letters and board, each a `root` type with a `default view`. Lists and their items are two
   windows: the notebook, the chat and the letters desk list their items, each row runs
   `open(item)`, and the item type's default view edits it (`note_editor`, `thread`, `editor`);
-  no root keeps an "open" item. Filters and sort orders are `window` state (notes' order and
-  filter, todo's `Show`, letters' `Shelf`); which note row shows its actions is `lens` state.
+  no root keeps an "open" item. Filters and sort orders are view state (notes' order and
+  filter, todo's `Show`, letters' `Shelf`); which note row shows its actions is view state too.
   Chat's `post(c, text, block)` records `author = invoker`; a message is a
   `Collection<Part>` (`kind` `text` or `block`, plus the part's `invocation`). Letters' `send`
   has a proposal view and asks as an Outside action. Board holds `Option` references to the
-  other apps' root resources and a flow, `morning_cleanup`, that composes foreign actions.
+  other apps' root resources and an action, `morning_cleanup`, that calls foreign actions.
 
 ## Gaps in the design
 
@@ -145,7 +168,7 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   (for example a register the approver sets before running, resolved deterministically).
 - A principal is a plain string id from the runtime's caller. Binding it to a verified
   identity (device keys, the platform's authenticated session) is the platform's job.
-- A block that applies a flow records one invocation; later suspensions inside the flow are
+- A block that applies an action records one invocation; later suspensions inside the run are
   decided with `resolve(run)` on the device that has the journal, and do not update the card.
 
 - No descending `sort_by`, no `list_set`, no reference-valued maps.
@@ -204,27 +227,6 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - **Roots.** The host opens `roots[0]` of a package through its default view, over the
   per-workspace resource of that type (`tilolang_tilo::host::Package::main`), replacing the old
   `view main` convention.
-
-## Seen marks
-
-- **Every change someone else made is marked** (task-legibility.md §4), a person's and an
-  agent's alike, for every type: `seen::is_marked` is `version.who != person`. A type declares
-  nothing for it, so the earlier `mark others` line is gone from the language; a workspace is
-  shared by default, and a reader who is told what a colleague changed can deal with it as they
-  deal with an agent's. What the person made themselves is never marked: their own change is
-  the newest they have seen of it.
-- **What the person made or looked at is what can be marked**: a resource they created or
-  changed, or looked at, and someone else changed after (`seen::unseen`). A resource they
-  neither made nor looked at is new to them, not changed under their hands; a row of one says
-  it was made (`kind: created`) and the open count already says it is there. "Since you last
-  looked" needs a look, or a hand.
-- **A place shows how many of what it lists changed under the person's hands**
-  (`unseen(items)`): the items of a collection or of a list that carry a change after their
-  mark, counted from the store's index of the resources each person made that someone else
-  changed last, and from the person's marks. It is never answered by checking the place's items
-  one by one: a place's count costs what the person has made and seen, not what the place
-  holds, so a place of any size counts in the same time, and a reader who made and looked at
-  nothing counts nothing however much it holds.
 
 ## Performance by default
 
@@ -503,7 +505,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   filtered listing and evaluates only the items a change touches (a field the predicate reads,
   or where the item is). A boundary that read a filtered collection depends on what it saw item
   by item, since an item moving in or out changes no field of the collection. Elsewhere (an
-  action, a flow, a lambda that reads anything else) the loop runs. A collection's listing
+  action, a lambda that reads anything else) the loop runs. A collection's listing
   reads each entry's order key and map and none of the item's fields; a row's first read of a
   register or counter reads the item's others in the same walk. Search and publication read the
   whole workspace from a snapshot that shares the mirror (`Arc`) rather than copying it on the

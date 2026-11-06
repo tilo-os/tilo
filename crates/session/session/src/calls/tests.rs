@@ -159,6 +159,14 @@ impl ChannelDirectory for Directory {
     ) -> Option<std::collections::BTreeSet<Ed25519PublicKey>> {
         Some(self.admitted.clone())
     }
+    fn unit_scope(
+        &self,
+        workspace: WorkspaceId,
+        route: &ChannelRoute,
+        _: u64,
+    ) -> Option<collab_types::ChannelId> {
+        Some(route.channel(&workspace.to_string()))
+    }
 }
 
 /// One channel's keys, as the device `device` of the workspace whose vault

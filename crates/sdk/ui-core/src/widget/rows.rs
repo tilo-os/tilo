@@ -1,8 +1,7 @@
-//! What every keyed row list does alike: [`super::VirtualList`],
-//! [`super::TreeView`] and [`super::DataTable`] all move the focus by the
-//! same keys, choose rows by the same gestures, count a double click the
-//! same way and glide to a revealed row the same way. Each list keeps only
-//! what its rows are (a flattened tree, a table's columns).
+//! What every keyed row list does alike: [`super::VirtualList`] (a list, a tree or a
+//! navigator) and [`super::DataTable`] all move the focus by the same keys, choose rows by the
+//! same gestures, count a double click the same way and glide to a revealed row the same way.
+//! Each list keeps only what its rows are (a flattened tree, a table's columns).
 
 use winit::keyboard::{Key, NamedKey};
 

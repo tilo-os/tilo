@@ -195,6 +195,7 @@ d-quhjeqzv = File
 d-sartpsxo = Title
 
 d-iqq34vjp = Parent
+    .doc = The file it stands under; none at the top of the tree.
 
 d-jd5rkocy = Folder
 

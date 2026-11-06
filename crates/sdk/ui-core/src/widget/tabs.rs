@@ -4191,9 +4191,10 @@ impl Widget for TabBar {
             x = r.x1 + gap;
         }
         // `x` is the strip's write head; the "+" chip is suppressed once pills
-        // fill the bar.
+        // fill the bar. A window's title stands beside it too: one window is
+        // still a place a person opens another application.
         let plus_x1 = x + NEW_TAB_CHIP_PX;
-        self.new_tab_rect = if self.new_tab && !self.solo() && plus_x1 <= row.x1 {
+        self.new_tab_rect = if self.new_tab && plus_x1 <= row.x1 {
             Rect::new(x, pill_y0, plus_x1, pill_y1)
         } else {
             Rect::ZERO
@@ -4915,12 +4916,17 @@ impl TabBar {
             .fold(0.0, f64::max);
         let row = self.pill_row();
         let laid_out = row.width() > 0.0;
+        let plus = if self.new_tab {
+            NEW_TAB_CHIP_PX + PILL_GAP
+        } else {
+            0.0
+        };
         let fit_avail = if laid_out && self.solo() {
-            // A window's title opens no chips and stands beside no "+": it
-            // takes the whole row.
-            row.width()
+            // A window's title opens no chips; what it has of a "+" stands
+            // beside it.
+            (row.width() - plus).max(1.0)
         } else if laid_out {
-            (row.width() - headroom - NEW_TAB_CHIP_PX - PILL_GAP).max(1.0)
+            (row.width() - headroom - plus).max(1.0)
         } else {
             row.width()
         };
@@ -9422,6 +9428,51 @@ mod tests {
         lay_out_at_width_with(&mut tabbed, 900.0, &theme);
         assert!((tabbed.bar_height() - TAB_BAR_HEIGHT).abs() < f64::EPSILON);
         assert!(!tabbed.toolbar_hit(location.center()));
+    }
+
+    /// A window with a single tab still offers the button that opens another
+    /// application: its title is a place to start work, not the end of it.
+    #[test]
+    fn a_window_with_one_tab_still_offers_a_new_tab() {
+        let _settled = crate::motion::testing::settled();
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut solo = TabBar::new("g1", vec![TabDescriptor::new(1, "Chat")], 1);
+        solo.set_window_controls(true);
+        lay_out_at_width_with(&mut solo, 900.0, &theme);
+        let plus = solo.new_tab_rect();
+        assert!(plus.area() > 0.0, "a one-tab window shows its +");
+        assert!(
+            plus.x0 >= solo.tab_rects()[0].x1,
+            "the + stands beside the title"
+        );
+        assert!(
+            !solo.tab_rects()[0].contains(plus.center()),
+            "the title reaches under no +"
+        );
+
+        let mut handled = false;
+        dispatch_cursor(&mut solo, plus.center(), &mut handled);
+        lay_out_at_width_with(&mut solo, 900.0, &theme);
+        dispatch_left_button(&mut solo, ElementState::Pressed, &mut handled);
+        assert!(handled, "the + takes the press");
+        dispatch_left_button(&mut solo, ElementState::Released, &mut handled);
+        assert!(solo.take_new_tab().is_some(), "a press on + asks for a tab");
+
+        // Narrow, the + is what gives way last: the title shrinks to keep it.
+        let wide_title = solo.tab_rects()[0].width();
+        lay_out_at_width_with(&mut solo, 200.0, &theme);
+        assert!(
+            solo.new_tab_rect().area() > 0.0,
+            "a narrow window keeps its +"
+        );
+        assert!(
+            solo.tab_rects()[0].width() > 0.0,
+            "the title keeps what the + leaves"
+        );
+        assert!(
+            solo.tab_rects()[0].width() < wide_title,
+            "the title is what shrinks"
+        );
     }
 
     pub(super) fn four_tab_bar() -> TabBar {

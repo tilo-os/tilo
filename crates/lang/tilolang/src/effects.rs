@@ -1,22 +1,95 @@
 //! Effect classes and what each declaration can reach, computed from the IR facts.
 //!
 //! An action is *Read* if it changes nothing, *Outside* if it reaches outside Tilo (itself or
-//! through an action it calls), and *Undoable* otherwise. A flow's class is the highest of
-//! the actions it can invoke. For every action, flow and view the metadata lists the actions it
+//! through an action it calls), and *Undoable* otherwise. For every action and view the
+//! metadata lists the actions it
 //! can reach, its own and other packages', each with its class. Granting, keeping and updating
 //! code are decided against that list (authority.md).
+//!
+//! [`Effect`] is the other axis: what a body reads that a replay cannot compute again, which its
+//! `uses` clause declares and its invocation records.
 
 use crate::ir::{ActionRef, FuncKind, Module};
 use crate::meta::Reach;
 use crate::types::EffectClass;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// What an action reads that a replay cannot compute again: what its `uses` clause
+/// declares and what its invocation records (convergence.md, "Actions").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Effect {
+    /// A service outside Tilo: a request and the answer it got.
+    Web,
+    /// A draw: a number, a choice, an order.
+    Random,
+    /// The clock and the person's zone: `now`, a day of a moment, a wall time of day.
+    Time,
+}
+
+impl Effect {
+    /// Every effect, in the order a message lists them.
+    pub const ALL: &'static [Self] = &[Self::Web, Self::Random, Self::Time];
+
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Web => "web",
+            Self::Random => "random",
+            Self::Time => "time",
+        }
+    }
+
+    /// What reading it is, in a message: what a replay cannot compute again.
+    pub const fn what(self) -> &'static str {
+        match self {
+            Self::Web => "a service outside Tilo",
+            Self::Random => "a draw",
+            Self::Time => "the clock and the person's zone",
+        }
+    }
+
+    /// The effect a `uses` clause names, if it names one.
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|e| e.word() == name)
+    }
+}
+
+/// The effects `funcs` reach: each function's own, and those of the code it calls, iterated to
+/// a fixed point. An action that calls another runs it as its own change, so its effects are
+/// not this action's; what it calls is decided on its own (see [`analyze`]).
+pub fn reached(funcs: &[crate::ir::Func]) -> Vec<BTreeSet<Effect>> {
+    let mut out: Vec<BTreeSet<Effect>> = funcs.iter().map(|f| f.facts.effects.clone()).collect();
+    loop {
+        let mut changed = false;
+        for (i, f) in funcs.iter().enumerate() {
+            let callees = f.facts.calls.iter();
+            for callee in callees {
+                let Some(there) = out.get(*callee).cloned() else {
+                    continue;
+                };
+                for e in there {
+                    if let Some(slot) = out.get_mut(i)
+                        && slot.insert(e)
+                    {
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            return out;
+        }
+    }
+}
 
 /// The result of the analysis, indexed like [`Module::funcs`].
 pub struct Effects {
-    /// Class of each action and flow; `Read` for the rest.
+    /// Class of each action; `Read` for the rest.
     pub class: Vec<EffectClass>,
-    /// Every action or flow each function can reach.
+    /// Every action each function can reach.
     pub reaches: Vec<Vec<Reach>>,
+    /// Whether each action's body invokes another action, itself included: what a run journals
+    /// for, because a call can wait for a person and the run then runs again from its start.
+    pub invokes: Vec<bool>,
 }
 
 type ReachMap = BTreeMap<(String, String), Reach>;
@@ -42,8 +115,10 @@ pub fn analyze(m: &Module, app: &str) -> Effects {
             } else {
                 EffectClass::Read
             };
-            for callee in &f.facts.inline_actions {
-                c = c.max(class.get(*callee).copied().unwrap_or(EffectClass::Read));
+            // An action reaches what it calls: the invocations are what its change makes of
+            // them, so its class is at least theirs.
+            for a in &f.facts.invokes {
+                c = c.max(ref_class(a, &class));
             }
             if class.get(i).copied() != Some(c) {
                 if let Some(slot) = class.get_mut(i) {
@@ -56,24 +131,9 @@ pub fn analyze(m: &Module, app: &str) -> Effects {
             break;
         }
     }
-    for (i, f) in m.funcs.iter().enumerate() {
-        if f.kind != FuncKind::Flow {
-            continue;
-        }
-        let c = f
-            .facts
-            .invokes
-            .iter()
-            .map(|a| ref_class(a, &class))
-            .max()
-            .unwrap_or(EffectClass::Read);
-        if let Some(slot) = class.get_mut(i) {
-            *slot = c;
-        }
-    }
     let mut reaches: Vec<ReachMap> = vec![ReachMap::new(); n];
-    // Actions reach themselves and what their inlined callees reach; views reach what their
-    // buttons apply and what the views they call reach. Iterate to a fixed point.
+    // Actions reach themselves and what they call; views reach what their buttons apply and
+    // what the views they call reach. Iterate to a fixed point.
     loop {
         let mut changed = false;
         for (i, f) in m.funcs.iter().enumerate() {
@@ -86,16 +146,8 @@ pub fn analyze(m: &Module, app: &str) -> Effects {
                         &f.export,
                         class.get(i).copied().unwrap_or(EffectClass::Read),
                     ));
-                    for callee in &f.facts.inline_actions {
-                        add.extend(
-                            reaches
-                                .get(*callee)
-                                .map(|r| r.values().cloned().collect::<Vec<_>>())
-                                .unwrap_or_default(),
-                        );
-                    }
-                }
-                FuncKind::Flow => {
+                    // What an action calls runs as its own action, decided on its own: it is a
+                    // step of the run, not of this action's change.
                     for a in &f.facts.invokes {
                         add.extend(reach_of(a, &class, &reaches, app));
                     }
@@ -128,12 +180,18 @@ pub fn analyze(m: &Module, app: &str) -> Effects {
             break;
         }
     }
+    let invokes = m
+        .funcs
+        .iter()
+        .map(|f| f.kind == FuncKind::Action && !f.facts.invokes.is_empty())
+        .collect();
     Effects {
         class,
         reaches: reaches
             .into_iter()
             .map(|m| m.into_values().collect())
             .collect(),
+        invokes,
     }
 }
 
@@ -154,7 +212,7 @@ fn entry_of_func(app: &str, name: &str, export: &str, class: EffectClass) -> Rea
     }
 }
 
-/// The action or flow itself, plus everything an own one reaches.
+/// The action itself, plus everything an own one reaches.
 fn reach_of(a: &ActionRef, class: &[EffectClass], reaches: &[ReachMap], app: &str) -> Vec<Reach> {
     let mut out = vec![Reach {
         app: a.app.clone(),

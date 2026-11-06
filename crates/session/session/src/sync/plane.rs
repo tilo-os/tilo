@@ -344,6 +344,24 @@ async fn listening(
         // app's own-device actions leave through it.
         let _ = actions.set(device);
     }
+    if let (Some(identity), Some(engine)) = (identity, engine) {
+        // A link this device hands out names this endpoint, so the joins those
+        // links are redeemed by are answered here: this device's own owner
+        // admits whoever a link it signed is for.
+        served.push((
+            tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN.to_vec(),
+            Box::<dyn iroh::protocol::DynProtocolHandler>::from(
+                tilo_relay_session::workspace_join::WorkspaceJoinProtocol::new(
+                    tilo_peer_state::join_answer::JoinAnswer(
+                        tilo_peer_state::owner::OwnerJoinWorkspaces::new(
+                            engine.owner().clone(),
+                            identity.device_signing_key.clone(),
+                        ),
+                    ),
+                ),
+            ),
+        ));
+    }
     let (actor, actor_task) = tilo_network_actor::Actor::spawn_serving(
         endpoint.clone(),
         lookup,

@@ -333,7 +333,7 @@ impl Backend for NestedBackend {
         region: (usize, usize),
         request: &crate::BackdropRequest,
     ) -> Result<Option<crate::BackdropImage>, BackendError> {
-        crate::backdrop::draw::<_, smithay::backend::renderer::gles::GlesTexture>(
+        crate::backdrop::draw(
             self.inner.borrow_mut().window.renderer(),
             state,
             region,

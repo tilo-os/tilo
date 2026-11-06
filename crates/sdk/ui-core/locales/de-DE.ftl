@@ -380,10 +380,6 @@ widget-block-outdent = Block mit Unterelementen ausrücken
 widget-maximized-restore = Wiederherstellen
 widget-maximized-fullscreen = Vollbild
 tree-rename-field = Umbenennen
-tree-move-up = Nach oben verschieben
-tree-move-down = Nach unten verschieben
-tree-move-indent = In das Element darüber verschieben
-tree-move-outdent = Aus dem übergeordneten Element verschieben
 
 # The show/hide control inside every password field.
 text-input-show-password = Passwort anzeigen

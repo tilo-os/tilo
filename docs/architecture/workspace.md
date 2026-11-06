@@ -166,6 +166,33 @@ second record of who belongs.
   reads the whole history locally. It grows with membership changes, never
   with content.
 
+**One group per reader set.** A group belongs to a key scope, not to a
+record: `workspace_scope(workspace)` is one MLS group and one content keyring
+for every storage unit whose readers are the workspace's participants. A unit
+— one record's channel — seals under its scope's keys while its payload still
+names the unit, so content stays bound to the record and artifact it was
+written for and every stored and wire format is unchanged. Membership is
+still decided per record: a Read Deny on a record, on its app or on a pattern
+over it narrows that unit's readers, and the unit is then carried by a group
+of its own whose key no denied device ever gets.
+
+What a scope buys is that membership costs what the *reader set* costs, not
+what the workspace holds: one admission, one removal and one commit per scope,
+however many units it carries. Before scopes, every record had a group, so a
+workspace of a thousand records paid about two seconds and 3 MiB of
+governance frames to admit one device, and repeated it on every change, on
+every device.
+
+Units sealed before scopes keep their groups. A device that holds one reads
+its history as before, merging that group's keys with the scope's; new
+content for those units seals under the scope, so a device has to hold both.
+The holder of an old group hands its content keys to the scope — the scope's
+next commit carries them to every member, and every admission after that
+passes them on in the joiner's key history — so a device that never held the
+old group reads the unit's whole history as soon as the scope has them, with
+no holder of the old group online. A unit a Read Deny narrows keeps a group
+of its own and is never handed to the broader scope.
+
 A store never enters the group and never holds a key. It keeps and forwards
 sealed ops, and refuses ones that are not signed by a member's device. To
 tell, it reads the one part of `workspace.members` that is not sealed: the
@@ -251,6 +278,131 @@ presents every held part as one resource, and the framework, not the app,
 holds an earlier part when a reader scrolls back to it. Headless readers
 (bots, moderation, the Discord bridge, agents) read and page the chain through
 that resource instead of enumerating parts themselves.
+
+## What a unit and a key scope cost
+
+Measured, not estimated: `channel-crypto`'s `per_channel` bench for a key
+scope, `tilo-app-state`'s `record_cost` for a unit and its document, and
+`tilolang-tilo`'s `index_units` for the index. Numbers are medians on a
+x86_64 development container, three samples; instruction counts repeat on any
+machine, times are that container's.
+
+**One group per channel** (one MLS group per record route, three devices in
+each channel), per channel — the cost a workspace paid before key scopes:
+
+| channels | join | per channel | join bytes | removal | removal bytes | device state |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1.99 ms | 1.99 ms | 3.1 KiB | 0.84 ms | 700 B | 757 B |
+| 10 | 22.0 ms | 2.20 ms | 3.1 KiB | 0.77 ms | 700 B | 763 B |
+| 100 | 197 ms | 1.97 ms | 3.1 KiB | 0.75 ms | 700 B | 760 B |
+| 1000 | 1989 ms | 1.99 ms | 3.1 KiB | 0.77 ms | 700 B | 760 B |
+
+The cost is flat per group and does not shrink as a workspace grows: 2.0 ms
+and 3.1 KiB of governance frames per channel to admit one device, 0.8 ms and
+700 B per channel for one removal, and 760 B of sealed peer state per channel
+on the device. A user joining a workspace of 1000 records paid about two
+seconds and 3 MiB before reading anything, and every membership change after
+that repeated it — once per channel, on every device.
+
+**One key scope per reader set** (one MLS group carrying every unit whose
+readers are the same devices, three devices), by the units it carries:
+
+| units | join | per unit | join bytes | removal | removal bytes |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 2.02 ms | 2.02 ms | 3.1 KiB | 0.97 ms | 700 B |
+| 10 | 1.95 ms | 195 us | 3.1 KiB | 0.77 ms | 700 B |
+| 100 | 1.87 ms | 18.7 us | 3.1 KiB | 0.74 ms | 700 B |
+| 1000 | 1.88 ms | 1.9 us | 3.1 KiB | 0.76 ms | 700 B |
+
+Flat in the units carried: a workspace of 1000 records costs 1.9 ms and 3.1
+KiB to admit a device and 0.76 ms and 700 B to remove one, instead of 1.99 s
+and 3.1 MiB and 0.77 s and 700 KiB. Each unit's content still seals and opens
+under the scope's keys, named for the unit: 4.8 us per unit at one unit, 2.4 us
+at 1000 (`unit_content`), which is what it was per channel before.
+
+**One storage unit** (one record: its own Automerge file, route and index
+row), per unit:
+
+| units | create | open | files | bytes | memory held open |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 408 us | 119 us | 4 | 46 B | 20.6 KiB |
+| 10 | 214 us | 40 us | 4 | 46 B | 19.1 KiB |
+| 100 | 202 us | 51 us | 4 | 46 B | 19.4 KiB |
+| 1000 | 207 us | 36 us | 4 | 46 B | 19.4 KiB |
+
+A unit is cheap to have: 200 us to make (two syncs), 36 us to open, four small
+files, 19 KiB of memory while it is held open. Per-unit fixed cost is what
+keeps units small; what a unit costs to read is its document.
+
+**One document**, one map of small items, one change per item:
+
+| items | snapshot | history | save | load | memory after load | one change | appended |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1k | 6.4 KiB | 135 KiB | 0.34 ms | 3.6 ms | 276 KiB | 0.08 ms | 123 B |
+| 10k | 71.6 KiB | 1.37 MiB | 2.1 ms | 31 ms | 3.1 MiB | 0.18 ms | 124 B |
+| 100k | 730 KiB | 14.1 MiB | 28 ms | 325 ms | 27 MiB | 4.7 ms | 124 B |
+
+Loading a document costs about a quarter of a millisecond per thousand items
+and holds about 38 times its snapshot in memory (the change graph, kept for
+merging). Its history is about twenty times the snapshot, and one more change
+is about 120 bytes whatever the size.
+
+A record on disk also keeps `state.hashes`, its own list of change hashes as a
+load hint: 32 bytes per change, so 320 KiB beside a 70 KiB snapshot at ten
+thousand items, and 3.2 MiB beside 730 KiB at a hundred thousand. The hint pays
+for itself on open (a 10k-item record loads in 12 ms where the same document
+takes 31 ms to load from its snapshot alone, because the hint skips re-hashing
+every change), but it is the same order as the history, not a rounding error.
+
+**One index**, one redb file per package and workspace, one row set per record:
+
+| records | write one record | open | one lookup | file |
+| --- | --- | --- | --- | --- |
+| 1 | 42 us | 0.04 ms | 5.1 us | 1.0 MiB |
+| 10 | 30 us | 0.04 ms | 0.7 us | 1.0 MiB |
+| 100 | 28 us | 0.06 ms | 0.5 us | 1.0 MiB |
+| 1000 | 36 us | 0.12 ms | 0.6 us | 1.0 MiB |
+| 10000 | 36 us | 0.10 ms | 0.6 us | 2.1 MiB |
+
+An index answers a lookup in under a microsecond and opens in a tenth of a
+millisecond whether it holds ten records or ten thousand; the rows are about
+100 bytes per record. What it costs per workspace and not per record is redb's
+minimum file: about a megabyte before it has a record in it, which is why an
+index is one per (package, workspace) pair rather than one per unit.
+
+**A host opening a workspace** (`tilolang-tilo`'s `bench` example,
+`--open-only`, p50 of three to five runs, taken on a sixteen-thread laptop while
+other builds shared it, load average around fifty, so the times are inflated
+several-fold; notes here, the board earlier, on a quieter aarch64 laptop):
+
+| items | open (over the index) | of which building the view | load the record |
+| --- | --- | --- | --- |
+| 10k | 0.39 s (66 ms earlier) | 0.31 s | 0.45 s (412 ms earlier) |
+| 100k | 3.6 s (1.04 s earlier) | 3.1 s | 4.3 s (6.7 s earlier) |
+
+In both measurements loading the record costs as much as opening over the index
+or several times more, so the index saves reading it but not having it: what a
+host pays for a workspace is dominated by the record's own bytes and by the
+view building its rows from them, and both grow with the number of items. A
+chunk the views do not read in full is what brings either down.
+
+What that implies for the layers above:
+
+- **Key scope, not channel.** Per-channel keys are what make a membership
+  change linear in the workspace: the 1.96 ms above is one commit and one
+  delivered frame set per channel, on every member. Keys per reader set make
+  the same change one commit for the whole workspace, and a device's sealed
+  state one file per reader set instead of 760 B per record.
+- **A chunk is a few thousand items, not a record per app.** A 10k-item chunk
+  loads in 31 ms and holds 3 MiB; a 1k-item chunk in 3.6 ms and 276 KiB. A
+  chunk that holds a whole collection of a few thousand small resources keeps
+  open, save and memory at tens of megabytes for a workspace of a hundred
+  thousand items, where one document per app at that size is 27 MiB and
+  325 ms to load before anything is shown.
+- **Units stay separate for what is written separately.** A record's fixed
+  cost is small enough that units are not the thing to merge; what has to
+  change is what is written and sealed together, so that a chunk's commit is
+  one scope and one append.
 
 ## Where the code differs
 

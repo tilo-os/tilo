@@ -2673,6 +2673,12 @@ fn publish_own(
     // The app it publishes under: what an action's `ActionKey` names, and
     // what a control bound by key is checked against.
     resource.app_id = Some(vocabulary.app.to_owned());
+    // What it is, as people name it: its type's noun, its app's name and
+    // whether it is that app's root. Exactly a tilolang type's, so the one
+    // search matches a Rust and a tilolang type alike. Its noun is the
+    // *type's* (`vocabulary.label`), never the record's own title: a channel
+    // called "MKBHD" is a `channel`, not an `m k b h d`.
+    resource = resource.with_type(crate::words::type_words(vocabulary.kind, vocabulary.label));
     for decl in vocabulary.declarations().iter() {
         let _phase = crate::profiling::Phase::start("resource.declaration_spec");
         let mut spec = spec_of_declaration(decl);

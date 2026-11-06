@@ -145,7 +145,7 @@ fn a_call_of_a_chat_action_is_checked_against_its_parameters() {
     std::fs::write(
         dir.join("app.tl"),
         "app so.tilo.test.wrong \"Wrong\"\n\nuse so.tilo.chat as chat\n\n\
-         flow rename(w: chat.Workspace) {\n    chat.rename_channel(w, \"general\", 3)\n}\n",
+         action rename(w: chat.Workspace) {\n    chat.rename_channel(w, \"general\", 3)\n}\n",
     )
     .expect("source");
     let error = check(&dir).expect_err("a number is no channel name");

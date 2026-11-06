@@ -11,8 +11,8 @@
 //! # use tilo_view::{ui, ViewCx};
 //! # use tilo_view::node::{Node, ResourceRef, Principal};
 //! fn page(cx: &ViewCx) -> Node {
-//!     let node = ui::TextBuilder::new(cx.key("title"), "Groceries").into();
-//!     ui::stack(cx.key("page"), ui::Gap::Sibling, vec![node])
+//!     let node = ui::TextBuilder::new(&cx.key("title"), "Groceries").into();
+//!     ui::stack(&cx.key("page"), ui::Gap::Sibling, vec![node])
 //! }
 //! ```
 //!
@@ -44,7 +44,10 @@ pub mod ui;
 
 pub use cx::{Effect, ViewCx};
 pub use node::{Binding, BuildError, Event, Node, Offered, Picture, Principal, ResourceRef, Value};
-pub use registry::{View, ViewRegistry};
+pub use registry::{View, ViewRegistry, ViewResource};
 
 /// The component-patch stream a view's tree travels on, as the runtime and the UI host read it.
 pub use tilo_render_protocol::patch;
+
+/// The registry a `#[view]` submits itself to, and the JSON a view's resource is read from.
+pub use {inventory, serde, serde_json};

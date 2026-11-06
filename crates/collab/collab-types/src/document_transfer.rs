@@ -205,10 +205,20 @@ impl DocumentFrame {
     ///
     /// # Errors
     ///
+    /// A payload carrying its action's commit ([`crate::WorkspaceCommit`]) is
+    /// read as the frame inside it: the commit is checked here, so a frame
+    /// whose commit does not decode never reaches a receiver.
+    ///
     /// Returns the same errors as [`DocumentMutation::decode`], plus
     /// [`DocumentMutationError::InvalidSegment`] for a segment whose header
-    /// is inconsistent with its data.
+    /// is inconsistent with its data and
+    /// [`DocumentMutationError::InvalidCommit`] for a commit that does not
+    /// check.
     pub fn decode(payload: &[u8]) -> Result<Self, DocumentMutationError> {
+        let payload = match crate::WorkspaceCommit::split(payload) {
+            Ok((inner, _)) => inner,
+            Err(error) => return Err(DocumentMutationError::InvalidCommit(error.to_string())),
+        };
         let max_frame = DOCUMENT_MUTATION_V2_PREFIX
             .len()
             .saturating_add(1)

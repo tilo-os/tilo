@@ -1957,9 +1957,10 @@ impl<'a> ButtonFace<'a> {
                 hint: self.shortcut.as_ref().map(shortcut_text),
                 // A painted face fills the rect its host gave it.
                 flush: false,
-                filled_icon: self
-                    .icon
-                    .is_some_and(|icon| icon.is_brand() || (self.on && fills_when_on(icon))),
+                filled_icon: self.icon.is_some_and(|icon| {
+                    icon.is_brand() || icon == crate::icons::Icon::HeartFilled
+                        || (self.on && fills_when_on(icon))
+                }),
                 menu: false,
             },
             metrics,
@@ -2404,9 +2405,10 @@ impl Widget for Button {
                 badge: self.badge.as_deref(),
                 label: &label,
                 hint,
-                filled_icon: self
-                    .icon
-                    .is_some_and(|icon| icon.is_brand() || (on && fills_when_on(icon))),
+                filled_icon: self.icon.is_some_and(|icon| {
+                    icon.is_brand() || icon == crate::icons::Icon::HeartFilled
+                        || (on && fills_when_on(icon))
+                }),
                 menu: self.opens_menu,
             },
             metrics: &metrics,

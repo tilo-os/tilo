@@ -22,6 +22,27 @@ mod unlock;
 pub(crate) use approvers::{AgentQuestion, KIND as AGENT_QUESTION};
 pub(crate) use unlock::{KIND as DEVICE_UNLOCK, UnlockQuestion, slot_name};
 
+/// A collaborator's device heard at another peer protocol version: one of
+/// the two devices must update before the two work together again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VersionMismatch {
+    /// What the person calls the device: its label, or its endpoint when the
+    /// peer named none.
+    pub device: String,
+    /// The version it speaks.
+    pub theirs: u32,
+    /// The version this device speaks.
+    pub ours: u32,
+}
+
+impl VersionMismatch {
+    /// Whether the other device is the newer one, so this device is the one
+    /// that updates.
+    pub(crate) fn theirs_is_newer(&self) -> bool {
+        self.theirs > self.ours
+    }
+}
+
 /// Install the session's services for the actor started from now on: the
 /// person's other devices' disk unlock ([`unlock`]), the questions their
 /// agents ask ([`approvers`]), and the word that a collaborator's device is
@@ -32,7 +53,7 @@ pub(crate) use unlock::{KIND as DEVICE_UNLOCK, UnlockQuestion, slot_name};
 pub(crate) fn install(
     link: Option<&Arc<crate::fabric::SessionFabric>>,
     questions: Option<Questions>,
-) -> std::sync::mpsc::Receiver<()> {
+) -> std::sync::mpsc::Receiver<VersionMismatch> {
     let (updates, requests) = std::sync::mpsc::channel();
     let Some(link) = link.map(|link| Arc::clone(link) as SharedLink) else {
         return requests;
@@ -70,11 +91,11 @@ fn approvers(questions: Option<Questions>) -> ApproversOf {
     })
 }
 
-/// Tell the person that a collaborator's device is at another protocol
+/// Tell the session that a collaborator's device is at another protocol
 /// version, once per device and version: one of the two must update before
-/// they work together again. A newer one on their side has this session fetch
-/// the newest system ([`crate::update_finish`]).
-fn peer_versions(updates: std::sync::mpsc::Sender<()>) -> PeerVersion {
+/// they work together again. The session answers the person, and a newer one
+/// on their side has it fetch the newest system ([`crate::update_finish`]).
+fn peer_versions(updates: std::sync::mpsc::Sender<VersionMismatch>) -> PeerVersion {
     let told = Arc::new(Mutex::new(HashSet::new()));
     Arc::new(move |endpoint: String, device_label: String, theirs: u32| {
         let ours = neighbour_wire::PEER_PROTOCOL_VERSION;
@@ -98,9 +119,14 @@ fn peer_versions(updates: std::sync::mpsc::Sender<()>) -> PeerVersion {
             ours,
             "a collaborator's device speaks another peer protocol version"
         );
-        if theirs > ours && updates.send(()).is_err() {
-            // The session that would update this device is gone.
-            tracing::debug!(device, "no session left to update this device");
+        let mismatch = VersionMismatch {
+            device: device.to_owned(),
+            theirs,
+            ours,
+        };
+        if updates.send(mismatch).is_err() {
+            // The session that would answer the person is gone.
+            tracing::debug!(device, "no session left to answer the person");
         }
     })
 }

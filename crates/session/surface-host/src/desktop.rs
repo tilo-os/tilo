@@ -32,8 +32,12 @@ const OFFSTAGE: i32 = -(1 << 20);
 /// has said what it means: the same steps the desktop's chords take.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DeskGesture {
-    /// Three fingers across: the window `steps` on along the strip.
-    StepWindow(i32),
+    /// Three fingers carrying the shown strip: `travel` is their total
+    /// signed travel since they landed, positive toward later windows.
+    StripDrag { travel: f64, began: bool },
+    /// Those fingers lifted (or the hand was taken back): the strip coasts
+    /// on the velocity they let go at, or stays where it was.
+    StripDragEnd { cancelled: bool },
     /// Three fingers up or down: the strip `steps` on.
     StepStrip(i32),
     /// Three fingers landed on the deck: it follows them from here. `travel`
@@ -112,8 +116,8 @@ impl GestureReader {
         };
         let asked = match action {
             // A vertical deck drag hands its travel to the desk on every
-            // update, so the strips are under the fingers; the horizontal
-            // one is only asked for at its end.
+            // update, so the strips are under the fingers; so does the
+            // horizontal one, which carries the shown strip with them.
             Some(GestureAction::StripDeckUpdate { travel, began }) => {
                 self.travel = travel;
                 if began {
@@ -121,12 +125,12 @@ impl GestureReader {
                 }
                 Some(DeskGesture::StripDeckDrag { travel })
             }
-            Some(GestureAction::StripPanUpdate { travel, .. }) => {
+            Some(GestureAction::StripPanUpdate { travel, began }) => {
                 self.travel = travel;
-                None
+                Some(DeskGesture::StripDrag { travel, began })
             }
-            Some(GestureAction::StripPanEnd { cancelled: false }) => {
-                step(self.travel).map(DeskGesture::StepWindow)
+            Some(GestureAction::StripPanEnd { cancelled }) => {
+                Some(DeskGesture::StripDragEnd { cancelled })
             }
             Some(GestureAction::StripDeckEnd { cancelled: false }) => {
                 Some(DeskGesture::StepStripFrom {
@@ -147,7 +151,7 @@ impl GestureReader {
                     steps: 0,
                 })
             }
-            Some(GestureAction::StripPanEnd { cancelled: true }) | None => None,
+            None => None,
         };
         match asked {
             Some(asked) => Reading::Asked(asked),
@@ -229,6 +233,15 @@ impl Desk {
     /// is hidden with its parent.
     fn floating(&self, window: u64, size: (i32, i32)) -> Option<LayoutPoint> {
         let (ox, oy) = self.host.placement().origin;
+        // A card stands exactly where the floating layer put it, and nowhere
+        // while it is suspended.
+        if self.policy.draws_card(window) {
+            let at = self.policy.card_place(window)?;
+            return Some(LayoutPoint::from((
+                ox.saturating_add(round(at.x0)),
+                oy.saturating_add(round(at.y0)),
+            )));
+        }
         let (_, area) = self
             .policy
             .layout()
@@ -928,12 +941,26 @@ impl WindowPolicy for StripPolicy {
         desk.primary = primary.map(str::to_owned);
     }
 
+    fn overlay(&self, window: &WindowInfo) -> bool {
+        self.desk.borrow().policy.draws_card(window.id)
+    }
+
+    /// A card's window takes no focus: the person works in the workspace it
+    /// floats over, and the card is a view of the activity, not a place to
+    /// type.
+    fn focus_on_map(&mut self, window: &WindowInfo) -> bool {
+        !self.desk.borrow().policy.draws_card(window.id)
+    }
+
     fn initial_size(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) -> Option<(i32, i32)> {
         self.map(window, outputs);
         if !self.pending.contains(&window.id) {
             self.pending.push(window.id);
         }
-        // A dialog picks its own size.
+        // A dialog picks its own size, and a card the size its app asked for.
+        if let Some(size) = self.desk.borrow().policy.card_size(window.id) {
+            return Some(size);
+        }
         let rect = self.desk.borrow().shown(window.id)?;
         Some((rect.size.w, rect.size.h))
     }
@@ -1109,6 +1136,46 @@ mod tests {
             pid,
             ..WindowInfo::default()
         }
+    }
+
+    /// Three fingers moving sideways carry the shown strip: the desk reads
+    /// every report as the hand's total travel, from the first one on, and
+    /// the lift as its release, rather than stepping the strip once the
+    /// travel passes a threshold.
+    #[test]
+    fn three_fingers_sideways_carry_the_strip() {
+        let mut reader = GestureReader::default();
+        // Natural scrolling, the touchpad default: the strip goes with the
+        // fingers, so their leftward travel goes toward later windows.
+        let config = Some(GestureConfig {
+            natural_scroll: true,
+            ..GestureConfig::default()
+        });
+        assert_eq!(
+            reader.read(&GestureEvent::SwipeBegin { fingers: 3 }, config),
+            Reading::Taken,
+            "the desk takes three fingers"
+        );
+        assert_eq!(
+            reader.read(&GestureEvent::SwipeUpdate { dx: -20.0, dy: 0.0 }, config),
+            Reading::Asked(DeskGesture::StripDrag {
+                travel: 20.0,
+                began: true,
+            }),
+            "the first report already carries the strip"
+        );
+        assert_eq!(
+            reader.read(&GestureEvent::SwipeUpdate { dx: -10.0, dy: 0.0 }, config),
+            Reading::Asked(DeskGesture::StripDrag {
+                travel: 30.0,
+                began: false,
+            }),
+            "the gesture reports its total"
+        );
+        assert_eq!(
+            reader.read(&GestureEvent::SwipeEnd { cancelled: false }, config),
+            Reading::Asked(DeskGesture::StripDragEnd { cancelled: false })
+        );
     }
 
     /// The policy is told the process of each window the compositor maps, as

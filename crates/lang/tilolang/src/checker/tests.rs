@@ -186,17 +186,6 @@ fn strings(f: &Func) -> Vec<String> {
     out
 }
 
-/// How often a function calls the function `target` of its module.
-fn calls_of(f: &Func, target: usize) -> usize {
-    let mut n = 0;
-    visit(f, &mut |e| {
-        if matches!(&e.kind, Ek::Call(t, _) if *t == target) {
-            n += 1;
-        }
-    });
-    n
-}
-
 fn has(calls: &[String], want: &str) -> bool {
     calls.iter().any(|c| c == want)
 }
@@ -204,13 +193,6 @@ fn has(calls: &[String], want: &str) -> bool {
 fn count(calls: &[String], want: &str) -> usize {
     calls.iter().filter(|c| *c == want).count()
 }
-
-const NOTES: &str = "type Note {\n    title: Text (title)\n    body: Text (body)\n    pinned: Bool = false\n}\n\
-type Notebook {\n    notes: Collection<Note>\n}\n\
-enum NoteOrder {\n    created\n    title\n}\n\
-root Notebook\ndefault view notebook for Notebook\n\
-fn listed(nb: Notebook, order: NoteOrder) -> List<Note> {\n    return match order {\n        .created => nb.notes.filter(n -> true),\n        .title => nb.notes.sort_by(n -> n.title),\n    }\n}\n\
-view notebook(nb: Notebook) {\n    window order: NoteOrder = .created\n    std.list(nb, listed(nb, order), sort: order, empty: \"No notes yet\") { n ->\n        row(n.title, secondary: n.body, mark: if n.pinned { .pin }, checkbox: n.pinned)\n    }\n}";
 
 #[test]
 fn a_type_with_a_row_view_lists_without_an_item_block() {
@@ -363,6 +345,7 @@ fn a_prop_a_component_does_not_declare_fails_the_compile() {
         }
         Module {
             funcs: vec![Func {
+                at: None,
                 kind: crate::ir::FuncKind::View,
                 name: "task_row".into(),
                 export: "v_task_row".into(),
@@ -509,12 +492,12 @@ fn a_button_for_an_action_reads_its_label_icon_and_state_with_what_it_applies() 
 #[test]
 fn a_primitive_a_component_draws_takes_the_components_events() {
     let (m, _) = lower(
-        "type Chat {\n    topic: Text\n}\naction say(c: Chat, body: RichText) {\n    c.topic = body.excerpt\n}\nview chat(c: Chat) {\n    lens draft: RichText = RichText(\"\")\n    stack {\n        rich_input(bind: draft) {\n            on submit: say(c, draft).then(set(draft, RichText(\"\")))\n        }\n    }\n}",
+        "type Chat {\n    topic: Text\n}\naction say(c: Chat, body: RichText) {\n    c.topic = body.excerpt\n}\nview chat(c: Chat) {\n    state draft: RichText = RichText(\"\")\n    stack {\n        rich_input(bind: draft) {\n            on submit: say(c, draft).then(set(draft, RichText(\"\")))\n        }\n    }\n}",
     );
     let calls = ui_calls(func(&m, "chat"));
     assert!(has(&calls, "on submit"), "{calls:#?}");
     let wrong = diagnostics(
-        "type Chat {\n    topic: Text\n}\nview chat(c: Chat) {\n    lens draft: RichText = RichText(\"\")\n    rich_input(bind: draft) {\n        on sent: set(draft, RichText(\"\"))\n    }\n}",
+        "type Chat {\n    topic: Text\n}\nview chat(c: Chat) {\n    state draft: RichText = RichText(\"\")\n    rich_input(bind: draft) {\n        on sent: set(draft, RichText(\"\"))\n    }\n}",
     );
     assert!(wrong.iter().any(|d| d.code == "E063"), "{wrong:#?}");
 }
@@ -660,6 +643,24 @@ fn listed(b: Bag) -> Int {\n    let l = b.items.filter(i -> true)\n    return l.
     );
 }
 
+/// A template's parameters are names of the template: a caller's block is read where it was
+/// written, so a name there that a parameter shares is the caller's. Reading it in the
+/// template's place made the block call the parameter itself, expanding it forever.
+#[test]
+fn a_callers_block_reads_its_names_in_the_callers_scope() {
+    let got = diagnostics(
+        "type Note {\n    title: Text (title)\n}\ntype Notes {\n    items: Collection<Note>\n}\n\
+         template view frame<T>(items: List<T>, row: (T, Int) -> View) {\n\
+             ui.VirtualList {\n        for x in items {\n            row(x, 0)\n        }\n    }\n}\n\
+         view notes(ns: Notes) {\n    frame(ns.items) { (x, at) ->\n        row(x.title)\n    }\n}",
+    );
+    assert_eq!(
+        got.iter().map(|d| d.code.as_str()).collect::<Vec<_>>(),
+        ["E063"],
+        "{got:#?}"
+    );
+}
+
 /// The package `body` checked: its diagnostics.
 fn diagnostics(body: &str) -> Vec<crate::diag::Diagnostic> {
     let src = format!("app t.x \"X\"\n{body}\n");
@@ -675,98 +676,9 @@ fn diagnostics(body: &str) -> Vec<crate::diag::Diagnostic> {
 }
 
 #[test]
-fn std_list_is_a_shell_over_a_virtual_list_whose_rows_render_as_shown() {
-    let (m, _) = lower(NOTES);
-    let calls = ui_calls(func(&m, "notebook"));
-    let at = |calls: &[String], want: &str| {
-        calls
-            .iter()
-            .position(|c| c == want || c.starts_with(&format!("{want}:")))
-            .unwrap_or_else(|| panic!("no {want} in {calls:#?}"))
-    };
-    // The library's frame, expanded in the view: a shell, its list one loop node whose rows are
-    // each a view of their own, rendered when the host shows them.
-    assert!(at(&calls, "node ui.NavShell") < at(&calls, "node ui.VirtualList"));
-    let list = at(&calls, "node ui.VirtualList");
-    assert!(
-        calls[list..]
-            .iter()
-            .any(|c| c == "node for" || c.starts_with("node for:")),
-        "the list holds its loop: {calls:#?}"
-    );
-    assert!(
-        !has(&calls, "node ui.ListItem"),
-        "no row is built with the list"
-    );
-    // The rows' view: the boundary of the list's loop (the header's More menu is one too).
-    let row = m
-        .funcs
-        .iter()
-        .filter(|f| f.name == "notebook row")
-        .map(ui_calls)
-        .find(|calls| calls.iter().any(|c| c == "node ui.ListItem"))
-        .expect("the rows' view");
-    assert!(
-        at(&row, "node ui.ListItem") < at(&row, "node ui.ListRow"),
-        "{row:#?}"
-    );
-    // A row is its own affordances only: the host puts the item's menu and swipe on it.
-    for want in [
-        "prop title",
-        "prop secondary",
-        "prop mark",
-        "bind",
-        "prop presence",
-    ] {
-        assert!(has(&row, want), "{want} in {row:#?}");
-    }
-    let s = strings(func(&m, "notebook"));
-    assert!(s.contains(&"No notes yet".to_string()));
-}
-
-#[test]
-fn the_sort_is_a_menu_and_the_item_types_toggles_are_the_sidebars_places() {
-    let (m, ids) = lower(NOTES);
-    let f = func(&m, "notebook");
-    let calls = ui_calls(f);
-    assert!(has(&calls, "node ui.NavList"), "the places: {calls:#?}");
-    assert!(has(&calls, "node ui.MenuButton"), "the sort menu");
-    // The places are the item type's filters, asked of the platform where the list expands;
-    // the list as the place chosen shows it, and each place's count, are queries the index
-    // answers, of the items the view passed once.
-    let note = ids.get("Note").expect("id").to_string();
-    let mut filters = Vec::new();
-    let mut queries = 0;
-    for g in m.funcs.iter().filter(|g| g.name.starts_with("notebook")) {
-        visit(g, &mut |e| match &e.kind {
-            Ek::Host(Imp::Filters, args) => {
-                filters.push(args.first().and_then(text).map(str::to_owned));
-            }
-            Ek::Host(Imp::Query, _) => queries += 1,
-            _ => {}
-        });
-    }
-    assert_eq!(filters, [Some(note)]);
-    assert!(queries >= 2, "the list and the places' counts: {queries}");
-    let listed = m
-        .funcs
-        .iter()
-        .position(|x| x.name == "listed")
-        .expect("listed");
-    assert_eq!(calls_of(f, listed), 1, "the items are listed once");
-    // Which place is chosen is the window's state, the library's own, kept under the view.
-    let notebook = ids.get("notebook").expect("id");
-    assert!(
-        strings(f).contains(&format!("{notebook}:list.query")),
-        "{:?}",
-        strings(f)
-    );
-}
-
-#[test]
 fn a_filter_named_by_its_type_is_the_value_a_query_and_a_sidebar_take() {
-    const FILTERS: &str = "type Task {\n    title: Text (title)\n    done: Bool (done) = false\n    project: Option<Project> = .none\n    search {\n        filter \"Inbox\" = not done (count: true)\n        filter \"Done\" = done\n        filter project\n    }\n}\ntype Project {\n    name: Text (title)\n}\ntype Board {\n    tasks: Collection<Task>\n    projects: Collection<Project>\n}\n";
-    let view = "view board(b: Board) {\n    window place: Filter<Task> = Task.inbox\n    ui.NavList(selected: place) {\n        for f in filters(Task).filter(f -> f.toggle) {\n            ui.NavItem(f, f.label) {\n                on select: set(place, f)\n            }\n        }\n        for p in b.projects {\n            ui.NavItem(Task.project(p), p.name, icon: .folder) {\n                on select: set(place, Task.project(p))\n            }\n        }\n    }\n    for t in b.tasks.matching(place) {\n        text(t.title)\n    }\n}";
+    const FILTERS: &str = "type Task {\n    title: Text (title)\n    done: Bool (done) = false\n    project: Option<Project> = .none\n    search {\n        filter \"Inbox\" = not done (icon: .inbox)\n        filter \"Done\" = done\n        filter project\n    }\n}\ntype Project {\n    name: Text (title)\n}\ntype Board {\n    tasks: Collection<Task>\n    projects: Collection<Project>\n}\n";
+    let view = "view board(b: Board) {\n    state place: Filter<Task> = Task.inbox\n    ui.NavList(selected: place) {\n        for f in filters(Task).filter(f -> f.toggle) {\n            ui.NavItem(f, f.label) {\n                on select: set(place, f)\n            }\n        }\n        for p in b.projects {\n            ui.NavItem(Task.project(p), p.name, icon: .folder) {\n                on select: set(place, Task.project(p))\n            }\n        }\n    }\n    for t in b.tasks.matching(place) {\n        text(t.title)\n    }\n}";
     let (m, ids) = lower(&format!("{FILTERS}{view}"));
     let task = ids.get("Task").expect("id").to_string();
     let query_field = crate::host::value_field("Filter", "query").expect("query");
@@ -883,7 +795,7 @@ fn a_body_held_as_rich_text_binds_like_any_field() {
 #[test]
 fn a_document_page_and_transcript_are_shells_of_the_library() {
     let (m, _) = lower(
-        "type Person {\n    name: Text (title)\n    vip: Bool = false\n    owner: Principal\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    lens tab: Tab = .about\n    std.document(p) {\n        choice(bind: tab)\n        avatar(p.owner)\n        section(\"About\") {\n            facts(p)\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            ui.Card(item: p, title: meta(p).title) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",
+        "type Person {\n    name: Text (title)\n    vip: Bool = false\n    owner: Principal\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    state tab: Tab = .about\n    std.document(p) {\n        choice(bind: tab)\n        avatar(p.owner)\n        section(\"About\") {\n            facts(p)\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            ui.Card(item: p, title: meta(p).title) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",
     );
     let calls = ui_calls(func(&m, "person"));
     for want in [
@@ -909,7 +821,7 @@ fn a_document_page_and_transcript_are_shells_of_the_library() {
         "the shell is the root"
     );
     let (m, _) = lower(
-        "type Chat {\n    draft: Text\n    lines: Collection<Line>\n}\ntype Line {\n    text: Text\n}\nview line(l: Line) {\n    text(l.text)\n}\nview chat(c: Chat) {\n    lens draft: Text\n    std.transcript(c, c.lines, row: line) {\n        composer: {\n            input(bind: draft)\n        }\n    }\n}",
+        "type Chat {\n    draft: Text\n    lines: Collection<Line>\n}\ntype Line {\n    text: Text\n}\nview line(l: Line) {\n    text(l.text)\n}\nview chat(c: Chat) {\n    state draft: Text\n    std.transcript(c, c.lines, row: line) {\n        composer: {\n            input(bind: draft)\n        }\n    }\n}",
     );
     let calls = ui_calls(func(&m, "chat"));
     let at = |s: &str| calls.iter().position(|c| c == s).expect(s);
@@ -1064,6 +976,24 @@ fn linked_and_made_from_are_read_from_the_log() {
 }
 
 #[test]
+fn an_action_applied_made_from_a_resource_is_invoked_from_it() {
+    let (m, _) = lower(
+        "type Note {\n    title: Text\n}\ntype Notes {\n    items: Collection<Note>\n}\nroot notes: Notes\ndefault view all for Notes\naction keep(all: Notes, title: Text) -> Note {\n    all.items.insert(Note(title: title))\n}\nview all(all: Notes) {\n    text(meta(all).title)\n}\nview note(n: Note) {\n    button(keep(notes, n.title).made_from(n))\n}",
+    );
+    // What a view shows of an action is the action the host runs; made from a resource, it runs
+    // from that resource, so what it makes records what it was made from.
+    let mut made_from = false;
+    for f in &m.funcs {
+        visit(f, &mut |e| {
+            if let Ek::Host(Imp::ActMadeFrom, _) = &e.kind {
+                made_from = true;
+            }
+        });
+    }
+    assert!(made_from, "`made_from` is the host's own step: {m:#?}");
+}
+
+#[test]
 fn a_links_how_is_a_case_of_the_hosts_link_how_enum() {
     let (m, _) = lower(
         "type Note {\n    title: Text\n}\nfn mentions(n: Note) -> Bool {\n    linked(n).any(l -> l.how == .mention)\n}",
@@ -1100,7 +1030,7 @@ fn a_links_how_is_a_case_of_the_hosts_link_how_enum() {
 #[test]
 fn every_rich_input_is_given_its_drawers_people_by_the_system() {
     let (m, _) = lower(
-        "type Chat {\n    topic: Text\n}\nview chat(c: Chat) {\n    lens draft: RichText = RichText(\"\")\n    stack {\n        rich_input(bind: draft)\n    }\n}\nview loose() {\n    lens draft: RichText = RichText(\"\")\n    rich_input(bind: draft)\n}",
+        "type Chat {\n    topic: Text\n}\nview chat(c: Chat) {\n    state draft: RichText = RichText(\"\")\n    stack {\n        rich_input(bind: draft)\n    }\n}\nview loose() {\n    state draft: RichText = RichText(\"\")\n    rich_input(bind: draft)\n}",
     );
     let chat = host_imports(func(&m, "chat"));
     for want in [Imp::Speakers, Imp::Members] {
@@ -1120,7 +1050,7 @@ fn every_rich_input_is_given_its_drawers_people_by_the_system() {
 #[test]
 fn a_generic_view_with_a_lambda_and_view_state_expands_where_it_is_called() {
     let (m, _) = lower(
-        "type Item {\n    title: Text\n}\ntype Bag {\n    items: Collection<Item>\n}\nenum Size {\n    small\n    large\n}\nview shown<T, E>(things: List<T>, size: State<E>, label: (T) -> Text, extra: Option<View> = .none) {\n    stack {\n        for c in cases(E) {\n            button(c.label(), on: set(size, c))\n        }\n        for t in things {\n            text(label(t))\n        }\n        match extra {\n            .some(v) => v,\n            .none => text(\"none\"),\n        }\n    }\n}\nview bag(b: Bag) {\n    window size: Size = .small\n    shown(b.items, size: size, label: i -> i.title)\n}",
+        "type Item {\n    title: Text\n}\ntype Bag {\n    items: Collection<Item>\n}\nenum Size {\n    small\n    large\n}\nview shown<T, E>(things: List<T>, size: State<E>, label: (T) -> Text, extra: Option<View> = .none) {\n    stack {\n        for c in cases(E) {\n            button(c.label(), on: set(size, c))\n        }\n        for t in things {\n            text(label(t))\n        }\n        match extra {\n            .some(v) => v,\n            .none => text(\"none\"),\n        }\n    }\n}\nview bag(b: Bag) {\n    state size: Size = .small\n    shown(b.items, size: size, label: i -> i.title)\n}",
     );
     let calls = ui_calls(func(&m, "bag"));
     assert_eq!(
@@ -1143,6 +1073,30 @@ fn a_generic_view_with_a_lambda_and_view_state_expands_where_it_is_called() {
     assert!(
         wrong.iter().any(|d| d.code == "E066"),
         "view state is passed by its name: {wrong:#?}"
+    );
+}
+
+/// A package may name a view as the library names one: only the same package's view is the same
+/// view, so an app's own `composer` calling `std.composer` expands the library's, not itself.
+#[test]
+fn an_apps_view_named_as_the_libraries_expands_the_libraries() {
+    let (m, _) = lower(
+        "type Chat {\n    topic: Text\n}\naction send(c: Chat, text: RichText) {\n}\nview composer(c: Chat) {\n    state draft: RichText = RichText(\"\")\n    std.composer(draft, \"Message {c.topic}\", send(c, draft))\n}\nview chat(c: Chat) {\n    composer(c)\n}",
+    );
+    let chat = ui_calls(func(&m, "chat"));
+    assert!(
+        chat.iter().any(|c| c.starts_with("node view:")),
+        "the app's composer stands in its chat: {chat:#?}"
+    );
+    let calls = ui_calls(func(&m, "composer"));
+    assert!(
+        calls.iter().any(|c| c.starts_with("node ui.RichInput")),
+        "the library's field is the one drawn: {calls:#?}"
+    );
+    assert!(has(&calls, "on submit"), "and it sends: {calls:#?}");
+    assert!(
+        has(&calls, "on press"),
+        "and so does its button: {calls:#?}"
     );
 }
 
@@ -1180,7 +1134,7 @@ type Tasks { items: Collection<Task> }
 root tasks: Tasks
 default view home for Tasks
 view home(t: Tasks) {
-    window place: Filter<Task> = Task.inbox
+    state place: Filter<Task> = Task.inbox
     let side: List<Filter<Task>> = [Task.inbox, Task.done]
     let chosen = side.find(f -> f == place)
     text(chosen?.label ?? "x")
@@ -1293,9 +1247,9 @@ fn a_length_of_time_is_a_value_of_its_own() {
     // A day and a moment move by one, and two of a kind are one apart.
     let (m, _) = lower(
         "type Note {\n    stamp: Date = Date(\"1970-01-01\")\n    at: Time = Time(\"1970-01-01T00:00:00Z\")\n}\n\
-         action soon(n: Note) -> Time { n.at = now + 2h \n now }\n\
-         action tomorrow(n: Note) -> Date { n.stamp = today + 1d \n today }\n\
-         action last_week(n: Note) -> Date { today - 1w }\n\
+         action soon(n: Note) -> Time uses time { n.at = now + 2h \n now }\n\
+         action tomorrow(n: Note) -> Date uses time { n.stamp = today + 1d \n today }\n\
+         action last_week(n: Note) -> Date uses time { today - 1w }\n\
          fn apart(a: Time, b: Time) -> Duration { b - a }\n\
          fn days(a: Date, b: Date) -> Duration { b - a }",
     );
@@ -1374,8 +1328,8 @@ fn a_day_and_a_moment_are_read_by_their_parts() {
 #[test]
 fn a_day_or_a_moment_is_read_from_a_text() {
     let (m, _) = lower(
-        "action day(t: Text) -> Option<Date> { Date.parse(t, near: now) }\n\
-         action at(t: Text) -> Option<Time> { Time.parse(t, near: now) }",
+        "action day(t: Text) -> Option<Date> uses time { Date.parse(t, near: now) }\n\
+         action at(t: Text) -> Option<Time> uses time { Time.parse(t, near: now) }",
     );
     assert_eq!(returned(func(&m, "day")).ty, Ty::Option(Box::new(Ty::Date)));
     assert_eq!(returned(func(&m, "at")).ty, Ty::Option(Box::new(Ty::Time)));
@@ -1412,7 +1366,7 @@ fn only_an_action_reads_the_day_it_is() {
     }
     // The action's day and moment read as one: the day is the one the moment falls on.
     let (m, _) = lower(
-        "type Note {\n    stamp: Date = Date(\"1970-01-01\")\n}\naction mark(n: Note) { n.stamp = now.day() }",
+        "type Note {\n    stamp: Date = Date(\"1970-01-01\")\n}\naction mark(n: Note) uses time { n.stamp = now.day() }",
     );
     assert!(imports(func(&m, "mark")).contains(&Imp::TimeDay));
 }

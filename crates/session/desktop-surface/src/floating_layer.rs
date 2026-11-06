@@ -46,14 +46,17 @@ pub enum Ask {
     Focus(bool),
 }
 
-/// Whether `card` stands on screen exactly as something in `cards` does.
+/// Whether `card` stands on screen exactly as something in `cards` does. An
+/// app's card is its window's to draw, so whatever happens to it, the layer
+/// has nothing of its own to repaint.
 fn drawn_like(cards: &[Placed], card: &Placed) -> bool {
-    cards.iter().any(|other| {
-        other.app == card.app
-            && other.summary.id == card.summary.id
-            && other.summary == card.summary
-            && other.rect == card.rect
-    })
+    card.rich
+        || cards.iter().any(|other| {
+            other.app == card.app
+                && other.summary.id == card.summary.id
+                && other.summary == card.summary
+                && other.rect == card.rect
+        })
 }
 
 /// A drag in flight: which card, and where the pointer took it from.
@@ -168,9 +171,7 @@ impl FloatingLayer {
     pub fn shown(&self) -> Shown {
         Shown {
             cards: self
-                .layout
-                .cards
-                .iter()
+                .drawn()
                 .map(|card| {
                     (
                         card.app.clone(),
@@ -195,10 +196,14 @@ impl FloatingLayer {
     /// shadows, so a press beside a card reaches the window under it.
     #[must_use]
     pub fn accepts(&self, point: Point) -> bool {
-        self.layout
-            .cards
-            .iter()
-            .any(|card| card.rect.contains(point))
+        self.drawn().any(|card| card.rect.contains(point))
+    }
+
+    /// The cards the layer draws: an app's own card is a window of its own,
+    /// so the layer keeps its place and paints, presses and names nothing of
+    /// it.
+    fn drawn(&self) -> impl DoubleEndedIterator<Item = &Placed> {
+        self.layout.cards.iter().filter(|card| !card.rich)
     }
 
     /// Draw the cards. Everything else on the surface stays clear.
@@ -209,7 +214,7 @@ impl FloatingLayer {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        for card in &self.layout.cards {
+        for card in self.layout.cards.iter().filter(|card| !card.rich) {
             let rect = self.dragged(card);
             paint_card_shadow(scene, transform, rect, 1.0, theme);
             paint_card_body(scene, transform, rect, theme);
@@ -321,9 +326,7 @@ impl FloatingLayer {
 
     fn press_at(&mut self, point: Point) -> Vec<Ask> {
         let Some(card) = self
-            .layout
-            .cards
-            .iter()
+            .drawn()
             .rev()
             .find(|card| card.rect.contains(point))
             .cloned()
@@ -471,13 +474,9 @@ impl FloatingLayer {
     /// by the activity's title, with its reading and its controls.
     #[must_use]
     pub fn accessibility(&self) -> Option<AccessNode> {
-        if self.layout.cards.is_empty() {
-            return None;
-        }
+        self.drawn().next()?;
         let groups = self
-            .layout
-            .cards
-            .iter()
+            .drawn()
             .map(|card| {
                 let summary = &card.summary;
                 let mut children = vec![
@@ -540,9 +539,7 @@ impl FloatingLayer {
     /// What the layer shows, for a test that reads it without a screen.
     #[must_use]
     pub fn test_rects(&self) -> Vec<(String, Rect)> {
-        self.layout
-            .cards
-            .iter()
+        self.drawn()
             .map(|card| (format!("activity:{}", card.summary.id), self.dragged(card)))
             .collect()
     }
@@ -756,6 +753,99 @@ mod tests {
                 app: "so.tilo.clocks".into(),
                 activity: "tea".into(),
             }]
+        );
+    }
+
+    /// A card its app draws is a window of its own: the layer keeps the place
+    /// it reserved for it and paints, presses and names nothing there, so the
+    /// app's first frame never lands over the layer's own drawing of the same
+    /// card and the layer's leftover never shows through after it goes.
+    #[test]
+    fn a_card_its_app_draws_is_left_to_its_window() {
+        let theme = Theme::default();
+        let mut text = TextRenderer::new();
+        let mut layer = FloatingLayer::default();
+        let mut drawn = Card::new("so.tilo.chat", timer());
+        drawn.rich = true;
+        drawn.size = Some(ui::vello::kurbo::Size::new(320.0, 240.0));
+        layer.set(
+            placement(),
+            Corner::BottomRight,
+            vec![drawn, music("Track 1")],
+        );
+        layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
+        let cards = layer.layout().cards.clone();
+        assert_eq!(
+            cards.len(),
+            2,
+            "the app's card keeps the place it was given"
+        );
+        let app_card = cards.iter().find(|card| card.rich).expect("the app's card");
+        assert!(
+            !layer.accepts(app_card.rect.center()),
+            "a press inside the app's card reaches its window, not the layer"
+        );
+        assert!(
+            layer
+                .test_rects()
+                .iter()
+                .all(|(id, _)| id != "activity:tea"),
+            "the layer names only the cards it draws"
+        );
+
+        // The app's card updates: the layer paints nothing of it, so there is
+        // nothing to repaint.
+        let mut grown = Card::new(
+            "so.tilo.chat",
+            Summary::new(Kind::Timer, "Tea", "4:31")
+                .with_id("tea")
+                .with_progress(0.5),
+        );
+        grown.rich = true;
+        grown.size = Some(ui::vello::kurbo::Size::new(320.0, 240.0));
+        layer.set(
+            placement(),
+            Corner::BottomRight,
+            vec![grown, music("Track 1")],
+        );
+        layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
+        assert_eq!(layer.damage(), Rect::ZERO, "nothing of it is the layer's");
+
+        // The card the layer draws changes: only its ground is repainted.
+        let mut drawn = Card::new(
+            "so.tilo.chat",
+            Summary::new(Kind::Timer, "Tea", "4:31")
+                .with_id("tea")
+                .with_progress(0.5),
+        );
+        drawn.rich = true;
+        drawn.size = Some(ui::vello::kurbo::Size::new(320.0, 240.0));
+        layer.set(
+            placement(),
+            Corner::BottomRight,
+            vec![drawn, music("Track 2")],
+        );
+        layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
+        let music_card = layer
+            .layout()
+            .cards
+            .iter()
+            .find(|card| !card.rich)
+            .expect("the music card")
+            .rect;
+        assert_eq!(
+            layer.damage(),
+            painted_bounds(music_card, &theme),
+            "the music card's ground, and nothing where the app draws"
+        );
+
+        let mut alone = FloatingLayer::default();
+        let mut drawn = Card::new("so.tilo.chat", timer());
+        drawn.rich = true;
+        alone.set(placement(), Corner::BottomRight, vec![drawn]);
+        assert!(
+            alone.accessibility().is_none(),
+            "nothing of the app's card is the layer's to read out"
         );
     }
 

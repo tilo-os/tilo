@@ -30,6 +30,12 @@ have, and its actions change them there; what it creates goes under the new id. 
 before is signed into the app's manifest, and installing it over an app of that id from another
 publisher is refused; from the same publisher it takes that app's place.
 
+A package that reaches services outside Tilo says which hosts its requests may reach, in the
+same header: `app so.tilo.feed "Feed" (web: ["example.com", "*.rss.org"])`. `*.rss.org` covers
+its subdomains, not `rss.org` itself. A request to any other host is refused as a value; a
+package that declares no hosts reaches none. The grant is part of the manifest an install shows,
+and the workspace may revoke a host.
+
 A package migrates its own records when its schema changes shape. The field the type no longer
 uses stays, marked `(previously)`: its values stay in the records, and only a migration reads
 it. A `migration action` on the type moves what it held to where the type keeps it now:
@@ -142,7 +148,7 @@ native record is.
 
 The full grammar is [grammar.md](grammar.md). In short:
 
-**Declarations.** A package is `type`s, `enum`s, `action`s, `flow`s, `view`s and `fn`s, plus two
+**Declarations.** A package is `type`s, `enum`s, `action`s, `view`s and `fn`s, plus two
 package-level declarations (workspace-model.md, "Apps"):
 
 ```
@@ -153,12 +159,14 @@ enum NoteOrder {
     title
 }
 
-type Notes = Collection<Note>          // a resource that is a collection
+type Notebook {                        // a resource holding a collection
+    notes: Collection<Note>
+}
 type Channel = TextChannel | Thread    // a resource of either type
 
-root notes: Notes                      // one per room; the launcher opens it
-default view notebook for notes       // what a window of the root shows
-default view note_editor for Note     // what a window of a Note shows
+root notebook: Notebook                // one per workspace; the launcher opens it
+default view notebook for Notebook     // what a window of the root shows
+default view note_editor for Note      // what a window of a Note shows
 ```
 
 **Enums** are plain named cases. A value is a dot literal resolved from the type the context
@@ -186,7 +194,7 @@ results and resources compare with `==`; options and results are taken apart wit
 
 **Type names and roots.** `type Name = T` names any type. A name for a collection, set or map is
 a resource of its own that code uses as that container (`notes.insert(n)`, `for n in notes`,
-`std.list(notes, notes)`); its one field is `Name.items` in the ids lock, so renaming an old
+`notes.matching(query)`); its one field is `Name.items` in the ids lock, so renaming an old
 `type Notebook { notes: Collection<Note> }` to it (`tilolang ids --rename`) keeps its records. A
 root names one such resource per room: `root notes: Notes` is `notes` in the package and
 `alias.notes` in a package that uses it.
@@ -234,7 +242,7 @@ let sum = items.map(i -> i.price).sum()
 
 `Text` has `len` and `is_empty`; `slice(from, to)`, a range of graphemes clamped to the text; `find(what)`, an `Option<Int>`; `starts_with`, `ends_with`, `contains` and `matches(pattern)`, where `*` stands for any run (the same pattern search's identifiers use); `trim`, `lower` and `upper`; `split(sep)`, which with an empty separator gives what a reader sees as one thing, and `replace(from, to)`, which replaces every occurrence; and `to_int`, an `Option<Int>` taking a decimal number written with an optional sign, around any outer space. A text is counted in what a reader sees: `len`, `find` and `slice` count graphemes, so a family emoji, a flag or a letter with an accent is one and a cut never splits one, and a text column's `len` in a filter counts the same way. Case changes are Unicode case mapping and not locale tailoring (`upper("straße")` is `STRASSE`).
 
-`Int` and `Float` have `min`, `max`, `clamp(lo, hi)` and `abs`; a `Float`'s `round`, `floor` and `ceil` give an `Int`, or, given the places to keep (`f.round(2)`), a `Float`. `Int.to_float()` and `Float.to_int()` convert between them (dropping the fraction), and `.to_text()` writes any number as `Bool.to_text()` writes `true` or `false`. A `List<Text>` has `join(sep)`; a `List<Int>` or `List<Float>` has `sum()` (the items' type) and `avg()` (a `Float`, 0.0 for an empty list); `contains` asks whether an item is one of a list, set or collection, as `index_of` finds it. All of them are pure — no clock, no workspace, no effect — so a view, an `fn`, an action and a flow write them alike.
+`Int` and `Float` have `min`, `max`, `clamp(lo, hi)` and `abs`; a `Float`'s `round`, `floor` and `ceil` give an `Int`, or, given the places to keep (`f.round(2)`), a `Float`. `Int.to_float()` and `Float.to_int()` convert between them (dropping the fraction), and `.to_text()` writes any number as `Bool.to_text()` writes `true` or `false`. A `List<Text>` has `join(sep)`; a `List<Int>` or `List<Float>` has `sum()` (the items' type) and `avg()` (a `Float`, 0.0 for an empty list); `contains` asks whether an item is one of a list, set or collection, as `index_of` finds it. All of them are pure — no clock, no workspace, no effect — so a view, an `fn` and an action write them alike.
 
 **Key paths.** Where a lambda would only read a field, `.field` (or `.a.b`) is that lambda:
 `items.sort_by(.due)`, `items.count(.done)`, `items.remove_where(.done)`. `sort_by` takes
@@ -248,7 +256,10 @@ before which of its siblings: `(moved, parent, before) -> move_to(tasks, moved, 
 **Reflection.** The log records who made every change, when and by which action, so code reads
 it rather than storing its own timestamps: `created(r)` and `updated(r)` are an
 `Option<host.Version>` (`.who`, `.at`, `.what`, the action's label), `history(r)` all of them,
-oldest first. `v.is(edit)` asks whether the action `edit` made it, by the action itself, never
+oldest first, and `changed(r, .field)` the one that last changed that field, or the one that
+made `r` when none after it did. A store with an index keeps the last change of each field, so
+a list groups or sorts by it at the cost of one value a row, never of a row's history:
+`group: t -> changed(t, .done)?.at.day()`. `v.is(edit)` asks whether the action `edit` made it, by the action itself, never
 its label: `history(m).any(v -> v.is(edit))`. An offered `host.Action` answers the same:
 `actions(m).any(a -> a.is(edit))`. A version also says which task run made it (`.task`, a
 `host.TaskRun`), what it did (`.kind`: `created`, `changed` or `removed`; a removed resource
@@ -256,8 +267,9 @@ keeps its versions) and which `.fields` it changed. A resource can be made from 
 an invocation carries the resource it is made from when the host or the invoker names one, the
 change records it, and the resource it created says so, `created(r)?.from` — an
 `Option<host.Resource>`. `changes(of: run)` is every version a run
-made, of every resource, and `unseen(r)` the versions of `r` an agent's run made that the
-person looking has not seen yet. The UI host marks those where views show them, with no code
+made, of every resource, and `unseen(r)` the versions of `r` the person looking has not seen
+yet: another person's or an agent's, since their seen mark of `r` (a comment about
+`r` counts as a change to it). The UI host marks those where views show them, with no code
 of the app's; `ui.ChangeMark(r)` places the mark where the default spot is wrong
 (task-legibility.md).
 
@@ -266,6 +278,10 @@ of the app's; `ui.ChangeMark(r)` places the mark where the default spot is wrong
 `.created_from` for one made from `r`, `.field` for one whose reference field points at it, and
 `.mention` for one whose rich text names it. It is read from the index, at the cost of what links to `r` and not of the
 workspace's size, and a view that reads it runs again when what links to `r` changes.
+
+What a type's records are to a resource is the page's to show: a comment is about what it
+was made from, and the thread under that resource draws every comment about it, so a page that
+draws a thread says what it draws itself (`std.linked(t, without: discussion.said_about(t))`).
 
 **Members.** Who is in the workspace is the platform's membership, read and never copied:
 `workspace.members` is everyone in it, people and agents, a `List<Principal>`, and `members(r)`
@@ -299,11 +315,16 @@ knows without reading the items before it. A board lane's drop says both
 what was dropped and where: `on drop(moved: Task, at: Int): place(moved, s, at)`. How moves,
 edits and removals made at the same time merge is convergence.md, "Storage and sync".
 
-**Flows** invoke actions by calling them. `try act(args)` gives a `Result<T, Text>` (`Result<(),
-Text>` for an action without a result) instead of failing:
+**Actions that call actions** invoke them by calling them, their own package's or another
+one's: each call runs at its door as a change of its own, and may wait for a person's approval.
+What the caller writes before a call is a change of its own too, committed before the call runs,
+so a call on a record the caller made in the same action sees it; what it writes after the call
+is its next change.
+`try act(args)` gives a `Result<T, Text>` (`Result<(), Text>` for an action without a result)
+instead of failing:
 
 ```
-flow cleanup(list: todo.TodoList) -> Text {
+action cleanup(list: todo.TodoList) -> Text {
     for item in list.items {
         if item.done {
             todo.remove(list, item)
@@ -315,6 +336,130 @@ flow cleanup(list: todo.TodoList) -> Text {
     }
 }
 ```
+
+**Triggers.** An action that runs by itself is a `trigger`: the package says when it runs, and
+the host invokes it as the app's own action (DECISIONS.md, "Triggers"):
+
+```
+trigger recount(b: Board) every 30m: recount_columns(b)
+trigger due(r: Reminder) at r.at: ring(r)
+```
+
+A trigger runs for each of the package's records of the type it names. `every` takes a length of
+time and runs at the start of each period on the clock; `at` reads a `Time` or `Option<Time>`
+field of the record and runs once when that instant has come, and again if the field moves to
+another time. Its action takes the record (`ring(r)`) or a root (`root Board`) and nothing else.
+The workspace's origin runs them: once per period or instant across the workspace's devices, once
+for a period or time that passed while every device was off, and never by polling.
+
+**Effects.** An action whose body reads what a replay cannot compute again says so:
+`uses time` after its parameters, comma-separated when it reads more (`uses web, random`).
+Reading the clock or the person's zone anywhere in the body — `now`, `today`, a time of no
+zone, `t.day()`, `t.time_of_day()`, `Time.parse(...)`, `r.next_at(...)` — is an error until
+it does (E121), and so is a `fn` or an action it calls that reads them. An
+invocation records what it read in its journal: the moment and the zone once per invocation,
+and each draw and fetch with its answer as the language grows into them. The journal is kept beside the change an action makes, so history
+says what a change was made of; a run that waits for a person and goes on reads the moment it
+started, not the moment it went on.
+
+A view reads the person's zone and the day it is as what it is drawn with, not as an effect: it
+has no `now` (E049) and nothing it does is replayed, while the day a filter reads is the query's
+and the window draws again when the day turns. A scenario is seed data, run where a developer
+runs it and never replayed, so it reads every effect without saying so.
+
+**Requests.** An action that calls a service outside Tilo declares `uses web` and uses
+`web.get(url, headers:, if_none_match:)` or `web.post(url, body:, headers:)`. Both answer a
+`Response`:
+
+```
+action refresh(feed: Feed) uses web {
+    let response = web.get(feed.url, if_none_match: feed.etag)
+    if response.ok {
+        feed.body = response.text()
+        feed.etag = response.headers.find(h -> h.starts_with("ETag: ")) ?? feed.etag
+    }
+}
+```
+
+`ok` is `200..=299`, `status` and `status_text` what the service answered, `headers` a list of
+`Name: value`, `body` the bytes it sent, with `.text()` and `.len()`. `headers:` take the same list
+of lines, and `if_none_match:` the tag a service gave, so an unchanged answer comes back as a
+`304`.
+
+The request runs once, where the invocation runs: on the person's device, or on the host for a
+host-run invocation. Its answer is a `Web` journal entry of that invocation, so a replay, and a
+run resumed tomorrow, answer from the record and do not ask again. What can go wrong is a value,
+never a trap: a host the package did not declare, a host the workspace revoked, a timeout (30
+seconds) and no network each answer `ok == false` with `status == 0` and a `status_text` that
+says why, and the invocation carries on. A reply's body may be up to 2 MiB; nothing streams.
+
+**JSON.** Text a service sent reads into the type the code names, and a value writes back as
+text, with no effect to declare: the work is in the text and the value, nothing outside them.
+
+```
+action refresh(feed: Feed) uses web {
+    let response = web.get(feed.url)
+    match json.decode<List<Entry>>(response.text()) {
+        .ok(entries) => {
+            for entry in entries {
+                feed.entries.insert(entry)
+            }
+        }
+        .err(why) => { feed.trouble = why }
+    }
+}
+```
+
+`json.decode<T>(text)` reads `Int`, `Float`, `Bool`, `Text` (and what holds text: `Date`, `Time`,
+`std.Identifier`), a `List`, an `Option`, an enum and a record, matching a record's fields by
+name; a record's field may hold a `Map`, a short list of text keys to values. A field the text leaves out is none when it is an `Option`, or the value the type
+declares for it; a required one it leaves out is an error at that field's path. Names the type
+has no field for are ignored, so a service that adds one breaks no reader.
+
+A number reads as an `Int` when it is a whole one that fits (`5` and `5.0`), as a `Float`
+otherwise; a field declared `Float` reads any number. An enum reads from its case's name.
+
+What can go wrong is a value, never a trap: text that is no JSON, and a value whose shape is not
+the type's, answer `.err(why)`, and `why` names the JSON path of the value that did not fit:
+`$.entries[2].title is not a Text, as text: 5`. A whole decode fails at the first value that does
+not fit, so a message names one path, not each.
+
+A record a decode answers is a record value: it has no id, and no store holds it until it is put
+in a collection (`feed.entries.insert(entry)`), which is what a record value is for; its fields
+read as the text gave them. A record field that holds a resource (a record, a collection, a set)
+cannot be made from text, so text carrying one is an error naming that field's path: read the
+list and insert what it holds.
+
+`json.encode(value)` writes the fields a record's type declares, by their names, an enum as its
+case's name, a list as an array, a `Map` as an object, an `Option` as its value or `null`, and a
+`json.Value` as it was read. Writing a stored resource (a reference) traps: its fields are what to
+write, and a resource's JSON is not one document: two resources may point at each other. Read
+the text into values, or write the fields it should carry into a record, and encode those.
+
+A service whose shape the code does not know is read as a `json.Value` and taken apart as the
+code asks, with `json.parse(text)`:
+
+```
+match json.parse(response.text()) {
+    .ok(value) => match value {
+        .object(fields) => { feed.keys = fields.keys().len() }
+        .array(items) => { feed.keys = items.len() }
+        .string(text) => { feed.trouble = text }
+        .number(number) => { feed.trouble = number.to_text() }
+        .bool(flag) => { feed.trouble = if flag { "yes" } else { "no" } }
+        .null => { feed.trouble = "nothing" }
+    }
+    .err(why) => { feed.trouble = why }
+}
+```
+
+`object` binds a `Map<json.Value>` (`fields.keys()`, `fields.get("name")`), `array` a
+`List<json.Value>`, `string` a `Text`, `number` a `Float` (JSON has no integers of its own),
+`bool` a `Bool`, and `null` nothing. A match over one names all six kinds, as a match over an
+enum names all its cases. Like a `Response`, a `json.Value` belongs to the run that read it, so
+it is no field's type (E023): a program keeps what it found by writing it into a record.
+
+The type between `<` and `>` is what makes a decode typed; only `json.decode` takes one.
 
 **Parameter defaults.** An action parameter may have a default written in terms of the
 parameters before it. An invocation that leaves the argument out gets it, computed when it is
@@ -338,8 +483,8 @@ their units and flags stay bare words. An anchor follows the call as `as name`:
 
 ```
 view notebook(nb: Notebook) {
-    window order: NoteOrder = .created     // how my window shows the notes
-    lens expanded: Option<Note> = .none    // one per person per window
+    state order: NoteOrder = .created      // how my window shows the notes
+    state expanded: Option<Note> = .none   // one per person per window
     page {
         stack(gap: .section) {
             row(distribute: .between) {
@@ -379,10 +524,10 @@ ladder of how far a view may go — options, composing `ui.*`, drawing, native w
 [components.md](../../../docs/designs/app-language/components.md#4-customizing-a-component-a-ladder).
 
 **View state** (workspace-model.md, "In the language") is declared at the top of a view:
-`window name: T = default` is how each person looking at the window shows its resource, and
-`lens name: T = default` is where each person is in it; both are each person's own, so one
-person's window setting or draft never moves another's view. The view reads them like
-variables; they change only through a control bound to them (`input(bind: query)`,
+`state name: T = default` is what each person looking at the window keeps in it — how their
+window shows the resource, and where they are in it; it is each person's own, so one person's
+window setting or draft never moves another's view. The view reads a slot like a
+variable; it changes only through a control bound to it (`input(bind: query)`,
 `checkbox("Open", bind: open)`) or the platform action `set(name, value)` on a control. `open(r)` and `open(r, view: v)` are platform actions
 too: they go to the window of `r`. An action's arguments are evaluated when it is invoked, on
 what the invoker sees, as its parameter defaults are: an action a view applies reads the view
@@ -480,9 +625,7 @@ is an account of any service held as its URI: `std.Identifier("mailto:jane@x.com
 completed) and a reminder its trigger duration (`std.Reminder("-PT15M")`), both from a string
 literal. `.next(from, done_on)`, `.next_at(at, day)` and `.at(due, at)` read them in the
 person's zone, so a wall time of day survives a change of clocks, and `.label()` says what they
-do in the reader's words ("Every 2 weeks", "15 minutes before"). An action completes a repeating
-item in one call: `let again = std.complete(t, done)` adds the day to the item's
-`completed: Set<Date>` and moves `due` and `at` to the next occurrence.
+do in the reader's words ("Every 2 weeks", "15 minutes before").
 
 `query(T, in: x, filter: value, sort: .field_order)` lists the resources of `T` inside `x`
 that the filters hold of, a lazy list the index answers. Its arguments are `T`'s filters,
@@ -490,28 +633,30 @@ checked against what each compares: a Bool; a case, or several (`[.open, .blocke
 or Time, `today`, `now`, either plus or minus a duration, a duration from now (`-7d`), a month
 (`2026-10`), or a range of them (`today..today + 7d`, `2026-10-01..`); a number or a range; a
 resource; an identifier or a pattern (`"*@x.com"`); `none` or `any` where a filter may hold no
-value. Without `sort:`, the type's own order. Outside a view (an action, a flow) a query may
+value. Without `sort:`, the type's own order. Outside a view (an action) a query may
 leave out `in:` and look across the workspace. A filter is a value: `Task.today` names the one
 the type declares, `Task.project(p)` one with its value, and `items.matching(Task.today)`,
 `items.matching(Task.project(p), Task.done)` and `query(Task, in: x, Task.today)` ask them, no
 search text written. `filters(T)` lists the type's filters (`host.Filter`), each with the query
-choosing it asks, its label, icon, whether it is on or off and whether its place shows how many
-it holds; the filters that are on or off are what a list's places are, and a `ui.NavItem` given
-one, or a `ui.NavList` given the chosen one (`selected: place`), is keyed by it without the app
-writing a key. `items.matching("is:done due:-7d")` still asks the same of a list, written as
-people type it in search. A filter's fields also read as text (`f.query` is `is:today`), so a
+choosing it asks, its label, icon and whether it is on or off; the filters that are on or off
+are what a list's places are, and a `ui.NavItem` given one, or a `ui.NavList` given the chosen
+one (`selected: place`), is keyed by it without the app writing a key.
+`items.matching("is:done due:-7d")` still asks the same of a list, written as people type it in
+search. A filter's fields also read as text (`f.query` is `is:today`), so a
 window's search box and a query's own words stay one language. What a window shows beside its
 places is the app's own, drawn by its view: the projects a root holds under a heading that adds
 one, or any other list of it, in the window's own `ui.NavList`.
 
 A filter is a predicate over the type's own fields, and nothing more: what a place holds is
 what its predicate says (`filter "Today" = due <= today and not done`), how its list reads is
-the app's (`std.rows(group:, tail:)`, each answered per item where the place decides so
-itself), and its order is the app's (`sort_by`).
+the app's (`ui.ListItem(group:, tail:)` in the row the app builds, each answered per item
+where the place decides so itself), and its order is the app's (`sort_by`).
 
-**Programs** (agents.md, "Querying" and "Reading and describing"). An agent's program (the
-door's `tilo` tool, `tilolang repl`) has words for reading what the workspace holds, across
-apps:
+**Agent and REPL sessions** (agents.md, "Querying" and "Reading and describing"). A session's
+code — the door's `tilo` tool, `tilolang repl` — has the agent library's words in scope for
+reading what the workspace holds, across apps. The library is `tilo.agent` (`agent.rs`), one
+like any other: a package that wants the words writes `use tilo.agent as agent` and calls
+`agent.grep(...)`, the code a session's `grep` is.
 
 ```
 grep(/\bChen\b/, in: notes + chat).count_by(.doc)      // counts first, then a row per note
@@ -535,8 +680,8 @@ print(xs, fields: [.title, .due])
   markdown writes it: `> ` a quote, `# ` a heading, `- ` a list item.
 - `count_by(key)` and `group(key)` give rows with `.key` and `.count` or `.items`, the largest
   first; `take(n)`, `each(f)` and `single()` chain on any list.
-- `me` is the person the task acts for.
-- An app the program's host does not hold is read through that app's host: its resources are
+- `me` is the person the session acts for (`agent.me` in a package).
+- An app the session's host does not hold is read through that app's host: its resources are
   `host.Resource`s, which print, count, group, `read` and `describe`, and `.of(T)` narrows to a
   type the host holds.
 
@@ -596,18 +741,18 @@ measures it in, read as one with `Duration(n)`.
   refused with the reason before anything changes. A condition reads only the subject and is
   pure, as the presentation is (it is checked in the action's presentation view):
   `primary action send(d: Draft) { require not d.sent "It went already" ... }`.
-- A scenario names people with `let mia = person("Mia")`. Inside
-  `as mia at 2026-06-29T07:02Z { post(t, "Hi") }`, the actions called run with `invoker` = mia
-  and `now` = that time, and the block is a change of its own, so history and reflection show
-  it as mia's at that time. `made from r { ... }` makes the block's change from `r`, as an
-  action invoked on `r` is, so what it creates shows what it was made from (`created(r)?.from`,
-  `std.origin`, `std.linked`); it is a change of its own too, and only a scenario writes it.
-  `window place = Task.done` and `lens picked = .some(1)` say what state the window the
-  scenario shows stands on, where a view declares it (`window place: Filter<Task> = ...`);
-  `window home.place = ...` names the view where two declare the same name. The value is
-  typed and checked as the declaration's, a person's own choice stands over it, and only a
-  scenario writes it, so `layout-check` captures a place that is not the declaration's
-  default without saving anything as anyone's change.
+- A scenario names people with `let mia = person("Mia")`, and runs an action as one of them
+  with `invoke(post(t, "Hi"), by: mia, at: 2026-06-29T07:02Z)`: inside that call `invoker` is
+  mia and `now` is that time, and the call is a change of its own, so history and reflection
+  show it as mia's at that time. `from: r` makes it from `r`, as an action invoked on `r` is,
+  so what it creates shows what it was made from (`created(r)?.from`, `std.origin`,
+  `std.linked`); `by` defaults to `invoker`, `at` to now, `from` to nothing. Only a scenario
+  writes `invoke`, and the seed data it makes is what shows a feature in a capture.
+- Which place a window stands on is a run's option, not code:
+  `layout-check --state place=Task.done` stages the state a view declares
+  (`state place: Filter<Task> = ...`) at a value the app's own code names, such as one of its
+  filters (`Task.today`) or a case of its enum (`Side.right`). A person's own choice stands
+  over it, and what a run stages is never saved as anyone's change.
 - `root T` (or `root alias.T`) is the workspace's resource of a root type, anywhere code may
   read it; until the host makes it, it reads as it would start.
 - An item block names a template's other slots beside the item's view; they do not see the
@@ -641,6 +786,9 @@ tilolang ids [dir] [--rename old new]     prints or edits the ids lock
 tilolang run [dir] [--peers N] [--headless]  runs the package as an app in a nested Tilo session
 tilolang describe [dir] [--search DIR]    prints what an app publishes as tilolang: a native app
                                           (its surface.toml) and a tilolang package alike
+tilolang profile [dir] [--seed N] [--then INTERACTION]...
+                                          counts what the app costs to open and to use, in the
+                                          language's own terms (see "Cost")
 ```
 
 `dir` defaults to the current directory. Errors print as `path:line:col: E0xx message`;
@@ -653,6 +801,46 @@ comments above the declaration, field, statement or match arm they were written 
 expression blocks and match arms as well; one written inside a declaration's head prints above
 the next statement. A blank line between two `///` lines is a paragraph break, kept as a `///`
 line.
+
+## Cost
+
+What an app costs is measured in the language's own terms, not in milliseconds: the fuel each
+call into its wasm spends, the calls it makes, and what it reads from the host — records,
+index pages and entries, evaluations — plus the offers it publishes. The runtime counts it
+(`tilolang_runtime::cost`, `crates/lang/tilolang-runtime/src/cost.rs`), off until asked, and the
+compiler writes each unit's export to the line it is written on (the `tilolang.lines` section of
+the module), so a table names a *unit* — a view, a row view, an action, a requirement, an
+`applies`, a filter, an at-event argument — by its source line:
+
+```
+tilolang profile apps/tl/tasks --seed 10000
+      fuel  unit                                  written                         calls    record     index
+    442511  Task.task_page view                                                      1         0     10026
+     13105  Task.home row                          apps/tl/tasks/app.tl:567         48         0       141
+      2340  Task.check~present view                apps/tl/tasks/app.tl:200         52         0        94
+      1092  Task.set_priority_high requirement     apps/tl/tasks/app.tl:298         52         0        47
+      1092  Task.set_priority_low requirement      apps/tl/tasks/app.tl:286         52         0        47
+...
+```
+
+A unit no declaration is written for (the view a list's page is rendered as) has no line.
+
+`--seed N` opens a workspace of N items, seeded as `tilolang bench` seeds one; `--scenario`
+stages a scenario (the app's first otherwise); each `--then` runs after the app is open and is
+counted alone: `key:Tab`, `click:X,Y`, `type:TEXT`, `scroll:DX,DY` (points in logical pixels).
+The table is sorted by inclusive fuel, so a unit that calls others carries theirs; a row says
+how often the unit ran, so a requirement evaluated for every item shows the count grow with the
+workspace rather than with the rows a person can see.
+
+The counts do not depend on the machine or its load, so they gate: a test records the costs of
+an interaction (`Runtime::record_costs`, `::reset_costs`, `::costs`) and holds them
+(`tilolang_runtime::assert_costs("open", &costs, |c| c.calls("Task.due_today requirement") <= rows)`),
+failing with the whole table. Fuel is a function of the code run, in the engine's own units: a
+budget in fuel is a budget on the work, the same in debug and release, on any runner.
+`tests/budgets.rs` of `tilolang-tilo` holds some to what they may take.
+
+Instrumentation costs nothing while off: the engine reads the fuel of a call anyway, and only
+the recorder being on makes a call name its unit and read the store's counters.
 
 ## Packages are apps
 

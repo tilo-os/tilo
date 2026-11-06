@@ -143,7 +143,10 @@ fn regions(area: Rect, theme: &Theme, accepts_new: bool) -> Regions {
 
 fn row_face<'a>(task: &'a Task, due: &'a str, spans: &'a [(&'a str, Tone)]) -> ListRowFace<'a> {
     let face = ListRowFace::new(&task.title)
-        .leading(RowLeading::Checkbox { checked: task.done })
+        .leading(RowLeading::Checkbox {
+            checked: task.done,
+            icon: None,
+        })
         .meta_spans(spans);
     let _ = due;
     face

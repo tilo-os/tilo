@@ -37,10 +37,21 @@ use tilolang_tilo::instance::record::InstanceRecord;
 const APP: &str = "so.tilo.lang.notes";
 
 fn notes() -> Arc<Bundle> {
+    let lock =
+        tilolang::IdsLock::parse(include_str!("../../../../apps/tl/discussion/app.ids")).unwrap();
+    let discussion = tilolang::compile_package(
+        include_str!("../../../../apps/tl/discussion/app.tl"),
+        &lock,
+        &[],
+    )
+    .unwrap_or_else(|_| panic!("Discussion compiles"));
     let lock = tilolang::IdsLock::parse(include_str!("../../../../apps/tl/notes/app.ids")).unwrap();
-    let compiled =
-        tilolang::compile_package(include_str!("../../../../apps/tl/notes/app.tl"), &lock, &[])
-            .unwrap_or_else(|_| panic!("Notes compiles"));
+    let compiled = tilolang::compile_package(
+        include_str!("../../../../apps/tl/notes/app.tl"),
+        &lock,
+        &[discussion.meta],
+    )
+    .unwrap_or_else(|_| panic!("Notes compiles"));
     Arc::new(Bundle::new(&compiled, []))
 }
 

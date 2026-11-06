@@ -19,6 +19,7 @@
 //! Nothing here knows Wayland: windows are plain ids, places are rects in
 //! the surface's logical coordinates.
 
+pub mod cards;
 pub mod displays;
 pub mod floating;
 
@@ -30,8 +31,8 @@ use tilo_desktop_model::commands::move_tab_to_workspace;
 use tilo_desktop_model::{
     DesktopTree, Display, GroupId, IdMinter, Tab, TabId, TileContent, Workspace, WorkspaceSlot,
 };
-use tilo_desktop_surface::crashed_app::Closed;
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, RouteIds, active_route};
+use tilo_desktop_surface::outcome::{Closed, Outcome};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
 use ui::kurbo::Rect;
 use ui::widget::TileHost;
@@ -117,9 +118,10 @@ type Notes = Rc<RefCell<Option<Rc<dyn WindowNotes>>>>;
 /// coming.
 type Crashed = Rc<RefCell<BTreeMap<TabId, String>>>;
 
-/// Why each app that left a notice is not running, by the app: a crash, or
-/// the session closing it for memory.
-type Closures = Rc<RefCell<BTreeMap<String, Closed>>>;
+/// What each app that left an answer is told of it, by the app: that it did
+/// not start, that it stopped working, or that the session closed it for
+/// memory.
+type Answers = Rc<RefCell<BTreeMap<String, Outcome>>>;
 
 /// The name each app is known by, for the notice it leaves when it stops.
 /// A launch id carries the app id alone, so its tab is named from here.
@@ -170,8 +172,8 @@ struct Windows {
     launches: Launches,
     /// The app each notice tab is about, which Reopen asks for again.
     crashed: Crashed,
-    /// Why each of those apps is not running.
-    closures: Closures,
+    /// What each of those apps is told of its not being here.
+    answers: Answers,
     /// The name each app is known by, for its notice.
     titles: Titles,
     /// The tabs held for the apps' coming windows.
@@ -208,22 +210,18 @@ impl TileSource for Windows {
             .get(&app)
             .cloned()
             .unwrap_or_else(|| shown_name(&app));
-        let closed = self
-            .closures
-            .borrow()
-            .get(&app)
-            .copied()
-            .unwrap_or_default();
+        let answer = self.answers.borrow().get(&app).cloned().unwrap_or_else(|| {
+            Closed::default().outcome(&title, tilo_desktop_surface::i18n::t("answer-reopen"))
+        });
         let launches = Rc::clone(&self.launches);
+        let held = Rc::clone(&self.held);
         let reopened = app;
+        let answered_tab = tab.id;
         TileHost::new(ui::widget::TileContent::App(Box::new(
-            tilo_desktop_surface::crashed_app::CrashedApp::new(&title, closed, move || {
-                // The notice keeps its tab: the window that comes opens in it
+            tilo_desktop_surface::outcome::OutcomeCard::new(&answer, move || {
+                // The answer keeps its tab: the window that comes takes it
                 // when the app is back, so the launch names no other.
-                launches.borrow_mut().push(LaunchAsk {
-                    app: reopened.clone(),
-                    tab: None,
-                });
+                ask_again(&held, &launches, &reopened, answered_tab);
             }),
         )))
     }
@@ -246,43 +244,16 @@ impl TileSource for Windows {
                 .iter_mut()
                 .find(|record| record.tab.is_none() && record.background == background)?;
             record.tab = Some(id);
-            let title = self
-                .titles
-                .borrow()
-                .get(app)
-                .cloned()
-                .unwrap_or_else(|| shown_name(app));
-            return Some(Tab {
-                id,
-                title,
-                tile: TileContent::AppPlaceholder {
-                    kind: tilo_desktop_model::AppKind::Other(app.to_owned()),
-                    label: app.to_owned(),
-                },
-                app_title: None,
-                view: String::new(),
-                pinned: false,
-            });
+            let tab = self.place(id, app);
+            self.titles
+                .borrow_mut()
+                .entry(app.to_owned())
+                .or_insert_with(|| tab.title.clone());
+            return Some(tab);
         }
         if let Some(app) = app.strip_prefix(CRASHED_PREFIX) {
             self.crashed.borrow_mut().insert(id, app.to_owned());
-            let title = self
-                .titles
-                .borrow()
-                .get(app)
-                .cloned()
-                .unwrap_or_else(|| shown_name(app));
-            return Some(Tab {
-                id,
-                title,
-                tile: TileContent::AppPlaceholder {
-                    kind: tilo_desktop_model::AppKind::Other(app.to_owned()),
-                    label: app.to_owned(),
-                },
-                app_title: None,
-                view: String::new(),
-                pinned: false,
-            });
+            return Some(self.place(id, app));
         }
         if let Some(window_id) = app.strip_prefix(LAUNCH_PREFIX) {
             let window = self
@@ -319,23 +290,7 @@ impl TileSource for Windows {
                 app: app.to_owned(),
                 tab: Some(id),
             });
-            let title = self
-                .titles
-                .borrow()
-                .get(app)
-                .cloned()
-                .unwrap_or_else(|| shown_name(app));
-            Some(Tab {
-                id,
-                title,
-                tile: TileContent::AppPlaceholder {
-                    kind: tilo_desktop_model::AppKind::Other(app.to_owned()),
-                    label: app.to_owned(),
-                },
-                app_title: None,
-                view: String::new(),
-                pinned: false,
-            })
+            Some(self.place(id, app))
         }
     }
 
@@ -375,6 +330,30 @@ impl TileSource for Windows {
     }
 }
 
+impl Windows {
+    /// The tab an app's place holds while its window comes: named as the app,
+    /// showing the app's own name until the window fills it.
+    fn place(&self, id: TabId, app: &str) -> Tab {
+        let title = self
+            .titles
+            .borrow()
+            .get(app)
+            .cloned()
+            .unwrap_or_else(|| shown_name(app));
+        Tab {
+            id,
+            title,
+            tile: TileContent::AppPlaceholder {
+                kind: tilo_desktop_model::AppKind::Other(app.to_owned()),
+                label: app.to_owned(),
+            },
+            app_title: None,
+            view: String::new(),
+            pinned: false,
+        }
+    }
+}
+
 /// The desktop's answer to where windows go and which has focus.
 pub struct DesktopPolicy {
     handle: DesktopHandle,
@@ -383,8 +362,8 @@ pub struct DesktopPolicy {
     launches: Launches,
     /// The apps whose notice tabs are open, by tab.
     crashed: Crashed,
-    /// Why each of those apps is not running.
-    closures: Closures,
+    /// What each of those apps is told of its not being here.
+    answers: Answers,
     /// The name each app is known by, for its notice.
     titles: Titles,
     /// The tabs held for the apps' coming windows.
@@ -404,6 +383,9 @@ pub struct DesktopPolicy {
     floating: BTreeMap<u64, Option<u64>>,
     /// The displays, primary first, a mirror set as one.
     displays: Vec<Display>,
+    /// The app-drawn cards floating over the desk, as the session placed
+    /// them.
+    cards: cards::Placements,
 }
 
 impl DesktopPolicy {
@@ -425,7 +407,7 @@ impl DesktopPolicy {
         let arriving = Arriving::default();
         let launches = Launches::default();
         let crashed = Crashed::default();
-        let closures = Closures::default();
+        let answers = Answers::default();
         let titles = Titles::default();
         let held = Held::default();
         let carried = Carried::default();
@@ -437,7 +419,7 @@ impl DesktopPolicy {
                 arriving: Rc::clone(&arriving),
                 launches: Rc::clone(&launches),
                 crashed: Rc::clone(&crashed),
-                closures: Rc::clone(&closures),
+                answers: Rc::clone(&answers),
                 titles: Rc::clone(&titles),
                 held: Rc::clone(&held),
                 carried: Rc::clone(&carried),
@@ -449,7 +431,7 @@ impl DesktopPolicy {
             arriving,
             launches,
             crashed,
-            closures,
+            answers,
             titles,
             held,
             carried,
@@ -458,6 +440,7 @@ impl DesktopPolicy {
             placed: BTreeSet::new(),
             floating: BTreeMap::new(),
             displays: Vec::new(),
+            cards: cards::Placements::new(),
         };
         (policy, surface)
     }
@@ -477,37 +460,68 @@ impl DesktopPolicy {
         *self.notes.borrow_mut() = Some(notes);
     }
 
-    /// Show that the app `asked` names stopped working, in a tab of its own
-    /// with Reopen asking for `asked` again. The window it had is already
-    /// gone; this is what the person finds in its place, instead of nothing.
-    ///
-    /// # Errors
-    /// The desktop has no workspace or strip to open it in.
-    pub fn crashed(&mut self, asked: &str, title: &str) -> Result<(), String> {
-        self.stopped(asked, title, Closed::Crashed)
-    }
-
-    /// Show that the app `asked` names is not running any more, for `closed`,
-    /// in a tab of its own with Reopen asking for `asked` again: the same
-    /// notice a crash leaves, saying why the session closed it when the app
-    /// did not stop on its own.
+    /// Show that the app `asked` names stopped, for `closed`, in a tab of its
+    /// own with its button asking for `asked` again: the window it had is
+    /// already gone, and this is what the person finds in its place instead
+    /// of nothing.
     ///
     /// # Errors
     /// The desktop has no workspace or strip to open it in.
     pub fn stopped(&mut self, asked: &str, title: &str, closed: Closed) -> Result<(), String> {
+        let answer = closed.outcome(title, tilo_desktop_surface::i18n::t("answer-reopen"));
         self.titles
             .borrow_mut()
             .insert(asked.to_owned(), title.to_owned());
-        self.closures.borrow_mut().insert(asked.to_owned(), closed);
+        self.answers.borrow_mut().insert(asked.to_owned(), answer);
         // The tab this opens is named by its launch id; the title it shows
-        // and the launch Reopen asks for come from the maps the tile source
-        // reads.
+        // and the launch its button asks for come from the maps the tile
+        // source reads.
         let launch = ChromeEffect::OpenApp {
             app: format!("{CRASHED_PREFIX}{asked}"),
             beside: None,
             background: None,
         };
         self.handle.dispatch(launch)
+    }
+
+    /// What the person asked for in `tab` did not happen, for `asked`, and
+    /// `answer` says what and why: the tab keeps its place, and shows the
+    /// answer instead of a window that is not coming. Trying again opens the
+    /// app's window in that same tab.
+    ///
+    /// The tab may not be on the desk yet — the answer waits in the maps the
+    /// tile source reads.
+    pub fn failed_at(&mut self, tab: TabId, asked: &str, answer: Outcome) {
+        self.crashed.borrow_mut().insert(tab, asked.to_owned());
+        self.answers.borrow_mut().insert(asked.to_owned(), answer);
+        // The tab's content stood from the frame it was opened in: the
+        // answer takes its place on the desk's next pass.
+        self.handle.rebuild(tab);
+    }
+
+    /// The name the person knows `asked` by, for the words its answer uses:
+    /// what the desk showed in the app's tab, else the app's own id.
+    #[must_use]
+    pub fn name_of(&self, asked: &str) -> String {
+        self.titles
+            .borrow()
+            .get(asked)
+            .cloned()
+            .unwrap_or_else(|| shown_name(asked))
+    }
+
+    /// The answer `app` left on the desk goes, `tab` having shown its window
+    /// again.
+    fn keep_answer_gone(&self, tab: TabId) {
+        let app = self.crashed.borrow_mut().remove(&tab);
+        let Some(app) = app else {
+            return;
+        };
+        let still_shown = self.crashed.borrow().values().any(|known| *known == app);
+        if !still_shown {
+            self.answers.borrow_mut().remove(&app);
+            self.titles.borrow_mut().remove(&app);
+        }
     }
 
     /// The host's side of the surface, for everything else it shows.
@@ -566,10 +580,58 @@ impl DesktopPolicy {
         self.handle.display_of(group)
     }
 
-    /// Whether `window` is a dialog floating over its parent.
+    /// Whether `window` is a dialog floating over its parent, or a card an
+    /// app draws over the desk.
     #[must_use]
     pub fn is_floating(&self, window: u64) -> bool {
         self.floating.contains_key(&window)
+    }
+
+    /// Place the cards the session authorises: where the floating layer puts
+    /// each one is the session's to say, and this desk's to lay out.
+    pub fn use_cards(&mut self, cards: cards::Placements) {
+        self.cards = cards;
+    }
+
+    /// The cards, as the session places them.
+    #[must_use]
+    pub fn cards(&self) -> cards::Placements {
+        self.cards.clone()
+    }
+
+    /// Whether `window` is a card an app draws, drawn or suspended.
+    #[must_use]
+    pub fn draws_card(&self, window: u64) -> bool {
+        self.cards.draws(window)
+    }
+
+    /// Where the layer puts the card `window`, while it shows it.
+    #[must_use]
+    pub fn card_place(&self, window: u64) -> Option<Rect> {
+        self.cards.card_of(window).map(|(_, at)| at)
+    }
+
+    /// The size the app asked for the card `window`.
+    #[must_use]
+    pub fn card_size(&self, window: u64) -> Option<(i32, i32)> {
+        self.cards.size_of(window)
+    }
+
+    /// Whether `app` has a window shown on the desk now: the activity it
+    /// runs draws there, and its floating card is suspended until it does
+    /// not.
+    #[must_use]
+    pub fn shows(&self, app: &str) -> bool {
+        let shown: BTreeSet<u64> = self.layout().shown.into_iter().map(|(id, _)| id).collect();
+        self.handle.read(|tree| {
+            tabs(tree)
+                .filter(|tab| foreign(tab).is_some_and(|window| shown.contains(&window)))
+                .filter_map(|tab| match &tab.tile {
+                    TileContent::Foreign { app_id, .. } => Some(app_id.clone()),
+                    _ => tilo_desktop_model::apps::canonical_app_id(&tab.tile),
+                })
+                .any(|shown| app_ids_match(&shown, app))
+        })
     }
 
     /// Give `window` its place: a dialog ([`floating::floats`]) floats over
@@ -581,6 +643,16 @@ impl DesktopPolicy {
     /// # Errors
     /// The desktop has no workspace or strip to open it in.
     pub fn map(&mut self, window: Window) -> Result<(), String> {
+        // A window carrying a card's token is the app's card: it floats where
+        // the layer puts it and never takes a tab. One carrying a token this
+        // session granted to nobody is no card and gets no place at all.
+        if let Some(token) = cards::Placements::token_of(window.app_id.as_deref()) {
+            if self.cards.draws_token(token) {
+                self.cards.mapped(token, window.id);
+                self.floating.insert(window.id, None);
+            }
+            return Ok(());
+        }
         let display = self
             .working_display()
             .map(|display| (display.width, display.height));
@@ -859,6 +931,18 @@ impl DesktopPolicy {
         })
     }
 
+    /// Whether `tab` still shows the place an app's launch held, no window
+    /// having come to fill it: the launch ended in front of the person as a
+    /// window that did not arrive.
+    #[must_use]
+    pub fn holds_a_place(&self, tab: TabId) -> bool {
+        self.handle.read(|tree| {
+            tabs(tree)
+                .find(|found| found.id == tab)
+                .is_some_and(|found| matches!(found.tile, TileContent::AppPlaceholder { .. }))
+        })
+    }
+
     /// The tab held for the next window of the app `app` announces, oldest
     /// first: taken once, by the one window it was held for.
     fn take_held(&self, app: &str) -> Option<HeldTab> {
@@ -920,6 +1004,7 @@ impl DesktopPolicy {
             tree.set_active_group(ids.strip, ids.group);
         }
         self.handle.replace_tree(tree);
+        self.keep_answer_gone(held_tab);
         if !held.background {
             self.handle.focus_tab(held_tab);
         }
@@ -969,6 +1054,7 @@ impl DesktopPolicy {
     /// `window` went away: its tab closes, and focus goes back to the
     /// window the person had in front before it.
     pub fn unmap(&mut self, window: u64) {
+        self.cards.gone(window);
         // Its dialogs float on, over the display.
         for parent in self.floating.values_mut() {
             if *parent == Some(window) {
@@ -1222,7 +1308,7 @@ impl DesktopPolicy {
             !held.is_empty()
         });
         let mut crashed = self.crashed.borrow_mut();
-        let mut closures = self.closures.borrow_mut();
+        let mut answers = self.answers.borrow_mut();
         let mut titles = self.titles.borrow_mut();
         crashed.retain(|tab, app| {
             let kept = open.contains(tab);
@@ -1232,7 +1318,7 @@ impl DesktopPolicy {
             kept
         });
         let shown: BTreeSet<String> = crashed.values().cloned().collect();
-        closures.retain(|app, _| shown.contains(app));
+        answers.retain(|app, _| shown.contains(app));
         closed
     }
 }
@@ -1242,10 +1328,36 @@ fn windows(tree: &DesktopTree) -> Vec<u64> {
     tabs(tree).filter_map(foreign).collect()
 }
 
-/// What a launch id is called when nothing named its app: a host app's id
-/// without the prefix that says it is one.
+/// Ask for `app` again, its window taking `tab`: where the answer in the tab
+/// stands, the place it holds is asked for once, so a second press does not
+/// leave a place behind for a window nobody asked for.
+fn ask_again(
+    held: &RefCell<BTreeMap<String, Vec<HeldTab>>>,
+    launches: &RefCell<Vec<LaunchAsk>>,
+    app: &str,
+    tab: TabId,
+) {
+    let mut held = held.borrow_mut();
+    let queue = held.entry(app.to_owned()).or_default();
+    if !queue.iter().any(|record| record.tab == Some(tab)) {
+        queue.push(HeldTab {
+            tab: Some(tab),
+            background: false,
+        });
+    }
+    drop(held);
+    launches.borrow_mut().push(LaunchAsk {
+        app: app.to_owned(),
+        tab: Some(tab),
+    });
+}
+
+/// What a launch id is called when nothing named its app: the name every
+/// desktop carries for it, or its id written as words.
 fn shown_name(app: &str) -> String {
-    app.strip_prefix("host:").unwrap_or(app).to_owned()
+    // The name every desktop carries, as the window bars and search name the
+    // same app: a tab never shows an app's id.
+    tilo_desktop_search::names::app_name(app)
 }
 
 fn tabs(tree: &DesktopTree) -> impl Iterator<Item = &Tab> {

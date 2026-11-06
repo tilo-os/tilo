@@ -101,6 +101,31 @@ pub(crate) enum DeskEffect {
         #[param("The workspace, by its key; the one in front when absent")]
         workspace: Option<String>,
     },
+    /// Make an invitation into a workspace from this device: the link to hand to whoever is
+    /// being invited, which their device joins with
+    IssueInvitation {
+        /// The part the invitation brings them in at: `viewer`, `commenter`, `editor` or
+        /// `moderator`; editor when absent
+        #[param(
+            "The part the invitation brings them in at: `viewer`, `commenter`, `editor` or `moderator`"
+        )]
+        role: Option<String>,
+        /// The name the invitation knows them by
+        #[param("The name the invitation knows them by")]
+        invitee_name: Option<String>,
+        /// The person the link is for, by their user key in hex: only a device of theirs may
+        /// redeem it. Anyone holding the link may redeem it when absent
+        #[param(
+            "The person the link is for, by their user key in hex; anyone holding it when absent"
+        )]
+        recipient: Option<String>,
+        /// How long the link works for, in seconds
+        #[param("How long the link works for, in seconds")]
+        expires_in_seconds: Option<u64>,
+        /// The workspace, by its key; the one in front when absent
+        #[param("The workspace, by its key; the one in front when absent")]
+        workspace: Option<String>,
+    },
     /// Cancel the invitation `invite` of a workspace: its link admits nobody from now on
     CancelInvitation {
         /// The invitation's id, 64 hex characters, as listing invitations reports it
@@ -1093,6 +1118,98 @@ impl Desk {
         }))
     }
 
+    /// Hand out a link into a workspace, made by this device's own person: the
+    /// invitation the desk lists from now on, in the text another device joins
+    /// with.
+    fn issue_invitation(
+        &self,
+        role: Option<&str>,
+        invitee_name: Option<String>,
+        recipient: Option<&str>,
+        expires_in_seconds: Option<u64>,
+        workspace: Option<&str>,
+    ) -> Result<Started, DoorError> {
+        let engine = self.engine()?;
+        let room = self.workspace_id(workspace)?;
+        let role = match role {
+            None => MemberRole::Editor,
+            Some(name) => role_named(name).ok_or_else(|| {
+                DoorError::InvalidArguments(format!("`{name}` is no part of a workspace"))
+            })?,
+        };
+        let recipient = recipient
+            .map(|person| {
+                let not_a_key = || {
+                    DoorError::InvalidArguments(format!(
+                        "`{person}` is not a person's key, 64 hex characters"
+                    ))
+                };
+                let key = hex::decode(person).map_err(|_| not_a_key())?;
+                <[u8; 32]>::try_from(key.as_slice()).map_err(|_| not_a_key())
+            })
+            .transpose()?;
+        let invitee_name = match (invitee_name, recipient) {
+            (None, Some(recipient)) => engine.name_of(&room.to_string(), recipient),
+            (name, _) => name,
+        };
+        // The link names this device, which answers whoever redeems it: a
+        // session taking part in no transport has no address to name.
+        let endpoint = self
+            .sync
+            .as_ref()
+            .map(|sync| sync.endpoint_addr())
+            .ok_or_else(|| {
+                DoorError::Failed(
+                    "this session takes part in no transport, so no link can name it".to_owned(),
+                )
+            })?;
+        let issued = engine
+            .issue_invitation(
+                &room.to_string(),
+                role,
+                invitee_name,
+                recipient,
+                expires_in_seconds.unwrap_or(DEFAULT_INVITE_SECONDS),
+                endpoint,
+                std::time::SystemTime::now(),
+            )
+            .map_err(DoorError::Failed)?;
+        Ok(Started::Done(tilo_actions::ActionOutput {
+            value: Some(serde_json::json!({
+                "invite": issued.invite,
+                "link": issued.link,
+                "role": role_name(issued.role),
+                "expires_at_ns": issued.expires_at_ns,
+            })),
+            resources: Vec::new(),
+        }))
+    }
+
+    /// What an invitation verb answers, when `effect` is one of them: the links
+    /// that still work, one made, or one taken back.
+    fn invitation(&self, effect: &DeskEffect) -> Option<Result<Started, DoorError>> {
+        match effect {
+            DeskEffect::Invitations { workspace } => Some(self.invitations(workspace.as_deref())),
+            DeskEffect::IssueInvitation {
+                role,
+                invitee_name,
+                recipient,
+                expires_in_seconds,
+                workspace,
+            } => Some(self.issue_invitation(
+                role.as_deref(),
+                invitee_name.clone(),
+                recipient.as_deref(),
+                *expires_in_seconds,
+                workspace.as_deref(),
+            )),
+            DeskEffect::CancelInvitation { invite, workspace } => {
+                Some(self.cancel_invitation(invite, workspace.as_deref()))
+            }
+            _ => None,
+        }
+    }
+
     /// This device's engine: invitations are its record's, and a session without
     /// one has none.
     fn engine(&self) -> Result<&crate::engine::Engine, DoorError> {
@@ -1123,6 +1240,21 @@ const fn role_name(role: MemberRole) -> &'static str {
         MemberRole::Moderator => "moderator",
     }
 }
+
+/// The part `name` names, as [`role_name`] writes it.
+fn role_named(name: &str) -> Option<MemberRole> {
+    match name {
+        "viewer" => Some(MemberRole::Viewer),
+        "commenter" => Some(MemberRole::Commenter),
+        "editor" => Some(MemberRole::Editor),
+        "moderator" => Some(MemberRole::Moderator),
+        _ => None,
+    }
+}
+
+/// How long an invitation the desk hands out without being told otherwise works
+/// for: an hour, as a person's invitation does.
+const DEFAULT_INVITE_SECONDS: u64 = 3_600;
 
 impl Desk {
     /// Open or close the running application's tray item `key`, as a press on its icon does:
@@ -1197,13 +1329,10 @@ impl Service for Desk {
                 return Ok(Started::Done(tilo_actions::ActionOutput::default()));
             }
             DeskEffect::OpenTrayItem { key } => return self.open_tray_item(key),
-            DeskEffect::Invitations { workspace } => {
-                return self.invitations(workspace.as_deref());
-            }
-            DeskEffect::CancelInvitation { invite, workspace } => {
-                return self.cancel_invitation(invite, workspace.as_deref());
-            }
             _ => {}
+        }
+        if let Some(answer) = self.invitation(&effect) {
+            return answer;
         }
         if let DeskEffect::ShowSurface { surface } = &effect {
             self.surfaces.toggle(surface);

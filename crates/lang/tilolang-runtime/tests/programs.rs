@@ -15,6 +15,7 @@ mod cases {
 
     const TODO: &str = include_str!("../../../../apps/tl/tasks/app.tl");
     const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
+    const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 
     struct World {
         rt: Runtime,
@@ -29,14 +30,16 @@ mod cases {
     }
 
     fn world() -> World {
-        let todo = App::compile(TODO, &[]);
-        let notes_app = App::compile(NOTES, &[]);
         let auth = SimpleAuthority::new();
         let rt = Runtime::new(AmStore::new(), auth.clone()).unwrap();
+        let discussion = App::compile(DISCUSSION, &[]);
+        discussion.load(&rt);
+        let todo = App::compile(TODO, &[discussion.meta().clone()]);
+        let notes_app = App::compile(NOTES, &[discussion.meta().clone()]);
         todo.load(&rt);
         notes_app.load(&rt);
         let list = rt.create("Tasks").unwrap();
-        let nb = rt.create("Notes").unwrap();
+        let nb = rt.create("Notebook").unwrap();
         let mut notes = Vec::new();
         let mut titled = Vec::new();
         for title in ["Launch video script", "Groceries", "Launch checklist"] {
@@ -133,7 +136,7 @@ mod cases {
             &w.rt,
             &agent(),
             &format!(
-                "let hits = find(\"Note launch\")\nfor n in hits {{\n    tasks.new_task({}, \"Follow up: {{n.title}}\")\n}}\nprint(hits.len(), \"notes\")\nhits",
+                "let hits = find(\"Note launch\")\nfor n in hits {{\n    tasks.new_task({}, title: \"Follow up: {{n.title}}\")\n}}\nprint(hits.len(), \"notes\")\nhits",
                 w.list_literal()
             ),
         );
@@ -202,7 +205,7 @@ mod cases {
             &w.rt,
             &agent(),
             &format!(
-                "print(\"before\")\ntasks.new_task({}, \"Ask first\")\nprint(\"after\")",
+                "print(\"before\")\ntasks.new_task({}, title: \"Ask first\")\nprint(\"after\")",
                 w.list_literal()
             ),
         );

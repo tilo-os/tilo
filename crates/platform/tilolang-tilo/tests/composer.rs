@@ -1,4 +1,4 @@
-//! Typing is personal: text being composed is each person's lens state, passed to the action that
+//! Typing is personal: text being composed is each person's view state, passed to the action that
 //! sends it, so two people typing in one conversation never overwrite each other.
 
 use automerge::AutoCommit;
@@ -30,7 +30,7 @@ action send(t: Talk, said: Text) (icon: .send) {
 }
 
 view talk(t: Talk) {
-    lens draft: Text
+    state draft: Text
     stack {
         for l in t.lines {
             text(l.said)

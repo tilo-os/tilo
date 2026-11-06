@@ -562,6 +562,51 @@ pub enum Moved {
     Everything,
 }
 
+/// What the updates since a revision moved of the records' text, as a reader that keeps one
+/// entry per resource (the search index) reads it: a task checked replaces its entry, a task
+/// added or deleted adds or drops one, whatever else the workspace holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextMoves {
+    /// The resources whose text may have moved and those that are gone, by path (`doc` or
+    /// `doc/item`).
+    These {
+        texts: std::collections::BTreeSet<String>,
+        gone: std::collections::BTreeSet<String>,
+    },
+    /// Every resource: an update since read them all again.
+    Everything,
+}
+
+/// The text a store change may have moved, by path.
+fn text_moves(changes: &crate::store::Changes) -> TextMoves {
+    let mut texts = std::collections::BTreeSet::new();
+    let mut gone = std::collections::BTreeSet::new();
+    for keys in changes.docs.values() {
+        for key in keys {
+            // A collection whose steps the store could not say may have gained or lost items
+            // nothing here names: read every resource's entry again.
+            if changes.unsaid(key) {
+                return TextMoves::Everything;
+            }
+            texts.insert(key.resource.clone());
+        }
+    }
+    texts.extend(changes.whole.iter().cloned());
+    for change in &changes.listings {
+        for splice in &change.splices {
+            let item = match splice {
+                tilolang_runtime::store::Splice::Insert { item, .. } => item,
+                tilolang_runtime::store::Splice::Remove { item, .. } => {
+                    gone.insert(crate::index::derive::item_path(&change.key.resource, item));
+                    continue;
+                }
+            };
+            texts.insert(crate::index::derive::item_path(&change.key.resource, item));
+        }
+    }
+    TextMoves::These { texts, gone }
+}
+
 pub struct Publications {
     watch: crate::store::Watch,
     /// Each the very tree it was while the record publishes the same: a reader holding it
@@ -603,6 +648,10 @@ pub struct Publications {
     /// for an update that read everything again: what a reader holding an earlier count reads
     /// the requirements of again.
     motions: std::collections::VecDeque<(u64, Option<Vec<Field>>)>,
+    /// What each recent update moved of the records' text, by [`Self::moved`], oldest first:
+    /// what a reader that keeps one entry per resource (the search index) replaces, and what it
+    /// drops, instead of reading every record again.
+    text_moves: std::collections::VecDeque<(u64, TextMoves)>,
 }
 
 /// A record built whole off the frame: its tree and the resource whose text names it.
@@ -734,6 +783,7 @@ impl Publications {
             sweeps: 0,
             moved: 0,
             motions: std::collections::VecDeque::new(),
+            text_moves: std::collections::VecDeque::new(),
         }
     }
 
@@ -933,6 +983,42 @@ impl Publications {
         Some(Moved::These(out.into_iter().collect()))
     }
 
+    /// What the updates since `since` moved of the records' text, each once: the entries a
+    /// reader that keeps one per resource reads again, and those it drops. `None` when what
+    /// moved that long ago is no longer kept, which reads everything too.
+    #[must_use]
+    pub fn text_since(&self, since: u64) -> Option<TextMoves> {
+        if since == self.moved {
+            return Some(TextMoves::These {
+                texts: std::collections::BTreeSet::new(),
+                gone: std::collections::BTreeSet::new(),
+            });
+        }
+        if since > self.moved {
+            return None;
+        }
+        let first = self.text_moves.iter().position(|(at, _)| *at > since)?;
+        if self.text_moves.get(first)?.0 != since.wrapping_add(1) {
+            return None;
+        }
+        let mut texts = std::collections::BTreeSet::new();
+        let mut gone = std::collections::BTreeSet::new();
+        for (_, moved) in self.text_moves.iter().skip(first) {
+            match moved {
+                TextMoves::Everything => return Some(TextMoves::Everything),
+                TextMoves::These {
+                    texts: these_texts,
+                    gone: these_gone,
+                } => {
+                    texts.extend(these_texts.iter().cloned());
+                    gone.extend(these_gone.iter().cloned());
+                }
+            }
+        }
+        gone.retain(|path| !texts.contains(path));
+        Some(TextMoves::These { texts, gone })
+    }
+
     /// How many times the updates so far have read every record in full: what publishing a
     /// change must never cost, whatever the workspace holds.
     #[must_use]
@@ -1077,6 +1163,15 @@ impl Publications {
                 self.motions.pop_front();
             }
             self.motions.push_back((self.moved, moved));
+            if self.text_moves.len() >= MOTIONS_KEPT {
+                self.text_moves.pop_front();
+            }
+            let moved_text = if all || changes.everything {
+                TextMoves::Everything
+            } else {
+                text_moves(&changes)
+            };
+            self.text_moves.push_back((self.moved, moved_text));
         }
         touched
     }
@@ -1109,10 +1204,18 @@ impl Publications {
                 self.named_by.remove(doc);
                 continue;
             }
-            let fields = changes.docs.get(doc);
+            // The versions of a resource name no value a record is published as: marks and
+            // history read them, and what the tree shows stays as it was.
+            let fields: Option<BTreeSet<_>> = changes.docs.get(doc).map(|fields| {
+                fields
+                    .iter()
+                    .filter(|key| key.field != tilolang_runtime::DOC_VERSIONS)
+                    .cloned()
+                    .collect()
+            });
             let whole = changes.whole.contains(doc)
                 || !self.trees.contains_key(doc)
-                || fields.is_some_and(|fields| {
+                || fields.as_ref().is_some_and(|fields| {
                     fields
                         .iter()
                         .any(|key| key.resource == doc && key.field == ANY_FIELD)
@@ -1122,10 +1225,14 @@ impl Publications {
                 continue;
             }
             let (Some(fields), Some((types, schema))) =
-                (fields, self.record_types(host, planner, doc))
+                (fields.as_ref(), self.record_types(host, planner, doc))
             else {
                 continue;
             };
+            // Nothing the tree shows was named.
+            if fields.is_empty() {
+                continue;
+            }
             let Some(tree) = self.trees.get_mut(doc) else {
                 continue;
             };
@@ -1860,22 +1967,6 @@ fn item_label(item: &crate::record::DynRecord) -> Option<String> {
     None
 }
 
-/// Set each action's availability on `resource` and the items under it, as its app says it now:
-/// whether the requirements its subject alone decides hold for the person at the window, or the
-/// first that does not and why. What a palette reads to leave an action out, and a toolbar to
-/// disable its control with the reason.
-pub fn publish_availability(host: &crate::host::Host, resource: &mut ResourceSpec) {
-    let id = resource.id.as_str().to_owned();
-    for action in &mut resource.actions {
-        if let Some(availability) = host.availability(&id, &action.id) {
-            action.type_mut().contract.availability = availability;
-        }
-    }
-    for child in &mut resource.children {
-        publish_availability(host, child);
-    }
-}
-
 /// The package's own resource, carrying the actions that take no record.
 #[must_use]
 pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>, words: &dyn Words) -> ResourceSpec {
@@ -1893,7 +1984,7 @@ pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>, words: &dyn Word
 /// The host's own resource: the commit of an action the runtime planned while a window handled a
 /// press. It is not offered in the palette; the window invokes it.
 ///
-/// It also carries the [`HostEffect`] vocabulary an agent uses: run a block, run a flow, read
+/// It also carries the [`HostEffect`] vocabulary an agent uses: run a block, read
 /// the catalogue. The window answers them with `Host::answer`.
 #[must_use]
 pub fn host_resource(committer: &Arc<dyn Committer>) -> ResourceSpec {

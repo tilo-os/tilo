@@ -22,6 +22,19 @@ pub(super) enum Sideways {
     Strip,
 }
 
+/// The hand a gesture follows. A wheel or a trackpad reports its own momentum
+/// after the fingers lift, so the strip is thrown nowhere at its end; the
+/// desk's own three fingers carry no momentum, so the strip coasts with the
+/// velocity they let go at.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Hand {
+    /// A wheel: a mouse's notches, or a trackpad, which coasts the gesture
+    /// itself.
+    Wheel,
+    /// Three fingers on the touchpad, which the desk claims and follows.
+    Fingers,
+}
+
 /// A wheel event's sideways travel in logical pixels when horizontal motion
 /// dominates, positive forward (toward later windows, like Super+Right).
 /// Winit's deltas are negative for a wheel turned (or fingers scrolling)
@@ -200,8 +213,25 @@ impl DesktopSurface {
     /// gesture on a strip that fits stepping at once so a single notch is
     /// felt. The rest of the gesture only keeps its owner.
     pub(super) fn take_sideways(&mut self, travel: f64, taken: bool, now: Instant) -> bool {
+        self.take_sideways_from(travel, taken, now, Hand::Wheel, None)
+    }
+
+    /// [`Self::take_sideways`] for the hand `travel` came from: `reported` is
+    /// how far it has carried the strip since it landed, for a hand that
+    /// reports its total rather than one event's travel.
+    fn take_sideways_from(
+        &mut self,
+        travel: f64,
+        taken: bool,
+        now: Instant,
+        hand: Hand,
+        reported: Option<f64>,
+    ) -> bool {
         if let Some(mut swipe) = self.swipe {
             swipe.last = now;
+            if let Some(total) = reported {
+                swipe.carried = total;
+            }
             let strip = swipe.owner == Sideways::Strip;
             if strip {
                 self.drive_strip(&mut swipe, travel, now);
@@ -221,6 +251,7 @@ impl DesktopSurface {
             } else {
                 Sideways::Strip
             },
+            hand,
             // On a strip that fits, the first event steps at once.
             travel: if stepping {
                 f64::from(forward) * STEP_TRAVEL_PX - travel
@@ -229,6 +260,7 @@ impl DesktopSurface {
             },
             panned: false,
             pan: None,
+            carried: reported.unwrap_or(0.0),
             last: now,
         };
         if !taken {
@@ -241,6 +273,10 @@ impl DesktopSurface {
     /// Move the shown strip by `travel` as part of `swipe`'s direct pan,
     /// beginning it on the gesture's first pull. A strip showing a
     /// maximized window stays at home.
+    ///
+    /// The pan follows the hand 1:1 within the strip and the rubber band past
+    /// either end, from where the strip stood when the gesture took it, so a
+    /// release carries the velocity the hand let go at.
     fn pull_strip(&mut self, swipe: &mut Swipe, travel: f64, now: Instant) {
         let Some(row) = self.shown_row() else {
             return;
@@ -248,14 +284,66 @@ impl DesktopSurface {
         if row.groups.iter().any(|g| g.maximized) {
             return;
         }
-        let requested = swipe.pan.unwrap_or_else(|| row.scroll_x()) + travel;
-        swipe.pan = Some(requested);
-        let moved = row.hold_strip_pull(requested, now);
+        // Where the gesture took the strip, and where it has carried it.
+        let began = swipe.pan.is_none();
+        let from = swipe.pan.unwrap_or_else(|| row.scroll_x());
+        let carried = from + travel;
+        swipe.pan = Some(carried);
+        let moved = match swipe.hand {
+            // A wheel reports where it is: the strip shows each event at
+            // once, with nothing of its own to resample.
+            Hand::Wheel => row.hold_strip_pull(carried, now),
+            // The desk resamples three fingers' travel at each frame, so a
+            // steady swipe moves the strip evenly whatever their report rate.
+            Hand::Fingers => {
+                if began {
+                    row.begin_strip_pan();
+                }
+                row.update_strip_pan(swipe.carried, now)
+            }
+        };
         if moved {
             // Moving the windows is no change of anything the workspace
             // publishes, as a scroll region's pan is none of its app's.
             ui::widget::note_view_only_pan();
         }
         swipe.panned |= moved;
+    }
+
+    /// Three fingers carrying the shown strip `travel` pixels since they
+    /// landed, positive toward later windows. `began` on their first report,
+    /// which takes the strip from where it is. The strip follows them exactly,
+    /// past either end against the rubber band, and a strip whose windows all
+    /// fit steps focus by their travel instead.
+    pub fn carry_strip(&mut self, travel: f64, began: bool) -> bool {
+        let now = ui::time::now();
+        if began {
+            // A wheel gesture the fingers interrupt is over, and the fingers
+            // start their own.
+            self.end_idle_swipe(now);
+            self.swipe = None;
+        }
+        // The gesture reports its total, the pan takes what is new.
+        let step = match self.swipe {
+            Some(swipe) if swipe.hand == Hand::Fingers => travel - swipe.carried,
+            _ => travel,
+        };
+        if step == 0.0 {
+            return self.swipe.is_some();
+        }
+        self.take_sideways_from(step, false, now, Hand::Fingers, Some(travel))
+    }
+
+    /// The fingers carrying the strip lifted at `cancelled`: the strip coasts
+    /// on the velocity they let go at, or, with the hand taken back, stays
+    /// where it was thrown nowhere. A pan's end leaves focus to follow the
+    /// strip once it rests ([`super::DesktopSurface`]).
+    pub fn release_strip(&mut self, cancelled: bool) -> bool {
+        let now = ui::time::now();
+        let Some(swipe) = self.swipe.take() else {
+            return false;
+        };
+        self.finish_swipe(swipe, now, cancelled);
+        true
     }
 }

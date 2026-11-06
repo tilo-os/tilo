@@ -7,7 +7,7 @@
 //! description names them; a named slot is a child `slot` node, and the block's other content
 //! fills the default slot as the node's own children.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::{Checker, Ctx, Ex};
 use crate::abi::Imp;
@@ -1130,10 +1130,7 @@ impl Checker<'_> {
                     .view_makes
                     .get(&v.name)
                     .is_some_and(|made| slot.accepts.takes(made)),
-                super::template::Macro::Block(block) => {
-                    self.slot_calls(d, slot, &block.body, calls);
-                    true
-                }
+                super::template::Macro::Block(block) => self.slot_block(d, slot, block, calls),
                 _ => false,
             },
             Some(super::template::Macro::View(v)) => self
@@ -1141,19 +1138,31 @@ impl Checker<'_> {
                 .view_makes
                 .get(&v.name)
                 .is_some_and(|made| slot.accepts.takes(made)),
-            Some(super::template::Macro::Block(block)) => {
-                self.slot_calls(d, slot, &block.body, calls);
-                true
-            }
+            Some(super::template::Macro::Block(block)) => self.slot_block(d, slot, &block, calls),
             _ => false,
         }
+    }
+
+    /// Whether the caller's block fills `slot`: its body is written in the caller's scope, so
+    /// it is read there, as [`Self::apply_ui`] reads it.
+    fn slot_block(
+        &mut self,
+        d: &Description,
+        slot: &tilo_ui_graph::component::Slot,
+        block: &super::template::UiClosure,
+        calls: &mut usize,
+    ) -> bool {
+        let saved = self.enter(&block.scope, HashMap::new());
+        self.slot_calls(d, slot, &block.body, calls);
+        self.leave(saved);
+        true
     }
 }
 
 /// Whether the action `e` takes `name` only as one of its arguments, as it is: `open(x)`,
 /// `check(item, x)`, `set(filter, x)`.
 fn passed_as_is(e: &ast::Expr, name: &str) -> bool {
-    let ExprKind::Call { callee, args } = &e.kind else {
+    let ExprKind::Call { callee, args, .. } = &e.kind else {
         return false;
     };
     let names = [name];

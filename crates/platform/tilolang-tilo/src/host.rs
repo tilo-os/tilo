@@ -23,7 +23,7 @@ use tilolang_runtime::meta::{Meta, Ty, parse_ty};
 use tilolang_runtime::store::NewRecord;
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
 use tilolang_runtime::{
-    InvokeOutcome, ModuleHash, PackageId, Principal, Reading, Runtime, RuntimeError, StoreError,
+    InvokeOutcome, ModuleHash, PackageId, Principal, Runtime, RuntimeError, StoreError,
     ViewInstance,
 };
 
@@ -34,6 +34,10 @@ use crate::publish::{Caller, Committer, PlanRequest, Planner};
 use crate::schema::lookup;
 use crate::store::{Committed, TiloStore};
 use tilo_action_policy::Standing;
+
+/// An action's arguments as it runs them, and as its invocation records them; `None` when the
+/// line a person typed names no item, so the action does not run.
+type PlannedArgs = Option<(Vec<Value>, serde_json::Map<String, Json>)>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
@@ -139,7 +143,7 @@ pub(crate) struct HostInner {
     authority: TiloAuthority,
     viewer: Principal,
     packages: RefCell<Vec<Package>>,
-    /// Suggestions an agent's flow raised on the door, waiting for the window to ask a person.
+    /// Suggestions an agent's code raised on the door, waiting for the window to ask a person.
     pub(crate) suspended: RefCell<std::collections::VecDeque<tilolang_runtime::Suggestion>>,
     /// The resource the last action planned for the person at the window returned, with the
     /// action: what a window opens after its primary action made it.
@@ -584,21 +588,16 @@ impl HostInner {
         };
     }
 
-    /// Whether the action `action` can run on the published resource `resource` now: the
-    /// requirements its subject alone decides, as its app says them, in the person at the
-    /// window's eyes. `None` when the app keeps none, or when one of them cannot be read.
+    /// Whether the action `action` can run on the published resource `resource` now: whether it
+    /// can apply to it where a view offers it at all, and the requirements its subject alone
+    /// decides, as its app says them, in the person at the window's eyes. `None` when the app
+    /// keeps neither, or when one cannot be read.
+    ///
+    /// Asked of the one resource a caller names, when it names it: an action directory answers
+    /// the rows it is asked for, an invoked action is refused before it runs, and a window
+    /// published the answer for what it shows, so no surface carries a condition's answer for
+    /// every item it holds.
     fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
-        self.availability_reading(resource, action)
-            .map(|(availability, _)| availability)
-    }
-
-    /// Whether the action `action` can run on `resource` now, and what reading that read of the
-    /// workspace: what a caller keeps to know when to ask again ([`Reading`]).
-    fn availability_reading(
-        &self,
-        resource: &str,
-        action: &str,
-    ) -> Option<(tilo_actions::Availability, Reading)> {
         let package = self
             .packages
             .borrow()
@@ -606,7 +605,7 @@ impl HostInner {
             .find(|package| package.meta.actions.iter().any(|held| held.id == action))
             .cloned()?;
         let meta = package.meta.actions.iter().find(|held| held.id == action)?;
-        if !meta.guard {
+        if !meta.guard && !meta.applies {
             return None;
         }
         let declared = package.meta.subject_of(&meta.params)?;
@@ -614,17 +613,29 @@ impl HostInner {
             .strip_prefix(&crate::publish::resource_id(&package.meta.app, ""))
             .unwrap_or(resource);
         let target = ResourceRef::parse_id(id, declared.id.clone())?;
+        // Where the action cannot apply at all, the offer leaves it out: that reason is the
+        // answer, before what it needs to run.
+        let decided = |reason: Option<String>| match reason {
+            Some(reason) => Some(tilo_actions::Availability::Unavailable {
+                code: "unmet".to_owned(),
+                reason,
+            }),
+            None => Some(tilo_actions::Availability::Available),
+        };
+        if meta.applies {
+            match self.runtime.applies_reading(action, &target, &self.viewer) {
+                Ok((Some(reason), _)) => return decided(Some(reason)),
+                Ok((None, _)) => {}
+                // A condition that cannot be read says nothing of the action: it is offered,
+                // and refuses with its reason when it runs.
+                Err(_) => return None,
+            }
+        }
+        if !meta.guard {
+            return decided(None);
+        }
         match self.runtime.refusal_reading(action, &target, &self.viewer) {
-            Ok((Some(reason), read)) => Some((
-                tilo_actions::Availability::Unavailable {
-                    code: "unmet".to_owned(),
-                    reason,
-                },
-                read,
-            )),
-            Ok((None, read)) => Some((tilo_actions::Availability::Available, read)),
-            // A requirement that cannot be read says nothing of the action: it is offered, and
-            // refuses with its reason when it runs.
+            Ok((reason, _)) => decided(reason),
             Err(_) => None,
         }
     }
@@ -637,7 +648,15 @@ impl HostInner {
             .iter()
             .find(|action| action.id == request.action_id)
             .ok_or_else(|| format!("no action {}", request.action_id))?;
-        let (args, recorded) = self.planned_args(&package, action, request)?;
+        // A requirement is the app's, and the app is what can read it: an action published
+        // while its rule held, or one an agent addresses by name, is refused here, before it
+        // runs, with its rule's reason.
+        if let Some(subject) = request.resource
+            && let Some(tilo_actions::Availability::Unavailable { reason, .. }) =
+                self.availability(subject, request.action_id)
+        {
+            return Err(reason);
+        }
         // The runtime sees the invoker the door admitted: an agent's task delegate for itself,
         // the person at the window otherwise.
         let invoker = request.caller.map_or_else(
@@ -647,38 +666,48 @@ impl HostInner {
         if let Some(caller) = request.caller.filter(|caller| caller.agent) {
             self.admit_agent(caller);
         }
-        let first = self.store.next_ticket();
-        let outcome = match request.from {
-            Some(from) => {
-                self.runtime
-                    .invoke_action_from(&invoker, (request.action_id, args.clone()), from)
+        let mut committed = Vec::new();
+        let recorded = match self.planned_args(&package, action, request)? {
+            Some((args, recorded)) => {
+                let first = self.store.next_ticket();
+                let outcome = match request.from {
+                    Some(from) => self.runtime.invoke_action_from(
+                        &invoker,
+                        (request.action_id, args.clone()),
+                        from,
+                    ),
+                    None => self
+                        .runtime
+                        .invoke_action(&invoker, (request.action_id, args.clone())),
+                }
+                .map_err(|error| error.to_string())?;
+                self.returned_by(request.action_id, &outcome);
+                match outcome {
+                    InvokeOutcome::Done(Value::Ref(made))
+                        if request.caller.is_none_or(|caller| !caller.agent) =>
+                    {
+                        *self.produced.borrow_mut() = Some((
+                            request.action_id.to_owned(),
+                            std::rc::Rc::unwrap_or_clone(made.target),
+                        ));
+                    }
+                    InvokeOutcome::Done(_) => {}
+                    // An action that needs a person's approval is not refused: it is recorded as
+                    // a suggested invocation, the answer an agent gets and a person decides.
+                    InvokeOutcome::Suggested(suggestion) => {
+                        self.runtime
+                            .record_suggestion(&invoker, request.action_id, args, &suggestion)
+                            .map_err(|error| error.to_string())?;
+                    }
+                    InvokeOutcome::Denied => return Err("the action is not allowed".to_owned()),
+                }
+                committed = self.store.take_from(first);
+                recorded
             }
-            None => self
-                .runtime
-                .invoke_action(&invoker, (request.action_id, args.clone())),
-        }
-        .map_err(|error| error.to_string())?;
-        self.returned_by(request.action_id, &outcome);
-        match outcome {
-            InvokeOutcome::Done(Value::Ref(made))
-                if request.caller.is_none_or(|caller| !caller.agent) =>
-            {
-                *self.produced.borrow_mut() = Some((
-                    request.action_id.to_owned(),
-                    std::rc::Rc::unwrap_or_clone(made.target),
-                ));
-            }
-            InvokeOutcome::Done(_) => {}
-            // An action that needs a person's approval is not refused: it is recorded as a
-            // suggested invocation, the answer an agent gets and a person decides.
-            InvokeOutcome::Suggested(suggestion) => {
-                self.runtime
-                    .record_suggestion(&invoker, request.action_id, args, &suggestion)
-                    .map_err(|error| error.to_string())?;
-            }
-            InvokeOutcome::Denied => return Err("the action is not allowed".to_owned()),
-        }
-        let committed = self.store.take_from(first);
+            // The one line typed names nothing — only space and what the action's other
+            // parameters take — so the action does not run and makes no change.
+            None => request.args.clone(),
+        };
         let mut planned = DynAction {
             app: request.app.to_owned(),
             kind: request.kind.to_owned(),
@@ -691,6 +720,7 @@ impl HostInner {
                 at: None,
                 from: request.from.cloned(),
                 suggested_by: None,
+                count: 1,
             },
             edits: Vec::new(),
         };
@@ -711,13 +741,14 @@ impl HostInner {
 
     /// The action's arguments as its invocation records them: those the door was given, and
     /// each left out that has a default computed now, on the invoker's state, since what the
-    /// person saw is the argument.
+    /// person saw is the argument. `None` when the line typed names no item, so the action
+    /// does not run at all.
     fn planned_args(
         &self,
         package: &Package,
         action: &tilolang::meta::ActionMeta,
         request: &PlanRequest<'_>,
-    ) -> Result<(Vec<Value>, serde_json::Map<String, Json>), String> {
+    ) -> Result<PlannedArgs, String> {
         let mut given: Vec<Option<Value>> = Vec::new();
         let mut params = action.params.iter();
         if let (Some(subject), Some(declared)) =
@@ -728,11 +759,23 @@ impl HostInner {
             given.push(Some(Value::resource(&target)));
             params.next();
         }
-        let mut defaulted = Vec::new();
+        // What a person typed as one line, when the action takes an entry and the door was
+        // given it: the words it holds fill the parameters they name, and the entry takes the
+        // rest, so one line from a palette makes the same task as one from the app's entry.
+        let entry = action.params.iter().find(|param| param.entry);
+        let entry_text = entry
+            .and_then(|param| request.args.get(&param.name))
+            .and_then(Json::as_str);
+        let mut computed = Vec::new();
         for param in params {
+            if entry_text.is_some() && entry.is_some_and(|entry| entry.name == param.name) {
+                computed.push(param);
+                given.push(None);
+                continue;
+            }
             match request.args.get(&param.name) {
                 None if param.default.is_some() => {
-                    defaulted.push(param);
+                    computed.push(param);
                     given.push(None);
                 }
                 json => {
@@ -741,12 +784,22 @@ impl HostInner {
                 }
             }
         }
+        if let Some(text) = entry_text {
+            let Some(filled) = self
+                .runtime
+                .fill_entry(request.action_id, given, text)
+                .map_err(|error| error.to_string())?
+            else {
+                return Ok(None);
+            };
+            given = filled;
+        }
         let args = self
             .runtime
             .complete_args(request.action_id, given)
             .map_err(|error| error.to_string())?;
         let mut recorded = request.args.clone();
-        for param in defaulted {
+        for param in computed {
             let index = action
                 .params
                 .iter()
@@ -756,7 +809,7 @@ impl HostInner {
                 recorded.insert(param.name.clone(), json);
             }
         }
-        Ok((args, recorded))
+        Ok(Some((args, recorded)))
     }
 }
 
@@ -913,7 +966,7 @@ impl Host {
         self.inner.admit_agent(caller);
     }
 
-    /// The next suggestion an agent's flow raised, for the window to ask a person about.
+    /// The next suggestion an agent's code raised, for the window to ask a person about.
     #[must_use]
     pub fn take_suspended(&self) -> Option<tilolang_runtime::Suggestion> {
         self.inner.suspended.borrow_mut().pop_front()
@@ -948,10 +1001,22 @@ impl Host {
             .map_err(|error| error.to_string())
     }
 
-    /// The runtime, for flows, blocks and the catalogue.
+    /// The runtime, for blocks, programs and the catalogue.
     #[must_use]
     pub fn runtime(&self) -> &Runtime {
         &self.inner.runtime
+    }
+
+    /// Tell the host the Rust views this process declares, so a place showing a resource of one
+    /// of their types draws that app's view, exactly as it draws a tilolang package's view
+    /// (one-app-model.md §2). Everything a `#[view]` linked into this process declared
+    /// ([`crate::views::DeclaredViews`]).
+    pub fn declare_rust_views(&self) {
+        if !tilo_view::ViewRegistry::is_empty() {
+            self.inner
+                .runtime
+                .set_rust_views(std::rc::Rc::new(crate::views::DeclaredViews));
+        }
     }
 
     #[must_use]
@@ -971,17 +1036,6 @@ impl Host {
     #[must_use]
     pub fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
         self.inner.availability(resource, action)
-    }
-
-    /// As [`Host::availability`], with what reading the requirement read: the resources it read,
-    /// so a caller keeping the answer knows what has to move for it to be read again.
-    #[must_use]
-    pub fn availability_reading(
-        &self,
-        resource: &str,
-        action: &str,
-    ) -> Option<(tilo_actions::Availability, Reading)> {
-        self.inner.availability_reading(resource, action)
     }
 
     /// The resource `action` returned when the person last ran it here, once: a window opens
@@ -1354,21 +1408,29 @@ impl Host {
         ran
     }
 
+    /// Run what the packages declare comes due at `now` (seconds since the epoch): each
+    /// trigger, for each record of its type, as the app's own invocation
+    /// ([`crate::authority::trigger_principal`]), whose change records in the same edit what
+    /// the trigger last did for the record. Only the workspace's origin calls it
+    /// (`Instance::sync`), so a trigger runs once across the workspace's devices; a run the
+    /// devices missed while all were off runs once when one comes up. Returns how many ran.
+    pub fn run_triggers(&self, now: i64) -> usize {
+        crate::triggers::run(self, now)
+    }
+
+    /// The next instant strictly after `now` at which a trigger has something to run: what the
+    /// host waits for, so nothing polls for it. `None` when no trigger will come due again.
+    #[must_use]
+    pub fn next_trigger(&self, now: i64) -> Option<i64> {
+        crate::triggers::next(self, now)
+    }
+
     /// Whether the resource `doc` holds anything in the fields `previously` (none: whether it
     /// may hold what an earlier version wrote, which only the migration can tell).
     fn holds_previously(&self, doc: &str, previously: &[&str]) -> bool {
-        if previously.is_empty() {
-            return true;
-        }
-        let Ok(record) = self.inner.store.record(doc) else {
-            return false;
-        };
-        let Ok(empty) = crate::record::DynRecord::empty(record.schema()) else {
-            return false;
-        };
-        previously
-            .iter()
-            .any(|field| record.get(field) != empty.get(field))
+        // Read from the record's own map: a record of ten thousand items is not built to
+        // learn whether one field a migration replaces was ever written.
+        self.inner.store.holds_any(doc, previously)
     }
 
     /// Open the window of `app`'s root resource, through the default view of its type: its

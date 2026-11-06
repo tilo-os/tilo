@@ -8,9 +8,13 @@ use tilolang_runtime::{InvokeOutcome, Principal, UiNode, Value, ViewInstance};
 
 use crate::fixtures::Replica;
 
-const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
-const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-const APP: &str = "so.tilo.lang.tasks";
+pub(crate) const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+pub(crate) const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
+pub(crate) const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+pub(crate) const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
+/// What a task's page is drawn from: the tasks and the discussion under them.
+pub(crate) const PACKAGES: &[(&str, &str)] = &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)];
+pub(crate) const APP: &str = "so.tilo.lang.tasks";
 
 pub(crate) fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     let meta = r.host.package(APP).unwrap().meta;
@@ -34,7 +38,7 @@ pub(crate) fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
 
 /// Ada's replica of an empty workspace at 10:00 on Thursday 2026-10-29, and the tasks root.
 pub(crate) fn workspace() -> (Replica, Value) {
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(TASKS, TASKS_IDS)]);
+    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), PACKAGES);
     ada.host
         .runtime()
         .set_clock(|| "2026-10-29T10:00:00Z".to_owned());
@@ -59,6 +63,15 @@ fn target(v: &Value) -> Option<String> {
     }
 }
 
+/// The arguments `new_task` takes for a task added with only its title: the list it is added
+/// to, nothing for the project, section, day, time and assignee, and what was typed.
+pub(crate) fn create(root: &Value, title: &str) -> Vec<Value> {
+    let mut args = vec![root.clone()];
+    args.resize(6, Value::none());
+    args.push(Value::text(title));
+    args
+}
+
 fn items(r: &Replica) -> Vec<Value> {
     let root = r.host.root_of(APP).unwrap();
     match r.host.runtime().read(&root, "items").unwrap() {
@@ -67,15 +80,15 @@ fn items(r: &Replica) -> Vec<Value> {
     }
 }
 
-/// A place as the sidebar draws it: its label, and the count it draws when its filter says
-/// `count: true` (the inbox's and today's).
-type ShownPlace = (String, Option<i64>);
+/// A place as the sidebar draws it: its label, and the count the sidebar itself works out for
+/// the places it counts (the inbox's and today's).
+pub(crate) type ShownPlace = (String, Option<i64>);
 
 /// A heading of the sidebar with the places under it, in the order they stand.
 type ShownSection = (String, Vec<ShownPlace>);
 
 /// The sidebar's places as the window shows them.
-fn places(view: &ViewInstance) -> Vec<ShownPlace> {
+pub(crate) fn places(view: &ViewInstance) -> Vec<ShownPlace> {
     fn walk(node: &UiNode, out: &mut Vec<ShownPlace>) {
         if node.kind == "ui.NavItem"
             && let Some(Value::Text(label)) = node.props.get("label")
@@ -96,7 +109,7 @@ fn places(view: &ViewInstance) -> Vec<ShownPlace> {
 }
 
 /// What the sidebar counts at `place`: a count only where the place's filter asks for one.
-fn count(view: &ViewInstance, place: &str) -> Option<i64> {
+pub(crate) fn count(view: &ViewInstance, place: &str) -> Option<i64> {
     places(view)
         .into_iter()
         .find(|(label, _)| label == place)
@@ -107,11 +120,7 @@ fn count(view: &ViewInstance, place: &str) -> Option<i64> {
 #[test]
 fn a_task_is_made_filed_under_a_project_and_checked_off() {
     let (mut ada, root) = workspace();
-    let task = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Book a haircut")],
-    );
+    let task = call(&ada, "new_task", create(&root, "Book a haircut"));
     ada.commit();
     let project = call(&ada, "new_project", vec![root.clone()]);
     ada.commit();
@@ -134,7 +143,7 @@ fn a_task_is_made_filed_under_a_project_and_checked_off() {
 }
 
 #[test]
-fn a_quick_add_adds_what_was_typed_and_nothing_for_an_empty_entry() {
+fn an_entry_adds_what_was_typed_and_nothing_for_an_empty_entry() {
     let (ada, _) = workspace();
     let mut view = ada.view(APP);
     // An entry with nothing in it adds nothing.
@@ -160,7 +169,7 @@ fn a_quick_add_adds_what_was_typed_and_nothing_for_an_empty_entry() {
 }
 
 #[test]
-fn a_quick_add_reads_when_it_is_due_in_the_persons_zone() {
+fn an_entry_reads_when_it_is_due_in_the_persons_zone() {
     // 20:00 UTC on Thursday 2026-10-29 is 05:00 on Friday the 30th in Tokyo.
     let (mut ada, _) = workspace();
     ada.host
@@ -254,7 +263,7 @@ fn inbox_today_and_upcoming_are_read_when_they_are_asked() {
     let (mut ada, root) = workspace();
     let project = call(&ada, "new_project", vec![root.clone()]);
     ada.commit();
-    let dated = |title: &str| call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+    let dated = |title: &str| call(&ada, "new_task", create(&root, title));
     let late = dated("Pay the electricity bill");
     let today = dated("Buy oat milk");
     let next = dated("Order a present");
@@ -364,7 +373,7 @@ fn overview_count(view: &ViewInstance) -> Option<i64> {
 fn the_home_list_counts_the_inbox_that_was_just_written() {
     let (mut ada, root) = workspace();
     for title in ["Buy oat milk and eggs", "Book a haircut"] {
-        call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+        call(&ada, "new_task", create(&root, title));
     }
     assert_eq!(
         overview_count(&ada.view(APP)),
@@ -378,7 +387,7 @@ fn the_home_list_counts_the_inbox_that_was_just_written() {
 #[test]
 fn a_window_open_over_midnight_moves_what_today_lists_without_the_record_changing() {
     let (mut ada, root) = workspace();
-    let dated = |title: &str| call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+    let dated = |title: &str| call(&ada, "new_task", create(&root, title));
     let today = dated("Buy oat milk");
     let next = dated("Order a present");
     ada.commit();
@@ -424,13 +433,9 @@ fn a_window_open_over_midnight_moves_what_today_lists_without_the_record_changin
 #[test]
 fn two_people_change_one_task_at_once_and_both_changes_stay() {
     let (mut ada, root) = workspace();
-    let task = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Call the landlord")],
-    );
+    let task = call(&ada, "new_task", create(&root, "Call the landlord"));
     ada.commit();
-    let mut ben = ada.fork("ben", &[(TASKS, TASKS_IDS)]);
+    let mut ben = ada.fork("ben", PACKAGES);
     ben.host.sync_from(&ben.doc);
     // Ada checks it off while Ben files it under a project he just made.
     call(&ada, "check", vec![task.clone()]);
@@ -526,7 +531,7 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
         "Pack the books",
         "Measure the bedworkspace",
     ] {
-        let t = call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+        let t = call(&ada, "new_task", create(&root, title));
         call(&ada, "file", vec![t.clone(), project.clone()]);
         made.push(t);
     }
@@ -678,113 +683,6 @@ fn a_lanes_header_counts_the_cards_it_holds() {
     }
 }
 
-/// A checklist written before a task's steps were tasks of their own opens with each step a
-/// subtask of the task it was a step of, in the checklist's order, and the migration runs once.
-#[test]
-fn a_checklist_written_before_subtasks_opens_as_subtasks() {
-    const BEFORE: &str = include_str!("tasks_before_subtasks/app.tl");
-    const BEFORE_IDS: &str = include_str!("tasks_before_subtasks/app.ids");
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(BEFORE, BEFORE_IDS)]);
-    let all = Value::resource(&ada.host.root_of(APP).unwrap());
-    ada.commit();
-    let copy = call(
-        &ada,
-        "add",
-        vec![all.clone(), Value::text("Write the launch post")],
-    );
-    ada.commit();
-    for title in ["Outline", "First draft", "Screenshots"] {
-        call(
-            &ada,
-            "add_step",
-            vec![all.clone(), copy.clone(), Value::text(title)],
-        );
-        ada.commit();
-    }
-    // Done, in the version that kept no note of which tasks fold.
-    call(&ada, "check", vec![copy.clone(), Value::Bool(true)]);
-    ada.commit();
-
-    // The same workspace, opened by the version that keeps subtasks.
-    let (mut later, _) = Replica::new("ada", ada.doc.fork(), &[(TASKS, TASKS_IDS)]);
-    later.host.sync_from(&later.doc);
-    assert_eq!(later.host.migrate(), 1, "the checklist migration runs");
-    for done in later.host.take_committed() {
-        later.apply(&done.action);
-    }
-    let tasks = items(&later);
-    let titles: Vec<Value> = tasks
-        .iter()
-        .map(|item| read(&later, item, "title"))
-        .collect();
-    assert_eq!(
-        titles,
-        [
-            Value::text("Write the launch post"),
-            Value::text("Outline"),
-            Value::text("First draft"),
-            Value::text("Screenshots"),
-        ],
-        "the task, then its checklist in order"
-    );
-    let of = target(&copy).expect("the task");
-    for step in &tasks[1..] {
-        assert_eq!(
-            target(&read(&later, step, "parent")),
-            Some(of.clone()),
-            "a step's task is under the task it was a step of"
-        );
-    }
-    assert_eq!(
-        read(&later, &tasks[1], "done"),
-        Value::Bool(false),
-        "a step keeps what it had"
-    );
-    assert_eq!(
-        read(&later, &tasks[0], "subtasks"),
-        Value::Int(3),
-        "the list counts the steps the migration made tasks under it"
-    );
-    assert_eq!(
-        read(&later, &tasks[0], "folded"),
-        Value::Bool(false),
-        "and it is not a finished branch: its steps are open"
-    );
-    assert_eq!(later.host.migrate(), 0, "the migration runs once");
-}
-
-/// A step outlived the task it was a step of: it opens as a task of its own, keeping what it
-/// said, rather than being lost or failing the migration.
-#[test]
-fn a_step_whose_task_was_removed_becomes_a_task_of_its_own() {
-    const BEFORE: &str = include_str!("tasks_before_subtasks/app.tl");
-    const BEFORE_IDS: &str = include_str!("tasks_before_subtasks/app.ids");
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(BEFORE, BEFORE_IDS)]);
-    let all = Value::resource(&ada.host.root_of(APP).unwrap());
-    ada.commit();
-    let gone = call(&ada, "add", vec![all.clone(), Value::text("Old task")]);
-    ada.commit();
-    call(
-        &ada,
-        "add_step",
-        vec![all.clone(), gone.clone(), Value::text("Its step")],
-    );
-    ada.commit();
-    call(&ada, "remove", vec![all, gone]);
-    ada.commit();
-
-    let (mut later, _) = Replica::new("ada", ada.doc.fork(), &[(TASKS, TASKS_IDS)]);
-    later.host.sync_from(&later.doc);
-    assert_eq!(later.host.migrate(), 1, "the steps migration runs");
-    for done in later.host.take_committed() {
-        later.apply(&done.action);
-    }
-    let tasks = items(&later);
-    assert_eq!(tasks.len(), 1, "the step stayed, as a task of its own");
-    assert_eq!(read(&later, &tasks[0], "title"), Value::text("Its step"));
-    assert_eq!(read(&later, &tasks[0], "parent"), Value::none());
-}
-
 /// The drawn row of the task held by `item`.
 fn row_of(view: &ViewInstance, item: &Value) -> String {
     let want = target(item);
@@ -817,11 +715,7 @@ fn titles(r: &Replica) -> Vec<Value> {
 /// A launch post with the subtasks "Outline", "First draft" and "Screenshots".
 fn launch_post() -> (Replica, Value) {
     let (mut ada, root) = workspace();
-    let parent = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Write the launch post")],
-    );
+    let parent = call(&ada, "new_task", create(&root, "Write the launch post"));
     ada.commit();
     for title in ["Outline", "First draft", "Screenshots"] {
         call(
@@ -835,7 +729,7 @@ fn launch_post() -> (Replica, Value) {
 }
 
 /// The page a task opens, drawn.
-fn task_page(ada: &Replica, task: &Value) -> ViewInstance {
+pub(crate) fn task_page(ada: &Replica, task: &Value) -> ViewInstance {
     let Value::Ref(at) = task else {
         panic!("a task: {task:?}")
     };
@@ -1134,7 +1028,7 @@ fn enter(view: &mut ViewInstance, text: &str) {
 fn a_checked_task_keeps_its_row_until_the_place_is_left() {
     let (mut ada, root) = workspace();
     for title in ["Buy oat milk", "Pay the electricity bill", "Book a haircut"] {
-        let made = call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+        let made = call(&ada, "new_task", create(&root, title));
         call(
             &ada,
             "schedule",
@@ -1160,7 +1054,7 @@ fn a_checked_task_keeps_its_row_until_the_place_is_left() {
     assert_eq!(now, place, "in the place it stood");
     assert!(drawn, "its box drawn checked");
     // Typing the next task into the entry is not leaving the place: the row stays.
-    view.set_lens("draft", Value::text("Buy bread"));
+    view.set_view_state("draft", Value::text("Buy bread"));
     let rows = home_list_rows(&mut view);
     assert_eq!(rows.len(), 3, "typing settles nothing: {rows:?}");
     // Pressing the box again opens it where it is.
@@ -1194,12 +1088,8 @@ fn a_task_filed_out_of_the_inbox_keeps_its_row_until_the_view_is_left() {
         "rename",
         vec![project.clone(), Value::text("Move flat")],
     );
-    let packed = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Pack the books")],
-    );
-    call(&ada, "new_task", vec![root, Value::text("Buy oat milk")]);
+    let packed = call(&ada, "new_task", create(&root, "Pack the books"));
+    call(&ada, "new_task", create(&root, "Buy oat milk"));
     ada.commit();
     let mut view = ada.view(APP);
     let of = target(&packed).expect("a task");
@@ -1235,7 +1125,7 @@ fn a_task_filed_out_of_the_inbox_keeps_its_row_until_the_view_is_left() {
 fn a_peers_completion_takes_its_row_away() {
     let (mut ada, root) = workspace();
     for title in ["Buy oat milk", "Pay the electricity bill"] {
-        let made = call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+        let made = call(&ada, "new_task", create(&root, title));
         call(
             &ada,
             "schedule",
@@ -1243,7 +1133,7 @@ fn a_peers_completion_takes_its_row_away() {
         );
         ada.commit();
     }
-    let mut ben = ada.fork("ben", &[(TASKS, TASKS_IDS)]);
+    let mut ben = ada.fork("ben", PACKAGES);
     ben.host.sync_from(&ben.doc);
     let mut view = ada.view(APP);
     go_to(&mut view, "Today");
@@ -1325,7 +1215,7 @@ fn bound_key(node: &UiNode, field: &str) -> Option<String> {
 
 /// Every text the tree shows.
 #[cfg(feature = "record")]
-fn texts(node: &UiNode) -> Vec<String> {
+pub(crate) fn texts(node: &UiNode) -> Vec<String> {
     fn walk(node: &UiNode, out: &mut Vec<String>) {
         if let Some(Value::Text(text)) = node.props.get("label").or_else(|| node.props.get("value"))
         {
@@ -1352,11 +1242,7 @@ fn a_task_whose_assignee_the_page_shows() -> (Replica, Value, ViewInstance, Stri
         ],
         None,
     );
-    let task = call(
-        &ada,
-        "new_task",
-        vec![root, Value::text("Write the launch post")],
-    );
+    let task = call(&ada, "new_task", create(&root, "Write the launch post"));
     ada.commit();
     let page = task_page(&ada, &task);
     let field = {
@@ -1494,11 +1380,7 @@ fn each_pick_of_the_assignee_is_one_step_of_history() {
 #[test]
 fn the_priority_is_one_case_field_and_each_pick_writes_the_case() {
     let (mut ada, root) = workspace();
-    let task = call(
-        &ada,
-        "new_task",
-        vec![root, Value::text("Write the launch post")],
-    );
+    let task = call(&ada, "new_task", create(&root, "Write the launch post"));
     ada.commit();
     let mut page = task_page(&ada, &task);
     let field = {
@@ -1600,11 +1482,7 @@ fn the_priority_is_one_case_field_and_each_pick_writes_the_case() {
 #[test]
 fn a_step_added_while_a_task_is_checked_off_is_never_cleared_with_it() {
     let (mut ada, root) = workspace();
-    let parent = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Write the launch post")],
-    );
+    let parent = call(&ada, "new_task", create(&root, "Write the launch post"));
     ada.commit();
     call(
         &ada,
@@ -1612,7 +1490,7 @@ fn a_step_added_while_a_task_is_checked_off_is_never_cleared_with_it() {
         vec![root.clone(), parent.clone(), Value::text("Outline")],
     );
     ada.commit();
-    let mut ben = ada.fork("ben", &[(TASKS, TASKS_IDS)]);
+    let mut ben = ada.fork("ben", PACKAGES);
     ben.host.sync_from(&ben.doc);
     // Ada checks the task off while Ben, not yet seeing that, puts a step under it.
     call(&ada, "check", vec![parent.clone()]);
@@ -1671,11 +1549,7 @@ fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
         "rename",
         vec![project.clone(), Value::text("Website launch")],
     );
-    let post = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Write the launch post")],
-    );
+    let post = call(&ada, "new_task", create(&root, "Write the launch post"));
     call(&ada, "file", vec![post.clone(), project]);
     ada.commit();
     for title in ["Outline", "Screenshots"] {
@@ -1688,7 +1562,7 @@ fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
     }
     let outline = task(&ada, "Outline");
     let screenshots = task(&ada, "Screenshots");
-    let mut ben = ada.fork("ben", &[(TASKS, TASKS_IDS)]);
+    let mut ben = ada.fork("ben", PACKAGES);
     ben.host.sync_from(&ben.doc);
     // Each checks one step, neither seeing the other: one step under the task is still open
     // when each writes, so the branch is not finished in either of them.
@@ -1748,8 +1622,10 @@ fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
 /// works the keys out from what the scenario wrote, so no migration runs after a record.
 #[test]
 fn a_scenario_reads_the_keys_of_the_branch_it_stages() {
-    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TASKS, TASKS_IDS)]);
-    let scenario = loaded[0]
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), PACKAGES);
+    let scenario = loaded
+        .last()
+        .unwrap()
         .meta
         .scenarios
         .iter()
@@ -1995,11 +1871,7 @@ fn a_tasks_row_and_its_outline_count_what_is_done_alike() {
         "rename",
         vec![project.clone(), Value::text("Website launch")],
     );
-    let post = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Write the launch post")],
-    );
+    let post = call(&ada, "new_task", create(&root, "Write the launch post"));
     call(&ada, "file", vec![post.clone(), project]);
     ada.commit();
     call(
@@ -2076,13 +1948,13 @@ fn a_tasks_row_and_its_outline_count_what_is_done_alike() {
 
 /// One command a menu offers, as the person reads it.
 #[derive(Debug, PartialEq, Eq)]
-struct Command {
-    label: String,
-    key: Option<String>,
-    group: Option<String>,
-    reason: Option<String>,
-    enabled: bool,
-    destructive: bool,
+pub(crate) struct Command {
+    pub(crate) label: String,
+    pub(crate) key: Option<String>,
+    pub(crate) group: Option<String>,
+    pub(crate) reason: Option<String>,
+    pub(crate) enabled: bool,
+    pub(crate) destructive: bool,
 }
 
 fn flag(node: &UiNode, name: &str) -> bool {
@@ -2216,7 +2088,7 @@ fn row_command_key(view: &mut ViewInstance, want: &Value, label: &str) -> String
 }
 
 /// The commands a page offers behind its `...` door.
-fn page_commands(view: &ViewInstance) -> Vec<Command> {
+pub(crate) fn page_commands(view: &ViewInstance) -> Vec<Command> {
     let more = all(view.tree(), "ui.MenuButton")
         .into_iter()
         .find(|button| button.key.ends_with("~more"))
@@ -2238,7 +2110,7 @@ fn page_commands(view: &ViewInstance) -> Vec<Command> {
 #[test]
 fn a_tasks_row_menu_offers_every_command_in_one_order() {
     let (mut ada, root) = workspace();
-    let booked = call(&ada, "new_task", vec![root, Value::text("Book a haircut")]);
+    let booked = call(&ada, "new_task", create(&root, "Book a haircut"));
     ada.commit();
     let mut view = ada.view(APP);
     let commands = row_commands(&mut view, &booked);
@@ -2253,7 +2125,7 @@ fn a_tasks_row_menu_offers_every_command_in_one_order() {
         "a command of no run stands on its own"
     );
     assert_eq!(
-        commands[2].group.as_deref(),
+        commands[3].group.as_deref(),
         Some("Due"),
         "the dates are one run"
     );
@@ -2355,17 +2227,9 @@ fn the_moves_a_row_offers_follow_the_rows_the_view_shows() {
     let (mut ada, root) = workspace();
     // What is overdue and what is due today, in the day's place: the list shows the day gone
     // by first, and the time before today stands over today's tasks in the store.
-    let van = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Book the van")],
-    );
-    let tent = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Pack the tent")],
-    );
-    let tank = call(&ada, "new_task", vec![root, Value::text("Fill the tank")]);
+    let van = call(&ada, "new_task", create(&root, "Book the van"));
+    let tent = call(&ada, "new_task", create(&root, "Pack the tent"));
+    let tank = call(&ada, "new_task", create(&root, "Fill the tank"));
     ada.commit();
     for (task, day) in [
         (&van, "2026-10-27"),
@@ -2464,7 +2328,7 @@ fn identifier_shaped(name: &str) -> bool {
 #[test]
 fn a_typing_control_is_named_by_a_word_a_person_says() {
     let (mut ada, root) = workspace();
-    let task = call(&ada, "new_task", vec![root, Value::text("Book the van")]);
+    let task = call(&ada, "new_task", create(&root, "Book the van"));
     ada.commit();
     let mut home = ada.view(APP);
     let mut page = task_page(&ada, &task);
@@ -2499,7 +2363,7 @@ fn a_typing_control_is_named_by_a_word_a_person_says() {
 #[test]
 fn a_tasks_page_menu_offers_what_its_row_does() {
     let (mut ada, root) = workspace();
-    let booked = call(&ada, "new_task", vec![root, Value::text("Book a haircut")]);
+    let booked = call(&ada, "new_task", create(&root, "Book a haircut"));
     ada.commit();
     let mut home = ada.view(APP);
     let row = row_commands(&mut home, &booked);
@@ -2514,11 +2378,7 @@ fn a_tasks_page_menu_offers_what_its_row_does() {
 #[test]
 fn adding_a_subtask_from_a_menu_asks_for_its_title_and_names_it_under_its_row() {
     let (mut ada, root) = workspace();
-    let parent = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Write the launch post")],
-    );
+    let parent = call(&ada, "new_task", create(&root, "Write the launch post"));
     call(
         &ada,
         "add_subtask",
@@ -2593,7 +2453,7 @@ fn the_offered_actions_are_the_person_facing_ones() {
             "{wanted} is offered: {offered:?}"
         );
     }
-    for gesture in ["place", "move_to", "quick_add", "copy_below"] {
+    for gesture in ["place", "move_to", "copy_below"] {
         assert!(
             !offered.contains(&gesture),
             "{gesture} runs from the app's own gestures alone: {offered:?}"
@@ -2648,17 +2508,9 @@ fn the_sidebar_is_the_windows_places_and_the_projects_the_root_holds() {
         "rename",
         vec![project.clone(), Value::text("Groceries")],
     );
-    let milk = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Buy oat milk")],
-    );
+    let milk = call(&ada, "new_task", create(&root, "Buy oat milk"));
     call(&ada, "file", vec![milk, project]);
-    let done = call(
-        &ada,
-        "new_task",
-        vec![root, Value::text("Take the bins out")],
-    );
+    let done = call(&ada, "new_task", create(&root, "Take the bins out"));
     call(&ada, "check", vec![done]);
     ada.commit();
     let view = ada.view(APP);
@@ -2728,13 +2580,9 @@ fn a_project_place_shows_its_tasks_and_adds_into_it_in_the_same_window() {
         "rename",
         vec![project.clone(), Value::text("Groceries")],
     );
-    let milk = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Buy oat milk")],
-    );
+    let milk = call(&ada, "new_task", create(&root, "Buy oat milk"));
     call(&ada, "file", vec![milk.clone(), project.clone()]);
-    call(&ada, "new_task", vec![root, Value::text("Book a haircut")]);
+    call(&ada, "new_task", create(&root, "Book a haircut"));
     ada.commit();
     let mut view = ada.view(APP);
     assert_eq!(home_list_rows(&mut view).len(), 1, "the inbox first");
@@ -2793,7 +2641,7 @@ fn every_place_leads_to_a_list_not_to_the_nothing_chosen_page() {
     let (mut ada, root) = workspace();
     let project = call(&ada, "new_project", vec![root.clone()]);
     call(&ada, "rename", vec![project, Value::text("Groceries")]);
-    call(&ada, "new_task", vec![root, Value::text("Book a haircut")]);
+    call(&ada, "new_task", create(&root, "Book a haircut"));
     ada.commit();
     let mut view = ada.view(APP);
     let labels: Vec<String> = places(&view).into_iter().map(|(label, _)| label).collect();
@@ -2831,7 +2679,7 @@ fn a_place_whose_tasks_are_all_done_says_so() {
     );
     let mut made = Vec::new();
     for title in ["Buy oat milk", "Take the bins out", "Book a haircut"] {
-        let task = call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+        let task = call(&ada, "new_task", create(&root, title));
         call(&ada, "file", vec![task.clone(), project.clone()]);
         made.push(task);
     }
@@ -2876,6 +2724,43 @@ fn a_place_whose_tasks_are_all_done_says_so() {
         home_list_rows(&mut view).len(),
         3,
         "and what is done with folds under it"
+    );
+}
+
+/// A place that holds nothing says it holds nothing: nothing there waits, but nothing there is
+/// done with either, so it is not that all of it is.
+#[test]
+fn a_place_that_holds_nothing_says_so_rather_than_all_done() {
+    let (mut ada, root) = workspace();
+    // Due today, so the place of what nobody sorted does not hold it.
+    let task = call(&ada, "new_task", create(&root, "Buy oat milk"));
+    call(
+        &ada,
+        "schedule",
+        vec![task, Value::some(Value::text("2026-10-29"))],
+    );
+    ada.commit();
+    let mut view = ada.view(APP);
+    let said: Vec<String> = all(view.tree(), "ui.EmptyState")
+        .into_iter()
+        .filter_map(|node| match node.props.get("title") {
+            Some(Value::Text(title)) => Some(title.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        said.iter().any(|title| title == "No tasks here"),
+        "the place says it holds nothing: {said:?}"
+    );
+    assert!(
+        !said
+            .iter()
+            .any(|title| title == "All done" || title == "tilolang-all-done"),
+        "and not that everything is done: {said:?}"
+    );
+    assert!(
+        home_list_rows(&mut view).is_empty(),
+        "a place that holds nothing draws no list"
     );
 }
 

@@ -43,6 +43,7 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
 
 use tilo_ui::chrome::{NavCount, NavRowFace, paint_nav_row};
+use tilo_ui::component::{Described, ResourceId};
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::icons::Icon;
 use tilo_ui::launch::ShotFrame;
@@ -55,17 +56,16 @@ use tilo_ui::time::Duration;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui::widget::toggle_group::{Segment, SegmentedStyle};
 use tilo_ui::widget::toolbar::Orientation;
-use tilo_ui::widget::tree_view::TreeNode;
 use tilo_ui::widget::{
     Actions, Avatar, AvatarFace, AvatarSize, Badge, Banner, Breadcrumb, Button, ButtonRole, Card,
     CardGrid, Checkbox, Chip, ChipLead, ChipStyle, Column, Container, ContextMenu, ControlSize,
-    DatePicker, DropZone, Dropdown, Element, EmptyState, Field, IconSize, IconWidget, Image,
-    Interaction, Link, ListRow, ListRowFace, MediaArt, MediaCard, MediaCardFace, MediaGrid,
-    MediaSource, MenuItem, ModalDialog, NavItem, NavList, NavSection, NumberInput, ObjectHeader,
-    Popover, PopoverSide, ProgressBar, ProgressRing, Property, PropertyList, Row, RowLeading,
-    RowStatus, SearchField, Section, SectionHeader, Skeleton, Slider, Spinner, StatGroup, StatTile,
-    StatusLine, Stepper, TabBar, TabDescriptor, Text, TextInput, TimePicker, Toggle, ToggleGroup,
-    Tone, Toolbar, TreeView, Trend, Widget,
+    DatePicker, DescribedTreeView, DropZone, Dropdown, Element, EmptyState, Field, IconSize,
+    IconWidget, Image, Interaction, Link, ListRow, ListRowFace, MediaArt, MediaCard, MediaCardFace,
+    MediaGrid, MediaSource, MenuItem, ModalDialog, NavItem, NavList, NavSection, NumberInput,
+    ObjectHeader, Popover, PopoverSide, ProgressBar, ProgressRing, Property, PropertyList, Row,
+    RowLeading, RowStatus, SearchField, Section, SectionHeader, Skeleton, Slider, Spinner,
+    StatGroup, StatTile, StatusLine, Stepper, TabBar, TabDescriptor, Text, TextInput, TimePicker,
+    Toggle, ToggleGroup, Tone, Toolbar, TreeViewNodeProps, TreeViewProps, Trend, Widget,
 };
 use tilo_ui::{LocalState, State, TextRole};
 
@@ -1047,27 +1047,31 @@ fn pane_blocks() -> Vec<Block> {
             )
         }),
         block("Tree", 280.0, 300.0, |_| {
-            let root = TreeNode::branch(
-                0,
-                "Workspace",
-                (),
-                vec![
-                    TreeNode::branch(
-                        1,
-                        "Design",
-                        (),
-                        vec![
-                            TreeNode::leaf(2, "Colour.md", ()),
-                            TreeNode::leaf(3, "Type.md", ()),
-                        ],
-                    ),
-                    TreeNode::leaf(4, "Roadmap.md", ()),
-                    TreeNode::leaf(5, "Notes.md", ()),
-                ],
-            );
-            let mut tree = TreeView::new(root).hide_root().with_selected(Some(3));
-            tree.toggle_expand(1);
-            Box::new(tree)
+            let node =
+                |label: &str, id: u64, parent: Option<u64>, branch: bool| TreeViewNodeProps {
+                    item: ResourceId(id.to_string()),
+                    label: label.into(),
+                    parent: parent.map(|parent| ResourceId(parent.to_string())),
+                    branch,
+                    ..TreeViewNodeProps::default()
+                };
+            Box::new(DescribedTreeView::from_props(
+                "tree",
+                TreeViewProps {
+                    hide_root: true,
+                    nodes: vec![
+                        node("Workspace", 0, None, true),
+                        node("Design", 1, Some(0), true),
+                        node("Colour.md", 2, Some(1), false),
+                        node("Type.md", 3, Some(1), false),
+                        node("Roadmap.md", 4, Some(0), false),
+                        node("Notes.md", 5, Some(0), false),
+                    ],
+                    expanded: Some(vec![ResourceId("0".into()), ResourceId("1".into())]),
+                    selection: Some(vec![ResourceId("3".into())]),
+                    ..TreeViewProps::default()
+                },
+            ))
         }),
         block("Section of rows", 560.0, 300.0, |_| {
             Box::new(Section::titled(

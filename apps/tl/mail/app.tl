@@ -380,18 +380,18 @@ action flag(t: Thread, flagged: Bool = not t.flagged) (
 /// Puts the conversation away until a moment: it leaves the inbox, and comes back once that
 /// moment has come, with no window open. The moment is a field, so it survives closing and
 /// reopening, and an agent snoozes the same way.
-action snooze(t: Thread, until: Time) (icon: .clock, label: "Snooze") {
+action snooze(t: Thread, until: Time) uses time (icon: .clock, label: "Snooze") {
     require until > now "Pick a moment still to come"
     t.snoozed_until = until
 }
 
 /// Puts the conversation away for an hour, the snooze people reach for most.
-action snooze_an_hour(t: Thread) (icon: .clock, label: "Snooze an hour") {
+action snooze_an_hour(t: Thread) uses time (icon: .clock, label: "Snooze an hour") {
     snooze(t, now + 1h)
 }
 
 /// Puts the conversation away until tomorrow morning, at nine, in the person's own zone.
-action snooze_until_tomorrow(t: Thread) (icon: .clock, label: "Snooze until tomorrow") {
+action snooze_until_tomorrow(t: Thread) uses time (icon: .clock, label: "Snooze until tomorrow") {
     snooze(t, Time.parse("tomorrow 9am", near: now) ?? now + 18h)
 }
 
@@ -447,7 +447,7 @@ action cancel_later(d: Draft) (icon: .undo_2, label: "Cancel scheduled send") {
 /// Sends the message at a moment instead of now: it waits in the outbox until then, as the
 /// person's hold makes a message wait, and goes with no window open. Until it goes it can be
 /// taken back, and bringing it back leaves it a draft.
-action send_later(d: Draft, at: Time) (icon: .clock, label: "Send later") {
+action send_later(d: Draft, at: Time) uses time (icon: .clock, label: "Send later") {
     require not d.sent or d.recalled "This message went already"
     require d.to != "" "It goes to nobody yet"
     require at > now "Pick a moment still to come"
@@ -463,7 +463,7 @@ action send_later(d: Draft, at: Time) (icon: .clock, label: "Send later") {
 
 /// Sends the message at nine tomorrow, the moment people reach for most when they write in the
 /// evening and do not want it to arrive then.
-action send_in_the_morning(d: Draft) (icon: .clock, label: "Send tomorrow morning") {
+action send_in_the_morning(d: Draft) uses time (icon: .clock, label: "Send tomorrow morning") {
     send_later(d, Time.parse("tomorrow 9am", near: now) ?? now + 18h)
 }
 
@@ -522,7 +522,7 @@ destructive action discard(m: Mail, d: Draft) (icon: .trash, label: "Delete draf
 /// outbox until the server took it; it is held back for the person's hold first, so they can
 /// take it back. The effect is an argument the action records, so the wait survives a window
 /// closing and an agent takes it back the same way.
-primary action send(d: Draft) proposal compose(d) (icon: .send) {
+primary action send(d: Draft) uses time proposal compose(d) (icon: .send) {
     require not d.sent or d.recalled "This message went already"
     require d.to != "" "It goes to nobody yet"
     let m = root Mail
@@ -549,7 +549,7 @@ action undo_send(d: Draft) (icon: .undo_2, label: "Undo send") {
 
 /// Answers the conversation with what was typed: the message goes to whoever wrote its newest,
 /// as a reply to it, quoted.
-action answer(t: Thread, body: Text) -> Draft (icon: .reply) {
+action answer(t: Thread, body: Text) -> Draft uses time (icon: .reply) {
     require body.len() > 0 "Say something first"
     let m = root Mail
     let last = t.messages.last()
@@ -597,7 +597,7 @@ fn place_title(m: Mail, query: Text) -> Text {
 /// list, a conversation in any account opening beside it; one account's window is its
 /// mailboxes as its places.
 view mail(m: Mail) {
-    lens account: Text = ""
+    state account: Text = ""
     if m.accounts.is_empty() {
         std.page(m) {
             ui.EmptyState("Add a mail account in Settings", icon: .mail)
@@ -612,7 +612,7 @@ view mail(m: Mail) {
 /// Every account's mail in one window: the unified inbox first, then each account's mail, and
 /// each account's own places under it. A conversation shows which account it came to.
 view unified(m: Mail) {
-    window query: Text = "is:inbox"
+    state query: Text = "is:inbox"
     let places = filters(Thread).filter(f -> f.toggle)
     let title = place_title(m, query)
     if let a = m.accounts.first() {
@@ -657,19 +657,7 @@ view unified(m: Mail) {
                 }
             }
             overview: {
-                if shown.is_empty() {
-                    ui.EmptyState("Nothing here", icon: .inbox)
-                } else {
-                    ui.VirtualList(selection_follows_focus: true, in_column: true) {
-                        on select(x: Thread): open(x, front: false).then(mark_read(x, false))
-                        on activate(x: Thread): open(x).then(mark_read(x, false))
-                        for x in shown {
-                            ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
-                                thread_row(x)
-                            }
-                        }
-                    }
-                }
+                thread_list(shown, fill)
             }
             content: {
                 ui.EmptyState("No conversation selected", icon: .mail)
@@ -684,7 +672,7 @@ view unified(m: Mail) {
 /// (`is:inbox`), so everyone looking sees the same list; it starts on the inbox. The person's
 /// labels come after the mailboxes, each showing the conversations it is on.
 view mailboxes(a: Account) {
-    window query: Text = "is:inbox"
+    state query: Text = "is:inbox"
     let m = root Mail
     let places = filters(Thread).filter(f -> f.toggle)
     let shown = a.threads.matching(query)
@@ -826,7 +814,7 @@ fn can_undo(d: Draft) -> Bool {
 /// A conversation's window: its subject, then every message in order with who wrote it, to
 /// whom and when, what it says and what came with it, and a reply at the foot.
 view conversation(t: Thread) {
-    lens draft: Text
+    state draft: Text
     ui.NavShell(content_kind: .page, title: t.subject) {
         content: {
             ui.Docked {
@@ -857,7 +845,7 @@ view conversation(t: Thread) {
 /// hover toolbar and the menu are the list item's: wherever the message's layout places them,
 /// the list runs them.
 view message(m: Message) {
-    lens quoting: Bool
+    state quoting: Bool
     let body = as_lines(m.body)
     let at = quote_begins(body)
     let said = if let i = at { body.slice(0, i) } else { body }

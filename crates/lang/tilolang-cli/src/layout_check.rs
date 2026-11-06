@@ -9,7 +9,7 @@
 
 mod audit;
 mod source;
-mod stage;
+pub(crate) mod stage;
 mod ux;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -196,6 +196,11 @@ pub struct Options {
     /// `shell` record): a shot of the shell's desk is `--root Desk`. None lays out the
     /// package's first root, as the launcher opens an app.
     pub root: Option<String>,
+    /// View states every window is staged at, as the app's own code names them
+    /// (`place=Task.today`, a filter of the type the state queries; `side=Side.right`, a case
+    /// of its enum): the place a window stands on before anyone picks, for a shot of a state
+    /// that is not the declaration's default.
+    pub states: Vec<String>,
     /// Key presses sent to each window before it is read, in order, as
     /// [`ui::headless::FrameHarness::key`] names them (`Tab`, `Down`, `Space`, or a chord that
     /// holds its modifiers for the press, `Shift+F10`): the layout a person reaches by
@@ -761,6 +766,7 @@ impl Worker<'_> {
             dump: self.options.dump,
             shots: self.options.shots.as_deref(),
             themes: &self.options.themes,
+            states: &self.options.states,
             keys: &self.options.keys,
             gathered: BTreeMap::new(),
             text: &mut self.text,
@@ -948,6 +954,7 @@ struct AppCheck<'a> {
     dump: Option<(u32, u32)>,
     shots: Option<&'a Path>,
     themes: &'a [String],
+    states: &'a [String],
     keys: &'a [String],
     gathered: BTreeMap<Identity, Finding>,
     /// Measures text as the window's pipeline does, for clipped text.
@@ -985,6 +992,7 @@ impl AppCheck<'_> {
             (first.size.width, first.size.height),
             ui::Theme::light(),
             unit.scene.root.as_deref(),
+            self.states,
         )
     }
 
@@ -1063,6 +1071,7 @@ impl AppCheck<'_> {
                     viewport,
                     layout.theme(),
                     unit.scene.root.as_deref(),
+                    self.states,
                 )?;
                 staged.lay_out_moving(viewport, layout.theme(), layout.input())?;
                 let found = {
@@ -1420,15 +1429,22 @@ mod windows {
         (app, packages)
     }
 
-    /// The tasks app and every package it uses, staged from `apps/tl/tasks`.
-    fn tasks_packages() -> Rc<stage::Packages> {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/tasks");
+    /// The app `name` and every package it uses, staged from `apps/tl/<name>`.
+    fn app_packages(name: &str) -> Rc<stage::Packages> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../apps/tl")
+            .join(name);
         let search = vec![dir.parent().expect("apps/tl").to_path_buf()];
-        let (built, platform) = super::build(&dir, &search).expect("the tasks app compiles");
+        let (built, platform) = super::build(&dir, &search).expect("the app compiles");
         Rc::new(stage::Packages(
             Rc::new(built.into_iter().map(|b| b.compiled).collect()),
             platform,
         ))
+    }
+
+    /// The tasks app and every package it uses, staged from `apps/tl/tasks`.
+    fn tasks_packages() -> Rc<stage::Packages> {
+        app_packages("tasks")
     }
 
     /// Every widget under `root` named `name`, with its rect, in drawing order.
@@ -1445,6 +1461,45 @@ mod windows {
         let mut out = Vec::new();
         all(root, name, &mut out);
         out
+    }
+
+    /// Every node of `kind` under `node`, in drawing order.
+    fn nodes<'a>(
+        node: &'a tilo_ui_host::UiNode,
+        kind: &str,
+        out: &mut Vec<&'a tilo_ui_host::UiNode>,
+    ) {
+        if node.kind == kind {
+            out.push(node);
+        }
+        for child in &node.children {
+            nodes(child, kind, out);
+        }
+    }
+
+    /// The change marks the rows of the window's lists draw, by the row they stand in.
+    fn row_marks(
+        rows: &std::collections::HashMap<String, tilo_ui_host::UiNode>,
+    ) -> Vec<tilo_ui_host::UiNode> {
+        let mut out = Vec::new();
+        for row in rows.values() {
+            let mut marks = Vec::new();
+            nodes(row, "ui.ChangeMark", &mut marks);
+            out.extend(marks.into_iter().cloned());
+        }
+        out
+    }
+
+    /// The mark a window's header carries: what changed in what it shows, and by whom.
+    fn window_mark(tree: &tilo_ui_host::UiNode) -> Option<tilo_ui_host::UiNode> {
+        let mut marks = Vec::new();
+        nodes(tree, "ui.ChangeMark", &mut marks);
+        marks
+            .into_iter()
+            .find(|mark| {
+                mark.props.get("window") == Some(&tilo_render_protocol::patch::Value::Bool(true))
+            })
+            .cloned()
     }
 
     /// The window's own tabs under `root`: the strip a `TabStrip` draws (it draws as the
@@ -1482,6 +1537,7 @@ mod windows {
             (1280, 800),
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the scenario stages");
         let root = staged.harness().root_widget();
@@ -1545,6 +1601,7 @@ mod windows {
             (1280, 800),
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the scenario stages");
         let frames = named(staged.harness().root_widget(), "WindowFrame");
@@ -1564,6 +1621,7 @@ mod windows {
             (1280, 800),
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the scenario stages");
         let group = named(grouped.harness().root_widget(), "WindowFrame");
@@ -1599,6 +1657,7 @@ mod windows {
             (1280, 800),
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the scenario stages");
         let frames = named(staged.harness().root_widget(), "WindowFrame");
@@ -1767,6 +1826,7 @@ mod windows {
                 (width, height),
                 ui::Theme::light().with_text_scale(text),
                 None,
+                &[],
             )
             .expect("the scenario stages");
             let mut controls = Vec::new();
@@ -1825,6 +1885,7 @@ mod windows {
                 (width, height),
                 ui::Theme::light().with_text_scale(text),
                 None,
+                &[],
             )
             .expect("the scenario stages");
             let mut controls = Vec::new();
@@ -1898,6 +1959,7 @@ mod windows {
             (320, 568),
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the scenario stages");
         let root = staged.harness().root_widget();
@@ -1973,6 +2035,7 @@ mod windows {
             size,
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the scenario stages");
         let input = if size.0 < 600 {
@@ -2063,6 +2126,7 @@ mod windows {
                 size,
                 ui::Theme::light(),
                 None,
+                &[],
             )
             .expect("the scenario stages");
             let input = if size.0 < 600 {
@@ -2127,6 +2191,7 @@ mod windows {
                 size,
                 ui::Theme::light(),
                 None,
+                &[],
             )
             .expect("the notes stage");
             let input = if size.0 < 600 {
@@ -2188,6 +2253,166 @@ mod windows {
     }
 
     #[test]
+    fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
+        // The marks a row and a window carry are read from the record's steps, which are the
+        // store's versions and the person's seen marks: a scenario staged for a capture is
+        // written down as a session writes it, or the capture shows nothing of what it staged.
+        tilo_ui_host::i18n::ensure();
+        ui::clock::freeze_for_capture();
+        let packages = tasks_packages();
+
+        let mut away = stage::Staged::over(
+            "so.tilo.lang.tasks",
+            &packages,
+            "while you were away",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+            &["place=Task.today".to_owned()],
+        )
+        .expect("the scenario stages");
+        away.lay_out(
+            (1280, 800),
+            ui::Theme::light(),
+            ui::interaction::InteractionEnvironment::POINTER,
+            1.0,
+        )
+        .expect("the app lays out");
+        let rows = row_marks(&away.rows());
+        // Bo took the mail and their agent moved the survey and finished the milk: the two in
+        // today's list are marked, the finished one's mark read where it stands now.
+        assert_eq!(
+            rows.len(),
+            2,
+            "the rows of the two tasks Bo and the agent changed are marked: {rows:?}"
+        );
+        for mark in &rows {
+            assert!(
+                matches!(
+                    mark.props.get("by"),
+                    Some(tilo_render_protocol::patch::Value::Principal(_))
+                ),
+                "a marked row says who changed it: {mark:?}"
+            );
+            assert!(
+                matches!(
+                    mark.props.get("kind"),
+                    Some(tilo_render_protocol::patch::Value::Text(_))
+                ),
+                "a marked row says what they did: {mark:?}"
+            );
+        }
+        let composed = away.composed().expect("the window composed its view");
+        let window = window_mark(&composed)
+            .unwrap_or_else(|| panic!("the window's header says what changed in it: {composed:?}"));
+        // Three: Bo's assign, and the agent's two, one of them the task that is in Done now.
+        assert!(
+            matches!(
+                window.props.get("count"),
+                Some(tilo_render_protocol::patch::Value::Int(3))
+            ),
+            "the window counts the three changes she has not seen: {window:?}"
+        );
+
+        let mut changed = stage::Staged::over(
+            "so.tilo.lang.tasks",
+            &packages,
+            "a task that changed since you looked",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        changed
+            .lay_out(
+                (1280, 800),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::POINTER,
+                1.0,
+            )
+            .expect("the app lays out");
+        let composed = changed.composed().expect("the window composed its view");
+        let window = window_mark(&composed).unwrap_or_else(|| {
+            panic!("the page of the task that changed says the change is unseen: {composed:?}")
+        });
+        assert!(
+            matches!(
+                window.props.get("count"),
+                Some(tilo_render_protocol::patch::Value::Int(1))
+            ),
+            "the page counts its one change: {window:?}"
+        );
+        assert!(
+            matches!(
+                window.props.get("by"),
+                Some(tilo_render_protocol::patch::Value::Principal(_))
+            ),
+            "the page names who changed it: {window:?}"
+        );
+    }
+
+    #[test]
+    fn a_message_someone_else_sent_is_marked_with_nothing_declared() {
+        // Marks are every resource's, for every type: a channel declares nothing about them,
+        // and a message Mia or Leo sent while the person looking was away is unseen, marked on
+        // its row where the conversation shows it.
+        tilo_ui_host::i18n::ensure();
+        ui::clock::freeze_for_capture();
+        let packages = app_packages("chat");
+        let mut channels = stage::Staged::over(
+            "so.tilo.lang.chat",
+            &packages,
+            "a team's channels",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        channels
+            .lay_out(
+                (1280, 800),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::POINTER,
+                1.0,
+            )
+            .expect("the app lays out");
+        let marks = row_marks(&channels.rows());
+        assert!(
+            marks.len() >= 3,
+            "the messages Mia and Leo sent are marked: {marks:?}"
+        );
+        let said_by = |mark: &tilo_ui_host::UiNode| match mark.props.get("by") {
+            Some(tilo_render_protocol::patch::Value::Principal(who)) => who.id.clone(),
+            other => panic!("a marked row says who sent it: {other:?}"),
+        };
+        let theirs: Vec<String> = marks.iter().map(said_by).collect();
+        assert!(
+            theirs
+                .iter()
+                .all(|who| who.starts_with("scenario:") && who != "ada"),
+            "a message someone else sent is what is marked, never the person's own: {theirs:?}"
+        );
+        let kinds: Vec<String> = marks
+            .iter()
+            .filter_map(|mark| match mark.props.get("kind") {
+                Some(tilo_render_protocol::patch::Value::Text(kind)) => Some(kind.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            kinds.len(),
+            marks.len(),
+            "a mark says what happened: {marks:?}"
+        );
+        assert!(
+            kinds.iter().any(|kind| kind == "created"),
+            "the messages they sent are marked as sent: {kinds:?}"
+        );
+    }
+
+    #[test]
     fn a_scenario_that_fails_is_said_rather_than_shown_empty() {
         tilo_ui_host::i18n::ensure();
         let (app, packages) = packages();
@@ -2198,6 +2423,7 @@ mod windows {
             (1280, 800),
             ui::Theme::light(),
             None,
+            &[],
         );
         let Err(why) = failed else {
             panic!("a scenario that does not run is an error");
@@ -2297,6 +2523,7 @@ mod board_lane {
             (1280, 800),
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the board stages");
         let root = staged.harness().root_widget();
@@ -2393,6 +2620,7 @@ mod board_lane {
             (864, 800),
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the board stages");
         let root = staged.harness().root_widget();
@@ -2473,6 +2701,7 @@ mod board_lane {
             (1280, 800),
             ui::Theme::light(),
             None,
+            &[],
         )
         .expect("the board stages");
         let root = staged.harness().root_widget();
