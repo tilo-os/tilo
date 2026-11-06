@@ -1042,23 +1042,17 @@ impl Workspace {
             .find(|preset| preset.name.eq_ignore_ascii_case(name.trim()))
             .cloned();
         let workspace = self.policy.workspace.clone();
-        let may = |node: &TreePath| {
-            authority.decide(node, roles::GOVERNANCE_KIND, &cx).answer == Answer::Allow
-        };
-        let on_set = preset
-            .as_ref()
-            .is_some_and(|preset| may(&preset_assign_node(&workspace, &preset.name)));
-        if !on_set
-            && !may(&roles::governance_action(
-                &workspace,
-                roles::governance::GRANT,
-            ))
-        {
-            let verdict = authority.decide(
-                &roles::governance_action(&workspace, roles::governance::GRANT),
-                roles::GOVERNANCE_KIND,
-                &cx,
-            );
+        let verdict = preset.as_ref().map_or_else(
+            || {
+                authority.decide(
+                    &roles::governance_action(&workspace, roles::governance::GRANT),
+                    roles::GOVERNANCE_KIND,
+                    &cx,
+                )
+            },
+            |preset| roles::assign_preset_verdict(authority, &workspace, &preset.name, &cx),
+        );
+        if verdict.answer != Answer::Allow {
             return Err(Refusal::NotPermitted(verdict.explain()).into());
         }
         let preset = preset.ok_or(PresetMutationError::NotFound)?;

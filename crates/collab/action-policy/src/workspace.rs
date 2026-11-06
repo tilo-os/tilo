@@ -524,8 +524,7 @@ impl WorkspacePolicy {
             return self.admit_action(actor, governance::GRANT, cx, approved);
         };
         self.check_not_held_off(actor, cx)?;
-        let node = roles::preset_assign_node(&self.workspace, set);
-        let verdict = actor.decide(&node, roles::GOVERNANCE_KIND, cx);
+        let verdict = roles::assign_preset_verdict(actor, &self.workspace, set, cx);
         Self::resolved(&verdict, approved)
     }
 

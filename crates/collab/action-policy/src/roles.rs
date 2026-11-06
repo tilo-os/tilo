@@ -3,7 +3,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Answer, Grant, GrantId, KindSet, Level, Lifetime, Role, Subject, TreePath};
+use crate::{
+    Answer, Authority, Context, Grant, GrantId, KindSet, Level, Lifetime, Role, Subject, TreePath,
+    Verdict,
+};
 
 /// The kind id of the workspace's own resource. Its actions are the workspace's
 /// governance: membership, roles, grants and settings.
@@ -146,6 +149,28 @@ pub fn preset_assign_node(workspace: &str, name: &str) -> TreePath {
         .field("presets")
         .item(name.trim().to_lowercase())
         .action("assign")
+}
+
+/// The verdict on `actor` assigning the saved grant set `set` in `workspace`:
+/// a grant on the set's assign node allows that set alone, and otherwise the
+/// workspace's grant action decides for every set, since assigning a set is
+/// granting what it holds.
+#[must_use]
+pub fn assign_preset_verdict<'g>(
+    actor: &Authority<'g>,
+    workspace: &str,
+    set: &str,
+    cx: &Context<'_>,
+) -> Verdict<'g> {
+    let on_set = actor.decide(&preset_assign_node(workspace, set), GOVERNANCE_KIND, cx);
+    if on_set.answer == Answer::Allow {
+        return on_set;
+    }
+    actor.decide(
+        &governance_action(workspace, governance::GRANT),
+        GOVERNANCE_KIND,
+        cx,
+    )
 }
 
 /// The set and rule a grant id assigns, when it places one of the workspace's
