@@ -130,7 +130,7 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - **What an effect is, and what is not one.** An effect is what a replay cannot compute again,
   so it is recorded on the invocation that read it: the clock and the person's zone (`now`,
   `today`, a time of no zone, `t.day()`, `t.time_of_day()`, a text parsed near a moment,
-  `next_at`, `at`, `std.complete`), a draw and a service outside Tilo. A filter's `today` is
+  `next_at`, `at`), a draw and a service outside Tilo. A filter's `today` is
   the query's input, read where the view is drawn: the query is answered again when the day
   turns (`ViewState::changes_at`), nothing is replayed, and the checker does not ask an action
   for `uses time` because a view it shows filters by a day. `t.day()` in a view is the same
@@ -546,12 +546,11 @@ search.md, "What a type declares" and "Types, references and paths".
   field), E101 (a type no filter compares), E102 (a named filter the index cannot keep), E103
   (an order the field does not have), E104 (repeated, hidden and filtered, a reserved key),
   each naming the type with its doc comment's first line.
-- **A filter's options are declared** with the annotation enum cases and actions take:
-  `filter done (icon: .circle_check)`, `filter "Today" = due <= today (icon: .star, count:
-  true)`. After a named filter's predicate the parenthesis would read as a call; one that names
-  only options is the filter's options. `icon:` is what its control shows beside its label, and
-  `count:` whether the place it makes shows how many items it holds. A filter that declares
-  neither has no icon and shows no count.
+- **A filter's option is declared** with the annotation enum cases and actions take:
+  `filter done (icon: .circle_check)`, `filter "Today" = due <= today (icon: .star)`. After a
+  named filter's predicate the parenthesis would read as a call; one that names only options is
+  the filter's options. `icon:` is what its control shows beside its label. A filter that
+  declares none has no icon.
 - **Named filters are predicates of the existing vocabulary.** They read fields with `not`,
   `and`, `or`, comparisons, `.len()` and `.is_empty()`. search.md's
   `attachments.count > 0` is written `not attachments.is_empty()` or
@@ -582,10 +581,9 @@ search.md, "What a type declares" and "Types, references and paths".
   view's metadata. `std.list`'s `window query: Text` holds the place chosen, as people type
   it in search (`is:done`); its places are `filters(T)`'s toggles after all of the items
   (`all`, named `everything:`, by default from the type's plural noun, `host.Meta.plural`: "All notes"); `place:` is
-  the place a window starts on, the state's default (Letters starts on `is:drafts`). A place shows a
-  count only where its filter declares `count: true` (`items.matching(p.query).len()`), never the
-  all place, a project's or one that declares none. The `filter:` and `count:` parameters are
-  gone.
+  the place a window starts on, the state's default (Letters starts on `is:drafts`). Its places
+  draw no badge: a count is a query of the app's own (`items.matching(p.query).len()`), which a
+  view that counts writes. The `filter:` and `count:` parameters are gone.
 - **A list groups by the key its caller gives.** `std.rows(group:)` takes `(T) -> Option<K>` and
   heads each run of items naming the same key with the key itself, as the platform presents a
   value of its kind — a day as Today, Tomorrow, a weekday; a word as it is written. Items that
@@ -712,16 +710,6 @@ search.md, "What a type declares" and "Types, references and paths".
   `.at(due, at)` places a reminder: from the instant of a timed item, or from the start of the
   due day for one without a time, so `PT9H` is 09:00 and `-PT15M` a quarter of an hour before
   midnight, both in the person's zone.
-- **`std.complete(item, done)` advances a repeating item in place.** An app writes one call and
-  its own `done` line (`let again = std.complete(t, done)` then `t.done = done and not again`):
-  the helper adds the completion day to the item's add-wins `Set<Date>` and moves the due day and
-  the time of day to the next occurrence, answering whether it repeats. The type's shape is the
-  contract, as `set`/`open` read their fields: one `std.Repeat` or `Option<std.Repeat>`, one
-  `Set<Date>` of the days it was completed, one `Date` or `Option<Date>` of the day it is due,
-  and at most one `Option<Time>` of the time of day. A type without them gets E118 naming the
-  field to declare, and a view or a function cannot call it (E040). Nothing happens for an item
-  that repeats nowhere or for `done = false`, so a check that does not repeat is the app's own
-  `done` write.
 - **A place the view supplies, and the commands only a view can offer.** An action parameter
   written `above: Option<T> (above)` is a *place*: the view offering the action fills it with
   what it shows there — `std.rows` and `std.outline` pass the item just over this one in its

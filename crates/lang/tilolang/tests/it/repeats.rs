@@ -1,10 +1,8 @@
 //! Repeats and reminders: both are held as their RFC 5545 text, written as a string literal, and
-//! `std.complete` advances an item in place so an app writes one call.
+//! read back as the day they come round again and the moment they remind.
 
 use crate::common::{codes, compile_body, compile_with};
 use tilolang::Diagnostic;
-
-const TASK: &str = "type Task {\n    title: Text (title)\n    done: Bool = false\n    due: Option<Date> = .none\n    at: Option<Time> = .none\n    repeats: Option<std.Repeat> (repeats: due) = .none\n    completed: Set<Date>\n}\n";
 
 fn messages(src: &str) -> Vec<Diagnostic> {
     let full = format!("app t.x \"X\"\n{src}\n");
@@ -171,68 +169,6 @@ fn two_repeats_compare_by_their_stored_text() {
 }
 
 #[test]
-fn completing_a_task_in_place_advances_it() {
-    assert_eq!(
-        codes(&format!(
-            "{TASK}action check(t: Task, done: Bool) uses time {{\n    let again = std.complete(t, done)\n    t.done = done and not again\n}}"
-        )),
-        Vec::<String>::new()
-    );
-    // Without the `Option`: the item repeats every time it is completed.
-    assert_eq!(
-        codes(
-            "type Task {\n    done: Bool = false\n    due: Option<Date> = .none\n    repeats: std.Repeat (repeats: due)\n    completed: Set<Date>\n}\naction check(t: Task, done: Bool) uses time {\n    let again = std.complete(t, done)\n    t.done = done and not again\n}"
-        ),
-        Vec::<String>::new()
-    );
-    // As the default of a boolean field, so the shape is a value and not a statement.
-    assert_eq!(
-        codes(&format!(
-            "{TASK}action check(t: Task) uses time {{\n    let repeated = std.complete(t, true)\n}}"
-        )),
-        Vec::<String>::new()
-    );
-}
-
-#[test]
-fn completing_needs_a_task_shaped_type_and_an_action() {
-    says(
-        "type T {\n    done: Bool\n}\naction a(t: T) uses time {\n    let b = std.complete(t, true)\n}",
-        "E118",
-        "std.complete",
-    );
-    says(
-        "type Task {\n    done: Bool\n    due: Option<Date>\n    repeats: Option<std.Repeat> (repeats: due)\n}\naction a(t: Task) uses time {\n    let b = std.complete(t, true)\n}",
-        "E118",
-        "completed",
-    );
-    says(
-        &format!(
-            "{TASK}view v(t: Task) {{\n    let again = std.complete(t, true)\n    text(\"x\")\n}}"
-        ),
-        "E040",
-        "cannot complete",
-    );
-    says(
-        &format!("{TASK}action a(t: Task) uses time {{\n    let b = std.complete(t)\n}}"),
-        "E022",
-        "std.complete",
-    );
-    says(
-        &format!(
-            "{TASK}action a(t: Task) uses time {{\n    let b = std.complete(t, true, false)\n}}"
-        ),
-        "E022",
-        "std.complete",
-    );
-    says(
-        &format!("{TASK}fn f(t: Task) -> Bool {{\n    return std.complete(t, true)\n}}"),
-        "E040",
-        "cannot complete",
-    );
-}
-
-#[test]
 fn what_a_repeat_compiles_to_is_valid_wasm() {
     use crate::common::validate;
     let cases = [
@@ -241,10 +177,6 @@ fn what_a_repeat_compiles_to_is_valid_wasm() {
         "type T {\n    due: Date\n    r: std.Repeat (repeats: due)\n    s: Text = \"\"\n}\naction a(t: T) {\n    t.s = t.r.label()\n}",
         "type T {\n    m: std.Reminder (reminds: due, at)\n    at: Option<Time>\n    due: Date\n    when: Option<Time>\n}\naction a(t: T) uses time {\n    t.when = .some(t.m.at(t.due, t.at))\n}",
         "type T {\n    due: Date\n    m: std.Reminder (reminds: due)\n    s: Text = \"\"\n}\naction a(t: T) {\n    t.s = t.m.label()\n}",
-        &format!(
-            "{TASK}action a(t: Task, done: Bool) uses time {{\n    let again = std.complete(t, done)\n    t.done = done and not again\n}}"
-        ),
-        "type T {\n    repeats: std.Repeat (repeats: due)\n    done: Bool = false\n    due: Option<Date> = .none\n    at: Time\n    completed: Set<Date>\n}\naction a(t: T, done: Bool) uses time {\n    let again = std.complete(t, done)\n    t.done = done and not again\n}",
     ];
     for src in cases {
         let wasm = compile_body(src).wasm;

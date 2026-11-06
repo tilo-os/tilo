@@ -107,11 +107,9 @@ impl Ctx<'_> {
         self.diags.push(Diagnostic::new(code, span, msg));
     }
 
-    /// A filter's options: `(icon: .x)` as an enum case's icon is written, and `(count: true)`
-    /// for the place it makes showing how many items it holds.
-    fn options(&mut self, opts: &[ast::ActionOpt]) -> (Option<String>, bool) {
+    /// A filter's options: `(icon: .x)` as an enum case's icon is written.
+    fn options(&mut self, opts: &[ast::ActionOpt]) -> Option<String> {
         let mut icon = None;
-        let mut count = false;
         for opt in opts {
             match (opt.name.name.as_str(), &opt.value.kind) {
                 ("icon", _) if icon.is_some() => {
@@ -132,20 +130,14 @@ impl Ctx<'_> {
                     opt.value.span,
                     "`icon:` takes an icon written with a dot, such as `icon: .circle`",
                 ),
-                ("count", ExprKind::Bool(shown)) => count = *shown,
-                ("count", _) => {
-                    self.err("E090", opt.value.span, "`count:` takes `true` or `false`");
-                }
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!(
-                        "a filter takes the options `icon:` and `count:`; `{other}:` is not one"
-                    ),
+                    format!("a filter takes the option `icon:`; `{other}:` is not one"),
                 ),
             }
         }
-        (icon, count)
+        icon
     }
 
     fn field(&mut self, name: &ast::Ident, what: &str) -> Option<&FieldInfo> {
@@ -197,7 +189,6 @@ impl Ctx<'_> {
             optional,
             many,
             icon: None,
-            count: false,
         })
     }
 
@@ -230,7 +221,6 @@ impl Ctx<'_> {
                 optional: false,
                 many: false,
                 icon: None,
-                count: false,
             }),
             Err((at, why)) => {
                 let msg = format!(
@@ -321,10 +311,9 @@ pub fn resolve(
     for entry in &block.entries {
         match &entry.kind {
             SearchEntryKind::Field { field, label, opts } => {
-                let (icon, count) = ctx.options(opts);
+                let icon = ctx.options(opts);
                 if let Some(mut filter) = ctx.field_filter(field, label.as_deref()) {
                     filter.icon = icon;
-                    filter.count = count;
                     push_filter(&mut ctx, &mut out, filter, entry.span);
                 }
             }
@@ -334,10 +323,9 @@ pub fn resolve(
                 expr,
                 opts,
             } => {
-                let (icon, count) = ctx.options(opts);
+                let icon = ctx.options(opts);
                 if let Some(mut filter) = ctx.named_filter(label, *label_span, expr) {
                     filter.icon = icon;
-                    filter.count = count;
                     push_filter(&mut ctx, &mut out, filter, entry.span);
                 }
             }
@@ -429,7 +417,6 @@ pub fn resolve(
                 optional,
                 many,
                 icon: None,
-                count: false,
             })
         })
         .collect();
@@ -486,7 +473,6 @@ pub fn defaults(info: &TypeInfo, env: &Env) -> SearchMeta {
             optional,
             many,
             icon: None,
-            count: false,
         });
     }
     out.sort = info

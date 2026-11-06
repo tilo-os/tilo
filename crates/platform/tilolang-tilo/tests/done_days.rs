@@ -116,8 +116,8 @@ fn done_stands_what_was_finished_under_the_day_it_was_finished() {
 /// change that finished it, read from the log, rather than under no day at all.
 #[test]
 fn a_task_finished_before_the_app_kept_its_moment_keeps_its_day() {
-    const BEFORE: &str = include_str!("tasks_before_subtasks/app.tl");
-    const BEFORE_IDS: &str = include_str!("tasks_before_subtasks/app.ids");
+    const BEFORE: &str = include_str!("tasks_before_done_at/app.tl");
+    const BEFORE_IDS: &str = include_str!("tasks_before_done_at/app.ids");
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(BEFORE, BEFORE_IDS)]);
     ada.host
         .runtime()

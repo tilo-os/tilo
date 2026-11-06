@@ -339,8 +339,8 @@ flow cleanup(list: todo.TodoList) -> Text {
 **Effects.** An action or flow whose body reads what a replay cannot compute again says so:
 `uses time` after its parameters, comma-separated when it reads more (`uses web, random`).
 Reading the clock or the person's zone anywhere in the body — `now`, `today`, a time of no
-zone, `t.day()`, `t.time_of_day()`, `Time.parse(...)`, `r.next_at(...)`, `std.complete` — is an
-error until it does (E121), and so is a `fn` or an action it calls that reads them. An
+zone, `t.day()`, `t.time_of_day()`, `Time.parse(...)`, `r.next_at(...)` — is an error until
+it does (E121), and so is a `fn` or an action it calls that reads them. An
 invocation records what it read in its journal: the moment and the zone once per invocation,
 and each draw and fetch with its answer as the language grows into them. The journal is kept beside the change an action makes, so history
 says what a change was made of; a flow that suspends and resumes reads the moment it started,
@@ -515,9 +515,7 @@ is an account of any service held as its URI: `std.Identifier("mailto:jane@x.com
 completed) and a reminder its trigger duration (`std.Reminder("-PT15M")`), both from a string
 literal. `.next(from, done_on)`, `.next_at(at, day)` and `.at(due, at)` read them in the
 person's zone, so a wall time of day survives a change of clocks, and `.label()` says what they
-do in the reader's words ("Every 2 weeks", "15 minutes before"). An action completes a repeating
-item in one call: `let again = std.complete(t, done)` adds the day to the item's
-`completed: Set<Date>` and moves `due` and `at` to the next occurrence.
+do in the reader's words ("Every 2 weeks", "15 minutes before").
 
 `query(T, in: x, filter: value, sort: .field_order)` lists the resources of `T` inside `x`
 that the filters hold of, a lazy list the index answers. Its arguments are `T`'s filters,
@@ -530,11 +528,11 @@ leave out `in:` and look across the workspace. A filter is a value: `Task.today`
 the type declares, `Task.project(p)` one with its value, and `items.matching(Task.today)`,
 `items.matching(Task.project(p), Task.done)` and `query(Task, in: x, Task.today)` ask them, no
 search text written. `filters(T)` lists the type's filters (`host.Filter`), each with the query
-choosing it asks, its label, icon, whether it is on or off and whether its place shows how many
-it holds; the filters that are on or off are what a list's places are, and a `ui.NavItem` given
-one, or a `ui.NavList` given the chosen one (`selected: place`), is keyed by it without the app
-writing a key. `items.matching("is:done due:-7d")` still asks the same of a list, written as
-people type it in search. A filter's fields also read as text (`f.query` is `is:today`), so a
+choosing it asks, its label, icon and whether it is on or off; the filters that are on or off
+are what a list's places are, and a `ui.NavItem` given one, or a `ui.NavList` given the chosen
+one (`selected: place`), is keyed by it without the app writing a key.
+`items.matching("is:done due:-7d")` still asks the same of a list, written as people type it in
+search. A filter's fields also read as text (`f.query` is `is:today`), so a
 window's search box and a query's own words stay one language. What a window shows beside its
 places is the app's own, drawn by its view: the projects a root holds under a heading that adds
 one, or any other list of it, in the window's own `ui.NavList`.

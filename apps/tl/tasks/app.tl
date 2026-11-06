@@ -66,17 +66,16 @@ type Task {
     derive subtasks_done: Int = children.count(done)
 
     search {
-        filter "Inbox" = project == .none and due == .none and not done (icon: .inbox, count: true)
+        filter "Inbox" = project == .none and due == .none and not done (icon: .inbox)
         // What waits for the person looking: what they picked for today, and what is due today
         // or late and theirs to do (or nobody's yet). A task due today that someone else holds
         // waits in their Today, not in this one.
         filter "Today" = not done
             and (picked
-                or due <= today
-                    and (assignee == .none or assignee == workspace.me)) (icon: .star, count: true)
+                or due <= today and (assignee == .none or assignee == workspace.me)) (icon: .star)
         filter "Upcoming" = due > today and not done (icon: .calendar)
         filter "Done" = done (icon: .circle_check)
-        filter "Assigned to me" = assignee == workspace.me and not done (icon: .user, count: true)
+        filter "Assigned to me" = assignee == workspace.me and not done (icon: .user)
         filter due
         filter project
         filter priority
@@ -87,14 +86,6 @@ type Task {
         hide subtasks
         hide subtasks_done
     }
-}
-
-/// One step of a task's checklist, from before a task's steps were tasks of their own.
-type Step {
-    title: Text (title)
-    done: Bool = false
-    /// The task it is a step of.
-    task: Task
 }
 
 /// A project: tasks that work towards one outcome.
@@ -116,8 +107,6 @@ type Tasks {
     /// Every task, in the order people put them.
     items: Collection<Task>
     projects: Collection<Project>
-    /// The steps of every task, before a task's steps were tasks of their own.
-    steps: Collection<Step> (previously)
     /// The sections of every project, each naming its project, in the order its board shows
     /// them.
     sections: Collection<Section>
@@ -137,31 +126,6 @@ default view project_list for Project
 views project_list (icon: .list), project_board (icon: .columns_2) for Project
 
 row view task_summary for Task
-
-/// Gives each step of a task from before steps were tasks a task of its own, under the task it
-/// was a step of, in the order it was in. A step whose task was removed becomes a task of its
-/// own, keeping what it said: the step was reachable before, through nothing but its checklist.
-migration action adopt_steps(tasks: Tasks) {
-    for s in tasks.steps {
-        // The task it was a step of, read only when it is still there: a removed task's fields
-        // cannot be read.
-        if let own = tasks.items.find(x -> x == s.task) {
-            let made = tasks.items.insert(
-                Task(
-                    title: s.title,
-                    done: s.done,
-                    parent: .some(own),
-                    project: own.project,
-                    section: own.section,
-                ),
-            )
-            let last = tasks.items.filter(x -> x.parent == .some(own) and x != made).last() ?? own
-            tasks.items.move(made, after: last)
-        } else {
-            tasks.items.insert(Task(title: s.title, done: s.done))
-        }
-    }
-}
 
 /// Adds what was typed in the entry at the end of a list as a task, to the inbox or to `p`, in
 /// the lane `s` of its board. The entry fills `title` with the words nothing else takes, and
@@ -630,10 +594,11 @@ view home(t: Tasks) {
         found.len() - t.items.matching(Task.project(p), Task.done).len()
     } else { found.len() }
     let all_done = open == 0
-    // A place that says `count: true` says how many it holds, when any do: a project's place
-    // is its own list, not a tally.
+    // The places whose badge says how many wait there, by key: what a person goes to, not the
+    // lists they read their way through. A project's place is its own list, not a tally.
+    let counted: List<Text> = ["inbox", "today", "assigned_to_me"]
     let header_count: Option<Int> = if let c = chosen {
-        if c.counts and found.len() > 0 { .some(found.len()) } else { .none }
+        if counted.any(k -> k == c.key) and found.len() > 0 { .some(found.len()) } else { .none }
     } else { .none }
     // The entry says where what is typed will go.
     let entry_placeholder = if let p = project {
@@ -650,7 +615,9 @@ view home(t: Tasks) {
         sidebar: {
             ui.NavList(selected: place) {
                 for f in side {
-                    let held = if f.counts { t.items.matching(f).len() } else { 0 }
+                    let held = if counted.any(k -> k == f.key) {
+                        t.items.matching(f).len()
+                    } else { 0 }
                     // A count of zero shows nothing: the badge says what waits.
                     ui.NavItem(
                         f,
@@ -965,8 +932,8 @@ scenario "a busy week" -> Task {
             assignee: .some(mia),
         ),
     )
-    // Checked off before the step under it was added: a list written by the version that kept
-    // steps apart, or a check made while someone else added that step. Clearing keeps the step.
+    // Checked off before the subtask under it was added: a check made while someone else added
+    // it. Clearing it keeps the subtask.
     let outline = tasks.items.insert(
         Task(title: "Outline", done: true, parent: .some(copy), project: launch),
     )
@@ -1046,8 +1013,8 @@ scenario "a task's subtasks" -> Task {
             assignee: .some(mia),
         ),
     )
-    // Checked off before the step under it was added: a list written by the version that kept
-    // steps apart, or a check made while someone else added that step. Clearing keeps the step.
+    // Checked off before the subtask under it was added: a check made while someone else added
+    // it. Clearing it keeps the subtask.
     let outline = tasks.items.insert(
         Task(title: "Outline", done: true, parent: .some(copy), project: launch),
     )

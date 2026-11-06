@@ -316,7 +316,7 @@ fn a_bad_declaration_is_an_error_that_names_the_type_by_its_doc() {
         (
             "        filter done (colour: .red)",
             "E090",
-            "takes the options `icon:` and `count:`",
+            "takes the option `icon:`",
         ),
         ("        filter done (icon: .nope)", "E090", "not an icon"),
         (
@@ -629,8 +629,8 @@ type Task {
     project: Option<Project> = .none
 
     search {
-        filter "Inbox" = project == .none and due == .none and not done (icon: .inbox, count: true)
-        filter "Today" = due <= today and not done (icon: .star, count: true)
+        filter "Inbox" = project == .none and due == .none and not done (icon: .inbox)
+        filter "Today" = due <= today and not done (icon: .star)
         filter "Upcoming" = due > today and not done (icon: .calendar)
         filter "Done" = done (icon: .circle_check)
         filter project
@@ -651,7 +651,7 @@ type Board {
 "#;
 
 #[test]
-fn a_named_filter_is_the_predicate_it_writes_and_says_whether_its_place_counts() {
+fn a_named_filter_is_the_predicate_it_writes() {
     let meta = compile_body(PLACES).meta;
     let task = type_meta(&meta, "Task");
     let keys: Vec<&str> = task.search.filters.iter().map(|f| f.key.as_str()).collect();
@@ -671,24 +671,18 @@ fn a_named_filter_is_the_predicate_it_writes_and_says_whether_its_place_counts()
             .unwrap_or_else(|| panic!("no filter {key}"));
         assert_eq!(filter.kind, FilterKind::Predicate, "{key}");
         assert!(filter.field.is_none(), "{key} is on no field");
-        (
-            filter.count,
-            filter.pred.clone().unwrap_or_else(|| panic!("{key}")),
-        )
+        filter.pred.clone().unwrap_or_else(|| panic!("{key}"))
     };
     // What is not sorted yet: open, filed under nothing and for no day.
     assert_eq!(
         place("inbox"),
-        (
-            true,
+        Pred::And(vec![
             Pred::And(vec![
-                Pred::And(vec![
-                    Pred::Not(Box::new(Pred::Present(project))),
-                    Pred::Not(Box::new(Pred::Present(due.clone()))),
-                ]),
-                Pred::Not(Box::new(open.clone())),
-            ])
-        )
+                Pred::Not(Box::new(Pred::Present(project))),
+                Pred::Not(Box::new(Pred::Present(due.clone()))),
+            ]),
+            Pred::Not(Box::new(open.clone())),
+        ])
     );
     let today = Operand::Clock {
         day: true,
@@ -696,64 +690,38 @@ fn a_named_filter_is_the_predicate_it_writes_and_says_whether_its_place_counts()
     };
     assert_eq!(
         place("today"),
-        (
-            true,
-            Pred::And(vec![
-                Pred::Cmp(CmpOp::Le, Operand::Field(due.clone()), today.clone()),
-                Pred::Not(Box::new(open.clone())),
-            ])
-        )
+        Pred::And(vec![
+            Pred::Cmp(CmpOp::Le, Operand::Field(due.clone()), today.clone()),
+            Pred::Not(Box::new(open.clone())),
+        ])
     );
     assert_eq!(
         place("upcoming"),
-        (
-            false,
-            Pred::And(vec![
-                Pred::Cmp(CmpOp::Gt, Operand::Field(due), today),
-                Pred::Not(Box::new(open)),
-            ])
-        )
+        Pred::And(vec![
+            Pred::Cmp(CmpOp::Gt, Operand::Field(due), today),
+            Pred::Not(Box::new(open)),
+        ])
     );
     assert_eq!(
         place("done"),
-        (
-            false,
-            Pred::Cmp(
-                CmpOp::Eq,
-                Operand::Field(done),
-                Operand::Lit(Lit::Bool(true))
-            )
+        Pred::Cmp(
+            CmpOp::Eq,
+            Operand::Field(done),
+            Operand::Lit(Lit::Bool(true))
         )
     );
-    // A field filter written beside them is still a field filter, counting nothing.
+    // A field filter written beside them is still a field filter.
     let project_filter = task.search.filter("project").expect("project");
-    assert!(!project_filter.count);
     assert_eq!(project_filter.kind, FilterKind::Reference);
 }
 
 #[test]
-fn a_filter_takes_the_options_icon_and_count() {
+fn a_filter_takes_the_option_icon() {
     let meta = compile_body(PLACES).meta;
     let task = type_meta(&meta, "Task");
     assert_eq!(
         task.search.filter("today").and_then(|f| f.icon.clone()),
         Some("star".to_owned())
-    );
-    let first = first_message(
-        r#"/// Something to do.
-type Todo {
-    title: Text (title)
-    done: Bool = false
-
-    search {
-        filter "Maybe" = not done (count: 3)
-    }
-}
-"#,
-    );
-    assert!(
-        first.contains("E090") && first.contains("`count:` takes `true` or `false`"),
-        "{first}"
     );
     let unknown = first_message(
         r"/// Something to do.
@@ -768,8 +736,7 @@ type Todo {
 ",
     );
     assert!(
-        unknown.contains("E090")
-            && unknown.contains("a filter takes the options `icon:` and `count:`"),
+        unknown.contains("E090") && unknown.contains("a filter takes the option `icon:`"),
         "{unknown}"
     );
 }
@@ -791,7 +758,6 @@ type Task {
     .meta;
     let task = type_meta(&meta, "Task");
     let filed = task.search.filter("filed").expect("filed");
-    assert!(!filed.count);
     assert_eq!(
         filed.pred,
         Some(Pred::Cmp(
@@ -859,7 +825,7 @@ type Shared {{
     assignee: Option<Principal> = .none
 
     search {{
-        filter \"Mine\" = assignee == workspace.me and not done (count: true)
+        filter \"Mine\" = assignee == workspace.me and not done
     }}
 }}
 "
@@ -867,7 +833,6 @@ type Shared {{
     .meta;
     let shared = type_meta(&meta, "Shared");
     let mine = shared.search.filter("mine").expect("mine");
-    assert!(mine.count);
     let pred = mine.pred.as_ref().expect("a predicate");
     let done = field_id(shared, "done");
     assert_eq!(

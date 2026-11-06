@@ -438,12 +438,6 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Bool",
                 "Whether it is on or off: a place of a list, a chip of search.",
             ),
-            (
-                "counts",
-                "Bool",
-                "Whether the place it makes shows how many items it holds: whether it declares \
-                 `count: true`.",
-            ),
         ],
     },
     ValueType {

@@ -11,13 +11,12 @@
 /// puts on its context menu and its swipe, a destructive one undone rather than confirmed; a
 /// command the app marked `frequent` a button of its own, never folded into a run; with no
 /// items it says `empty` and the bar keeps the type's actions. The places in the sidebar are
-/// the item type's filters that are on or off (`filters(T)`), after all of the items, each with
-/// how many it holds where its filter says `count: true`; the one chosen is the window's
-/// query, as people type it in search (`is:done`), and a window's state is the person's own, not
-/// the workspace's; a window starts on `place` (all of the items when empty). The place of all
-/// of the items is called `everything`, "All" and the item type's plural noun unless the app
-/// says. A `sort` view state is the bar's sort menu. Items whose type has a window of their own
-/// open in the next column; the list follows which one is open.
+/// the item type's filters that are on or off (`filters(T)`), after all of the items; the one
+/// chosen is the window's query, as people type it in search (`is:done`), and a window's state
+/// is the person's own, not the workspace's; a window starts on `place` (all of the items when
+/// empty). The place of all of the items is called `everything`, "All" and the item type's
+/// plural noun unless the app says. A `sort` view state is the bar's sort menu. Items whose
+/// type has a window of their own open in the next column; the list follows which one is open.
 view list<R, T, S>(
     of: R,
     items: List<T>,
@@ -50,14 +49,7 @@ view list<R, T, S>(
                         on select: set(query, "")
                     }
                     for p in places {
-                        // A count of zero shows nothing: the badge says what waits.
-                        let held = if p.counts { items.matching(p.query).len() } else { 0 }
-                        ui.NavItem(
-                            p.query,
-                            p.label,
-                            icon: p.icon,
-                            count: if held > 0 { .some(held) } else { .none },
-                        ) {
+                        ui.NavItem(p.query, p.label, icon: p.icon) {
                             on select: set(query, p.query)
                         }
                     }

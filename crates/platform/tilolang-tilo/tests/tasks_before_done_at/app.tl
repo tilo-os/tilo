@@ -50,14 +50,6 @@ type Task {
     }
 }
 
-/// One step of a task: a line of its checklist.
-type Step {
-    title: Text (title)
-    done: Bool = false
-    /// The task it is a step of.
-    task: Task
-}
-
 /// A project: tasks that work towards one outcome.
 type Project {
     name: Text (title)
@@ -79,9 +71,6 @@ type Tasks {
     /// Every task, in the order people put them.
     items: Collection<Task>
     projects: Collection<Project>
-    /// The steps of every task, each naming its task: a task's checklist is the run of its
-    /// steps, which the index answers without reading the others.
-    steps: Collection<Step>
     /// The sections of every project, each naming its project, in the order its board shows
     /// them.
     sections: Collection<Section>
@@ -96,8 +85,6 @@ default view task_page for Task
 default view project_page for Project
 
 row view task_row for Task
-
-row view step_row for Step
 
 /// Adds a task with this title to the inbox.
 action add(tasks: Tasks, title: Text) -> Task {
@@ -181,27 +168,6 @@ action prioritize(t: Task, priority: Priority) (icon: .flag) {
     t.priority = priority
 }
 
-/// Adds a step to a task's checklist.
-action add_step(tasks: Tasks, t: Task, title: Text) {
-    if title != "" {
-        tasks.steps.insert(Step(title: title, task: t))
-    }
-}
-
-/// Checks a step off, or opens it again.
-action check_step(s: Step, done: Bool = not s.done) (
-    label: if done { "Complete" } else { "Reopen" },
-    icon: .check,
-    on: s.done,
-) {
-    s.done = done
-}
-
-/// Removes a step from a task's checklist.
-destructive action remove_step(tasks: Tasks, s: Step) (icon: .trash) {
-    tasks.steps.remove(s)
-}
-
 /// Deletes a task.
 destructive action remove(tasks: Tasks, t: Task) (icon: .trash) {
     tasks.items.remove(t)
@@ -277,11 +243,6 @@ action move(tasks: Tasks, t: Task, after: Task) {
 /// Renames a project.
 action rename(p: Project, name: Text) {
     p.name = name
-}
-
-/// The steps of a task, in order.
-fn steps_of(t: Task) -> List<Step> {
-    tasks.steps.filter(s -> s.task == t)
 }
 
 /// The tasks of a project, in order.
@@ -471,15 +432,9 @@ view task_row(t: Task) {
     )
 }
 
-/// One step of a task's checklist: a checkbox for whether it is done, and what it is.
-view step_row(s: Step) {
-    row(s.title, checkbox: s.done)
-}
-
 /// A task's window: whether it is done and its title, when it is due, its project, how much it
-/// matters, who is doing it, its steps, its notes, and what happened to it.
+/// matters, who is doing it, its notes, and what happened to it.
 view task_page(t: Task) {
-    lens step: Text
     std.document(t) {
         row(gap: .related, align: .center) {
             checkbox(bind: t.done)
@@ -520,21 +475,6 @@ view task_page(t: Task) {
                     button(take(t))
                     button(assign(t))
                 }
-            }
-        }
-        section("Steps") {
-            let steps = steps_of(t)
-            if not steps.is_empty() {
-                ui.VirtualList {
-                    for s in steps {
-                        ui.ListItem(item: s) {
-                            step_row(s)
-                        }
-                    }
-                }
-            }
-            ui.TextInput(value: step, placeholder: "Add a step") {
-                on submit: add_step(tasks, t, step).then(set(step, ""))
             }
         }
         rich_input(bind: t.notes, placeholder: "Add notes")
@@ -586,9 +526,6 @@ scenario "a busy week" -> Task {
             notes: RichText("Lead with the offline editor, then sharing."),
         ),
     )
-    tasks.steps.insert(Step(title: "Outline", done: true, task: copy))
-    tasks.steps.insert(Step(title: "First draft", task: copy))
-    tasks.steps.insert(Step(title: "Screenshots", task: copy))
     tasks.items.insert(
         Task(title: "Check the pricing page on phones", project: launch, due: 2026-07-08),
     )
@@ -597,26 +534,6 @@ scenario "a busy week" -> Task {
         take(copy)
     }
     call
-}
-
-/// A launch post half written: its window, with the steps it was broken into, one done.
-scenario "a task's steps" -> Task {
-    let launch = tasks.projects.insert(Project(name: "Website launch"))
-    let copy = tasks.items.insert(
-        Task(
-            title: "Write the launch post",
-            project: launch,
-            due: 2026-07-06,
-            priority: .urgent,
-            notes: RichText("Lead with the offline editor, then sharing."),
-        ),
-    )
-    tasks.steps.insert(Step(title: "Outline", done: true, task: copy))
-    tasks.steps.insert(
-        Step(title: "First draft, with the quotes from the beta testers", task: copy),
-    )
-    tasks.steps.insert(Step(title: "Screenshots", task: copy))
-    copy
 }
 
 /// A week everyone has finished.

@@ -67,8 +67,8 @@ fn items(r: &Replica) -> Vec<Value> {
     }
 }
 
-/// A place as the sidebar draws it: its label, and the count it draws when its filter says
-/// `count: true` (the inbox's and today's).
+/// A place as the sidebar draws it: its label, and the count the sidebar itself works out for
+/// the places it counts (the inbox's and today's).
 pub(crate) type ShownPlace = (String, Option<i64>);
 
 /// A heading of the sidebar with the places under it, in the order they stand.
@@ -676,113 +676,6 @@ fn a_lanes_header_counts_the_cards_it_holds() {
             "the header of `{title:?}` counts the cards it holds"
         );
     }
-}
-
-/// A checklist written before a task's steps were tasks of their own opens with each step a
-/// subtask of the task it was a step of, in the checklist's order, and the migration runs once.
-#[test]
-fn a_checklist_written_before_subtasks_opens_as_subtasks() {
-    const BEFORE: &str = include_str!("tasks_before_subtasks/app.tl");
-    const BEFORE_IDS: &str = include_str!("tasks_before_subtasks/app.ids");
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(BEFORE, BEFORE_IDS)]);
-    let all = Value::resource(&ada.host.root_of(APP).unwrap());
-    ada.commit();
-    let copy = call(
-        &ada,
-        "add",
-        vec![all.clone(), Value::text("Write the launch post")],
-    );
-    ada.commit();
-    for title in ["Outline", "First draft", "Screenshots"] {
-        call(
-            &ada,
-            "add_step",
-            vec![all.clone(), copy.clone(), Value::text(title)],
-        );
-        ada.commit();
-    }
-    // Done, in the version that kept no note of which tasks fold.
-    call(&ada, "check", vec![copy.clone(), Value::Bool(true)]);
-    ada.commit();
-
-    // The same workspace, opened by the version that keeps subtasks.
-    let (mut later, _) = Replica::new("ada", ada.doc.fork(), &[(TASKS, TASKS_IDS)]);
-    later.host.sync_from(&later.doc);
-    assert_eq!(later.host.migrate(), 1, "the checklist migration runs");
-    for done in later.host.take_committed() {
-        later.apply(&done.action);
-    }
-    let tasks = items(&later);
-    let titles: Vec<Value> = tasks
-        .iter()
-        .map(|item| read(&later, item, "title"))
-        .collect();
-    assert_eq!(
-        titles,
-        [
-            Value::text("Write the launch post"),
-            Value::text("Outline"),
-            Value::text("First draft"),
-            Value::text("Screenshots"),
-        ],
-        "the task, then its checklist in order"
-    );
-    let of = target(&copy).expect("the task");
-    for step in &tasks[1..] {
-        assert_eq!(
-            target(&read(&later, step, "parent")),
-            Some(of.clone()),
-            "a step's task is under the task it was a step of"
-        );
-    }
-    assert_eq!(
-        read(&later, &tasks[1], "done"),
-        Value::Bool(false),
-        "a step keeps what it had"
-    );
-    assert_eq!(
-        read(&later, &tasks[0], "subtasks"),
-        Value::Int(3),
-        "the list counts the steps the migration made tasks under it"
-    );
-    assert_eq!(
-        read(&later, &tasks[0], "folded"),
-        Value::Bool(false),
-        "and it is not a finished branch: its steps are open"
-    );
-    assert_eq!(later.host.migrate(), 0, "the migration runs once");
-}
-
-/// A step outlived the task it was a step of: it opens as a task of its own, keeping what it
-/// said, rather than being lost or failing the migration.
-#[test]
-fn a_step_whose_task_was_removed_becomes_a_task_of_its_own() {
-    const BEFORE: &str = include_str!("tasks_before_subtasks/app.tl");
-    const BEFORE_IDS: &str = include_str!("tasks_before_subtasks/app.ids");
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(BEFORE, BEFORE_IDS)]);
-    let all = Value::resource(&ada.host.root_of(APP).unwrap());
-    ada.commit();
-    let gone = call(&ada, "add", vec![all.clone(), Value::text("Old task")]);
-    ada.commit();
-    call(
-        &ada,
-        "add_step",
-        vec![all.clone(), gone.clone(), Value::text("Its step")],
-    );
-    ada.commit();
-    call(&ada, "remove", vec![all, gone]);
-    ada.commit();
-
-    let (mut later, _) = Replica::new("ada", ada.doc.fork(), &[(TASKS, TASKS_IDS)]);
-    later.host.sync_from(&later.doc);
-    assert_eq!(later.host.migrate(), 1, "the steps migration runs");
-    for done in later.host.take_committed() {
-        later.apply(&done.action);
-    }
-    let tasks = items(&later);
-    assert_eq!(tasks.len(), 1, "the step stayed, as a task of its own");
-    assert_eq!(read(&later, &tasks[0], "title"), Value::text("Its step"));
-    assert_eq!(read(&later, &tasks[0], "parent"), Value::none());
 }
 
 /// The drawn row of the task held by `item`.

@@ -366,10 +366,6 @@ pub struct FilterMeta {
     /// (`filter done (icon: .circle_check)`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    /// Whether the place it makes shows how many of its items it holds, as its declaration says
-    /// (`filter "Today" = due <= today (count: true)`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub count: bool,
 }
 
 /// What a filter compares, and so the control it is.

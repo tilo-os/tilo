@@ -1231,8 +1231,8 @@ impl Resolver<'_> {
             }
             return Some(FieldRole::Previously);
         }
-        // The flag saying an item is finished: a place leaves it out of its count and folds it
-        // into its foot.
+        // The flag saying an item is finished: a list folds it into its foot, under the heading
+        // of the items done with.
         if word == "done" {
             if !marker.args.is_empty() {
                 self.err(

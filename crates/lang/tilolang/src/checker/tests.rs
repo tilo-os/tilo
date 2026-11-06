@@ -733,8 +733,8 @@ fn the_sort_is_a_menu_and_the_item_types_toggles_are_the_sidebars_places() {
     assert!(has(&calls, "node ui.NavList"), "the places: {calls:#?}");
     assert!(has(&calls, "node ui.MenuButton"), "the sort menu");
     // The places are the item type's filters, asked of the platform where the list expands;
-    // the list as the place chosen shows it, and each place's count, are queries the index
-    // answers, of the items the view passed once.
+    // the list as the place chosen shows it is the one query the index answers, of the items
+    // the view passed once. A place that shows a count asks that query itself.
     let note = ids.get("Note").expect("id").to_string();
     let mut filters = Vec::new();
     let mut queries = 0;
@@ -748,7 +748,10 @@ fn the_sort_is_a_menu_and_the_item_types_toggles_are_the_sidebars_places() {
         });
     }
     assert_eq!(filters, [Some(note)]);
-    assert!(queries >= 2, "the list and the places' counts: {queries}");
+    assert_eq!(
+        queries, 1,
+        "the list, and no count of the places: {queries}"
+    );
     let listed = m
         .funcs
         .iter()
@@ -766,7 +769,7 @@ fn the_sort_is_a_menu_and_the_item_types_toggles_are_the_sidebars_places() {
 
 #[test]
 fn a_filter_named_by_its_type_is_the_value_a_query_and_a_sidebar_take() {
-    const FILTERS: &str = "type Task {\n    title: Text (title)\n    done: Bool (done) = false\n    project: Option<Project> = .none\n    search {\n        filter \"Inbox\" = not done (count: true)\n        filter \"Done\" = done\n        filter project\n    }\n}\ntype Project {\n    name: Text (title)\n}\ntype Board {\n    tasks: Collection<Task>\n    projects: Collection<Project>\n}\n";
+    const FILTERS: &str = "type Task {\n    title: Text (title)\n    done: Bool (done) = false\n    project: Option<Project> = .none\n    search {\n        filter \"Inbox\" = not done (icon: .inbox)\n        filter \"Done\" = done\n        filter project\n    }\n}\ntype Project {\n    name: Text (title)\n}\ntype Board {\n    tasks: Collection<Task>\n    projects: Collection<Project>\n}\n";
     let view = "view board(b: Board) {\n    window place: Filter<Task> = Task.inbox\n    ui.NavList(selected: place) {\n        for f in filters(Task).filter(f -> f.toggle) {\n            ui.NavItem(f, f.label) {\n                on select: set(place, f)\n            }\n        }\n        for p in b.projects {\n            ui.NavItem(Task.project(p), p.name, icon: .folder) {\n                on select: set(place, Task.project(p))\n            }\n        }\n    }\n    for t in b.tasks.matching(place) {\n        text(t.title)\n    }\n}";
     let (m, ids) = lower(&format!("{FILTERS}{view}"));
     let task = ids.get("Task").expect("id").to_string();
