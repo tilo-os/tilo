@@ -1150,15 +1150,15 @@ workspace-notice-renamed = { $name } renamed the workspace to { $workspace }
 # they asked for, why, and the button that tries it again.
 answer-app-not-opened = { $app } could not open
 answer-app-stopped = { $app } stopped working
-answer-why-stopped = it was closed to keep the rest of the desktop running
+answer-why-stopped = It stopped unexpectedly.
 answer-app-closed-for-memory = { $app } was closed to free memory
 answer-app-closed-for-runaway = { $app } was using too much memory
-answer-why-runaway = it was closed to keep the rest of the desktop running
+answer-why-runaway = It was closed so the rest keeps running.
 answer-try-again = Try again
 answer-reopen = Reopen
-answer-why-unknown-app = this desktop does not know how to open it
-answer-why-not-opened = it ended before its window came
-answer-why-cannot-start = this desktop cannot start apps right now
+answer-why-unknown-app = No app here opens it.
+answer-why-not-opened = It was stopped before a window appeared.
+answer-why-cannot-start = Apps cannot be started right now.
 
 # The menu behind the top bar's Tilo mark, and the About sheet it opens
 tilo-menu-about = About this computer

@@ -1169,15 +1169,15 @@ workspace-notice-renamed = { $name } hat den Arbeitsbereich in { $workspace } um
 # gebeten hat: wonach gefragt wurde, warum, und die Taste, die es erneut versucht.
 answer-app-not-opened = { $app } konnte nicht geöffnet werden
 answer-app-stopped = { $app } funktionierte nicht mehr
-answer-why-stopped = wurde geschlossen, damit der Rest des Desktops weiterläuft
+answer-why-stopped = Es wurde unerwartet beendet.
 answer-app-closed-for-memory = { $app } wurde geschlossen, um Arbeitsspeicher freizugeben
 answer-app-closed-for-runaway = { $app } hat zu viel Arbeitsspeicher verbraucht
-answer-why-runaway = wurde geschlossen, damit der Rest des Desktops weiterläuft
+answer-why-runaway = Es wurde geschlossen, damit der Rest weiterläuft.
 answer-try-again = Erneut versuchen
 answer-reopen = Wieder öffnen
-answer-why-unknown-app = dieser Desktop weiß nicht, wie er sie öffnen soll
-answer-why-not-opened = es endete, bevor sein Fenster kam
-answer-why-cannot-start = dieser Desktop kann gerade keine Apps starten
+answer-why-unknown-app = Es gibt keine App, die das öffnet.
+answer-why-not-opened = Es wurde beendet, bevor ein Fenster erschien.
+answer-why-cannot-start = Apps können gerade nicht gestartet werden.
 
 # Das Menü hinter dem Tilo-Zeichen der oberen Leiste und das Info-Blatt, das es öffnet
 tilo-menu-about = Über diesen Computer
