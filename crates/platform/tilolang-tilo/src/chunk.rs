@@ -334,8 +334,24 @@ mod tests {
     }
 
     #[test]
-    fn a_record_written_before_chunks_names_none() {
-        let placement = Placement::read(&record());
+    fn a_record_written_before_chunks_opens_as_one_chunk() {
+        // A workspace written before chunks: its app's resources in the record's own map, and no
+        // manifest. It reads as one chunk with everything in it, in place.
+        let mut doc = record();
+        {
+            use automerge::transaction::Transactable as _;
+            let records = doc
+                .put_object(&automerge::ROOT, crate::action::RECORDS_KEY, ObjType::Map)
+                .expect("records");
+            let app = doc
+                .put_object(&records, "so.tilo.tasks", ObjType::Map)
+                .expect("app");
+            let issue = doc
+                .put_object(&app, "issue-1", ObjType::Map)
+                .expect("issue");
+            doc.put(&issue, "title", "Ship it").expect("title");
+        }
+        let placement = Placement::read(&doc);
         assert!(placement.is_empty());
         assert_eq!(placement.chunk("issue-1"), FIRST);
         assert_eq!(placement.next(), 1);
