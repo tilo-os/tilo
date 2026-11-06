@@ -13,6 +13,7 @@ use serde_json::Value as Json;
 use crate::abi::Imp;
 use crate::core::{Args, Core, HResult, ret_f64, ret_i32, ret_i64, ret_void, trap};
 use crate::engine::Wasm;
+use crate::error::RuntimeError;
 use crate::handles::FrameKind;
 use crate::ids::{ModuleHash, Principal};
 use crate::meta::{FieldKind, Ty};
@@ -275,6 +276,24 @@ impl Core {
             self.foreign.borrow().remember_waiting(&why);
         }
         why
+    }
+
+    /// Why a call of the view `view` of `app` failed — no loaded package declares it — and, for
+    /// a view of an app whose package this runtime does not hold, the ask that loads that app's
+    /// package ([`crate::Runtime::take_wanted_packages`]): the call draws its waiting state
+    /// where it stands and runs again when the package arrives
+    /// ([`crate::foreign::packages_key`]). A view of an app this runtime runs that declares
+    /// none is a fault.
+    pub(crate) fn missing_view(&self, app: &str, view: &str) -> RuntimeError {
+        let why = format!("view {view} of `{app}` is not declared by any loaded package");
+        // A view of an app whose package this runtime does not hold may come: ask for it, and
+        // the call waits rather than faults. One of an app loaded here is a mistake in the
+        // view, and stays a fault.
+        if !self.registry.borrow().holds_app(app) {
+            self.wanted_packages.borrow_mut().want_app(app);
+            self.foreign.borrow().remember_waiting(&why);
+        }
+        RuntimeError::NotFound(why)
     }
 
     pub(crate) fn ref_arg(&self, h: i32) -> HResult<RefValue> {

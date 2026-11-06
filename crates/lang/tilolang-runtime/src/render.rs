@@ -484,7 +484,20 @@ impl Core {
         if let Some(boundaries) = hook.as_deref_mut()
             && let Some(call) = self.view_call(&n.kind, &n.props, cx.offer, acc)
         {
-            return Self::foreign_view(cx, n, key, events, call?, walk, boundaries);
+            match call {
+                Ok(call) => {
+                    return Self::foreign_view(cx, n, key, events, call, walk, boundaries);
+                }
+                // A view call of an app whose package this runtime does not hold: the session
+                // publishes it, and until it comes the call waits where it stands, so the
+                // rest of the view draws. A call that failed for anything else is the
+                // caller's to report.
+                Err(error) if self.read_waited(&error) => {
+                    let waiting = self.waiting_rendered();
+                    return Ok(Self::waiting_view(n, key, events, acc, waiting));
+                }
+                Err(error) => return Err(error),
+            }
         }
         // A view call's keys are the same at every call site, so they go under the call's key.
         let calls = n.kind == "fragment" || n.kind.starts_with(FOREIGN_VIEW) || n.kind == SHOW;
@@ -582,6 +595,30 @@ impl Core {
             anchor: n.anchor.clone(),
             children,
         })
+    }
+
+    /// The fragment a view call waiting on another app's package stands for: its props without
+    /// the arguments passed, and the toolkit's waiting state where its tree would go. The call
+    /// runs again when the package arrives ([`crate::foreign::packages_key`]), which the
+    /// waiting state notes as read.
+    fn waiting_view(
+        n: &NodeBuild,
+        key: String,
+        events: std::collections::BTreeMap<String, Retained>,
+        acc: &mut Acc,
+        waiting: Rendered,
+    ) -> UiNode {
+        let mut props = n.props.clone();
+        props.retain(|name, _| !name.starts_with(ARG_PREFIX) && name != SHOWN);
+        UiNode {
+            kind: "fragment".to_owned(),
+            key,
+            props,
+            binding: n.binding.clone(),
+            events,
+            anchor: n.anchor.clone(),
+            children: vec![acc.absorb(waiting)],
+        }
     }
 
     /// The children of `n`, its loops' rows in their places, and how many there are: a
@@ -1036,7 +1073,8 @@ impl Core {
     }
 
     /// The view a `view:<app>:<view id>` node applies and its arguments, from the node's
-    /// `arg.<name>` properties.
+    /// `arg.<name>` properties. A view of an app whose package this runtime does not hold is
+    /// the ask for that package, and the call waits on it ([`Core::missing_view`]).
     pub(crate) fn call_of(
         &self,
         target: &str,
@@ -1045,7 +1083,9 @@ impl Core {
         let (app, view) = target
             .split_once(':')
             .ok_or_else(|| RuntimeError::Package(format!("malformed view node `{target}`")))?;
-        let vt = self.view_target(view)?;
+        let vt = self
+            .view_target(view)
+            .map_err(|_: RuntimeError| self.missing_view(app, view))?;
         let pkg: std::rc::Rc<Package> = self
             .registry
             .borrow()
