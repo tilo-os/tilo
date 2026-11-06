@@ -704,7 +704,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            labels.last().map(|label| label.clone()),
+            labels.last().cloned(),
             Some(Some("Leave workspace".to_owned())),
             "leaving goes last"
         );

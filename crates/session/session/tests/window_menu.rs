@@ -36,12 +36,16 @@ const KEY_F10: u32 = 68;
 const KEY_LEFT_META: u32 = 125;
 
 /// The rows the desk offers a lone window, in order.
-const ROWS: [&str; 14] = [
+const ROWS: [&str; 5] = [
     "Full screen",
     "Fill the strip",
-    "Move to strip",
-    "Move to workspace",
-    "Move to display",
+    "Width",
+    "New tab of this app",
+    "Close this window",
+];
+
+/// The shares a window can take, under their row.
+const WIDTHS: [&str; 7] = [
     "Half the strip",
     "Narrow",
     "Normal",
@@ -49,8 +53,6 @@ const ROWS: [&str; 14] = [
     "Every window the same",
     "Wider",
     "Narrower",
-    "New tab of this app",
-    "Close this window",
 ];
 
 fn window(id: u64, title: &str, app: &str) -> Tab {
@@ -144,14 +146,33 @@ fn menu(session: &Session) -> Value {
         .expect("the session publishes the window menu")
 }
 
-/// The labels of the menu's rows, in order; nothing while it is closed.
+/// The labels of the menu's rows, in order; nothing while it is closed. A
+/// rule between groups is not a row a person reads.
 fn labels(reading: &Value) -> Vec<String> {
     reading["rows"]
         .as_array()
         .expect("rows")
         .iter()
+        .filter(|row| row["separator"] != json!(true))
         .map(|row| row["label"].as_str().expect("a label").to_owned())
         .collect()
+}
+
+/// The labels under the row `id`, in order.
+fn under(reading: &Value, id: &str) -> Vec<String> {
+    reading["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|row| row["id"] == json!(id))
+        .and_then(|row| row["children"].as_array())
+        .map(|children| {
+            children
+                .iter()
+                .map(|child| child["label"].as_str().expect("a label").to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The window's tab as the session publishes it, or `None` while the menu is
@@ -190,11 +211,17 @@ fn super_f10_opens_the_window_in_fronts_menu_at_its_window() {
         ROWS,
         "with the desk's own rows, in its own order"
     );
+    assert_eq!(
+        under(&reading, "window-width"),
+        WIDTHS,
+        "and the shares the window can take under their row"
+    );
     assert!(
         reading["rows"]
             .as_array()
             .expect("rows")
             .iter()
+            .filter(|row| row["separator"] != json!(true))
             .all(|row| row["enabled"].is_boolean() && row["id"].is_string()),
         "every row says what choosing it does and whether it can be"
     );
@@ -362,25 +389,69 @@ fn the_menu_names_the_window_it_is_on_and_forgets_it_when_closed() {
 }
 
 #[test]
-fn a_row_the_window_cannot_choose_reads_with_its_reason() {
-    let mut session = session_with(desk_tree());
-    // A place with nowhere to go keeps its row, disabled with the reason,
-    // rather than vanishing: the menu reads the same for every window.
+fn the_menu_groups_what_it_offers_and_hides_places_there_are_none_of() {
+    let mut tree = desk_tree();
+    // The widest window cannot be widened: the row stays, and says why.
+    tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Wide;
+    let mut session = session_with(tree);
     session
         .invoke(WINDOW_MENU, "open", &args(&json!({ "tab": "20" })))
         .expect("the menu opens");
     let reading = menu(&session);
     let rows = reading["rows"].as_array().expect("rows");
+
+    // A rule between groups, never at either end and never two together.
+    let groups: Vec<&[Value]> = rows.split(|row| row["separator"] == json!(true)).collect();
+    assert_eq!(groups.len(), 4, "the rows read in groups: {reading}");
     assert!(
-        rows.iter().any(|row| row["enabled"] == json!(true)),
-        "the window offers what it can do: {reading}"
+        groups.iter().all(|group| !group.is_empty()),
+        "a rule stands between groups, not beside one: {reading}"
     );
+
+    // Every row that is not a rule shows the picture of what it does.
     assert!(
         rows.iter()
-            .filter(|row| row["enabled"] == json!(false))
-            .all(|row| row["reason"].is_string()),
-        "and says why for each it cannot: {reading}"
+            .filter(|row| row["separator"] != json!(true))
+            .all(|row| row["icon"].is_string()),
+        "each row carries its icon: {reading}"
     );
+
+    // The lone window has nowhere to move to, so the moves are not there at
+    // all rather than there and greyed out.
+    assert!(
+        rows.iter().all(|row| {
+            let id = row["id"].as_str().unwrap_or_default();
+            !id.starts_with("window-move-")
+        }),
+        "no move to offer, no move row: {reading}"
+    );
+
+    // A share the window cannot take is still offered, with its reason.
+    let cannot: Vec<&Value> = refused(rows);
+    assert!(
+        cannot.iter().any(|row| row["id"] == json!("window-wider")),
+        "the widest window cannot be widened: {reading}"
+    );
+    assert!(
+        cannot.iter().all(|row| row["reason"].is_string()),
+        "and says why for each share it cannot take: {reading}"
+    );
+}
+
+/// Every row of `rows` and of the submenus they open that the person cannot
+/// choose.
+fn refused(rows: &[Value]) -> Vec<&Value> {
+    rows.iter()
+        .flat_map(|row| {
+            let here =
+                (row["separator"] != json!(true) && row["enabled"] == json!(false)).then_some(row);
+            let below = row["children"]
+                .as_array()
+                .map(|children| refused(children))
+                .unwrap_or_default();
+            here.into_iter().chain(below).collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// A program that stands where a surface app would, without a window: what
