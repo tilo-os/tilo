@@ -1,6 +1,7 @@
 use super::*;
 use crate::component::{Bound, Described, Fired, Intent};
 use crate::headless::{FrameHarness, InspectionNode};
+use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 use crate::widget::{Column, Element};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -123,21 +124,328 @@ fn row_height_comes_from_measured_line_boxes_and_grows_with_text() {
     }
 }
 
+/// A dense row is a quiet reference under content: one line at the caption's size with the
+/// small glyph, as tall as that line and its inset rather than the list's row height, and a
+/// finger's press on one still grows it to its target.
 #[test]
-fn a_row_without_its_avatar_keeps_the_avatars_room() {
-    // A conversation with no messages yet has no last author to show; its text still lines up
-    // with that of the conversations that have one, at the same height.
+fn a_dense_row_is_its_caption_line_not_a_list_row() {
+    use crate::interaction::InteractionEnvironment;
+    let theme = Theme::dark();
+    let single = f64::from(theme.tokens.metrics.row_single);
+    let quiet = ListRowFace::new("The move flat on Saturday").dense();
+    assert!(
+        face_height(&quiet, 1.0) < single,
+        "a dense row stands under the list's row height"
+    );
+    assert!(
+        face_height(&ListRowFace::new("Water the plants"), 1.0)
+            - face_height(&ListRowFace::new("Water the plants").dense(), 1.0)
+            > f64::from(theme.tokens.spacing.rhythm.tight),
+        "the list's row height leaves it, not only its title's size"
+    );
+    assert!(
+        face_height(&quiet, 2.0) > face_height(&quiet, 1.0) * 1.5,
+        "a dense row grows with the text scale"
+    );
+
+    let row = || {
+        ListRow::new("made", "The move flat on Saturday")
+            .dense()
+            .on_activate(|| {})
+    };
+    for (name, input, want) in [
+        (
+            "a pointer",
+            InteractionEnvironment::POINTER,
+            face_height(&quiet, 1.0),
+        ),
+        (
+            "a finger",
+            InteractionEnvironment::TOUCH,
+            f64::from(InteractionEnvironment::TOUCH.minimum_collection_row()),
+        ),
+    ] {
+        let mut h = FrameHarness::for_root(
+            crate::State::new(),
+            Column::new().push(Box::new(row())),
+            (360, 200),
+            theme.clone(),
+        );
+        h.set_interaction_environment(input);
+        h.relayout_at((360, 200)).expect("layout");
+        let inspection = h.inspection();
+        let height = rect_of(find(&inspection.root, "ListRow").expect("the row")).height();
+        assert!(
+            (height - want).abs() < 0.5,
+            "a dense row is {want} tall as {name} shows it, not {height}"
+        );
+    }
+}
+
+#[test]
+fn a_quiet_word_before_the_title_shares_its_line_and_takes_its_room() {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let rect = Rect::new(0.0, 0.0, 200.0, 36.0);
+    let plain = ListRowFace::new("Book the van");
+    assert!(!plain.title_elided(rect, &mut text, &theme), "it fits");
+    assert!(
+        (face_height(&plain, 1.0) - face_height(&plain.clone().prefix("From"), 1.0)).abs() < 0.5,
+        "the word shares the title's line"
+    );
+    let long = ListRowFace::new("Book the van")
+        .prefix("From the message Bo sent about the move flat on Saturday morning");
+    assert!(
+        long.title_elided(rect, &mut text, &theme),
+        "the title keeps only the room the word leaves it"
+    );
+}
+
+#[test]
+fn a_row_without_its_avatar_leaves_no_room_for_one() {
+    // Facts are a flowing run: a row with no avatar takes no room for one, so the facts it
+    // has run on to the row's shared trailing edge instead of stopping at a hole.
     let outer = Rect::new(0.0, 0.0, 400.0, 56.0);
     let with = ListRowFace::new("Design")
         .secondary("See you there")
-        .leading(RowLeading::Avatar(AvatarFace::new("Ada", "ada")));
+        .meta("Thursday")
+        .avatar(AvatarFace::new("Ada", "ada"));
     let without = ListRowFace::new("Empty")
         .secondary("No messages yet")
-        .leading(RowLeading::AvatarSpace);
-    let bare = ListRowFace::new("Empty").secondary("No messages yet");
-    assert!((geometry(&with, outer).text_x - geometry(&without, outer).text_x).abs() < 0.01);
-    assert!(geometry(&bare, outer).text_x < geometry(&without, outer).text_x);
-    assert!((face_height(&with, 1.0) - face_height(&without, 1.0)).abs() < 0.01);
+        .meta("Thursday");
+    let with = geometry(&with, outer);
+    let without = geometry(&without, outer);
+    let avatar = with.avatar.expect("the row shows the face");
+    assert!(without.avatar.is_none());
+    assert!(
+        with.meta_right < avatar.x0,
+        "the day stands before the face: {with:?}"
+    );
+    assert!(
+        (without.meta_right - avatar.x1).abs() < 0.01,
+        "with no avatar the day ends on the facts' shared edge: {without:?} beside {with:?}"
+    );
+}
+
+#[test]
+fn a_cards_facts_run_on_without_the_room_of_those_it_has_not() {
+    let theme = Theme::dark();
+    let m = RowMetrics::card(&theme);
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let outer = Rect::new(0.0, 0.0, 320.0, 57.0);
+    // A day and a flag, nobody assigned: the flag follows the day one spacing token on,
+    // with no empty slot where the avatar would stand.
+    let face = ListRowFace::new("Measure the new bedroom")
+        .card()
+        .meta("Saturday")
+        .mark(Icon::Flag);
+    let geo = face.geometry(outer, &m, &mut text, &theme);
+    assert!(geo.avatar.is_none(), "{geo:?}");
+    let marks = geo.marks_right.expect("the flag");
+    assert!(
+        (marks - m.mark - (geo.meta_right + m.tag_gap)).abs() < 0.01,
+        "the flag follows the day one spacing token on: {geo:?}"
+    );
+}
+
+#[test]
+fn a_card_without_facts_has_no_facts_line() {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let m = RowMetrics::card(&theme);
+    let bare = ListRowFace::new("Measure the new bedroom").card();
+    let with_facts = ListRowFace::new("Measure the new bedroom")
+        .card()
+        .meta("Saturday");
+    let facts = RowMetrics::line(&mut text, &m.meta);
+    let tight = f64::from(theme.tokens.spacing.rhythm.tight);
+    let difference = with_facts.height(&mut text, &theme) - bare.height(&mut text, &theme);
+    assert!(
+        (difference - facts - tight).abs() < 0.5,
+        "a card grows by its facts line and nothing when it has none: it grew {difference} \
+         (facts {facts}, gap {tight}, bare {}, with {})",
+        bare.height(&mut text, &theme),
+        with_facts.height(&mut text, &theme)
+    );
+}
+
+#[test]
+fn a_card_wraps_its_title_up_to_three_lines_and_cuts_only_past_what_fits() {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    // The narrowest room a lane gives a card.
+    let width = f64::from(crate::widget::CardWidth::Regular.min_width(&theme));
+    let lines = |text: &mut TextRenderer, title: &str| {
+        ListRowFace::new(title)
+            .card()
+            .meta("Thursday")
+            .card_title_lines(width, text, &theme)
+    };
+    let height = |text: &mut TextRenderer, title: &str, lines: u8| {
+        ListRowFace::new(title)
+            .card()
+            .title_lines(lines)
+            .meta("Thursday")
+            .height(text, &theme)
+    };
+    // A title that fits keeps one line: a card never cuts what it can show.
+    assert_eq!(lines(&mut text, "Book the van"), 1);
+    // A longer one takes the lines it needs, and its card grows to hold them.
+    let long = "Order boxes, tape and bubble wrap for the kitchen, the bedroom and the hallway";
+    let wrapped = lines(&mut text, long);
+    assert!(
+        (2..=CARD_TITLE_LINES).contains(&wrapped),
+        "a long title takes {wrapped} lines"
+    );
+    let one = height(&mut text, "Book the van", 1);
+    let several = height(&mut text, long, wrapped);
+    assert!(
+        (44.0..=56.0).contains(&one),
+        "a card of one title line and its facts is {one} tall"
+    );
+    assert!(
+        several > one,
+        "a card as tall as its title's lines: {several} for {wrapped}, {one} for one"
+    );
+    // Past three lines it is cut, and its card is no taller than three lines make it.
+    let endless = "Words ".repeat(80);
+    assert_eq!(lines(&mut text, &endless), CARD_TITLE_LINES);
+    assert!(
+        (height(&mut text, &endless, CARD_TITLE_LINES) - height(&mut text, long, 3)).abs() < 0.01,
+        "a title past three lines stands in the room three take"
+    );
+}
+
+#[test]
+fn a_cards_facts_stand_under_its_title_from_where_its_text_begins() {
+    let theme = Theme::dark();
+    let m = RowMetrics::card(&theme);
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let outer = Rect::new(0.0, 0.0, 264.0, 57.0);
+    let face = ListRowFace::new("Order boxes and tape")
+        .card()
+        .leading(RowLeading::Checkbox { checked: false })
+        .meta("Thursday")
+        .mark(Icon::Flag)
+        .mark_tone(Tone::Warning);
+    let geo = face.geometry(outer, &m, &mut text, &theme);
+    let line = RowMetrics::line(&mut text, &face.title_style(&m));
+    // The facts stand on one line under the title, read from where the title's text begins —
+    // the day, then the flag — not spread across the card's width.
+    assert!(
+        (geo.meta_left - geo.text_x).abs() < 0.01,
+        "the facts start at the title's text: {geo:?}"
+    );
+    let marks = geo.marks_right.expect("the flag");
+    assert!(geo.meta_right <= marks, "the day stands before the flag");
+    assert!(
+        geo.facts_cy > outer.y0 + m.pad_y + line,
+        "the facts stand under the title's line: {geo:?}"
+    );
+    assert!(
+        geo.facts_cy <= outer.y1 - m.pad_y,
+        "the facts stand inside the card"
+    );
+    // The checkbox hangs on the title's first line, not centred on the card.
+    let first_cy = face.card_content_top(outer, &m, &mut text, &theme) + line / 2.0;
+    assert!(
+        (geo.leading.center().y - first_cy).abs() < 0.01,
+        "the checkbox stands on the title's first line: {:?}",
+        geo.leading
+    );
+    assert!(
+        (first_cy - outer.center().y).abs() > 0.5,
+        "the card holds more room than its content, and the line is not the card's middle"
+    );
+}
+
+/// A card that a finger's target made taller than its one line centres that line in it: the
+/// text never hangs under the top padding with dead space below.
+#[test]
+fn a_card_grown_to_a_fingers_target_centres_its_single_line() {
+    let theme = Theme::dark();
+    let m = RowMetrics::card(&theme);
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let face = ListRowFace::new("Screenshots for the docs").card();
+    let line = RowMetrics::line(&mut text, &face.title_style(&m));
+    let natural = face.height(&mut text, &theme);
+    let touch =
+        f64::from(crate::interaction::InteractionEnvironment::TOUCH.minimum_collection_row());
+    assert!(touch > natural, "a finger's target grows a one-line card");
+    let grown = Rect::new(0.0, 0.0, 264.0, touch);
+    let top = face.card_content_top(grown, &m, &mut text, &theme);
+    assert!(
+        (top + line / 2.0 - grown.center().y).abs() < 0.5,
+        "the title's line is centred in the grown card: {top} in {touch}"
+    );
+    // The natural card starts its text under its own padding: centring adds nothing where
+    // the card is only as tall as the text it holds.
+    let snug = Rect::new(0.0, 0.0, 264.0, natural);
+    let top = face.card_content_top(snug, &m, &mut text, &theme);
+    assert!(
+        (top - (snug.y0 + m.pad_y)).abs() < 0.5,
+        "a card that fits its text keeps its padding: {top}"
+    );
+    // A leading checkbox hangs on the centred line, as it hangs on the title's line.
+    let boxed = ListRowFace::new("Screenshots for the docs")
+        .card()
+        .leading(RowLeading::Checkbox { checked: false });
+    let geo = boxed.geometry(grown, &m, &mut text, &theme);
+    assert!(
+        (geo.leading.center().y - grown.center().y).abs() < 0.5,
+        "the checkbox centres with the line: {:?}",
+        geo.leading
+    );
+}
+
+#[test]
+fn a_rows_facts_stand_in_one_column_in_a_fixed_order() {
+    let theme = Theme::dark();
+    let m = RowMetrics::new(&theme);
+    let mut text = TextRenderer::new();
+    let outer = Rect::new(0.0, 0.0, 560.0, 44.0);
+    let face = ListRowFace::new("Call the landlord about the boiler")
+        .meta("Today 09:00")
+        .avatar(AvatarFace::new("Ada", "ada"))
+        .value("2/5")
+        .count(3)
+        .mark(Icon::Flag)
+        .mark_tone(Tone::Warning);
+    let geo = face.geometry(outer, &m, &mut text, &theme);
+    let avatar = geo.avatar.expect("who is on it, in the facts");
+    // When it is due, who is on it, how far it has got, how important it is: left to right,
+    // and the title ends before the column starts.
+    assert!(
+        geo.meta_right <= avatar.x0,
+        "the due fact stands left of the face: {geo:?}"
+    );
+    assert!(geo.text_right < geo.meta_right, "{geo:?}");
+    let count = geo.count_right.expect("the count's pill");
+    assert!(avatar.x1 <= count, "{geo:?}");
+    let marks = geo.marks_right.expect("the priority mark");
+    assert!(count <= marks, "{geo:?}");
+    assert!(
+        (geo.value_right - (outer.x1 - m.bleed)).abs() < 0.01,
+        "the last fact ends on the row's content edge"
+    );
+    assert!(marks <= geo.value_right, "a value keeps the edge: {geo:?}");
+    // The facts column ends on one edge down a list, whatever each row's facts say.
+    let other = ListRowFace::new("Water the plants")
+        .meta("Jun 30")
+        .avatar(AvatarFace::new("Grace", "grace"))
+        .value("12/5")
+        .mark(Icon::Star);
+    let other = other.geometry(outer, &m, &mut text, &theme);
+    assert!((other.value_right - geo.value_right).abs() < 0.01);
+    // A row whose facts end earlier keeps that same edge.
+    let bare = ListRowFace::new("Water the plants").meta("Jun 30");
+    let bare = bare.geometry(outer, &m, &mut text, &theme);
+    assert!((bare.meta_right - geo.value_right).abs() < 0.01, "{bare:?}");
 }
 
 #[test]
@@ -236,26 +544,101 @@ fn hover_actions_replace_the_meta_but_not_the_value() {
     );
 }
 
+/// Assistive technology reaches a row's actions without hovering it: each
+/// button says where it stands, in the slot the row keeps for it.
 #[test]
-fn the_meta_and_count_narrow_only_their_own_line() {
+fn a_rows_actions_say_where_they_stand_without_a_hover() {
+    let theme = Theme::dark();
+    let rect = Rect::new(0.0, 0.0, 400.0, 48.0);
+    let mut row = ListRow::new("note-1", "Ada")
+        .action(Icon::Plus, "New note under Ada", || {})
+        .action(Icon::MoreHorizontal, "More actions for Ada", || {});
+    row.metrics = Some(RowMetrics::new(&theme));
+    row.theme = Some(theme.clone());
+    row.rect = rect;
+    let node = Widget::accessibility(&row).unwrap();
+    let buttons: Vec<_> = node
+        .children
+        .iter()
+        .filter(|child| {
+            child
+                .action_target
+                .as_deref()
+                .is_some_and(|target| target.contains("/action/"))
+        })
+        .collect();
+    assert_eq!(buttons.len(), 2, "one button per action");
+    assert!(
+        row.action_rects().is_empty(),
+        "the row is at rest: it shows no action"
+    );
+    // The band the row's own controls are hit-tested and published in.
+    let band = row.text_band();
+    let slots = row.with_face(|face| {
+        face.clone()
+            .interaction(hovered())
+            .action_rects(band, &theme)
+    });
+    let bounds: Vec<Rect> = buttons
+        .iter()
+        .map(|button| match button.bounds {
+            Some(bounds) => bounds.to_rect(),
+            None => panic!("an action a reader can press says where it stands"),
+        })
+        .collect();
+    assert_eq!(bounds.len(), slots.len());
+    for (bounds, slot) in bounds.iter().zip(&slots) {
+        assert!(
+            (bounds.x0 - slot.x0).abs() < 0.01 && (bounds.x1 - slot.x1).abs() < 0.01,
+            "the hovered row shows the action where its button stands: {bounds:?} vs {slot:?}"
+        );
+    }
+}
+
+/// A row says where its actions stand through the capability a list asks it for, so the list
+/// reports the place without knowing the kind of row its host built.
+#[test]
+fn a_row_says_where_its_actions_stand() {
+    let theme = Theme::dark();
+    let rect = Rect::new(0.0, 0.0, 400.0, 48.0);
+    let mut row = ListRow::new("note-1", "Ada")
+        .selected(true)
+        .action(Icon::Trash, "Delete", || {});
+    // A touch pointer has no hover: the selected row shows its action.
+    row.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+    row.metrics = Some(RowMetrics::new(&theme));
+    row.theme = Some(theme.clone());
+    row.rect = rect;
+    let rects = crate::widget::capability::capability::<dyn crate::widget::RowActionRects>(&row)
+        .expect("the row answers where its actions stand")
+        .row_action_rects();
+    assert_eq!(rects.len(), 1, "one action, where the row shows it");
+    assert!(rect.contains(rects[0].center()), "{rect:?} vs {rects:?}");
+    assert_eq!(rects, row.action_rects(), "the same place it paints");
+}
+
+#[test]
+fn the_text_ends_before_the_rows_facts() {
     let rect = Rect::new(0.0, 0.0, 400.0, 64.0);
-    let face = ListRowFace::new("Ada Lovelace")
-        .secondary("A preview that runs the full width of the row")
-        .meta("Yesterday");
-    let geo = geometry(&face, rect);
+    let bare =
+        ListRowFace::new("Ada Lovelace").secondary("A preview that runs the full width of the row");
+    let geo = geometry(&bare, rect);
+    let bare_right = geo.text_right;
     assert!(
-        geo.title_right < geo.text_right,
-        "the meta narrows the title"
+        (geo.title_right - geo.text_right).abs() < 0.01
+            && (geo.second_right - geo.text_right).abs() < 0.01,
+        "a row with no facts keeps the row's width"
+    );
+    let facts = bare.clone().meta("Yesterday").count(4);
+    let geo = geometry(&facts, rect);
+    assert!(geo.title_right < bare_right, "the facts narrow the title");
+    assert!(
+        (geo.second_right - geo.title_right).abs() < 0.01,
+        "the preview ends where the title does, before the column"
     );
     assert!(
-        (geo.second_right - geo.text_right).abs() < 0.01,
-        "the preview keeps the full width"
-    );
-    let thread = face.clone().count(4);
-    let geo = geometry(&thread, rect);
-    assert!(
-        geo.second_right < geo.text_right,
-        "a count narrows the line under the title"
+        geo.title_right <= geo.meta_left + 0.01,
+        "no line runs into the facts' room"
     );
 }
 
@@ -390,6 +773,38 @@ fn toned_meta_spans_stay_legible_on_the_ground_and_the_lift() {
 }
 
 #[test]
+fn a_priority_tones_the_mark_and_the_trailing_fact() {
+    let props = ListRowProps {
+        key: "plants".to_owned(),
+        title: "Water the plants".to_owned(),
+        mark: Some(crate::icons::Icon::Flag),
+        tone: Tone::Danger,
+        meta: Some("Jul 2".to_owned()),
+        meta_tone: Tone::Warning,
+        ..ListRowProps::default()
+    };
+    let row = <ListRow as Described>::from_props("plants", props);
+    assert_eq!(row.mark, Some(crate::icons::Icon::Flag));
+    assert_eq!(row.mark_tone, Tone::Danger, "the mark and the box's ring");
+    assert_eq!(
+        row.meta_spans,
+        vec![("Jul 2".to_owned(), Tone::Warning)],
+        "the trailing fact reads in the tone it was given"
+    );
+    // A row no tone is given paints its mark as its quiet ink, and its fact plainly.
+    let props = ListRowProps {
+        key: "plain".to_owned(),
+        title: "Water the plants".to_owned(),
+        mark: Some(crate::icons::Icon::Flag),
+        meta: Some("Jul 2".to_owned()),
+        ..ListRowProps::default()
+    };
+    let row = <ListRow as Described>::from_props("plain", props);
+    assert_eq!(row.mark_tone, Tone::Neutral);
+    assert!(row.meta_spans.is_empty());
+}
+
+#[test]
 fn every_leading_kind_paints_in_its_column_and_titles_line_up() {
     let theme = Theme::dark();
     let mut text = TextRenderer::new();
@@ -484,6 +899,37 @@ fn accessibility_names_the_badge_and_reads_parts_and_actions() {
     let node = Widget::accessibility(&row).unwrap();
     assert_eq!(node.name.as_deref(), Some("Build server"));
     assert_eq!(node.description.as_deref(), Some("SSH"));
+}
+
+#[test]
+fn an_item_nobody_has_named_shows_a_muted_placeholder_and_is_spoken_by_it() {
+    let untitled = crate::i18n::I18nManager::lookup_plain("list-row-untitled");
+    assert_ne!(untitled, "list-row-untitled", "the placeholder is a phrase");
+    assert!(
+        !untitled.is_empty(),
+        "a row of an item nobody has named yet shows words"
+    );
+    // The row paints, so it is visible and pressable, and is announced by the placeholder.
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let mut scene = Scene::new();
+    let row = ListRow::new("r", "");
+    ListRowFace::new("").paint(
+        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+        Rect::new(0.0, 0.0, 320.0, 40.0),
+    );
+    assert!(
+        !scene.encoding().resources.glyph_runs.is_empty(),
+        "an empty title paints its placeholder"
+    );
+    let node = Widget::accessibility(&row).unwrap();
+    assert_eq!(node.name.as_deref(), Some(untitled.as_str()));
+
+    // A title with nothing but space is no name either; one that says something is itself.
+    let node = Widget::accessibility(&ListRow::new("r", "  ")).unwrap();
+    assert_eq!(node.name.as_deref(), Some(untitled.as_str()));
+    let node = Widget::accessibility(&ListRow::new("r", "Groceries")).unwrap();
+    assert_eq!(node.name.as_deref(), Some("Groceries"));
 }
 
 #[test]
@@ -1205,6 +1651,37 @@ fn a_bound_rows_checkbox_follows_a_check_made_elsewhere() {
     );
 }
 
+/// A row checked off reads as done with: its title struck through and in the weaker ink, as a
+/// row of an item that left reads. The box says it, so the row says it too, and a row whose
+/// item came back says it no more.
+#[test]
+fn a_checked_rows_title_is_struck_through_and_muted() {
+    let face_strikes = |row: &ListRow| row.with_face(|face| face.struck);
+    let mut row = ListRow::new("milk", "Buy oat milk").checkbox(false, |_| {});
+    assert!(!face_strikes(&row), "an unchecked row's title is plain");
+    press_leading_checkbox(&mut row);
+    assert!(
+        face_strikes(&row),
+        "a checked row's title is struck through and drawn in the weaker ink"
+    );
+    press_leading_checkbox(&mut row);
+    assert!(!face_strikes(&row), "a reopened row's title is plain again");
+    assert!(
+        face_strikes(&ListRow::new("stale", "Old errand").struck()),
+        "a row of a removed item is struck the same way"
+    );
+}
+
+#[test]
+fn a_toned_meta_is_spoken_once() {
+    // A late day draws as a span in the danger tone: one fact, one span, said once.
+    let node = ListRowFace::new("Ring the letting agent")
+        .meta("Overdue since Jun 29")
+        .meta_spans(&[("Overdue since Jun 29", Tone::Danger)])
+        .accessibility(Rect::new(0.0, 0.0, 320.0, 40.0), "late");
+    assert_eq!(node.value.as_deref(), Some("Overdue since Jun 29"));
+}
+
 #[test]
 fn a_person_pressing_a_bound_rows_box_still_sees_the_check_fill_in() {
     use crate::time::testing::with_monotonic_time;
@@ -1289,5 +1766,30 @@ fn a_row_that_says_still_marks_at_once_where_brisk_still_moves() {
         harness.root::<ListRow>().check_pose.expect("drawn").level,
         1.0,
         "a still row's mark lands at once"
+    );
+}
+
+#[test]
+fn a_nested_row_indents_its_content_a_gutter_a_step_and_keeps_its_trailing_column() {
+    let theme = Theme::dark();
+    let step = crate::chrome::disclosure_gutter(&theme);
+    let rect = Rect::new(0.0, 0.0, 300.0, 40.0);
+    let top = geometry(&ListRowFace::new("Top"), rect);
+    let nested = geometry(&ListRowFace::new("Under").depth(2), rect);
+    assert!(
+        (nested.leading.x0 - (top.leading.x0 + 2.0 * step)).abs() < 0.5,
+        "the nested row's content stands two gutters in: {} from {}",
+        nested.leading.x0,
+        top.leading.x0
+    );
+    assert!(
+        (nested.text_x - (top.text_x + 2.0 * step)).abs() < 0.5,
+        "its title moves with its content"
+    );
+    assert!(
+        (nested.value_right - top.value_right).abs() < 0.5,
+        "depth never moves the row's trailing facts: {} and {}",
+        nested.value_right,
+        top.value_right
     );
 }

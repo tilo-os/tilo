@@ -79,6 +79,14 @@ pub enum UpdateAction {
         keywords = "update, upgrade, aktualisieren"
     )]
     UpdateNow,
+    /// Restart the desktop onto the new interface to finish the system
+    /// update, with the windows it has open reopened.
+    #[effect(
+        own_device,
+        icon = "rotate-cw",
+        keywords = "restart desktop, finish update, desktop neu starten"
+    )]
+    RestartDesktop,
     /// Restart the device to finish the system update.
     #[effect(
         own_device,

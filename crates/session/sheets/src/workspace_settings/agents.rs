@@ -551,11 +551,20 @@ pub(super) fn sample() -> Agents {
         add_bot: "Add a bot".to_owned(),
         bot_tag: "Bot".to_owned(),
         remove_bot: "Remove".to_owned(),
-        bots: vec![Bot {
-            name: "Standup".to_owned(),
-            entry: Some("standup".to_owned()),
-            detail: "Running version 1.2".to_owned(),
-        }],
+        bots: vec![
+            Bot {
+                name: "Standup".to_owned(),
+                entry: Some("so.tilo.bots.standup".to_owned()),
+                detail: "Running version 1.2".to_owned(),
+            },
+            // One the workspace's host runs from its own choice: it is
+            // named here and not a member's to remove.
+            Bot {
+                name: "Greeter".to_owned(),
+                entry: None,
+                detail: "Running".to_owned(),
+            },
+        ],
         bots_empty: "No bots yet.".to_owned(),
         footnote: None,
         review: None,

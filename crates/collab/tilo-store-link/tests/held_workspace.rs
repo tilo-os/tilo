@@ -423,6 +423,7 @@ async fn a_short_lived_workspace_is_held_by_a_store_device() {
                 workspace_id,
                 TransportOrigin::RetainedRelayDelta(author),
                 message,
+                None,
                 now,
             )
             .unwrap();
@@ -658,6 +659,7 @@ async fn a_shared_app_is_a_workspace_its_guests_write_in() {
                 workspace_id,
                 TransportOrigin::RetainedRelayDelta(a_author),
                 message,
+                None,
                 now,
             )
             .unwrap();

@@ -112,6 +112,20 @@ impl Launch {
         }
     }
 
+    /// The Tilo package this launch starts, when it starts one: a package of
+    /// its own, or one opening a record or content. `None` for one of the
+    /// machine's applications, a window the compositor already made, and a
+    /// crash notice, which starts nothing.
+    #[must_use]
+    pub fn package(&self) -> Option<&str> {
+        match self {
+            Self::Package { app, .. } | Self::Record { app, .. } | Self::Content { app, .. } => {
+                Some(app)
+            }
+            Self::Host { .. } | Self::Window { .. } | Self::Crashed { .. } => None,
+        }
+    }
+
     /// The same launch opening `open`.
     #[must_use]
     pub fn opening(self, open: Option<Open>) -> Self {

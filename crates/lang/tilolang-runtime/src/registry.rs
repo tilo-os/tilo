@@ -5,12 +5,16 @@ use std::rc::Rc;
 
 use serde_json::Value as Json;
 
+use tilolang::derived::Derived;
+use tilolang::types::FieldRole;
+
 use crate::ids::{ActionId, FlowId, ModuleHash, TypeId, ViewId};
 use crate::meta::{
     ActionMeta, EnumMeta, FieldKind, FlowMeta, FnMeta, Meta, StateMeta, Ty, TypeKey, TypeMeta,
     ViewMeta, field_kind, parse_ty,
 };
 use crate::store::{FieldSpec, NewRecord};
+use crate::value::EnumValue;
 
 #[derive(Clone, Debug)]
 pub struct FieldInfo {
@@ -18,7 +22,13 @@ pub struct FieldInfo {
     pub name: String,
     pub ty: Ty,
     pub kind: FieldKind,
+    /// What the field is of its type, where it declares it (`(title)`, `(done)`, `(time of:
+    /// due)`): what a sentence about a change to it reads with ([`crate::did`]).
+    pub role: Option<FieldRole>,
     pub default: Option<Json>,
+    /// What a store works it out from, for a `derive` key: a value no record holds
+    /// ([`crate::derived`]).
+    pub derived: Option<Derived<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -29,6 +39,9 @@ pub struct TypeInfo {
     /// `mark others` in its `search` block: another person's change to it is marked unseen
     /// for a reader, as an agent's is (task-legibility.md §4).
     pub mark_others: bool,
+    /// The field holding the item a record stands under (`(parent)`): the one its derived
+    /// keys read the items above and under it through.
+    pub parent: Option<String>,
 }
 
 impl TypeInfo {
@@ -153,20 +166,37 @@ fn type_info(t: &TypeMeta, app: &str) -> Result<TypeInfo, String> {
         .map(|f| {
             let ty = parse_ty(&f.ty, app).map_err(|e| format!("{}.{}: {e}", t.name, f.name))?;
             let kind = field_kind(f, &ty);
+            // A key's expression names the type's fields; a record holds them under their ids.
+            let derived = f.derived.as_ref().map(|expr| {
+                expr.map(&|name| {
+                    t.fields
+                        .iter()
+                        .find(|field| field.name == *name)
+                        .map_or_else(|| name.to_owned(), |field| field.id.clone())
+                })
+            });
             Ok(FieldInfo {
                 id: f.id.clone(),
                 name: f.name.clone(),
                 ty,
                 kind,
+                role: f.role.clone(),
                 default: f.default.clone(),
+                derived,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
+    let parent = t
+        .fields
+        .iter()
+        .find(|f| matches!(f.role, Some(FieldRole::Parent)))
+        .map(|f| f.id.clone());
     Ok(TypeInfo {
         id: t.id.clone(),
         name: t.name.clone(),
         fields,
         mark_others: t.search.mark_others,
+        parent,
     })
 }
 
@@ -268,6 +298,15 @@ impl Registry {
         })
     }
 
+    /// Whether a package of the app `app` is loaded here: its types are declared, and a type of
+    /// it no loaded package declares is a fault rather than one waiting on the app's package.
+    #[must_use]
+    pub fn holds_app(&self, app: &str) -> bool {
+        self.packages
+            .values()
+            .any(|package| package.meta.app == app)
+    }
+
     /// Remove every package of the app `app` this runtime does not run (its records are that
     /// app's): its types, actions, views and flows are declared here no more. Whether one was.
     pub fn remove_foreign(&mut self, app: &str) -> bool {
@@ -327,6 +366,15 @@ impl Registry {
 
     pub fn type_owner(&self, ty: &str) -> Option<&ModuleHash> {
         self.types.get(ty)
+    }
+
+    /// Every type every loaded package declares, for a store that works a derived key out as
+    /// it reads it ([`crate::derived`]).
+    pub fn loaded_types(&self) -> Vec<Rc<TypeInfo>> {
+        self.packages
+            .values()
+            .flat_map(|p| p.types.iter().cloned())
+            .collect()
     }
 
     pub fn type_info(&self, ty: &str) -> Option<(Rc<Package>, Rc<TypeInfo>)> {
@@ -411,25 +459,48 @@ impl Registry {
             .find_map(|p| p.meta.enums.iter().find(|e| e.id == id).cloned())
     }
 
-    /// The id of `key`'s case `case`, named by its name or its id: what a value of the enum
-    /// holds (`LinkKind.wifi`), as the enum's package declares it.
+    /// The enum `key` names, as the package of its app declares it.
+    pub fn enum_of(&self, key: &TypeKey) -> Option<EnumMeta> {
+        self.order
+            .iter()
+            .rev()
+            .filter_map(|hash| self.packages.get(hash))
+            .filter(|pkg| pkg.meta.app == key.app)
+            .find_map(|pkg| {
+                pkg.meta
+                    .enums
+                    .iter()
+                    .find(|declared| declared.name == key.name)
+                    .cloned()
+            })
+    }
+
+    /// The value of `case`, named by its name or its id, as a value of `key`'s enum holds it:
+    /// the enum's id, the case's id, and no fields.
     ///
     /// # Errors
     ///
     /// A message when no loaded package declares the enum, or it has no such plain case.
-    pub fn enum_case(&self, key: &TypeKey, case: &str) -> Result<String, String> {
-        let id = format!("{}#{}", key.app, key.name);
-        let declared = self
-            .enum_meta(&id)
-            .ok_or_else(|| format!("`{id}` is not declared by any loaded package"))?;
-        declared
+    pub fn enum_value(&self, key: &TypeKey, case: &str) -> Result<EnumValue, String> {
+        let declared = self.enum_of(key).ok_or_else(|| {
+            format!(
+                "`{}.{}` is not declared by any loaded package",
+                key.app, key.name
+            )
+        })?;
+        let variant = declared
             .variants
             .iter()
             .find(|variant| {
                 variant.fields.is_empty() && (variant.name == case || variant.id == case)
             })
             .map(|variant| variant.id.clone())
-            .ok_or_else(|| format!("`{case}` is not a case of `{}`", key.name))
+            .ok_or_else(|| format!("`{case}` is not a case of `{}`", key.name))?;
+        Ok(EnumValue {
+            ty: declared.id,
+            variant,
+            fields: std::collections::BTreeMap::new(),
+        })
     }
 
     /// The id of the view a window of type `ty` (an id) shows unless another is asked for: the
@@ -438,6 +509,14 @@ impl Registry {
         let ty = self.type_id(ty)?;
         let pkg = self.package(self.types.get(&ty)?)?;
         pkg.meta.default_view(&ty).map(str::to_owned)
+    }
+
+    /// The id of the row view a list of `ty` (an id) draws each item through: the one the
+    /// type's package declares as its row.
+    pub fn row_view(&self, ty: &str) -> Option<ViewId> {
+        let ty = self.type_id(ty)?;
+        let pkg = self.package(self.types.get(&ty)?)?;
+        pkg.meta.row_view(&ty).map(str::to_owned)
     }
 
     /// The id of the type `ty` names: a type id, or another app's type as its resources name
@@ -449,23 +528,70 @@ impl Registry {
         }
     }
 
+    /// The views a window of `ty` switches between, in the order the package declares them
+    /// (`views a, b for T`), each with the name it is declared by: empty when the type declares
+    /// none, whose views are then the app's own helpers.
+    pub fn views_of_type(&self, ty: &str) -> Vec<(ViewId, String)> {
+        let Some(ty) = self.type_id(ty) else {
+            return Vec::new();
+        };
+        let Some(pkg) = self.types.get(&ty).and_then(|hash| self.package(hash)) else {
+            return Vec::new();
+        };
+        pkg.meta
+            .views_of(&ty)
+            .into_iter()
+            .filter_map(|id| {
+                let view = pkg.meta.views.iter().find(|view| view.id == id)?;
+                Some((view.id.clone(), view.name.clone()))
+            })
+            .collect()
+    }
+
+    /// How a window's switch offers the view `view` (its id) of the type `ty`: the short label
+    /// and icon its declaration names for it, `None` for each it does not say.
+    pub fn view_shown(&self, ty: &str, view: &str) -> (Option<String>, Option<String>) {
+        let Some(ty) = self.type_id(ty) else {
+            return (None, None);
+        };
+        let Some(pkg) = self.types.get(&ty).and_then(|hash| self.package(hash)) else {
+            return (None, None);
+        };
+        let (label, icon) = pkg.meta.view_shown(&ty, view);
+        (label.map(str::to_owned), icon.map(str::to_owned))
+    }
+
+    /// The views of `ty` a person or an agent can apply or name (`shown_as`), whether or not a
+    /// window switches between them: a declared view of one resource and nothing else, but not a
+    /// row. A view no declaration names is the app's own helper, which the app places itself and
+    /// no window offers.
+    pub fn offered_views_of_type(&self, ty: &str) -> Vec<(ViewId, String)> {
+        let Some(ty) = self.type_id(ty) else {
+            return Vec::new();
+        };
+        let Some(pkg) = self.types.get(&ty).and_then(|hash| self.package(hash)) else {
+            return Vec::new();
+        };
+        let Some(name) = pkg.type_by_id(&ty).map(|info| info.name.clone()) else {
+            return Vec::new();
+        };
+        pkg.meta
+            .views_showing(&name)
+            .into_iter()
+            // A row draws one item of a list, not a resource whole, so a window cannot show
+            // the resource through it.
+            .filter(|v| !pkg.meta.row_views.iter().any(|row| row.view == v.id))
+            .map(|v| (v.id.clone(), v.name.clone()))
+            .collect()
+    }
+
     /// The offered view `view` (its id or name) of the package declaring `ty` that takes a
     /// resource of `ty` and nothing else: what a place names as `shown_as`.
     pub fn view_of_type(&self, ty: &str, view: &str) -> Option<ViewId> {
-        let ty = self.type_id(ty)?;
-        let pkg = self.package(self.types.get(&ty)?)?;
-        let name = &pkg.type_by_id(&ty)?.name;
-        pkg.meta
-            .offered_views()
-            .filter(|v| v.id == view || v.name == view)
-            .find(|v| match v.params.as_slice() {
-                [param] => matches!(
-                    crate::meta::parse_ty(&param.ty, &pkg.meta.app),
-                    Ok(Ty::Record(key)) if key.app == pkg.meta.app && &key.name == name
-                ),
-                _ => false,
-            })
-            .map(|v| v.id.clone())
+        self.offered_views_of_type(ty)
+            .into_iter()
+            .find(|(id, name)| id == view || name == view)
+            .map(|(id, _)| id)
     }
 
     /// What a new resource of this type starts out with.

@@ -438,144 +438,6 @@ type OptionRow = (String, OptionChoice, Option<bool>);
 /// A section of the options popover: its caption and rows.
 type OptionSection = (Option<String>, Vec<OptionRow>);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BarItem {
-    Output(usize),
-    Target(usize),
-    Shutter,
-    Options,
-    /// The elapsed time of a recording, or the seconds left of a delay.
-    Time,
-    /// Save the kept last 30 seconds.
-    Save,
-}
-
-/// The bar's measures in the theme it was last painted with. Render caches
-/// only; before the first paint, the stock theme's.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct BarMetrics {
-    pad: f64,
-    gap: f64,
-    margin: f64,
-    radius: f64,
-    strip_h: f64,
-    output_w: f64,
-    target_w: f64,
-    shutter: f64,
-    icon_button: f64,
-    time_w: f64,
-    save_w: f64,
-}
-
-impl Default for BarMetrics {
-    fn default() -> Self {
-        let spacing = crate::tokens::Spacing::BASE;
-        let metrics = crate::tokens::Metrics::BASE;
-        Self {
-            pad: f64::from(spacing.s2),
-            gap: f64::from(spacing.s4),
-            margin: f64::from(spacing.s6),
-            radius: f64::from(crate::tokens::Radii::default().panel),
-            strip_h: 56.0,
-            output_w: 96.0,
-            target_w: 80.0,
-            shutter: f64::from(metrics.min_pointer_target) * 2.0,
-            icon_button: f64::from(metrics.min_pointer_target),
-            time_w: 64.0,
-            save_w: 150.0,
-        }
-    }
-}
-
-/// A string from the toolkit's catalogue.
-fn studio_text(key: &str) -> String {
-    crate::i18n::widget_format(key, &[])
-}
-
-fn output_key(mode: CaptureMode) -> &'static str {
-    match mode {
-        CaptureMode::Screenshot => "widget-capture-mode-screenshot",
-        CaptureMode::Recording => "widget-capture-mode-recording",
-        CaptureMode::Pip => "widget-capture-mode-pip",
-    }
-}
-
-fn output_icon(mode: CaptureMode) -> Icon {
-    match mode {
-        CaptureMode::Screenshot => Icon::Camera,
-        CaptureMode::Recording => Icon::CircleDot,
-        CaptureMode::Pip => Icon::PictureInPicture2,
-    }
-}
-
-/// The output's full name, for its tooltip: the bar's label for picture in
-/// picture is its short form.
-fn output_name(mode: CaptureMode) -> String {
-    match mode {
-        CaptureMode::Pip => studio_text("widget-capture-mode-pip-name"),
-        mode => studio_text(output_key(mode)),
-    }
-}
-
-fn target_key(source: SourceMode) -> &'static str {
-    match source {
-        SourceMode::Region => "widget-capture-source-region",
-        SourceMode::Window => "widget-capture-source-window",
-        SourceMode::Display => "widget-capture-source-display",
-        SourceMode::Strip => "widget-capture-source-strip",
-    }
-}
-
-fn target_icon(source: SourceMode) -> Icon {
-    match source {
-        SourceMode::Region => Icon::SquareDashed,
-        SourceMode::Window => Icon::AppWindow,
-        SourceMode::Display => Icon::Monitor,
-        SourceMode::Strip => Icon::GalleryHorizontal,
-    }
-}
-
-fn output_segments() -> Vec<Segment> {
-    OUTPUTS
-        .iter()
-        .map(|mode| Segment::new(studio_text(output_key(*mode))).with_icon(output_icon(*mode)))
-        .collect()
-}
-
-fn target_segments() -> Vec<Segment> {
-    TARGETS
-        .iter()
-        .map(|source| {
-            Segment::new(studio_text(target_key(*source))).with_icon(target_icon(*source))
-        })
-        .collect()
-}
-
-/// A delay's row in the options popover.
-fn delay_choice(seconds: u8) -> String {
-    if seconds == 0 {
-        studio_text("widget-capture-delay-none")
-    } else {
-        crate::i18n::widget_format(
-            "widget-capture-delay-choice",
-            &[("seconds", i64::from(seconds).into())],
-        )
-    }
-}
-
-fn layout_key(layout: PipLayout) -> &'static str {
-    match layout {
-        PipLayout::Auto => "widget-capture-layout-auto",
-        PipLayout::Grid => "widget-capture-layout-grid",
-        PipLayout::Stack => "widget-capture-layout-stack",
-    }
-}
-
-/// `label  shortcut`, the way the shell's tooltips name a shortcut.
-fn ui_count(n: usize) -> f64 {
-    crate::num::f64_of_usize(n)
-}
-
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent capture, recording, replay and receipt states are retained together"
@@ -605,6 +467,14 @@ pub struct CaptureStudio {
     /// The current take; reset whole whenever one starts or ends.
     take: RecordingTake,
     recording_finished_at: Option<Instant>,
+    /// Frames the recording that ended had to skip, while its receipt shows.
+    recording_skipped: u64,
+    /// Why the recording that ended could not be finished, while its
+    /// receipt says so.
+    recording_failure: Option<String>,
+    /// Whether the recording that ended left a file: one that was not
+    /// finished leaves what was written, unless it wrote nothing.
+    recording_kept: bool,
     replay_active: bool,
     replay_buffered_seconds: u8,
     replay_audio: AudioCaptureMode,
@@ -634,11 +504,16 @@ pub struct CaptureStudio {
     /// Render caches only.
     metrics: BarMetrics,
     receipt_widths: ReceiptWidths,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Default for CaptureStudio {
     fn default() -> Self {
         Self {
+            dirty: true,
             rect: Rect::ZERO,
             overlay_rect: Rect::ZERO,
             open: false,
@@ -659,6 +534,9 @@ impl Default for CaptureStudio {
             pending: Vec::new(),
             take: RecordingTake::default(),
             recording_finished_at: None,
+            recording_skipped: 0,
+            recording_failure: None,
+            recording_kept: true,
             replay_active: false,
             replay_buffered_seconds: 0,
             replay_audio: AudioCaptureMode::None,
@@ -686,6 +564,7 @@ impl CaptureStudio {
     /// current layout parent. The latter can move back into the content area
     /// as soon as modal selection closes.
     pub fn set_overlay_rect(&mut self, rect: Rect) {
+        self.dirty = true;
         self.overlay_rect = rect;
     }
 
@@ -704,7 +583,7 @@ impl CaptureStudio {
             return;
         }
         self.armed_capture = None;
-        self.recording_finished_at = None;
+        self.end_recording_receipt();
         self.screenshot_receipt = None;
         self.screenshot_pin_pending = false;
         self.options_menu = None;
@@ -751,7 +630,7 @@ impl CaptureStudio {
         self.open = false;
         self.drag = None;
         self.armed_capture = None;
-        self.recording_finished_at = None;
+        self.end_recording_receipt();
         self.options_menu = None;
     }
 
@@ -816,6 +695,7 @@ impl CaptureStudio {
     }
 
     pub fn set_mode(&mut self, mode: CaptureMode) {
+        self.dirty = true;
         self.mode = mode;
         self.options_menu = None;
         if mode == CaptureMode::Pip {
@@ -826,6 +706,7 @@ impl CaptureStudio {
     }
 
     pub fn set_source_mode(&mut self, source: SourceMode) {
+        self.dirty = true;
         self.source = source;
         self.regions.clear();
         self.drag = None;
@@ -836,6 +717,7 @@ impl CaptureStudio {
     }
 
     pub fn set_audio_available(&mut self, system: bool, microphone: bool) {
+        self.dirty = true;
         self.system_audio_available = system;
         self.microphone_available = microphone;
         self.audio = AudioCaptureMode::of(
@@ -848,6 +730,7 @@ impl CaptureStudio {
     /// is chosen, the picked window follows the keyboard focus, so moving
     /// focus the usual way picks another one.
     pub fn set_candidates(&mut self, candidates: Vec<CaptureTarget>) {
+        self.dirty = true;
         self.candidates = candidates;
         if self.source == SourceMode::Window {
             self.select_focused_window();
@@ -901,26 +784,27 @@ impl CaptureStudio {
             start_pending: true,
             ..RecordingTake::default()
         };
-        self.recording_finished_at = None;
+        self.end_recording_receipt();
         self.open = true;
         self.mode = CaptureMode::Recording;
     }
 
     pub fn set_recording_active(&mut self, active: bool) {
+        self.dirty = true;
         if active && !self.take.active {
             self.take = RecordingTake {
                 active: true,
                 started_at: Some(crate::time::now()),
                 ..RecordingTake::default()
             };
-            self.recording_finished_at = None;
+            self.end_recording_receipt();
             // The picker closed before the compositor started the encoder;
             // the bar comes back as a non-modal status.
             self.open = true;
             self.mode = CaptureMode::Recording;
         } else if !active {
             self.take = RecordingTake::default();
-            self.recording_finished_at = None;
+            self.end_recording_receipt();
             self.open = self.replay_active;
             if !self.replay_active {
                 self.scope = None;
@@ -928,15 +812,20 @@ impl CaptureStudio {
         }
     }
 
+    /// Nothing of the last finished take is said any more.
+    fn end_recording_receipt(&mut self) {
+        self.recording_finished_at = None;
+        self.recording_skipped = 0;
+        self.recording_failure = None;
+        self.recording_kept = true;
+    }
+
     /// The compositor flushed the recording: the bar gives way to a receipt
-    /// that plays it or shows it in Files. Failures use
-    /// `set_recording_active(false)` instead, so a receipt never shows for an
-    /// incomplete file.
-    pub fn set_recording_finished(&mut self) {
-        if !self.take.active {
-            return;
-        }
+    /// that plays it or shows it in Files.
+    pub fn set_recording_finished(&mut self, skipped: u64) {
+        self.dirty = true;
         self.take = RecordingTake::default();
+        self.recording_skipped = skipped;
         self.recording_finished_at = Some(crate::time::now());
         self.open = true;
         if !self.replay_active {
@@ -944,7 +833,33 @@ impl CaptureStudio {
         }
     }
 
+    /// The recording's file could not be finished: the same receipt says
+    /// why, and keeps what was written rather than playing a file that is
+    /// not whole. `kept` says whether a file is there to show.
+    pub fn set_recording_failed(&mut self, reason: String, kept: bool) {
+        self.dirty = true;
+        self.take = RecordingTake::default();
+        self.recording_failure = Some(reason);
+        self.recording_kept = kept;
+        self.recording_finished_at = Some(crate::time::now());
+        self.open = true;
+        if !self.replay_active {
+            self.scope = None;
+        }
+    }
+
+    /// How many frames the recording has had to skip so far because the disk
+    /// could not keep up.
+    pub fn set_recording_skipped(&mut self, skipped: u64) {
+        if self.recording_skipped == skipped {
+            return;
+        }
+        self.dirty = true;
+        self.recording_skipped = skipped;
+    }
+
     pub fn set_recording_paused(&mut self, paused: bool) {
+        self.dirty = true;
         if !self.take.active || paused == self.take.paused {
             return;
         }
@@ -971,6 +886,7 @@ impl CaptureStudio {
     }
 
     pub fn set_replay_active(&mut self, active: bool, audio: AudioCaptureMode) {
+        self.dirty = true;
         self.replay_active = active;
         self.replay_audio = if active {
             audio
@@ -989,6 +905,7 @@ impl CaptureStudio {
     }
 
     pub fn set_replay_buffered_seconds(&mut self, seconds: u8) {
+        self.dirty = true;
         if self.replay_active {
             self.replay_buffered_seconds = seconds.min(30);
         }
@@ -996,7 +913,10 @@ impl CaptureStudio {
 
     /// The kept seconds were saved: the receipt offers to play them.
     pub fn set_replay_saved(&mut self) {
+        self.dirty = true;
         if self.replay_active {
+            // What a recording before this kept back is not the clip's.
+            self.recording_skipped = 0;
             self.recording_finished_at = Some(crate::time::now());
         }
     }
@@ -1043,6 +963,7 @@ impl CaptureStudio {
     /// The devices "Send…" lists. Called by the shell whenever a screenshot
     /// is saved, so the picker names who is online now.
     pub fn set_screenshot_send_devices(&mut self, devices: Vec<ScreenshotSendDevice>) {
+        self.dirty = true;
         self.send_devices = devices;
     }
 
@@ -1124,6 +1045,7 @@ impl CaptureStudio {
         height: u32,
         preview: CapturePreview,
     ) {
+        self.dirty = true;
         let origin = self
             .screenshot_origin
             .take()
@@ -1142,10 +1064,12 @@ impl CaptureStudio {
     }
 
     pub fn set_screenshot_pin_pending(&mut self, pending: bool) {
+        self.dirty = true;
         self.screenshot_pin_pending = pending;
     }
 
     pub fn set_screenshot_pinned(&mut self) {
+        self.dirty = true;
         self.screenshot_pin_pending = false;
         self.screenshot_receipt = None;
         self.open = false;
@@ -1154,6 +1078,7 @@ impl CaptureStudio {
     /// Pin the selected-pixels-to-receipt handoff for deterministic visual
     /// review. Live presentation continues to use elapsed time.
     pub fn set_screenshot_transition_progress(&mut self, permille: u16) {
+        self.dirty = true;
         let Some(receipt) = self.screenshot_receipt.as_mut() else {
             return;
         };
@@ -1553,271 +1478,6 @@ impl CaptureStudio {
         true
     }
 
-    fn measure_bar(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let spacing = &theme.tokens.spacing;
-        let outputs: Vec<String> = OUTPUTS
-            .iter()
-            .map(|mode| studio_text(output_key(*mode)))
-            .collect();
-        let targets: Vec<String> = TARGETS
-            .iter()
-            .map(|source| studio_text(target_key(*source)))
-            .collect();
-        let outputs: Vec<&str> = outputs.iter().map(String::as_str).collect();
-        let targets: Vec<&str> = targets.iter().map(String::as_str).collect();
-        let size = ControlSize::Regular;
-        let label = theme.text(TextRole::Label);
-        let time_w = f64::from(tr.measure_style("0:00:00", None, &label).0).ceil();
-        let save_label = studio_text("widget-replay-save");
-        let save_w = ButtonFace::new(Rect::ZERO, &save_label)
-            .icon(Icon::Download)
-            .control_size(size)
-            .intrinsic_width(tr, theme);
-        self.metrics = BarMetrics {
-            pad: f64::from(spacing.s2),
-            gap: f64::from(spacing.s4),
-            margin: f64::from(spacing.s6),
-            radius: f64::from(theme.tokens.radii.panel),
-            strip_h: SegmentedFace::stacked_height(size, theme),
-            output_w: SegmentedFace::stacked_segment_width(&outputs, size, tr, theme),
-            target_w: SegmentedFace::stacked_segment_width(&targets, size, tr, theme),
-            shutter: CaptureButtonFace::diameter(theme),
-            icon_button: size.height(theme),
-            time_w,
-            save_w,
-        };
-    }
-
-    /// The bar's height: its tallest part and its padding.
-    fn bar_height(&self) -> f64 {
-        let m = &self.metrics;
-        m.strip_h.max(m.shutter) + 2.0 * m.pad
-    }
-
-    /// The setup bar: bottom centre, moved to the top when it would cover
-    /// what is chosen and the top is clear of it.
-    fn setup_bar(&self) -> Rect {
-        let m = &self.metrics;
-        let w = 2.0 * m.pad + 2.0 * self.setup_side() + m.shutter;
-        let w = w.min(self.rect.width());
-        let h = self.bar_height();
-        let cx = self.rect.center().x;
-        let bottom = Rect::new(
-            cx - w / 2.0,
-            self.rect.y1 - m.margin - h,
-            cx + w / 2.0,
-            self.rect.y1 - m.margin,
-        );
-        let top = Rect::new(
-            cx - w / 2.0,
-            self.rect.y0 + m.margin,
-            cx + w / 2.0,
-            self.rect.y0 + m.margin + h,
-        );
-        match self.avoid_rect() {
-            // Only to a place that is clear: over a window filling the
-            // screen, both cover it, and the bottom is where it rests.
-            Some(avoid) if overlap(bottom, avoid) > 0.0 && overlap(top, avoid) <= 0.0 => top,
-            _ => bottom,
-        }
-    }
-
-    /// Whether the tool's floating parts are at `p`: a screenshot's or a
-    /// recording's receipt, or the bar while recording. They hang over the
-    /// windows, so a press there, from the pointer or a finger, is the
-    /// tool's and never the window's beneath.
-    pub fn takes_pointer_at(&self, p: Point) -> bool {
-        self.open
-            && ((self.screenshot_receipt.is_some()
-                && self.screenshot_receipt_layout().pill.contains(p))
-                || (self.recording_finished_at.is_some()
-                    && self.recording_receipt_layout().pill.contains(p))
-                || (self.shows_status() && self.status_bar().contains(p)))
-    }
-
-    /// How far each half of the setup bar reaches from the shutter: the
-    /// wider of the outputs, or the targets and the options, with the gap
-    /// before the shutter. Both halves are this wide, so the shutter is the
-    /// bar's centre whatever is chosen; each group packs toward the shutter
-    /// at its own width, and the bar's outer padding takes the difference.
-    fn setup_side(&self) -> f64 {
-        let m = &self.metrics;
-        let outputs = OUTPUTS.len() as f64 * m.output_w;
-        let targets = TARGETS.len() as f64 * m.target_w + m.gap + m.icon_button;
-        outputs.max(targets) + m.gap
-    }
-
-    /// The bar while recording, counting down or keeping the last 30
-    /// seconds: the shutter and a time (or Save), where the person moved it.
-    fn status_bar(&self) -> Rect {
-        let m = &self.metrics;
-        let content = if self.replay_active {
-            m.save_w
-        } else {
-            m.time_w
-        };
-        let w = 2.0 * m.pad + content + m.gap + m.shutter;
-        let h = self.bar_height();
-        let bounds = self.status_rect();
-        let x0 = bounds.center().x - w / 2.0 + self.status_offset.x;
-        let y0 = bounds.y1 - m.margin - h + self.status_offset.y;
-        let x0 = x0.clamp(bounds.x0, (bounds.x1 - w).max(bounds.x0));
-        let y0 = y0.clamp(bounds.y0, (bounds.y1 - h).max(bounds.y0));
-        Rect::new(x0, y0, x0 + w, y0 + h)
-    }
-
-    /// The bar shows its status form: a recording, its start, a countdown,
-    /// or the kept last 30 seconds.
-    fn shows_status(&self) -> bool {
-        self.open
-            && (self.take.start_pending
-                || self.take.active
-                || self.replay_active
-                || self.armed_capture.is_some())
-    }
-
-    /// Where each thing on the bar sits now.
-    fn bar_items(&self) -> Vec<(BarItem, Rect)> {
-        let m = self.metrics;
-        if self.shows_status() {
-            let bar = self.status_bar();
-            let cy = bar.center().y;
-            let mut x = bar.x0 + m.pad;
-            let mut items = Vec::with_capacity(2);
-            if self.replay_active {
-                let h = m.icon_button;
-                items.push((
-                    BarItem::Save,
-                    Rect::new(x, cy - h / 2.0, x + m.save_w, cy + h / 2.0),
-                ));
-                x += m.save_w;
-            } else {
-                items.push((
-                    BarItem::Time,
-                    Rect::new(x, bar.y0 + m.pad, x + m.time_w, bar.y1 - m.pad),
-                ));
-                x += m.time_w;
-            }
-            x += m.gap;
-            items.push((
-                BarItem::Shutter,
-                Rect::from_center_size(Point::new(x + m.shutter / 2.0, cy), (m.shutter, m.shutter)),
-            ));
-            return items;
-        }
-        if !self.choosing() {
-            return Vec::new();
-        }
-        let bar = self.setup_bar();
-        let cy = bar.center().y;
-        let strip =
-            |x: f64, w: f64| Rect::new(x, cy - m.strip_h / 2.0, x + w, cy + m.strip_h / 2.0);
-        // The shutter is the bar's centre: what comes out on its left, what
-        // it is of and the options on its right.
-        let cx = bar.center().x;
-        let mut items = Vec::with_capacity(9);
-        let mut x = cx - m.shutter / 2.0 - m.gap - OUTPUTS.len() as f64 * m.output_w;
-        for i in 0..OUTPUTS.len() {
-            items.push((BarItem::Output(i), strip(x, m.output_w)));
-            x += m.output_w;
-        }
-        items.push((
-            BarItem::Shutter,
-            Rect::from_center_size(Point::new(cx, cy), (m.shutter, m.shutter)),
-        ));
-        x = cx + m.shutter / 2.0 + m.gap;
-        for i in 0..TARGETS.len() {
-            items.push((BarItem::Target(i), strip(x, m.target_w)));
-            x += m.target_w;
-        }
-        x += m.gap;
-        items.push((
-            BarItem::Options,
-            Rect::new(
-                x,
-                cy - m.icon_button / 2.0,
-                x + m.icon_button,
-                cy + m.icon_button / 2.0,
-            ),
-        ));
-        items
-    }
-
-    fn bar_item(&self, item: BarItem) -> Rect {
-        self.bar_items()
-            .into_iter()
-            .find(|(it, _)| *it == item)
-            .map_or(Rect::ZERO, |(_, rect)| rect)
-    }
-
-    /// What the shutter does now.
-    fn shutter_kind(&self) -> CaptureKind {
-        if self.take.active || self.take.start_pending || self.replay_active {
-            return CaptureKind::Recording;
-        }
-        match self.mode {
-            CaptureMode::Screenshot => CaptureKind::Photo,
-            CaptureMode::Recording => CaptureKind::Video,
-            CaptureMode::Pip => CaptureKind::Pip,
-        }
-    }
-
-    fn shutter_name(&self) -> String {
-        if self.replay_active {
-            return studio_text("widget-replay-stop");
-        }
-        if self.take.active || self.take.start_pending {
-            return studio_text("widget-capture-stop");
-        }
-        studio_text(match self.mode {
-            CaptureMode::Screenshot => "widget-capture-take",
-            CaptureMode::Recording => "widget-capture-record",
-            CaptureMode::Pip => "widget-capture-create-pip",
-        })
-    }
-
-    /// Whether the shutter can be pressed now.
-    fn shutter_ready(&self) -> bool {
-        if self.replay_active {
-            return true;
-        }
-        if self.take.start_pending || self.armed_capture.is_some() {
-            return false;
-        }
-        if self.take.active {
-            return !self.take.stop_pending;
-        }
-        self.has_capture_source()
-    }
-
-    /// The tooltip of the bar's item under the pointer: what it is and its
-    /// shortcut.
-    fn bar_tip(&self) -> Option<(Rect, String)> {
-        if self.options_menu.is_some() || self.send_menu.is_some() {
-            return None;
-        }
-        let (item, rect) = self
-            .bar_items()
-            .into_iter()
-            .find(|(_, rect)| rect.contains(self.cursor))?;
-        // No shortcut helpers in this tool. The outputs and targets carry
-        // their labels, so only the unlabelled shutter and options are named,
-        // and an output whose label is a short form (PiP) spells it out.
-        let tip = match item {
-            BarItem::Shutter => self.shutter_name(),
-            BarItem::Options => studio_text("widget-capture-options"),
-            BarItem::Output(i) => {
-                let name = output_name(OUTPUTS[i]);
-                if name == studio_text(output_key(OUTPUTS[i])) {
-                    return None;
-                }
-                name
-            }
-            BarItem::Target(_) | BarItem::Time | BarItem::Save => return None,
-        };
-        Some((rect, tip))
-    }
-
     /// The options that apply now, in sections.
     fn option_sections(&self) -> Vec<OptionSection> {
         let mut sections = Vec::new();
@@ -1947,7 +1607,7 @@ impl CaptureStudio {
                 BarItem::Target(i) => self.set_source_mode(TARGETS[i]),
                 BarItem::Shutter => self.commit(self.primary_destination()),
                 BarItem::Options => self.open_options_menu(rect),
-                BarItem::Time | BarItem::Save => {}
+                BarItem::Time | BarItem::Save | BarItem::Skipped => {}
             }
             return;
         }
@@ -2018,29 +1678,6 @@ impl CaptureStudio {
         });
     }
 
-    /// A press on the status bar: the shutter stops, Save saves, anywhere
-    /// else picks the bar up to move it out of the way.
-    fn press_status(&mut self, p: Point) {
-        let items = self.bar_items();
-        match items
-            .iter()
-            .find(|(_, rect)| rect.contains(p))
-            .map(|(i, _)| *i)
-        {
-            Some(BarItem::Shutter) if self.replay_active => {
-                self.queue_replay_command(ReplayCommand::Stop);
-            }
-            Some(BarItem::Shutter) if self.take.active && !self.take.stop_pending => {
-                self.queue_recording_command(RecordingCommand::Stop);
-            }
-            Some(BarItem::Save) => {
-                let _ = self.save_recent_replay();
-            }
-            Some(BarItem::Shutter) => {}
-            _ => self.status_drag = Some((p, self.status_offset)),
-        }
-    }
-
     fn press_receipt(&mut self, p: Point) {
         if let Some(receipt) = self.screenshot_receipt.as_ref() {
             if self.screenshot_pin_pending {
@@ -2094,7 +1731,7 @@ impl CaptureStudio {
                 _ if layout.dismiss.contains(p) => {}
                 _ => return,
             }
-            self.recording_finished_at = None;
+            self.end_recording_receipt();
             self.open = self.shows_status();
         }
     }
@@ -2106,148 +1743,6 @@ impl CaptureStudio {
         }
         self.recording_finished_at
             .map(|_| self.recording_receipt_layout().pill)
-    }
-
-    /// Paint the bar: the setup form while choosing, the status form while
-    /// recording, counting down or keeping the last 30 seconds.
-    fn paint_bar(&self, ctx: &mut PaintCtx<'_>) {
-        let PaintCtx {
-            scene,
-            transform,
-            text: tr,
-            theme,
-        } = ctx.reborrow();
-        let status = self.shows_status();
-        let bar = if status {
-            self.status_bar()
-        } else {
-            self.setup_bar()
-        };
-        let on =
-            crate::widget::paint_see_through(scene, transform, bar, self.metrics.radius, theme);
-        let items = self.bar_items();
-        let hovered = |item: BarItem| {
-            items
-                .iter()
-                .any(|(it, rect)| *it == item && rect.contains(self.cursor))
-        };
-        let rects = |pick: fn(BarItem) -> bool| -> Vec<Rect> {
-            items
-                .iter()
-                .filter(|(item, _)| pick(*item))
-                .map(|(_, rect)| *rect)
-                .collect()
-        };
-        if !status {
-            let outputs = rects(|item| matches!(item, BarItem::Output(_)));
-            let output_items = output_segments();
-            let chosen = OUTPUTS.iter().position(|m| *m == self.mode).unwrap_or(0);
-            crate::widget::ToggleGroup::paint(
-                scene,
-                transform,
-                tr,
-                &on,
-                &SegmentedFace::of_segments(&outputs, &output_items, chosen)
-                    .stacked(true)
-                    .style(SegmentedStyle::Quiet)
-                    .hovered(outputs.iter().position(|r| r.contains(self.cursor))),
-            );
-            let targets = rects(|item| matches!(item, BarItem::Target(_)));
-            let target_items = target_segments();
-            let chosen = TARGETS.iter().position(|s| *s == self.source).unwrap_or(0);
-            crate::widget::ToggleGroup::paint(
-                scene,
-                transform,
-                tr,
-                &on,
-                &SegmentedFace::of_segments(&targets, &target_items, chosen)
-                    .stacked(true)
-                    .style(SegmentedStyle::Quiet)
-                    .hovered(targets.iter().position(|r| r.contains(self.cursor))),
-            );
-            // Two separate choices with the shutter between them, set off
-            // by a rule on each side: what comes out, then what it is of.
-            let ground = crate::chrome::panel_ground(theme);
-            let inset = f64::from(theme.tokens.spacing.s2);
-            for (left, right) in [
-                (BarItem::Output(OUTPUTS.len() - 1), BarItem::Shutter),
-                (BarItem::Shutter, BarItem::Target(0)),
-            ] {
-                let x = (self.bar_item(left).x1 + self.bar_item(right).x0) / 2.0;
-                crate::surface::vertical_separator(
-                    scene, transform, x, bar.y0, bar.y1, inset, ground,
-                );
-            }
-            let options = self.bar_item(BarItem::Options);
-            let name = studio_text("widget-capture-options");
-            let enabled = !self.option_sections().is_empty();
-            let face = IconButton::face(options, Icon::MoreHorizontal, &name)
-                .control_size(ControlSize::Regular)
-                .toggled(self.options_menu.is_some())
-                .hovered(enabled && hovered(BarItem::Options))
-                .disabled(!enabled);
-            Button::paint(scene, transform, tr, &on, &face);
-        }
-        for (item, rect) in &items {
-            match item {
-                BarItem::Time => {
-                    let text = match self.armed_capture.as_ref() {
-                        Some(armed) => {
-                            let left = armed.duration.saturating_sub(
-                                crate::time::now().saturating_duration_since(armed.started_at),
-                            );
-                            left.as_secs_f64().ceil().max(1.0).to_string()
-                        }
-                        None => crate::format::timecode(self.recording_elapsed().as_secs()),
-                    };
-                    let style = on.text(TextRole::Label);
-                    let (w, h) = tr.measure_style(&text, None, &style);
-                    tr.draw_style(
-                        scene,
-                        &text,
-                        on.tokens.colors.text_primary,
-                        transform.pre_translate(
-                            (
-                                rect.center().x - f64::from(w) / 2.0,
-                                rect.center().y - f64::from(h) / 2.0,
-                            )
-                                .into(),
-                        ),
-                        None,
-                        &style,
-                    );
-                }
-                BarItem::Save => {
-                    let label = studio_text("widget-replay-save");
-                    let ready = self.replay_buffered_seconds > 0;
-                    let face = ButtonFace::new(*rect, &label)
-                        .icon(Icon::Download)
-                        .control_size(ControlSize::Regular)
-                        .hovered(ready && rect.contains(self.cursor))
-                        .disabled(!ready);
-                    Button::paint(scene, transform, tr, &on, &face);
-                }
-                BarItem::Shutter => {
-                    CaptureButtonFace::new(self.shutter_kind())
-                        .on_chrome(true)
-                        .live(self.shutter_ready())
-                        .hovered(self.shutter_ready() && rect.contains(self.cursor))
-                        .paint(&mut PaintCtx::new(scene, transform, tr, &on), rect.center());
-                }
-                BarItem::Output(_) | BarItem::Target(_) | BarItem::Options => {}
-            }
-        }
-        if let Some((anchor, tip)) = self.bar_tip() {
-            super::tooltip::draw_hover_tooltip(
-                scene,
-                transform,
-                tr,
-                theme,
-                anchor,
-                &tip,
-                self.status_rect(),
-            );
-        }
     }
 
     /// How far the tool has appeared (`motion::Appear`).
@@ -2535,9 +2030,12 @@ impl CaptureStudio {
                     self.open = self.shows_status();
                     return true;
                 }
-                if self.screenshot_receipt.take().is_some()
-                    || self.recording_finished_at.take().is_some()
-                {
+                if self.screenshot_receipt.take().is_some() {
+                    self.open = self.shows_status();
+                    return true;
+                }
+                if self.recording_finished_at.is_some() {
+                    self.end_recording_receipt();
                     self.open = self.shows_status();
                     return true;
                 }
@@ -2639,6 +2137,7 @@ impl Widget for CaptureStudio {
     }
 
     fn handle_event(&mut self, e: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         if !self.open {
             return;
         }
@@ -2696,6 +2195,8 @@ impl Widget for CaptureStudio {
         *ctx.handled = consumed;
     }
 
+    crate::redraw_flag!();
+
     fn name(&self) -> &'static str {
         "CaptureStudio"
     }
@@ -2739,9 +2240,9 @@ impl Widget for CaptureStudio {
                 crate::time::now().saturating_duration_since(receipt.shown_at)
                     < SCREENSHOT_RECEIPT_DURATION
             })
-            || self.recording_finished_at.is_some_and(|at| {
-                crate::time::now().saturating_duration_since(at) < RECORDING_RECEIPT_DURATION
-            })
+            // Frames carry a saved recording's receipt out; one that could not
+            // be finished stays as it is until it is put away.
+            || (self.recording_finished_at.is_some() && self.recording_failure.is_none())
             || (self.open
                 && self.opened_at.is_some_and(|at| {
                     crate::time::now().saturating_duration_since(at)
@@ -2797,6 +2298,7 @@ impl Widget for CaptureStudio {
                     BarItem::Shutter if self.replay_active => "capture.stop-replay",
                     BarItem::Shutter => "capture.stop",
                     BarItem::Save => "capture.save-replay",
+                    BarItem::Skipped => "capture.recording-skipped",
                     _ => continue,
                 };
                 o.push((name.into(), rect));
@@ -2942,57 +2444,13 @@ fn drive_menu(
     }
 }
 
-fn normal_rect(a: Point, b: Point) -> Rect {
-    Rect::new(a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y))
-}
-
-fn add_rect(path: &mut BezPath, r: Rect) {
-    path.move_to((r.x0, r.y0));
-    path.line_to((r.x1, r.y0));
-    path.line_to((r.x1, r.y1));
-    path.line_to((r.x0, r.y1));
-    path.close_path();
-}
-
-fn studio_progress(spec: crate::motion::MotionSpec, elapsed: Duration) -> f64 {
-    spec.progress_after(
-        crate::motion::Direction::Enter,
-        crate::tokens::EffectiveMotion::default(),
-        crate::tokens::MotionSource::Pointer,
-        elapsed,
-    )
-}
-
-/// How long one of the tool's motions runs.
-fn studio_motion_time(spec: crate::motion::MotionSpec) -> Duration {
-    spec.settle_time(
-        crate::motion::Direction::Enter,
-        crate::tokens::EffectiveMotion::default(),
-        crate::tokens::MotionSource::Pointer,
-    )
-}
-
-/// A receipt's opacity: there at once, leaving on the standard transient
-/// when its time is up.
-fn leaving_opacity(shown: Instant, lasts: Duration) -> f32 {
-    let now = crate::time::now();
-    let fade_from = crate::motion::Transient::exit_starts(
-        crate::motion::Transient::READOUT,
-        shown + lasts,
-        crate::tokens::EffectiveMotion::default(),
-    );
-    if now < fade_from {
-        return 1.0;
-    }
-    crate::motion::unit_opacity(f64::from(crate::motion::Transient::opacity(
-        crate::motion::Transient::READOUT,
-        (shown, shown + lasts),
-        now,
-        crate::tokens::EffectiveMotion::default(),
-    )))
-}
-
+mod bar;
+mod geometry;
+mod motion;
 mod receipt;
+use bar::{BarItem, BarMetrics, delay_choice, layout_key, studio_text};
+use geometry::{add_rect, normal_rect};
+use motion::{leaving_opacity, studio_motion_time, studio_progress};
 use receipt::{ReceiptAction, ReceiptWidths};
 mod semantics;
 

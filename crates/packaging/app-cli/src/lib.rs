@@ -523,15 +523,12 @@ fn target_supported(tapp: &registry_types::TappArtifact) -> bool {
     }
 }
 
+/// The person's interface language, which selects the catalogue names a
+/// listing shows: the same one answer every surface resolves its language
+/// from (`settings_store::appearance::preferred_language`), the system locale
+/// only as its default.
 fn preferred_locale() -> String {
-    ["LC_ALL", "LC_MESSAGES", "LANG"]
-        .into_iter()
-        .find_map(|name| std::env::var(name).ok())
-        .and_then(|value| {
-            let base = value.split('.').next()?.replace('_', "-");
-            registry_types::valid_language_tag(&base).then_some(base)
-        })
-        .unwrap_or_else(|| "en".into())
+    settings_store::appearance::preferred_language().unwrap_or_else(|| "en".into())
 }
 
 /// The package ids `tilo-install` has already installed here, read
@@ -602,26 +599,32 @@ pub fn host_apps(installed: &[InstalledApp]) -> Vec<InstalledApp> {
         .map(|app| app.package_id.to_ascii_lowercase())
         .collect();
     let person_applications = tilo_paths::xdg::data_home().map(|home| home.join("applications"));
-    desktop_entry::scan()
-        .entries
-        .into_iter()
-        .filter(|entry| !packaged.contains(&entry.id.to_ascii_lowercase()))
-        .map(|entry| {
-            let from = match entry.kind(person_applications.as_deref()) {
-                desktop_entry::EntryKind::Flatpak => "flatpak",
-                desktop_entry::EntryKind::AppImage => "appimage",
-                desktop_entry::EntryKind::Program => "program",
-                desktop_entry::EntryKind::System => "system",
-            };
-            InstalledApp {
-                missing: entry.downloaded.as_ref().is_some_and(|d| !d.present),
-                package_id: entry.id,
-                version: String::new(),
-                from: from.into(),
-                name: entry.name,
-            }
-        })
-        .collect()
+    desktop_entry::scan_dirs(
+        &desktop_entry::scan::application_dirs(),
+        &desktop_entry::scan::current_desktops(),
+        &desktop_entry::locale::language_candidates(
+            settings_store::appearance::preferred_language().as_deref(),
+        ),
+    )
+    .entries
+    .into_iter()
+    .filter(|entry| !packaged.contains(&entry.id.to_ascii_lowercase()))
+    .map(|entry| {
+        let from = match entry.kind(person_applications.as_deref()) {
+            desktop_entry::EntryKind::Flatpak => "flatpak",
+            desktop_entry::EntryKind::AppImage => "appimage",
+            desktop_entry::EntryKind::Program => "program",
+            desktop_entry::EntryKind::System => "system",
+        };
+        InstalledApp {
+            missing: entry.downloaded.as_ref().is_some_and(|d| !d.present),
+            package_id: entry.id,
+            version: String::new(),
+            from: from.into(),
+            name: entry.name,
+        }
+    })
+    .collect()
 }
 
 /// The version of `package_id` the system image ships, when the user's copy
@@ -967,6 +970,26 @@ mod tests {
         assert_eq!(locale_tag("pt-br"), "pt-BR");
         assert_eq!(locale_tag("zh-hant-tw"), "zh-Hant-TW");
         assert_eq!(locale_tag("fr"), "fr");
+    }
+
+    /// A listing's names and taglines read in the person's language, the same
+    /// one answer the shell speaks, and the pack installed for it is that
+    /// language's own — never the machine's locale, which only stands in when
+    /// the person has chosen none.
+    #[test]
+    fn the_catalogue_language_is_the_persons_not_the_machines() {
+        let document = serde_json::json!({"appearance": {"language": "de-DE"}})
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let _settings = settings_store::scoped_source(Some(std::sync::Arc::new(
+            settings_store::HostDocument::new(document, |_| Ok(())),
+        )));
+        assert_eq!(preferred_locale(), "de-DE");
+        assert_eq!(
+            language_pack_id(&preferred_locale()),
+            "so.tilo.language-pack.de-de"
+        );
     }
 
     fn native_baseline_isa() -> &'static str {

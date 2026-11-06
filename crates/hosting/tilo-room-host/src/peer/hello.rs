@@ -30,19 +30,19 @@ pub(super) async fn handle_host_hello(
             runtime
                 .attach_sessions
                 .insert(peer.device_public_key, session.disconnect.clone());
-            governed.extend(runtime.room_authority.clone());
+            governed.extend(runtime.workspace_authority.clone());
             drop(runtime);
             hosted_here.push(*id);
         }
     }
     drop(wsmap);
-    // A host serving a room governed here is answered with a session back
+    // A host serving a workspace governed here is answered with a session back
     // to it, for what its members change there.
     for authority in governed {
-        if let Some(rooms) = authority.rooms() {
-            rooms
+        if let Some(workspaces) = authority.workspaces() {
+            workspaces
                 .answer_host(
-                    authority.room(),
+                    authority.workspace(),
                     peer.device_public_key,
                     session.disconnect.clone(),
                 )

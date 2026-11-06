@@ -292,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn durable_membership_reconciles_to_a_reopenable_governor_checkpoint() {
+    fn durable_membership_retires_to_a_reopenable_governor_checkpoint() {
         let mut fixture = fixture();
         let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
         let add = request(
@@ -306,10 +306,7 @@ mod tests {
             .owner
             .commit_workspace_membership_command(add, &fixture.key, fixture.now)
             .unwrap();
-        fixture
-            .owner
-            .reconcile_outgoing(workspace, &fixture.key, fixture.now)
-            .unwrap();
+        fixture.owner.retire_outgoing(workspace).unwrap();
 
         let reopened =
             crate::owner::open_file(&fixture.directory.path().join("owner.json")).unwrap();
@@ -321,10 +318,7 @@ mod tests {
                     .collect::<Vec<_>>())
             })
             .unwrap();
-        assert!(
-            !frames.is_empty(),
-            "reconciliation must retain a checkpoint"
-        );
+        assert!(!frames.is_empty(), "retirement must retain a checkpoint");
         for frame in frames {
             let message: NeighbourMsg = postcard::from_bytes(&frame).unwrap();
             fixture
@@ -407,6 +401,7 @@ mod tests {
                     workspace,
                     TransportOrigin::RetainedRelayDelta(governor),
                     postcard::from_bytes(bytes).unwrap(),
+                    Some(&fixture.key),
                     fixture.now,
                 )
                 .unwrap();
@@ -429,8 +424,13 @@ mod tests {
             },
         );
         let path = fixture.directory.path().join("owner.json");
-        std::fs::rename(&path, fixture.directory.path().join("retained-owner.json")).unwrap();
-        std::fs::create_dir(&path).unwrap();
+        let parts = crate::owner::file_store::parts_of(&path);
+        let retained = fixture.directory.path().join("retained-owner.json");
+        // The record's index and the workspace files it names move together.
+        std::fs::rename(&parts, crate::owner::file_store::parts_of(&retained)).unwrap();
+        // A publication that cannot write its index fails.
+        std::fs::create_dir(&parts).unwrap();
+        std::fs::create_dir(crate::owner::file_store::index_of(&parts)).unwrap();
         assert!(
             fixture
                 .owner
@@ -438,8 +438,7 @@ mod tests {
                 .is_err()
         );
         assert!(agent_caps(&fixture.owner, &fixture).is_empty());
-        let retained =
-            crate::owner::open_file(&fixture.directory.path().join("retained-owner.json")).unwrap();
+        let retained = crate::owner::open_file(&retained).unwrap();
         assert!(agent_caps(&retained, &fixture).is_empty());
     }
 }

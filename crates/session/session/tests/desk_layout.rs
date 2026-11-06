@@ -15,11 +15,14 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
+use tilo_action_policy::Role;
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{
     DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
@@ -27,6 +30,7 @@ use tilo_desktop_model::{
 };
 use tilo_desktop_policy::Window;
 use tilo_desktop_surface::notifications::NotificationSeverity;
+use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
 use tilo_session::mount::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 
@@ -73,6 +77,8 @@ fn tab(id: u64, label: &str, app: &str) -> Tab {
             note: String::new(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 
@@ -176,13 +182,7 @@ fn apps_at(home: &tilo_test_env::TestHome, launcher: Option<PathBuf>) -> Rc<Apps
 
 /// Run frames until `done` holds.
 fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
-    for _ in 0..400 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!("{what} did not happen");
+    common::wait_for(session, what, |session| done(session).then_some(()));
 }
 
 /// Every tab of the desk, with the group it sits in: what a second window or
@@ -247,6 +247,65 @@ fn window(id: u64, app: &str) -> Window {
 /// session starts it through: it records the pid of every start and runs, as
 /// the app would, until the test is over.
 fn installed_probe(home: &mut tilo_test_env::TestHome, started: &Path) -> tilo_test_env::StandIn {
+    installed_probe_package(home);
+    launcher(home, started)
+}
+
+/// The launcher the session starts packages through: it records the pid of
+/// every start and runs, as the app would, until the test is over.
+fn launcher(home: &tilo_test_env::TestHome, started: &Path) -> tilo_test_env::StandIn {
+    tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
+        &format!(
+            "printf '%s\\n' \"$$\" >> '{started}'\nhold\n",
+            started = started.display(),
+        ),
+    )
+    .unwrap()
+}
+
+/// The same launcher, recording what each start was handed as well.
+fn recording_launcher(
+    home: &tilo_test_env::TestHome,
+    started: &Path,
+    arguments: &Path,
+) -> tilo_test_env::StandIn {
+    tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
+        &format!(
+            "printf '%s\\n' \"$$\" >> '{started}'\n\
+             printf '%s\\n' \"$*\" >> '{arguments}'\n\
+             hold\n",
+            started = started.display(),
+            arguments = arguments.display(),
+        ),
+    )
+    .unwrap()
+}
+
+/// What the last start the launcher recorded was handed for `flag`: the
+/// argument that follows it.
+fn handed(arguments: &Path, flag: &str) -> String {
+    let recorded = fs::read_to_string(arguments).expect("the launcher recorded its start");
+    let arguments: Vec<&str> = recorded
+        .lines()
+        .next_back()
+        .expect("a line per start")
+        .split_whitespace()
+        .collect();
+    let at = arguments
+        .iter()
+        .position(|argument| *argument == flag)
+        .unwrap_or_else(|| panic!("the launch carries {flag}: {arguments:?}"));
+    arguments
+        .get(at.saturating_add(1))
+        .unwrap_or_else(|| panic!("{flag} names a value: {arguments:?}"))
+        .to_string()
+}
+
+/// Install [`PROBE`] in `home`'s own app store: a package whose entrypoint is
+/// the launcher's to start.
+fn installed_probe_package(home: &mut tilo_test_env::TestHome) {
     let store = home.data().join("tilo-apps");
     let payload = store.join("payload").join(PROBE);
     fs::create_dir_all(payload.join("bin")).unwrap();
@@ -293,14 +352,6 @@ fn installed_probe(home: &mut tilo_test_env::TestHome, started: &Path) -> tilo_t
     )
     .unwrap();
     home.env().set("TILO_APPS_DATA_DIR", &store);
-    tilo_test_env::stand_in(
-        home.home().join("tilo-launcher"),
-        &format!(
-            "printf '%s\\n' \"$$\" >> '{started}'\nhold\n",
-            started = started.display(),
-        ),
-    )
-    .unwrap()
 }
 
 #[test]
@@ -436,6 +487,131 @@ fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
     );
 }
 
+/// The app a saved window's tab opens again into is told which tab it is:
+/// the instance its window is, which what it reports of the window names.
+#[test]
+fn a_window_that_opens_again_is_told_which_tab_it_is_in() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("started");
+    let instances = home.home().join("instances");
+    installed_probe_package(&mut home);
+    let launcher = tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
+        &format!(
+            "printf '%s\\n' \"$$\" >> '{started}'\n\
+             printf '%s\\n' \"${{TILO_CONTINUITY_INSTANCE:-}}\" >> '{instances}'\n\
+             hold\n",
+            started = started.display(),
+            instances = instances.display(),
+        ),
+    )
+    .unwrap();
+    save_desk(&state_of(&home), &one_window(PROBE, "Probe"));
+
+    let mut session = session_keeping(
+        &state_of(&home),
+        Some(apps_at(&home, Some(launcher.path().to_owned()))),
+    );
+    until(&mut session, "the app is asked for its window", |_| {
+        instances.exists()
+            && fs::read_to_string(&instances).is_ok_and(|said| !said.trim().is_empty())
+    });
+    assert_eq!(
+        fs::read_to_string(&instances)
+            .expect("the launcher recorded its start")
+            .trim(),
+        "100",
+        "the app is told the tab its window takes"
+    );
+}
+
+/// How many times the launcher wrote a start down: one line per app the
+/// session started.
+fn starts(started: &Path) -> usize {
+    fs::read_to_string(started).map_or(0, |written| {
+        written
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count()
+    })
+}
+
+/// A window the person opened in one session opens again in the next: the
+/// desk keeps a running window as the app that opened it, and the next session
+/// opens that app, in the tab it was in.
+#[test]
+fn a_window_the_person_opened_opens_again_after_a_restart() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("started");
+    let launcher = installed_probe(&mut home, &started);
+    let state = state_of(&home);
+
+    // The person opens the app from the desk, the compositor maps its window
+    // into the tab it made, and the session stops with that window open.
+    let before = {
+        let apps = apps_at(&home, Some(launcher.path().to_owned()));
+        let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+        let workspace = session
+            .handle()
+            .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
+            .expect("a workspace is in front");
+        apps.start(
+            &tilo_app_launch::Launch::Package {
+                app: PROBE.into(),
+                open: None,
+            },
+            &apps.workspace_named(&workspace),
+        )
+        .expect("the desk starts the app");
+        until(&mut session, "the app is started", |_| {
+            starts(&started) == 1
+        });
+        session
+            .desktop()
+            .with_policy(|policy| policy.map(window(11, PROBE)))
+            .expect("the window maps");
+        until(&mut session, "the window is in its tab", |session| {
+            tabs(session).len() == 1
+                && matches!(
+                    tile_of(session, tabs(session)[0].0),
+                    Some(TileContent::Foreign { surface_id: 11, .. })
+                )
+        });
+        tabs(&session)
+    };
+
+    // The next session starts on what this one kept, and asks the app for its
+    // window again, into the tab it was in.
+    let mut next = session_keeping(
+        &state,
+        Some(apps_at(&home, Some(launcher.path().to_owned()))),
+    );
+    until(&mut next, "the app is asked for its window again", |_| {
+        starts(&started) == 2
+    });
+    assert_eq!(
+        tabs(&next),
+        before,
+        "the tab it was in is kept for it while the app starts"
+    );
+    next.desktop()
+        .with_policy(|policy| policy.map(window(12, PROBE)))
+        .expect("the window maps");
+    until(&mut next, "the app's new window takes its tab", |session| {
+        matches!(
+            tile_of(session, before[0].0),
+            Some(TileContent::Foreign { surface_id: 12, .. })
+        )
+    });
+    assert_eq!(
+        tabs(&next),
+        before,
+        "no second tab opens beside the saved one"
+    );
+}
+
 #[test]
 fn a_window_whose_app_is_gone_says_so_in_its_tab_and_that_tab_closes() {
     let _settled = ui::motion::testing::settled();
@@ -531,4 +707,214 @@ fn a_desk_that_cannot_be_read_starts_empty_and_says_the_desk_is_still_there() {
         "{ not a desk",
         "nothing is written over a desk this session did not open"
     );
+}
+
+/// A desk with one empty strip in Home, and Away behind it.
+fn two_workspaces() -> DesktopTree {
+    let mut away = Workspace::new(WorkspaceSlot(2), "Away");
+    away.strips = vec![Strip::new(StripId(3), "Later")];
+    let mut tree = on_desk(vec![Strip::new(StripId(1), "Main")]);
+    tree.workspaces.push(away);
+    tree
+}
+
+/// The workspace the tab `id` stands in.
+fn workspace_of(session: &Session, id: TabId) -> Option<WorkspaceSlot> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .find(|workspace| {
+                workspace.strips.iter().any(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .any(|group| group.tabs.iter().any(|tab| tab.id == id))
+                })
+            })
+            .map(|workspace| workspace.slot)
+    })
+}
+
+/// The app's window on the desk of the workspace in front, mapped as the
+/// compositor would have it: what the person is looking at.
+fn showing(session: &mut Session, apps: &Apps, started: &Path) -> TabId {
+    let workspace = session
+        .handle()
+        .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
+        .expect("a workspace in front");
+    apps.start(
+        &tilo_app_launch::Launch::Package {
+            app: PROBE.into(),
+            open: None,
+        },
+        &apps.workspace_named(&workspace),
+    )
+    .expect("the desk starts the app");
+    until(session, "the app is started", |_| starts(started) == 1);
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(window(11, PROBE)))
+        .expect("the window maps");
+    until(session, "the window is in its tab", |session| {
+        tabs(session).len() == 1
+            && matches!(
+                tile_of(session, tabs(session)[0].0),
+                Some(TileContent::Foreign { surface_id: 11, .. })
+            )
+    });
+    tabs(session)[0].0
+}
+
+/// A window the person moves to another workspace runs its app there: the app
+/// is started again in the workspace they carried it to, under that
+/// workspace's grants, and the window it opens takes the tab they moved.
+#[test]
+fn a_window_moved_to_another_workspace_runs_its_app_there() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("started");
+    let arguments = home.home().join("arguments");
+    installed_probe_package(&mut home);
+    let launcher = recording_launcher(&home, &started, &arguments);
+    let state = state_of(&home);
+    save_desk(&state, &two_workspaces());
+
+    let apps = apps_at(&home, Some(launcher.path().to_owned()));
+    let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+    let window_tab = showing(&mut session, &apps, &started);
+    let (away, away_id) = session
+        .handle()
+        .read(|tree| {
+            let away = tree
+                .workspaces
+                .iter()
+                .find(|held| held.slot != WorkspaceSlot(1))?;
+            Some((away.slot, away.id().to_string()))
+        })
+        .expect("a workspace to move it to");
+
+    session
+        .handle()
+        .choose_window_menu(window_tab, &format!("{MOVE_TO_WORKSPACE}:{}", away.0), None)
+        .expect("the person moves the window");
+
+    until(&mut session, "the app runs in the other workspace", |_| {
+        starts(&started) == 2
+    });
+    assert_eq!(
+        handed(&arguments, "--workspace-id"),
+        away_id,
+        "the app runs under the grants of the workspace the person moved it to"
+    );
+    assert_eq!(
+        workspace_of(&session, window_tab),
+        Some(away),
+        "the tab is where the person put it"
+    );
+    // The window the app opens there takes the tab the person moved.
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(window(12, PROBE)))
+        .expect("the window of the app in the other workspace maps");
+    until(&mut session, "the new window takes the tab", |session| {
+        matches!(
+            tile_of(session, window_tab),
+            Some(TileContent::Foreign { surface_id: 12, .. })
+        )
+    });
+    assert!(
+        session.notifications().feed().banners.is_empty(),
+        "nobody else is in either workspace, so nobody is asked"
+    );
+}
+
+/// Moving a window into a workspace other people are in changes what they can
+/// see: the person is asked first, nothing moves until they answer, and the
+/// app runs in the shared workspace only once they say so.
+#[test]
+fn moving_a_window_into_a_shared_workspace_asks_first() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("started");
+    let arguments = home.home().join("arguments");
+    installed_probe_package(&mut home);
+    let launcher = recording_launcher(&home, &started, &arguments);
+    let state = state_of(&home);
+    let mut desk = two_workspaces();
+    let away = desk
+        .workspaces
+        .iter_mut()
+        .find(|held| held.slot != WorkspaceSlot(1))
+        .expect("the workspace behind");
+    let away_id = away.id().to_string();
+    save_desk(&state, &desk);
+
+    let apps = apps_at(&home, Some(launcher.path().to_owned()));
+    let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+    // Someone else is in the workspace the person moves the window to: a
+    // workspace's people are its governance's, which this session reads onto
+    // its workspaces once it holds them, and the desk it starts from does not
+    // carry them.
+    let mut desk = session.handle().read(Clone::clone);
+    desk.workspaces
+        .iter_mut()
+        .find(|held| held.slot == WorkspaceSlot(2))
+        .expect("the workspace behind")
+        .admit("bb".repeat(32), Role::Editor);
+    session.handle().replace_tree(desk);
+    let window_tab = showing(&mut session, &apps, &started);
+
+    session
+        .handle()
+        .choose_window_menu(
+            window_tab,
+            &format!("{MOVE_TO_WORKSPACE}:{}", WorkspaceSlot(2).0),
+            None,
+        )
+        .expect("the person moves the window");
+    until(&mut session, "the person is asked", |session| {
+        session.notifications().feed().banners.iter().any(|banner| {
+            banner
+                .actions
+                .iter()
+                .any(|(key, _)| key == "window-move-carry")
+        })
+    });
+    let ask = session
+        .notifications()
+        .feed()
+        .banners
+        .into_iter()
+        .find(|banner| {
+            banner
+                .actions
+                .iter()
+                .any(|(key, _)| key == "window-move-carry")
+        })
+        .expect("the notice asking about the move");
+    assert!(
+        ask.actions.iter().any(|(key, _)| key == "window-move-stay"),
+        "the person may leave the window where it is: {:?}",
+        ask.actions
+    );
+    assert!(
+        ask.notification.title.contains("Away"),
+        "the notice names the workspace: {:?}",
+        ask.notification.title
+    );
+    assert_eq!(
+        workspace_of(&session, window_tab),
+        Some(WorkspaceSlot(1)),
+        "nothing moves until they answer"
+    );
+    assert_eq!(starts(&started), 1, "and nothing starts");
+
+    session
+        .notifications()
+        .invoke_action(ask.notification.id, "window-move-carry");
+    until(&mut session, "the app runs in the shared workspace", |_| {
+        starts(&started) == 2
+    });
+    assert_eq!(handed(&arguments, "--workspace-id"), away_id);
+    assert_eq!(workspace_of(&session, window_tab), Some(WorkspaceSlot(2)));
 }

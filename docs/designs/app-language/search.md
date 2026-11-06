@@ -44,6 +44,11 @@ type Message {
   or passed by an agent (`unread: true`).
 - `filter "Label" = expr` is a named test over the resource's own fields; the compiler checks it
   reads only this resource so it can be indexed.
+- A filter is a value of type `Filter<T>`: `Message.unread` names the one the type declares,
+  `filters(Message)` lists them, and `items.matching(Message.unread)` asks for it, so a window's
+  state can hold the place a person chose without a search string. `Message.labels(label)` is a
+  filter with its value (`label:urgent`); a name the type declares no filter for is a compile
+  error listing the ones it does.
 - `sort` sets the default order. Relevance is offered whenever there's text.
 - Text fields: `(title)` weighs most, `(body)` is prose, others are metadata, `(secret)` is never
   indexed.
@@ -178,7 +183,9 @@ known by (the registry's keywords: "youtube" for an app called Tube) are not par
   (`b.cards.filter(c -> c.column == col)`, `col` a local): the value is bound when the filter
   is asked, and the index answers it as the run of that value in the field's column. A board
   showing each column's cards and count reads, per lane, the run's bounds and the page it
-  starts on, never every card; no separate grouping syntax is needed.
+  starts on; a header saying how many cards a lane holds counts that lane's cards, which reads
+  its run once and the count from then on, never the workspace; no separate grouping syntax is
+  needed.
 - **A filter of several tests reads its run by pages.** One test that a column answers as a
   run of one value (an equality, a presence, a named filter, `boxes.contains("inbox")` in a
   set) chooses the run; the other tests in the conjunction (`snoozed_until <= now`,
@@ -187,7 +194,10 @@ known by (the registry's keywords: "youtube" for an app called Tube) are not par
   what it examines, not the run's length, and a change that brings one item in (a snooze
   ending, at the moment it ends) reads the item's own pages. Until the whole run is checked
   the list's length is the run's count — the most it can have — and says it is up to that
-  many rather than claim it exact.
+  many rather than claim it exact. Its `len` is that length, which a column's counts answer;
+  its `count` is how many it holds, which reads the run it is drawn from to its end once, so a
+  lane's header says the cards it drew for the cards it holds, and a workspace's list of
+  everything shows the most it can hold rather than read itself.
 - **Versions are indexed too.** Per resource the list index keeps its first and last version
   (who, when, which action: `created(r)`, `updated(r)`), taken change by change from the log,
   and per collection a column of each by time. `items.sort_by(x -> updated(x), desc)` then

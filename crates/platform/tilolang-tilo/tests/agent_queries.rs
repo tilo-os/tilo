@@ -194,7 +194,7 @@ fn grep_knows_block_kinds_groups_times_and_writers() {
 fn a_grep_result_feeds_actions_in_the_same_program() {
     let w = world();
     let answer = w.run(
-        r"grep(/^Two blockers (.*)/, in: notes).each(m -> tasks.add(tasks.tasks, m.group(1)))",
+        r"grep(/^Two blockers (.*)/, in: notes).each(m -> tasks.new_task(tasks.tasks, m.group(1)))",
     );
     assert_eq!(answer["state"], "done", "{answer:#}");
     assert_eq!(answer["changed"], 1, "{answer:#}");
@@ -298,15 +298,20 @@ fn describe_gives_declarations_of_apps_types_actions_fields_and_resources() {
     );
     let ty = printed(&w.run("describe(Task)"));
     assert!(ty.contains("type tasks.Task {"), "{ty}");
-    assert!(ty.contains("    done: Bool\n"), "{ty}");
     assert!(
-        ty.contains("filters: inbox, today, upcoming, done, due, project, priority"),
+        ty.contains("    done: Bool (done)\n"),
+        "the declaration says the field is the one that is finished: {ty}"
+    );
+    assert!(
+        ty.contains(
+            "filters: inbox, today, upcoming, done, assigned_to_me, due, project, priority"
+        ),
         "{ty}"
     );
-    let action = printed(&w.run("describe(tasks.add)"));
+    let action = printed(&w.run("describe(tasks.new_task)"));
     assert!(action.starts_with("/// "), "its doc first: {action}");
     assert!(
-        action.contains("action tasks.add(tasks: Tasks, title: Text) -> Task"),
+        action.contains("action tasks.new_task(tasks: Tasks, title: Text"),
         "{action}"
     );
     let field = printed(&w.run("describe(Task.done)"));
@@ -321,7 +326,7 @@ fn describe_gives_declarations_of_apps_types_actions_fields_and_resources() {
 #[test]
 fn print_shows_rows_with_the_fields_asked_or_the_types_filters() {
     let w = world();
-    w.run("tasks.add(tasks.tasks, \"Milk\")");
+    w.run("tasks.new_task(tasks.tasks, \"Milk\")");
     let asked = printed(&w.run("print(tasks.tasks.items, fields: [.title, .done])"));
     assert!(asked.starts_with("@tasks.Task:"), "{asked}");
     assert!(
@@ -366,7 +371,7 @@ fn a_session_of_the_agents_doc_examples() {
         r"grep(/\bTide\b/, in: journal, not: .quote)",
         r"grep(/(?i)release/).count_by(.written_by)",
         r"grep(/Tide/, in: journal, mentions: me).len()",
-        r"grep(/^- \[ \] (.*launch.*)/i, in: journal, changed: -14d).each(t -> tasks.add(tasks.todos, t.group(1)))",
+        r"grep(/^- \[ \] (.*launch.*)/i, in: journal, changed: -14d).each(t -> tasks.new_task(tasks.todos, t.group(1)))",
         "print(tasks.todos.items, fields: [.title, .done])",
         r#"find("standup chen")"#,
         r#"find("standup").take(2)"#,
@@ -376,7 +381,7 @@ fn a_session_of_the_agents_doc_examples() {
         r"read(grep(/Chen is out/, in: notes).single().doc, matching: /Chen/)",
         "describe(notes)",
         "describe(Todo)",
-        "describe(tasks.add)",
+        "describe(tasks.new_task)",
         "describe(Todo.done)",
         "let list = tasks.todos\ndescribe(list)",
         "find(Todo, completed: true)",
@@ -467,7 +472,7 @@ fn a_tasks_next_program_reads_what_its_earlier_ones_changed() {
     task.set_clock(tilolang_tilo::host::system_time);
     apps.lag("so.tilo.lang.tasks");
     let out = printed(&task.run(
-        "let t = tasks.add(tasks.tasks, \"Check the launch video\")",
+        "let t = tasks.new_task(tasks.tasks, \"Check the launch video\")",
         true,
         &tilolang_tilo::runtime::Principal::new("agent:task-1"),
     ));

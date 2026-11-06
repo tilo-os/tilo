@@ -52,6 +52,7 @@ mod cases {
             vec![Patch::Move {
                 parent: vec!["col".into()],
                 key: before[2].clone(),
+                from: 2,
                 to: 0
             }],
             "a move keeps the item's identity: only its position changes"

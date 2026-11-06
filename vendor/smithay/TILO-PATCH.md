@@ -176,3 +176,94 @@ engine could not type into the field it was composing in.
 
 Remove both once smithay lets a compositor serve its own text fields through
 an input method and route a virtual keyboard's keys through its own input.
+
+## A mode set does not hold the compositor's thread (`drm`)
+
+Setting a mode is a state commit, and this release makes one blocking: the
+atomic commit returns once the driver's commit tail ran, and that is where the
+link to the display trains — seconds when a sink's training fails and the
+driver waits its timeout out. The caller is the compositor's event loop, so
+every other display kept scanning out the frame it had, and no input was read,
+until it returned. The crtc also forgot the commit it still had: `commit_frame`
+dropped the frame it committed instead of tracking it, so nothing knew a
+commit was in flight.
+
+- `src/backend/drm/surface/atomic.rs`: one `commit_flags(event)` for state
+  commits, `ALLOW_MODESET | NONBLOCK` plus `PAGE_FLIP_EVENT` when the caller
+  waits for the commit, used by `commit` and by `clear_state`. Page flips
+  already queued theirs.
+- `src/backend/drm/compositor/mod.rs`: `commit_frame` asks for the event, and
+  `PendingFrame`/`QueuedFrame` hold `Option<U>`, so a frame committed without
+  user data is tracked like one queued with it. `frame_submitted` retires it
+  on its event, no second commit goes to that crtc before it, a frame
+  committed while one is in flight waits for the same event, and
+  `reset_state` drops both because the state they were committed against is
+  read back again.
+
+A commit the driver fails after the call returned cannot be reported to the
+caller; whoever commits owns that. Tilo's DRM backend judges a commit by the
+vblank and the kernel state that follow it, and redoes the modeset once. The
+backend only creates atomic surfaces; the legacy surface keeps
+`drmModeSetCrtc`, which is blocking by API.
+
+Remove this once upstream queues its state commits and tracks them, or reports
+which commit is still in flight.
+
+## An X11 display that outlives its server (`XWaylandListener`)
+
+One display number serves one workspace, and a workspace runs an X server
+only while one of its apps does: the compositor binds the workspace's display
+at its first launch, hands `DISPLAY` to the apps it starts there, and starts
+Xwayland when one of them actually connects. `spawn` cannot express that,
+because it binds the display's sockets and the server in one call, so a
+server exists from the moment the display does.
+
+- `src/xwayland/xserver.rs`: `XWaylandListener` — the sockets and lock of a
+  display, listening, with no server on them (`prepare`, `display_number`,
+  `sockets`); clients that connect queue until a server accepts them.
+  `XWayland::spawn_on` spawns on a listener's sockets, which stay the
+  caller's, so the display serves the next server after this one stops.
+  `spawn` is `prepare_x11_sockets` + `spawn_on_sockets`, the shared body, and
+  `Instance` holds `Option<X11Lock>` and its display number instead of the
+  lock's.
+- `src/xwayland/mod.rs`: exports `XWaylandListener`.
+
+The listening sockets need a backlog that holds the clients a display queues
+before its server runs, and the readiness pipe must read as the server going
+away when it closes it:
+
+- `src/xwayland/x11_sockets.rs`: `listen(&fd, 128)` instead of the default
+  backlog, which a burst of apps opening a display outran.
+- `src/xwayland/xserver.rs`: the displayfd's `Ok(0)` (the pipe closed) is an
+  `UnexpectedEof` error like any read error, instead of polling it forever.
+
+A server whose Wayland connection closes keeps running: Xwayland prints
+`failed to read Wayland events: Broken pipe` and stays in its event loop, so
+a display that stopped serving would leave an idle Xwayland behind for as
+long as the session lives.
+
+- `src/xwayland/xserver.rs`: `Drop for XWayland` kills its process (the
+  thread that waits on it reaps it) before it disconnects the Wayland client.
+
+Remove these once upstream separates binding a display from spawning its
+server, with a backlog deep enough for the clients waiting on one, and ends
+its server when the Wayland connection does.
+
+## Shared memory in the opaque 10-bit format
+
+`Xrgb2101010` had no way in: its format table entry has no transparent
+counterpart to look up, so `fourcc_to_gl_formats` answered `None` and a GLES
+renderer refused the buffer, leaving a client that sent one with no window.
+Its bytes also lie the other way round from the formats the table maps: DRM
+keeps blue in the low bits where GL's `RGBA` reading of
+`UNSIGNED_INT_2_10_10_10_REV` finds red, so uploading it as `Abgr2101010`
+would paint it with two channels swapped.
+
+- `src/backend/renderer/gles/format.rs`: `Xrgb2101010` maps to `RGB10_A2`,
+  read as `RGBA` with `UNSIGNED_INT_2_10_10_10_REV`, and the shader's opaque
+  variant supplies alpha 1, so the format's unused high bits are not read.
+- `src/backend/renderer/gles/mod.rs`: it joins the shared-memory formats a
+  GLES 3 renderer imports, and `swizzle_blue_first` swaps red and blue on the
+  texture that carries it, in both import paths.
+
+Remove this once upstream maps the opaque 10-bit RGB formats.

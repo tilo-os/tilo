@@ -59,8 +59,11 @@
 #
 # The window opens at 1280x800 logical pixels; set TILO_WINIT_SIZE=WxH
 # (physical pixels) to choose another size. A headless session renders a
-# 1280x800 output (TILO_HEADLESS_SIZE overrides it) only when tilo-control
-# asks for a snapshot.
+# 1280x800 output; set TILO_HEADLESS_SIZE=WxH to choose another size, and
+# TILO_HEADLESS_SCALE=S (or TILO_HEADLESS_PANEL_MM=WxH, the panel's physical
+# size, from which the scale is derived) to have it draw at that density —
+# the same the DRM backend takes from its connector, so a HiDPI panel's
+# desktop can be driven and photographed headless.
 #
 # dist/dev/nested-session-build.sh builds everything with cargo, into
 # target/nested-session. Re-running repackages only apps
@@ -414,6 +417,16 @@ if [[ -n $env_runtime_id && ! -d $system_store/pkgs/${env_runtime_id#tapp:} ]]; 
 fi
 
 # --- 7. Apps -------------------------------------------------------------------
+# The translations the build packed, where a device keeps the ones the person
+# installed: the launcher binds this directory into every app it starts, so a
+# session started here speaks its language in the apps it launches, as an
+# installed device does, rather than showing each app in its source language.
+language_packs=$state/data/tilo/language-packs
+if [[ -d $build_out/language-packs ]]; then
+    rm -rf "$language_packs"
+    mkdir -p "$(dirname "$language_packs")"
+    cp -a "$build_out/language-packs" "$language_packs"
+fi
 stamps=$state/stamps
 mkdir -p "$stamps" "$TILO_APPS_DATA_DIR"
 installed=$("$bin/tilo-install" list 2>/dev/null || true)
@@ -570,19 +583,31 @@ fi
 
 # A throwaway identity's certificates last 24 hours; mint a fresh one well
 # before that, rather than have the session refuse an expired chain.
+#
+# A state directory the caller filled with a real identity is never given a
+# throwaway one: the two trees a session reads it from (`TILO_IDENTITY_ROOT`,
+# now holding `device/cert.bin`) are the person's, and minting over them would
+# discard the identity the caller put there.
 identity_dir=$XDG_CONFIG_HOME/tilo/identity
 marker=$identity_dir/throwaway-test-identity
-if ((reset_identity)) || { [[ -f $marker ]] && [[ -n $(find "$marker" -mmin +1200) ]]; }; then
-    # A new identity is a new person: the native workspace the old one
-    # governs belongs to someone else now.
-    say "discarding the throwaway identity and its desktop"
-    rm -rf "$identity_dir" "$TILO_IDENTITY_ROOT" "$state/secrets" \
-        "$XDG_CONFIG_HOME"/tilo/state.json "$XDG_CONFIG_HOME"/tilo/state.json.* \
-        "$XDG_CONFIG_HOME"/tilo/state.owner.json "$XDG_CONFIG_HOME"/tilo/state.automerge*
-    mkdir -p "$TILO_IDENTITY_ROOT"
-    mkdir -m 700 "$state/secrets"
+keep_identity=0
+if ((!reset_identity)) && [[ -f $TILO_IDENTITY_ROOT/device/cert.bin ]]; then
+    say "keeping the identity already in $TILO_IDENTITY_ROOT"
+    keep_identity=1
 fi
-if [[ ! -f $marker ]]; then
+if ((!keep_identity)); then
+    if ((reset_identity)) || { [[ -f $marker ]] && [[ -n $(find "$marker" -mmin +1200) ]]; }; then
+        # A new identity is a new person: the native workspace the old one
+        # governs belongs to someone else now.
+        say "discarding the throwaway identity and its desktop"
+        rm -rf "$identity_dir" "$TILO_IDENTITY_ROOT" "$state/secrets" \
+            "$XDG_CONFIG_HOME"/tilo/state.json "$XDG_CONFIG_HOME"/tilo/state.json.* \
+            "$XDG_CONFIG_HOME"/tilo/state.owner.json "$XDG_CONFIG_HOME"/tilo/state.automerge*
+        mkdir -p "$TILO_IDENTITY_ROOT"
+        mkdir -m 700 "$state/secrets"
+    fi
+fi
+if ((!keep_identity)) && [[ ! -f $marker ]]; then
     # Nobody completes first-login setup here; a headless pass mints the
     # development identity a dev image would, then exits.
     say "minting a throwaway identity"
@@ -664,9 +689,18 @@ fi
 # connects for it and hands the connection over as WAYLAND_SOCKET.
 host_client=()
 if ((headless)); then
-    backend=(--backend headless)
+    backend=(--backend headless --size "$TILO_HEADLESS_SIZE")
+    if [[ -n ${TILO_HEADLESS_PANEL_MM:-} ]]; then
+        backend+=(--panel-mm "$TILO_HEADLESS_PANEL_MM")
+        density=", ${TILO_HEADLESS_PANEL_MM} mm panel"
+    elif [[ -n ${TILO_HEADLESS_SCALE:-} ]]; then
+        backend+=(--scale "$TILO_HEADLESS_SCALE")
+        density=" at ${TILO_HEADLESS_SCALE}x"
+    else
+        density=""
+    fi
     display_env=(-u WAYLAND_DISPLAY -u DISPLAY)
-    say "starting the session headless at ${TILO_HEADLESS_SIZE} (log: $logs/session.log)"
+    say "starting the session headless at ${TILO_HEADLESS_SIZE}${density} (log: $logs/session.log)"
 else
     backend=(--backend nested)
     display_env=(-u DISPLAY -u WAYLAND_DISPLAY)

@@ -6,7 +6,7 @@
 
 use super::{
     DropPlacement, DropTarget, ElementState, Key, KeyEvent, LABEL_ROLE, MouseButton, NamedKey,
-    NodeId, Point, Rect, ReorderDrop, TreeImpl, TreeModel, TreeRowKey, WindowEvent,
+    NodeId, Point, Rect, ReorderDrop, TreeImpl, TreeModel, TreeMove, TreeRowKey, WindowEvent,
 };
 use crate::widget::{TextInput, Widget};
 
@@ -14,51 +14,6 @@ use crate::widget::{TextInput, Widget};
 pub(super) struct RenameField {
     pub(super) id: NodeId,
     pub(super) input: TextInput,
-}
-
-/// A structural move of one row — what a drag does, as a single step for the
-/// keyboard (`Alt` + arrows, or `Tab` / `Shift+Tab` with
-/// `TreeView::tab_indents`) and for assistive technology, which sees one
-/// button per move on every row.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TreeMove {
-    /// Before the previous sibling.
-    Up,
-    /// After the next sibling.
-    Down,
-    /// Into the previous sibling, as its last child.
-    Indent,
-    /// Out of the parent, directly after it.
-    Outdent,
-}
-
-impl TreeMove {
-    pub(super) const ALL: [Self; 4] = [Self::Up, Self::Down, Self::Indent, Self::Outdent];
-
-    pub(super) fn token(self) -> &'static str {
-        match self {
-            Self::Up => "up",
-            Self::Down => "down",
-            Self::Indent => "indent",
-            Self::Outdent => "outdent",
-        }
-    }
-
-    pub(super) fn from_token(token: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|movement| movement.token() == token)
-    }
-
-    /// The FTL key naming this move for assistive technology.
-    pub(super) fn label_key(self) -> &'static str {
-        match self {
-            Self::Up => "tree-move-up",
-            Self::Down => "tree-move-down",
-            Self::Indent => "tree-move-indent",
-            Self::Outdent => "tree-move-outdent",
-        }
-    }
 }
 
 impl<T, M: TreeModel> TreeImpl<T, M> {

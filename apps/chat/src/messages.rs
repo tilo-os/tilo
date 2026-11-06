@@ -21,7 +21,6 @@ use tilo_document::ClipBlock;
 use ui::framework::Chained;
 use ui::tilo_resource::{self, ActionCx, Atom, Id, JsonSchema, NonBlank, Refusal, Segment};
 
-use crate::model::ChannelKind;
 use crate::parts::{self, ChatPart};
 use crate::record::{
     AttachmentUpdate, Chat, MAX_AGENT_NAME_BYTES, MAX_MESSAGE_TEXT_BYTES, Message, Posting,
@@ -758,13 +757,14 @@ impl ChatPart {
     }
 }
 
-/// Refuse a post to `channel` unless the chat has it as a text channel.
+/// Refuse a post to `channel` unless the chat has it as a conversation that
+/// takes messages: a text channel, or a direct conversation between members
+/// the chat knows.
 fn takes_posts(chat: &Chat, channel: &Id) -> Result<(), String> {
-    let target = chat
-        .channels
-        .get(channel)
-        .ok_or("there is no such channel")?;
-    if target.kind == ChannelKind::Voice {
+    if chat.conversation(channel).is_none() {
+        return Err("there is no such channel".into());
+    }
+    if !chat.takes_messages(channel) {
         return Err("a voice channel has no conversation to post in".into());
     }
     Ok(())
@@ -883,9 +883,9 @@ impl Chained for ChatPart {
             ChatPartAction::ShareWindow(share) => &share.channel,
             _ => return None,
         };
-        let channel = chat.channels.get(channel)?;
-        let name = channel.name.trim().trim_start_matches('#');
-        (channel.conversation_with.is_none() && !name.is_empty()).then(|| format!("#{name}"))
+        let conversation = chat.conversation(channel)?;
+        let name = conversation.name.trim().trim_start_matches('#');
+        (conversation.is_channel() && !name.is_empty()).then(|| format!("#{name}"))
     }
 }
 
@@ -1128,6 +1128,35 @@ impl Messages {
                 }
             })
             .sum()
+    }
+
+    /// The top-level messages of `channel` after `mark` that `author` did not
+    /// write: what a direct conversation counts as unread for them. Counted in
+    /// the parts this reader holds, as a direct conversation is short and its
+    /// reader holds it.
+    #[must_use]
+    pub fn unread_by_others(&self, channel: &Id, mark: parts::ReadMark, author: &str) -> usize {
+        let from = u64::try_from(mark.part.max(0)).unwrap_or_default();
+        let seen = usize::try_from(mark.seen.max(0)).unwrap_or(usize::MAX);
+        let mut unread = 0;
+        for (index, part) in &self.parts {
+            if *index < from {
+                continue;
+            }
+            let mut of_channel: Vec<&Message> = part
+                .messages
+                .values()
+                .filter(|message| message.channel == *channel && message.parent.is_none())
+                .collect();
+            of_channel.sort_by_key(|message| message.ts);
+            let skip = if *index == from { seen } else { 0 };
+            unread += of_channel
+                .into_iter()
+                .skip(skip)
+                .filter(|message| message.author.0 != author)
+                .count();
+        }
+        unread
     }
 }
 

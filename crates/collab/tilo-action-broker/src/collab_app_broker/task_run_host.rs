@@ -472,7 +472,6 @@ impl tilo_actions::remote::ActionHost for TaskRunHost {
             }));
         }
         // A live publication by its connection, or an app the run may launch.
-        // optional-decode: a provider that is no peer number names a launchable app
         let (peer_id, launch) = provider
             .parse::<u64>()
             .map_or_else(|_| (0, provider.to_owned()), |peer| (peer, String::new()));

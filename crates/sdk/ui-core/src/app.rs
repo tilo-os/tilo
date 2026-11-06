@@ -72,6 +72,7 @@ include!("app/host_core.rs");
 include!("app/action_directory.rs");
 include!("app/control_availability.rs");
 include!("app/accessibility.rs");
+include!("app/window_targets.rs");
 include!("app/touch_exploration.rs");
 include!("app/collaboration.rs");
 include!("app/persistence.rs");
@@ -422,12 +423,6 @@ fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceInte
 /// Fans cursor moves out to Iroh peers too, alongside the Unix-socket
 /// send. Invoked after the throttle gate.
 type PresenceBroadcastSink = Box<dyn Fn(&PresenceKey, &PresencePayload) + Send + Sync>;
-/// Lets the shell drain `NeighbourMsg::PresenceMoved` into
-/// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
-/// Returns `true` only when the callback changed pixels. This keeps an
-/// installed background pump from turning every event-loop wake into a full
-/// window redraw.
-type FrameTick = Box<dyn FnMut(&mut PresenceCtx) -> bool + Send + Sync>;
 type ResolvedResourceInvocation<'a> = (
     Option<serde_json::Map<String, serde_json::Value>>,
     &'a tilo_actions::ResourceSpec,
@@ -441,6 +436,10 @@ type ResolvedResourceInvocation<'a> = (
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ResourceCacheKey {
     mutation_generation: u64,
+    /// The locale what was declared reads in: a resource's, an action's and
+    /// a row's labels are resolved when they are materialised, so a language
+    /// the person changes declares its resources again.
+    locale: u64,
 }
 
 struct ResourceCache {
@@ -559,6 +558,11 @@ pub struct App {
     native_workspace_route: Option<crate::collaboration::RouteSpec>,
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,
+    /// [`crate::permissions::shared_revision`] as the last frame painted
+    /// with it: what widgets paint follows permissions that can change with
+    /// nothing in the tree marking it, so a frame draws again from cleared
+    /// drawings after it moves.
+    painted_permissions: u64,
 
     presence: PresenceRuntime,
 
@@ -1281,6 +1285,19 @@ impl App {
             root_widget,
             AppConstructionInputs::controlled(),
         )
+    }
+
+    /// Whether the shared permissions moved since the last frame painted
+    /// them: the drawings the tree holds were made from the ones before.
+    #[cfg_attr(
+        not(feature = "native"),
+        allow(
+            dead_code,
+            reason = "read by the native draw and by embedded apps, which this feature set leaves out"
+        )
+    )]
+    pub(crate) fn permissions_moved(&self) -> bool {
+        self.painted_permissions != crate::permissions::shared_revision()
     }
 
     pub fn enter_wake_scope(&self) -> crate::wake::WakeScopeGuard {
@@ -2954,6 +2971,14 @@ fn humanize_ident(ident: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+
+#[cfg(test)]
+#[path = "app/window_targets_tests.rs"]
+mod window_targets_tests;
+
+#[cfg(test)]
+#[path = "app/sideways_wheel_tests.rs"]
+mod sideways_wheel_tests;
 
 #[cfg(test)]
 #[path = "app/manual_composition_tests.rs"]

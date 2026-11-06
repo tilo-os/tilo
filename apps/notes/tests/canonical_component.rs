@@ -360,11 +360,14 @@ fn native_accessibility_page_activation_binds_an_empty_note_without_another_inpu
         .records
         .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
         .unwrap();
-    let target = app
-        .build_a11y_tree_update(1.0)
-        .nodes
+    let nodes = app.build_a11y_tree_update(1.0).nodes;
+    // The page tree's rows are tree items that name their page: the one a reader
+    // activates, not the plain list item a container draws around it.
+    let target = nodes
         .into_iter()
-        .find(|(_, node)| node.label() == Some("Empty"))
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::TreeItem && node.label() == Some("Empty")
+        })
         .expect("exported native page row")
         .0;
     assert!(

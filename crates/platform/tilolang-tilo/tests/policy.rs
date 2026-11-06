@@ -39,7 +39,10 @@ fn standing(answers: Vec<tilo_action_policy::Grant>) -> Standing {
 /// The block that adds `title` to the todo list.
 fn add_block(replica: &Replica, title: &str) -> String {
     let list = replica.host.root_of(APP).unwrap();
-    format!("tasks.add(@tasks.Tasks:{}, \"{title}\")", list.id_string())
+    format!(
+        "tasks.new_task(@tasks.Tasks:{}, \"{title}\")",
+        list.id_string()
+    )
 }
 
 fn state(block: AgentBlock) -> String {
@@ -67,7 +70,7 @@ fn an_agent_the_person_denied_the_app_is_denied() {
     let meta = &packages[0].meta;
     let list = ada.host.root_of(APP).unwrap();
     ada.commit();
-    let add = meta.actions.iter().find(|a| a.name == "add").unwrap();
+    let add = meta.actions.iter().find(|a| a.name == "new_task").unwrap();
     let kind = meta.kind_of("Tasks");
     let args = json!({"title": "Take the bins out"});
     let plan = |caller: Option<&Caller>| {
@@ -78,6 +81,7 @@ fn an_agent_the_person_denied_the_app_is_denied() {
             resource: Some(&list.doc),
             args: args.as_object().unwrap(),
             caller,
+            from: None,
         })
     };
     let refused = plan(Some(&agent())).unwrap_err();

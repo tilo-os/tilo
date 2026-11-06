@@ -136,7 +136,6 @@ impl ChannelSettings {
     }
 
     pub fn disconnected(&self) {
-        crate::person_chat::invalidate();
         self.lock().connected = false;
         self.revision.fetch_add(1, Ordering::AcqRel);
         self.changes.ring();

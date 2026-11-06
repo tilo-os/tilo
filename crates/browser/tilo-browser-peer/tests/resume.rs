@@ -52,7 +52,7 @@ async fn receive(peer: &PeerHandle, count: usize) -> Vec<DocumentMutation> {
 async fn resumed(peer: &PeerHandle) {
     wait_for("the new session", || {
         let ready = PeerSnapshot::from_status(&peer.status()).phase == "ready"
-            && peer.status().rooms.values().all(|ready| *ready);
+            && peer.status().workspaces.values().all(|ready| *ready);
         async move { ready.then_some(()) }
     })
     .await;

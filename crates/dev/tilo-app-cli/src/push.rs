@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Map, Value, json};
-use tilo_relay_session::rooms::govern::{self, RoomLink};
+use tilo_relay_session::workspaces::govern::{self, WorkspaceLink};
 
 #[derive(clap::Args)]
 pub struct PushArgs {
@@ -61,7 +61,7 @@ pub struct Push {
 }
 
 pub fn run_push(args: PushArgs) -> Result<Value> {
-    let link: RoomLink = args.workspace.parse().map_err(anyhow::Error::msg)?;
+    let link: WorkspaceLink = args.workspace.parse().map_err(anyhow::Error::msg)?;
     let push = if let Some(program) = &args.bot {
         bot_push(
             program,
@@ -103,13 +103,13 @@ pub fn run_push(args: PushArgs) -> Result<Value> {
         let client = govern::connect(&link, cert, key).await?;
         let mut argument = push.argument.clone();
         if let Some(bytes) = &upload {
-            let file = govern::upload(&client, link.workspace_id, &link.room, bytes).await?;
+            let file = govern::upload(&client, link.workspace_id, &link.workspace, bytes).await?;
             argument.insert("file".into(), Value::from(file));
         }
         govern::invoke(
             &client,
             link.workspace_id,
-            &link.room,
+            &link.workspace,
             push.action,
             argument,
         )

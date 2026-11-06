@@ -4,13 +4,16 @@
 //!
 //! ```text
 //! bench [--size 1600x900] [--threads 0,2,3,4] [--runs 20] [--direct-blur]
-//!       [--png DIR] SCENE.tscene...
+//!       [--regions COLSxROWS] [--png DIR] SCENE.tscene...
 //! ```
 //!
 //! Damage comes from `SCENE.damage` beside each capture (one `x y w h` per
 //! line), when present, plus a cursor-sized and a bar-sized region. The
 //! name `shadows` instead of a file is a built-in scene of overlapping windows
-//! with blurred shadows, for comparing `--direct-blur`.
+//! with blurred shadows, for comparing `--direct-blur`; `many` is 10 000 small
+//! draws, for comparing what a frame costs when it changes in many places.
+//! `--regions COLSxROWS` tiles the whole target into that many damaged
+//! regions, which is what a frame costs then.
 
 #![allow(
     clippy::unwrap_used,
@@ -26,7 +29,7 @@
     reason = "a command-line benchmark: failures end the run"
 )]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use tilo_cpu_raster::color::{AlphaColor, Srgb};
@@ -37,6 +40,7 @@ struct Args {
     threads: Vec<u16>,
     runs: usize,
     cached_blur: bool,
+    regions: Option<(u32, u32)>,
     png: Option<PathBuf>,
     scenes: Vec<PathBuf>,
 }
@@ -47,6 +51,7 @@ fn parse() -> Args {
         threads: vec![0, 2, 3, 4],
         runs: 20,
         cached_blur: true,
+        regions: None,
         png: None,
         scenes: Vec::new(),
     };
@@ -67,6 +72,11 @@ fn parse() -> Args {
                     .collect();
             }
             "--runs" => args.runs = it.next().expect("--runs N").parse().unwrap(),
+            "--regions" => {
+                let v = it.next().expect("--regions COLSxROWS");
+                let (cols, rows) = v.split_once('x').expect("--regions COLSxROWS");
+                args.regions = Some((cols.parse().unwrap(), rows.parse().unwrap()));
+            }
             "--direct-blur" => args.cached_blur = false,
             "--png" => args.png = Some(it.next().expect("--png DIR").into()),
             _ => args.scenes.push(arg.into()),
@@ -133,81 +143,153 @@ fn main() {
         }
     );
     for path in &args.scenes {
-        let encoding = if path.as_os_str() == "shadows" {
-            shadows(args.size).encoding().clone()
-        } else {
-            tilo_cpu_raster::capture::read(std::fs::File::open(path).unwrap()).unwrap()
-        };
-        let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-        let shell_damage: Vec<Region> = std::fs::read_to_string(path.with_extension("damage"))
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|line| {
-                let v: Vec<u32> = line
-                    .split_whitespace()
-                    .filter_map(|n| n.parse().ok())
-                    .collect();
-                (v.len() == 4).then(|| Region::new(v[0], v[1], v[2], v[3]))
+        bench(&args, path);
+    }
+}
+
+/// Times one scene through a fresh rasterizer at every thread count asked for.
+fn bench(args: &Args, path: &Path) {
+    let (w, h) = args.size;
+    let encoding = if path.as_os_str() == "shadows" {
+        shadows(args.size).encoding().clone()
+    } else if path.as_os_str() == "many" {
+        many(args.size).encoding().clone()
+    } else {
+        tilo_cpu_raster::capture::read(std::fs::File::open(path).unwrap()).unwrap()
+    };
+    let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+    let damages = damages(args, path);
+    println!(
+        "{name}: {} draw tags, {} glyph runs",
+        encoding.draw_tags.len(),
+        encoding.resources.glyph_runs.len()
+    );
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    for &threads in &args.threads {
+        time(args, &name, &encoding, &mut buf, &damages, threads);
+    }
+}
+
+/// The damage a scene is timed with: a cursor, a bar, the shell's own rects
+/// beside it, and the tiled regions when `--regions` asks for them.
+fn damages(args: &Args, path: &Path) -> Vec<(String, Vec<Region>)> {
+    let (w, h) = args.size;
+    let shell_damage: Vec<Region> = std::fs::read_to_string(path.with_extension("damage"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let v: Vec<u32> = line
+                .split_whitespace()
+                .filter_map(|n| n.parse().ok())
+                .collect();
+            (v.len() == 4).then(|| Region::new(v[0], v[1], v[2], v[3]))
+        })
+        .collect();
+    let mut damages: Vec<(String, Vec<Region>)> = vec![
+        (
+            "damage cursor 64x64".into(),
+            vec![Region::new(w / 2, h / 2, 64, 64)],
+        ),
+        ("damage bar 1600x48".into(), vec![Region::new(0, 0, w, 48)]),
+    ];
+    if !shell_damage.is_empty() {
+        let px: u32 = shell_damage.iter().map(|r| r.width * r.height).sum();
+        damages.insert(
+            0,
+            (
+                format!("damage shell ({} rects, {px} px)", shell_damage.len()),
+                shell_damage,
+            ),
+        );
+    }
+    if let Some((cols, rows)) = args.regions {
+        let tiles: Vec<Region> = (0..rows)
+            .flat_map(|row| {
+                (0..cols).map(move |col| {
+                    let (x0, x1) = (w * col / cols, w * (col + 1) / cols);
+                    let (y0, y1) = (h * row / rows, h * (row + 1) / rows);
+                    Region::new(x0, y0, x1 - x0, y1 - y0)
+                })
             })
             .collect();
-        println!(
-            "{name}: {} draw tags, {} glyph runs",
-            encoding.draw_tags.len(),
-            encoding.resources.glyph_runs.len()
-        );
-        let mut damages: Vec<(String, Vec<Region>)> = vec![
-            (
-                "damage cursor 64x64".into(),
-                vec![Region::new(w / 2, h / 2, 64, 64)],
-            ),
-            ("damage bar 1600x48".into(), vec![Region::new(0, 0, w, 48)]),
-        ];
-        if !shell_damage.is_empty() {
-            let px: u32 = shell_damage.iter().map(|r| r.width * r.height).sum();
-            damages.insert(
-                0,
-                (
-                    format!("damage shell ({} rects, {px} px)", shell_damage.len()),
-                    shell_damage,
+        let px: u32 = tiles.iter().map(|r| r.width * r.height).sum();
+        damages.push((format!("damage {cols}x{rows} tiles ({px} px)"), tiles));
+    }
+    damages
+}
+
+/// Times one scene at one thread count: a cold frame, warm full frames, and
+/// each damage set.
+fn time(
+    args: &Args,
+    name: &str,
+    encoding: &vello_encoding::Encoding,
+    buf: &mut [u8],
+    damages: &[(String, Vec<Region>)],
+    threads: u16,
+) {
+    let (w, h) = args.size;
+    println!(" threads {threads}");
+    let options = Options {
+        threads,
+        cached_blur: args.cached_blur,
+    };
+    let mut raster = CpuRasterizer::new(options);
+    let cold = run(&mut raster, encoding, buf, args.size, None);
+    report(
+        &format!(
+            "cold full (glyph {} blur {})",
+            cold.stats.glyph_misses, cold.stats.blur_misses
+        ),
+        &[cold],
+    );
+    let samples: Vec<_> = (0..args.runs)
+        .map(|_| run(&mut raster, encoding, buf, args.size, None))
+        .collect();
+    report("full frame", &samples);
+    if let Some(dir) = &args.png {
+        std::fs::create_dir_all(dir).unwrap();
+        let file = std::fs::File::create(dir.join(format!("{name}-t{threads}.png"))).unwrap();
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.write_header().unwrap().write_image_data(buf).unwrap();
+    }
+    for (label, regions) in damages {
+        let samples: Vec<_> = (0..args.runs)
+            .map(|_| run(&mut raster, encoding, buf, args.size, Some(regions)))
+            .collect();
+        report(label, &samples);
+    }
+}
+
+/// Ten thousand small draws spread over the target: a scene whose draws are
+/// many but whose changed places are few.
+fn many((w, h): (u32, u32)) -> vello::Scene {
+    use vello::kurbo::{Affine, Rect};
+    use vello::peniko::{Color, Fill};
+    let mut scene = vello::Scene::new();
+    let (w, h) = (f64::from(w), f64::from(h));
+    let (cols, rows) = (125_u32, 80_u32);
+    for row in 0..rows {
+        for col in 0..cols {
+            let x = f64::from(col) * w / f64::from(cols);
+            let y = f64::from(row) * h / f64::from(rows);
+            let shade = ((row * 7 + col * 3) % 200) as u8;
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgb8(shade, 0x80, 0x40),
+                None,
+                &Rect::new(
+                    x,
+                    y,
+                    x + w / f64::from(cols) - 1.0,
+                    y + h / f64::from(rows) - 1.0,
                 ),
             );
-        }
-        let mut buf = vec![0u8; (w * h * 4) as usize];
-        for &threads in &args.threads {
-            println!(" threads {threads}");
-            let options = Options {
-                threads,
-                cached_blur: args.cached_blur,
-            };
-            let mut raster = CpuRasterizer::new(options);
-            let cold = run(&mut raster, &encoding, &mut buf, args.size, None);
-            report(
-                &format!(
-                    "cold full (glyph {} blur {})",
-                    cold.stats.glyph_misses, cold.stats.blur_misses
-                ),
-                &[cold],
-            );
-            let samples: Vec<_> = (0..args.runs)
-                .map(|_| run(&mut raster, &encoding, &mut buf, args.size, None))
-                .collect();
-            report("full frame", &samples);
-            if let Some(dir) = &args.png {
-                std::fs::create_dir_all(dir).unwrap();
-                let file =
-                    std::fs::File::create(dir.join(format!("{name}-t{threads}.png"))).unwrap();
-                let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
-                enc.set_color(png::ColorType::Rgba);
-                enc.write_header().unwrap().write_image_data(&buf).unwrap();
-            }
-            for (label, regions) in &damages {
-                let samples: Vec<_> = (0..args.runs)
-                    .map(|_| run(&mut raster, &encoding, &mut buf, args.size, Some(regions)))
-                    .collect();
-                report(label, &samples);
-            }
         }
     }
+    scene
 }
 
 /// Six overlapping windows with the shell's shadow, at fractional positions.

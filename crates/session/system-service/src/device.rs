@@ -18,6 +18,8 @@ pub enum Change {
     PowerOff,
     LogOut,
     UpdateNow,
+    /// Finish the update that waits for the desktop, restarting it in place.
+    RestartDesktop,
     /// The zone the person picked: following the device stops.
     Zone(String),
     /// The zone where the device is, while it follows the device.
@@ -77,6 +79,7 @@ impl System for OsSystem {
             firmware: os_actions::get_firmware_updates()
                 .ok()
                 .map(|offered| offered.len()),
+            fell_back: crate::update::fallbacks(),
             ..Update::of(staged, live.as_ref())
         }
     }
@@ -108,6 +111,7 @@ impl System for OsSystem {
             Change::PowerOff => perform_session_action(SessionAction::ShutDown),
             Change::LogOut => perform_session_action(SessionAction::Logout),
             Change::UpdateNow => crate::update::update_now(),
+            Change::RestartDesktop => crate::update::restart_desktop(),
             Change::Zone(zone) => {
                 // A zone the person picks turns following the device off.
                 settings_store::clock::AUTOMATIC_ZONE

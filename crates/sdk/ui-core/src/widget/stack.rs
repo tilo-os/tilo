@@ -164,7 +164,7 @@ impl Widget for Stack {
     /// bounds, as a `Container` does; a plain stack paints nothing of its own.
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
         if self.permission_scope.is_some() || !self.presence_path.is_empty() {
-            if self.needs_redraw() {
+            if self.needs_redraw() || self.needs_animation_frame() {
                 regions.push(self.rect);
             }
         } else {

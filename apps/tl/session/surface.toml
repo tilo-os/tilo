@@ -662,6 +662,16 @@ id = "close-tab"
 kind = "outside"
 params = []
 
+[[resources.verbs]]
+id = "wait-window"
+kind = "outside"
+params = []
+
+[[resources.verbs]]
+id = "force-quit-app"
+kind = "outside"
+params = []
+
 [[resources]]
 instances = true
 kind = "so.tilo.session.agent-run"
@@ -735,6 +745,15 @@ name = "permille"
 required = true
 type = "int"
 
+[[resources.verbs]]
+id = "maximize-strip"
+kind = "undoable"
+
+[[resources.verbs.params]]
+name = "on"
+required = false
+type = "bool"
+
 [[resources]]
 instances = true
 kind = "arrangement.place"
@@ -753,6 +772,11 @@ type = "bool"
 
 [[resources.verbs]]
 id = "close"
+kind = "undoable"
+params = []
+
+[[resources.verbs]]
+id = "activate"
 kind = "undoable"
 params = []
 

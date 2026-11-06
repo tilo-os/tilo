@@ -3,13 +3,12 @@
 //!
 //! The workspace's host is the SDK's own, `tilo-relay room --persistent`, on
 //! this machine: it governs the workspace, so it keys every record's channel
-//! and what one person does reaches everyone else, and it admits people one
-//! by one as persons of their own (`tilo_relay_protocol::room_operator`).
-//! This module is that host's operator and the workspace's door: every
-//! browser that opens the served join page creates a person of its own, asks
-//! `/__tilo/room/join`, and is pre-admitted as an Editor of the workspace.
-//! The app is an author of the workspace (`--author-app`), so members write
-//! through it.
+//! and what one person does reaches everyone else. The workspace is listed in
+//! the host's directory at its default role, so its door admits each person
+//! on their own: every browser that opens the served join page creates a
+//! person of its own, asks the page server's `/join`, and the page server asks
+//! the host's door for them. The app is an author of the workspace
+//! (`--author-app`), so members write through it.
 //!
 //! It is for development on this machine. Anyone who reaches the page is
 //! let in; the page server and the host listen on loopback.
@@ -19,14 +18,16 @@ use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command as ProcessCommand, Stdio};
+use std::sync::Mutex;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
-use sha2::{Digest as _, Sha256};
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::directory::door_path;
+use tilo_relay_protocol::web::API_PREFIX;
+use tilo_workspace_directory::{Person, client, join, web_origin};
 
 use super::Project;
 
@@ -34,8 +35,6 @@ use super::Project;
 const OPERATOR: &str = "tilo-room-operator ";
 /// How long the host has to start serving.
 const START_TIMEOUT: Duration = Duration::from_secs(120);
-/// How long a join waits for the host's pre-admission.
-const ADMIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A running shared workspace.
 pub struct SharedWorkspace {
@@ -48,8 +47,6 @@ pub struct SharedWorkspace {
     pub name: String,
     child: Mutex<Child>,
     stdin: Mutex<ChildStdin>,
-    /// Joins waiting on their pre-admission, by token digest.
-    waiting: Arc<Mutex<HashMap<String, mpsc::Sender<Value>>>>,
     /// The workspace's record of each app, once a page opened it, kept in
     /// `records_file` across restarts.
     records: Mutex<Records>,
@@ -105,8 +102,8 @@ pub struct RecordClaim {
     pub open: bool,
 }
 
-/// What a page needs to join: the invitation the host signed for its person
-/// and the one-time token that redeems it at once.
+/// What a page needs to join: the invitation the workspace's door issued for
+/// its person and the one-time token that redeems it at once.
 pub struct Admission {
     pub invitation: String,
     pub admission_token: String,
@@ -141,12 +138,17 @@ impl SharedWorkspace {
         }
         let [web, plain] = free_ports()?;
         let app_id = project.manifest.package.id.clone();
+        let name = project.display_name();
         let mut child = ProcessCommand::new(&relay)
             .arg("room")
             .arg("--state")
             .arg(state.join("relay"))
             .args(["--persistent", &project.package])
-            .args(["--workspace-name", &project.display_name()])
+            .args(["--workspace-name", &name])
+            // Listed, so its door admits whoever asks, at the app's default
+            // role: the page server asks it for each person.
+            .args(["--listing-description", &format!("{name} in a browser")])
+            .args(["--default-role", "editor"])
             .arg("--root-file")
             .arg(&owner_root)
             .arg("--room-id-file")
@@ -166,8 +168,7 @@ impl SharedWorkspace {
             .with_context(|| format!("starting {}", relay.display()))?;
         let stdin = child.stdin.take().context("the host has no stdin")?;
         let stdout = child.stdout.take().context("the host has no stdout")?;
-        let waiting: Arc<Mutex<HashMap<String, mpsc::Sender<Value>>>> = Arc::default();
-        let started_rx = follow_operator(stdout, Arc::clone(&waiting))?;
+        let started_rx = follow_operator(stdout)?;
         let started = started_rx.recv_timeout(START_TIMEOUT).map_err(|_| {
             let _ = child.kill();
             anyhow::anyhow!("the host did not start in two minutes")
@@ -191,10 +192,9 @@ impl SharedWorkspace {
             origin: format!("http://127.0.0.1:{plain}"),
             relay_room,
             app_id,
-            name: project.display_name(),
+            name,
             child: Mutex::new(child),
             stdin: Mutex::new(stdin),
-            waiting,
             records: Mutex::new(Records {
                 opened,
                 opening: HashMap::new(),
@@ -238,46 +238,42 @@ impl SharedWorkspace {
             .with_context(|| format!("writing {}", self.records_file.display()))
     }
 
-    /// Pre-admit the person `user_public_key` (hex), named `label`, as an
-    /// Editor of the workspace.
+    /// Ask the workspace's door to admit the person `user_public_key` (hex),
+    /// named `label`, at the workspace's default role.
     pub fn admit(&self, user_public_key: &str, label: &str) -> Result<Admission> {
-        if user_public_key.len() != 64 || !user_public_key.bytes().all(|b| b.is_ascii_hexdigit()) {
-            bail!("no person to admit");
-        }
-        let token = hex::encode(random::<32>()?);
-        let digest = hex::encode(Sha256::digest(token.as_bytes()));
-        let (tx, rx) = mpsc::channel();
-        self.waiting.lock_recover().insert(digest.clone(), tx);
-        let command = json!({
-            "op": "pre_admit",
-            "user_public_key": user_public_key.to_ascii_lowercase(),
-            "token_sha256": digest,
-            "label": label,
-            "role": "Editor",
-        });
-        writeln!(self.stdin.lock_recover(), "{command}").context("asking the host")?;
-        let answer = rx
-            .recv_timeout(ADMIT_TIMEOUT)
-            .context("the host did not answer")?;
-        let field = |key: &str| answer.get(key).and_then(Value::as_str);
-        match field("event") {
-            Some("pre_admitted") => {
-                let invitation = field("invitation")
-                    .context("the host sent no invitation")?
-                    .to_owned();
-                let people = {
-                    let mut people = self.people.lock_recover();
-                    people.insert(user_public_key.to_ascii_lowercase(), label.to_owned());
-                    serde_json::to_vec(&*people)
-                };
-                let _ = people.map(|json| std::fs::write(&self.people_file, json));
-                Ok(Admission {
-                    invitation,
-                    admission_token: token,
-                })
-            }
-            _ => bail!("{}", field("reason").unwrap_or("the workspace refused")),
-        }
+        let mut user = [0_u8; 32];
+        hex::decode_to_slice(user_public_key, &mut user)
+            .map_err(|_| anyhow!("no person to admit"))?;
+        let door = web_origin(&format!(
+            "{}{API_PREFIX}/{}",
+            self.origin,
+            door_path(&self.relay_room)
+        ))
+        .map_err(anyhow::Error::msg)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("starting the door's runtime")?;
+        let granted = runtime
+            .block_on(join(
+                &client().map_err(anyhow::Error::msg)?,
+                &door,
+                &Person {
+                    user,
+                    name: label.to_owned(),
+                },
+            ))
+            .map_err(anyhow::Error::msg)?;
+        let people = {
+            let mut people = self.people.lock_recover();
+            people.insert(hex::encode(user), label.to_owned());
+            serde_json::to_vec(&*people)
+        };
+        let _ = people.map(|json| std::fs::write(&self.people_file, json));
+        Ok(Admission {
+            invitation: granted.invitation,
+            admission_token: granted.admission_token,
+        })
     }
 }
 
@@ -296,13 +292,9 @@ impl Drop for SharedWorkspace {
     }
 }
 
-/// Read the host's operator events from `stdout` on a thread of its own:
-/// hand each pre-admission's answer to the join `waiting` on it, and answer
-/// the host's start on the returned channel.
-fn follow_operator(
-    stdout: std::process::ChildStdout,
-    waiting: Arc<Mutex<HashMap<String, mpsc::Sender<Value>>>>,
-) -> Result<mpsc::Receiver<Value>> {
+/// Read the host's operator events from `stdout` on a thread of its own and
+/// answer the host's start on the returned channel.
+fn follow_operator(stdout: std::process::ChildStdout) -> Result<mpsc::Receiver<Value>> {
     let (started_tx, started_rx) = mpsc::channel::<Value>();
     std::thread::Builder::new()
         .name("tilo-app-workspace".into())
@@ -315,12 +307,7 @@ fn follow_operator(
                     continue;
                 };
                 if event.get("event").and_then(Value::as_str) == Some("started") {
-                    let _ = started_tx.send(event.clone());
-                }
-                if let Some(digest) = event.get("token_sha256").and_then(Value::as_str)
-                    && let Some(waiter) = waiting.lock_recover().remove(digest)
-                {
-                    let _ = waiter.send(event);
+                    let _ = started_tx.send(event);
                 }
             }
         })

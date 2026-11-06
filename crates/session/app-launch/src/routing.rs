@@ -165,7 +165,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("a directory");
         let path = directory.path().join("org.example.Viewer.desktop");
         std::fs::write(&path, source).expect("the entry");
-        let mut scan = desktop_entry::scan_dirs(&[directory.path().to_path_buf()], &[]);
+        let mut scan = desktop_entry::scan_dirs(&[directory.path().to_path_buf()], &[], &[]);
         assert_eq!(scan.entries.len(), 1, "{:?}", scan.stats);
         // The directory goes away with the test; only the parsed entry is
         // read afterwards.

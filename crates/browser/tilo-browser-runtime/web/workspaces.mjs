@@ -15,9 +15,10 @@
  *
  * Joining through the host takes the person's identity from the caller,
  * which owns creating and keeping it: a person who already joined that host
- * reconnects; otherwise the host pre-admits the person
- * (`POST <admission>join`) and the page joins with the invitation and
- * one-time token at once, with no pairing code.
+ * reconnects; otherwise the door admits the person (`POST <admission>join`)
+ * and the page joins with the invitation and one-time token at once, with no
+ * pairing code. A workspace that is full answers `503` with `Retry-After`:
+ * the page waits that long and asks again, until there is a seat.
  *
  * A host set up again (a new device key behind the same origin) is not the
  * one this browser kept the person's state for. Nothing kept is reused or
@@ -49,20 +50,10 @@
  * can never open. Only that answer, from the origin itself, forgets one: a
  * host that cannot be reached, or fails, says nothing about its workspaces, so
  * they stay, marked as not opening last time (`settleFailedWorkspace`).
- *
- * Spectating (the homepage embed): the page makes a device key in memory
- * only and asks the host to certify it as the workspace's one read-only
- * spectator person (`POST <admission>spectate`), then connects through the
- * ordinary `connectPeer` path with that certificate, watching only (it
- * writes nothing, and takes the keys of what members seal from the workspace's
- * node). Nothing is stored and
- * no person is created, so a visitor who only scrolls past leaves no member
- * behind.
  */
 import {AdmissionError} from './admission.mjs';
-import {connectPeer, fitDisplayName, httpsPost, identityProfile, joinWorkspace, pairDevice, renewDevice, withCustody} from './peer.mjs';
+import {connectPeer, fitDisplayName, identityProfile, joinWorkspace, pairDevice, renewDevice, withCustody} from './peer.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
-import {memberText} from './json-text.mjs';
 import {backoffDelay} from './reconnect.mjs';
 import {hostUnreachable} from './session-refusal.mjs';
 
@@ -330,6 +321,43 @@ export function workspaceActions(choices, {current = null} = {}) {
   });
 }
 
+/**
+ * The workspaces this page holds, as the directory sheet shows them
+ * (`mountDesktop({directory: {held}})`, `Held` in the runtime): each by the
+ * workspace id a site lists it as, and by the host action id that opens it.
+ * `current` (the scope in front) comes too, so the workspace the page is in
+ * says Open rather than Join.
+ */
+export function heldWorkspaces({entered = [], current = null} = {}) {
+  const held = [];
+  const seen = new Set();
+  const add = (origin, room, name) => {
+    if (!origin || !room || seen.has(room)) return;
+    seen.add(room);
+    const at = originOf(origin);
+    held.push({workspace: room, key: `${OPEN_WORKSPACE}${at}/${room}`, name: name || new URL(at).host});
+  };
+  if (current?.kind === 'room') add(current.host, current.room, current.name ?? null);
+  for (const entry of entered) add(entry?.origin, entry?.room, entry?.name ?? null);
+  return held;
+}
+
+/**
+ * Join the workspace a site's directory let this person into
+ * (`mountDesktop({onJoinGranted})`): the sheet's Join already asked the
+ * door, so the page joins with what it answered — the invitation, and the
+ * one-time token only this page can redeem — through the same join a link's
+ * invitation takes (`join`, the page's `joinWorkspace`), then shows it.
+ * Resolves to `{peer, origin, room, name}`.
+ */
+export async function joinGranted({origin, invitation, admissionToken = '', workspace = null, name = null}, {join, displayName = null, ...connectOptions} = {}) {
+  if (!origin || !invitation) throw new TypeError('a granted join names the origin that granted it, and its invitation');
+  if (typeof join !== 'function') throw new TypeError('a granted join needs the page\'s join');
+  const peer = await join({...connectOptions, origin, invitation, admissionToken, ...(displayName ? {displayName} : {})});
+  const room = peer?.workspace ?? workspace;
+  return {peer, origin: originOf(origin), room, name: name || room};
+}
+
 /** What a person the host took out of a workspace is told. */
 export const removedFrom = name => `You were removed from ${name || 'this workspace'}. To come back, ask someone in it for a new invitation.`;
 
@@ -412,7 +440,6 @@ export function chooseDisplayName(userPublicKey, name, store = globalThis.localS
   return chosen;
 }
 
-const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 const CODES = {400: 'invalid', 403: 'cooling-down', 429: 'too-many', 503: 'full'};
 
 function admissionDoor(workspace) {
@@ -664,11 +691,13 @@ export function hostToReconnect(origin, userPublicKey, memberships = globalThis.
   return kept && !kept.paired && kept.userPublicKey === userPublicKey ? kept : null;
 }
 
-/** Resolves after the backoff before try `attempt` (`reconnect.mjs`), or
+/** Resolves after the backoff before try `attempt` (`reconnect.mjs`), or the
+ * least wait the door asked for (`retryAfter`, seconds), whichever is longer;
  * rejects once `signal` aborts. */
-const backOff = ({attempt, signal}) => new Promise((resolve, reject) => {
+const backOff = ({attempt, retryAfter = null, signal}) => new Promise((resolve, reject) => {
   signal?.throwIfAborted();
-  const timer = setTimeout(resolve, backoffDelay(attempt));
+  const asked = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 0;
+  const timer = setTimeout(resolve, Math.max(backoffDelay(attempt), asked));
   signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, {once: true});
 });
 
@@ -732,7 +761,9 @@ export async function joinViaHost({
       }
       throw error;
     }
-    const {invitation, admissionToken, origin} = admitted;
+    // A door that names no origin is its workspace's own (`directory.rs`
+    // in the relay's protocol): that is the host this page asked.
+    const {invitation, admissionToken, origin = workspace.host.origin} = admitted;
     const sameHost = custody && known && originOf(origin) === originOf(known.origin);
     if (custody && !sameHost) await custody.close();
     let device = sameHost ? custody : null;
@@ -755,26 +786,38 @@ export async function joinViaHost({
    * this browser no longer holds (its storage was cleared, or a join the
    * host admitted never finished here) is never admitted under another, so
    * the person comes again as a new device of theirs. A person the workspace
-   * bans is told so; anything else passes (a host still starting, a crowd
-   * at the door), so the page waits (`wait`: the reconnect screen, with
-   * backoff) and asks again. */
+   * bans is told so; a crowd at the door (the workspace is full, or this
+   * address asks too often) is waited out, as long as the door asked. Both
+   * pass through `wait` (the reconnect screen, with the backoff and the
+   * door's own `Retry-After`), so the page says where it stands and tries
+   * again rather than stopping at an error. */
   const admitAnew = async (custody, refused = false) => {
     let held = custody;
     let since = null;
-    for (let attempt = 0; ; attempt += 1) {
+    /** How many times this tab has come again as a new device. */
+    let renewals = 0;
+    /** How many times the page has waited. */
+    let waits = 0;
+    for (;;) {
       try {
-        return await throughDoor(held, refused, attempt > 0);
+        return await throughDoor(held, refused, renewals > 0);
       } catch (error) {
-        if (error?.code !== 'refused') throw error;
-        if (/banned/.test(error.reason ?? '')) {
-          throw Object.assign(new AdmissionError('removed', removedFrom(workspace.name)), {reason: error.reason});
+        if (error?.code === 'refused') {
+          if (/banned/.test(error.reason ?? '')) {
+            throw Object.assign(new AdmissionError('removed', removedFrom(workspace.name)), {reason: error.reason});
+          }
+          // The first new device took this tab's key in place of the old one.
+          if (renewals > 0) held = null;
+          renewals += 1;
+          console.warn('host admission: the host refused the door\'s invitation, joining as a new device', error.reason);
+          // The first new device goes at once; later ones after a wait.
+          if (renewals === 1) continue;
+        } else if (!['full', 'too-many'].includes(error?.code)) {
+          throw error;
         }
-        // The first new device took this tab's key in place of the old one.
-        if (attempt > 0) held = null;
         since ??= Date.now();
-        console.warn('host admission: the host refused the door\'s invitation, joining as a new device', error.reason);
-        // The first new device goes at once; later ones after a wait.
-        if (attempt > 0) await wait({attempt: attempt - 1, error, since, signal: connectOptions.signal});
+        await wait({attempt: waits, error, retryAfter: error.retryAfter ?? null, since, signal: connectOptions.signal});
+        waits += 1;
       }
     }
   };
@@ -844,70 +887,6 @@ export async function pairViaHost({
   return peer;
 }
 
-/** A device key that lives only in this page: never stored, gone on reload. */
-async function memoryCustody(crypto) {
-  let pair;
-  try {
-    pair = await crypto.subtle.generateKey({name: 'Ed25519'}, false, ['sign', 'verify']);
-  } catch (error) {
-    throw new HostAdmissionError('unavailable', `this browser cannot watch: ${error?.message ?? error}`);
-  }
-  const publicKey = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey));
-  return {
-    kind: 'webcrypto-ed25519',
-    publicKey,
-    sign: async message => new Uint8Array(await crypto.subtle.sign({name: 'Ed25519'}, pair.privateKey, message)),
-    close: async () => {},
-    destroy: async () => {},
-  };
-}
-
-/** `{get, put, delete}` peer state that is gone with the page. */
-function memoryStore() {
-  const map = new Map();
-  return {get: async key => map.get(key), put: async (key, value) => { map.set(key, value); }, delete: async key => { map.delete(key); }};
-}
-
-/**
- * Join `workspace` once its door has a seat: a page that watches because
- * there was none asks the door's `presence` every `retryAfter` seconds (with
- * jitter, so a full workspace is not asked by everyone at once) and calls `join`
- * only when it says `open`. Asking takes no seat, so the page keeps watching
- * on the one it has instead of trading it for a new one each time. Returns
- * a function that stops asking.
- */
-export function joinWhenSeated({workspace, retryAfter, join, fetch = globalThis.fetch,
-  schedule = (run, ms) => setTimeout(run, ms), cancel = clearTimeout, random = Math.random}) {
-  const wait = Math.max(5, retryAfter ?? 30);
-  let timer, stopped = false;
-  const next = () => { if (!stopped) timer = schedule(check, (wait + random() * wait / 2) * 1000); };
-  async function check() {
-    if (!stopped && (await doorPresence(workspace, fetch))?.open === true) {
-      stopped = true;
-      join();
-      return;
-    }
-    next();
-  }
-  next();
-  return () => { stopped = true; cancel(timer); };
-}
-
-/**
- * What `workspace`'s door says about the workspace now (`presence`), without
- * taking a seat: `open`, whether a guest would get in; `joins`, whether
- * anyone joins at all now; `admission`, `open` or `invite` (members and
- * invitees only); or `null` when it does not answer.
- */
-export async function doorPresence(workspace, fetch = globalThis.fetch) {
-  try {
-    const response = await fetch(new URL('presence', admissionDoor(workspace)), {credentials: 'omit'});
-    return response.ok ? await response.json() : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Whether this browser opens the person's own desktop under an entry whose
  * home workspace is `home`. Whom the home's door lets in by itself gets a
@@ -921,31 +900,17 @@ export async function ownDesktopOpen(home, {memberships = globalThis.localStorag
   let kept = [];
   try { kept = membershipOrigins(undefined, memberships); } catch { /* No storage: nothing kept. */ }
   if (kept.length) return true;
-  const admission = (await doorPresence(home, fetch))?.admission;
+  const admission = await doorAdmission(home, fetch);
   return typeof admission === 'string' && admission !== 'invite';
 }
 
-/**
- * Watch `workspace` read-only as its spectator person. Rejects with
- * `HostAdmissionError` code `full` above the host's spectator cap, so an
- * embedding site can show its static fallback.
- */
-export async function spectate({
-  workspace, fetch = globalThis.fetch, crypto = globalThis.crypto, connect = connectPeer,
-  runtime, loadRuntime = async () => (await import('./host.mjs')).loadRuntime(), ...connectOptions
-}) {
-  const custody = await memoryCustody(crypto);
-  const {certificate, origin, room} = await ask({
-    workspace, path: 'spectate', fetch, body: {devicePublicKey: hex(custody.publicKey)},
-  });
-  runtime ??= await loadRuntime();
-  const hostText = await runtime.hostInfo(httpsPost(origin, fetch));
-  // Both certificates are passed on as the JSON text they arrived as: their
-  // nanosecond timestamps exceed what a JavaScript number holds exactly, and
-  // a rounded copy no longer matches its signature (json-text.mjs).
-  return connect({
-    ...connectOptions, origin, workspace: room, runtime, custody, store: memoryStore(), fetch,
-    userPublicKey: hex(JSON.parse(certificate).user_public_key), label: 'Spectator', watching: true,
-    deviceCertificate: `{"cert":${certificate},"hostCert":${memberText(hostText, 'hostCert')}}`,
-  });
+/** Who `home`'s door admits now, as its presence says it (`open` or
+ * `invite`), or `null` when it does not say. */
+async function doorAdmission(home, fetch) {
+  try {
+    const response = await fetch(new URL('presence', home.admission), {credentials: 'omit'});
+    return response.ok ? (await response.json())?.admission ?? null : null;
+  } catch {
+    return null;
+  }
 }

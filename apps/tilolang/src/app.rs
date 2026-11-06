@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use tilolang_tilo::host::Host;
+use tilolang_tilo::personal::{self, Personal};
 use tilolang_tilo::tilolang::PackageMeta;
 use ui::framework::{AppName, OpeningCx, OpeningView, ResourceApp, ViewCx};
 use ui::widget::Element;
@@ -189,6 +190,18 @@ impl ResourceApp for TlApp {
             if let Some(record) = cx.record_id().filter(|id| !id.is_package_primary()) {
                 window = window.of_record(record.as_str());
             }
+            window
+        };
+        // What the person picked in their views and what they have seen is theirs: it is kept in
+        // the workspace's record of it, and given back to the window when it opens.
+        let personal_record = cx.shared_workspace::<Personal>(personal::OWNER);
+        let window = window.keeping_personal(personal_record);
+        // A live window tells the person what the workspace's records remind them of, as the
+        // platform's notifications; the word it keeps in the person's own record is what stops
+        // their other devices from telling them again.
+        let window = if cx.mode() == ui::framework::RunMode::Live {
+            window.ringing(ui::host::current().notifications, cx.waker())
+        } else {
             window
         };
         // What its runtime invokes is decided by the person's standing as the host keeps it.

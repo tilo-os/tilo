@@ -69,6 +69,8 @@ fn desk_tree() -> DesktopTree {
             note: String::new(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }];
     let group = WindowGroup {
         id: 3,

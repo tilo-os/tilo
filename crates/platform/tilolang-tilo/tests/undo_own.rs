@@ -223,7 +223,7 @@ fn a_task_retitled_by_somebody_else_since_keeps_their_title_when_its_first_title
         &ada,
         "ada",
         TASKS_APP,
-        "add",
+        "new_task",
         vec![root(&ada, TASKS_APP), Value::text("")],
     ));
     ada.commit();
@@ -275,14 +275,14 @@ fn a_removed_task_comes_back_after_the_task_beside_it_changed() {
         &ada,
         "ada",
         TASKS_APP,
-        "add",
+        "new_task",
         vec![tasks.clone(), Value::text("Milk")],
     ));
     let eggs = target(&call(
         &ada,
         "ada",
         TASKS_APP,
-        "add",
+        "new_task",
         vec![tasks.clone(), Value::text("Eggs")],
     ));
     ada.commit();
@@ -383,4 +383,191 @@ fn an_agent_run_undone_while_a_person_edited_the_same_note_keeps_the_persons_edi
             r.name
         );
     }
+}
+
+/// The tasks of the workspace's list, in the order they stand.
+fn tasks_in(r: &Replica) -> Vec<Value> {
+    match r
+        .host
+        .runtime()
+        .read(&target(&root(r, TASKS_APP)), "items")
+        .unwrap()
+    {
+        Value::List(items) => items,
+        other => panic!("a list: {other:?}"),
+    }
+}
+
+/// The task with this title, as its person's list holds it.
+fn task_titled(r: &Replica, title: &str) -> ResourceRef {
+    tasks_in(r)
+        .into_iter()
+        .map(|item| target(&item))
+        .find(|task| text(r, task, "title") == title)
+        .unwrap_or_else(|| panic!("{title}"))
+}
+
+/// Whether a task is done.
+fn done(r: &Replica, task: &ResourceRef) -> Value {
+    r.host.runtime().read(task, "done").unwrap()
+}
+
+/// A check is one step: one person's Undo opens the task and every task it took with it, and
+/// the steps before it stand.
+#[test]
+fn undo_opens_a_checked_task_and_every_task_under_it_at_once() {
+    let (mut ada, _ben) = workspace();
+    let tasks = root(&ada, TASKS_APP);
+    let parent = target(&call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "new_task",
+        vec![tasks.clone(), Value::text("Write the launch post")],
+    ));
+    ada.commit();
+    call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "add_subtask",
+        vec![
+            tasks.clone(),
+            Value::resource(&parent),
+            Value::text("Outline"),
+        ],
+    );
+    ada.commit();
+    let outline = task_titled(&ada, "Outline");
+    call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "add_subtask",
+        vec![
+            tasks,
+            Value::resource(&outline),
+            Value::text("Gather facts"),
+        ],
+    );
+    ada.commit();
+    let facts = task_titled(&ada, "Gather facts");
+    call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "check",
+        vec![Value::resource(&parent)],
+    );
+    ada.commit();
+    for task in [&parent, &outline, &facts] {
+        assert_eq!(done(&ada, task), Value::Bool(true));
+    }
+
+    undo(&mut ada);
+    for task in [&parent, &outline, &facts] {
+        assert_eq!(
+            done(&ada, task),
+            Value::Bool(false),
+            "one undo opens the whole check"
+        );
+    }
+    assert_eq!(tasks_in(&ada).len(), 3, "the tasks are still there");
+    // The adds before it are steps of their own: the next Undo takes the last of them back.
+    undo(&mut ada);
+    assert_eq!(
+        tasks_in(&ada).len(),
+        2,
+        "the check was one step, so the undo before it was the add"
+    );
+}
+
+/// The tasks as they stand, by id.
+fn order(r: &Replica, tasks: &ResourceRef) -> Vec<String> {
+    match r.host.runtime().read(tasks, "items").unwrap() {
+        Value::List(items) => items.iter().map(|item| target(item).id_string()).collect(),
+        other => panic!("a list of tasks: {other:?}"),
+    }
+}
+
+/// The task a task stands under, by id.
+fn under(r: &Replica, task: &ResourceRef) -> Option<String> {
+    match r.host.runtime().read(task, "parent").unwrap() {
+        Value::Opt(Some(parent)) => Some(target(&parent).id_string()),
+        Value::Opt(None) => None,
+        other => panic!("a parent: {other:?}"),
+    }
+}
+
+/// Indenting a task under the one over it, and outdenting it again, are one step each: undo
+/// takes the task back out from under its parent, and the next undo puts it back there.
+#[test]
+fn a_task_indented_under_another_is_put_back_in_one_undo() {
+    let (mut ada, _) = workspace();
+    let tasks = target(&root(&ada, TASKS_APP));
+    let make = |ada: &Replica, title: &str| {
+        target(&call(
+            ada,
+            "ada",
+            TASKS_APP,
+            "new_task",
+            vec![Value::resource(&tasks), Value::text(title)],
+        ))
+    };
+    let book = make(&ada, "Book a haircut");
+    let find = make(&ada, "Find a salon");
+    let ring = make(&ada, "Call the salon");
+    ada.commit();
+    let id = |task: &ResourceRef| task.id_string();
+
+    // Tab puts each task under the task the list shows over it at its level, the first task
+    // here for both: one change each.
+    for (task, above) in [(&find, &book), (&ring, &book)] {
+        call(
+            &ada,
+            "ada",
+            TASKS_APP,
+            "indent",
+            vec![Value::resource(task), Value::some(Value::resource(above))],
+        );
+        ada.commit();
+    }
+    assert_eq!(under(&ada, &ring).as_deref(), Some(id(&book).as_str()));
+    assert_eq!(
+        order(&ada, &tasks),
+        [id(&book), id(&find), id(&ring)],
+        "the subtasks stand under their parent, in order"
+    );
+
+    // Shift+Tab lifts the second out beside its parent, and one undo puts it back.
+    call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "outdent",
+        vec![Value::resource(&ring)],
+    );
+    ada.commit();
+    assert_eq!(under(&ada, &ring), None);
+    assert_eq!(
+        order(&ada, &tasks),
+        [id(&book), id(&ring), id(&find)],
+        "out again it stands beside the task it was under"
+    );
+    undo(&mut ada);
+    assert_eq!(
+        under(&ada, &ring).as_deref(),
+        Some(id(&book).as_str()),
+        "one undo takes the outdent back"
+    );
+    assert_eq!(
+        order(&ada, &tasks),
+        [id(&book), id(&find), id(&ring)],
+        "and stands it under its parent again"
+    );
+
+    // The undo of the indent itself takes the task back out to the top level.
+    undo(&mut ada);
+    assert_eq!(under(&ada, &ring), None);
+    assert_eq!(order(&ada, &tasks), [id(&book), id(&find), id(&ring)]);
 }

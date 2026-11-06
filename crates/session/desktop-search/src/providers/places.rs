@@ -115,7 +115,7 @@ pub struct Continue {
     names: Vec<(String, String)>,
     /// Now, in Unix seconds: how long ago the person was somewhere.
     now: u64,
-    app_name: Box<dyn Fn(&str) -> String>,
+    app_name: Box<dyn Fn(&str) -> String + Send + Sync>,
 }
 
 impl Continue {
@@ -126,7 +126,7 @@ impl Continue {
         workspace: &str,
         open_tabs: Vec<u64>,
         now: u64,
-        app_name: impl Fn(&str) -> String + 'static,
+        app_name: impl Fn(&str) -> String + Send + Sync + 'static,
     ) -> Self {
         Self {
             places: recent
@@ -152,7 +152,7 @@ impl Continue {
         open_tabs: Vec<u64>,
         names: Vec<(String, String)>,
         now: u64,
-        app_name: impl Fn(&str) -> String + 'static,
+        app_name: impl Fn(&str) -> String + Send + Sync + 'static,
     ) -> Self {
         Self {
             places: recent.places().to_vec(),

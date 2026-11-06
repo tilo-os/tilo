@@ -46,6 +46,8 @@ mod native_history {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         };
         let mut tree = crate::seed_tree(&mut minter, "Studio", vec![notes]);
 

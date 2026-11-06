@@ -137,7 +137,7 @@ fn save_at(path: &Path, records: &Records) {
         std::fs::rename(&beside, path)
     })();
     if let Err(error) = written {
-        tracing::debug!(%error, "the wallpapers are not kept");
+        tracing::warn!(%error, "the wallpapers are not kept");
     }
 }
 

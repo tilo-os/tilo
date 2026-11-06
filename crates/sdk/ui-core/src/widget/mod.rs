@@ -1,4 +1,6 @@
 mod action_directory_identity;
+mod wheel;
+pub use wheel::{WHEEL_GESTURE_GAP, line_of_wheel, sideways_travel};
 mod action_emitter;
 mod disclosing;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
@@ -331,6 +333,17 @@ pub fn share_row(taffy: &mut TaffyTree<()>, node: NodeId, grow: f32) {
 #[must_use]
 pub fn holds_pointer(child: &dyn Widget) -> bool {
     child.wants_pointer_capture() || child.modal_capture().is_some()
+}
+
+/// Whether `widget` paints this frame: it changed itself, or a child is dirty
+/// or on its way (`needs_animation_frame`) and paints other pixels.
+#[must_use]
+pub fn redraw_or_children(dirty: bool, widget: &dyn Widget) -> bool {
+    let mut dirty = dirty;
+    widget.for_each_child(&mut |child: &dyn Widget| {
+        dirty |= child.needs_redraw() || child.needs_animation_frame();
+    });
+    dirty
 }
 
 /// Route `event` through a container's children, first handler wins. A
@@ -1474,6 +1487,13 @@ pub trait Widget {
         defaults::set_interaction_environment(self.children_mut(), environment);
     }
 
+    /// Tell this widget whether it stands in a window bar. A bar's controls are drawn
+    /// at the bar's control height whatever the pointer; the target a finger needs
+    /// reaches beyond the drawn shape, invisibly. The default propagates to children.
+    fn set_window_bar_control(&mut self, in_bar: bool) {
+        defaults::set_window_bar_control(self.children_mut(), in_bar);
+    }
+
     /// Pull model state into this widget before layout. The default syncs the
     /// children [`Widget::children_mut`] returns; a widget overrides it only to
     /// read state of its own, or to sync children it does not expose there.
@@ -1682,6 +1702,14 @@ pub trait Widget {
         None
     }
 
+    /// Offsets along `axis` that this widget, as a scroll view's content,
+    /// offers it to settle on, measured from its own leading edge: a board's
+    /// lanes ([`crate::widget::Board`]). None leaves a scroller stopping
+    /// wherever the hand left it.
+    fn snap_points(&self, axis: crate::widget::ScrollAxis, out: &mut Vec<f32>) {
+        let _ = (axis, out);
+    }
+
     /// One-shot request to open the host's action palette directly at a typed
     /// resource action. Parameter collection and permission checks remain host
     /// policy; widgets only name an address already present in `resources()`.
@@ -1811,6 +1839,15 @@ pub trait Widget {
 
     fn is_focused(&self) -> bool {
         false
+    }
+
+    /// The box a context menu opened from the keyboard stands against: the
+    /// item that has the keyboard, so the menu opens under it rather than
+    /// under the whole widget. A widget that holds items (a list) answers
+    /// for the one with the keyboard; `None` leaves the menu to stand under
+    /// the focused widget's own box.
+    fn context_menu_anchor(&self) -> Option<vello::kurbo::Rect> {
+        None
     }
 
     /// Whether a focused widget owns Tab instead of the host's focus
@@ -2121,13 +2158,9 @@ pub trait Widget {
         })
     }
 
-    /// Default `true`; the exception is a widget standing in for a window's
-    /// content whose first frame is not drawn yet (a process that has started
-    /// but not drawn, a stream from another device before its first picture).
-    /// Must **latch**: once `true`, never `false` again for the same content,
-    /// or an un-presenting widget would make a window vanish mid-resize. What
-    /// shows meanwhile is the framework's ([`crate::arriving`]), timed from
-    /// [`Widget::arrives_from`].
+    /// Default `true`; false only for a widget standing in for a window's
+    /// content whose first frame has not drawn. Must **latch**: once `true`,
+    /// never `false` again for the same content.
     fn presented(&self) -> bool {
         true
     }
@@ -2311,15 +2344,13 @@ pub trait Widget {
     }
 
     /// `App` polls this in `Event::AboutToWait`; without it a curve would
-    /// freeze partway until an unrelated event woke it again.
+    /// freeze until an unrelated event woke it.
     fn needs_animation_frame(&self) -> bool {
         defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
     }
 
-    /// Earliest wall-clock deadline at which this subtree needs a sync/redraw
-    /// even if there is no input. Unlike `needs_animation_frame`, this keeps
-    /// the event loop asleep until the requested instant and is appropriate
-    /// for filesystem/status polling rather than animation.
+    /// Earliest wall-clock deadline at which this subtree needs a sync or
+    /// redraw with no input: the loop sleeps until then (not animation).
     fn next_wake_deadline(&self) -> Option<Instant> {
         defaults::next_wake_deadline(&|visit| self.for_each_child(visit))
     }
@@ -2335,12 +2366,8 @@ pub trait Widget {
     }
 
     /// A deadline this subtree asked for ([`Self::next_wake_deadline`]) is
-    /// due at `now`: do the work it was for, and say whether anything the
-    /// subtree shows or publishes changed. The host syncs, and drops the
-    /// published resource tree, only when it did: a poll that found nothing
-    /// costs nothing more. The default says it did, so the host syncs as for
-    /// any wake; a widget overrides it only where it serves here every
-    /// deadline it asks for and reports every change that serving makes.
+    /// due at `now`: do the work it was for, and say whether anything
+    /// changed. The default says it did.
     fn serve_deadline(&mut self, _now: Instant) -> bool {
         true
     }
@@ -2354,13 +2381,22 @@ pub trait Widget {
         defaults::modal_capture(&|visit| self.for_each_child(visit))
     }
 
-    /// True if this subtree's structural composition (children
-    /// inserted/removed) changed since the last frame; the App rebuilds the
-    /// taffy tree when so. Reading clears it. The default drains every
-    /// retained child (no short-circuit, so no child keeps a stale flag) and
-    /// reports whether any was dirty; a leaf has no children and reports
-    /// `false`. A container that changes its own child list sets its own flag
-    /// and ORs it with this traversal.
+    /// Close every modal this subtree presents, as its own way out does (a
+    /// host whose surface is a modal sheet calls it when the shell takes the
+    /// sheet down). Whether any was presented; containers forward.
+    fn dismiss_presented_modal(&mut self) -> bool {
+        defaults::dismiss_presented_modal(self.children_mut())
+    }
+
+    /// Whether this subtree presents a modal still drawn (arriving, open or
+    /// leaving): the counterpart of [`Widget::dismiss_presented_modal`].
+    fn presents_modal(&self) -> bool {
+        defaults::presents_modal(self.modal_capture(), &|visit| self.for_each_child(visit))
+    }
+
+    /// True if this subtree's structural composition changed since the last
+    /// frame; reading clears it. The default drains every retained child and
+    /// reports whether any was dirty.
     fn take_structure_dirty(&mut self) -> bool {
         defaults::take_structure_dirty(self.children_mut())
     }
@@ -2414,10 +2450,12 @@ pub trait Widget {
         defaults::has_transient_feedback(self.children())
     }
 
-    /// Default `true` (dirty every frame). Opt into incremental redraw by
-    /// tracking a `dirty: bool`, setting it in `handle_event`/`sync`, and
-    /// clearing it in `mark_drawn()`. Containers MUST forward: dirty iff any
-    /// descendant is.
+    /// Default `false` (clean). A widget is clean until something it reads
+    /// changes: a leaf that keeps state says so by tracking a `dirty: bool`
+    /// (set in `handle_event`/`sync`, cleared in `mark_drawn()`), and one
+    /// that paints from the people on the document reads the frame's
+    /// presence ([`crate::presence::frame::frame`]). Containers MUST
+    /// forward: dirty iff any descendant is.
     fn needs_redraw(&self) -> bool {
         defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
@@ -2430,7 +2468,7 @@ pub trait Widget {
     /// Callers add an anti-alias/effect safety margin and fall back to a full
     /// redraw for layout, structure, overlays, or invalid retained targets.
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
-        if self.needs_redraw() {
+        if self.needs_redraw() || self.needs_animation_frame() {
             regions.push(self.get_rect());
         }
     }
@@ -2449,6 +2487,12 @@ pub trait Widget {
     /// Called after this widget's scene lands in the composed frame, to
     /// clear a `dirty` flag. Default forwards to children.
     fn mark_drawn(&mut self) {
+        defaults::mark_drawn(self.children_mut());
+    }
+
+    /// Rest this widget's children after a frame drew them, for a widget that
+    /// keeps its own dirty flag: it clears the flag itself, then calls this.
+    fn mark_children_drawn(&mut self) {
         defaults::mark_drawn(self.children_mut());
     }
 
@@ -2992,6 +3036,9 @@ pub use decorator::Decorator;
 pub(crate) mod layout;
 pub mod remount;
 pub use remount::Remount;
+mod reach;
+pub(crate) use reach::find;
+pub use reach::find_mut;
 #[cfg(test)]
 pub(crate) mod replaced_tripwire;
 pub use layout::{
@@ -3027,7 +3074,8 @@ pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
 pub use form_composition::{Field, Form, FormPage, FormSection, Page};
 pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, LabelPlacement, LayoutInfo, LayoutOrigin,
-    ManualConflict, ManualLayout, PageLayout, ScrollDirection, ScrollLayout, SectionLayout,
+    ManualConflict, ManualLayout, PageLayout, RowLayout, ScrollDirection, ScrollLayout,
+    SectionLayout,
 };
 mod embedded;
 pub use embedded::Embedded;
@@ -3252,17 +3300,23 @@ pub mod context_menu;
 pub mod floating_surface;
 pub mod primitives;
 pub use context_menu::{
-    ContextMenu, MenuButton, MenuButtonProps, MenuItem, MenuItemProps, note_shift, shift_held,
-    shift_skips_confirmation,
+    ContextMenu, MenuButton, MenuButtonProps, MenuItem, MenuItemProps, MenuPick, note_shift,
+    shift_held, shift_skips_confirmation,
 };
 mod row_menu;
+pub use chrome_body::paint_bar_body;
 pub use primitives::{
-    BarControlFace, DeclaredModal, DeclaredPanel, DeclaredPopover, DeclaredPopoverButton,
-    DensityRegion, DisclosureGroup, DisclosureRow, DisclosureRowProps, DisclosureState, Fact,
-    FactProps, Facts, FactsFace, FactsProps, FloatingPanel, FloatingPanelFace, FloatingPanelLayout,
+    ActivityCardFace, BarChip, BarChipFace, BarChipLayout, BarChipProps, BarControlFace,
+    DeclaredModal, DeclaredPanel, DeclaredPopover, DeclaredPopoverButton, DensityRegion,
+    DisclosureGroup, DisclosureRow, DisclosureRowProps, DisclosureState, Fact, FactProps, Facts,
+    FactsFace, FactsProps, FloatingPanel, FloatingPanelFace, FloatingPanelLayout,
     FloatingPanelProps, IconButton, KeyHint, KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps,
-    ModalProps, PopoverButtonProps, PopoverProps, Surface, SurfaceLevel, TextStack, TextStackFace,
-    TextStackProps, paint_see_through, paint_surface,
+    LinkKind, LinkStatus, ModalProps, NotificationListControl, NotificationListLayout,
+    NotificationListRow, NotificationListView, NotificationRowControls, PopoverProps,
+    StatusCluster, StatusClusterFace, StatusClusterLayout, StatusSlot, Surface, SurfaceLevel,
+    TextBlockFace, TextLineAlign, TextLineFace, TextStack, TextStackFace, TextStackProps,
+    badge_label, badge_size, control_fill, control_radius, paint_control_row, paint_see_through,
+    paint_severity_rail, paint_surface, paint_unread_badge,
 };
 pub use row_menu::RowMenu;
 pub mod context_menu_area;
@@ -3340,10 +3394,16 @@ pub mod program_step;
 pub use program_step::{ProgramStepView, StepAnswer};
 pub mod date_field;
 pub mod date_picker;
+pub mod enum_field;
+pub mod person_field;
 pub use date_field::{DateField, DateFieldProps};
 pub use date_picker::{DateFeed, DatePicker, DatePickerProps, DateShown, ExternalDatePickerHit};
+pub use enum_field::{EnumField, EnumFieldProps, EnumOptionProps};
+pub use person_field::{PersonField, PersonFieldProps};
+pub mod time_field;
 pub mod time_picker;
 pub mod timeline_density;
+pub use time_field::{TimeField, TimeFieldProps};
 pub use time_picker::{TimePicker, TimePickerProps, TimeValue};
 pub use timeline_density::TimelineDensity;
 pub mod color_picker;
@@ -3483,11 +3543,13 @@ pub use tree_view::{
 pub use tree_view_component::{
     DescribedTreeView, TreeTone, TreeViewNodeProps, TreeViewProps, TreeViewRowProps,
 };
+mod row_selection;
 mod rows;
 pub mod virtual_list;
 pub use virtual_list::{
     DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps, ListModel,
-    RowGroup, RowSelection, VecListModel, VirtualList, VirtualListProps,
+    RowActionRects, RowGroup, RowRenameField, RowSelection, RowSelectionSink, TREE_DISCLOSURE,
+    TREE_INDENT, TreeMarks, TreeRow, VecListModel, VirtualList, VirtualListProps,
 };
 mod activation;
 pub(crate) mod control_verb;
@@ -3542,9 +3604,9 @@ pub use property_list::{
 };
 pub mod list_row;
 pub use list_row::{
-    ControlRow, ControlRowProps, ListRow, ListRowFace, ListRowProps, RowAction, RowLeading,
-    RowLeadingShape, RowShape, RowStatus, RowValue, SwipeAction, SwipeActionProps,
-    badge_column_width,
+    CARD_TITLE_LINES, CardBody, ControlRow, ControlRowProps, ListRow, ListRowFace, ListRowProps,
+    RowAction, RowLeading, RowLeadingShape, RowShape, RowStatus, RowValue, SwipeAction,
+    SwipeActionProps, badge_column_width,
 };
 pub mod toggle_group;
 pub use toggle_group::{
@@ -3663,6 +3725,10 @@ pub use qr_component::QrProps;
 
 #[cfg(test)]
 mod a11y_tree_tests;
+
+#[cfg(test)]
+#[path = "flow_cache_tests.rs"]
+mod flow_cache_tests;
 
 #[cfg(test)]
 #[path = "mod_tests.rs"]

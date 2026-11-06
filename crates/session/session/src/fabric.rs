@@ -22,14 +22,18 @@ use tilo_network_actor::PersonalFabricPayload;
 
 use crate::sync::Outgoing;
 
-/// Whether the person lets what they play here go on playing on their other
-/// devices: the `media` switch of their `continuity` settings, under the
-/// master switch, each on unless they turned it off. The session's settings
-/// watch keeps it current ([`MediaContinuity::read`]).
+/// What the person lets of this device continue on their other devices: each
+/// facet's switch of their `continuity` settings, under the master switch,
+/// each on unless they turned it off. The session's settings watch keeps them
+/// current ([`Continuity::read`]).
 #[derive(Clone, Debug, Default)]
-pub struct MediaContinuity(Arc<AtomicBool>);
+pub struct Continuity {
+    media: Arc<AtomicBool>,
+    wifi_settings: Arc<AtomicBool>,
+    file_transfer: Arc<AtomicBool>,
+}
 
-impl MediaContinuity {
+impl Continuity {
     /// Take the switches from a settings document, as Settings writes it.
     pub(crate) fn read(&self, document: &serde_json::Map<String, serde_json::Value>) {
         let section = document.get("continuity");
@@ -42,12 +46,25 @@ impl MediaContinuity {
                 }),
             Some(_) => false,
         };
-        self.0
-            .store(on("enabled") && on("media"), Ordering::Relaxed);
+        let enabled = on("enabled");
+        self.media.store(enabled && on("media"), Ordering::Relaxed);
+        self.wifi_settings
+            .store(enabled && on("wifi_settings"), Ordering::Relaxed);
+        self.file_transfer
+            .store(enabled && on("file_transfer"), Ordering::Relaxed);
     }
 
-    fn permitted(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+    fn media_permitted(&self) -> bool {
+        self.media.load(Ordering::Relaxed)
+    }
+
+    fn wifi_settings_permitted(&self) -> bool {
+        self.wifi_settings.load(Ordering::Relaxed)
+    }
+
+    /// Whether the person lets files they send move to their other devices.
+    pub(crate) fn file_transfer_permitted(&self) -> bool {
+        self.file_transfer.load(Ordering::Relaxed)
     }
 }
 
@@ -59,7 +76,13 @@ pub(crate) struct SessionFabric {
     /// The person's root key: a frame goes only to the devices that proved a
     /// certificate of it.
     user_public_key: [u8; 32],
-    media: MediaContinuity,
+    /// This device's key: what a credential one of the person's devices
+    /// sealed for it opens with.
+    device_signing_key: ed25519_dalek::SigningKey,
+    continuity: Continuity,
+    /// This session's Nearby Send, once the session made it: where the bytes
+    /// of a transfer one of the person's devices offers or streams come in.
+    nearby: Mutex<Option<Arc<crate::nearby_transfer::NearbyTransfer>>>,
 }
 
 impl std::fmt::Debug for SessionFabric {
@@ -75,14 +98,23 @@ impl SessionFabric {
         runtime: FabricRuntime,
         outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
         user_public_key: [u8; 32],
-        media: MediaContinuity,
+        device_signing_key: ed25519_dalek::SigningKey,
+        continuity: Continuity,
     ) -> Arc<Self> {
         Arc::new(Self {
             runtime: Arc::new(Mutex::new(runtime)),
             outgoing,
             user_public_key,
-            media,
+            device_signing_key,
+            continuity,
+            nearby: Mutex::new(None),
         })
+    }
+
+    /// This session's Nearby Send takes what the person's devices offer and
+    /// stream here.
+    pub(crate) fn attach_nearby(&self, nearby: Arc<crate::nearby_transfer::NearbyTransfer>) {
+        *self.nearby.lock_recover() = Some(nearby);
     }
 
     /// One of the person's devices proved itself on its session with this
@@ -115,7 +147,7 @@ impl SessionFabric {
             PersonalFabricPayload::Snapshot(bytes) => {
                 let taken = self.runtime.lock_recover().snapshot(peer, bytes);
                 if let Err(error) = taken {
-                    tracing::debug!(%error, %peer, "a device sent a snapshot this session does not take");
+                    tracing::warn!(%error, %peer, "a device sent a snapshot this session does not take");
                 }
             }
             PersonalFabricPayload::Action(bytes) => {
@@ -126,7 +158,7 @@ impl SessionFabric {
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        tracing::debug!(%error, %peer, "a device sent an action this session does not take");
+                        tracing::warn!(%error, %peer, "a device sent an action this session does not take");
                     }
                 }
             }
@@ -145,7 +177,7 @@ impl SessionFabric {
                     outputs.clone(),
                 );
                 if let Err(error) = taken {
-                    tracing::debug!(%error, %peer, "a device's outputs are not taken as they stand");
+                    tracing::warn!(%error, %peer, "a device's outputs are not taken as they stand");
                 }
             }
             PersonalFabricPayload::DisplayOutputs { stamp, outputs } => {
@@ -155,15 +187,23 @@ impl SessionFabric {
                     outputs.clone(),
                 );
                 if let Err(error) = taken {
-                    tracing::debug!(%error, %peer, "a device's output facts are not taken");
+                    tracing::warn!(%error, %peer, "a device's output facts are not taken");
+                }
+            }
+            // The bytes of a Nearby Send this device took: the transfer
+            // engine holds them for the device that proved itself here.
+            PersonalFabricPayload::NearbyTransfer(frame) => {
+                let nearby = self.nearby.lock_recover().clone();
+                let device = self.runtime.lock_recover().device_behind(peer);
+                if let (Some(nearby), Some(device)) = (nearby, device) {
+                    nearby.frame(&device, frame);
                 }
             }
             // What the person's devices carry for each other beyond the
-            // fabric state this session keeps — file bytes, records — belongs
-            // to the shell's runtime; this session routes none of it and
-            // drops it rather than half-handling it.
-            PersonalFabricPayload::NearbyTransfer(_)
-            | PersonalFabricPayload::Document { .. }
+            // fabric state this session keeps — records — belongs to their
+            // own planes; this session routes none of it and drops it rather
+            // than half-handling it.
+            PersonalFabricPayload::Document { .. }
             | PersonalFabricPayload::RecordContentWant { .. }
             | PersonalFabricPayload::RecordContentPiece { .. }
             | PersonalFabricPayload::RecordContentLacks { .. } => {}
@@ -300,30 +340,97 @@ impl FabricLink for SessionFabric {
     }
 
     fn require_media(&self) -> Result<(), String> {
-        self.media
-            .permitted()
+        self.continuity
+            .media_permitted()
             .then_some(())
             .ok_or_else(|| "media continuity is turned off in this device's settings".to_owned())
+    }
+
+    fn share_nearby_spool(
+        &self,
+        target: &DeviceId,
+        offer: tilo_device_fabric::link::NearbySpoolOffer,
+    ) -> Result<(), PersonalFabricSendError> {
+        let endpoint = self
+            .runtime
+            .lock_recover()
+            .endpoint_of(target)
+            .ok_or_else(|| {
+                PersonalFabricSendError::Rejected("that device has no session with this one".into())
+            })?;
+        self.outgoing
+            .send(Outgoing::NearbySpool {
+                user_public_key: self.user_public_key,
+                target: endpoint,
+                checkpoint: offer.checkpoint,
+                file: offer.file,
+            })
+            .map_err(|_| {
+                PersonalFabricSendError::Rejected("this session's transport stopped".into())
+            })
+    }
+
+    fn require_wifi_settings(&self) -> Result<(), String> {
+        self.continuity
+            .wifi_settings_permitted()
+            .then_some(())
+            .ok_or_else(|| "Wi-Fi continuity is turned off in this device's settings".to_owned())
+    }
+
+    fn wifi_password(&self, ssid: &str, security: os_actions::WifiSecurity) -> Option<String> {
+        if self.require_wifi_settings().is_err() || !security.supports_portable_passphrase() {
+            return None;
+        }
+        let fabric = self.runtime.lock_recover().device_fabric().clone();
+        fabric
+            .merged_wifi()
+            .into_values()
+            .filter(|credential| credential.ssid == ssid && credential.security == security)
+            .find_map(|credential| {
+                tilo_device_fabric::secrets::open_wifi_credential(
+                    &credential,
+                    &self.device_signing_key,
+                )
+                .ok()
+            })
+    }
+
+    fn share_wifi_password(
+        &self,
+        ssid: &str,
+        security: os_actions::WifiSecurity,
+        password: &str,
+    ) -> Result<(), String> {
+        self.require_wifi_settings()?;
+        let shared = self
+            .runtime
+            .lock_recover()
+            .share_wifi_password(ssid, security, password)
+            .map_err(|error| error.to_string())?;
+        if !shared {
+            return Err("this session is no certified device of the person's".to_owned());
+        }
+        Ok(())
     }
 
     fn share_wake_routes(&self, routes: Vec<tilo_device_fabric::WakeRoute>) {
         let taken = self.runtime.lock_recover().set_wake_routes(routes);
         if let Err(error) = taken {
-            tracing::debug!(%error, "this device's wake routes are not shared");
+            tracing::warn!(%error, "this device's wake routes are not shared");
         }
     }
 
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
         let taken = self.runtime.lock_recover().share_clipboard(entries);
         if let Err(error) = taken {
-            tracing::debug!(%error, "the clipboard is not shared");
+            tracing::warn!(%error, "the clipboard is not shared");
         }
     }
 
     fn publish_owner_session(&self, session: tilo_device_fabric::OwnerSession) {
         let taken = self.runtime.lock_recover().set_owner_session(session);
         if let Err(error) = taken {
-            tracing::debug!(%error, "this device's session is not said to the others");
+            tracing::warn!(%error, "this device's session is not said to the others");
         }
     }
 
@@ -341,7 +448,7 @@ impl FabricLink for SessionFabric {
         match taken {
             Ok(changed) => changed,
             Err(error) => {
-                tracing::debug!(%error, "this device's displays are not shared");
+                tracing::warn!(%error, "this device's displays are not shared");
                 false
             }
         }
@@ -354,7 +461,7 @@ impl FabricLink for SessionFabric {
     fn share_unlock(&self, unlock: tilo_device_fabric::unlock::UnlockFabricState) {
         let taken = self.runtime.lock_recover().set_unlock(unlock);
         if let Err(error) = taken {
-            tracing::debug!(%error, "this device's disk unlock is not shared");
+            tracing::warn!(%error, "this device's disk unlock is not shared");
         }
     }
 }
@@ -367,10 +474,6 @@ impl crate::Session {
     /// one. The speaker services take their own; a session another device
     /// offers becomes the now-playing card's offer, which this device
     /// continues from.
-    #[allow(
-        clippy::unused_self,
-        reason = "the actions are the session's to route, as the rest of its pass is"
-    )]
     pub(crate) fn route_fabric_action(
         &self,
         fabric: &tilo_device_fabric::link::SharedLink,
@@ -419,6 +522,9 @@ impl crate::Session {
             | PersonalFabricAction::SpatialInputSequenced { .. }
             | PersonalFabricAction::NearbyDrop { .. }
             | PersonalFabricAction::NearbyDropResult { .. }
+            // A Nearby Send reaches no session here: the client that carries
+            // one hands its offer, checkpoint, withdrawal and ending to its
+            // own engine, so what is left is a session running none.
             | PersonalFabricAction::NearbyTransferOffer { .. }
             | PersonalFabricAction::NearbyTransferReady { .. }
             | PersonalFabricAction::NearbyTransferCancel { .. }

@@ -5,12 +5,12 @@
 //! and the role everyone who joins gets (the default role). The host the
 //! workspace lives on then lists it in its directory and admits whoever asks
 //! at its door with that role, the way a chat server's invite-free join
-//! does. Nobody decides each join again; the owner and the room's
+//! does. Nobody decides each join again; the owner and the workspace's
 //! moderators remove and ban like they do for anyone, and a banned person is
 //! refused at the door.
 //!
 //! JSON over HTTPS, below the host's [`API_PREFIX`](crate::web::API_PREFIX)
-//! for a relay, at the site's own path for a site's community room (the room
+//! for a relay, at the site's own path for a site's community workspace (the workspace
 //! service). Every route is a `POST` (a relay serves nothing else):
 //!
 //! | Route | Body | Answer |
@@ -18,6 +18,7 @@
 //! | [`DIRECTORY_PATH`] | none | [`DirectoryPage`] |
 //! | `<door>join` | [`DoorJoin`] | [`DoorAnswer`] |
 //! | `<door>report` | [`DoorReport`] | `204` |
+//! | `<door>errors` | [`PageError`] | `204` |
 //!
 //! `<door>` is a [`DirectoryEntry::door`], resolved against the directory's
 //! own address. A site names its directory in its `entry.json`
@@ -25,7 +26,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::rooms::RoomRole;
+use crate::workspaces::WorkspaceRole;
 
 /// The directory of a host, below its API prefix.
 pub const DIRECTORY_PATH: &str = "/directory";
@@ -39,20 +40,20 @@ pub const MAX_FACES: usize = 8;
 /// The longest reason a report gives.
 pub const MAX_REPORT_CHARS: usize = 500;
 
-/// The door of `room` on a relay, relative to its directory: what
+/// The door of `workspace` on a relay, relative to its directory: what
 /// [`DirectoryEntry::door`] names.
 #[must_use]
-pub fn door_path(room: &str) -> String {
-    format!("directory/{room}/")
+pub fn door_path(workspace: &str) -> String {
+    format!("directory/{workspace}/")
 }
 
-/// The room a relay door route below the API prefix names, and what is
-/// asked of it there: `/directory/<room>/join` is `(room, "join")`.
+/// The workspace a relay door route below the API prefix names, and what is
+/// asked of it there: `/directory/<workspace>/join` is `(workspace, "join")`.
 #[must_use]
 pub fn door_route(route: &str) -> Option<(&str, &str)> {
     let rest = route.strip_prefix(DIRECTORY_PATH)?.strip_prefix('/')?;
-    let (room, step) = rest.split_once('/')?;
-    (!room.is_empty() && !step.contains('/')).then_some((room, step))
+    let (workspace, step) = rest.split_once('/')?;
+    (!workspace.is_empty() && !step.contains('/')).then_some((workspace, step))
 }
 
 /// What the owner decided when they made the workspace public.
@@ -62,7 +63,7 @@ pub struct Listing {
     /// What the workspace is, in a sentence or two.
     pub description: String,
     /// The role everyone who joins through the directory gets.
-    pub default_role: RoomRole,
+    pub default_role: WorkspaceRole,
 }
 
 /// Why a listing cannot be published.
@@ -86,7 +87,7 @@ impl Listing {
         {
             return Err(ListingError::Description);
         }
-        if self.default_role == RoomRole::Moderator {
+        if self.default_role == WorkspaceRole::Moderator {
             return Err(ListingError::Role);
         }
         Ok(Self {
@@ -110,14 +111,15 @@ pub struct Face {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryEntry {
-    /// The room's UUID.
-    pub room: String,
+    /// The workspace's UUID.
+    #[serde(rename = "room")]
+    pub workspace: String,
     pub name: String,
     /// What it is.
     #[serde(default)]
     pub description: String,
     /// The role people who join get.
-    pub default_role: RoomRole,
+    pub default_role: WorkspaceRole,
     /// Its door, relative to the directory's address (or absolute).
     pub door: String,
     #[serde(default)]
@@ -195,6 +197,63 @@ impl DoorReport {
     }
 }
 
+/// The largest page error report a door takes.
+pub const MAX_PAGE_ERROR_BYTES: usize = 4096;
+
+/// A page's own uncaught error, reported to the door that let the page in:
+/// the host logs it for the site's operator, and keeps nothing else.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageError {
+    /// What happened: `error` or `unhandledrejection`.
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub message: String,
+    /// The file the error came from, when the browser named one.
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub line: u32,
+    #[serde(default)]
+    pub column: u32,
+    /// The call stack the page held, when it held one.
+    #[serde(default)]
+    pub stack: String,
+    /// The page that failed: its path on the site.
+    #[serde(default)]
+    pub page: String,
+    /// The page's build, as `version.json` names it.
+    #[serde(default)]
+    pub build: String,
+}
+
+impl PageError {
+    /// The report a page sent, when it is one this host logs.
+    ///
+    /// # Errors
+    ///
+    /// A body larger than [`MAX_PAGE_ERROR_BYTES`], or one that is not a
+    /// report: a page's own code, not another site's identity, is what a
+    /// door takes here.
+    pub fn parse(body: &[u8]) -> Result<Self, &'static str> {
+        if body.len() > MAX_PAGE_ERROR_BYTES {
+            return Err("a page error report is at most 4 KiB");
+        }
+        serde_json::from_slice(body).map_err(|_| "not a page error report")
+    }
+
+    /// The kind as a host logs it: a kind this version does not know logs as
+    /// `other` rather than being dropped.
+    #[must_use]
+    pub fn kind(&self) -> &str {
+        match self.kind.as_str() {
+            "error" | "unhandledrejection" => self.kind.as_str(),
+            _ => "other",
+        }
+    }
+}
+
 /// How lively a public workspace is, as its listing says in a word.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Activity {
@@ -232,10 +291,10 @@ mod tests {
 
     fn entry() -> DirectoryEntry {
         DirectoryEntry {
-            room: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
+            workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
             name: "Coffee".into(),
             description: String::new(),
-            default_role: RoomRole::Commenter,
+            default_role: WorkspaceRole::Commenter,
             door: door_path("6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71"),
             here: Vec::new(),
             here_count: 0,
@@ -247,18 +306,21 @@ mod tests {
 
     #[test]
     fn a_door_route_names_its_room_and_step() {
-        let room = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+        let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
         assert_eq!(
-            door_route(&format!("/{}join", door_path(room))),
-            Some((room, "join"))
+            door_route(&format!("/{}join", door_path(workspace))),
+            Some((workspace, "join"))
         );
         assert_eq!(
-            door_route(&format!("/directory/{room}/report")),
-            Some((room, "report"))
+            door_route(&format!("/directory/{workspace}/report")),
+            Some((workspace, "report"))
         );
         assert_eq!(door_route("/directory"), None);
         assert_eq!(door_route("/directory//join"), None);
-        assert_eq!(door_route(&format!("/directory/{room}/join/more")), None);
+        assert_eq!(
+            door_route(&format!("/directory/{workspace}/join/more")),
+            None
+        );
         assert_eq!(door_route("/rooms"), None);
     }
 
@@ -266,7 +328,7 @@ mod tests {
     fn a_listing_is_text_and_hands_out_no_moderators() {
         let listing = Listing {
             description: "  A place for coffee.\nAnd tea.  ".into(),
-            default_role: RoomRole::Commenter,
+            default_role: WorkspaceRole::Commenter,
         };
         assert_eq!(
             listing.checked().map(|listing| listing.description),
@@ -274,17 +336,17 @@ mod tests {
         );
         let moderators = Listing {
             description: String::new(),
-            default_role: RoomRole::Moderator,
+            default_role: WorkspaceRole::Moderator,
         };
         assert_eq!(moderators.checked(), Err(ListingError::Role));
         let long = Listing {
             description: "x".repeat(MAX_DESCRIPTION_CHARS + 1),
-            default_role: RoomRole::Viewer,
+            default_role: WorkspaceRole::Viewer,
         };
         assert_eq!(long.checked(), Err(ListingError::Description));
         let control = Listing {
             description: "bell\u{7}".into(),
-            default_role: RoomRole::Viewer,
+            default_role: WorkspaceRole::Viewer,
         };
         assert_eq!(control.checked(), Err(ListingError::Description));
     }
@@ -306,6 +368,33 @@ mod tests {
     }
 
     #[test]
+    fn a_page_error_report_is_what_the_page_sends() {
+        let body = serde_json::json!({
+            "kind": "error", "message": "x is not a function", "source": "https://site.example/v/1/page.js",
+            "line": 12, "column": 4, "stack": "at page.js:12", "page": "/", "build": "1.2.3",
+        })
+        .to_string();
+        let error = PageError::parse(body.as_bytes()).unwrap();
+        assert_eq!(error.kind(), "error");
+        assert_eq!(error.line, 12);
+        assert_eq!(error.build, "1.2.3");
+        // A report without the optional parts is still a report.
+        let rejection =
+            PageError::parse(br#"{"kind": "unhandledrejection", "message": "gone"}"#).unwrap();
+        assert_eq!(rejection.kind(), "unhandledrejection");
+        assert_eq!(rejection.source, "");
+        // A kind this version does not know is logged as one, not refused.
+        assert_eq!(
+            PageError::parse(br#"{"kind": "console", "message": "hi"}"#)
+                .unwrap()
+                .kind(),
+            "other"
+        );
+        assert!(PageError::parse(b"not json").is_err());
+        assert!(PageError::parse(&vec![b' '; MAX_PAGE_ERROR_BYTES + 1]).is_err());
+    }
+
+    #[test]
     fn the_wire_is_camel_case_json_with_optional_fields() {
         let page: DirectoryPage = serde_json::from_value(serde_json::json!({
             "workspaces": [{
@@ -316,7 +405,7 @@ mod tests {
         .unwrap();
         let listed = &page.workspaces[0];
         assert!(listed.community);
-        assert_eq!(listed.default_role, RoomRole::Editor);
+        assert_eq!(listed.default_role, WorkspaceRole::Editor);
         assert_eq!(listed.here_count, 12);
         assert!(listed.here.is_empty());
         let answer: DoorAnswer = serde_json::from_value(serde_json::json!({

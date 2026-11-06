@@ -87,8 +87,6 @@ impl NativeWorkspaceOwner {
                 enrollment: None,
                 vouched: None,
                 peer: peer.durable()?,
-                private_direct_conversations: crate::owner::PrivateDirectConversationStore::default(
-                ),
                 generation: 1,
                 continuity: 0,
                 publication: Some(publication::StoredPublication::default()),

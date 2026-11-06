@@ -261,11 +261,15 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 /// `beside` is what else this device answers on its endpoint — its exit for
 /// the person's other devices. A caller that hands its own client
 /// ([`Options::sync`]) has already said what that endpoint serves.
+///
+/// `documents` is where what admission takes in from another device goes, so
+/// the apps this session runs show what everyone wrote.
 pub(crate) fn start_collaboration(
     options: &Options,
-    media: fabric::MediaContinuity,
+    continuity: fabric::Continuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
     beside: tilo_network_actor::local_host::Protocols,
+    documents: Option<sync::PeerDocuments>,
 ) -> Option<Rc<sync::Client>> {
     if let Some(sync) = &options.sync {
         return Some(Rc::clone(sync));
@@ -274,6 +278,21 @@ pub(crate) fn start_collaboration(
         return None;
     }
     let identity = sync::device_identity();
+    // The person's own store is answered on the session's endpoint, so it is
+    // opened before that endpoint binds and handed over with the rest.
+    let personal = identity.as_ref().and_then(|identity| {
+        match crate::personal::Personal::open(options, identity) {
+            Ok(personal) => Some(personal),
+            Err(error) => {
+                tracing::warn!(%error, "this session keeps no store of the person's own");
+                None
+            }
+        }
+    });
+    let mut beside = beside;
+    if let Some(personal) = &personal {
+        beside.push(personal.protocol());
+    }
     let own = sync::OwnPresence {
         label: options.person.clone(),
         user: identity
@@ -282,16 +301,24 @@ pub(crate) fn start_collaboration(
         ..sync::OwnPresence::default()
     };
     match sync::Client::start(
-        identity,
+        sync::Entry {
+            identity,
+            own,
+            hosts: sync::configured_hosts(),
+            continuity,
+            wake: options.wake.handle(),
+        },
         engine,
-        own,
-        sync::configured_hosts(),
-        media,
-        options.wake.handle(),
         options.questions.clone(),
         beside,
+        documents,
     ) {
-        Ok(sync) => Some(Rc::new(sync)),
+        Ok(sync) => {
+            if let Some(personal) = personal {
+                sync.attach_personal(personal);
+            }
+            Some(Rc::new(sync))
+        }
         Err(error) => {
             tracing::warn!(%error, "the collaboration plane");
             None
@@ -316,7 +343,7 @@ pub(crate) fn open_engine(
     match engine::Engine::for_this_device(options.state.as_deref(), workspaces) {
         Ok(engine) => Some(std::sync::Arc::new(engine)),
         Err(error) => {
-            tracing::debug!(%error, "this session holds no workspaces");
+            tracing::warn!(%error, "this session holds no workspaces");
             None
         }
     }

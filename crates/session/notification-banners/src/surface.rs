@@ -583,7 +583,7 @@ impl Widget for BannerSurface {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.state.borrow().needs_redraw()
+        self.state.borrow().needs_redraw() || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {

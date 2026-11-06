@@ -22,6 +22,7 @@ pub mod i18n;
 pub mod names;
 #[cfg(test)]
 pub mod packages;
+pub mod reminders;
 pub mod resource;
 pub mod search;
 pub mod updates;
@@ -138,4 +139,57 @@ pub fn definition() -> &'static ApplicationDefinition {
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     let _ = definition();
     ui::framework::launch_spec::<app::TlApp>()
+}
+
+/// The shared toolkit and `libstd`: a thin build links both dynamically so the window's process
+/// can map a new build of this crate.
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
+/// The symbols `tilolang dev` reloads the window's code through. The process that owns the
+/// window keeps it and maps a new build of this library, which builds the app's root again over
+/// the state the running code wrote.
+#[cfg(feature = "thin")]
+mod reload_in_place {
+    /// Hand one window's state back to the process that owns it.
+    ///
+    /// # Safety
+    /// `state` points at `state_len` readable bytes, `out` at `out_cap` writable ones, both
+    /// live for this call.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn tilo_dev_apply(
+        id: *const u8,
+        id_len: usize,
+        state: *const u8,
+        state_len: usize,
+        out: *mut u8,
+        out_cap: usize,
+    ) -> isize {
+        let _ = (id, id_len);
+        unsafe { ui::framework::dev_reload::copy_window_state(state, state_len, out, out_cap) }
+    }
+
+    /// The address of the toolkit this library linked, which the process must share.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn tilo_dev_linked_ui() -> *const () {
+        ui::framework::dev_reload::linked_ui()
+    }
+
+    /// Build the app's root again, for the process's window to take.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn tilo_dev_publish_root() -> i32 {
+        // This library holds its own copy of everything static in this crate: the package the
+        // process runs, and the build it shows. Take both before the window asks for them.
+        if let Err(error) = crate::install_from_env() {
+            eprintln!("tilolang: the new runtime cannot run the package it was built for: {error}");
+            return 0;
+        }
+        if let Some(bundle) = crate::installed_bundle() {
+            // The window showed the latest of the package's builds: the new root shows that
+            // one, and follows the ones after it.
+            crate::updates::catch_up(&bundle.meta.app);
+            crate::updates::start(&bundle.meta.app);
+        }
+        ui::framework::dev_reload::publish_root::<crate::app::TlApp>()
+    }
 }

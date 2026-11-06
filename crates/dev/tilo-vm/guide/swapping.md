@@ -198,7 +198,7 @@ and, being a generation, can be rolled back.
 
 | Component scope | Goes into | What happens |
 |---|---|---|
-| `session` (tilo-session, launcher, user services, runtime) | your slot | a normal session restart: log out, restart your user manager, log in. A laptop's `device` slot (the owner's login) instead merges VM-wide and restarts the desktop and the component's user services in place; the owner stays logged in (`tilo-vm guide devices`) |
+| `session` (tilo-session, launcher, user services, runtime) | your slot | a normal session restart: log out, restart your user manager, log in. The `device` slot instead merges VM-wide (`systemd-sysext`) and restarts its own session, because its compositor runs in the host's mount namespace: a laptop's owner stays logged in and only the desktop restarts; a board restarts its session (`tilo-vm guide devices`) |
 | app (`app:<dir>`) | your slot's app store | nothing restarts; live at next app launch |
 | `vm` (fs, greeter, system services) | the `vm` slot | `systemd-sysext refresh`, its active units and the live owner's active user services restart, and **every slot's session restarts** |
 | `boot`, swappable (the kernel: `dev_swap = "reboot"`) | the `vm` slot, plus a boot entry | modules merge with `systemd-sysext refresh`, the kernel becomes the next boot entry, **the VM reboots**; confirmed, it becomes the default (`tilo-vm guide kernel`) |
@@ -221,7 +221,8 @@ it. `tilo-vm guide kernel` has the whole loop.
 ## Verify your swap
 
 The session sees your slot's layers stacked over the VM's `/usr`; nothing
-else does, so check from inside the slot, never with `vm ssh`:
+else does, so check from inside the slot, never with `vm ssh` (the `device`
+slot merges system-wide, so the machine's own shell sees its layers too):
 
 ```sh
 tilo-vm slot show                              # generations, and each component's files with sha256 and layer

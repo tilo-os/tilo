@@ -5,7 +5,7 @@
 //! The session dials through the same handshake and client every device
 //! uses, says which workspaces it carries (`PeerRelayHello`), and subscribes
 //! to those both sides host. Subscribing replays everything the upstream
-//! retains of each, as it does for any host that keeps a whole room, and
+//! retains of each, as it does for any host that keeps a whole workspace, and
 //! live fan-out carries every later change. Inbound changes are admitted
 //! through the same ordered persistence owner device peers use.
 //!
@@ -19,7 +19,7 @@
 //! arrives: no timer runs while it is connected.
 //!
 //! A session carries changes one way, from the host dialed to the host
-//! dialing. A device governing a room another host of its person serves
+//! dialing. A device governing a workspace another host of its person serves
 //! dials nothing on its own: when that host's session arrives, the device
 //! answers it with one back ([`HostDialer::answer`]) that lasts as long
 //! as it does.
@@ -44,14 +44,14 @@ use crate::transport::Envelope;
 /// Which host an attach session dials, and how its identity is pinned.
 #[derive(Clone, Debug)]
 pub enum Upstream {
-    /// The device `device` of this host's own person, hosting its rooms at
-    /// `addr`: the governor of a room this host also serves.
+    /// The device `device` of this host's own person, hosting its workspaces at
+    /// `addr`: the governor of a workspace this host also serves.
     OwnDevice {
         addr: EndpointAddr,
         device: [u8; 32],
     },
     /// The certified host `device` of this host's own person, at `addr`:
-    /// a host serving a room this device governs.
+    /// a host serving a workspace this device governs.
     OwnHost {
         addr: EndpointAddr,
         device: [u8; 32],
@@ -120,8 +120,8 @@ async fn arrival(arrivals: &mut tokio::sync::broadcast::Receiver<[u8; 32]>, devi
 /// What an outbound attach session carries: the local endpoint, this host's
 /// own identity (its revocation list read afresh for every dial and
 /// session), the workspaces it hosts and its metrics. `scope`, when given,
-/// is the only workspaces the session offers: a host serving one room for
-/// its governor attaches that room alone.
+/// is the only workspaces the session offers: a host serving one workspace for
+/// its governor attaches that workspace alone.
 pub struct HostDialer {
     pub endpoint: Endpoint,
     pub identity: LiveIdentity,
@@ -221,7 +221,7 @@ impl HostDialer {
         client.map_err(|error| error.to_string())
     }
 
-    /// Answer the host that opened `inbound` here, a host serving a room
+    /// Answer the host that opened `inbound` here, a host serving a workspace
     /// this device governs, with one session back to it at `upstream`: what
     /// its members change there reaches this device that way, as what
     /// changes here reaches it over its own session. The answer lasts as
@@ -253,7 +253,7 @@ impl HostDialer {
     }
 
     /// One attach session: agree on the workspaces both host (by `hello`,
-    /// or this host's scope when the upstream serves a room this device
+    /// or this host's scope when the upstream serves a workspace this device
     /// governs), subscribe to them, then follow the upstream until the
     /// session ends.
     #[expect(
@@ -418,7 +418,7 @@ impl Session<'_> {
     }
 
     /// Admit one inbound envelope: a change through the ordered state owner
-    /// (and to the room's follower, when one listens), presence to local
+    /// (and to the workspace's follower, when one listens), presence to local
     /// subscribers, and the session's housekeeping.
     async fn admit(&self, envelope: Envelope) -> Result<(), String> {
         match &envelope {
@@ -449,7 +449,7 @@ impl Session<'_> {
                     crate::peer::tell_governor(&tap, author, body).await;
                 }
             }
-            Envelope::Presence { workspace_id, .. } => {
+            Envelope::RetiredPresence { workspace_id, .. } => {
                 if let Some(workspace) = self.workspace(*workspace_id).await {
                     // Presence carries no author on the wire; zero stands
                     // in. Fan-out only compares it to subscribers and keeps
@@ -457,7 +457,7 @@ impl Session<'_> {
                     workspace
                         .lock()
                         .await
-                        .fanout_presence(&[0u8; 32], &envelope, None);
+                        .fanout_presence(&[0u8; 32], &envelope);
                 }
             }
             Envelope::NotAuthorised {

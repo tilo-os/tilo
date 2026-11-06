@@ -9,19 +9,27 @@
 //! relay copies is opaque to the relay and a frame from a device the roster
 //! does not name is refused before it is decrypted.
 //!
+//! Presence, audio and the activity note are tracks every plane publishes.
+//! Pictures are not: a camera or screen layer exists only while a peer asks
+//! for it ([`Plane::show`]), and a device encodes a layer only while it is
+//! asked for ([`Plane::wanted_pictures`]), so a picture nobody watches costs
+//! no bitrate and no encoder.
+//!
 //! The carrier is whatever [`Dial`] this device has: iroh to the workspace's
 //! relay ([`crate::native::Iroh`]), or a page's WebTransport session. This
 //! module names neither.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
 
+use crate::frame::{Opener, Refusal, Sealer, Stream, TrackName};
+use crate::roster::Roster;
+use crate::video::{self, Layer, Source, VideoObject};
 use channel_crypto::ChannelContentKeys;
 use moq_net::origin::{Consumer, Producer};
-use tilo_call_lane::frame::{Opener, Refusal, Sealer, Stream, TrackName};
-use tilo_call_lane::roster::Roster;
 use tilo_lock::MutexRecover as _;
 
 use crate::Task;
@@ -30,16 +38,23 @@ use crate::live::{self, Delivery, Namespace, Track, exact};
 use crate::scope::Scope;
 use crate::voice::{self, VoiceObject};
 
-/// The tracks one plane carries: the workspace's presence, a call's audio and
-/// the activity note. Pictures keep their own lane ([`crate::client`]) until
-/// they are carried here too.
+/// The tracks every plane publishes: the workspace's presence, a call's audio
+/// and the activity note. A plane's pictures ([`Track::Camera`],
+/// [`Track::Screen`]) are not among them: a layer exists only while someone
+/// asks for it ([`Plane::show`]).
 pub const TRACKS: [Track; 3] = [Track::Presence, Track::Audio, Track::Activity];
 
 /// Objects one plane keeps before it drops the oldest: a jitter buffer, not a
 /// backlog.
 const QUEUE: usize = 256;
+/// Pictures one received track keeps before it starts over at the next
+/// keyframe: a decoder never sees a picture whose reference was dropped.
+const PICTURES_QUEUED: usize = 8;
 /// Join budget: the transport, the admission preface and the setup.
 const JOINT: Duration = Duration::from_secs(10);
+/// How long a reader waits before asking again for a peer's broadcast whose
+/// read ended with nothing in it.
+const REJOIN: Duration = Duration::from_millis(100);
 /// Bytes one plane's own publication may cache at its ingress.
 const INGRESS: u64 = 2 * 1024 * 1024;
 /// Bytes a plane caches of what it hears.
@@ -64,6 +79,13 @@ pub enum PlaneError {
     /// object that a sealed payload still fits in, on the audio track.
     #[error("the object does not fit its track")]
     Invalid,
+    /// Nobody shows the picture's layer, so nothing of it is encoded.
+    #[error("no one shows this picture layer")]
+    Unwanted,
+    /// The picture cannot join its layer's group: the layer starts over at a
+    /// keyframe.
+    #[error("the picture layer needs a keyframe")]
+    Unkeyed,
     /// The session has ended.
     #[error("the live plane has ended")]
     Ended,
@@ -109,6 +131,67 @@ pub struct Heard {
     pub body: Vec<u8>,
 }
 
+/// One picture track this plane publishes because a peer asked for it.
+struct PictureOut {
+    track: moq_net::track::Producer,
+    group: Option<moq_net::group::Producer>,
+    next_group: u64,
+    in_group: u64,
+    /// Ends the track once nobody reads it ([`watch_unused`]).
+    _unused: Task,
+}
+
+impl PictureOut {
+    /// Write one encoded picture: a keyframe starts a group.
+    fn write(
+        &mut self,
+        keyframe: bool,
+        timestamp: moq_net::Timestamp,
+        bytes: Vec<u8>,
+    ) -> Result<(), PlaneError> {
+        if keyframe {
+            if let Some(group) = self.group.take() {
+                let _ = group.finish();
+            }
+            self.group = Some(
+                self.track
+                    .create_group(moq_net::group::Info::from(self.next_group))
+                    .map_err(|_| PlaneError::Unkeyed)?,
+            );
+            self.next_group = self.next_group.saturating_add(1);
+            self.in_group = 0;
+        }
+        if self.in_group >= video::MAX_GROUP_OBJECTS {
+            self.group = None;
+            return Err(PlaneError::Unkeyed);
+        }
+        let group = self.group.as_mut().ok_or(PlaneError::Unkeyed)?;
+        group
+            .write_frame(timestamp, bytes)
+            .map_err(|_| PlaneError::Unkeyed)?;
+        self.in_group = self.in_group.saturating_add(1);
+        Ok(())
+    }
+}
+
+/// The picture tracks of one plane, as its readers asked for them.
+#[derive(Default)]
+struct Pictures {
+    /// The tracks someone asked this device for, by track name: exactly what
+    /// it encodes ([`Plane::wanted_pictures`]).
+    out: BTreeMap<String, PictureOut>,
+    /// Where a track asked for again numbers its groups: one past the last
+    /// group of its earlier acceptance, so a subscriber that asks again is
+    /// never sent a group it already read.
+    next_group: BTreeMap<String, u64>,
+    /// Tracks whose reader needs a keyframe: they were asked for afresh, or
+    /// a picture could not join its group.
+    keyframes: BTreeSet<video::Track>,
+    /// Received tracks that dropped a picture: nothing of them is delivered
+    /// until a keyframe.
+    behind: BTreeSet<([u8; 32], Track)>,
+}
+
 /// What a plane shares with its readers.
 pub(crate) struct Shared {
     pub(crate) join: Join,
@@ -122,6 +205,15 @@ pub(crate) struct Shared {
     /// This device's broadcast, kept for as long as the plane lives: dropping
     /// it withdraws the announcement its subscribers are reading.
     _broadcast: Option<moq_net::broadcast::Producer>,
+    /// The peers' requests for picture tracks of this device's broadcast,
+    /// taken once by the plane's acceptor.
+    picture_requests: Mutex<Option<moq_net::broadcast::Dynamic>>,
+    /// The picture layers someone shows of this device, and the groups they
+    /// are written in.
+    pictures: Mutex<Pictures>,
+    /// Advances whenever a picture layer is asked for or ends, or a picture
+    /// could not join its group.
+    pictures_revision: AtomicU64,
     heard: Mutex<VecDeque<Heard>>,
     ended: Mutex<bool>,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -144,7 +236,7 @@ impl Shared {
                 TrackName::new(&join.scope, name.as_str()),
             )?;
         }
-        let (broadcast, published) = if join.publish {
+        let (broadcast, published, requests) = if join.publish {
             let path = Namespace::new(&join.scope, join.device).path();
             let broadcast = outgoing
                 .create_broadcast(path.as_str())
@@ -160,12 +252,15 @@ impl Shared {
                     .map_err(|_| PlaneError::Unavailable)?;
                 published.insert(name, producer);
             }
+            // Taken before the announcement, like the relay's own forwarding:
+            // a request that arrives with the announcement is not one to miss.
+            let requests = broadcast.dynamic();
             broadcast
                 .announce(moq_net::origin::Route::default())
                 .map_err(|_| PlaneError::Unavailable)?;
-            (Some(broadcast), published)
+            (Some(broadcast), published, Some(requests))
         } else {
-            (None, std::collections::BTreeMap::new())
+            (None, std::collections::BTreeMap::new(), None)
         };
         Ok(Arc::new(Self {
             opener: Mutex::new(Opener::new(join.keys.clone(), join.roster.clone())),
@@ -175,6 +270,9 @@ impl Shared {
             incoming: incoming.clone(),
             published: Mutex::new(published),
             _broadcast: broadcast,
+            picture_requests: Mutex::new(requests),
+            pictures: Mutex::new(Pictures::default()),
+            pictures_revision: AtomicU64::new(0),
             heard: Mutex::new(VecDeque::new()),
             ended: Mutex::new(false),
             wake: Mutex::new(None),
@@ -234,6 +332,47 @@ impl Shared {
         }
         self.wake();
     }
+    /// Queue one received picture, or start its track over at the next
+    /// keyframe when its reader fell behind: a decoder is never handed a
+    /// picture whose reference was dropped.
+    fn deliver_picture(&self, heard: Heard) {
+        let key = (heard.sender, heard.track);
+        let keyframe = VideoObject::decode(&heard.body).is_ok_and(|object| object.keyframe);
+        let mut pictures = self.pictures.lock_recover();
+        if pictures.behind.contains(&key) {
+            if !keyframe {
+                return;
+            }
+            pictures.behind.remove(&key);
+        }
+        let queued = self
+            .heard
+            .lock_recover()
+            .iter()
+            .filter(|object| (object.sender, object.track) == key)
+            .count();
+        if queued >= PICTURES_QUEUED {
+            self.heard
+                .lock_recover()
+                .retain(|object| (object.sender, object.track) != key);
+            if !keyframe {
+                pictures.behind.insert(key);
+                return;
+            }
+        }
+        drop(pictures);
+        self.deliver(heard);
+    }
+    /// A picture track someone asked for, or one this plane no longer reads,
+    /// or one that needs a keyframe: the encoder reads it.
+    fn pictures_moved(&self) {
+        self.pictures_revision.fetch_add(1, Ordering::Relaxed);
+        self.wake();
+    }
+    /// The peers' requests for this device's picture tracks, taken once.
+    fn take_picture_requests(&self) -> Option<moq_net::broadcast::Dynamic> {
+        self.picture_requests.lock_recover().take()
+    }
     /// Would `device`'s frame be opened now? Decided by the roster and the
     /// keys, before any byte of it is read.
     fn admits(&self, device: [u8; 32]) -> bool {
@@ -254,7 +393,11 @@ pub struct Plane {
     /// This device's recent audio objects, newest last: the redundancy its
     /// datagrams carry, so one lost packet costs one frame and not two.
     sent: Mutex<VecDeque<Vec<u8>>>,
+    /// The peer picture tracks this plane reads now: exactly what its app
+    /// shows ([`Self::show`]), one reader each.
+    shown: Mutex<BTreeMap<([u8; 32], Track), Task>>,
     _readers: Vec<Task>,
+    _pictures: Vec<Task>,
     _origins: Vec<OriginTask>,
     _connected: Option<Connected>,
 }
@@ -312,6 +455,7 @@ impl Plane {
     /// Start the readers of a prepared plane.
     fn serve(shared: Arc<Shared>, origins: Vec<OriginTask>, connected: Option<Connected>) -> Self {
         let mut readers = Vec::new();
+        let mut pictures = Vec::new();
         if let Some(connected) = &connected {
             let watched = connected.session.clone();
             let ended = shared.clone();
@@ -319,6 +463,9 @@ impl Plane {
                 let _ = watched.closed().await;
                 ended.end();
             }));
+        }
+        if let Some(requests) = shared.take_picture_requests() {
+            pictures.push(Task::spawn(accept_pictures(shared.clone(), requests)));
         }
         for device in shared.join.roster.devices() {
             if device == shared.join.device {
@@ -331,7 +478,9 @@ impl Plane {
         Self {
             shared,
             sent: Mutex::new(VecDeque::new()),
+            shown: Mutex::new(BTreeMap::new()),
             _readers: readers,
+            _pictures: pictures,
             _origins: origins,
             _connected: connected,
         }
@@ -426,6 +575,148 @@ impl Plane {
         self.shared.heard.lock_recover().pop_front()
     }
 
+    /// Show `tracks` of `sender` here, and stop showing those left out: this
+    /// plane asks the peer for exactly these picture layers, and its session
+    /// encodes a layer only while a peer asks for it. A track is read from
+    /// the peer's own broadcast, so what arrives is [`Shared::deliver`]ed as
+    /// that peer's objects.
+    pub fn show(&self, sender: [u8; 32], tracks: &[Track]) {
+        let wanted: BTreeSet<Track> = tracks
+            .iter()
+            .copied()
+            .filter(|track| matches!(track, Track::Camera(_) | Track::Screen(_)))
+            .collect();
+        let mut shown = self.shown.lock_recover();
+        let stale: Vec<([u8; 32], Track)> = shown
+            .keys()
+            .filter(|(device, track)| *device == sender && !wanted.contains(track))
+            .copied()
+            .collect();
+        for key in stale {
+            // Dropping the reader's task ends it: the peer is no longer
+            // asked for that layer.
+            shown.remove(&key);
+        }
+        if sender == self.shared.join.device {
+            return;
+        }
+        for track in wanted {
+            if shown.contains_key(&(sender, track)) {
+                continue;
+            }
+            let reader = Task::spawn(receive_pictures(self.shared.clone(), sender, track));
+            shown.insert((sender, track), reader);
+        }
+    }
+
+    /// The picture layers someone shows of this device now: exactly what it
+    /// encodes. Changes with [`Self::pictures_revision`].
+    #[must_use]
+    pub fn wanted_pictures(&self) -> Vec<(Source, Layer)> {
+        self.shared
+            .pictures
+            .lock_recover()
+            .out
+            .keys()
+            .filter_map(|name| video::parse_track(name))
+            .collect()
+    }
+
+    /// Whether a layer of `source` needs a keyframe now, as
+    /// [`Self::take_picture_keyframes`] would take.
+    #[must_use]
+    pub fn wants_picture_keyframe(&self, source: Source) -> bool {
+        self.shared
+            .pictures
+            .lock_recover()
+            .keyframes
+            .iter()
+            .any(|track| matches!(track, video::Track::Picture(of, _) if *of == source))
+    }
+
+    /// The layers of `source` that need a keyframe now: their tracks were
+    /// asked for afresh, or a picture could not join its group. A still
+    /// picture sends its new reader nothing until asked.
+    #[must_use]
+    pub fn take_picture_keyframes(&self, source: Source) -> Vec<Layer> {
+        let mut pictures = self.shared.pictures.lock_recover();
+        let layers = pictures
+            .keyframes
+            .iter()
+            .filter_map(|track| match track {
+                video::Track::Picture(of, layer) if *of == source => Some(*layer),
+                _ => None,
+            })
+            .collect();
+        pictures
+            .keyframes
+            .retain(|track| !matches!(track, video::Track::Picture(of, _) if *of == source));
+        layers
+    }
+
+    /// Advances whenever a picture layer is asked for or ends, or a picture
+    /// could not join its group.
+    #[must_use]
+    pub fn pictures_revision(&self) -> u64 {
+        self.shared.pictures_revision.load(Ordering::Relaxed)
+    }
+
+    /// Send one picture of `source` on its layer's track, to everyone who
+    /// shows that layer. A layer starts with a keyframe, and each keyframe
+    /// starts a group.
+    ///
+    /// The layer is sealed as its own stream: only the payload is sealed, so
+    /// the relay still validates the object it forwards and never sees the
+    /// picture.
+    ///
+    /// # Errors
+    ///
+    /// [`PlaneError::Unwanted`] when nobody shows this layer,
+    /// [`PlaneError::Unkeyed`] for a picture before the layer's first
+    /// keyframe or a group past [`video::MAX_GROUP_OBJECTS`] (send a
+    /// keyframe), and otherwise as [`Self::publish`].
+    pub fn send_picture(&self, source: Source, object: &VideoObject) -> Result<(), PlaneError> {
+        if self.shared.ended() {
+            return Err(PlaneError::Ended);
+        }
+        let track = match source {
+            Source::Camera => Track::Camera(object.layer),
+            Source::Screen => Track::Screen(object.layer),
+        };
+        let name = live::track(track);
+        let keys = self.shared.keys.lock_recover().clone();
+        let sealer = Sealer::new(
+            &keys,
+            self.shared.join.device,
+            stream(track),
+            TrackName::new(&self.shared.join.scope, name.as_str()),
+        )?;
+        let timestamp = moq_net::Timestamp::from_scale(object.timestamp_us, 1_000_000)
+            .map_err(|_| PlaneError::Invalid)?;
+        let mut pictures = self.shared.pictures.lock_recover();
+        let Some(out) = pictures.out.get_mut(&name) else {
+            return Err(PlaneError::Unwanted);
+        };
+        let cipher_body = sealer.seal(
+            u32::try_from(out.next_group).unwrap_or(u32::MAX),
+            &object.payload,
+        )?;
+        let object = VideoObject {
+            payload: cipher_body,
+            ..object.clone()
+        };
+        let bytes = object.encode().map_err(|_| PlaneError::Invalid)?;
+        let sent = out.write(object.keyframe, timestamp, bytes);
+        if sent.is_err() {
+            pictures
+                .keyframes
+                .insert(video::Track::Picture(source, object.layer));
+            drop(pictures);
+            self.shared.pictures_moved();
+        }
+        sent
+    }
+
     /// Who may send from now on, under the same keys: a roster that moved
     /// while the epoch stayed as it was.
     pub fn set_roster(&self, roster: Roster) {
@@ -470,7 +761,10 @@ pub const fn stream(track: Track) -> Stream {
     match track {
         Track::Presence => Stream::Presence,
         Track::Audio => Stream::Microphone,
-        _ => Stream::Activity,
+        Track::Camera(_) => Stream::Camera,
+        Track::Screen(_) => Stream::Screen,
+        Track::Window(..) => Stream::Window,
+        Track::Input(_) | Track::Activity => Stream::Activity,
     }
 }
 
@@ -489,32 +783,254 @@ fn track_info(track: Track) -> moq_net::track::Info {
         .with_priority(live::priority(track))
 }
 
+/// Serve the peers' requests for this device's picture tracks: a request for
+/// a camera or screen layer is accepted and encoded from then on, a track
+/// nobody reads past its grace is ended
+/// ([`watch_unused`]), and anything else is refused.
+async fn accept_pictures(shared: Arc<Shared>, mut requests: moq_net::broadcast::Dynamic) {
+    while let Ok(request) = requests.requested_track().await {
+        let Some(track) = video::Track::parse(request.name()) else {
+            request.reject(moq_net::Error::NotFound);
+            continue;
+        };
+        let video::Track::Picture(source, layer) = track else {
+            request.reject(moq_net::Error::NotFound);
+            continue;
+        };
+        if shared.ended() {
+            request.reject(moq_net::Error::Cancel);
+            return;
+        }
+        let name = request.name().to_owned();
+        let plane_track = match source {
+            Source::Camera => Track::Camera(layer),
+            Source::Screen => Track::Screen(layer),
+        };
+        let out = request.accept(track_info(plane_track));
+        let unused = watch_unused(&shared, name.clone(), out.clone());
+        let mut pictures = shared.pictures.lock_recover();
+        let next_group = pictures.next_group.get(&name).copied().unwrap_or(0);
+        pictures.out.insert(
+            name,
+            PictureOut {
+                track: out,
+                group: None,
+                next_group,
+                in_group: 0,
+                _unused: unused,
+            },
+        );
+        // The new reader can start at nothing but a keyframe.
+        pictures.keyframes.insert(track);
+        drop(pictures);
+        shared.pictures_moved();
+    }
+}
+
+/// A picture track nobody reads any more is ended and no longer encoded. A
+/// track is accepted before its reader attaches, so it is ended only once it
+/// stays unread past the grace: a track ended in that gap would take the
+/// keyframe asked for with it.
+fn watch_unused(shared: &Arc<Shared>, name: String, track: moq_net::track::Producer) -> Task {
+    let shared = Arc::downgrade(shared);
+    Task::spawn(async move {
+        loop {
+            unused(&track).await;
+            let Some(shared) = shared.upgrade() else {
+                return;
+            };
+            let mut pictures = shared.pictures.lock_recover();
+            if !pictures
+                .out
+                .get(&name)
+                .is_some_and(|out| out.track.is_clone(&track))
+            {
+                return;
+            }
+            if track.clone().abort_unused(moq_net::Error::Cancel).is_err() {
+                continue;
+            }
+            if let Some(out) = pictures.out.remove(&name) {
+                pictures.next_group.insert(name, out.next_group);
+            }
+            drop(pictures);
+            shared.pictures_moved();
+            return;
+        }
+    })
+}
+
+/// Read one shown picture track of `device`'s broadcast for as long as it is
+/// shown. Asking the broadcast for the track is the demand: the peer encodes
+/// that layer while this reader exists, and stops when it ends.
+async fn receive_pictures(shared: Arc<Shared>, device: [u8; 32], track: Track) {
+    let address = Namespace::new(&shared.join.scope, device).path();
+    let name = live::track(track);
+    loop {
+        if shared.ended() || !shared.admits(device) {
+            return;
+        }
+        let Ok(broadcast) = shared
+            .incoming
+            .consume()
+            .routed_broadcast(address.as_str())
+            .await
+        else {
+            return;
+        };
+        let Ok(peer_track) = broadcast.track(name.as_str()) else {
+            return;
+        };
+        let Ok(mut subscriber) = peer_track
+            .subscribe(moq_net::track::Subscription::default().with_max_age(retain(track)))
+            .await
+        else {
+            return;
+        };
+        // Whether the track delivered anything before it ended: an ended
+        // layer is asked for again only after the grace, not in a spin.
+        let mut heard_any = false;
+        while let Ok(Some(mut group)) = subscriber.recv_group().await {
+            while let Ok(Some(frame)) = group.read_frame().await {
+                if shared.ended() || !shared.admits(device) {
+                    return;
+                }
+                let Some((sequence, body)) = open_picture(&shared, device, track, &frame.payload)
+                else {
+                    // A frame this device may not open: the epoch or the
+                    // roster moved.
+                    return;
+                };
+                heard_any = true;
+                shared.deliver_picture(Heard {
+                    sender: device,
+                    track,
+                    sequence,
+                    body,
+                });
+            }
+        }
+        if !heard_any {
+            n0_future::time::sleep(REJOIN).await;
+        }
+    }
+}
+
+/// Open one picture object's sealed payload, keeping the header the relay
+/// validated: `None` when the epoch or the roster no longer opens it.
+fn open_picture(
+    shared: &Shared,
+    device: [u8; 32],
+    track: Track,
+    bytes: &[u8],
+) -> Option<(u32, Vec<u8>)> {
+    let object = VideoObject::decode(bytes).ok()?;
+    let opened = shared.open(device, track, &object.payload).ok()?;
+    let sequence = u32::try_from(object.sequence).unwrap_or(u32::MAX);
+    let body = VideoObject {
+        payload: opened,
+        ..object
+    }
+    .encode()
+    .ok()?;
+    Some((sequence, body))
+}
+
+/// The wait a picture track nobody reads may stay accepted: a reader
+/// attaches just after its request, and a track ended in that gap would take
+/// the keyframe asked for with it.
+const UNUSED_GRACE: Duration = Duration::from_secs(2);
+
+/// Wait until `track` is unread for longer than [`UNUSED_GRACE`].
+async fn unused(track: &moq_net::track::Producer) {
+    loop {
+        if track.unused().await.is_err() {
+            return;
+        }
+        n0_future::time::sleep(UNUSED_GRACE).await;
+        if !track.is_used() {
+            return;
+        }
+    }
+}
+
 /// Read `track` of `device`'s broadcast for as long as the plane lives.
+///
+/// A device's broadcast ends when its plane does — it left the workspace and
+/// came back, or a page reloaded — and is announced again under the same
+/// namespace by the session that took its place. This reader waits for that
+/// announcement and reads the track again, so the device is heard here
+/// without this plane joining again; what it said before is not played twice.
 async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
     let address = Namespace::new(&shared.join.scope, device).path();
-    let Ok(broadcast) = shared
-        .incoming
-        .consume()
-        .routed_broadcast(address.as_str())
-        .await
-    else {
-        return;
-    };
     let name = live::track(track);
-    let Ok(producer) = broadcast.track(name.as_str()) else {
-        return;
-    };
-    let Ok(mut subscriber) = producer
-        .subscribe(moq_net::track::Subscription::default().with_max_age(retain(track)))
-        .await
-    else {
-        return;
-    };
-    // The newest audio object played: a bundle carries earlier objects again,
-    // and one already played is not played twice.
-    let mut played: Option<u64> = None;
     loop {
-        match next(&mut subscriber).await {
+        if shared.ended() || !shared.admits(device) {
+            return;
+        }
+        let Ok(broadcast) = shared
+            .incoming
+            .consume()
+            .routed_broadcast(address.as_str())
+            .await
+        else {
+            return;
+        };
+        let Ok(producer) = broadcast.track(name.as_str()) else {
+            return;
+        };
+        // A reader that attaches late starts at the newest group the track
+        // holds: the presence a peer said before it joined is what it draws,
+        // instead of waiting out the heartbeat.
+        let newest = producer.latest();
+        let Ok(mut subscriber) = producer
+            .subscribe(
+                moq_net::track::Subscription::default()
+                    .with_max_age(retain(track))
+                    .with_start(newest.map(moq_net::track::Position::group)),
+            )
+            .await
+        else {
+            return;
+        };
+        // The newest audio object played: a bundle carries earlier objects
+        // again, and one already played is not played twice.
+        let mut played: Option<u64> = None;
+        // Whether the read delivered anything before it ended: a track that
+        // is announced but already finished ends at once, and asking for it
+        // again in a spin would starve the plane's other reads.
+        let mut heard_any = false;
+        if !read(
+            &shared,
+            device,
+            track,
+            &mut subscriber,
+            &mut played,
+            &mut heard_any,
+        )
+        .await
+        {
+            return;
+        }
+        if !heard_any {
+            n0_future::time::sleep(REJOIN).await;
+        }
+    }
+}
+
+/// Read one subscription of `track` to its end: `false` when the plane is
+/// over or the track may no longer be opened here, `true` when the peer's
+/// broadcast ended and may come back.
+async fn read(
+    shared: &Shared,
+    device: [u8; 32],
+    track: Track,
+    subscriber: &mut moq_net::track::Subscriber,
+    played: &mut Option<u64>,
+    heard_any: &mut bool,
+) -> bool {
+    loop {
+        match next(subscriber).await {
             Next::Datagram(datagram) => {
                 // Only audio travels as datagrams: one bundle of voice
                 // objects, newest first, each with its payload sealed.
@@ -532,49 +1048,54 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
                         continue;
                     }
                     if shared.ended() || !shared.admits(device) {
-                        return;
+                        return false;
                     }
-                    if !hear_voice(&shared, device, &object) {
-                        return;
+                    if !hear_voice(shared, device, &object) {
+                        return false;
                     }
-                    played = Some(object.sequence);
+                    *heard_any = true;
+                    *played = Some(object.sequence);
                 }
             }
             Next::Group(mut group) => {
                 let sequence = u32::try_from(group.sequence).unwrap_or(u32::MAX);
                 while let Ok(Some(frame)) = group.read_frame().await {
                     if shared.ended() || !shared.admits(device) {
-                        return;
+                        return false;
                     }
                     if track == Track::Audio {
                         // Group lanes carry one voice object per frame: the
                         // same object the datagram lane carries.
                         let Ok(object) = VoiceObject::decode(&frame.payload) else {
-                            return;
+                            return false;
                         };
                         if played.is_some_and(|seen| object.sequence <= seen) {
                             continue;
                         }
-                        if !hear_voice(&shared, device, &object) {
-                            return;
+                        if !hear_voice(shared, device, &object) {
+                            return false;
                         }
-                        played = Some(object.sequence);
+                        *heard_any = true;
+                        *played = Some(object.sequence);
                         continue;
                     }
                     match shared.open(device, track, &frame.payload) {
-                        Ok(body) => shared.deliver(Heard {
-                            sender: device,
-                            track,
-                            sequence,
-                            body,
-                        }),
+                        Ok(body) => {
+                            *heard_any = true;
+                            shared.deliver(Heard {
+                                sender: device,
+                                track,
+                                sequence,
+                                body,
+                            });
+                        }
                         // A frame this device may not open is not one to keep
                         // reading the track for: the epoch or the roster moved.
-                        Err(_) => return,
+                        Err(_) => return false,
                     }
                 }
             }
-            Next::End => return,
+            Next::End => return true,
         }
     }
 }

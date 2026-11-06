@@ -14,10 +14,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ui::advanced::WindowEvent;
-use ui::framework::{Dispatcher, Effected, ResourceApp, ViewCx};
+use ui::framework::{Effected, ResourceApp, ViewCx};
+use ui::icons::Icon;
 use ui::prelude::*;
+use ui::tokens::Rhythm;
 use ui::widget::{
-    Avatar, Button, ButtonRole, Column, Element, ListRow, ModalDialog, Row, Text, TextInput, Widget,
+    Avatar, Banner, Button, ButtonRole, ChipStyle, Column, ControlSize, Element, EmptyState,
+    ListRow, ModalDialog, Row, SearchField, Section, Text, Widget,
 };
 
 use crate::presentation::Presentation;
@@ -68,6 +71,9 @@ pub enum DirectoryEffect {
     /// Read the directories again
     #[effect(own_device, kind = "read")]
     Refresh,
+    /// Put the note saying what went wrong away
+    #[effect(own_device, kind = "read")]
+    ClearNote,
     /// Close the sheet
     #[effect(own_device, kind = "read")]
     Done,
@@ -210,6 +216,45 @@ impl DirectorySeat {
     }
 }
 
+/// How the sheet asks its host for something: an effect the person pressed,
+/// carried out by whoever shows the sheet. The session's window pushes it
+/// into the seat its shell reads; a page's host hands it to the page.
+pub type Ask = Rc<dyn Fn(DirectoryEffect)>;
+
+/// The sheet as its hosts draw it, from the [`Directory`] they keep current:
+/// the search, what went wrong last, and the workspaces a site lists, with
+/// the search kept in `query` and every press asked through `ask`. The
+/// session's window ([`DirectoryApp`]) and a browser page build this same
+/// sheet from the same data.
+pub fn sheet(directory: &Directory, query: &LocalState<String>, ask: &Ask) -> Element {
+    let search = SearchField::from_state(query)
+        .with_placeholder(&t("directory-search"))
+        .with_id("directory-search");
+    let mut body = Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .with_rhythm(Rhythm::Section)
+        .push(Box::new(search));
+    if let Some(note) = &directory.note {
+        body = body.push(notice(note.clone(), ask));
+    }
+    body = body.push(rows(directory, &query.get(), ask));
+    let link = ask.clone();
+    let typed = query.clone();
+    let dismissed = ask.clone();
+    Box::new(
+        ModalDialog::new(t("directory-title"), body)
+            .with_test_id("directory")
+            .with_icon(Icon::Users)
+            .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
+            .open(true)
+            .secondary_action(t("directory-link-or-code"), move || {
+                link(DirectoryEffect::LinkOrCode { text: typed.get() });
+            })
+            .on_dismiss(move || dismissed(DirectoryEffect::Done)),
+    )
+}
+
 /// The sheet as an app.
 pub struct DirectoryApp;
 
@@ -257,22 +302,22 @@ impl ResourceApp for DirectoryApp {
             None => Err("no network to join through here".to_owned()),
         });
         let dispatch = cx.dispatcher();
+        let ask: Ask = Rc::new(move |effect: DirectoryEffect| dispatch.effect(&effect));
         let field = query.clone();
         let rows_query = query.clone();
-        let rows_dispatch = dispatch.clone();
-        let sheet_dispatch = dispatch.clone();
+        let asking = ask.clone();
         let content = cx.switch(&shown, move |cx, directory| {
             let directory = directory.clone();
-            let dispatch = rows_dispatch.clone();
-            let rows = cx.switch(&rows_query, move |_cx, query| {
-                rows(&directory, query, &dispatch)
-            });
-            sheet(rows, &field, &sheet_dispatch)
+            let ask = asking.clone();
+            let field = field.clone();
+            cx.switch(&rows_query, move |_cx, _query| {
+                sheet(&directory, &field, &ask)
+            })
         });
         Box::new(Searching {
             content,
-            dispatch,
             query,
+            ask,
         })
     }
 
@@ -338,60 +383,43 @@ fn sample_directory() -> Directory {
     }
 }
 
-/// The sheet around `rows`: the search, the list, the way in with a link.
-fn sheet(
-    rows: Element,
-    query: &LocalState<String>,
-    dispatch: &Dispatcher<WorkspaceDirectory>,
-) -> Element {
-    let link = dispatch.clone();
-    let typed = query.clone();
-    let dismissed = dispatch.clone();
-    let search = TextInput::from_state(query)
-        .with_placeholder(t("directory-search"))
-        .with_id("directory-search");
-    let body = Column::new()
-        .with_gap(ui::tokens::Spacing::BASE.s3)
-        .push(Box::new(search))
-        .push(rows);
+/// What the person asked for last went wrong: said in a notice over the
+/// list, in the design language's own words rather than the protocol's.
+fn notice(text: String, ask: &Ask) -> Element {
+    let dismiss = ask.clone();
     Box::new(
-        ModalDialog::new(t("directory-title"), body)
-            .with_test_id("directory")
-            .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
-            .open(true)
-            .secondary_action(t("directory-link-or-code"), move || {
-                link.effect(&DirectoryEffect::LinkOrCode { text: typed.get() });
-            })
-            .on_dismiss(move || dismissed.effect(&DirectoryEffect::Done)),
+        Banner::error(text)
+            .with_id("directory-note")
+            .dismissible()
+            .on_dismiss(move || dismiss(DirectoryEffect::ClearNote)),
     )
 }
 
-/// The listings that answer `query`, or what stands in their place.
-fn rows(directory: &Directory, query: &str, dispatch: &Dispatcher<WorkspaceDirectory>) -> Element {
-    let caption = |text: &str| -> Element {
-        Box::new(
-            Text::new(text)
-                .with_role(TextRole::Caption)
-                .with_id("directory-status"),
-        )
-    };
-    let mut column = Column::new().with_gap(ui::tokens::Spacing::BASE.s1);
-    if let Some(note) = &directory.note {
-        column = column.push(caption(note));
-    }
+/// The listings that answer `query`, or what stands in their place: the
+/// workspaces themselves, or one sentence saying why there are none.
+fn rows(directory: &Directory, query: &str, ask: &Ask) -> Element {
+    let mut column = Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .with_rhythm(Rhythm::Section);
     match &directory.status {
-        Status::Loading => return Box::new(column.push(caption(&t("directory-loading")))),
+        Status::Loading => {
+            return Box::new(
+                column.push(Box::new(EmptyState::new(t("directory-loading")).inline())),
+            );
+        }
         Status::Failed(error) => {
-            let retry = dispatch.clone();
+            let retry = ask.clone();
             return Box::new(
                 column
-                    .push(caption(&crate::t_args(
-                        "directory-failed",
-                        &[("error", ui::i18n::ArgValue::Text(error.clone()))],
-                    )))
                     .push(Box::new(
-                        Button::new("directory-retry", &t("directory-try-again"))
-                            .on_view(move || retry.effect(&DirectoryEffect::Refresh)),
+                        EmptyState::error(t("directory-failed-title"), error.clone()).inline(),
+                    ))
+                    .push(Box::new(
+                        Row::new().with_rhythm(Rhythm::Related).push(Box::new(
+                            Button::new("directory-retry", &t("directory-try-again"))
+                                .on_view(move || retry(DirectoryEffect::Refresh)),
+                        )),
                     )),
             );
         }
@@ -403,31 +431,33 @@ fn rows(directory: &Directory, query: &str, dispatch: &Dispatcher<WorkspaceDirec
         .filter(|listing| listing.matches(query))
         .collect();
     if shown.is_empty() {
-        let says = if directory.listings.is_empty() {
-            t("directory-empty")
+        let empty = if directory.listings.is_empty() {
+            EmptyState::new(t("directory-empty-title")).with_message(t("directory-empty"))
         } else {
-            crate::t_args(
-                "directory-no-match",
+            EmptyState::new(crate::t_args(
+                "directory-no-match-title",
                 &[("query", ui::i18n::ArgValue::Text(query.trim().to_owned()))],
-            )
+            ))
+            .with_message(t("directory-no-match"))
         };
-        return Box::new(column.push(caption(&says)));
+        return Box::new(column.push(Box::new(empty)));
     }
-    for listing in shown {
-        column = column.push(row(listing, dispatch));
-    }
+    column = column.push(Box::new(Section::new(
+        shown.into_iter().map(|listing| row(listing, ask)).collect(),
+    )));
     Box::new(column)
 }
 
-/// One workspace: its mark, name and what it is, who is here, its button.
-fn row(listing: &Listing, dispatch: &Dispatcher<WorkspaceDirectory>) -> Element {
+/// One workspace: its mark, name and what it is, who is here now, and Join
+/// (Open once this computer holds it).
+fn row(listing: &Listing, ask: &Ask) -> Element {
     let (label, named, primary) = match listing.action {
         ListingAction::Open => ("directory-open", "directory-open-named", false),
         ListingAction::Joining => ("directory-joining", "directory-joining-named", true),
         ListingAction::TryAgain => ("directory-try-again", "directory-join-named", true),
         ListingAction::Join => ("directory-join", "directory-join-named", true),
     };
-    let press = dispatch.clone();
+    let press = ask.clone();
     let effect = match listing.action {
         ListingAction::Open => DirectoryEffect::Open {
             key: listing.key.clone(),
@@ -437,27 +467,38 @@ fn row(listing: &Listing, dispatch: &Dispatcher<WorkspaceDirectory>) -> Element 
         },
     };
     let mut button = Button::new(&format!("directory-row-{}", listing.key), &t(label))
+        .control_size(ControlSize::Small)
         .with_accessible_name(&crate::t_args(
             named,
             &[("name", ui::i18n::ArgValue::Text(listing.name.clone()))],
         ))
         .tooltip(listing.joins_as.clone())
-        .on_own_device_effect(move || press.effect(&effect))
+        .on_own_device_effect(move || press(effect.clone()))
         .with_enabled(!listing.waiting && listing.action != ListingAction::Joining);
     if primary {
         button = button.role(ButtonRole::Primary);
     }
-    let mut trailing = Row::new().with_gap(ui::tokens::Spacing::BASE.s1);
-    for (name, identity) in listing.here.iter().take(FACES_SHOWN) {
+    let mut trailing = Row::new()
+        .with_rhythm(Rhythm::Related)
+        .with_gap(ui::tokens::Spacing::BASE.s1);
+    let faces = listing.here.len().min(FACES_SHOWN);
+    for (name, identity) in listing.here.iter().take(faces) {
         trailing = trailing.push(Box::new(Avatar::person(name.clone(), identity.clone())));
     }
+    // The count of who is here only counts past faces: a listing that says how
+    // many are here but draws none (a host that keeps no faces) leaves it to
+    // its activity line, which says it in words.
     let extra = listing
         .here_count
         .max(listing.here.len())
-        .saturating_sub(listing.here.len().min(FACES_SHOWN));
-    if extra > 0 {
+        .saturating_sub(faces);
+    if faces > 0 && extra > 0 {
         trailing = trailing.push(Box::new(
-            Text::new(&format!("+{extra}")).with_role(TextRole::Caption),
+            Text::new(&crate::t_args(
+                "directory-here-more",
+                &[("count", ui::i18n::ArgValue::Text(extra.to_string()))],
+            ))
+            .with_role(TextRole::Caption),
         ));
     }
     trailing = trailing.push(Box::new(button));
@@ -467,11 +508,13 @@ fn row(listing: &Listing, dispatch: &Dispatcher<WorkspaceDirectory>) -> Element 
     )
     .avatar(listing.name.clone(), listing.key.clone())
     .square()
+    .avatar_glyph(Icon::Users)
     .subtitle(listing.about.replace('\n', " "))
-    .secondary(listing.activity.clone())
+    .secondary(&listing.activity)
     .trailing(Box::new(trailing));
     if let Some(tag) = &listing.tag {
-        row = row.badge(tag.clone());
+        let chips = [(tag.as_str(), ChipStyle::Neutral)];
+        row = row.tags(&chips);
     }
     if let Some(members) = &listing.members {
         row = row.meta(members.clone());
@@ -483,8 +526,8 @@ fn row(listing: &Listing, dispatch: &Dispatcher<WorkspaceDirectory>) -> Element 
 /// before it closes the sheet. A row's button takes Space or a press.
 struct Searching {
     content: Element,
-    dispatch: Dispatcher<WorkspaceDirectory>,
     query: LocalState<String>,
+    ask: Ask,
 }
 
 impl ui::widget::Decorator for Searching {
@@ -516,7 +559,7 @@ impl ui::widget::Decorator for Searching {
         if pressed == Some(Key::Named(NamedKey::Enter)) {
             let text = self.query.get().trim().to_owned();
             if !text.is_empty() {
-                self.dispatch.effect(&DirectoryEffect::Look { text });
+                (self.ask)(DirectoryEffect::Look { text });
                 *ctx.handled = true;
                 return;
             }

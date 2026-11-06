@@ -29,6 +29,7 @@
 //! arguments.
 
 mod effects;
+mod i18n;
 mod service;
 #[cfg(test)]
 mod tests;
@@ -51,9 +52,6 @@ pub use tilo_actions::remote::agent_runs as wire;
 pub const RUNS_KIND: &str = "so.tilo.session.agent-runs";
 /// The kind of one run's resource, [`wire::run`].
 pub const RUN_KIND: &str = "so.tilo.session.agent-run";
-/// What the runs are called wherever a person reads them.
-pub const LABEL: &str = "Agent runs";
-
 /// How many runs the session keeps: the last ones asked. What an older run
 /// did stays in the records its steps changed.
 const KEPT_RUNS: usize = 64;

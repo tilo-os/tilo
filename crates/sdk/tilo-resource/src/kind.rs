@@ -54,9 +54,14 @@ pub struct ResourceKind {
     name: fn(&dyn Any) -> Option<String>,
     publish: fn(&str, &str, &dyn Any) -> Option<tilo_actions::ResourceSpec>,
     search: fn(&dyn Any) -> Option<Vec<SearchEntry>>,
+    to_json: fn(&dyn Any) -> Option<serde_json::Value>,
     child: fn(&dyn Any, &Doc, &str) -> Option<tilo_actions::ResourceSpec>,
+    content: fn(&dyn Any, &Doc, Option<&str>) -> Result<serde_json::Value, String>,
+    reads_item: fn(&str) -> bool,
     register: fn(&mut ActionRegistry),
     initialize: fn(&mut Doc) -> Result<(), ModelError>,
+    migrate: fn(&mut Doc) -> Result<bool, ModelError>,
+    needs_migrate: fn(&Doc) -> bool,
     encode: fn(serde_json::Value) -> Result<EncodedAction, String>,
     lands: fn(&Doc, &EncodedAction) -> Option<Place>,
 }
@@ -95,8 +100,24 @@ fn no_search(_state: &dyn Any) -> Option<Vec<SearchEntry>> {
     None
 }
 
+fn no_to_json(_state: &dyn Any) -> Option<serde_json::Value> {
+    None
+}
+
 fn no_child(_state: &dyn Any, _doc: &Doc, _id: &str) -> Option<tilo_actions::ResourceSpec> {
     None
+}
+
+fn no_content(
+    _state: &dyn Any,
+    _doc: &Doc,
+    _item: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    Err("a kind declared by name alone holds no record".to_owned())
+}
+
+fn no_item(_id: &str) -> bool {
+    false
 }
 
 fn no_register(_registry: &mut ActionRegistry) {}
@@ -105,6 +126,18 @@ fn no_initialize(_doc: &mut Doc) -> Result<(), ModelError> {
     Err(ModelError::Refused(
         "a kind declared by name alone initialises no record".to_owned(),
     ))
+}
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "a kind's migration answers as a type's migration does, whether or not it changes anything"
+)]
+fn no_migrate(_doc: &mut Doc) -> Result<bool, ModelError> {
+    Ok(false)
+}
+
+fn no_needs_migrate(_doc: &Doc) -> bool {
+    false
 }
 
 fn no_encode(_action: serde_json::Value) -> Result<EncodedAction, String> {
@@ -135,13 +168,13 @@ const fn app_eq(a: &str, b: &str) -> bool {
     true
 }
 
-/// [`Resource::LABEL`], for a kind declared from a type's name alone.
+/// [`Resource::label`], for a kind declared from a type's name alone.
 #[allow(
     clippy::unnecessary_wraps,
     reason = "a kind names its records through a `Resource` method, whatever its state"
 )]
 fn naming<R: Resource>(_state: &dyn Any) -> Option<String> {
-    Some(R::LABEL.to_owned())
+    Some(R::label())
 }
 
 fn read<R: Resource>(doc: &Doc) -> Result<Box<dyn Any>, ModelError> {
@@ -149,9 +182,7 @@ fn read<R: Resource>(doc: &Doc) -> Result<Box<dyn Any>, ModelError> {
 }
 
 fn resource_label<R: Resource>(state: &dyn Any) -> Option<String> {
-    state
-        .downcast_ref::<R::State>()
-        .map(|_| R::LABEL.to_owned())
+    state.downcast_ref::<R::State>().map(|_| R::label())
 }
 
 fn publish<R: Resource>(
@@ -170,6 +201,42 @@ fn child<R: Resource>(state: &dyn Any, doc: &Doc, id: &str) -> Option<tilo_actio
 
 fn search<R: Resource>(state: &dyn Any) -> Option<Vec<SearchEntry>> {
     state.downcast_ref::<R::State>().map(R::search)
+}
+
+/// A record's state as JSON, through its own model table
+/// ([`Model::to_json`](crate::Model::to_json)): what a view of it is offered.
+fn to_json<R: Resource>(state: &dyn Any) -> Option<serde_json::Value> {
+    let table = R::RECORD_TABLE?;
+    state
+        .downcast_ref::<R::State>()
+        .map(|state| crate::table::Run(table).to_json(state))
+}
+
+/// [`Resource::read_content`], or the record's model tables for a part the
+/// type does not answer reads of itself: the same two ways the framework's
+/// `read` takes, so a host without the type reads what the app's process read.
+fn content<R: Resource>(
+    state: &dyn Any,
+    doc: &Doc,
+    item: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let state = state
+        .downcast_ref::<R::State>()
+        .ok_or_else(|| format!("{} state is another type", R::KIND))?;
+    if R::READABLE {
+        match R::read_content(state, doc, item) {
+            Ok(content) => return Ok(content),
+            Err(error) if !reads_item::<R>(item.unwrap_or_default()) => return Err(error),
+            Err(_) => {}
+        }
+    }
+    let table = R::RECORD_TABLE
+        .ok_or_else(|| format!("a {} does not answer reads of its parts", R::LABEL))?;
+    crate::table::item_json(table, state, R::KIND, item.unwrap_or_default())
+}
+
+fn reads_item<R: Resource>(item: &str) -> bool {
+    R::RECORD_TABLE.is_some_and(|table| crate::table::reads_item(table, R::KIND, item))
 }
 
 fn lands<R: Resource>(doc: &Doc, action: &EncodedAction) -> Option<Place> {
@@ -225,9 +292,14 @@ impl ResourceKind {
             name: resource_label::<R>,
             publish: publish::<R>,
             search: search::<R>,
+            to_json: to_json::<R>,
             child: child::<R>,
+            content: content::<R>,
+            reads_item: reads_item::<R>,
             register: crate::group::register::<R>,
             initialize: R::initialize,
+            migrate: crate::evolution::migrate::<R>,
+            needs_migrate: crate::evolution::needs_migrate::<R>,
             encode: encode::<R>,
             lands: lands::<R>,
         }
@@ -261,9 +333,14 @@ impl ResourceKind {
             name: no_name,
             publish: no_publish,
             search: no_search,
+            to_json: no_to_json,
             child: no_child,
+            content: no_content,
+            reads_item: no_item,
             register: no_register,
             initialize: no_initialize,
+            migrate: no_migrate,
+            needs_migrate: no_needs_migrate,
             encode: no_encode,
             lands: no_lands,
         }
@@ -439,6 +516,28 @@ impl ResourceKind {
         Ok((self.child)(state.as_ref(), doc, id))
     }
 
+    /// What `doc` holds, as JSON a caller can act on: the resource itself, or
+    /// with `item`, the part of it that id names — the reading a document
+    /// host offers a view (`docs/architecture/apps.md` §2). Read through the
+    /// type's own [`Resource::read_content`] where it answers reads, else
+    /// from the record's model tables, so a host that links no model type
+    /// still reads exactly what the app's process did.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the document does not hold this resource,
+    /// or a refusal naming why the part cannot be read.
+    pub fn content(&self, doc: &Doc, item: Option<&str>) -> Result<serde_json::Value, ModelError> {
+        let state = self.read(doc)?;
+        (self.content)(state.as_ref(), doc, item).map_err(ModelError::Refused)
+    }
+
+    /// Whether [`Self::content`] answers with `item`: the record publishes a
+    /// read of that part.
+    #[must_use]
+    pub fn reads_item(&self, item: &str) -> bool {
+        (self.reads_item)(item)
+    }
+
     /// [`Self::publish`] from a state [`Self::read`] returned.
     ///
     /// # Errors
@@ -450,6 +549,16 @@ impl ResourceKind {
     ) -> Result<tilo_actions::ResourceSpec, ModelError> {
         let name = self.name(state);
         (self.publish)(id, &name, state)
+            .ok_or_else(|| ModelError::invalid(format!("{} state is another type", self.kind)))
+    }
+
+    /// What the state a [`Self::read`] returned is, as JSON: the reading a
+    /// view of the resource is offered, where no better adapter answers.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when `state` is not this resource's state.
+    pub fn to_json(&self, state: &dyn Any) -> Result<serde_json::Value, ModelError> {
+        (self.to_json)(state)
             .ok_or_else(|| ModelError::invalid(format!("{} state is another type", self.kind)))
     }
 
@@ -475,6 +584,23 @@ impl ResourceKind {
     /// Returns the document's write error.
     pub fn initialize(&self, doc: &mut Doc) -> Result<(), ModelError> {
         (self.initialize)(doc)
+    }
+
+    /// Bring `doc` up to this kind's version with its own migration
+    /// ([`crate::evolution::migrate`]), and to this build's version key.
+    /// Returns whether it changed anything.
+    ///
+    /// # Errors
+    /// Returns the migration's error; `doc` is left as it was.
+    pub fn migrate(&self, doc: &mut Doc) -> Result<bool, ModelError> {
+        (self.migrate)(doc)
+    }
+
+    /// Whether [`Self::migrate`] would change `doc`: it is older than this
+    /// kind, or still keeps its version under a key this one replaced.
+    #[must_use]
+    pub fn needs_migrate(&self, doc: &Doc) -> bool {
+        (self.needs_migrate)(doc)
     }
 
     /// One typed action from its JSON form, encoded for replay — read as

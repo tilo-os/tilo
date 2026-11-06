@@ -18,38 +18,39 @@ ASSEMBLER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ASSEMBLER)
 
 
+def authored_app(repo, name, pins=()):
+    """One app of a throwaway source graph, as the runtime graph reads it."""
+    directory = repo / 'apps' / name
+    directory.mkdir(parents=True)
+    (directory / 'Cargo.toml').write_text(f'[package]\nname = "{name}"\n')
+    required = ('optional-runtimes = [' + ', '.join(f'"{pin}"' for pin in pins) + ']\n'
+                if pins else '')
+    (directory / 'tilo-app.toml').write_text(
+        f'[package]\nid = "so.tilo.{name}"\nname = "{name.title()}"\n'
+        f'runtime = "tilo-runtime/2026.07"\n{required}\n[entrypoint]\nbin = "bin/{name}"\n')
+
+
 class SourceMembership(unittest.TestCase):
-    def test_exact_source_membership_is_sorted_and_bound_to_the_inventory(self):
+    def test_the_signed_membership_is_exactly_the_cohort(self):
         with tempfile.TemporaryDirectory(prefix='source-membership-') as name:
-            repo = Path(name)
-            for directory, app_id in [('first', 'so.tilo.z'), ('second', 'so.tilo.a')]:
-                path = repo / 'apps' / directory / 'tilo-app.toml'
-                path.parent.mkdir(parents=True)
-                path.write_text(f'[package]\nid = "{app_id}"\n')
-            destination = repo / 'system-app-cohort.json'
-            ASSEMBLER.source_membership(repo, destination, 'ab' * 32)
+            destination = Path(name) / 'system-app-cohort.json'
+            ASSEMBLER.source_membership(destination, 'ab' * 32,
+                                        ['so.tilo.z', 'so.tilo.a'])
             self.assertEqual(json.loads(destination.read_text()), {
                 'schema': 1, 'source_inventory': 'ab' * 32,
                 'apps': ['so.tilo.a', 'so.tilo.z'],
             })
-            (repo / 'apps/first/tilo-app.toml').unlink()
-            ASSEMBLER.source_membership(repo, destination, 'cd' * 32)
-            self.assertEqual(json.loads(destination.read_text())['apps'], ['so.tilo.a'])
             with self.assertRaisesRegex(ValueError, 'invalid source inventory'):
-                ASSEMBLER.source_membership(repo, destination, 'unbound')
+                ASSEMBLER.source_membership(destination, 'unbound', ['so.tilo.a'])
 
     def test_duplicate_or_empty_membership_is_not_signed(self):
         with tempfile.TemporaryDirectory(prefix='source-membership-') as name:
-            repo = Path(name)
-            destination = repo / 'system-app-cohort.json'
+            destination = Path(name) / 'system-app-cohort.json'
             with self.assertRaisesRegex(ValueError, 'empty, oversized or duplicated'):
-                ASSEMBLER.source_membership(repo, destination, 'ab' * 32)
-            for directory in ['first', 'second']:
-                path = repo / 'apps' / directory / 'tilo-app.toml'
-                path.parent.mkdir(parents=True)
-                path.write_text('[package]\nid = "so.tilo.duplicate"\n')
+                ASSEMBLER.source_membership(destination, 'ab' * 32, [])
             with self.assertRaisesRegex(ValueError, 'empty, oversized or duplicated'):
-                ASSEMBLER.source_membership(repo, destination, 'ab' * 32)
+                ASSEMBLER.source_membership(destination, 'ab' * 32,
+                                            ['so.tilo.duplicate', 'so.tilo.duplicate'])
             self.assertFalse(destination.exists())
 
 
@@ -160,6 +161,16 @@ class NativeClosure(unittest.TestCase):
 
 
 class AssemblyNamespaces(unittest.TestCase):
+    def test_each_assembly_namespace_is_told_the_cohort_it_ships(self):
+        with tempfile.TemporaryDirectory(prefix='assembly-test-') as directory:
+            stage = Path(directory)
+            for packaging in (False, True):
+                with self.subTest(packaging=packaging):
+                    argv = ASSEMBLER.namespace_command(SOURCE.parents[2], stage, stage,
+                                                       'thin-app', packaging=packaging,
+                                                       cohort='notes,terminal')
+                    self.assertEqual(argv[argv.index('--cohort') + 1], 'notes,terminal')
+
     def test_builder_temporary_directory_cannot_escape_private_stage(self):
         with tempfile.TemporaryDirectory(prefix='assembly-test-') as directory:
             stage = Path(directory)
@@ -210,21 +221,23 @@ class AssemblyNamespaces(unittest.TestCase):
     def test_selected_app_uses_the_same_catalogue_and_rejects_escape(self):
         repo = SOURCE.parents[2]
         rows = ASSEMBLER.applications(repo)
-        selected = ASSEMBLER.selected_applications(repo, 'terminal')
+        selected = ASSEMBLER.named_applications(repo, None, 'terminal')
         self.assertEqual(len(selected), 1)
-        self.assertIn(selected[0], rows)
-        self.assertEqual(selected[0][0], 'terminal')
+        self.assertIn((selected[0]['package'], selected[0]['binary'], selected[0]['release']), rows)
+        self.assertEqual(selected[0]['package'], 'terminal')
         for invalid in ('../terminal', 'terminal/..', 'not-a-real-app'):
             with self.assertRaises(ValueError):
-                ASSEMBLER.selected_applications(repo, invalid)
+                ASSEMBLER.named_applications(repo, None, invalid)
 
     def test_complete_cohort_ships_each_app_once_without_restamping_versions(self):
         with tempfile.TemporaryDirectory(prefix='cohort-pack-') as directory:
             stage = Path(directory)
             (stage / 'work').mkdir()
             (stage / 'work/runtime-version').write_text('2026.07+native.' + 'a' * 32)
+            cohort = ','.join(entry['dir']
+                              for entry in ASSEMBLER.named_applications(SOURCE.parents[2], None))
             args = SimpleNamespace(repo=SOURCE.parents[2], target_dir=stage, stage=stage,
-                                   profile='thin-app', app=None)
+                                   profile='thin-app', app=None, cohort=cohort)
             with patch.object(ASSEMBLER, 'run') as run:
                 ASSEMBLER.package_inside(args)
             environment = run.call_args.kwargs['env']
@@ -233,11 +246,15 @@ class AssemblyNamespaces(unittest.TestCase):
             self.assertNotIn('TAPP_OUT', environment)
             self.assertNotIn('APP_VERSION', environment)
             self.assertNotIn('VERSION_OVERRIDE', environment)
+            # The cohort names what ships, so a leftover binary cannot join it.
+            self.assertEqual(environment['COHORT_APPS'], cohort.replace(',', ' '))
+            self.assertEqual(int(environment['REQUIRE_MIN']), cohort.count(',') + 1)
             args.app = 'notes'
+            args.cohort = 'notes'
             with patch.object(ASSEMBLER, 'run') as run:
                 ASSEMBLER.package_inside(args)
             self.assertNotIn('COHORT_TAPP_DIR', run.call_args.kwargs['env'])
-            self.assertEqual(run.call_args.kwargs['env']['APP_DIR'], 'notes')
+            self.assertEqual(run.call_args.kwargs['env']['COHORT_APPS'], 'notes')
 
     def test_developer_capture_is_readable_in_owned_namespace_but_outside_component_tree(self):
         with tempfile.TemporaryDirectory(prefix='assembly-compiler-') as directory:
@@ -264,8 +281,11 @@ class AssemblyNamespaces(unittest.TestCase):
 
 
 class EngineRuntimeShips(unittest.TestCase):
-    """A swapped-in Browser brings the engine it pins, or the swap is refused."""
+    """An app ships with the runtime builds it requires or not at all: the
+    Browser brings its engine, and an engine nobody can supply costs the app,
+    never the cohort."""
     PUBLISHER = 'ab' * 32
+    ENGINE = 'tilo-runtime/2026.10.23-chromium'
 
     def fixture(self, directory):
         root = Path(directory)
@@ -284,6 +304,13 @@ class EngineRuntimeShips(unittest.TestCase):
         (root / version / 'lib').mkdir()
         (root / version / 'lib/tilo-chromium-host').write_text(version)
 
+    def graph(self, directory, apps):
+        """An authored source graph: {app directory: the runtimes it requires}."""
+        repo = Path(directory) / 'repo'
+        for name, pins in apps.items():
+            authored_app(repo, name, pins)
+        return repo
+
     def pinned(self):
         return ASSEMBLER.engine_pins(SOURCE.parents[2])
 
@@ -299,8 +326,11 @@ class EngineRuntimeShips(unittest.TestCase):
             version = self.pinned()[0].split('/', 1)[1]
             self.bundle(host, version)
             self.bundle(host, '2026.10.2-chromium')
-            ASSEMBLER.stage_engine_runtimes(SOURCE.parents[2], stage, tool, roots=[host],
-                                            fetch=lambda *_: self.fail('the host has it'))
+            sources, unavailable = ASSEMBLER.engine_sources(
+                SOURCE.parents[2], stage, tool, roots=[host],
+                fetch=lambda *_: self.fail('the host has it'))
+            self.assertEqual(unavailable, {})
+            ASSEMBLER.stage_engine_runtimes(stage, tool, sources)
             shipped = sorted(p.name for p in (stage / 'tree/usr/lib/tilo-runtime').iterdir())
             self.assertEqual(shipped, [version], 'only the pinned build, never the old ones')
             self.assertEqual((stage / 'tree/usr/share/tilo/browser-runtime-publisher.hex').read_text(),
@@ -320,11 +350,12 @@ class EngineRuntimeShips(unittest.TestCase):
             version = self.pinned()[0].split('/', 1)[1]
             self.bundle(host, version)
             (host / version / 'bundle.toml').write_text('version = "older-engine"\n')
+            sources, _ = ASSEMBLER.engine_sources(SOURCE.parents[2], stage, tool, roots=[host])
             with self.assertRaisesRegex(ValueError, 'different signed engine version'):
-                ASSEMBLER.stage_engine_runtimes(SOURCE.parents[2], stage, tool, roots=[host])
+                ASSEMBLER.stage_engine_runtimes(stage, tool, sources)
             self.assertEqual(list((stage / 'tree/usr/lib/tilo-runtime').iterdir()), [])
 
-    def test_a_missing_engine_is_fetched_and_a_missing_one_everywhere_refuses_the_cohort(self):
+    def test_the_registry_supplies_an_engine_this_host_does_not_install(self):
         with tempfile.TemporaryDirectory() as directory:
             stage, tool = self.fixture(directory)
             version = self.pinned()[0].split('/', 1)[1]
@@ -333,15 +364,154 @@ class EngineRuntimeShips(unittest.TestCase):
             def fetch(reference, destination):
                 asked.append(reference)
                 self.bundle(destination, version)
-            ASSEMBLER.stage_engine_runtimes(SOURCE.parents[2], stage, tool, roots=[], fetch=fetch)
+            sources, unavailable = ASSEMBLER.engine_sources(
+                SOURCE.parents[2], stage, tool, roots=[], fetch=fetch)
             self.assertEqual(asked, self.pinned())
+            self.assertEqual(unavailable, {})
+            ASSEMBLER.stage_engine_runtimes(stage, tool, sources)
             self.assertTrue((stage / 'tree/usr/lib/tilo-runtime' / version / 'bundle.toml').is_file())
-        with tempfile.TemporaryDirectory() as directory:
-            stage, tool = self.fixture(directory)
-            with self.assertRaises(ValueError):
-                ASSEMBLER.stage_engine_runtimes(SOURCE.parents[2], stage, tool, roots=[],
-                                                fetch=lambda *_: None)
 
+    def test_an_engine_no_host_and_no_registry_offers_costs_only_its_apps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.graph(directory, {'notes': [], 'browser': [self.ENGINE]})
+            stage, tool = self.fixture(directory)
+            sources, unavailable = ASSEMBLER.engine_sources(
+                repo, stage, tool, roots=[],
+                fetch=lambda *_: 'app: no configured registry offers ' + self.ENGINE)
+            self.assertEqual(sources, {})
+            self.assertEqual(unavailable[self.ENGINE],
+                             'app: no configured registry offers ' + self.ENGINE)
+            cohort, left_out = ASSEMBLER.cohort_entries(repo, sources)
+            self.assertEqual([entry['dir'] for entry in cohort], ['notes'])
+            self.assertEqual([(entry['dir'], pins) for entry, pins in left_out],
+                             [('browser', [self.ENGINE])])
+            ASSEMBLER.stage_engine_runtimes(stage, tool, sources)
+            self.assertEqual(list((stage / 'tree/usr/lib/tilo-runtime').iterdir()), [])
+            self.assertFalse((stage / 'tree/usr/share/tilo/browser-runtime-publisher.hex').exists())
+
+    def test_the_apps_that_need_a_registry_engine_stay_in_the_cohort(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.graph(directory, {'notes': [], 'browser': [self.ENGINE]})
+            stage, tool = self.fixture(directory)
+
+            def fetch(reference, destination):
+                self.bundle(destination, self.ENGINE.split('/', 1)[1])
+            sources, unavailable = ASSEMBLER.engine_sources(
+                repo, stage, tool, roots=[], fetch=fetch)
+            self.assertEqual(unavailable, {})
+            cohort, left_out = ASSEMBLER.cohort_entries(repo, sources)
+            self.assertEqual([entry['dir'] for entry in cohort], ['browser', 'notes'])
+            self.assertEqual(left_out, [])
+
+    def test_a_cohort_no_application_can_join_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.graph(directory, {'browser': [self.ENGINE]})
+            with self.assertRaisesRegex(ValueError, 'no application in the cohort'):
+                ASSEMBLER.cohort_entries(repo, {})
+
+    def test_a_selected_app_ships_whatever_this_host_has(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.graph(directory, {'notes': [], 'browser': [self.ENGINE]})
+            cohort, left_out = ASSEMBLER.cohort_entries(repo, {}, 'browser')
+            self.assertEqual([entry['dir'] for entry in cohort], ['browser'])
+            self.assertEqual(left_out, [])
+
+    def test_a_malformed_pin_still_refuses_the_assembly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.graph(directory, {'notes': [], 'wrong': ['chromium/2026.10.23']})
+            with self.assertRaisesRegex(ValueError, 'invalid required runtime'):
+                ASSEMBLER.engine_pins(repo)
+
+    def test_the_build_leaves_out_the_apps_the_cohort_left_out(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.graph(directory, {'notes': [], 'browser': [self.ENGINE]})
+            target = Path(directory) / 'target'
+            (target / 'thin-app').mkdir(parents=True)
+            (target / 'thin-app/notes').write_text('')
+            cohort, _ = ASSEMBLER.cohort_entries(repo, {})
+            args = SimpleNamespace(repo=repo, target_dir=target, profile='thin-app',
+                                   features='', compiler_interface_out=None,
+                                   compiler_capture=None)
+            with patch.object(ASSEMBLER, 'run') as run:
+                ASSEMBLER.prepare_applications(args, cohort)
+            self.assertEqual(run.call_args.kwargs['env']['EXCLUDE_PACKAGES'], 'browser')
+
+    def test_an_inside_assembly_ships_exactly_the_cohort_it_is_told(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.graph(directory, {'notes': [], 'browser': [self.ENGINE]})
+            self.assertEqual([entry['dir'] for entry in ASSEMBLER.named_applications(repo, None)],
+                             ['browser', 'notes'])
+            self.assertEqual([entry['dir'] for entry in ASSEMBLER.named_applications(repo, 'notes')],
+                             ['notes'])
+            self.assertEqual([entry['dir'] for entry in
+                              ASSEMBLER.named_applications(repo, 'notes,browser')],
+                             ['browser', 'notes'])
+            with self.assertRaisesRegex(ValueError, 'names an application twice'):
+                ASSEMBLER.named_applications(repo, 'notes,notes')
+            with self.assertRaisesRegex(ValueError, 'does not author'):
+                ASSEMBLER.named_applications(repo, 'notes,ghost')
+            with self.assertRaisesRegex(ValueError, 'names no authored application'):
+                ASSEMBLER.named_applications(repo, '')
+            with self.assertRaisesRegex(ValueError, 'outside the canonical runtime graph'):
+                ASSEMBLER.named_applications(repo, 'notes', 'missing')
+
+
+class PackagingBudgets(unittest.TestCase):
+    """The per-app size budgets measure the thin-LTO release binaries; a cohort
+    layer links without LTO, so packaging a package over its budget reports it
+    instead of refusing the whole swap."""
+
+    MANIFEST = ('[profile.release]\nlto = "fat"\n'
+                '[profile.thin-app]\ninherits = "release"\nlto = false\n'
+                '[profile.fast]\nlto = "thin"\n'
+                '[profile.fast-child]\ninherits = "fast"\n')
+
+    def repo(self, directory, manifest=MANIFEST):
+        repo = Path(directory) / 'repo'
+        authored_app(repo, 'notes')
+        (repo / 'Cargo.toml').write_text(manifest)
+        return repo
+
+    def test_only_a_build_the_budgets_measure_enforces_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.repo(directory)
+            self.assertEqual(ASSEMBLER.packaging_budget(repo, 'release', {}), 'enforce')
+            self.assertEqual(ASSEMBLER.packaging_budget(repo, 'thin-app', {}), 'report')
+            self.assertEqual(ASSEMBLER.packaging_budget(repo, 'dev', {}), 'report')
+            self.assertEqual(ASSEMBLER.packaging_budget(repo, 'fast-child', {}), 'enforce')
+
+    def test_a_cargo_lto_setting_or_the_callers_choice_names_the_budgets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.repo(directory)
+            self.assertEqual(
+                ASSEMBLER.packaging_budget(repo, 'thin-app',
+                                           {'CARGO_PROFILE_THIN_APP_LTO': 'thin'}),
+                'enforce')
+            self.assertEqual(
+                ASSEMBLER.packaging_budget(repo, 'thin-app',
+                                           {'CARGO_PROFILE_THIN_APP_LTO': 'off'}),
+                'report')
+            self.assertEqual(
+                ASSEMBLER.packaging_budget(repo, 'release', {'TAPP_BUDGET': 'report'}),
+                'report')
+
+    def test_the_packaging_step_is_told_which_budgets_its_build_is_measured_by(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.repo(directory)
+            target = Path(directory) / 'target'
+            stage = Path(directory) / 'stage'
+            (stage / 'work').mkdir(parents=True)
+            (stage / 'work/runtime-version').write_text('2026.07\n')
+            args = SimpleNamespace(repo=repo, target_dir=target, stage=stage,
+                                   profile='thin-app', features='', app=None, cohort=None,
+                                   compiler_interface_out=None, compiler_capture=None)
+            with patch.object(ASSEMBLER, 'run') as run:
+                ASSEMBLER.package_inside(args)
+            self.assertEqual(run.call_args.kwargs['env']['TAPP_BUDGET'], 'report')
+            with patch.dict(os.environ, {'CARGO_PROFILE_THIN_APP_LTO': 'thin'}), \
+                    patch.object(ASSEMBLER, 'run') as run:
+                ASSEMBLER.package_inside(args)
+            self.assertEqual(run.call_args.kwargs['env']['TAPP_BUDGET'], 'enforce')
 
 
 class RuntimeFonts(unittest.TestCase):

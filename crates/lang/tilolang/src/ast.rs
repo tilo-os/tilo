@@ -52,12 +52,51 @@ pub enum Item {
     DefaultView(DefaultViewDecl),
     /// `row view v for T`: the row a list of `T`s shows for each item.
     RowView(DefaultViewDecl),
+    /// `views a, b for T`: the views a window of a `T` switches between, in the order written.
+    Views(ViewsDecl),
     /// `scenario "name" { ... }`: named seed data, run as a hidden action.
     Scenario(ScenarioDecl),
     Action(ActionDecl),
     Flow(FlowDecl),
     View(ViewDecl),
     Fn(FnDecl),
+}
+
+impl Item {
+    /// The `///` lines a declaration is written with, in order; an item that takes none has
+    /// none.
+    pub fn doc(&self) -> &[String] {
+        match self {
+            Self::Type(d) => &d.doc,
+            Self::Alias(d) => &d.doc,
+            Self::Enum(d) => &d.doc,
+            Self::Scenario(d) => &d.doc,
+            Self::Action(d) => &d.doc,
+            Self::Flow(d) => &d.doc,
+            Self::View(d) => &d.doc,
+            Self::Fn(d) => &d.doc,
+            Self::Use(_) | Self::Root(_) | Self::DefaultView(_) | Self::RowView(_) => &[],
+            Self::Views(d) => &d.doc,
+        }
+    }
+
+    /// Where the item is written.
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Use(d) => d.span,
+            Self::Type(d) => d.span,
+            Self::Alias(d) => d.span,
+            Self::Enum(d) => d.span,
+            Self::Root(d) => d.span,
+            Self::DefaultView(d) | Self::RowView(d) => d.span,
+            Self::Views(d) => d.span,
+            Self::Scenario(d) => d.span,
+            Self::Action(d) => d.span,
+            Self::Flow(d) => d.span,
+            Self::View(d) => d.span,
+            Self::Fn(d) => d.span,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -77,8 +116,25 @@ pub struct TypeDecl {
     /// (convergence.md, "Outside services"), as the dotted name of one of its kinds.
     pub origin: Option<Ident>,
     pub fields: Vec<FieldDecl>,
+    /// `derive folded: Bool = finished and parent.all(folded)`: a value the store derives
+    /// from the collection, which no record keeps ([`crate::derived`]).
+    pub derives: Vec<DerivedDecl>,
     /// `search { ... }`: what search, a list's filters and agents offer of the type.
     pub search: Option<SearchBlock>,
+    pub span: Span,
+}
+
+/// `derive folded: Bool = finished and parent.all(folded)` in a type: a key the store derives
+/// from the collection rather than the record keeping it. Code reads it as a field; nothing writes
+/// it, as the store keeps it in step with every change ([`crate::derived`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DerivedDecl {
+    pub node: NodeId,
+    pub doc: Vec<String>,
+    pub name: Ident,
+    /// The type of the value: `Bool` or `Int`.
+    pub ty: TypeExpr,
+    pub expr: Expr,
     pub span: Span,
 }
 
@@ -173,6 +229,25 @@ pub struct DefaultViewDecl {
     pub span: Span,
 }
 
+/// `views project_list, project_board for Project`: what a window of the type switches between.
+/// Only views named here are a window's; any other view of the type is the app's own helper.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewsDecl {
+    pub node: NodeId,
+    pub doc: Vec<String>,
+    pub views: Vec<ViewsEntry>,
+    pub ty: TypeExpr,
+    pub span: Span,
+}
+
+/// One view of a `views` declaration, with the short label and icon it is offered by:
+/// `project_board (icon: .columns)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewsEntry {
+    pub view: Ident,
+    pub opts: Vec<ActionOpt>,
+}
+
 /// `scenario "a week of notes" { ... }`: statements that fill a workspace with sample data for
 /// screenshots, tests and benchmarks. It never touches a person's data.
 #[derive(Clone, Debug, PartialEq)]
@@ -201,11 +276,58 @@ pub struct FieldDecl {
     pub name: Ident,
     pub ty: TypeExpr,
     pub merge: Option<MergeSpec>,
-    /// `(title)` or `(body)`: what the field is to the platform; `(previously)`: what the type
-    /// held before, which only its migrations read.
-    pub marker: Option<Ident>,
+    /// What the field is to the platform (`(title)`, `(repeats: due)`); see
+    /// [`crate::types::FieldRole`].
+    pub marker: Option<FieldMarker>,
     pub default: Option<Expr>,
     pub span: Span,
+}
+
+/// A field's marker: `(title)`, `(body)`, `(previously)`, `(repeats: due)`,
+/// `(reminds: due, at, who: assignee)` or `(time of: due)`. Its arguments name the type's own
+/// fields.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldMarker {
+    pub name: Ident,
+    /// The fields it names, in the order written.
+    pub args: Vec<MarkerArg>,
+    pub span: Span,
+}
+
+impl FieldMarker {
+    /// The marker as the declaration writes it, `repeats: due`, `reminds: due, at, who:
+    /// assignee` or `time of: due`.
+    #[must_use]
+    pub fn text(&self) -> String {
+        if self.args.is_empty() {
+            return self.name.name.clone();
+        }
+        let args: Vec<String> = self.args.iter().map(MarkerArg::text).collect();
+        let named = self.args.iter().all(|a| a.name.is_some());
+        if named {
+            return format!("{} {}", self.name.name, args.join(", "));
+        }
+        format!("{}: {}", self.name.name, args.join(", "))
+    }
+}
+
+/// One field a marker names: `due`, or `who: assignee` where it says what the field is to it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarkerArg {
+    /// `who` for `who: assignee`; none for a field written bare.
+    pub name: Option<Ident>,
+    pub field: Ident,
+}
+
+impl MarkerArg {
+    /// The argument as the declaration writes it.
+    #[must_use]
+    pub fn text(&self) -> String {
+        match &self.name {
+            Some(name) => format!("{}: {}", name.name, self.field.name),
+            None => self.field.name.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -236,6 +358,12 @@ pub struct Param {
     /// `done: Bool = not item.done`: an action parameter's default, evaluated when the action is
     /// invoked without it, over the parameters before it, and recorded as the argument.
     pub default: Option<Expr>,
+    /// `above: Option<Task> (above)`: the place the view offers the action in supplies it, and
+    /// no invocation does: a row of a list gives the row above it in its own visible group.
+    pub place: Option<Ident>,
+    /// `title: Text (entry)`: the text of the entry that runs the action is the item's title,
+    /// and the words before it are the other parameters' (`crate::entry`).
+    pub entry: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -245,7 +373,13 @@ pub struct Proposal {
     pub args: Option<Vec<Ident>>,
 }
 
-/// `primary` or `destructive` before `action`: how the platform presents the action.
+/// `primary`, `destructive`, `migration` or `internal` before `action`: how the action is, not
+/// where a surface shows it.
+///
+/// A surface decides placement from what the action offers a person: `frequent: true` earns a
+/// button in the header, every other offered action goes in an item's menu, the header's menu or
+/// the palette. A role never moves an action between those lists — the two hiding roles take it
+/// out of all of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionRole {
     /// The one main action on its subject: the header's Primary button and the empty state's
@@ -257,6 +391,12 @@ pub enum ActionRole {
     /// subject's type that a version before it wrote, as an ordinary action, to bring what that
     /// version stored to where this one keeps it. Only a migration reads `(previously)` fields.
     Migration,
+    /// `internal action`: never offered. Only the app's own gestures run it — a drag, an entry,
+    /// a lane's button — and no surface that lists a subject's actions shows it: not the header,
+    /// not an item's menu, not the palette, not an agent's choices. An action a person chooses
+    /// from a list is offered, and `frequent` alone decides whether the header draws it as a
+    /// button or leaves it in the header's menu.
+    Internal,
 }
 
 impl ActionRole {
@@ -265,6 +405,7 @@ impl ActionRole {
             Self::Primary => "primary",
             Self::Destructive => "destructive",
             Self::Migration => "migration",
+            Self::Internal => "internal",
         }
     }
 }
@@ -289,6 +430,11 @@ pub struct ActionDecl {
     pub opts: Vec<ActionOpt>,
     /// The `require` lines heading the body: when the action is available on its subject.
     pub requires: Vec<Require>,
+    /// The `applies` lines heading the body: when the action can apply to its subject at all,
+    /// as the item it is offered on stands in the view offering it (`applies above != .none`).
+    /// A surface offering it says so, and leaves it out of an item's menu rather than showing
+    /// a row that can never work there.
+    pub applies: Vec<Require>,
     pub body: Block,
     pub span: Span,
 }
@@ -448,6 +594,15 @@ pub enum StmtKind {
         at: Option<Expr>,
         body: Block,
     },
+    /// `window place = Task.done` (or `lens place = x`): in a scenario, the value a window's
+    /// state starts from, as a person picking it in the window leaves it. A name more than one
+    /// view declares is written with its view (`home.place`).
+    SeedState {
+        layer: StateLayer,
+        view: Option<Ident>,
+        name: Ident,
+        value: Expr,
+    },
     Expr(Expr),
 }
 
@@ -572,6 +727,12 @@ pub enum ExprKind {
     },
     /// `{ stmts; expr }`: the value of the last expression.
     Block(Block),
+    /// `made from r { ... }`: in a scenario, the resources the block makes were made from `r`,
+    /// as an action invoked from it makes them; the value of the last expression.
+    MadeFrom {
+        of: Box<Expr>,
+        body: Block,
+    },
     /// `match e { .a => x, .b(p, q) => y }`.
     Match {
         scrutinee: Box<Expr>,
@@ -614,6 +775,9 @@ pub enum ExprKind {
     /// `try act(args)`: invokes in a flow; a `Result` of the action's result and the reason
     /// it failed.
     Try(Box<Expr>),
+    /// `suggest act(args)`: proposes the action instead of applying it, as a suggestion that
+    /// waits on the resource it is about; an agent block's value.
+    Suggest(Box<Expr>),
     /// `root T`: the workspace's resource of the root type `T`.
     Root(TypeExpr),
 }
@@ -680,7 +844,8 @@ pub enum UiKind {
     },
     /// `window name: T = default` or `lens name: T = default`.
     State(StateDecl),
-    /// `"Due": d.due`: one fact of a `facts { }` block.
+    /// `"Due": d.due`: a labelled fact, which E098 rejects — a fact is a chip derived from
+    /// the field it shows (`facts(of)`), never a label and a value.
     Fact {
         node: NodeId,
         label: Expr,
@@ -723,9 +888,9 @@ pub struct UiArm {
 /// Which layer of view state a declaration lives in (workspace-model.md, "The pieces").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StateLayer {
-    /// Shared by everyone looking at the window.
+    /// How one person's window shows its resource.
     Window,
-    /// One per person per window.
+    /// Where one person is in a window: scroll, cursor, selection, a draft.
     Lens,
 }
 
@@ -761,8 +926,9 @@ pub struct UiCall {
     pub node: NodeId,
     /// A call of a UI primitive or of a view, or a bare name.
     pub call: Expr,
-    /// The item name of a list's item block: `list(xs) { x -> ... }`.
-    pub item: Option<Ident>,
+    /// The names a block opens with: `list(xs) { x -> ... }`, or a template's function of
+    /// several values, `rows(xs) { (x, under) -> ... }`. Empty for a plain block.
+    pub params: Vec<Ident>,
     pub block: Option<Vec<UiStmt>>,
     pub anchor: Option<Ident>,
 }

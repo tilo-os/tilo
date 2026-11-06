@@ -6,18 +6,18 @@ pub(super) struct Cursor {
 }
 impl Cursor {
     /// Send each of `frames`, what custody allows now, unless this session
-    /// already sent it. `queued` is every id still in custody: an entry held
-    /// back for a while (a recovery projection waiting for a fresh governor
-    /// checkpoint) stays sent, so it is not sent again once allowed.
+    /// already sent it. `queued` is every id still in custody: an entry the
+    /// session held back stays sent, so it is not sent twice once allowed.
     pub(super) fn drive<'a>(
         &mut self,
         queued: impl Iterator<Item = [u8; 32]>,
         frames: impl Iterator<Item = ([u8; 32], &'a [u8], [u8; 32], neighbour_wire::Retention)>,
         mut send: impl FnMut(&[u8], [u8; 32], neighbour_wire::Retention) -> Result<(), String>,
     ) -> Result<(), String> {
-        // The owner bounds entries to128 (64 originals plus64 recovery projections). Never retain ids no longer in its queue.
-        let frames: Vec<_> = frames.take(129).collect();
-        if frames.len() > 128 {
+        // The owner bounds custody to 64 frames and one governance entry.
+        // Never retain ids no longer in its queue.
+        let frames: Vec<_> = frames.take(66).collect();
+        if frames.len() > 65 {
             return Err("native publication cursor capacity".into());
         }
         let queued: BTreeSet<_> = queued.collect();
@@ -97,13 +97,13 @@ mod tests {
         assert!(cursor.sent.is_empty());
     }
     #[test]
-    fn native_publication_cursor_covers_full_original_and_recovery_routes_then_new_edit() {
+    fn native_publication_cursor_covers_the_full_custody_then_a_new_frame() {
         let mut cursor = Cursor::default();
         let mut sent = 0;
         cursor
             .drive(
-                (0..128).map(|id| [id; 32]),
-                (0..128).map(|id| {
+                (0..65).map(|id| [id; 32]),
+                (0..65).map(|id| {
                     (
                         [id; 32],
                         b"exact".as_slice(),
@@ -117,11 +117,11 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(sent, 128);
+        assert_eq!(sent, 65);
         cursor
             .drive(
-                (1..129).map(|id| [id; 32]),
-                (1..129).map(|id| {
+                (1..66).map(|id| [id; 32]),
+                (1..66).map(|id| {
                     (
                         [id; 32],
                         b"exact".as_slice(),
@@ -135,8 +135,8 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(sent, 129);
-        assert_eq!(cursor.sent.len(), 128);
+        assert_eq!(sent, 66);
+        assert_eq!(cursor.sent.len(), 65);
     }
     #[test]
     fn native_publication_cursor_refuses_excess_without_partial_send() {
@@ -144,8 +144,8 @@ mod tests {
         assert!(
             cursor
                 .drive(
-                    (0..129).map(|i| [i; 32]),
-                    (0..129).map(|i| (
+                    (0..66).map(|i| [i; 32]),
+                    (0..66).map(|i| (
                         [i; 32],
                         b"x".as_slice(),
                         [0; 32],
@@ -160,7 +160,7 @@ mod tests {
     fn native_publication_cursor_never_resends_an_entry_held_back_while_queued() {
         let frame = (
             [3; 32],
-            b"recovery projection".as_slice(),
+            b"custody frame".as_slice(),
             [4; 32],
             neighbour_wire::Retention::Delta,
         );

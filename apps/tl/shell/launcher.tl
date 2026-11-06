@@ -31,7 +31,11 @@ view launcher(d: Desk) {
                 }
             }
             if typed and windows.is_empty() {
-                ui.EmptyState("Nothing here matches", message: "Search everywhere for it", icon: .search) {
+                ui.EmptyState(
+                    "Nothing here matches",
+                    message: "Search everywhere for it",
+                    icon: .search,
+                ) {
                     on act: session.search(query: .some(query))
                 }
             }
@@ -42,7 +46,12 @@ view launcher(d: Desk) {
         footer: {
             row(gap: .related, align: .center, wrap: true) {
                 if typed {
-                    ui.Button("Search everywhere for {query}", icon: .search, role: .primary, size: .small) {
+                    ui.Button(
+                        "Search everywhere for {query}",
+                        icon: .search,
+                        role: .primary,
+                        size: .small,
+                    ) {
                         on press: session.search(query: .some(query))
                     }
                 }
@@ -55,7 +64,13 @@ view launcher(d: Desk) {
 
 /// One window the search found: what it is, what it shows, and where it is.
 view window_row(w: Win) {
-    ui.ListRow(w.title, secondary: .some(w.origin_app), meta: .some(if w.workspace != "" { w.workspace } else { w.strip }), item: w, icon: if w.preview == "withheld" { .eye_off } else { .app_window }) {
+    ui.ListRow(
+        w.title,
+        secondary: .some(w.origin_app),
+        meta: .some(if w.workspace != "" { w.workspace } else { w.strip }),
+        item: w,
+        icon: if w.preview == "withheld" { .eye_off } else { .app_window },
+    ) {
         on activate: session.focus(window(w))
     }
 }
@@ -64,16 +79,32 @@ view window_row(w: Win) {
 /// workspace.
 view desk_doors(d: Desk) {
     ui.Section("The desk") {
-        ui.ListRow("Overview", secondary: .some("Every strip and window, to search and move"), icon: .layout_grid) {
+        ui.ListRow(
+            "Overview",
+            secondary: .some("Every strip and window, to search and move"),
+            icon: .layout_grid,
+        ) {
             on activate: device.show_surface(device.desk, surface: "overview")
         }
-        ui.ListRow("Workspaces", secondary: .some("Who is in each, and what it holds"), icon: .layers) {
+        ui.ListRow(
+            "Workspaces",
+            secondary: .some("Who is in each, and what it holds"),
+            icon: .layers,
+        ) {
             on activate: device.show_surface(device.desk, surface: "workspaces")
         }
-        ui.ListRow("Notifications", secondary: .some("What apps and agents told you"), icon: .bell) {
+        ui.ListRow(
+            "Notifications",
+            secondary: .some("What apps and agents told you"),
+            icon: .bell,
+        ) {
             on activate: device.show_surface(device.desk, surface: "centre")
         }
-        ui.ListRow("Ask an agent", secondary: .some("Run a task over what you point at"), icon: .bot) {
+        ui.ListRow(
+            "Ask an agent",
+            secondary: .some("Run a task over what you point at"),
+            icon: .bot,
+        ) {
             on activate: device.show_surface(device.desk, surface: "composer")
         }
     }

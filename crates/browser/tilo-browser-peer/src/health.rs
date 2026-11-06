@@ -312,7 +312,7 @@ fn failure_scope(code: &str) -> (&'static str, &'static str, Vec<RecoveryRequest
 impl PeerSnapshot {
     /// Derive the snapshot from a session status.
     pub fn from_status(status: &PeerStatus) -> Self {
-        let waiting_workspaces = status.rooms.values().filter(|ready| !**ready).count();
+        let waiting_workspaces = status.workspaces.values().filter(|ready| !**ready).count();
         let connected = status.phase == TransportPhase::Connected;
         let phase = match status.phase {
             TransportPhase::Closed => "closed",
@@ -425,7 +425,7 @@ mod tests {
             attempt: 0,
             next_attempt_at_ms: None,
             last_contact_at_ms: None,
-            rooms: BTreeMap::new(),
+            workspaces: BTreeMap::new(),
             routes: BTreeMap::new(),
             failures,
             outgoing_pending: 0,

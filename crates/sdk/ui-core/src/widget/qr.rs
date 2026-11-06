@@ -53,6 +53,10 @@ pub struct QrWidget {
     /// `"QR: <error>"` label) rather than panicking so a too-large
     /// payload doesn't kill the host app.
     error: Option<String>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl QrWidget {
@@ -60,6 +64,7 @@ impl QrWidget {
     /// medium tier — suitable for on-screen reads with a clean lens.
     pub fn new(payload: impl Into<Vec<u8>>) -> Self {
         let mut w = Self {
+            dirty: true,
             rect: Rect::ZERO,
             test_id: "qr_widget".to_owned(),
             alt: "QR code".to_owned(),
@@ -86,6 +91,7 @@ impl QrWidget {
 
     /// [`Self::with_secret`] after construction.
     pub fn set_secret(&mut self, secret: bool) {
+        self.dirty = true;
         self.secret = secret;
     }
 
@@ -97,6 +103,7 @@ impl QrWidget {
 
     /// [`Self::with_alt`] after construction.
     pub fn set_alt(&mut self, alt: impl Into<String>) {
+        self.dirty = true;
         self.alt = alt.into();
     }
 
@@ -132,6 +139,7 @@ impl QrWidget {
     /// A failure to encode (most commonly: payload too large for the
     /// chosen EC level) is stored in `self.error` for inline display.
     pub fn set_payload(&mut self, payload: impl Into<Vec<u8>>) {
+        self.dirty = true;
         self.payload = Zeroizing::new(payload.into());
         if self.payload.is_empty() {
             self.matrix = Zeroizing::new(Vec::new());
@@ -276,6 +284,14 @@ impl Widget for QrWidget {
                 scene.fill(Fill::NonZero, transform, dark, None, &cell);
             }
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

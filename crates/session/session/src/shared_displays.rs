@@ -191,7 +191,7 @@ impl Publisher {
             devices,
         };
         if let Err(error) = view.save() {
-            tracing::debug!(%error, "the person's displays are not published");
+            tracing::warn!(%error, "the person's displays are not published");
         }
         moved
     }
@@ -334,7 +334,8 @@ mod tests {
             runtime,
             outgoing,
             [7; 32],
-            crate::fabric::MediaContinuity::default(),
+            ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
+            crate::fabric::Continuity::default(),
         )
     }
 

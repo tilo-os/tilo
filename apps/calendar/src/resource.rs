@@ -1023,6 +1023,30 @@ pub enum CalendarEffect {
     /// Opens this workspace's Inbox task list without changing its content.
     #[effect(view, idempotent)]
     ShowTasks,
+    /// New event
+    ///
+    /// Starts an event the way the window's own New event does: at the next
+    /// quarter hour on the day the window shows, its form open with the caret
+    /// in the title.
+    #[effect(
+        view,
+        idempotent,
+        label = "New event",
+        icon = "plus",
+        keywords = "create, add, schedule, start"
+    )]
+    StartEvent,
+    /// New task
+    ///
+    /// Opens the task list's entry, ready for the new task's name.
+    #[effect(
+        view,
+        idempotent,
+        label = "New task",
+        icon = "plus",
+        keywords = "create, add, todo, start"
+    )]
+    StartTask,
     /// Open
     ///
     /// Shows an event, one occurrence of it, a task, a project's tasks or
@@ -1283,6 +1307,14 @@ impl ResourceApp for CalendarShell {
     const ICON: Option<&'static str> = Some("calendar");
     const OPENS: &'static [&'static str] = &["text/calendar"];
     const ARGUMENTS: usize = 1;
+
+    /// The person's accounts, kept by Settings, and the directory of their
+    /// identities, kept by Contacts: both theirs, read here for the
+    /// calendars and the attendees they name.
+    const PERSON_RECORDS: &'static [ui::framework::PersonKind] = &[
+        ui::framework::PersonKind::shared::<accounts::person::PersonAccounts>(),
+        ui::framework::PersonKind::shared::<tilo_contact_directory::ContactDirectory>(),
+    ];
 
     fn commands() -> &'static [ui::framework::Command] {
         COMMANDS

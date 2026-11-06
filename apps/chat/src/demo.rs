@@ -12,7 +12,7 @@ use ui::tilo_resource::{Atom, Id, Invoke, ModelError, Replica};
 use crate::messages::{Messages, chat_part};
 use crate::model::{Attachment, ChannelKind, EditRecord, Presence};
 use crate::parts::ChatPart;
-use crate::record::{Category, Channel, Chat, Message, Person, Revision, chat};
+use crate::record::{Category, Chat, Conversation, Message, Person, Revision, chat};
 
 /// Deterministic "now" for the demo so a screenshot is stable: 2026-06-30
 /// 10:40 UTC, just before the capture clock's 10:42.
@@ -376,13 +376,12 @@ pub fn demo(me: &str) -> Chat {
     {
         chat.open_channel(
             Id::from_raw(*id),
-            Channel {
+            Conversation {
                 category: Some(Id::from_raw(*category)),
                 name: (*name).to_owned(),
                 topic: (*topic).to_owned(),
                 kind: *kind,
-                archived: false,
-                conversation_with: None,
+                ..Conversation::default()
             },
         );
     }
@@ -963,11 +962,11 @@ pub fn insert_channel(
     name: &str,
     kind: ChannelKind,
 ) -> Result<(), DoorError> {
-    let channel = Channel {
+    let channel = Conversation {
         category: (!category.is_empty()).then(|| Id::from_raw(category)),
         name: name.into(),
         kind,
-        ..Channel::default()
+        ..Conversation::default()
     };
     write_fixture(doc, |chat| {
         add(&mut chat.channels, &Id::from_raw(id), channel)

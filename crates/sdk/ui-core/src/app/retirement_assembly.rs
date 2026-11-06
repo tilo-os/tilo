@@ -340,6 +340,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         native_workspace_route,
         presence_ctx,
         permission_ctx,
+        painted_permissions: crate::permissions::shared_revision(),
         presence,
         accessibility,
         window,

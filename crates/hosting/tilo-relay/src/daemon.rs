@@ -101,7 +101,9 @@ impl From<crate::host::HostError> for RelayError {
             HostError::Store(error) => Self::Store(error),
             HostError::Io(error) => Self::Io(error),
             HostError::GovernedAccess(reason) => Self::GovernedAccess(reason),
-            HostError::Rooms(reason) => Self::Identity(format!("governed rooms: {reason}")),
+            HostError::Workspaces(reason) => {
+                Self::Identity(format!("governed workspaces: {reason}"))
+            }
             HostError::Handshake(reason) => Self::Iroh(reason),
         }
     }
@@ -136,12 +138,15 @@ pub struct Relay {
     pub endpoint: Endpoint,
     /// Iroh router that wires the ALPN → protocol handler.
     router: Router,
-    /// The room host this relay is: its workspaces, the handshake that
+    /// The workspace host this relay is: its workspaces, the handshake that
     /// admits their members and every member's session.
     sessions: crate::host::HostSessions,
     /// Only the browser listener publishes this public navigation origin.
     #[cfg(feature = "web")]
     pub(crate) browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
+    /// The relay's live plane, which its browsers serve and its devices dial.
+    #[cfg(feature = "web")]
+    pub(crate) plane: Option<crate::web::wt::Plane>,
     /// Background tasks (revocation refresh, metrics persistence). Aborted
     /// (per-handle) when the `Relay` drops.
     background_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
@@ -153,8 +158,12 @@ pub struct Relay {
     full_replica: ReplicaProof,
     /// What the browser carriers need to serve sessions of this relay.
     web: Box<WebContext>,
-    /// The rooms this relay governs; absent when it hosts no room authority.
-    rooms: Option<crate::rooms::Rooms>,
+    /// The workspaces this relay governs; absent when it hosts no workspace authority.
+    workspaces: Option<crate::workspaces::Workspaces>,
+    /// This device's part in the channels of the workspaces it governs:
+    /// absent when its certificate does not let it own workspaces, and so it
+    /// holds no channel keys.
+    _channels: Option<Arc<crate::channels::Channels>>,
 }
 
 /// The relay state the browser carriers serve sessions with.
@@ -224,7 +233,7 @@ pub struct RelayHandle {
 
 /// Verify `cert`'s device's delegation against the relay's user `own_user`
 /// and put it in the relay's agent register, replacing an earlier one: what
-/// confines an agent to its delegated rooms from its next envelope on. Both
+/// confines an agent to its delegated workspaces from its next envelope on. Both
 /// doors that tell a relay about an agent come here
 /// ([`Relay::register_agent`], `RelayAgentLink::register`), so neither can
 /// register one the other leaves unconfined.
@@ -247,7 +256,7 @@ pub(crate) fn register_agent_in(
     agents
         .write_recover()
         .insert(delegation.device_public_key, Some(delegation.clone()));
-    // A replacement may narrow an earlier delegation's rooms.
+    // A replacement may narrow an earlier delegation's workspaces.
     crate::authority_epoch::bump();
     Ok(())
 }
@@ -460,7 +469,7 @@ impl Relay {
             Some(endpoint) => endpoint,
             None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
         };
-        // A certified host governs the rooms it creates, unless its embedder
+        // A certified host governs the workspaces it creates, unless its embedder
         // serves workspace joining itself. It answers their governance as
         // actions itself, beside whatever apps its embedder serves, and it
         // runs the app transforms its embedder gives it a job runner for.
@@ -468,28 +477,49 @@ impl Relay {
             && !additional_protocols.iter().any(|(alpn, _)| {
                 alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
             });
+        // A relay whose device may own workspaces takes part in every channel of
+        // the workspaces it governs, as one participant beside their members; a
+        // relay whose device may not keeps no channel keys at all.
+        let channels = (governs_rooms
+            && identity
+                .device_cert
+                .capabilities
+                .takes_part_in_workspace_channels())
+        .then(|| {
+            crate::channels::Channels::open(&cfg.state_root, identity.device_signing_key.clone())
+        })
+        .transpose()?
+        .map(Arc::new);
         let (sessions, governed) = crate::host::HostSessions::open(
             crate::host::HostConfig {
                 state_root: cfg.state_root.clone(),
                 mode: crate::host::HostMode::CertifiedHost,
                 trust_policy: cfg.trust_policy.clone(),
                 member_limits: cfg.member_limits,
-                max_room_grants: cfg.max_room_grants,
+                max_workspace_grants: cfg.max_workspace_grants,
                 apps: app_serving,
                 shell_payloads,
             },
             identity.clone(),
             endpoint.clone(),
             governs_rooms,
-            None,
+            channels.as_ref().map(|channels| channels.device()),
             |_workspaces, rest| rest,
         )
         .await?;
-        let rooms = governed.map(|governed| governed.rooms);
+        let governed = governed.map(|governed| governed.workspaces);
+        if let (Some(channels), Some(governed)) = (&channels, &governed) {
+            channels.attach(governed);
+        }
         let workspaces = sessions.workspaces.clone();
         let metrics = sessions.metrics.clone();
         let live = sessions.identity.clone();
         let handler = sessions.handler.clone();
+        // The live plane belongs to the relay: pages reach it over
+        // WebTransport, devices over the relay's own iroh endpoint, and both
+        // land in one origin whether or not browsers are served.
+        #[cfg(feature = "web")]
+        let mut plane = Some(crate::web::wt::Plane::start(handler.clone()));
         let live_trust_policy = handler.trust_policy.clone();
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),
@@ -520,18 +550,28 @@ impl Relay {
             .accept(crate::certify::CERTIFY_ALPN, certification)
             .accept(DISCOVERY_ALPN, discovery)
             .accept(MANAGEMENT_ALPN, management);
-        if let Some(rooms) = &rooms {
-            for (alpn, handler) in crate::host::rooms_protocols(&sessions, rooms) {
+        if let Some(governed) = &governed {
+            for (alpn, handler) in crate::host::workspaces_protocols(&sessions, governed) {
                 router = router.accept(alpn, handler);
             }
         }
         for (alpn, handler) in additional_protocols {
             router = router.accept(alpn, handler);
         }
+        #[cfg(feature = "web")]
+        if let Some(plane) = plane.as_ref() {
+            let (alpn, handler) = plane.protocol();
+            router = router.accept(alpn, handler);
+        }
         let router = router.spawn();
 
         let background_tasks = spawn_background_tasks(&cfg, &identity, &metrics, &live);
-        // The host is a member of every room it holds: its own device is on
+        #[cfg(feature = "web")]
+        if let Some(plane) = plane.as_mut() {
+            let mut tasks = lock_background_tasks(&background_tasks);
+            tasks.extend(plane.tasks().into_iter().map(AbortOnDrop));
+        }
+        // The host is a member of every workspace it holds: its own device is on
         // those rosters, so it reads and serves them as any participant does.
         for workspace in workspaces.lock().await.values() {
             workspace
@@ -545,11 +585,14 @@ impl Relay {
             sessions,
             #[cfg(feature = "web")]
             browser_origin: Arc::new(std::sync::RwLock::new(None)),
+            #[cfg(feature = "web")]
+            plane,
             background_tasks,
             mesh_profile,
             full_replica: full_replica.clone(),
             web,
-            rooms,
+            workspaces: governed,
+            _channels: channels,
         })
     }
 
@@ -597,10 +640,10 @@ impl Relay {
 
     /// Tell the host that the device `cert` certifies is an agent: verify
     /// its root-signed delegation against this relay's user and confine the
-    /// device to the delegated rooms from its next envelope on, then put it
-    /// on the roster of each room this relay governs that the delegation
-    /// names, as an approved grant does ([`crate::rooms::Rooms::reconcile_agent`]).
-    /// Once this returns, those rooms admit it. Replaces an earlier
+    /// device to the delegated workspaces from its next envelope on, then put it
+    /// on the roster of each workspace this relay governs that the delegation
+    /// names, as an approved grant does ([`crate::workspaces::Workspaces::reconcile_agent`]).
+    /// Once this returns, those workspaces admit it. Replaces an earlier
     /// delegation of the same device.
     ///
     /// # Errors
@@ -625,10 +668,10 @@ impl Relay {
             cert,
             &delegation,
         )?;
-        // The governed rooms it names put it on their rosters.
+        // The governed workspaces it names put it on their rosters.
         #[cfg(feature = "agents")]
-        if let Some(rooms) = self.rooms() {
-            rooms
+        if let Some(workspaces) = self.workspaces() {
+            workspaces
                 .reconcile_agent(cert.device_public_key, Some(cert))
                 .await;
         }
@@ -655,13 +698,13 @@ impl Relay {
     /// Atomically replace the native governor's exact member devices and the
     /// user roots those devices need at the relay handshake. This is a
     /// trusted, server-local reconciliation API: roots open only the global
-    /// handshake, while the exact device set continues to gate this room.
+    /// handshake, while the exact device set continues to gate this workspace.
     ///
-    /// Removals narrow live room access before disk I/O and additions become
+    /// Removals narrow live workspace access before disk I/O and additions become
     /// reachable only after one crash-safe access record commits. The global
     /// handshake allowlist is then rebuilt from configured pins and every
-    /// room's projection, so removing one room cannot revoke another room or
-    /// widen either room to sibling devices under the same user root.
+    /// workspace's projection, so removing one workspace cannot revoke another workspace or
+    /// widen either workspace to sibling devices under the same user root.
     ///
     /// # Errors
     ///
@@ -682,36 +725,10 @@ impl Relay {
             .await?)
     }
 
-    /// Let visitors watch `workspace_id` read-only as `spectators`: every
-    /// device the spectator root certified reads the room's state and
-    /// writes nothing, up to `spectators.seats` subscribed at once (see
-    /// `crate::room_access`). The spectator person must be a member of the
-    /// room, which is also what lets its devices through the handshake.
-    pub async fn admit_spectators(
-        &self,
-        workspace_id: u64,
-        spectators: crate::room_access::Spectators,
-    ) -> Result<(), RelayError> {
-        let workspace = self
-            .sessions
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace_id)
-            .cloned()
-            .ok_or_else(|| {
-                RelayError::GovernedAccess(format!("room {workspace_id} is not open here"))
-            })?;
-        workspace.lock().await.spectators = Some(spectators);
-        // Live subscriptions are audited again: fewer seats end the extra.
-        crate::authority_epoch::bump();
-        Ok(())
-    }
-
-    /// The rooms this relay governs, when it hosts the room authority.
+    /// The workspaces this relay governs, when it hosts the workspace authority.
     #[must_use]
-    pub const fn rooms(&self) -> Option<&crate::rooms::Rooms> {
-        self.rooms.as_ref()
+    pub const fn workspaces(&self) -> Option<&crate::workspaces::Workspaces> {
+        self.workspaces.as_ref()
     }
 
     /// Where this relay keeps its state.
@@ -728,8 +745,8 @@ impl Relay {
     /// In-process access to the records of the workspaces this relay hosts,
     /// for a service embedded in the host process.
     #[must_use]
-    pub fn room_records(&self) -> crate::room_records::RoomRecords {
-        self.sessions.room_records()
+    pub fn workspace_records(&self) -> crate::workspace_records::WorkspaceRecords {
+        self.sessions.workspace_records()
     }
 }
 
@@ -741,7 +758,7 @@ fn home_peer_relay_workspaces(
     let ticket = fs::Ticket::decode(&workspace.ticket)
         .map_err(|error| RelayError::Identity(format!("invalid home-peer ticket: {error}")))?;
     let relay_workspace_ids = if workspace.relay_workspace_ids.is_empty() {
-        // Bundles exported before room bindings existed have one stable
+        // Bundles exported before workspace bindings existed have one stable
         // fallback shard. New enrollment always writes explicit ids.
         vec![
             crate::room_workspace_id(&ticket.workspace_id().to_string())
@@ -754,8 +771,8 @@ fn home_peer_relay_workspaces(
 }
 
 /// Check the home-peer bundle the filesystem worker consumes and, when there
-/// is one, serve full-content replication. Which rooms this relay holds is
-/// not the bundle's to say: the rooms' own governance admits it as one of
+/// is one, serve full-content replication. Which workspaces this relay holds is
+/// not the bundle's to say: the workspaces' own governance admits it as one of
 /// their hosts.
 fn import_home_peer(cfg: &mut RelayConfig) -> Result<(), RelayError> {
     if !cfg.home_peer_bundle.exists() {
@@ -1047,8 +1064,8 @@ struct DiscoveryProtocol {
 }
 
 impl DiscoveryProtocol {
-    fn trust(&self) -> crate::room_access::RelayTrust<'_> {
-        crate::room_access::RelayTrust {
+    fn trust(&self) -> crate::workspace_access::RelayTrust<'_> {
+        crate::workspace_access::RelayTrust {
             revocations: &self.identity.revocations,
             policy: &self.trust_policy,
             own_user: &self.identity.user_public_key,
@@ -1215,7 +1232,7 @@ impl ProtocolHandler for DiscoveryProtocol {
         }
         let (mut send, mut recv) = connection.accept_bi().await?;
         // Any device the live policy admits may ask; the request is then
-        // scoped to a room it belongs to.
+        // scoped to a workspace it belongs to.
         let peer = self
             .identity
             .authenticate(
@@ -1238,7 +1255,7 @@ impl ProtocolHandler for DiscoveryProtocol {
             .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         }
-        // A discovery request is scoped to a relay room. Do not turn the
+        // A discovery request is scoped to a relay workspace. Do not turn the
         // host into a global filesystem endpoint directory for arbitrary
         // authenticated peers.
         let workspace = self
@@ -1250,11 +1267,11 @@ impl ProtocolHandler for DiscoveryProtocol {
         let permitted = match workspace {
             Some(workspace) => {
                 let workspace = workspace.lock().await;
-                crate::room_access::decide(
+                crate::workspace_access::decide(
                     &workspace,
                     &self.trust(),
                     &peer,
-                    crate::room_access::RoomOperation::ContentDiscovery,
+                    crate::workspace_access::WorkspaceOperation::ContentDiscovery,
                 )
                 .admitted()
             }

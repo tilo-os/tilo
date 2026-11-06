@@ -232,6 +232,11 @@ pub trait ActivityHost {
     fn app_display_name(&self, _app: &str) -> Option<String> {
         None
     }
+    /// The devices that refused writes in `workspace`, each with what it
+    /// refused: one verdict per write, the highest sequence.
+    fn refusals(&self, _workspace: &str) -> Vec<tilo_actions::remote::workspace_activity::Refusal> {
+        Vec::new()
+    }
     /// Undo an agent's run of task `task`: each document in `steps` (its
     /// app and record) undoes the changes grouped under the task, through
     /// its own history, as the person at the screen.
@@ -312,6 +317,8 @@ mod admitted_history_tests {
                         label: "Notes".into(),
                     },
                     app_title: None,
+                    view: String::new(),
+                    pinned: false,
                 }],
             }],
         }];
@@ -327,6 +334,7 @@ mod admitted_history_tests {
                     mine: &|id| id >> 48 == 5,
                     retained: &|_| false,
                     carried: tilo_desktop_model::shared_record::device::Writer::NOTHING_CARRIED,
+                    records: tilo_desktop_model::shared_record::device::Writer::NOTHING_NOTED,
                 },
             )
             .unwrap();

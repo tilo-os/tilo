@@ -144,14 +144,17 @@ impl JoinedChannel {
                 .and_then(|caller| caller.current(&self.state))
                 .map(|caller| self.state.caller_actor(&caller, &workspace))
                 .ok_or("original clipboard caller unavailable")?;
+            // A caller that is not the session's own agent has no agent to
+            // attribute the write to; that is the expected case.
+            // ignored-failure: only an agent acting for this session's person is attributed
             let agent = attributed_agent(&actor, session_person(&self.verified_identity)).ok();
             (actor.id().to_owned(), agent)
         } else {
             (self.verified_identity.broker_actor().id().to_owned(), None)
         };
         let local_action = action.to_owned();
-        let peer = self.peer_id;
-        let admitted = self.verified_identity.clone();
+        let (peer, admitted) = (self.peer_id, self.verified_identity.clone());
+        let app_id = route.app_id.clone();
         let state = Arc::downgrade(&self.state);
         let check = Arc::new(move |needed: ActionKind| {
             local.revalidate()?;
@@ -210,6 +213,7 @@ impl JoinedChannel {
             // with its process.
             peer: self.connection_id,
             window,
+            app_id,
             duplicate,
             workspace,
             owner,

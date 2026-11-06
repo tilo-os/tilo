@@ -1,14 +1,13 @@
-//! Ephemeral traffic the relay never keeps: the live plane (`LiveJoin`,
-//! `LiveLeave`, `Live`), presence, voice calls and record content handed
-//! to one device. Presence is every device's own, browser pages included.
+//! Ephemeral traffic the relay never keeps: the live plane's membership,
+//! presence, voice calls and record content handed to one device. Presence
+//! is every device's own, browser pages included.
 
 use super::{
-    Arc, AuthenticatedPeer, Decision, Envelope, PeerError, RoomOperation, SessionCtx, room_access,
-    unix_now_ns,
+    Arc, AuthenticatedPeer, Decision, Envelope, PeerError, SessionCtx, WorkspaceOperation,
 };
 
-/// Handle `LiveJoin`: add a subscribed device to the workspace's live plane
-/// and send it one `LiveMember` per member already present.
+/// Handle `RetiredLiveJoin`: add a subscribed device to the workspace's live
+/// plane and send it one `LiveMember` per member already present.
 pub(super) async fn handle_live_join(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -31,21 +30,17 @@ pub(super) async fn handle_live_join(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return refused(UNSUBSCRIBED);
     };
-    let members = {
-        let mut runtime = ws.lock().await;
-        // A spectator neither shows nor sends a cursor.
-        if room_access::watches_only(&runtime, peer) {
-            return refused(room_access::DenyReason::WatchOnly.reason());
-        }
-        runtime.live_join(peer.device_public_key, workspace_id)
-    };
+    let members = ws
+        .lock()
+        .await
+        .live_join(peer.device_public_key, workspace_id);
     let Some(members) = members else {
         return refused(UNSUBSCRIBED);
     };
     for device in members {
         // Live state is never authority: a member notice lost to a full
         // queue costs only a late cursor.
-        let _ = session.outbound.try_send(Envelope::LiveMember {
+        let _ = session.outbound.try_send(Envelope::RetiredLiveMember {
             workspace_id,
             device_public_key: device,
             active: true,
@@ -69,56 +64,47 @@ async fn subscription_refusal(
     };
     let runtime = crate::workspace_io::fresh_membership(&ws).await?;
     Ok(
-        match session.decide(&runtime, peer, RoomOperation::Subscribe) {
+        match session.decide(&runtime, peer, WorkspaceOperation::Subscribe) {
             Decision::Deny(reason) => Some(reason.reason()),
             Decision::Admit | Decision::AdmitAndEnrol => None,
         },
     )
 }
 
-/// Where `peer`'s calls in `workspace_id` are held: by this relay's room
-/// authority when it governs the room, else by the room it carries (a
+/// Where `peer`'s calls in `workspace_id` are held: by this relay's workspace
+/// authority when it governs the workspace, else by the workspace it carries (a
 /// person's own workspace, synced across their devices through this host).
-/// None unless they subscribed to it, and none for a spectator, who takes
-/// no part in the room's calls.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the registry guard only lives for the lookup and the workspace guard for the answer read from it"
-)]
+/// None unless they subscribed to it.
 async fn call_host(
-    peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &[u64],
     workspace_id: u64,
-) -> Option<(crate::rooms::Rooms, String)> {
+) -> Option<CallHost> {
     if !subscribed.contains(&workspace_id) {
         return None;
     }
-    let ws = session
+    let authority = session
         .workspaces
         .lock()
         .await
         .get(&workspace_id)
-        .cloned()?;
-    let authority = {
-        let runtime = ws.lock().await;
-        if room_access::watches_only(&runtime, peer) {
-            return None;
-        }
-        runtime.room_authority.clone()
-    };
+        .cloned()?
+        .lock()
+        .await
+        .workspace_authority
+        .clone();
     match authority {
-        Some(authority) => Some((authority.rooms()?, authority.room().to_owned())),
+        Some(authority) => Some((authority.workspaces()?, authority.workspace().to_owned())),
         None => Some((
             session.carried_calls.as_ref()?.upgrade()?,
-            crate::rooms::carried_call_room(workspace_id),
+            crate::workspaces::carried_call_room(workspace_id),
         )),
     }
 }
 
 /// Handle a call envelope for a subscribed workspace: its calls are held
-/// by this relay's room authority, or as a room it carries; see
-/// [`crate::rooms`].
+/// by this relay's workspace authority, or as a workspace it carries; see
+/// [`crate::workspaces`].
 pub(super) async fn handle_voice(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -133,64 +119,37 @@ pub(super) async fn handle_voice(
         | Envelope::VoiceCalls { workspace_id } => *workspace_id,
         _ => return Ok(None),
     };
-    let rooms = call_host(peer, session, subscribed, workspace_id).await;
-    let refusal = "calls require a subscription to the room";
+    let host = call_host(session, subscribed, workspace_id).await;
     Ok(match env {
         Envelope::VoiceCall {
             request, operation, ..
-        } => {
-            let result = match &rooms {
-                Some((rooms, room)) => rooms.voice_call(room, peer, &operation).await,
-                None => Err(refusal.into()),
-            };
-            Some(Envelope::VoiceCallResult {
-                workspace_id,
-                request,
-                result,
-            })
-        }
+        } => Some(Envelope::VoiceCallResult {
+            workspace_id,
+            request,
+            result: call_answer(host.as_ref(), peer, &operation).await,
+        }),
         Envelope::VoiceJoin {
             call,
             participation,
             ..
-        } => {
-            let result = match &rooms {
-                Some((rooms, room)) => {
-                    rooms
-                        .voice_join(room, peer, call, participation, session.outbound.clone())
-                        .await
-                }
-                None => Err(refusal.into()),
-            };
-            Some(match result {
-                Ok(grant) => Envelope::VoiceGranted {
-                    workspace_id,
-                    grant: Box::new(grant),
-                },
-                Err(reason) => {
-                    // Why a call drops: a beat for a participation the host
-                    // forgot, or a fresh join it refused.
-                    tracing::info!(
-                        call = %hex::encode(call),
-                        beat = participation.is_some(),
-                        %reason,
-                        "voice join refused"
-                    );
-                    Envelope::VoiceRefused {
-                        workspace_id,
-                        call,
-                        reason,
-                    }
-                }
-            })
-        }
+        } => Some(
+            join_answer(
+                host.as_ref(),
+                workspace_id,
+                peer,
+                session,
+                call,
+                participation,
+            )
+            .await,
+        ),
         Envelope::VoiceLeave {
             call,
             participation,
             ..
         } => {
-            if let Some((rooms, _)) = &rooms {
-                rooms.voice_leave(peer, call, participation);
+            if let Some((workspaces, _)) = &host {
+                workspaces.voice_leave(peer, call, participation);
             }
             None
         }
@@ -200,77 +159,100 @@ pub(super) async fn handle_voice(
             showing,
             ..
         } => {
-            if let Some((rooms, _)) = &rooms {
-                rooms.voice_show(peer, call, participation, showing);
+            if let Some((workspaces, _)) = &host {
+                workspaces.voice_show(peer, call, participation, showing);
             }
             None
         }
         Envelope::VoiceCalls { .. } => Some(Envelope::VoiceCallList {
             workspace_id,
-            result: match &rooms {
-                Some((rooms, room)) => {
-                    rooms
-                        .voice_calls(room, peer, session.outbound.clone())
-                        .await
-                }
-                None => Err(refusal.into()),
-            },
+            result: calls_answer(host.as_ref(), peer, session).await,
         }),
         _ => None,
     })
 }
 
-/// Handle `LiveLeave`.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the guard only lives for the lookup; the value kept is a clone"
-)]
-pub(super) async fn handle_live_leave(
+/// Where a peer's calls in one workspace are held: the workspace authority
+/// that governs them there and the workspace as calls name it.
+type CallHost = (crate::workspaces::Workspaces, String);
+
+/// Why a peer holds no calls in a workspace: it does not subscribe to it, or
+/// it watches it without taking part.
+const CALLS_REFUSED: &str = "calls require a subscription to the workspace";
+
+/// The answer to a call's change: the call as governance now records it, or
+/// the reason this peer may not change it.
+async fn call_answer(
+    host: Option<&CallHost>,
     peer: &AuthenticatedPeer,
-    session: &SessionCtx<'_>,
-    workspace_id: u64,
-) -> Result<Option<Envelope>, PeerError> {
-    let ws = session.workspaces.lock().await.get(&workspace_id).cloned();
-    if let Some(ws) = ws {
-        let mut ws = ws.lock().await;
-        ws.live_leave(&peer.device_public_key, workspace_id);
-        drop(ws);
+    operation: &tilo_relay_protocol::voice::CallOperation,
+) -> Result<tilo_relay_protocol::voice::CallState, String> {
+    match host {
+        Some((workspaces, workspace)) => workspaces.voice_call(workspace, peer, operation).await,
+        None => Err(CALLS_REFUSED.into()),
     }
-    Ok(None)
 }
 
-/// Handle an inbound `Live` frame: decode it canonically, stamp the
-/// authenticated sender and relay it within the sender's rate budget.
-/// Invalid, over-budget or non-member frames are dropped: live traffic is
-/// never authority, and dropping it costs only a stale cursor.
-pub(super) async fn handle_live(
+/// The answer to a join: the participation's grant, or a refusal, which is
+/// worth a line in the host's log: a beat for a participation it forgot, or a
+/// fresh join it refused.
+async fn join_answer(
+    host: Option<&CallHost>,
+    workspace_id: u64,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[u64],
-    workspace_id: u64,
-    frame: Vec<u8>,
-) -> Result<Option<Envelope>, PeerError> {
-    if !subscribed.contains(&workspace_id) {
-        return Ok(None);
+    call: [u8; 32],
+    participation: Option<[u8; 32]>,
+) -> Envelope {
+    let result = match host {
+        Some((workspaces, workspace)) => {
+            workspaces
+                .voice_join(
+                    workspace,
+                    peer,
+                    call,
+                    participation,
+                    session.outbound.clone(),
+                )
+                .await
+        }
+        None => Err(CALLS_REFUSED.into()),
+    };
+    match result {
+        Ok(grant) => Envelope::VoiceGranted {
+            workspace_id,
+            grant: Box::new(grant),
+        },
+        Err(reason) => {
+            tracing::info!(
+                call = %hex::encode(call),
+                beat = participation.is_some(),
+                %reason,
+                "voice join refused"
+            );
+            Envelope::VoiceRefused {
+                workspace_id,
+                call,
+                reason,
+            }
+        }
     }
-    // Only a sealed frame is relayed; its content is never read here.
-    // optional-decode: live traffic is never authority; a malformed frame costs a stale cursor (above)
-    let Ok(sealed) = crate::live::SealedLiveFrame::decode(&frame) else {
-        return Ok(None);
-    };
-    let presence = sealed.kind == crate::live::LiveKind::Presence;
-    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
-        return Ok(None);
-    };
-    let stamped = Envelope::Live {
-        workspace_id,
-        from_device_public_key: peer.device_public_key,
-        frame,
-    };
-    ws.lock()
-        .await
-        .fanout_live(&peer.device_public_key, presence, &stamped, unix_now_ns());
-    Ok(None)
+}
+
+/// The calls a peer may see in the workspace, or the reason it may see none.
+async fn calls_answer(
+    host: Option<&CallHost>,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<Vec<tilo_relay_protocol::voice::CallSummary>, String> {
+    match host {
+        Some((workspaces, workspace)) => {
+            workspaces
+                .voice_calls(workspace, peer, session.outbound.clone())
+                .await
+        }
+        None => Err(CALLS_REFUSED.into()),
+    }
 }
 
 /// Handle an inbound `Presence`: fan it out to every other subscriber.
@@ -285,10 +267,9 @@ pub(super) async fn handle_presence(
     subscribed: &[u64],
     mut env: Envelope,
 ) -> Result<Option<Envelope>, PeerError> {
-    let mut slot = None;
-    // A presence that is no toolkit presence may ask the room for content.
+    // A presence that is no toolkit presence may ask the workspace for content.
     let mut asks = None;
-    let Envelope::Presence { workspace_id, .. } = &env else {
+    let Envelope::RetiredPresence { workspace_id, .. } = &env else {
         return Err(PeerError::Protocol(
             "handle_presence called with a non-Presence envelope".into(),
         ));
@@ -305,17 +286,14 @@ pub(super) async fn handle_presence(
         None => false,
     };
     if !attached
-        && let Envelope::Presence { payload, .. } = &mut env
+        && let Envelope::RetiredPresence { payload, .. } = &mut env
         && let Some(mut attributed) = crate::AttributedPresence::decode(payload)
     {
         // Co-edit receivers recover the author from this opaque wrapper.
         // A sender's claim is not transport evidence, even if that other
         // device has a valid certificate in the same workspace.
         attributed.author = peer.device_public_key;
-        slot = crate::coedit::presence_slot(&attributed.body);
-        if slot.is_none() {
-            asks = Some(attributed.body.clone());
-        }
+        asks = Some(attributed.body.clone());
         *payload = attributed
             .encode()
             .map_err(|error| PeerError::Protocol(error.to_string()))?;
@@ -329,26 +307,8 @@ pub(super) async fn handle_presence(
         if !attached {
             wr.request_checkpoint(&peer.device_public_key);
         }
-        // A spectator's presence asks for its baseline: nobody sees it. In
-        // a public room it reads what members read, so it may also ask the
-        // room for the content those records reference.
-        if room_access::watches_only(&wr, peer) {
-            let reads = wr.spectators.is_some_and(|spectators| spectators.public);
-            let authority = wr.room_authority.clone();
-            drop(wr);
-            if reads && let Some(body) = asks {
-                answer_content(
-                    &ws,
-                    authority.as_ref(),
-                    workspace_id,
-                    (*session.own_device_public_key, peer.device_public_key),
-                    body,
-                );
-            }
-            return Ok(None);
-        }
-        wr.fanout_presence(&peer.device_public_key, &env, slot);
-        let authority = wr.room_authority.clone();
+        wr.fanout_presence(&peer.device_public_key, &env);
+        let authority = wr.workspace_authority.clone();
         drop(wr);
         if let Some(body) = asks {
             answer_content(
@@ -363,28 +323,78 @@ pub(super) async fn handle_presence(
     Ok(None)
 }
 
-/// Answer a member's request for content its room's records reference
-/// from what this host keeps ([`crate::rooms::RoomContent`]), to the
+/// Handle `RecordContentWant`: fan a member's request for content out to the
+/// workspace's other members, as presence was fanned out, and answer it here
+/// from what the host keeps ([`answer_content`]).
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
+)]
+pub(super) async fn handle_content_want(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    mut env: Envelope,
+) -> Result<Option<Envelope>, PeerError> {
+    let Envelope::RecordContentWant {
+        workspace_id,
+        from_device_public_key,
+        frame,
+    } = &mut env
+    else {
+        return Err(PeerError::Protocol(
+            "handle_content_want called with a non-RecordContentWant envelope".into(),
+        ));
+    };
+    // A sender's claim is not transport evidence: the host stamps its own.
+    let workspace_id = *workspace_id;
+    if !subscribed.contains(&workspace_id) {
+        return Err(PeerError::Protocol(
+            "content wanted before subscribing to workspace".into(),
+        ));
+    }
+    let frame = std::mem::take(frame);
+    *from_device_public_key = peer.device_public_key;
+    let ws = session.workspaces.lock().await.get(&workspace_id).cloned();
+    let Some(ws) = ws else {
+        return Ok(None);
+    };
+    let mut wr = ws.lock().await;
+    wr.fanout_presence(&peer.device_public_key, &env);
+    let authority = wr.workspace_authority.clone();
+    drop(wr);
+    answer_content(
+        &ws,
+        authority.as_ref(),
+        workspace_id,
+        (*session.own_device_public_key, peer.device_public_key),
+        frame,
+    );
+    Ok(None)
+}
+
+/// Answer a member's request for content its workspace's records reference
+/// from what this host keeps ([`crate::workspaces::WorkspaceContent`]), to the
 /// member's device alone, off the connection's task: reading the content
-/// may touch the disk. A host that governs no room here keeps none of it,
+/// may touch the disk. A host that governs no workspace here keeps none of it,
 /// and says so, so the member stops counting on it.
 fn answer_content(
     ws: &Arc<tokio::sync::Mutex<crate::workspace::WorkspaceRuntime>>,
-    authority: Option<&crate::rooms::RoomAuthority>,
+    authority: Option<&crate::workspaces::WorkspaceAuthority>,
     workspace_id: u64,
     (host, member): ([u8; 32], [u8; 32]),
     body: Vec<u8>,
 ) {
     let served = authority.and_then(|authority| {
         authority
-            .rooms()
-            .map(|rooms| (rooms, authority.room().to_owned()))
+            .workspaces()
+            .map(|workspaces| (workspaces, authority.workspace().to_owned()))
     });
     let ws = Arc::clone(ws);
     tokio::spawn(async move {
         let frames = match tokio::task::spawn_blocking(move || match served {
-            Some((rooms, room)) => rooms.content_answer(&room, &body),
-            None => crate::rooms::lacks_answer(&host, &body)
+            Some((workspaces, workspace)) => workspaces.content_answer(&workspace, &body),
+            None => crate::workspaces::lacks_answer(&host, &body)
                 .into_iter()
                 .collect(),
         })
@@ -442,16 +452,12 @@ pub(super) async fn route_record_content(
         return;
     };
     let runtime = ws.lock().await;
-    // A spectator hands no member content.
-    if room_access::watches_only(&runtime, peer) {
-        return;
-    }
     // A piece answering the host's own request is the host's to keep.
     let host = if to == *session.own_device_public_key {
         runtime
-            .room_authority
+            .workspace_authority
             .as_ref()
-            .and_then(|authority| Some((authority.rooms()?, authority.room().to_owned())))
+            .and_then(|authority| Some((authority.workspaces()?, authority.workspace().to_owned())))
     } else {
         None
     };
@@ -460,7 +466,7 @@ pub(super) async fn route_record_content(
     // reaches it; every other piece spends the member's content budget.
     let asked = host
         .as_ref()
-        .is_some_and(|(rooms, room)| rooms.host_expects(room, &frame));
+        .is_some_and(|(workspaces, workspace)| workspaces.host_expects(workspace, &frame));
     if !asked
         && let Some(limits) = session.member_limits
         && peer.user_public_key != *session.own_user_public_key
@@ -475,9 +481,11 @@ pub(super) async fn route_record_content(
     }
     if to == *session.own_device_public_key {
         drop(runtime);
-        if let Some((rooms, room)) = host {
+        if let Some((workspaces, workspace)) = host {
             let from = peer.device_public_key;
-            tokio::task::spawn_blocking(move || rooms.content_for_host(&room, from, &frame));
+            tokio::task::spawn_blocking(move || {
+                workspaces.content_for_host(&workspace, from, &frame);
+            });
         }
         return;
     }

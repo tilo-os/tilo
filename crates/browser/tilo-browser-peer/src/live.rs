@@ -13,9 +13,9 @@
 //! [`join`] answers [`LiveError::Unsupported`], whose message is what the page
 //! shows.
 
-use tilo_call_lane::Roster;
 use tilo_live::admit::{self, AdmissionError, Dial, Dialling};
 use tilo_live::plane::{Join, Plane, PlaneError};
+use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
 use tilo_relay_protocol::web::LiveGrant;
 

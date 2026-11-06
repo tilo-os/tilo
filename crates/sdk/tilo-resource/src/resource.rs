@@ -24,8 +24,6 @@ use tilo_lock::MutexRecover as _;
 
 mod head;
 pub use head::{HeadInputs, head_inputs, publish_head, publish_head_of};
-mod default_search;
-pub use default_search::default_search;
 
 /// A resource type. `#[resource]` implements it for a `#[derive(Model)]`
 /// record, which is how every app declares its own. The SDK implements it by
@@ -53,7 +51,9 @@ pub use default_search::default_search;
 pub trait Resource: Sized + 'static {
     /// Stable kind of record this resource lives in, e.g. `"notes.notebook"`.
     const KIND: &'static str;
-    /// Human name of one resource of this kind, e.g. `"Notebook"`.
+    /// Human name of one resource of this kind, e.g. `"Notebook"`, in the
+    /// language the declaration is written in. What a person reads is
+    /// [`label`](Self::label), which a host's catalogue translates.
     const LABEL: &'static str;
     /// The app that publishes records of this kind, e.g. `"so.tilo.notes"`:
     /// the framework app's id, or for a resource that names its app in its
@@ -63,6 +63,14 @@ pub trait Resource: Sized + 'static {
     const APP_ID: &'static str = crate::kind::DEFAULT_APP;
     /// The registry type id every action of this resource is replayed under.
     const ACTION_TYPE: &'static str = Self::KIND;
+
+    /// The name a person reads this kind by, in their language: what
+    /// [`LABEL`](Self::LABEL) declares, resolved through the catalogue a
+    /// host installed ([`crate::label`]), so every kind is named in the
+    /// language of the desktop it is published on.
+    fn label() -> String {
+        crate::label::localized(Self::KIND, Self::LABEL)
+    }
 
     /// What views render. For a record resource this is the record itself.
     type State: 'static;
@@ -2570,6 +2578,9 @@ pub(crate) fn group_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
     })
 }
 
+/// The default search entries of a record ([`crate::search_default`]).
+pub use crate::search_default::default_search;
+
 /// The resource tree published for one open resource: every declared and
 /// state-bound action, the generic [`APPLY`] and [`GROUP`](crate::GROUP)
 /// actions, the named [`Resource::views`], and the nested resources.
@@ -2628,7 +2639,8 @@ pub fn unreadable_parts<R: Resource>(
     label: &str,
     reason: &str,
 ) -> tilo_actions::ResourceSpec {
-    crate::unreadable::parts::<R>(id, label, reason)
+    let label = crate::label::published(R::KIND, label, R::LABEL);
+    crate::unreadable::parts::<R>(id, &label, reason)
 }
 
 /// What a resource's own publication reads of its state.
@@ -2652,7 +2664,10 @@ fn publish_own(
     own: Own<'_>,
     offered_bound: &dyn Fn(&Declaration) -> bool,
 ) -> tilo_actions::ResourceSpec {
-    let mut resource = tilo_actions::ResourceSpec::new(id, vocabulary.kind, label);
+    // The name the person reads, in their language: the kind's catalogue
+    // entry while the publisher kept the name the declaration gave it.
+    let label = crate::label::published(vocabulary.kind, label, vocabulary.label);
+    let mut resource = tilo_actions::ResourceSpec::new(id, vocabulary.kind, &label);
     // Describe the declared domain ID before any host dispatch alias projection.
     resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(vocabulary.kind, id);
     // The app it publishes under: what an action's `ActionKey` names, and
@@ -2661,7 +2676,7 @@ fn publish_own(
     // What it is, as people name it: its type's noun, its app's name and
     // whether it is that app's root. Exactly a tilolang type's, so the one
     // search matches a Rust and a tilolang type alike.
-    resource = resource.with_type(crate::words::type_words(vocabulary.kind, label));
+    resource = resource.with_type(crate::words::type_words(vocabulary.kind, &label));
     for decl in vocabulary.declarations().iter() {
         let _phase = crate::profiling::Phase::start("resource.declaration_spec");
         let mut spec = spec_of_declaration(decl);

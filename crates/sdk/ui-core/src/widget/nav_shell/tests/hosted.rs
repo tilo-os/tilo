@@ -447,7 +447,7 @@ fn a_sections_menu_and_rename_come_back_through_the_feed() {
         .sidebar_ref::<NavList>()
         .expect("the sidebar is the list");
     let field = list
-        .tree()
+        .list()
         .rename_field()
         .expect("the title's field is open");
     assert_eq!(field.value(), "Projects");

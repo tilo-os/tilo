@@ -15,6 +15,8 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
+mod common;
+
 use std::cell::RefCell;
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
@@ -202,7 +204,7 @@ fn pump(
     clients: &mut [&mut TestClient],
     mut done: impl FnMut(&mut Session, &[&mut TestClient]) -> bool,
 ) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         for client in clients.iter_mut() {
             client.exchange();
@@ -216,7 +218,9 @@ fn pump(
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "condition not reached"
+            "gave up waiting for the session and its client after {:?}; it looks hung \
+             (set TILO_TEST_HANG_BOUND_SECS to wait longer)",
+            tilo_test_env::hang_bound()
         );
     }
 }
@@ -470,29 +474,22 @@ fn band_colour(session: &mut Session) -> [u8; 4] {
         .unwrap()
 }
 
-/// Step the session until `done` holds, for up to three seconds of its
-/// clock.
+/// Step the session and exchange with `client` until `done` holds: the bound
+/// is the suite's hang bound, so a busy machine slows the wait instead of
+/// failing it.
 #[track_caller]
 fn within(
     session: &mut Session,
     client: &mut TestClient,
     mut done: impl FnMut(&mut Session) -> bool,
 ) {
-    let until = std::time::Instant::now() + Duration::from_secs(3);
-    while std::time::Instant::now() < until {
-        client.exchange();
-        session.step(Duration::from_millis(4)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!("condition not reached in time");
+    pump(session, &mut [client], |session, _| done(session));
 }
 
 /// Wait for the size the desktop configures the window to, draw it at that
 /// size as its client does, and wait until the compositor shows it there.
 fn take_size(session: &mut Session, client: &mut TestClient, app: &str, size: (i32, i32)) {
-    let until = std::time::Instant::now() + Duration::from_secs(3);
+    let until = tilo_test_env::hang_deadline();
     while std::time::Instant::now() < until && client.seen.size != Some(size) {
         client.exchange();
         session.step(Duration::from_millis(4)).expect("step");
@@ -893,16 +890,21 @@ fn the_volume_and_brightness_keys_work_with_no_quick_settings_panel() {
         rate: 100,
     });
     key(&mut session, keys::VOLUME_UP, true);
-    let held = std::time::Instant::now();
-    while held.elapsed() < Duration::from_millis(200) {
-        session.step(Duration::from_millis(5)).unwrap();
-    }
+    let repeats = |asked: &Rc<RefCell<Vec<String>>>| {
+        asked
+            .borrow()
+            .iter()
+            .filter(|call| *call == "volume-up")
+            .count()
+    };
+    // The repeat is one per turn the compositor dispatches, however long a turnaround takes
+    // on a busy machine: the test holds the key until the sound has been raised more than
+    // once, rather than for a span of the host's clock.
+    common::wait_for(&mut session, "a held volume key to ramp the sound", |_| {
+        (repeats(&asked) > 3).then_some(())
+    });
     key(&mut session, keys::VOLUME_UP, false);
-    let louder = asked
-        .borrow()
-        .iter()
-        .filter(|call| *call == "volume-up")
-        .count();
+    let louder = repeats(&asked);
     assert!(louder > 3, "holding volume up ramps it: {louder}");
     assert!(
         session
@@ -953,6 +955,7 @@ impl Published for Player {
         &mut self,
         address: &tilo_actions::ActionAddress,
         _: &serde_json::Map<String, serde_json::Value>,
+        _look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         self.asked.borrow_mut().push(address.action.clone());
         Ok(ui::host_operation::ResourceOperationStart::Completed(
@@ -983,18 +986,24 @@ fn the_touchpad_key_and_the_sessions_own_action_switch_the_touchpad() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     assert!(session.input_config().touchpad_enabled);
-    tap(&mut session, keys::F21);
-    assert!(
-        !session.input_config().touchpad_enabled,
-        "the key turned it off"
-    );
-    assert!(
-        session
-            .accessible_labels()
-            .contains(&"Touchpad off".to_owned()),
-        "the readout says so: {:?}",
-        session.accessible_labels()
-    );
+    // The readout that answers the key stays up for a moment of its own, and a
+    // machine running a whole suite at once can spend that moment on the turn
+    // that pressed the key: the press and the read of what it says happen at
+    // one reading of the clock, so what is read is the readout the key raised.
+    ui::time::testing::with_monotonic_time(ui::time::now(), || {
+        tap(&mut session, keys::F21);
+        assert!(
+            !session.input_config().touchpad_enabled,
+            "the key turned it off"
+        );
+        assert!(
+            session
+                .accessible_labels()
+                .contains(&"Touchpad off".to_owned()),
+            "the readout says so: {:?}",
+            session.accessible_labels()
+        );
+    });
     let mut on = serde_json::Map::new();
     on.insert("on".into(), true.into());
     session
@@ -1219,7 +1228,7 @@ fn the_liveness_door_beside_the_control_socket_answers_a_heartbeat() {
         .expect("the heartbeat is asked for");
     let mut reader = std::io::BufReader::new(&mut client);
     let mut answer = String::new();
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         assert!(
             std::time::Instant::now() < deadline,
@@ -1301,6 +1310,102 @@ fn the_power_menu_opens_by_its_published_verb() {
     assert!(
         !menu.rows().is_empty(),
         "and it offers the person's choices"
+    );
+}
+
+/// The power menu's shortcut puts it up: the chord, as a person presses it,
+/// reaches the menu the same verb opens.
+#[test]
+fn the_power_menus_shortcut_opens_it() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "shortcut",
+        &serde_json::json!({"action": "power_menu"}),
+    );
+    let menu = session.power_menu().expect("the power menu");
+    assert!(
+        menu.presentation().is_open(),
+        "the shortcut puts the menu up"
+    );
+    assert!(!menu.rows().is_empty(), "with the person's choices");
+}
+
+/// The session publishes the actions only it can carry out, with what each
+/// is called, so every surface listing them — the Tilo menu, search — offers
+/// the same rows; what this machine cannot do is not offered.
+#[test]
+fn the_session_publishes_the_actions_only_it_can_carry_out() {
+    let _settled = ui::motion::testing::settled();
+    let mut own = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            session_actions: record_session_action,
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    own.step(Duration::from_millis(1)).unwrap();
+    let offered: Vec<(
+        String,
+        String,
+        Option<tilo_desktop_surface::HostActionSource>,
+    )> = own
+        .handle()
+        .host_actions()
+        .into_iter()
+        .map(|action| (action.id, action.title, action.source))
+        .collect();
+    for (id, title) in [
+        ("session-lock", "Lock"),
+        ("session-log-out", "Log out"),
+        ("session-restart", "Restart"),
+        ("session-shut-down", "Shut down"),
+    ] {
+        assert!(
+            offered.iter().any(|(held, called, source)| held == id
+                && called == title
+                && *source == Some(tilo_desktop_surface::HostActionSource::Session)),
+            "the session offers {id} as {title}: {offered:?}"
+        );
+    }
+
+    // A session in a window of another desktop owns neither the machine's
+    // power nor its session switching, so it offers none of them.
+    let mut windowed = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            machine: tilo_session::Machine::Window,
+            session_actions: record_session_action,
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    windowed.step(Duration::from_millis(1)).unwrap();
+    let offered: Vec<String> = windowed
+        .handle()
+        .host_actions()
+        .into_iter()
+        .map(|action| action.id)
+        .collect();
+    for id in ["session-suspend", "session-restart", "session-switch-user"] {
+        assert!(
+            !offered.iter().any(|held| held == id),
+            "a session in a window does not offer {id}: {offered:?}"
+        );
+    }
+    assert!(
+        offered.iter().any(|held| held == "session-shut-down"),
+        "shutting down is offered everywhere: {offered:?}"
     );
 }
 
@@ -2154,8 +2259,13 @@ fn wait_for(session: &mut Session) -> Option<Duration> {
     }
 }
 
+#[path = "session/activities.rs"]
+mod activities;
+
 #[path = "session/desk.rs"]
 mod desk;
+#[path = "session/hung.rs"]
+mod hung;
 
 #[path = "session/readout.rs"]
 mod readout;
@@ -2520,7 +2630,7 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
     for row in [
         "New workspace",
         "Join a workspace",
-        "Leave this workspace",
+        "Leave workspace",
         "Workspace settings",
     ] {
         assert!(menu.contains(row), "the menu offers {row}: {menu}");

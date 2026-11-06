@@ -39,7 +39,7 @@ impl Session {
     /// Ask the person whether to uninstall `app`, by its entry's id in the
     /// downloaded programs' registry or by the name they know it by.
     pub fn ask_uninstall(&self, app: &str) {
-        self.shared.app_sheets.ask_uninstall(app);
+        self.shared.ask_uninstall(app);
     }
 
     /// Workspace settings' seat: what it shows, kept current by whoever

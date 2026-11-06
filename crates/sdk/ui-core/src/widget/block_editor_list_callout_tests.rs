@@ -92,6 +92,18 @@ fn access_names(node: &crate::a11y::AccessNode, out: &mut Vec<String>) {
     }
 }
 
+/// Every block row's kind, in its own words, from the document's tree.
+fn role_descriptions(node: &crate::a11y::AccessNode, out: &mut Vec<String>) {
+    if node.role == crate::a11y::Role::ListItem
+        && let Some(description) = &node.role_description
+    {
+        out.push(description.clone());
+    }
+    for child in &node.children {
+        role_descriptions(child, out);
+    }
+}
+
 #[test]
 fn bullet_x_height_is_the_top_of_the_faces_x() {
     let theme = Theme::dark();
@@ -244,17 +256,27 @@ fn nested_ordinals_follow_tex_enumerate_and_are_announced_as_shown() {
         .map(|(block, ordinal)| list_marker::ordinal_label(*ordinal, block.indent()))
         .collect();
     assert_eq!(labels, ["1.", "(a)", "i.", "ii.", "(b)"]);
+    // The row says what the block says, and the kind's own words — the
+    // ordinal as the page shows it — are what it is described as.
     let mut names = Vec::new();
     access_names(&Widget::accessibility(&editor).unwrap(), &mut names);
-    for expected in [
-        "Numbered item 1. block 1",
-        "Numbered item (a) block 2",
-        "Numbered item i. block 3",
-        "Numbered item (b) block 5",
-    ] {
+    for expected in ["Top", "Letter", "Roman", "Letter two"] {
         assert!(
             names.iter().any(|name| name == expected),
             "{expected}: {names:?}"
+        );
+    }
+    let mut described = Vec::new();
+    role_descriptions(&Widget::accessibility(&editor).unwrap(), &mut described);
+    for expected in [
+        "Numbered item 1.",
+        "Numbered item (a)",
+        "Numbered item i.",
+        "Numbered item (b)",
+    ] {
+        assert!(
+            described.iter().any(|description| description == expected),
+            "{expected}: {described:?}"
         );
     }
     // Markdown keeps the digits.
@@ -327,9 +349,14 @@ fn a_callout_paints_its_wash_under_its_header_and_text() {
     );
     let mut names = Vec::new();
     access_names(&Widget::accessibility(&editor).unwrap(), &mut names);
+    assert!(names.iter().any(|name| name == "Mind the gap"), "{names:?}");
+    let mut described = Vec::new();
+    role_descriptions(&Widget::accessibility(&editor).unwrap(), &mut described);
     assert!(
-        names.iter().any(|name| name == "Warning callout block 2"),
-        "{names:?}"
+        described
+            .iter()
+            .any(|description| description == "Warning callout"),
+        "{described:?}"
     );
 
     // Without a callout, no wash.
@@ -370,4 +397,66 @@ fn backspace_at_a_callouts_start_and_enter_in_an_empty_one_leave_it() {
     editor.apply_signal(0, &LineSignal::BackspaceAtStart);
     assert_eq!(editor.blocks[0].kind, BlockKind::Paragraph);
     assert_eq!(editor.blocks[0].text(), "Keep me");
+}
+
+/// The space above block `index`, in theme pixels.
+fn above(editor: &BlockEditor, index: usize, theme: &Theme) -> f32 {
+    editor.stack_boxes[index].margin_top / theme.text_scale
+}
+
+#[test]
+fn a_block_that_paints_a_surface_clears_the_prose_around_it() {
+    let theme = Theme::dark();
+    let spacing = theme.tokens.spacing;
+    let mut editor = page(vec![
+        Block::paragraph("Before"),
+        Block::code_block(Some("rust".to_owned()), "fn main() {}"),
+        Block::code_block(Some("toml".to_owned()), "name = "),
+        Block::paragraph("Between"),
+        Block::quote("Quoted"),
+        Block::quote("The same quote continues"),
+        Block::paragraph("After"),
+        Block::divider(),
+        Block::paragraph("End"),
+    ]);
+    lay_out_and_draw(&mut editor, &theme);
+    // A code ground reaches past its box and its header sits inside the block: one surface gap
+    // on either side of it, and of a second fence beside it.
+    assert_eq!(above(&editor, 1, &theme), spacing.s4, "above the fence");
+    assert_eq!(above(&editor, 2, &theme), spacing.s4, "between fences");
+    assert_eq!(above(&editor, 3, &theme), spacing.s4, "below the fence");
+    // The lines of one quote are one unit; the quote as a whole stands apart from the prose.
+    assert_eq!(above(&editor, 4, &theme), spacing.s4, "above the quote");
+    assert!(above(&editor, 5, &theme) < spacing.s4, "within the quote");
+    assert_eq!(above(&editor, 6, &theme), spacing.s4, "below the quote");
+    assert_eq!(above(&editor, 7, &theme), spacing.s4, "above the rule");
+    assert_eq!(above(&editor, 8, &theme), spacing.s4, "below the rule");
+}
+
+#[test]
+fn a_heading_opens_its_section_with_room_and_its_first_block_sits_close_under_it() {
+    let theme = Theme::dark();
+    let spacing = theme.tokens.spacing;
+    let mut editor = page(vec![
+        Block::paragraph("Before"),
+        Block::heading(2, "Section"),
+        Block::paragraph("First line of the section"),
+        Block::paragraph("Second paragraph"),
+    ]);
+    lay_out_and_draw(&mut editor, &theme);
+    assert_eq!(
+        above(&editor, 1, &theme),
+        spacing.s6,
+        "room above a heading"
+    );
+    assert_eq!(
+        above(&editor, 2, &theme),
+        spacing.s3,
+        "the section's first block sits close under its heading"
+    );
+    assert_eq!(
+        above(&editor, 3, &theme),
+        spacing.s1,
+        "prose keeps its compact gap"
+    );
 }

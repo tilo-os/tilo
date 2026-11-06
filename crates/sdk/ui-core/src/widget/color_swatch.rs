@@ -348,6 +348,10 @@ pub struct ColorSwatchPicker {
     cell_height: Option<f64>,
     /// Paints each swatch in place of its flat colour.
     painter: Option<Box<SwatchPainter>>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl ColorSwatchPicker {
@@ -355,6 +359,7 @@ impl ColorSwatchPicker {
     pub fn new(swatches: impl IntoIterator<Item = ColorSwatch>, columns: usize) -> Self {
         let metrics = crate::tokens::Metrics::BASE;
         Self {
+            dirty: true,
             swatches: swatches.into_iter().collect(),
             columns: columns.max(1),
             selected: None,
@@ -442,6 +447,7 @@ impl ColorSwatchPicker {
     /// Show `idx` as chosen (`None`: none is), without telling
     /// [`Self::on_change`].
     pub fn set_selected(&mut self, idx: Option<usize>) {
+        self.dirty = true;
         self.selected = idx.filter(|idx| *idx < self.swatches.len());
     }
 
@@ -682,6 +688,7 @@ impl Widget for ColorSwatchPicker {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
@@ -742,6 +749,14 @@ impl Widget for ColorSwatchPicker {
         }
     }
 
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "ColorSwatchPicker"
     }
@@ -763,6 +778,7 @@ impl Widget for ColorSwatchPicker {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.focused = focused;
         if focused {
             self.focus_index = self

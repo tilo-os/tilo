@@ -40,7 +40,7 @@ thread_local! {
 /// A capture lists the retained frames it replays in its owner turn and
 /// pins them (one hard link each) when it is prepared, off the owner: the
 /// pins were the bulk of a newcomer's turn, and the frames to pin grow with
-/// the room. In between, the listed frames must stay where they were
+/// the workspace. In between, the listed frames must stay where they were
 /// listed. Only collection removes a retained frame, so collection waits
 /// while any capture of the store is leased: a lineage collected then is
 /// remembered, and collected once no capture is leased
@@ -55,8 +55,8 @@ pub(crate) struct CaptureLeases {
     /// The store's owner, woken when the last lease ends so what waited is
     /// collected without waiting for its next job.
     wake: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
-    /// The governor of a room whose layout is personal, which this store
-    /// holds: captures leave out every other author's lineages of the room's
+    /// The governor of a workspace whose layout is personal, which this store
+    /// holds: captures leave out every other author's lineages of the workspace's
     /// layout ([`WorkspaceStore::replay_member_layout`]).
     layout_governor: std::sync::Mutex<Option<[u8; 32]>>,
     /// What each lineage's current generation held when last listed.
@@ -106,17 +106,17 @@ impl WorkspaceStore {
         *self.capture_leases.wake.lock_recover() = Some(owner);
     }
     /// From now on, with `Some(governor)`, leave out of every capture what
-    /// members other than `governor` wrote of the room's layout: their
-    /// changes to the room document (its topology and windows) and to its
-    /// shared desktop record. The room's layout is personal, and shares no
+    /// members other than `governor` wrote of the workspace's layout: their
+    /// changes to the workspace document (its topology and windows) and to its
+    /// shared desktop record. The workspace's layout is personal, and shares no
     /// member's windows. They stay retained; no one is replayed them. With
-    /// `None` (the room shares its layout) every capture holds them again.
+    /// `None` (the workspace shares its layout) every capture holds them again.
     pub(crate) fn replay_member_layout(&self, governor: Option<[u8; 32]>) {
         *self.capture_leases.layout_governor.lock_recover() = governor;
     }
 
     /// Whether a capture leaves the retained lineage `name` out because it
-    /// is a member's part of a personal room's layout.
+    /// is a member's part of a personal workspace's layout.
     fn leaves_out_member_layout(&self, name: &std::ffi::OsStr) -> bool {
         let Some(governor) = *self.capture_leases.layout_governor.lock_recover() else {
             return false;
@@ -125,7 +125,7 @@ impl WorkspaceStore {
     }
 
     /// The next entry of the directory a capture lists, past the retained
-    /// lineages it leaves out: a room keeps far more lineages than a
+    /// lineages it leaves out: a workspace keeps far more lineages than a
     /// newcomer is replayed (each author's part of every record, on-demand
     /// ones included), and stepping over one is not a step of work.
     fn next_listed(
@@ -384,7 +384,7 @@ fn frame_payload(bytes: &[u8]) -> &[u8] {
 fn heap_bytes(envelope: &Envelope) -> usize {
     match envelope {
         Envelope::Delta { delta, .. } => delta.capacity(),
-        Envelope::Presence { payload, .. } => payload.capacity(),
+        Envelope::RetiredPresence { payload, .. } => payload.capacity(),
         Envelope::NotAuthorised { reason, .. } => reason.capacity(),
         Envelope::PeerRelayHello { hosted_workspaces } => {
             hosted_workspaces.capacity().saturating_mul(8)
@@ -432,7 +432,7 @@ fn v1_frame_charge(
 /// otherwise ordered by hash.
 pub(crate) fn lineage_rank(lineage: &str) -> &'static str {
     let identity = lineage.split_once('-').is_some_and(|(author, channel)| {
-        // optional-decode: only a sort rank; a lineage not named for an author ranks last
+        // ignored-failure: only a sort rank; a lineage not named for an author ranks last
         let Ok(author) = hex::decode(author) else {
             return false;
         };
@@ -487,7 +487,7 @@ pub struct ReplayBuild {
     shell_selected: bool,
     skip: Option<ResumeSkip>,
     /// Replay every record, on-demand ones and earlier parts of chains
-    /// included: a host attached to the room keeps all of it.
+    /// included: a host attached to the workspace keeps all of it.
     every_record: bool,
     /// The frames listed to pin when the capture is prepared
     /// (`capture.manifest`): the retained frames, with the lease that keeps
@@ -531,7 +531,7 @@ const MAX_LISTED_LINEAGE: usize = 256;
 const MAX_LISTED_FRAMES: usize = 65_536;
 
 /// What each retained lineage's current generation held when a capture
-/// listed it, until an owner job changes the lineage. In a room every
+/// listed it, until an owner job changes the lineage. In a workspace every
 /// newcomer's capture listed every lineage again, a generation's `CURRENT`
 /// and its entries each time, in the owner's turn; now it lists only the
 /// lineages that changed since the last capture.
@@ -1822,7 +1822,7 @@ impl PublicationCursor {
 }
 
 /// Whether the retained lineage `name` (`<author>-<channel>`, both hex) is
-/// an author's other than `governor` on a room's layout: the room document
+/// an author's other than `governor` on a workspace's layout: the workspace document
 /// (`SyncResp`) or the shared desktop record.
 fn member_layout_lineage(name: &std::ffi::OsStr, governor: &[u8; 32]) -> bool {
     let Some((author, channel)) = name.to_str().and_then(|name| name.split_once('-')) else {
@@ -1843,7 +1843,7 @@ fn member_layout_lineage(name: &std::ffi::OsStr, governor: &[u8; 32]) -> bool {
 mod member_layout_tests {
     use super::member_layout_lineage;
 
-    /// The lineages a personal room replays to nobody: a member's room
+    /// The lineages a personal workspace replays to nobody: a member's workspace
     /// document and shared desktop writes, never the governor's, and no
     /// record's.
     #[test]

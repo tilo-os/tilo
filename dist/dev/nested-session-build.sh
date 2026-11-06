@@ -133,10 +133,18 @@ build_host() {
 # turns on in the crates both use (media, the toolkit's services) would unify into it, and its
 # binary would link libraries its sandbox, the tilolang runtime on the app runtime alone, does
 # not hold.
+#
+# Without a symbol table: the session bakes this binary into the signed runtime bundle it
+# installs, and that bundle takes no binary over 64 MiB (runtime-bundle). At this profile's 16
+# codegen units and no LTO its linked names alone are 19 MB of the 67 MB file, and nothing that
+# reads the bundle reads them; the session's other programs keep theirs, which their crash logs
+# do read.
 build_tilolang_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
-    cargo build --locked --timings "${args[@]}" -p tilolang-host --bin tilolang-host
+    cargo build --locked --timings "${args[@]}" \
+        --config "profile.$host_profile.package.tilolang-host.strip=\"symbols\"" \
+        -p tilolang-host --bin tilolang-host
 }
 # The `tilolang` CLI authors run against the session (`tilolang dev --session`), in
 # a build of its own for the same reason: its toolkit features stay out of the
@@ -211,12 +219,14 @@ published_env_runtime() {
 # SDK and the native host), which the session signs as the
 # `tilo-runtime/<RUNTIME_VERSION>` bundle Browser requires
 # (ui::webview::chromium::runtime). Built again only when the CEF pin or the
-# host's sources change.
+# host's sources change. The key hashes the sources themselves: a build copy of
+# the tree (a builder's, synced without `.git`) has no index to list them from.
 chromium_engine=$target/nested-session-chromium
 build_chromium_engine() {
     local key began=$SECONDS
     key=$( { cat scripts/browser/cef-lock.json scripts/browser/build-host.py
-             git ls-files -s apps/browser/chromium crates/browser/tilo-chromium-blocker; } \
+             find apps/browser/chromium crates/browser/chromium-blocker -type f -print \
+                 | LC_ALL=C sort | xargs sha256sum; } \
            | sha256sum | cut -c1-64)
     if [[ -f $chromium_engine/.key && $(<"$chromium_engine/.key") == "$key" \
           && -x $chromium_engine/runtime/chromium/tilo-chromium-host ]]; then
@@ -266,6 +276,13 @@ done < <(cat "$target/$thin_profile/runtime-engines"
          ((${#selected[@]})) && python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.catalog[].binary')
 [[ ! -d $env_runtime ]] || cp -rp "$env_runtime" "$out/env-runtime"
 [[ ! -d $chromium_engine/runtime/chromium ]] || cp -rp "$chromium_engine/runtime/chromium" "$out/chromium-engine"
+# The tree's translations, packed as the OS image packs them: every language a
+# catalogue is translated into, one directory per language, beside the apps
+# that read them. An app package carries its source language alone, so without
+# these a session started from this build shows every app in English whatever
+# language the session speaks.
+python3 tools/apps/language_packs.py build . "$out/language-packs" \
+    || { echo "cannot build the language packs" >&2; exit 1; }
 # The runtime bundle carries the exact libstd the runtime links, so the
 # session needs no local Rust toolchain.
 needed_std=$(readelf -dW "$out/thin-app/libruntime_dylib.so" \

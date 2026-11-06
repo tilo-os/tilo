@@ -8,7 +8,7 @@ use super::{Desktop, Mount};
 pub(super) struct Asks {
     /// What the windows it opened are to show, each until it is shown or
     /// gives up waiting for its window.
-    reveals: std::cell::RefCell<Vec<(tilo_desktop_surface::session::Reveal, ui::time::Instant)>>,
+    reveals: std::cell::RefCell<Vec<Opening>>,
     /// The peer replicating the workspace, through whose workspaces door the windows'
     /// asks of nodes of the workspace's tree go.
     peer: Option<u32>,
@@ -68,7 +68,9 @@ impl Desktop {
                 Box::new(move |reply| {
                     // What the workspace permits beyond the person's role (an
                     // item shared with them to edit) reaches their windows.
-                    if let Ok(tilo_relay_protocol::rooms::RoomsReply::Permits(may)) = &reply {
+                    if let Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) =
+                        &reply
+                    {
                         permitted
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -101,37 +103,31 @@ fn node_request(
     workspace: &str,
     node: String,
     action: tilo_desktop_surface::session::NodeAction,
-) -> tilo_relay_protocol::rooms::RoomsRequest {
+) -> tilo_relay_protocol::workspaces::WorkspacesRequest {
     use tilo_desktop_surface::session::NodeAction;
-    use tilo_relay_protocol::rooms::RoomsRequest;
+    use tilo_relay_protocol::workspaces::WorkspacesRequest;
     let workspace = workspace.to_owned();
     match action {
-        NodeAction::Share { share, access } => RoomsRequest::Share {
-            room: workspace,
+        NodeAction::Share { share, access } => WorkspacesRequest::Share {
+            workspace,
             share,
             node,
             access,
         },
-        NodeAction::Unshare { share } => RoomsRequest::Unshare {
-            room: workspace,
-            share,
-        },
-        NodeAction::Permits => RoomsRequest::Permits {
-            room: workspace,
-            node,
-        },
+        NodeAction::Unshare { share } => WorkspacesRequest::Unshare { workspace, share },
+        NodeAction::Permits => WorkspacesRequest::Permits { workspace, node },
     }
 }
 
 /// A node ask's output from the workspace's reply.
 fn node_answer(
-    reply: Result<tilo_relay_protocol::rooms::RoomsReply, String>,
+    reply: Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>,
 ) -> Result<serde_json::Value, String> {
-    use tilo_relay_protocol::rooms::RoomsReply;
+    use tilo_relay_protocol::workspaces::WorkspacesReply;
     match reply? {
-        RoomsReply::Permits(may) => Ok(serde_json::json!({ "undoable": may })),
-        RoomsReply::Shared(count) => Ok(serde_json::json!({ "grants": count })),
-        RoomsReply::Refused(reason) => Err(reason),
+        WorkspacesReply::Permits(may) => Ok(serde_json::json!({ "undoable": may })),
+        WorkspacesReply::Shared(count) => Ok(serde_json::json!({ "grants": count })),
+        WorkspacesReply::Refused(reason) => Err(reason),
         other => Err(format!("the workspace answered something else: {other:?}")),
     }
 }
@@ -139,20 +135,37 @@ fn node_answer(
 /// How long an opened window has to come up and show what its open named.
 const REVEAL_WAIT: ui::time::Duration = ui::time::Duration::from_secs(20);
 
+/// An open a window was asked to show, and how waiting for it went.
+struct Opening {
+    reveal: tilo_desktop_surface::session::Reveal,
+    /// When waiting for it ends: an app that still offers nothing by then is
+    /// told so, once.
+    until: ui::time::Instant,
+    /// How many resources the window's app had published when the open was
+    /// last tried: the row it names only arrives with a publication, so
+    /// asking again before the app publishes would find the same.
+    tried_at: Option<u64>,
+}
+
 impl Mount {
     /// Show, in each window the session opened on a record, the resource
     /// its open named, through the resource's own `open` as the person
     /// would: a note in a notebook rather than the notebook. Any other
     /// action a window asked of an app's resource is invoked in its window
-    /// the same way. A window still coming up (its app's code arriving, its
-    /// record syncing) is tried again on the next frame.
+    /// the same way.
+    ///
+    /// A window still coming up (its app's code arriving, its record
+    /// syncing) publishes nothing yet: an open that found nothing is kept,
+    /// and asked again when the app publishes next, not on every frame. The
+    /// page is woken by that publication like it is woken by any message.
     pub(super) fn reveal_opened(&mut self) {
         let Some(desktop) = &self.desktop else {
             return;
         };
         let now = ui::time::now();
-        let mut reveals = desktop.asks.reveals.borrow_mut();
-        reveals.extend(
+        let published = self.frame.published();
+        let mut openings = desktop.asks.reveals.borrow_mut();
+        openings.extend(
             desktop
                 .openings
                 .take_reveals()
@@ -166,17 +179,28 @@ impl Mount {
                             &reveal.resource,
                         )
                 })
-                .map(|reveal| (reveal, now.checked_add(REVEAL_WAIT).unwrap_or(now))),
+                .map(|reveal| Opening {
+                    reveal,
+                    until: now.checked_add(REVEAL_WAIT).unwrap_or(now),
+                    tried_at: None,
+                }),
         );
-        if reveals.is_empty() {
+        if openings.is_empty() {
             return;
         }
         let frame = &mut self.frame;
-        let mut settling = false;
-        reveals.retain(|(reveal, until)| {
+        openings.retain_mut(|opening| {
+            let reveal = &opening.reveal;
+            // Its window is not up yet: the window coming up is the page's
+            // own news, and nothing here can be asked of it before that.
             let Some(tab) = desktop.shared.tab_on(&reveal.app, &reveal.record) else {
-                return *until > now;
+                return opening.until > now;
             };
+            // Nothing was published since the last try: the row this open
+            // names is not there, and asking again would find the same.
+            if opening.tried_at == Some(published) {
+                return opening.until > now;
+            }
             let address = ui::bound_dispatch::BoundActionAddress {
                 instance_id: tab,
                 address: tilo_actions::ActionAddress::new(&reveal.resource, &reveal.action),
@@ -184,20 +208,17 @@ impl Mount {
             match frame.invoke_bound_action(&address, &reveal.arguments) {
                 Ok(_) => false,
                 Err(error) => {
-                    if *until <= now {
+                    if opening.until <= now {
                         web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
                             "an opened window did not show {}: {error}",
                             reveal.resource
                         )));
+                        return false;
                     }
-                    // Its window is up but has not published the resource
-                    // yet: the next frame publishes it.
-                    settling |= *until > now;
-                    *until > now
+                    opening.tried_at = Some(published);
+                    true
                 }
             }
         });
-        drop(reveals);
-        self.pending |= settling;
     }
 }

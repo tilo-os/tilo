@@ -30,6 +30,9 @@ impl Builder {
             Ok(value) => {
                 self.digest.update(&value.to_le_bytes());
             }
+            // A length no tag can carry: the digest is marked unsupported, and
+            // whoever compares it refuses.
+            // ignored-failure: the unsupported flag is this failure's report
             Err(_) => self.supported = false,
         }
     }

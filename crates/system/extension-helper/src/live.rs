@@ -94,8 +94,10 @@ const DESKTOP_STABLE: Duration = Duration::from_secs(20);
 const DESKTOP_EXIT: Duration = Duration::from_secs(30);
 /// The process that runs a login's compositor and restarts it on SIGUSR1.
 const LOGIN_WRAPPER: &str = "tilo-session";
-/// The compositor's process name.
-const COMPOSITOR: &str = "shell";
+/// The compositor's process name. The login wrapper has the same name and is
+/// the shell script that runs the compositor, so the executable each process
+/// runs tells them apart: the compositor is a binary of this name.
+const COMPOSITOR: &str = "tilo-session";
 
 /// Paths only a boot changes: the kernel and its modules, firmware the
 /// kernel loads, the bootloader and the initramfs.
@@ -1409,12 +1411,58 @@ fn zombie(pid: u32) -> bool {
         .unwrap_or(true)
 }
 
+/// Whether `pid` runs the compositor: a process of that name running the
+/// compositor's own binary, not the login wrapper's shell, whose script has
+/// the same name.
+fn is_compositor(pid: u32) -> bool {
+    comm(pid).as_deref() == Some(COMPOSITOR)
+        && fs::read_link(format!("/proc/{pid}/exe"))
+            .ok()
+            .and_then(|exe| {
+                exe.file_name().map(|name| {
+                    let name = name.to_string_lossy();
+                    // A run from before an update replaced the binary is
+                    // this same compositor.
+                    name.strip_suffix(" (deleted)").unwrap_or(&name) == COMPOSITOR
+                })
+            })
+            .unwrap_or(false)
+}
+
+/// The parent `pid` reports, from `/proc/<pid>/status`.
+fn parent(pid: u32) -> Option<u32> {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("PPid:"))
+        .and_then(|parent| parent.trim().parse().ok())
+}
+
+/// The processes `wrapper` started.
+///
+/// `/proc/<pid>/task/<tid>/children` exists only on kernels built with
+/// `CONFIG_PROC_CHILDREN`, so the parent each process reports is what names
+/// them here.
+fn children_of(wrapper: u32) -> Vec<u32> {
+    let Ok(processes) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    processes
+        .flatten()
+        .filter_map(|process| {
+            process
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+        })
+        .filter(|pid| parent(*pid) == Some(wrapper))
+        .collect()
+}
+
 fn compositor_of(wrapper: u32) -> Option<u32> {
-    fs::read_to_string(format!("/proc/{wrapper}/task/{wrapper}/children"))
-        .ok()?
-        .split_whitespace()
-        .filter_map(|pid| pid.parse::<u32>().ok())
-        .find(|pid| comm(*pid).as_deref() == Some(COMPOSITOR) && !zombie(*pid))
+    children_of(wrapper)
+        .into_iter()
+        .find(|pid| is_compositor(*pid) && !zombie(*pid))
 }
 
 fn user_name(uid: u32) -> Option<String> {
@@ -1633,7 +1681,7 @@ impl LiveHost for crate::System {
             else {
                 continue;
             };
-            if comm(pid).as_deref() != Some(LOGIN_WRAPPER) {
+            if comm(pid).as_deref() != Some(LOGIN_WRAPPER) || is_compositor(pid) {
                 continue;
             }
             let Some(user) = entry.metadata().ok().and_then(|meta| user_name(meta.uid())) else {

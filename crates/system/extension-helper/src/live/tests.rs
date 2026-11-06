@@ -1,5 +1,8 @@
 use std::cell::RefCell;
+use std::fmt;
 use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use super::*;
 
@@ -673,4 +676,143 @@ fn a_composefs_image_is_checked_by_its_own_digest_algorithm() {
         .map(OsString::from),
         "no digest= option: libcomposefs measures only SHA-256 images"
     );
+}
+
+/// The fixture as the machine has it, read when a wait gives up: what the
+/// wrapper runs, which children it has and what they run, so a failure names
+/// what stood in the compositor's place rather than only that it never came.
+struct Fixture(u32);
+
+impl fmt::Display for Fixture {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let children: Vec<String> = children_of(self.0)
+            .into_iter()
+            .map(|pid| {
+                format!(
+                    "{pid} runs {}{}",
+                    process(pid),
+                    if zombie(pid) { " (a zombie)" } else { "" }
+                )
+            })
+            .collect();
+        write!(
+            out,
+            "the fixture's compositor (the wrapper {} runs {}, and is {}; the children file is {}; \
+             its children: {})",
+            self.0,
+            process(self.0),
+            if zombie(self.0) { "gone" } else { "running" },
+            if fs::metadata(format!("/proc/{}/task/{}/children", self.0, self.0)).is_ok() {
+                "there"
+            } else {
+                "absent"
+            },
+            if children.is_empty() {
+                "none".to_owned()
+            } else {
+                children.join(", ")
+            },
+        )
+    }
+}
+
+/// What `pid` runs, what it was told to run, and where it waits: its name,
+/// its binary, its arguments, its state and the kernel function it sleeps in.
+fn process(pid: u32) -> String {
+    let binary = fs::read_link(format!("/proc/{pid}/exe"))
+        .map_or_else(|_| "unreadable".to_owned(), |exe| exe.display().to_string());
+    let args = fs::read(format!("/proc/{pid}/cmdline")).map_or_else(
+        |_| "unreadable".to_owned(),
+        |args| {
+            String::from_utf8_lossy(&args)
+                .replace('\0', " ")
+                .trim()
+                .to_owned()
+        },
+    );
+    let state = fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| {
+            // The state follows the name, which is parenthesised and may hold
+            // spaces of its own.
+            stat.rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_owned))
+        })
+        .unwrap_or_else(|| "unreadable".to_owned());
+    let waiting = fs::read_to_string(format!("/proc/{pid}/wchan")).map_or_else(
+        |_| "unreadable".to_owned(),
+        |waiting| waiting.trim().to_owned(),
+    );
+    format!(
+        "{:?} from {binary:?} (`{args}`, state {state}, waiting in {waiting:?})",
+        comm(pid)
+    )
+}
+
+/// The compositor and the login wrapper share a process name, because the
+/// wrapper that runs the compositor is a script of the same name: what each
+/// process runs is what tells them apart, so the update restarts a desktop
+/// through its wrapper and never signals a compositor as if it were one.
+#[test]
+fn the_compositor_is_told_from_the_login_wrapper_by_its_binary() {
+    let dir = tempfile::tempdir().unwrap();
+    // The compositor: a binary of the wrapper's name.
+    let binaries = dir.path().join("bin");
+    fs::create_dir(&binaries).unwrap();
+    let binary = binaries.join(COMPOSITOR);
+    fs::copy("/bin/sleep", &binary).unwrap();
+    // The wrapper: a script of that name, running the compositor as a child
+    // of its own as the login's wrapper does. The compositor outlives the
+    // wait, so a failure reports what is running rather than what has just
+    // been reaped.
+    let wrapper = dir.path().join(LOGIN_WRAPPER);
+    fs::write(
+        &wrapper,
+        format!("#!/bin/sh\n\"{}\" 600 &\nwait\n", binary.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut login = std::process::Command::new(&wrapper).spawn_locked().unwrap();
+    let wrapper_pid = login.id();
+    let compositor_pid = tilo_test_env::wait_for(Fixture(wrapper_pid), || {
+        // A wrapper that ended started no compositor, and never will.
+        if let Some(status) = login.try_wait().unwrap() {
+            panic!("the wrapper ended ({status}) before its compositor started");
+        }
+        compositor_of(wrapper_pid)
+    });
+
+    assert_eq!(
+        comm(wrapper_pid).as_deref(),
+        Some(LOGIN_WRAPPER),
+        "the wrapper runs under the compositor's name"
+    );
+    assert!(
+        !is_compositor(wrapper_pid),
+        "a script named so is the wrapper, not the compositor"
+    );
+    assert!(
+        is_compositor(compositor_pid),
+        "the binary is the compositor"
+    );
+    let logins = crate::System.logins();
+    assert!(
+        logins.iter().any(|login| login.wrapper == wrapper_pid),
+        "the login is found, and restarted through its wrapper"
+    );
+    assert!(
+        !logins.iter().any(|login| login.wrapper == compositor_pid),
+        "the compositor is never taken for a login of its own"
+    );
+    assert_eq!(
+        compositor_pid,
+        compositor_of(wrapper_pid).unwrap(),
+        "the running compositor is the wrapper's"
+    );
+
+    let _ = std::process::Command::new("kill")
+        .arg(compositor_pid.to_string())
+        .status_locked();
+    let _ = login.kill();
+    let _ = login.wait();
 }

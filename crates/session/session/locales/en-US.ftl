@@ -46,6 +46,26 @@ system-update-restart-title = Restart to finish updating
 system-update-restart-body = Your windows come back after the restart.
 power-restart = Restart
 
+## What this machine could not read of its own update, so it did not act on
+## it. The next look reads it again.
+update-state-unreadable-title = The update state could not be read
+update-state-unreadable-body = This computer could not read how far its last update got, so it did not act on it. It looks again by itself; Settings, Updates shows what it knows.
+
+## A deployment this computer tried did not start within its tries and the
+## boot loader went back to the version that worked before: said once, with
+## where the failed tries left what they found.
+system-update-went-back-title = Went back to the version before
+system-update-went-back-body = { $what } did not start after { $tries } tries, so this computer went back to { $running }. What the failed tries left behind: { $summary }, and tilo status.
+system-update-went-back-unnamed = The new version
+system-update-went-back-several-tries = several
+system-update-went-back-runs-before = the version before
+
+## The list of the person's own workspaces that this computer kept could not
+## be read: it starts the list again instead of showing nothing.
+workspaces-app-name = Workspaces
+workspaces-unreadable-title = Your workspaces could not be read
+workspaces-unreadable-body = The list of your own workspaces that this computer kept could not be read, so it starts the list again. Nothing was removed: your workspaces are still on this computer and on your other devices.
+
 ## The desk this device saved could not be opened: the person's own desk is
 ## still on disk and this session starts empty, so it is never written over.
 desk-not-opened-app-name = Desktop
@@ -65,6 +85,28 @@ desk-not-opened-old-unreadable-detail = { $path } is your desk from the version 
 desk-window-not-installed = { $app } is not installed on this machine
 desk-window-would-not-start = { $app } could not be started: { $why }
 desk-window-did-not-open = { $app } started but did not open a window
+
+## A window the person's record kept whose saved state this version cannot
+## read: its tab says why the window is not here instead of the place being
+## dropped.
+desk-place-not-read = Its saved window could not be read, so it is not here. Close this tab when you are done with it; the app opens again next time you sign in.
+
+## The "Always allow" answers this computer kept for the agents at its door,
+## which could not be read: each agent whose answer it was is asked again.
+agent-bindings-app-name = Agents
+agent-bindings-lost-title = { $agent } is asked again
+agent-bindings-lost-body = This computer could not read that you let { $agent } work here, so it asks you again the next time { $agent } connects. Nothing else was removed.
+agent-bindings-unreadable-title = Your answers about agents could not be read
+agent-bindings-unreadable-body = This computer could not read which agents you let work here, so it asks you again the next time each one connects. Nothing else was removed.
+
+## The registry of the programs the person downloaded does not read back: none
+## of their apps is listed until it does, and none is gone.
+refused-write-app = Changes
+refused-write-title = { $device } will not take your change
+refused-write-body = Your change stays on the devices that took it: { $reason }.
+downloaded-apps-app-name = Downloaded apps
+downloaded-apps-unreadable-title = Your downloaded apps could not be read
+downloaded-apps-unreadable-body = This computer could not read the list of programs you added to your apps, so they are not listed now. Nothing was removed: they are still on this computer.
 
 ## A display tool tried to put back a layout the person had just reverted.
 display-tool-reapply-refused = { $tool } tried to reapply a display layout you reverted
@@ -210,3 +252,54 @@ paste-failed-body = { $failed } of { $total } did not land. { $name }: { $reason
 paste-undone-title = The last paste did not finish
 paste-undone-body = { $landed } of { $total } had already landed. Those are kept; the rest is where it was.
 paste-undone-trouble = { $landed } of { $total } had already landed. Those are kept; the rest could not be put back yet: { $reason }
+
+## What the desk's own rows say: the question on the person's avatar, a running
+## application's tray item, and what the roster is called to assistive technology.
+session-desk-answer-ask = Answer
+session-desk-ask-later = Ask me later
+session-desk-open = Open
+session-desk-stop-agent = Stop
+session-people = People
+
+## What a person's private conversations are called, and the one action they offer.
+session-messages = Private messages
+session-messages-send = Send a private message
+
+## What the lock screen is called while it is up.
+session-lock-screen = Lock screen
+
+## What an agent's programs are, as the action door offers them: a task agent
+## writes one program at a time as a step of its task's run.
+task-programs-resource = Task programs
+task-programs-run = Run a program
+task-programs-run-detail = Runs a tilolang program as a step of the task's run, as the agent working the task, and answers what it read or changed.
+
+## What the person's own devices answered when one of them asked to be
+## unlocked after a reboot, as their activity history lists it: the package
+## the rows stand under, and what an answer says.
+unlock-history-app = Disk unlock
+unlock-approved = Approved unlocking { $item }
+unlock-denied = Declined to unlock { $item }
+unlock-history-unknown-device = a device this computer cannot name
+
+## What a window moved to another workspace asks, what it says when the app did
+## not start where the person put it, and what it says when the record the window
+## shows could not go along.
+window-move-app-name = Workspaces
+window-move-ask-title = Move { $app } to { $workspace }?
+window-move-ask-what = The app starts again there, with the access that workspace gives it, and opens the record that workspace keeps.
+window-move-ask-carries = The app starts again there, with the access that workspace gives it, and takes what the window shows along, edits and all. What it leaves behind says where it went.
+window-move-ask-they-see = Everyone in { $workspace } can see the window and what it opens.
+window-move-ask-you-leave = In { $workspace } it stops running, and what that workspace keeps stays there.
+window-move-ask-carry = Move it
+window-move-ask-stay = Leave it
+window-move-failed-title = { $app } did not start in { $workspace }
+window-move-failed-body = The window stayed in { $workspace }.
+window-move-record-failed-title = { $app } could not take what it shows to { $workspace }
+window-move-record-failed-body = The window stayed in { $workspace }: { $reason }.
+window-move-reason-busy = the window's app still has it open
+window-move-reason-record = its record cannot be moved to that workspace
+window-move-reason-storage = this computer could not keep it there
+window-move-reason-no-window = the app opened no window there
+window-move-reason-no-start = the app did not start there
+window-move-bringing-edits = The window comes back with what was written after it moved.

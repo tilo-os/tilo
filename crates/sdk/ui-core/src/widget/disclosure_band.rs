@@ -243,7 +243,7 @@ impl Widget for DisclosureBand {
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         if self.band.in_motion() {
             regions.push(self.band.laid_rect);
-        } else if self.needs_redraw() {
+        } else if self.needs_redraw() || self.needs_animation_frame() {
             regions.push(self.rect);
         }
     }
@@ -314,7 +314,9 @@ impl Widget for DisclosureBand {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.band.in_motion() || self.child.needs_redraw()
+        self.dirty
+            || self.band.in_motion()
+            || (self.child.needs_redraw() || self.child.needs_animation_frame())
     }
 
     fn mark_drawn(&mut self) {

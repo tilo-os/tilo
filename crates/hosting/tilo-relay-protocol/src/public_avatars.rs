@@ -1,5 +1,5 @@
 //! Avatars a public host publishes for the authors whose content a bot
-//! sent out of the room (a Discord webhook needs a public avatar URL).
+//! sent out of the workspace (a Discord webhook needs a public avatar URL).
 //! Only raster images: an SVG could carry script.
 
 /// The largest avatar published.

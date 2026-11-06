@@ -50,6 +50,12 @@ fn write_leb(out: &mut Vec<u8>, mut value: usize) {
     }
 }
 
+/// The record kind of each person's own state of an app's workspace: the window and lens state
+/// they set in views and what they have seen, kept in the workspace's record of the kind
+/// (`tilo.host`'s, `$personal/<person>`), on every device of theirs and readable by every
+/// member.
+pub const PERSONAL_RECORD_KIND: &str = "tilolang.personal";
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PackageMeta {
     pub app: String,
@@ -101,6 +107,10 @@ pub struct PackageMeta {
     /// The row a list of each type shows per item (`row view v for T`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub row_views: Vec<DefaultViewMeta>,
+    /// The views a window of each type switches between (`views a, b for T`), in order. A type
+    /// not named here has no switch: its views are helpers the app places itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub views_of: Vec<ViewsMeta>,
     /// Named seed data (`scenario "name" { ... }`), each run by its hidden action.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scenarios: Vec<ScenarioMeta>,
@@ -109,6 +119,35 @@ pub struct PackageMeta {
     /// as it is then. Each is exported as `e_<id>`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub at_event: Vec<FnMeta>,
+}
+
+/// The views a window of a type switches between: the type's id and the views' ids, in the
+/// order the declaration names them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ViewsMeta {
+    /// The type id.
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// The views' ids.
+    pub views: Vec<String>,
+    /// The views whose declaration says how a window's switch offers them, by id: the rest are
+    /// offered by their names, with the type's name left off.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shown: Vec<ViewShownMeta>,
+}
+
+/// How a view of a type is offered in a window's switch, when its declaration says
+/// (`views project_list (label: "List", icon: .list), project_board for Project`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ViewShownMeta {
+    /// The view's id.
+    pub view: String,
+    /// The short label the switch shows, in the words the app wrote it in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The icon beside it, as a kebab-case name of the platform's set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// A named root: its name and its type's id.
@@ -181,6 +220,10 @@ pub struct VariantMeta {
     /// platform's icon set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// `(tone: .x)`: the tone the case reads in, one of `ui.Tone`'s cases, a theme role rather
+    /// than a colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tone: Option<String>,
     /// The payload fields, in order. Their merge is always `register`.
     pub fields: Vec<FieldMeta>,
 }
@@ -190,7 +233,7 @@ pub struct VariantMeta {
 pub struct StateMeta {
     pub id: String,
     pub name: String,
-    /// `window` (shared by the window) or `lens` (one per person per window).
+    /// `window` (how the person looking shows the window) or `lens` (where they are in it).
     pub layer: String,
     #[serde(rename = "type")]
     pub ty: String,
@@ -282,6 +325,10 @@ pub struct FilterMeta {
     /// (`filter done (icon: .circle_check)`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// Whether the place it makes shows how many of its items it holds, as its declaration says
+    /// (`filter "Today" = due <= today (count: true)`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub count: bool,
 }
 
 /// What a filter compares, and so the control it is.
@@ -305,6 +352,9 @@ pub enum FilterKind {
     Text,
     /// A named filter, a toggle.
     Predicate,
+    /// A person or agent of the workspace: `assignee:me`, `assignee:<id>`. A field of
+    /// `Principal` is one without declaring it.
+    Person,
 }
 
 impl FilterKind {
@@ -371,9 +421,14 @@ pub struct FieldMeta {
     pub doc: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<serde_json::Value>,
-    /// `title` or `body`: what the field is to the platform (`title: Text (title)`).
+    /// What the field is to the platform (`title: Text (title)`, `repeats:
+    /// Option<std.Repeat> (repeats: due)`), naming the type's own fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
+    pub role: Option<crate::types::FieldRole>,
+    /// What the store derives it from, for a `derive` key ([`crate::derived`]): a value no
+    /// record holds, worked out from the collection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived: Option<crate::derived::Derived<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -385,6 +440,16 @@ pub struct ParamMeta {
     /// out gets it, computed then over the arguments before it and recorded as the argument.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<DefaultMeta>,
+    /// Whether the view offering the action supplies it (`above: Option<Task> (above)`): the
+    /// place the item stands in, which no invocation gives. A surface offering the action with
+    /// no such view (a palette over the item alone) supplies `.none`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub place: bool,
+    /// Whether the text of an entry fills it (`title: Text (entry)`): the action carries what
+    /// the words before the entry type say into its other parameters, the rest titles the item
+    /// (`crate::entry`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub entry: bool,
 }
 
 /// How an action parameter's default is computed.
@@ -439,6 +504,10 @@ pub struct ProposalMeta {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one part of what a surface offers and is read on its own: whether the action is a scenario's, whether it is frequent, and the two conditions its subject and its place decide"
+)]
 pub struct ActionMeta {
     pub id: String,
     pub name: String,
@@ -461,6 +530,11 @@ pub struct ActionMeta {
     /// The hidden action of a scenario: never offered, run only to seed a workspace.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub scenario: bool,
+    /// `did: "moved this"`: what the action did to its subject, as a history entry reads it
+    /// after who did it. An attribute of the action's message in the app's catalogue
+    /// (`d-<id>.did`), so a translation says it in the reader's language.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did: Option<String>,
     /// The id of the view that presents the action's state for a subject, when its `label:` or
     /// `icon:` follows the subject or it declares `on:`. The view takes the action's first
     /// parameter and builds one node of kind `present` with the props given dynamically:
@@ -488,6 +562,17 @@ pub struct ActionMeta {
     /// surface showing the resource's actions draws directly rather than behind the rest.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub frequent: bool,
+    /// Whether the action keeps a requirement its subject alone decides, exported as
+    /// [`crate::ir::guard_export`]: the first reason it cannot run on the subject now, or empty
+    /// while it can. What a surface offering the action reads its availability from.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guard: bool,
+    /// Whether the action keeps an `applies` condition, exported as
+    /// [`crate::ir::applies_export`]: the first reason it cannot apply to the item where it is
+    /// offered, or empty while it can. A menu leaves such an action out; a palette lists it,
+    /// disabled with the reason.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub applies: bool,
 }
 
 impl ActionMeta {
@@ -496,6 +581,34 @@ impl ActionMeta {
     #[must_use]
     pub fn is_migration(&self) -> bool {
         self.role.as_deref() == Some("migration")
+    }
+
+    /// Whether it is an `internal action`: only the app's own gestures run it (a drag, a lane's
+    /// button, an entry in the app's view), so no surface that lists a subject's actions offers
+    /// it — not the header, not an item's menu, not the palette, not an agent's choices.
+    ///
+    /// It is not a way to keep an action out of the header: that is `frequent`, which decides
+    /// between a button in the row and a row in the header's menu, while an action marked
+    /// `internal` is absent from every list.
+    #[must_use]
+    pub fn is_internal(&self) -> bool {
+        self.role.as_deref() == Some("internal")
+    }
+
+    /// The parameters an invocation that has given `bound` arguments still lacks: those after
+    /// them that have no default, each with its place, which its form asks the person for
+    /// before the action runs. Empty when it runs at once on what it was given.
+    ///
+    /// What an offer binds — the subject, the places its view supplies, the resource holding
+    /// the subject — is what `bound` counts, so this is the one rule for what a command still
+    /// asks: the form an invocation opens on (`missing_arguments`) and the "…" its label says
+    /// so with ([`crate::host::Action`]'s label) both read it.
+    pub fn unbound(&self, bound: usize) -> impl Iterator<Item = (usize, &ParamMeta)> {
+        self.params
+            .iter()
+            .enumerate()
+            .skip(bound)
+            .filter(|(_, param)| param.default.is_none())
     }
 }
 
@@ -508,6 +621,9 @@ pub struct AnchorMeta {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ViewMeta {
     pub id: String,
+    /// The view's name, as it is declared: what its window is called and what a screen reader
+    /// says. A loop body is a part of the view it stands in and takes that view's name, never a
+    /// binding's.
     pub name: String,
     pub doc: String,
     pub params: Vec<ParamMeta>,
@@ -612,6 +728,28 @@ impl PackageMeta {
             .map(|d| d.view.as_str())
     }
 
+    /// The views a window of the type `ty` (an id) switches between, in the order declared;
+    /// empty when the type declares none.
+    #[must_use]
+    pub fn views_of(&self, ty: &str) -> Vec<&str> {
+        self.views_of
+            .iter()
+            .find(|v| v.ty == ty)
+            .map(|v| v.views.iter().map(String::as_str).collect())
+            .unwrap_or_default()
+    }
+
+    /// How the switch offers the view `view` (an id) of the type `ty` (an id): the short label
+    /// and the icon its declaration names, `None` for each it does not.
+    #[must_use]
+    pub fn view_shown(&self, ty: &str, view: &str) -> (Option<&str>, Option<&str>) {
+        self.views_of
+            .iter()
+            .find(|v| v.ty == ty)
+            .and_then(|v| v.shown.iter().find(|s| s.view == view))
+            .map_or((None, None), |s| (s.label.as_deref(), s.icon.as_deref()))
+    }
+
     /// The id of the row view of the type `ty` (an id), when the package declares one.
     pub fn row_view(&self, ty: &str) -> Option<&str> {
         self.row_views
@@ -620,9 +758,21 @@ impl PackageMeta {
             .map(|d| d.view.as_str())
     }
 
-    /// The actions the platform offers: every action but the hidden ones of scenarios and the
-    /// migrations, which the platform runs itself.
+    /// The actions the platform offers: every action but the hidden ones of scenarios, the
+    /// migrations, which the platform runs itself, and the internal ones, which only the app's own
+    /// gestures run. This is the one list every surface draws from — the header's buttons and
+    /// menu, an item's menu, the palette — so an offered action is always somewhere a person can
+    /// reach it.
     pub fn offered_actions(&self) -> impl Iterator<Item = &ActionMeta> {
+        self.actions
+            .iter()
+            .filter(|a| !a.scenario && !a.is_migration() && !a.is_internal())
+    }
+
+    /// The actions code may call by name: every action but the hidden ones of scenarios and the
+    /// migrations, which the platform runs itself. Internal actions are among them, since the
+    /// app's own gestures and the programs of agents run them; a surface just never lists one.
+    pub fn callable_actions(&self) -> impl Iterator<Item = &ActionMeta> {
         self.actions
             .iter()
             .filter(|a| !a.scenario && !a.is_migration())
@@ -639,6 +789,22 @@ impl PackageMeta {
         self.views
             .iter()
             .filter(|v| v.presents.is_none() && v.row_of.is_none())
+    }
+
+    /// The views a person or an agent can open a resource of the type `ty` (an id) through: the
+    /// declared views that take such a resource and nothing else. An app's helpers are not among
+    /// them: they belong to the views that place them.
+    #[must_use]
+    pub fn views_showing(&self, ty: &str) -> Vec<&ViewMeta> {
+        let of_type = |param: &ParamMeta| {
+            matches!(
+                crate::types::Ty::parse_meta(&param.ty, &self.app),
+                Some(crate::types::Ty::Record(key)) if key.app == self.app && key.name == ty
+            )
+        };
+        self.offered_views()
+            .filter(|view| matches!(&view.params[..], [only] if of_type(only)))
+            .collect()
     }
 
     /// The JSON bytes embedded in the `tilolang.meta` section.

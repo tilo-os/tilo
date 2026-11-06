@@ -147,9 +147,32 @@ type Win (origin: session.window) {
     /// Its strip's id, as moving a window there names the strip.
     strip_key: Text merge register
     workspace: Text merge register
+    /// Its workspace's id, as switching to it names the workspace.
+    workspace_key: Text merge register
+    /// The window it is a tab of: a group's tabs are one window on the desk, and its other
+    /// tabs stand behind it.
+    group_key: Text merge register
+    /// Its place among its group's tabs: 0 for the tab in front, then the tabs behind it in
+    /// their order.
+    tab_index: Int
+    /// Its share of its strip's width, 0..1: the width the window keeps on the desk.
+    share: Float
+    /// Whether it runs on this device: false for a window on another of the person's devices,
+    /// or on a peer's.
+    local: Bool
+    /// The device that runs it, when it is not this one: its key, empty when it is not known.
+    device: Text merge register
+    /// That device's name, as its certificate labels it.
+    device_name: Text merge register
+    /// Where it stands in the picture of its workspace: 1 for the first tab of the first group
+    /// of the first strip, on along them, strips top to bottom.
+    place: Int
     recency: Int
     focused: Bool
     preview: Text merge register
+    /// Whether its app stopped answering: its card says so, and offers to keep waiting for the
+    /// app or to quit it.
+    not_responding: Bool
 }
 
 /// An agent here for the person, or that acted for them.
@@ -228,7 +251,10 @@ view clock(d: Desk) {
         ui.Text(d.clock, role: .subheading, numeric: true)
         if d.timer != "" {
             ui.Text(d.timer, role: .caption)
-            ui.Text(if d.timer_paused { "Paused · {d.timer_left}" } else { d.timer_left }, role: .caption, numeric: true)
+            if d.timer_paused {
+                ui.Text("Paused", role: .caption)
+            }
+            ui.Text(d.timer_left, role: .caption, numeric: true)
         }
     }
 }
@@ -246,8 +272,18 @@ view bar(d: Desk) {
     ui.DragRun(axis: .horizontal, name: "Top bar") {
         on drop(moved: BarPart, at: Int): place_part(s, moved, at)
         for part in s.bar_parts {
-            if part.shown and (space.wide or not part_gives_way(part, roomy)) and not (part.slot == .people and nobody) {
-                ui.DragItem(part, title: part.title, group: if part.slot == .clock { .center } else if part.slot == .people or part.slot == .status { .trailing } else if part.slot == .space { .space } else { .leading }) {
+            if part.shown
+                and (space.wide or not part_gives_way(part, roomy))
+                and not (part.slot == .people and nobody) {
+                ui.DragItem(
+                    part,
+                    title: part.title,
+                    group: if part.slot == .clock {
+                        .center
+                    } else if part.slot == .people or part.slot == .status {
+                        .trailing
+                    } else if part.slot == .space { .space } else { .leading },
+                ) {
                     bar_part(d, part)
                 }
             }
@@ -258,9 +294,10 @@ view bar(d: Desk) {
 /// Whether a part of the bar gives way on a bar narrower than a wide one: the strip and the
 /// focused window's menu below an expanded bar (a phone, a tablet, or large text), and the
 /// tasks and the agents, which run longest, below a wide one. The menu, the workspace, the clock,
-/// the status and a question put to the person always keep their room. The bar decides by its
-/// width, so a part that gives way leaves no room behind; the bar's parts must never press into
-/// each other (the overview shows what gave way).
+/// the status and a question put to the person always keep their room — the menu alone on a bar
+/// narrower than a compact one, where its preset switch gives way (`bar_part`). The bar decides
+/// by its width, so a part that gives way leaves no room behind; the bar's parts must never press
+/// into each other (the overview shows what gave way).
 fn part_gives_way(part: BarPart, roomy: Bool) -> Bool {
     if part.slot == .tasks or part.slot == .agent {
         return true
@@ -268,22 +305,41 @@ fn part_gives_way(part: BarPart, roomy: Bool) -> Bool {
     return not roomy and (part.slot == .strip or part.slot == .app_menu)
 }
 
+/// Whether the bar is too narrow to hold its parts at their roomiest: a phone, or a short window
+/// with large text. Room enough for the menu, the workspace's name, the clock and the status
+/// beside each other starts at about this width; below it the parts pack a tighter gap apart, the
+/// workspace keeps only its icon and the preset switch gives way, so the person's own face at the
+/// end never goes off the bar.
+fn bar_is_narrow(width: Float) -> Bool {
+    return width < 26.0
+}
+
 /// One part of the bar, drawn from what it is. Who is here is its faces alone, one button that
 /// opens the roster of everyone here and names them to assistive technology (`people_button`);
 /// a question put to the person stands beside them, their answer or their putting it off, never
 /// a banner over their windows. The status part leads with the running applications' tray
-/// items, each under the app's own words for it, then the device's own status
-/// (`status_icons`), the notifications, and the person's own face at the far end. On a compact
-/// bar the tray items and the sound give way: what a glance needs — the clock, the workspace,
-/// the connection, the charge, the notifications and the person's own face — keeps its room.
+/// items, each under the app's own words for it, then the device's own status, the notifications,
+/// and the person's own face at the far end. On a compact bar the tray items and the sound give
+/// way: what a glance needs — the clock, the workspace, the connection, the charge, the
+/// notifications and the person's own face — keeps its room.
 view bar_part(d: Desk, part: BarPart) {
     if part.slot == .space {
         spacer
     } else if part.slot == .clock {
         clock(d)
     } else if part.slot == .menu {
-        ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
-            on press: session.tilo_menu()
+        row(gap: .related, align: .center) {
+            ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
+                on press: session.tilo_menu()
+            }
+            // The switch between the presets, in the bar's own seat rather than in a row of its
+            // own, so nothing stands between a window and the bar. A bar too narrow for it beside
+            // the clock and the status gives it up, as it gives up the strip and the focused
+            // window's menu; the same switch is a page of Settings, so the preset a person picked
+            // is never out of reach, and no control is pressed into its neighbour to keep it here.
+            if not bar_is_narrow(space.width) {
+                preset_menu(viewing)
+            }
         }
     } else if part.slot == .workspace {
         workspace_menu(d)
@@ -294,13 +350,13 @@ view bar_part(d: Desk, part: BarPart) {
             ui.Button(d.strip, icon: .chevron_right, role: .bar)
         }
     } else if part.slot == .tasks {
-        row(gap: .tight, align: .center) {
+        row(gap: .related, align: .center) {
             for t in d.tasks {
                 ui.Button(t.title, icon: .bot, role: .bar)
             }
         }
     } else if part.slot == .people {
-        row(gap: .tight, align: .center) {
+        row(gap: .related, align: .center) {
             if not space.compact {
                 people_button(d)
             }
@@ -316,15 +372,28 @@ view bar_part(d: Desk, part: BarPart) {
             agent_chip(d, a)
         }
     } else if part.slot == .status {
-        row(gap: .sibling, align: .center) {
+        // One cluster, so its controls stand a cluster gap apart and never the tightest: a bar
+        // control's press target is wider than its face (a finger's, and a mouse's), and two of
+        // them at the tightest gap would share the press between them. What the device does not
+        // publish is not drawn at all, so no gap stands for a control that is not there.
+        row(gap: .related, align: .center) {
             if not space.compact and not d.tray.is_empty() {
-                row(gap: .tight, align: .center) {
+                row(gap: .related, align: .center) {
                     for item in d.tray {
                         ui.Button(item.title, role: .bar)
                     }
                 }
             }
-            status_icons()
+            // The device's own status: the sound's level, the connection the machine's traffic
+            // leaves on, and the pack's charge. Each reads the resource the session publishes —
+            // the sound, the network and the battery `quick.tl` reads and changes too, so the bar
+            // and the panel show one fact, never a copy — and each press opens the quick settings,
+            // the one place a person changes them.
+            if not space.compact {
+                volume_status()
+            }
+            network_status()
+            battery_status()
             bell(d)
             if d.person != "" {
                 ui.Avatar(name: .some(d.person))
@@ -339,7 +408,8 @@ view bar_part(d: Desk, part: BarPart) {
 /// workspace the session has not published a name for still opens by the workspaces' name.
 view workspace_menu(d: Desk) {
     let name = if d.workspace != "" { d.workspace } else { "Workspaces" }
-    ui.MenuButton(name, icon: if space.width < 18.0 { .layers }, icon_only: space.width < 18.0, role: .bar) {
+    let icon_only = bar_is_narrow(space.width)
+    ui.MenuButton(name, icon: if icon_only { .layers }, icon_only: icon_only, role: .bar) {
         for w in d.workspaces {
             ui.MenuItem(w.name, checked: .some(w.current)) {
                 on choose: device.switch_workspace(device.desk, workspace: w.key)
@@ -360,30 +430,20 @@ view workspace_menu(d: Desk) {
     }
 }
 
-/// The device's status as the session publishes it: the sound's level, the connection the
-/// machine's traffic leaves on, and the pack's charge. Each reads the resource the session
-/// publishes — the sound, the network and the battery `quick.tl` reads and changes too, so the
-/// bar and the panel show one fact, never a copy — and each press opens the quick settings,
-/// the one place a person changes them. A device that publishes none of them shows none.
-view status_icons() {
-    row(gap: .tight, align: .center) {
-        // A compact bar keeps the connection and the charge, what a glance looks for; the sound
-        // is a key away and a press on the others opens it (`volume_status`).
-        if not space.compact {
-            volume_status()
-        }
-        network_status()
-        battery_status()
-    }
-}
-
 /// The sound's level, and that it is muted; nothing on a device whose sound reads no level.
+/// A compact bar keeps the connection and the charge, what a glance looks for; the sound is a
+/// key away and a press on the others opens it.
 view volume_status() {
     let sound = device.sound
     if let volume = sound.volume {
         // Rounded, not cut: a level of 0.65 is 65%.
         let percent = (volume * 100.0 + 0.5).to_int()
-        ui.Button(if sound.muted { "Volume, muted" } else { "Volume, {percent}%" }, icon: if sound.muted { .volume_x } else { .volume_2 }, icon_only: true, role: .bar) {
+        ui.Button(
+            if sound.muted { "Volume, muted" } else { "Volume, {percent}%" },
+            icon: if sound.muted { .volume_x } else { .volume_2 },
+            icon_only: true,
+            role: .bar,
+        ) {
             on press: device.show_surface(device.desk, surface: "quick-settings")
         }
     }
@@ -398,10 +458,15 @@ view network_status() {
             if let called = joined.name { "Wi-Fi, {called}" } else { "Wi-Fi" }
         } else if joined.kind == .wired {
             if let called = joined.name { "Wired, {called}" } else { "Wired" }
-        } else {
-            "Offline"
-        }
-        ui.Button(label, icon: if joined.kind == .wifi { .wifi } else if joined.kind == .wired { .ethernet_port } else { .wifi_off }, icon_only: true, role: .bar) {
+        } else { "Offline" }
+        ui.Button(
+            label,
+            icon: if joined.kind == .wifi {
+                .wifi
+            } else if joined.kind == .wired { .ethernet_port } else { .wifi_off },
+            icon_only: true,
+            role: .bar,
+        ) {
             on press: device.show_surface(device.desk, surface: "quick-settings")
         }
     }
@@ -417,7 +482,13 @@ view battery_status() {
     if b.present {
         let charging = b.state == "charging" or b.state == "pending-charge"
         let name = if charging { "{b.percentage}%, charging" } else { "{b.percentage}%" }
-        ui.Button("{b.percentage}%", accessible_name: name, icon: if charging { .battery_charging } else { .battery }, icon_only: space.compact, role: .bar) {
+        ui.Button(
+            "{b.percentage}%",
+            accessible_name: name,
+            icon: if charging { .battery_charging } else { .battery },
+            icon_only: space.compact,
+            role: .bar,
+        ) {
             on press: device.show_surface(device.desk, surface: "quick-settings")
         }
     }
@@ -432,8 +503,16 @@ view battery_status() {
 /// the bell nor the control beside it.
 view bell(d: Desk) {
     let name = if d.quiet { "Notifications silenced" } else { "Notifications" }
-    let label = if d.unread == 0 { name } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }
-    ui.Button(label, icon: if d.quiet { .bell_off } else { .bell }, icon_only: true, role: .bar, count: d.unread) {
+    let label = if d.unread == 0 {
+        name
+    } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }
+    ui.Button(
+        label,
+        icon: if d.quiet { .bell_off } else { .bell },
+        icon_only: true,
+        role: .bar,
+        count: d.unread,
+    ) {
         on press: device.show_surface(device.desk, surface: "quick-settings")
     }
 }

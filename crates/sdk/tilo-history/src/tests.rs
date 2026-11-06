@@ -479,3 +479,43 @@ fn a_framework_message_a_catalogue_lacks_never_renders_as_its_id() {
     assert_eq!(sentence, "Changed Folder of Deploy script to Ops");
     assert!(!sentence.contains("history-"), "{sentence}");
 }
+
+/// A window speaks one language: the person's when it ships it, whatever else it ships.
+#[test]
+fn a_window_speaks_one_language() {
+    assert_eq!(
+        window_language(Some("de_AT.UTF-8"), &["en-US", "de-DE"]),
+        "de-DE",
+        "their language, in the region the app ships"
+    );
+    assert_eq!(
+        window_language(Some("de-DE"), &["en-US"]),
+        "en-US",
+        "an app that ships English only speaks English"
+    );
+    assert_eq!(
+        window_language(Some("fr-FR"), &["de-DE", "en-US", "fr-FR"]),
+        "fr-FR",
+        "the language they prefer, when it ships it"
+    );
+    assert_eq!(
+        window_language(Some("fr-FR"), &["de-DE", "en-US"]),
+        "en-US",
+        "no language of theirs: the source language"
+    );
+    assert_eq!(
+        window_language(Some("fr-FR"), &["ja-JP", "de-DE"]),
+        "ja-JP",
+        "no language of theirs and no source: the first it ships"
+    );
+    assert_eq!(
+        window_language(None, &["de-DE", "en-US"]),
+        "en-US",
+        "no preference: the source language"
+    );
+    assert_eq!(
+        window_language(Some("de-DE"), &[]),
+        "de-DE",
+        "nothing to choose among: the person's own"
+    );
+}

@@ -306,6 +306,18 @@ fn write_tab(doc: &mut AutoCommit, entry: &ObjId, tab: &Tab) {
         None => delete_if_present(doc, entry, "app_title"),
     }
     put_json_if_changed(doc, entry, "tile_json", &tab.tile);
+    if tab.view.is_empty() {
+        delete_if_present(doc, entry, "view");
+    } else {
+        let _ = doc.put_str_if_changed(entry, "view", &tab.view);
+    }
+    if tab.pinned {
+        if doc.bool_at(entry, "pinned") != Some(true) {
+            let _ = doc.put(entry, "pinned", true);
+        }
+    } else {
+        delete_if_present(doc, entry, "pinned");
+    }
 }
 
 fn write_group(doc: &mut AutoCommit, entry: &ObjId, group: &WindowGroup) {
@@ -520,17 +532,10 @@ impl View {
 }
 
 /// What a workspace holds that this device reads and no other device needs:
-/// the ownership ceremony's records, the defaults for opening each kind of
-/// resource, which windows this device streams to which peer, and the fields
-/// an older build wrote there.
+/// the defaults for opening each kind of resource, which windows this device
+/// streams to which peer, and the fields an older build wrote there.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Local {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    ownership_transfer_audit: Vec<collab_types::OwnershipTransferAuditV1>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    ownership_transfer_cancellations: Vec<collab_types::OwnershipTransferCancellationV1>,
     #[serde(default, skip_serializing_if = "default_apps_unset")]
     default_apps: desktop_policy::WorkspaceDefaults,
     #[serde(
@@ -545,9 +550,6 @@ struct Local {
 impl Local {
     fn of(workspace: &Workspace) -> Self {
         Self {
-            pending_ownership_transfer: workspace.pending_ownership_transfer.clone(),
-            ownership_transfer_audit: workspace.ownership_transfer_audit.clone(),
-            ownership_transfer_cancellations: workspace.ownership_transfer_cancellations.clone(),
             default_apps: workspace.default_apps.clone(),
             shared_surfaces: workspace.shared_surfaces.clone(),
             retired_fields: workspace.retired_fields.clone(),
@@ -556,19 +558,13 @@ impl Local {
 
     /// Give `workspace` what the document recorded of it.
     fn apply(self, workspace: &mut Workspace) {
-        workspace.pending_ownership_transfer = self.pending_ownership_transfer;
-        workspace.ownership_transfer_audit = self.ownership_transfer_audit;
-        workspace.ownership_transfer_cancellations = self.ownership_transfer_cancellations;
         workspace.default_apps = self.default_apps;
         workspace.shared_surfaces = self.shared_surfaces;
         workspace.retired_fields = self.retired_fields;
     }
 
     fn is_empty(&self) -> bool {
-        self.pending_ownership_transfer.is_none()
-            && self.ownership_transfer_audit.is_empty()
-            && self.ownership_transfer_cancellations.is_empty()
-            && default_apps_unset(&self.default_apps)
+        default_apps_unset(&self.default_apps)
             && self.shared_surfaces.is_empty()
             && self.retired_fields.is_empty()
     }
@@ -917,6 +913,8 @@ struct DocTab {
     title: String,
     app_title: Option<String>,
     tile_json: Vec<u8>,
+    view: String,
+    pinned: bool,
 }
 
 /// The tabs under a group entry.
@@ -933,6 +931,8 @@ fn group_tabs(doc: &AutoCommit, group_entry: &ObjId) -> Vec<DocTab> {
                 title: doc.str_at(&entry, "title").unwrap_or_default(),
                 app_title: doc.str_at(&entry, "app_title"),
                 tile_json: doc.bytes_at(&entry, "tile_json").unwrap_or_default(),
+                view: doc.str_at(&entry, "view").unwrap_or_default(),
+                pinned: doc.bool_at(&entry, "pinned").unwrap_or(false),
             })
         })
         .collect()
@@ -941,11 +941,26 @@ fn group_tabs(doc: &AutoCommit, group_entry: &ObjId) -> Vec<DocTab> {
 /// Fold a document group's tabs into `strip`'s group `group_id`, creating
 /// it with local presentation defaults when the strip does not have it.
 fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[DocTab]) {
-    let hydrate = |entry: &DocTab| Tab {
-        id: entry.id,
-        title: entry.title.clone(),
-        tile: tile_from_blob(&entry.tile_json, &entry.title),
-        app_title: entry.app_title.clone(),
+    // The view a window shows and whether it is pinned are the record's: they
+    // are the same on every device that shows the window, so the document's
+    // answer is taken over whatever this device had.
+    let marks = |mut tab: Tab, entry: &DocTab| {
+        tab.view.clone_from(&entry.view);
+        tab.pinned = entry.pinned;
+        tab
+    };
+    let hydrate = |entry: &DocTab| {
+        marks(
+            Tab {
+                id: entry.id,
+                title: entry.title.clone(),
+                tile: tile_from_blob(&entry.tile_json, &entry.title),
+                app_title: entry.app_title.clone(),
+                view: String::new(),
+                pinned: false,
+            },
+            entry,
+        )
     };
     let Some(group) = strip.window_groups.iter_mut().find(|g| g.id == group_id) else {
         let tabs: Vec<Tab> = doc_tabs.iter().map(hydrate).collect();
@@ -965,14 +980,12 @@ fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[DocTab]) {
     }
     let tabs: Vec<Tab> = doc_tabs
         .iter()
-        .map(|entry| {
-            group
-                .tabs
-                .iter()
-                .find(|t| t.id == entry.id)
-                .cloned()
-                .unwrap_or_else(|| hydrate(entry))
-        })
+        .map(
+            |entry| match group.tabs.iter().find(|t| t.id == entry.id).cloned() {
+                Some(tab) => marks(tab, entry),
+                None => hydrate(entry),
+            },
+        )
         .collect();
     if group.tabs.is_empty()
         || group
@@ -1107,6 +1120,23 @@ pub fn records(doc: &AutoCommit) -> Vec<(TabId, String)> {
         .collect();
     held.sort_by_key(|(tab, _)| *tab);
     held
+}
+
+/// Note that the window `tab` shows `record`, beside every other window's: a
+/// window that takes up a record names it here, so the same windows come back
+/// on the records they showed ([`records`]). Whether the document changed.
+///
+/// It adds one entry and removes none: a window's record arrives with the
+/// window, which the desk adds in the same change, so a write that knows one
+/// binding is no authority over the others.
+#[must_use]
+pub fn note_record(doc: &mut AutoCommit, tab: TabId, record: &str) -> bool {
+    let before = doc.pending_ops();
+    let Some(map) = child_object(doc, &ROOT, RECORDS_KEY, ObjType::Map) else {
+        return false;
+    };
+    let _ = doc.put_str_if_changed(&map, tab.to_string(), record);
+    doc.pending_ops() > before
 }
 
 /// Make [`records`] hold exactly `records`.

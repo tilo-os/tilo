@@ -576,7 +576,6 @@ impl TypstApp {
             }
             _ => {}
         }
-        self.dirty = true;
     }
 
     /// Live Problems rows and preview pages, published beneath the
@@ -1103,14 +1102,12 @@ impl TypstApp {
         self.compact_view = view;
         self.editor.focused = matches!(view, CompactPane::Editor);
         self.layout_in(self.rect);
-        self.dirty = true;
     }
 
     /// Announce something worth noticing once: the window's bar says it for
     /// a while.
     fn set_flash(&mut self, msg: impl AsRef<str>) {
         self.status.show(msg.as_ref().to_owned());
-        self.dirty = true;
     }
 
     /// 1-based (line, col) of the editor caret within the cached source.
@@ -1695,7 +1692,7 @@ impl Widget for TypstApp {
         // host gates them to avoid hover spam). A live drag or a hover change
         // sets `dirty`, so divider drags, preview text-selection, and inline
         // diagnostic tooltips all repaint smoothly.
-        self.dirty || self.chrome.needs_redraw()
+        self.dirty || self.chrome.needs_redraw() || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {

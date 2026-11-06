@@ -1,34 +1,31 @@
-//! Cold-start warmup for expensive first-frame work.
+//! Cold-start warmup of the font system.
 //!
-//! Two things dominate time-to-first-paint on a cold process: loading the
-//! font system (verifying the font catalog and mapping every installed face,
-//! up to ~1s on release builds), and `vello::Renderer::new()`, which compiles
-//! ~30 WGSL pipelines against the live wgpu device, stalling whichever thread
-//! runs it. Only the fonts side ships enabled by default:
+//! Loading the font system dominates time-to-first-paint on a cold process:
+//! the catalog is verified and every installed face mapped, up to ~1s on
+//! release builds. Shaping the first text on a background thread, before the
+//! first frame needs it, takes that off the critical path:
 //!
-//! | Configuration          | median first-paint | notes                 |
-//! |-------------------------|--------------------|-----------------------|
-//! | no warmup               | 406 ms             | reference              |
-//! | fonts + vello warmup    | 483 ms             | slower than no warmup |
-//! | fonts warmup only       | **316 ms**         | **-90 ms / -22 %**    |
+//! | Configuration     | median first-paint |
+//! |-------------------|--------------------|
+//! | no warmup         | 406 ms             |
+//! | fonts warmup      | **316 ms**         |
 //!
-//! Vello regresses because it holds the process-wide `SHARED_RENDER_CONTEXT`
-//! mutex through its scratch render, blocking main's `OffscreenRenderer::new`
-//! on the same lock — left opt-in behind `TILO_STARTUP_WARM_VELLO`. Fonts
-//! wins because it never touches the GPU: it shapes strings on a background
+//! It wins because it never touches the GPU: it shapes strings on a background
 //! thread, building the process's shared font database so the compositor's own
-//! `configured_font_system` call finds it ready.
+//! `configured_font_system` call finds it ready. Building the renderer's
+//! pipelines here instead was measured slower (483 ms): it holds the
+//! process-wide `SHARED_RENDER_CONTEXT` mutex through its scratch render,
+//! blocking the real renderer's start on the same lock, so it is not done.
 //!
-//! `TILO_STARTUP_WARM=off` (also `0`/`false`/`no`) disables warmup for A/B
-//! measurement. Stages mark through [`tilo_startup_metrics::span`]:
-//! `warmup-spawn`, `warmup-fonts`(-end), `warmup-vello`(-end).
+//! The stages mark through [`tilo_startup_metrics::span`]: `warmup-spawn`,
+//! `warmup-fonts`(-end).
 //!
 //! Not persistence: compiled pipelines are kept across launches by
 //! `crate::pipeline_cache` (the app's own) and `crate::pipeline_seed` (the
 //! session's), where the backend has pipeline caches.
 #![allow(
     clippy::disallowed_methods,
-    reason = "native host runner: cold-start warmup overlaps font and GPU setup on a thread"
+    reason = "native host runner: cold-start warmup builds the shared font system on a thread"
 )]
 
 use std::thread;
@@ -60,25 +57,6 @@ pub const CANONICAL_STRINGS: &[&str] = &[
     "\u{1F600}\u{1F44D}\u{2764}\u{FE0F}\u{1F4A1}",
 ];
 
-/// Whether warmup should run in the current process.
-///
-/// Reads `TILO_STARTUP_WARM` once per process (cached in a `OnceLock`).
-/// Disabled if the value is `off`/`0`/`false`/`no` (case-insensitive);
-/// every other value, and an unset var, enables warmup.
-pub fn is_enabled() -> bool {
-    use std::sync::OnceLock;
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| enabled_by(std::env::var("TILO_STARTUP_WARM").ok().as_deref()))
-}
-
-fn enabled_by(raw: Option<&str>) -> bool {
-    let Some(raw) = raw else {
-        return true;
-    };
-    let normalized = raw.trim().to_ascii_lowercase();
-    !matches!(normalized.as_str(), "off" | "0" | "false" | "no")
-}
-
 /// Shape every entry of [`CANONICAL_STRINGS`] through the supplied
 /// `FontSystem`. Populates the internal shape / fallback caches so the
 /// first real draw against the same `FontSystem` short-circuits at those
@@ -106,19 +84,13 @@ pub fn shape_canonical_strings(fs: &mut FontSystem) -> usize {
     total_glyphs
 }
 
-/// Spawn a detached background worker that constructs a throw-away
-/// `FontSystem`, shapes [`CANONICAL_STRINGS`] against it, then — unless
-/// `no_vello` is set — builds a 4×4 scratch
-/// [`crate::offscreen::OffscreenRenderer`] and renders one solid-colour
-/// scene.
+/// Spawn a detached background worker that builds the process's shared
+/// `FontSystem` and shapes [`CANONICAL_STRINGS`] against it, so the fonts the
+/// first frame needs are read and mapped beside the rest of the start.
 ///
 /// Dropping the returned `JoinHandle` before the worker finishes doesn't
 /// cancel anything — the process keeps whatever warmup already completed.
-/// Returns `None` when warmup is disabled via `TILO_STARTUP_WARM=off`.
-pub fn spawn_warmup(no_vello: bool) -> Option<thread::JoinHandle<()>> {
-    if !is_enabled() {
-        return None;
-    }
+pub fn spawn_warmup() -> Option<thread::JoinHandle<()>> {
     tilo_startup_metrics::mark("warmup-spawn");
     let handle = thread::Builder::new()
         .name("tilo-startup-warmup".into())
@@ -126,34 +98,6 @@ pub fn spawn_warmup(no_vello: bool) -> Option<thread::JoinHandle<()>> {
             tilo_startup_metrics::span("warmup-fonts", || {
                 let mut fs = crate::text_render::configured_font_system();
                 let _ = shape_canonical_strings(&mut fs);
-            });
-            if no_vello {
-                return;
-            }
-            // Builds against the process-wide `SHARED_RENDER_CONTEXT` device
-            // — the same one the compositor's real Renderer uses — so its
-            // ~30 pipelines are already resident when the real one starts.
-            //
-            // `try_new`, not `new`: under `panic = "abort"` a `new()` panic
-            // on a missing adapter would take the whole compositor down at
-            // startup, and `catch_unwind` doesn't help under abort.
-            tilo_startup_metrics::span("warmup-vello", || {
-                use vello::Scene;
-                use vello::kurbo::{Affine, Rect};
-                use vello::peniko::{Color, Fill};
-
-                let Ok(mut renderer) = crate::offscreen::OffscreenRenderer::try_new(4, 4) else {
-                    return;
-                };
-                let mut scene = Scene::new();
-                scene.fill(
-                    Fill::NonZero,
-                    Affine::IDENTITY,
-                    Color::from_rgb8(0x33, 0x33, 0x33),
-                    None,
-                    &Rect::new(0.0, 0.0, 4.0, 4.0),
-                );
-                let _ = renderer.render(&scene, Color::TRANSPARENT);
             });
         })
         .ok()?;
@@ -165,22 +109,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn warmup_is_on_unless_switched_off_and_shapes_bundled_fonts() {
-        // phase: bundled_fonts_shape_the_startup_probe
-        {
-            let mut font_system = crate::font_catalog::fixture_font_system();
-            assert!(shape_canonical_strings(&mut font_system) > 0);
-        }
-        // phase: enabled_unless_explicitly_switched_off
-        // The default is on: an unset variable must not silently skip the win.
-        {
-            assert!(enabled_by(None));
-            assert!(enabled_by(Some("")));
-            assert!(enabled_by(Some("1")));
-            assert!(enabled_by(Some("vello")));
-            for off in ["off", "0", "false", "no", " OFF ", "No"] {
-                assert!(!enabled_by(Some(off)), "{off:?} disables warmup");
-            }
-        }
+    fn warmup_shapes_the_bundled_fonts_the_first_frame_needs() {
+        let mut font_system = crate::font_catalog::fixture_font_system();
+        assert!(shape_canonical_strings(&mut font_system) > 0);
     }
 }

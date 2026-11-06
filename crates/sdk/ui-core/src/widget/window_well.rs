@@ -160,6 +160,10 @@ pub struct WindowWellProps {
     pub place: String,
 }
 
+/// A window's shape, width over height: the shape a place opens at, which a well gives the
+/// window it stands for when its frame names a width and no height.
+const WINDOW_ASPECT: f32 = 1.6;
+
 /// See the module docs.
 pub struct WindowWell {
     place: String,
@@ -228,11 +232,15 @@ impl Widget for WindowWell {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The well takes the room its frame leaves it; it holds nothing.
+        // The well takes the room its frame leaves it; it holds nothing. A frame that names no
+        // height (a column that hugs its content, a page that grows with what it holds) leaves
+        // the well only its width, so its shape stands in for the height: a window is wider than
+        // it is tall, and a well with no height at all would give its window a line to draw in.
         taffy.widget_leaf(
             Style {
                 size: taffy::Size::from_percent(1.0, 1.0),
                 min_size: taffy::Size::from_lengths(1.0, 1.0),
+                aspect_ratio: Some(WINDOW_ASPECT),
                 ..Style::default()
             },
             node_map,
@@ -275,5 +283,72 @@ impl Widget for WindowWell {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use taffy::{AvailableSpace, FlexDirection, NodeId, Size, Style, TaffyTree};
+
+    use super::{WINDOW_ASPECT, WindowWell};
+    use crate::theme::Theme;
+    use crate::widget::Widget as _;
+
+    /// The size the well takes in a column shaped by `container`.
+    fn well_in(container: Style) -> (f32, f32) {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn crate::widget::Widget> = HashMap::new();
+        let node = WindowWell::new("place").build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let column = taffy.new_with_children(container, &[node]).unwrap();
+        taffy
+            .compute_layout(
+                column,
+                Size {
+                    width: AvailableSpace::Definite(800.0),
+                    height: AvailableSpace::MaxContent,
+                },
+            )
+            .unwrap();
+        let size = taffy.layout(node).unwrap().size;
+        (size.width, size.height)
+    }
+
+    fn column(height: taffy::Dimension) -> Style {
+        Style {
+            flex_direction: FlexDirection::Column,
+            size: Size {
+                width: taffy::Dimension::length(800.0),
+                height,
+            },
+            ..Style::default()
+        }
+    }
+
+    /// A column that hugs what it holds names the well a width and no height: the well still
+    /// stands a window's shape, so the window in it has a face to draw rather than a line.
+    #[test]
+    fn a_well_in_a_column_that_hugs_stands_a_window_height() {
+        let (width, height) = well_in(column(taffy::Dimension::auto()));
+        assert!(
+            (width - 800.0).abs() < 1.0,
+            "the well takes the column's width, {width}"
+        );
+        assert!(
+            (height - 800.0 / WINDOW_ASPECT).abs() < 1.0,
+            "the well stands a window's height, not a line: {height}"
+        );
+    }
+
+    /// A frame that names the well a height gets it back whole: the well fills the room it was
+    /// given, whatever shape a window is.
+    #[test]
+    fn a_well_in_a_framed_column_fills_the_height_it_is_given() {
+        let (_, height) = well_in(column(taffy::Dimension::length(300.0)));
+        assert!(
+            (height - 300.0).abs() < 1.0,
+            "the well fills its frame: {height}"
+        );
     }
 }

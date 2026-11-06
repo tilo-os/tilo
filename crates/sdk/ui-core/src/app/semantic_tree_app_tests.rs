@@ -2381,3 +2381,75 @@ fn a_control_replaced_while_its_destructive_action_asks_is_not_followed() {
          replacement was never focused"
     );
 }
+
+/// What an assistive technology asks of a table row — press it, open its
+/// menu — reaches the row it named, by the node it was handed and never by
+/// a point guessed from it.
+#[test]
+fn a_table_row_does_what_an_assistive_technology_asks_of_it() {
+    use crate::a11y::Action;
+    use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+
+    #[derive(Clone)]
+    struct Listed {
+        name: &'static str,
+    }
+
+    let opened = std::rc::Rc::new(RefCell::new(Vec::<usize>::new()));
+    let recorded = std::rc::Rc::clone(&opened);
+    let menus = std::rc::Rc::new(RefCell::new(Vec::<usize>::new()));
+    let listed = std::rc::Rc::clone(&menus);
+    let mut table = DataTable::<Listed>::new(vec![
+        ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0))
+            .with_accessible_value(|row: &Listed| row.name.to_owned()),
+    ])
+    .with_row_key(|row: &Listed| row.name.len() as u64)
+    .selectable(true)
+    .on_activate_view("files.open", move |index| recorded.borrow_mut().push(index))
+    .on_row_context_menu(move |index, _point, _rect| listed.borrow_mut().push(index));
+    table.set_rows(vec![
+        Listed { name: "Notes.txt" },
+        Listed { name: "Report.pdf" },
+    ]);
+    table.set_viewport(96.0, 24.0);
+    let mut app = App::new(State::new(), Box::new(table));
+    app.init_layout();
+
+    let row = |update: &accesskit::TreeUpdate, label: &str| {
+        update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == accesskit::Role::Row && node.label() == Some(label))
+            .map(|(id, node)| {
+                (
+                    *id,
+                    node.supports_action(accesskit::Action::Click),
+                    node.supports_action(accesskit::Action::ShowContextMenu),
+                )
+            })
+            .unwrap_or_else(|| panic!("the row reading {label} is exported"))
+    };
+    let update = app.build_a11y_tree_update(1.0);
+    let (notes, pressable, _) = row(&update, "Notes.txt");
+    assert!(pressable, "a row a reader names is one it can press");
+    assert!(
+        row(&update, "Report.pdf").1,
+        "every listed file is pressable"
+    );
+    let _ = app.dispatch_a11y_action(notes, &Action::Activate);
+    assert_eq!(
+        &*opened.borrow(),
+        &[0],
+        "the file the reader named is opened"
+    );
+
+    let update = app.build_a11y_tree_update(1.0);
+    let (report, _, menuable) = row(&update, "Report.pdf");
+    assert!(menuable, "a row whose menu opens announces that menu");
+    let handled = app.dispatch_a11y_action(report, &Action::ShowContextMenu);
+    assert_eq!(
+        &*menus.borrow(),
+        &[1],
+        "the menu opens on the row the reader named, not on what was selected ({handled:?})"
+    );
+}

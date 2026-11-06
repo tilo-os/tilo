@@ -66,7 +66,6 @@ pub(crate) fn restore(
         record: record.clone(),
     };
     publication::validate(&view)?;
-    view.record.private_direct_conversations.validate()?;
     crate::owner::effect_receipt::validate(&view)?;
     Ok(view)
 }
@@ -436,7 +435,6 @@ impl NativeWorkspaceOwner {
             }),
             vouched: None,
             peer: peer.durable()?,
-            private_direct_conversations: crate::owner::PrivateDirectConversationStore::default(),
             generation: 1,
             continuity: 0,
             publication: Some(publication::StoredPublication::default()),
@@ -460,11 +458,9 @@ impl NativeWorkspaceOwner {
     /// The envelope is signed before this owner turn starts, so its sequence
     /// must come from [`collab_types::next_unordered_document_sequence`] (as
     /// every SDK document signer does). A dense `floor + 1` read through
-    /// [`Self::with_current`] races [`Self::reconcile_outgoing`], which
-    /// reserves `floor + 1` for a recovery projection without exact evidence
-    /// in its own turn; the write is then refused as stale. A caller that
-    /// needs the dense sequence prepares it inside the turn with
-    /// [`Self::commit_document_with_current`].
+    /// [`Self::with_current`] races another local write, which then makes it
+    /// stale. A caller that needs the dense sequence prepares it inside the
+    /// turn with [`Self::commit_document_with_current`].
     ///
     /// # Errors
     /// The request is not an admissible local document write, its signed

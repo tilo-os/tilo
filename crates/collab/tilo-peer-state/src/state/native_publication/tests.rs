@@ -168,7 +168,7 @@ fn native_publication_closed_families_do_not_promote_presence_or_requests() {
             invite_id: None,
             nonce: 0,
         },
-        NeighbourMsg::PresenceCleared {
+        NeighbourMsg::RetiredPresenceCleared {
             peer: 0,
             key: "cursor".into(),
         },

@@ -537,6 +537,10 @@ pub(crate) struct ProcessesPane {
     nodes: Nodes,
     layout_dirty: bool,
     structure_dirty: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl ProcessesPane {
@@ -548,6 +552,7 @@ impl ProcessesPane {
         };
         let (table, sort_keys) = process_table(shape, &shared);
         Self {
+            dirty: true,
             seen: None,
             seen_rows: None,
             seen_metrics: None,
@@ -772,6 +777,7 @@ impl Widget for ProcessesPane {
     ui::provides!(dyn Filterable);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         self.adopt();
         for child in self.children_mut() {
             child.sync(state, path);
@@ -930,6 +936,7 @@ impl Widget for ProcessesPane {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = ctx.logical(position);
             // Every part follows the pointer, whichever one is under it.
@@ -1013,6 +1020,14 @@ impl Widget for ProcessesPane {
             dirty |= child.take_structure_dirty();
         }
         dirty
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -1306,11 +1321,16 @@ pub(crate) struct ResourcesPane {
     rect: Rect,
     node: Option<NodeId>,
     structure_dirty: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl ResourcesPane {
     pub(crate) fn new(shared: Shared) -> Self {
         Self {
+            dirty: true,
             shared,
             seen: None,
             built_with: None,
@@ -1402,6 +1422,7 @@ impl ResourcesPane {
 
 impl Widget for ResourcesPane {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         self.adopt();
         if let Some(page) = &mut self.page {
             page.sync(state, path);
@@ -1461,6 +1482,7 @@ impl Widget for ResourcesPane {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = ctx.logical(position);
         }
@@ -1508,6 +1530,14 @@ impl Widget for ResourcesPane {
             dirty |= page.take_structure_dirty();
         }
         dirty
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

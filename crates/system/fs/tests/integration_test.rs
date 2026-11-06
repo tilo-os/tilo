@@ -13,7 +13,7 @@ use std::time::Duration;
 use std::{
     io::{Read, Seek, SeekFrom, Write},
     os::unix::ffi::OsStringExt,
-    os::unix::fs::MetadataExt,
+    os::unix::fs::{MetadataExt, PermissionsExt as _},
 };
 use tilo_test_env::SpawnUnderEnvLock as _;
 
@@ -2432,7 +2432,18 @@ async fn mount_owned_by(
     Endpoint,
     Arc<ContentStore>,
 ) {
-    let dir = tempdir().expect("mount temp dir");
+    // A session that admits other callers is mounted where every account
+    // reaches it: the shared temporary directory is traversable, while the
+    // test environment's own root is private to its account.
+    let dir = if allow_other {
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("tilo-fs-callers-");
+        builder.permissions(std::fs::Permissions::from_mode(0o755));
+        builder.tempdir_in("/tmp")
+    } else {
+        tempfile::tempdir()
+    }
+    .expect("mount temp dir");
     let endpoint = Endpoint::bind(presets::Minimal)
         .await
         .expect("bind endpoint");

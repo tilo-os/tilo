@@ -14,9 +14,9 @@
 //!   admitting the governance it relays, as a native device's does (`replica`);
 //! - the **live plane** ([`live`]): ephemeral presence and previews relayed
 //!   by the host to live members;
-//! - **calls** ([`call_media`], and [`voice`] for the relay's own media path):
-//!   the page's turns with the device that bridges it into a call, and the
-//!   grants that admit it to the call.
+//! - **calls** ([`voice`] for the relay's own media path, and the plane's
+//!   camera and screen tracks for what a call carries): the grants that admit
+//!   the page to a call, and the pictures and voice it publishes and shows.
 //!
 //! [`health`] derives `PeerSnapshot` and `SessionHealth` v1 from it. With the
 //! `toolkit` feature, [`transport::RelayCollabTransport`] plugs the session
@@ -24,7 +24,6 @@
 
 #![deny(rust_2018_idioms)]
 
-pub mod call_media;
 mod channels;
 mod clock;
 pub mod content;
@@ -40,12 +39,7 @@ pub mod session;
 #[cfg(feature = "toolkit")]
 pub mod transport;
 pub mod voice;
-mod watching;
 
-pub use call_media::{
-    Asked, HeardFrame, LaneAnswer, LaneCall, LaneTurn, MicFrame, Opened, OpenedPicture,
-    PictureFrame, SeenFrame, Showing,
-};
 pub use channel_crypto::ChannelContentKeys;
 pub use channels::document_admission;
 pub use custody::{
@@ -55,9 +49,11 @@ pub use custody::{
 pub use health::{PeerSnapshot, SessionHealth};
 pub use previews::{LiveChange, LiveState, RemoteMember};
 pub use session::{
-    Failure, FailureSubject, Host, LaneCompletion, LocalState, NodeCompletion, PAGE_FAILURE_CODES,
-    PeerConfig, PeerEvent, PeerEvents, PeerHandle, PeerStatus, RoomsCompletion, TransportPhase,
+    CallFrame, CallPicture, CallShown, Completion, Failure, FailureSubject, Host, LocalState,
+    NodeCompletion, PAGE_FAILURE_CODES, PeerConfig, PeerEvent, PeerEvents, PeerHandle, PeerStatus,
+    RoomsCompletion, TransportPhase,
 };
+pub use tilo_live::live::Track;
 pub use tilo_relay_client::https::{HttpClient, HttpFuture, HttpsLink, LinkError, host_info};
 pub use tilo_relay_client::{DeviceSigner, SignError, SignFuture};
 pub use voice::VoiceEvent;

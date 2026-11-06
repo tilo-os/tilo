@@ -107,14 +107,6 @@ impl SystemStatus {
     }
 }
 
-/// `0` when offline or wired (a cable has no bars), `1..=4` on Wi-Fi.
-pub fn link_bars(link: &Link) -> u8 {
-    match link.kind {
-        LinkKind::Wifi => link.signal.clamp(1, 4),
-        _ => 0,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,31 +216,6 @@ mod tests {
             assert_eq!(
                 s.summary(),
                 "Wi-Fi: Cafe WiFi, Volume 35%, Battery 64%, charging"
-            );
-        }
-
-        // Phase `a_wired_link_has_no_bars`.
-        {
-            let wired = Link {
-                kind: LinkKind::Wired,
-                name: Some("eth0".into()),
-                signal: 4,
-            };
-            assert_eq!(link_bars(&wired), 0);
-            assert_eq!(link_bars(&Link::default()), 0);
-        }
-
-        // Phase `a_connected_radio_always_shows_at_least_one_bar`.
-        {
-            let weak = Link {
-                kind: LinkKind::Wifi,
-                name: Some("Far".into()),
-                signal: 0,
-            };
-            assert_eq!(
-                link_bars(&weak),
-                1,
-                "connected-but-weak must not render identically to offline"
             );
         }
     }

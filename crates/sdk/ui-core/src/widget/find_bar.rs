@@ -559,6 +559,10 @@ pub struct FindBar {
     /// Which field types: the query (`false`) or the replacement.
     replace_focused: bool,
     focused: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Default for FindBar {
@@ -571,6 +575,7 @@ impl FindBar {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            dirty: true,
             // The bar has one close control; its fields clear with the
             // keyboard, not with an X of their own.
             field: SearchField::new()
@@ -632,6 +637,7 @@ impl FindBar {
 
     /// Switch the mode; the query runs again.
     pub fn set_mode(&mut self, mode: FindMode) {
+        self.dirty = true;
         if self.options.mode != mode {
             self.options.mode = mode;
             self.pending.search = true;
@@ -641,6 +647,7 @@ impl FindBar {
     /// Set every option at once (restoring a view's last find); the query
     /// runs again when they changed.
     pub fn set_options(&mut self, options: FindOptions) {
+        self.dirty = true;
         if self.options != options {
             self.options = options;
             self.pending.search = true;
@@ -657,6 +664,7 @@ impl FindBar {
 
     /// [`Self::with_content_inset`] after construction.
     pub fn set_content_inset(&mut self, leading: f64, trailing: f64) {
+        self.dirty = true;
         self.inset = Some((leading.max(0.0), trailing.max(0.0)));
     }
 
@@ -670,6 +678,7 @@ impl FindBar {
     /// The results of a view whose engine finds on its own: `total`
     /// matches, `current` the 0-based one shown. The counter follows.
     pub fn set_results(&mut self, total: usize, current: Option<usize>) {
+        self.dirty = true;
         self.session.set_results(total, current);
         self.update_count();
     }
@@ -692,6 +701,7 @@ impl FindBar {
 
     /// Start with `query` (the selection when the bar opens), selected.
     pub fn set_query(&mut self, query: &str) {
+        self.dirty = true;
         self.field.set_query(query);
         self.field.select_all();
         self.pending.search = true;
@@ -1153,6 +1163,7 @@ impl Widget for FindBar {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         self.route(event, ctx);
     }
 
@@ -1161,6 +1172,7 @@ impl Widget for FindBar {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.focused = focused;
         if focused {
             self.field.set_focused(!self.replace_focused);
@@ -1236,6 +1248,14 @@ impl Widget for FindBar {
         } else {
             vec![&mut self.field]
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

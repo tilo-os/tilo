@@ -171,10 +171,18 @@ view parts(b: Basics, last: State<Text>) {
             ui.Property("Stage", "Review")
         }
     }
-    ui.EmptyState("No archived items", message: "Archived items show here.", icon: .archive, inline: true)
+    ui.EmptyState(
+        "No archived items",
+        message: "Archive an item to put it aside.",
+        icon: .archive,
+        inline: true,
+    )
     ui.Section("A page of a stack") {
         ui.PageSlide(level: 1) {
-            ui.Text("A section opened in its own page of the panel, one level deep.", role: .caption)
+            ui.Text(
+                "A section opened in its own page of the panel, one level deep.",
+                role: .caption,
+            )
         }
     }
 }
@@ -248,7 +256,12 @@ view release_board(r: Release) {
     std.page(r, canvas: true) {
         ui.TabStrip(r.items.first(), focused: true) {
             for x in r.items {
-                ui.TabItem(x, title: .some(x.title), icon: .file_text, modified: x.stage == "Doing") {
+                ui.TabItem(
+                    x,
+                    title: .some(x.title),
+                    icon: .file_text,
+                    modified: x.stage == "Doing",
+                ) {
                     ui.TabFace(r.lead, name: .some("Ada Lovelace"))
                 }
             }
@@ -257,10 +270,14 @@ view release_board(r: Release) {
             ui.Board(name: .some("Release")) {
                 for stage in ["To do", "Doing", "Done"] {
                     let cards = r.items.filter(x -> x.stage == stage)
-                    ui.BoardLane(title: .some(stage), count: .some(cards.len()), action: .some("New item")) {
+                    ui.BoardLane(
+                        title: .some(stage),
+                        count: .some(cards.len()),
+                        action: .some("New item"),
+                    ) {
                         for x in cards {
-                            ui.BoardCard(x, title: .some(x.title)) {
-                                ui.Text(x.stage, role: .caption, secondary: true)
+                            ui.BoardCard(x) {
+                                board_item_row(x)
                             }
                         }
                     }
@@ -270,17 +287,28 @@ view release_board(r: Release) {
     }
 }
 
+/// An item on the release's board as its row: its title, and the stage it is in.
+view board_item_row(x: Item) {
+    row(x.title, secondary: x.stage)
+}
+
 /// The basics, looked after by the person looking.
 scenario "basics" {
     let g = root Gallery
-    g.basics.insert(Basics(title: "Basics", owner: .some(invoker), updated: 2026-06-30T09:00Z))
+    g.basics.insert(Basics(title: "Basics", owner: .some(invoker), updated: 2026-06-30T09:00))
 }
 
 /// A team's backlog a week into a release.
 scenario "a backlog" {
     let g = root Gallery
     let b = g.backlogs.insert(Backlog(title: "Backlog"))
-    b.items.insert(Item(title: "Write the release notes", notes: RichText("Lead with the sync fix, then the new board."), stage: "To do"))
+    b.items.insert(
+        Item(
+            title: "Write the release notes",
+            notes: RichText("Lead with the sync fix, then the new board."),
+            stage: "To do",
+        ),
+    )
     b.items.insert(Item(title: "Screenshots for the docs", notes: RichText(""), stage: "Doing"))
     b.items.insert(Item(title: "Bump the version", notes: RichText(""), stage: "Done"))
 }

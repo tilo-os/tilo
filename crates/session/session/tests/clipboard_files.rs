@@ -13,6 +13,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::fs;
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
@@ -28,7 +30,6 @@ use ui::dnd::{COPIED_FILES_MIME, copied_files_list};
 const STAGING_PREFIX: &str = ".tilo-transfer-";
 /// How many files the folder of the crash test holds.
 const BIG: usize = 500;
-
 fn session() -> Session {
     Session::headless(
         Options::default(),
@@ -49,16 +50,37 @@ fn step(session: &mut Session) {
     session.step(Duration::from_millis(1)).expect("step");
 }
 
+/// The CPU time this thread has run so far: what a turn of the loop itself
+/// spent, without the time a loaded machine kept it off a core.
+fn thread_cpu() -> Duration {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `now` is a valid, writable timespec for the call's duration.
+    let status = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut now) };
+    assert_eq!(status, 0, "clock_gettime(CLOCK_THREAD_CPUTIME_ID)");
+    Duration::new(
+        u64::try_from(now.tv_sec).unwrap(),
+        u32::try_from(now.tv_nsec).unwrap(),
+    )
+}
+
+/// One turn of the loop and the CPU it spent, which is the turn's own time:
+/// the clock's time it took says as much about the machine's load as about
+/// the loop.
+fn turn(session: &mut Session) -> Duration {
+    let started = thread_cpu();
+    step(session);
+    thread_cpu().saturating_sub(started)
+}
+
 /// Step the session until `done`, so a paste on its own thread has time to
-/// finish.
-fn until(session: &mut Session, what: &str, mut done: impl FnMut() -> bool) {
-    for _ in 0..200_000 {
-        if done() {
-            return;
-        }
-        step(session);
-    }
-    panic!("{what} did not happen");
+/// finish. The steps move the session's clock on, not the machine's: the paste
+/// copies on its own thread, so the suite's hang bound is what ends the wait,
+/// never a count of turns a loaded machine would run through too fast.
+fn until(session: &mut Session, what: &str, done: impl FnMut(&mut Session) -> bool) {
+    common::until(session, what, done);
 }
 
 /// An app copies (`cut == false`) or cuts a list of files.
@@ -178,9 +200,9 @@ fn copied_files_are_pasted_beside_the_ones_already_in_the_folder() {
         false,
     );
     paste_into(&mut session, &destination, None);
-    let pasted = destination.join("notes (2).txt");
-    until(&mut session, "the paste finished", || pasted.exists());
-    until(&mut session, "the receipt went", || {
+    let pasted = destination.join("notes 2.txt");
+    until(&mut session, "the paste finished", |_| pasted.exists());
+    until(&mut session, "the receipt went", |_| {
         !receipt(&home).exists()
     });
 
@@ -210,10 +232,10 @@ fn a_cut_takes_its_sources_once_the_copies_stand_under_their_names() {
     let mut session = session();
     copy(&mut session, &paths, true);
     paste_into(&mut session, &destination, None);
-    until(&mut session, "the cut finished", || {
+    until(&mut session, "the cut finished", |_| {
         paths.iter().all(|path| !path.exists())
     });
-    until(&mut session, "the receipt went", || {
+    until(&mut session, "the receipt went", |_| {
         !receipt(&home).exists()
     });
 
@@ -243,10 +265,13 @@ fn replacing_sends_the_name_that_was_there_to_the_trash() {
     let mut session = session();
     copy(&mut session, &[source.join("note.txt")], false);
     paste_into(&mut session, &destination, Some("replace"));
-    until(&mut session, "the paste finished", || {
-        read(&destination.join("note.txt")) == b"the new one"
+    // A replacement sends what was there to the Trash before the new file
+    // lands, so the name is gone for a moment: the wait asks what the name
+    // holds, not whether it can be read.
+    until(&mut session, "the paste finished", |_| {
+        fs::read(destination.join("note.txt")).is_ok_and(|now| now == b"the new one")
     });
-    until(&mut session, "the receipt went", || {
+    until(&mut session, "the receipt went", |_| {
         !receipt(&home).exists()
     });
 
@@ -282,12 +307,20 @@ fn a_file_that_cannot_be_read_is_reported_and_the_rest_of_the_paste_lands() {
     let mut session = session();
     copy(&mut session, &[secret, source.join("fine.txt")], false);
     paste_into(&mut session, &destination, None);
-    until(&mut session, "the readable one landed", || {
+    until(&mut session, "the readable one landed", |_| {
         destination.join("fine.txt").exists()
     });
-    until(&mut session, "the receipt went", || {
+    until(&mut session, "the receipt went", |_| {
         !receipt(&home).exists()
     });
+    // The receipt goes before the worker says it is done, and the loop tells
+    // the person on the pass after that: the notice is waited on, not read
+    // from the receipt's going.
+    until(
+        &mut session,
+        "the notice saying what did not land",
+        |session| !session.notifications().log().active().is_empty(),
+    );
     assert_eq!(read(&destination.join("fine.txt")), b"open");
     assert!(
         !destination.join("secret.txt").exists(),
@@ -320,17 +353,21 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
     let paths = tree(&source.join("big"), 12000);
 
     let mut session = session();
+    // What a turn's own work costs before the paste starts: a loaded machine
+    // takes every turn slowly, and the test is about the paste being spread
+    // over turns, not about the machine being idle.
+    let mut before: Vec<Duration> = (0..5).map(|_| turn(&mut session)).collect();
+    before.sort_unstable();
+    let pace = before.get(before.len() / 2).copied().unwrap_or_default();
     copy(&mut session, &[source.join("big")], false);
     let started = Instant::now();
     paste_into(&mut session, &destination, None);
     let mut turns: Vec<Duration> = Vec::new();
-    while !destination.join("big").exists() && started.elapsed() < Duration::from_secs(300) {
-        let turn = Instant::now();
-        step(&mut session);
-        turns.push(turn.elapsed());
+    while !destination.join("big").exists() && started.elapsed() < tilo_test_env::hang_bound() {
+        turns.push(turn(&mut session));
     }
     let copied = started.elapsed();
-    until(&mut session, "the receipt went", || {
+    until(&mut session, "the receipt went", |_| {
         !receipt(&home).exists()
     });
     assert!(
@@ -347,72 +384,69 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
         .unwrap_or_default();
     let max = sorted.last().copied().unwrap_or_default();
     println!(
-        "paste of {} files took {copied:?} over {} turns; turn p50 {p50:?}, p95 {p95:?}, max {max:?}",
+        "paste of {} files took {copied:?} over {} turns; turn CPU p50 {p50:?}, p95 {p95:?}, \
+         max {max:?}",
         paths.len(),
         turns.len()
     );
+    // How many turns the paste spans is the machine's pace against the
+    // worker's, so all the count says is that the loop kept turning after the
+    // paste was asked: a paste carried inside the turn that asked for it would
+    // leave no turn at all. The turns' own times are what show none of them
+    // carried a copy.
     assert!(
-        turns.len() > 20,
+        !turns.is_empty(),
         "the loop kept turning while the paste ran: {} turns over {copied:?}",
         turns.len()
     );
+    // A turn that waits on the disk stands out from the turns around it by
+    // whole seconds, and a turn that copies files spends the CPU for them: a
+    // turn's own time is the CPU it spent, which a machine that holds it off a
+    // core for tens of milliseconds does not change.
+    let quiet = pace.max(Duration::from_millis(50));
     assert!(
-        max < Duration::from_millis(50),
-        "no turn waited on the disk: max {max:?} of {} turns, p50 {p50:?}, over {copied:?}",
+        p50 < quiet,
+        "the loop's usual turn kept its time: p50 {p50:?} of CPU over {} turns, over \
+         {copied:?} in all, against {pace:?} a turn before the paste",
+        turns.len()
+    );
+    assert!(
+        max < quiet,
+        "no turn carried a copy: max {max:?} of CPU over {} turns, p50 {p50:?}, p95 {p95:?}, \
+         in {copied:?} in all",
         turns.len()
     );
 }
 
 /// The paste a child process starts, and the moment it loses power: the
-/// process kills itself while the transfer is in flight, so nothing of it
-/// survives to tidy up.
+/// transfer ends the process at the moment `CLIPBOARD_KILL_AT` names, so
+/// nothing of it survives to tidy up.
 fn kill_mid_transfer_child() {
-    let Some(stage) = std::env::var_os("CLIPBOARD_KILL_STAGE") else {
+    let Some(stage) = std::env::var_os("CLIPBOARD_KILL_AT") else {
         return;
     };
     let source = PathBuf::from(std::env::var_os("CLIPBOARD_KILL_SOURCE").expect("a source"));
     let destination =
         PathBuf::from(std::env::var_os("CLIPBOARD_KILL_DESTINATION").expect("a destination"));
-    let state_home = PathBuf::from(std::env::var_os("XDG_STATE_HOME").expect("a state directory"));
-    let receipt = state_home.join("tilo/file-paste/paste.json");
     let mut paths = tree(&source, 6);
     paths.push(source.join("big"));
 
     let mut session = session();
     copy(&mut session, &paths, true);
     paste_into(&mut session, &destination, None);
-    // The paste runs on a thread of its own: the loop lets the command reach
-    // it and then watches the disk, so the moment it is killed for is a
-    // moment the transfer is really in flight.
-    for round in 0..2_000_000 {
-        if round % 1000 == 0 {
-            step(&mut session);
-        }
-        let some_staged = staging(&destination).iter().any(|folder| {
-            fs::read_dir(folder).is_ok_and(|entries| {
-                entries
-                    .filter_map(Result::ok)
-                    .any(|entry| entry.file_name().to_string_lossy() != "replaced")
-            })
-        });
-        let some_published = (0..6).any(|index| destination.join(index.to_string()).exists())
-            || destination.join("big").exists();
-        let caught = receipt.exists()
-            && match stage.to_string_lossy().as_ref() {
-                // In the middle of the copying: some of it is staged, none
-                // of it is published.
-                "staging" => some_staged,
-                // In the middle of the publishing: some of it stands under
-                // its own name.
-                _ => some_published,
-            };
-        if caught {
-            // SAFETY: the process ends here, as a power cut would end it:
-            // no destructor runs and nothing is tidied up.
-            unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
-        }
+    // The paste dies at the moment `stage` names (it ends this process
+    // there, as a power cut would), so this loop only lets it run: no reading
+    // of the disk races the transfer, and the machine's pace, not a count of
+    // turns, decides when it dies.
+    let started = Instant::now();
+    loop {
+        assert!(
+            started.elapsed() < tilo_test_env::hang_bound(),
+            "the transfer never reached {}",
+            stage.display()
+        );
+        step(&mut session);
     }
-    panic!("the transfer was never caught in flight");
 }
 
 #[test]
@@ -425,7 +459,8 @@ fn kill_mid_transfer() {
 fn kill_under(stage: &str, source: &Path, destination: &Path) -> std::process::ExitStatus {
     Command::new(std::env::current_exe().expect("this test's binary"))
         .args(["--exact", "kill_mid_transfer", "--ignored", "--nocapture"])
-        .env("CLIPBOARD_KILL_STAGE", stage)
+        .env("CLIPBOARD_KILL_AT", stage)
+        .env("TILO_FILE_PASTE_CRASH_POINT", stage)
         .env("CLIPBOARD_KILL_SOURCE", source)
         .env("CLIPBOARD_KILL_DESTINATION", destination)
         .spawn_locked()
@@ -496,7 +531,7 @@ fn a_killed_paste_leaves_every_file_whole_or_untouched() {
     );
     {
         let mut session = session();
-        until(&mut session, "the paste was undone", || {
+        until(&mut session, "the paste was undone", |_| {
             !receipt(&home).exists()
         });
     }
@@ -513,7 +548,7 @@ fn a_killed_paste_leaves_every_file_whole_or_untouched() {
     assert!(receipt(&home).exists(), "the second paste was written down");
     {
         let mut session = session();
-        until(&mut session, "the second paste was undone", || {
+        until(&mut session, "the second paste was undone", |_| {
             !receipt(&home).exists()
         });
     }

@@ -812,23 +812,7 @@ impl AtomicDrmSurface {
         debug!("Setting screen: {:?}", req);
         let result = self
             .fd
-            .atomic_commit(
-                if event {
-                    // on the atomic api we can modeset and trigger a page_flip event on the same call!
-                    AtomicCommitFlags::PAGE_FLIP_EVENT | AtomicCommitFlags::ALLOW_MODESET
-                    // we also *should* not need to wait for completion, like with `set_crtc`,
-                    // because we have tested this exact commit already, so we do not expect any errors later down the line.
-                    //
-                    // but there is always an exception and `amdgpu` can fail in interesting ways with this flag set...
-                    // https://gitlab.freedesktop.org/drm/amd/-/issues?scope=all&utf8=%E2%9C%93&state=opened&search=drm_atomic_helper_wait_for_flip_done
-                    //
-                    // so we skip this flag:
-                    // AtomicCommitFlags::Nonblock,
-                } else {
-                    AtomicCommitFlags::ALLOW_MODESET
-                },
-                req.build()?,
-            )
+            .atomic_commit(commit_flags(event), req.build()?)
             .map_err(|source| {
                 Error::Access(AccessError {
                     errmsg: "Error setting crtc",
@@ -970,7 +954,7 @@ impl AtomicDrmSurface {
 
         let res = self
             .fd
-            .atomic_commit(AtomicCommitFlags::ALLOW_MODESET, req.build()?)
+            .atomic_commit(commit_flags(false), req.build()?)
             .map_err(|source| {
                 Error::Access(AccessError {
                     errmsg: "Failed to commit on clear_state",
@@ -1074,6 +1058,33 @@ impl From<Transform> for DrmRotation {
             Transform::Flipped180 => DrmRotation::REFLECT_Y | DrmRotation::ROTATE_180,
             Transform::Flipped270 => DrmRotation::REFLECT_Y | DrmRotation::ROTATE_270,
         }
+    }
+}
+
+/// The flags a state commit is made with.
+///
+/// Tilo patch: the commit is queued, and the call returns as soon as the
+/// kernel has accepted it, instead of waiting for it to reach the screen. A
+/// commit that sets a mode runs in the driver's commit tail, where the link
+/// to the display trains — seconds when a DisplayPort sink's training fails
+/// and the driver waits out its timeout — and the caller here is the
+/// compositor's event loop thread, which until it returned served no other
+/// output and no input. With `event` the kernel sends a page flip event when
+/// the commit is on the screen; [`DrmCompositor`][super::super::compositor::DrmCompositor]
+/// keeps the frame as pending until it arrives.
+///
+/// Upstream leaves `NONBLOCK` off because a commit can then fail in the
+/// driver after the call returned (see the `wait_for_flip_done` reports for
+/// amdgpu). A state the check phase refuses still returns its error here; one
+/// the hardware never completes is what the caller's own check times out on
+/// and redoes, which is cheaper than stalling every other display.
+fn commit_flags(event: bool) -> AtomicCommitFlags {
+    // on the atomic api we can modeset and trigger a page_flip event on the same call!
+    let flags = AtomicCommitFlags::ALLOW_MODESET | AtomicCommitFlags::NONBLOCK;
+    if event {
+        flags | AtomicCommitFlags::PAGE_FLIP_EVENT
+    } else {
+        flags
     }
 }
 

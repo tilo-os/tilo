@@ -37,6 +37,8 @@ fn source() -> (DesktopTree, CommandSource) {
                     label: "Not authority".into(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             })
             .collect(),
     }];

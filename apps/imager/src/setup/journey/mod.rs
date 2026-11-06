@@ -3561,6 +3561,7 @@ impl InstallerPreview {
     /// category stays the stored authority; this only stops the parent checkbox
     /// and its children from telling different stories.
     fn sync_files_category(&mut self) -> bool {
+        self.dirty = true;
         if self.belongings.windows.is_some() || !self.belongings.source_selection.ready() {
             return false;
         }
@@ -5548,6 +5549,7 @@ impl Widget for InstallerPreview {
         Some(self)
     }
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         self.follow_document();
         let staged = self.published.borrow_mut().take_staged();
         if let Some(crate::window_view::Staged(scenario)) = staged {
@@ -5741,6 +5743,7 @@ impl Widget for InstallerPreview {
         self.last_frame = Some(current);
     }
     fn handle_event(&mut self, event: &WindowEvent, cx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = cx.logical(position);
         }
@@ -5773,6 +5776,14 @@ impl Widget for InstallerPreview {
             .iter_mut()
             .map(|child| child.as_mut() as &mut dyn Widget)
             .collect()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
         "InstallerPreview"
@@ -11618,6 +11629,7 @@ mod tests {
     #[test]
     fn identity_recovery_route_availability_matches_native_platform_before_choice() {
         let mut preview = InstallerPreview {
+            dirty: true,
             live: true,
             ..Default::default()
         };

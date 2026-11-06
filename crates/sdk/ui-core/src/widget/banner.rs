@@ -1223,7 +1223,7 @@ impl Widget for Banner {
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         if self.in_motion() {
             regions.push(self.band.laid_rect);
-        } else if self.needs_redraw() {
+        } else if self.needs_redraw() || self.needs_animation_frame() {
             regions.push(self.rect);
         }
     }
@@ -1307,7 +1307,7 @@ impl Widget for Banner {
     fn needs_redraw(&self) -> bool {
         self.dirty
             || self.in_motion()
-            || self.body.needs_redraw()
+            || (self.body.needs_redraw() || self.body.needs_animation_frame())
             || [&self.secondary, &self.action, &self.dismiss]
                 .into_iter()
                 .flatten()

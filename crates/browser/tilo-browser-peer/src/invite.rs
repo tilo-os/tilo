@@ -1,5 +1,5 @@
 //! Joining a workspace someone else's host governs, from a page with no session
-//! there (`/join`; see [`tilo_relay_protocol::rooms`]).
+//! there (`/join`; see [`tilo_relay_protocol::workspaces`]).
 //!
 //! The joining person is not a user of that host: their page holds its own
 //! user root beside its device key and certifies the device itself
@@ -8,7 +8,7 @@
 //! of the host user's devices.
 
 use tilo_relay_client::DeviceSigner;
-use tilo_relay_protocol::rooms::{JoinChallengeView, JoinReply, JoinStep, join_proof_digest};
+use tilo_relay_protocol::workspaces::{JoinChallengeView, JoinReply, JoinStep, join_proof_digest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, device_cert_signing_digest};
 
 use tilo_relay_client::https::{self, HttpClient, LinkError};

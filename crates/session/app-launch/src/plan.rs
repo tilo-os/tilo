@@ -5,10 +5,12 @@
 //! - a Tilo package, through `tilo-launcher run`, which builds the package's
 //!   sandbox from its signed manifest, the workspace it is launched into and the
 //!   grants written for it ([`Workspace::write_grants`]);
-//! - one of the machine's own applications, through its `.desktop` entry:
-//!   Flatpak, `AppImage`, a program the person added, or one of the system's.
-//!   It runs unconfined, as the person, exactly as [`desktop_entry::launch`]
-//!   decides — see that module for why it cannot be confined.
+//! - one of the machine's own applications, through `tilo-launcher run-host`
+//!   and its `.desktop` entry: Flatpak, `AppImage`, a program the person
+//!   added, or one of the system's. It runs unconfined, as the person, exactly
+//!   as [`desktop_entry::launch`] decides — see that module for why it cannot
+//!   be confined — but through the same launcher as a package, so it is born
+//!   in a scope of its own and the session's one memory watch covers it.
 //!
 //! A plan is pure data: the program, its arguments and the child's whole
 //! environment. Nothing here starts anything, so what a launch *would* run is
@@ -20,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use desktop_entry::launch::{HostLaunch, LaunchEnv};
 
+use crate::authority::Authority;
 use crate::env::SessionEnvironment;
 use crate::instance::package_identities;
 use crate::launch::{Launch, Open};
@@ -90,8 +93,17 @@ pub enum PlanError {
         #[source]
         source: std::io::Error,
     },
-    /// No Tilo launcher is installed.
-    #[error("no tilo-launcher is installed, so Tilo apps cannot start here")]
+    /// The person's authority in the workspace could not be published, so the
+    /// app would start as a viewer of a workspace they may change: refuse
+    /// rather than launch it as someone they are not.
+    #[error("the person's authority for {app} could not be published: {source}")]
+    Authority {
+        app: String,
+        #[source]
+        source: std::io::Error,
+    },
+    /// No Tilo launcher is installed, and every app starts through it.
+    #[error("no tilo-launcher is installed, so no app can start here")]
     NoLauncher,
     /// A record launch names something that is not a record id: starting the
     /// app would open nothing, so the app is not started.
@@ -133,6 +145,10 @@ pub struct PlanContext<'a> {
     /// The identity record this workspace's apps are given, when the session
     /// resolved one.
     pub identity: Option<PathBuf>,
+    /// What publishes the person's authority in the workspace, for the app
+    /// this launch starts: what the launcher binds into it so it decides the
+    /// person's actions as the workspace's policy says ([`crate::authority`]).
+    pub authority: Option<&'a Authority>,
     /// The DRM render node the compositor renders on, so an app renders on
     /// the same GPU.
     pub render_node: Option<PathBuf>,
@@ -140,6 +156,10 @@ pub struct PlanContext<'a> {
     /// request ([`crate::Answer::Start`]): ask for the new one the way its
     /// entry declares, through its New Window action where it has one.
     pub new_window: bool,
+    /// The tab the window takes, when the desk holds one for it: the app is
+    /// told it as its window's instance, so what it reports about the window
+    /// is about that tab.
+    pub continuity_instance: Option<u64>,
 }
 
 impl PlanContext<'_> {
@@ -233,6 +253,17 @@ impl Planned {
                 app: package.id.to_owned(),
                 source,
             })?;
+        // What the person may do in this app here, published before the app
+        // starts: it decides every action against it from its first frame.
+        let authority = context
+            .authority
+            .map(|authority| authority.publish(context.workspace, package.id))
+            .transpose()
+            .map_err(|source| PlanError::Authority {
+                app: package.id.to_owned(),
+                source,
+            })?
+            .flatten();
         let mut args = vec![
             "run".to_owned(),
             "--manifest".to_owned(),
@@ -256,6 +287,10 @@ impl Planned {
             args.push("--capabilities".to_owned());
             args.push(path.display().to_string());
         }
+        if let Some(path) = &authority {
+            args.push("--action-authority".to_owned());
+            args.push(path.display().to_string());
+        }
         if let Some(path) = &context.identity {
             args.push("--identity".to_owned());
             args.push(path.display().to_string());
@@ -275,7 +310,12 @@ impl Planned {
             }
             None => {}
         }
-        let env = context.environment.variables();
+        let mut env = context.environment.variables();
+        if let Some(instance) = context.continuity_instance {
+            // The window's instance: the id of the tab it opens in, which
+            // its continuation reports are addressed by.
+            env.insert("TILO_CONTINUITY_INSTANCE".to_owned(), instance.to_string());
+        }
         // The launcher resolves a package's services against
         // `$XDG_RUNTIME_DIR/tilo/services`. A session that serves none asks
         // for a launch without them, so a package needing one warns instead
@@ -307,7 +347,9 @@ impl Planned {
         open: Option<&Open>,
         context: &PlanContext<'_>,
     ) -> Result<Self, PlanError> {
-        let scan = desktop_entry::cache::cached_scan();
+        let scan = desktop_entry::cache::cached_scan(&desktop_entry::locale::language_candidates(
+            ui::i18n::preferred_language().as_deref(),
+        ));
         let entry = scan.find(desktop_id).ok_or_else(|| {
             PlanError::Host(desktop_entry::launch::HostLaunchError::NotFound(
                 desktop_id.to_owned(),
@@ -318,8 +360,17 @@ impl Planned {
             open,
             context.new_window,
         );
+        // Planned here as well as in the launcher: this is where an entry
+        // that cannot run says so before anything is started, and what its
+        // window will announce itself by.
         let planned = desktop_entry::launch::plan(entry, &launch_env)?;
-        Ok(from_host_launch(planned, Kind::of_entry(entry)))
+        Ok(run_host(
+            planned,
+            None,
+            &launch_env,
+            context.launcher.clone().ok_or(PlanError::NoLauncher)?,
+            Kind::of_entry(entry),
+        ))
     }
 
     /// The program file at `path` itself, as opening a downloaded `AppImage`
@@ -330,13 +381,19 @@ impl Planned {
     /// See [`Self::of`], and the file is not a program that runs by itself.
     pub fn program(path: &Path, context: &PlanContext<'_>) -> Result<Self, PlanError> {
         desktop_entry::launch::make_runnable(path)?;
-        let planned =
-            desktop_entry::launch::plan_program(path, &context.environment.host_launch_env())?;
+        let launch_env = context.environment.host_launch_env();
+        let planned = desktop_entry::launch::plan_program(path, &launch_env)?;
         let kind = match path.extension().and_then(std::ffi::OsStr::to_str) {
             Some("AppImage") => Kind::AppImage,
             _ => Kind::Program,
         };
-        Ok(from_host_launch(planned, kind))
+        Ok(run_host(
+            planned,
+            Some(path),
+            &launch_env,
+            context.launcher.clone().ok_or(PlanError::NoLauncher)?,
+            kind,
+        ))
     }
 
     /// One line saying what this launch starts, for a log before it starts.
@@ -365,15 +422,53 @@ fn opening(mut env: LaunchEnv, open: Option<&Open>, new_window: bool) -> LaunchE
     env
 }
 
-/// A host plan as it was resolved.
-fn from_host_launch(planned: HostLaunch, kind: Kind) -> Planned {
+/// A host launch run through the launcher: the program is `launcher`, and
+/// the app it starts is the one `planned` resolved. `program` is the file
+/// itself for a launch with no desktop entry.
+fn run_host(
+    planned: HostLaunch,
+    program: Option<&Path>,
+    env: &LaunchEnv,
+    launcher: PathBuf,
+    kind: Kind,
+) -> Planned {
+    let mut args = vec![
+        "run-host".to_owned(),
+        "--desktop-id".to_owned(),
+        planned.desktop_id.clone(),
+    ];
+    if let Some(program) = program {
+        args.push("--program".to_owned());
+        args.push(program.display().to_string());
+    }
+    if let Some(socket) = &env.wayland_socket {
+        args.push("--wayland-socket".to_owned());
+        args.push(socket.display().to_string());
+    }
+    if let Some(display) = &env.x11_display {
+        args.push("--x11-display".to_owned());
+        args.push(display.clone());
+    }
+    for file in &env.files {
+        args.push("--open".to_owned());
+        args.push(file.clone());
+    }
+    for uri in &env.urls {
+        args.push("--open-url".to_owned());
+        args.push(uri.clone());
+    }
+    if env.prefer_new_window {
+        args.push("--new-window".to_owned());
+    }
     Planned {
         app: planned.desktop_id.clone(),
         title: planned.display_name.clone(),
         kind,
-        program: planned.program,
-        args: planned.args,
-        env: planned.env,
+        program: launcher,
+        args,
+        // The launcher builds the app's environment from the same allowlist
+        // of the session's own: a host app is told nothing of Tilo's.
+        env: desktop_entry::launch::inherited_environment(),
         window_identities: planned.window_identities,
     }
 }
@@ -391,8 +486,10 @@ mod tests {
             workspace,
             launcher: Some(PathBuf::from("/usr/libexec/tilo/tilo-launcher")),
             identity: None,
+            authority: None,
             render_node: None,
             new_window: false,
+            continuity_instance: None,
         }
     }
 
@@ -400,7 +497,6 @@ mod tests {
         SessionEnvironment {
             wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-4")),
             x11_display: Some(":11".into()),
-            x11_authority: Some(PathBuf::from("/run/user/1000/tilo/Xauthority")),
             session_bus: Some("unix:path=/run/user/1000/tilo/bus".into()),
             forwarded: BTreeMap::from([("TILO_USER_ID".to_owned(), "person-3".to_owned())]),
         }
@@ -411,7 +507,7 @@ mod tests {
             "[Desktop Entry]\nType=Application\nName=Spotify\nIcon=com.spotify.Client\n\
              Exec=/usr/bin/flatpak run --file-forwarding com.spotify.Client @@u %U @@\n\
              StartupWMClass=spotify\nX-Flatpak=com.spotify.Client\n",
-            "com.spotify.Client.desktop",
+            "com.spotify.Client",
             Path::new("/var/lib/flatpak/exports/share/applications/com.spotify.Client.desktop"),
             &[],
         )
@@ -482,6 +578,73 @@ mod tests {
     }
 
     #[test]
+    fn a_package_is_handed_the_persons_authority_in_its_workspace() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let mut workspace = Workspace::under(directory.path(), "workspace-9");
+        workspace.policy = Some(tilo_action_policy::WorkspacePolicy::new(
+            "workspace-9",
+            "person-3",
+        ));
+        workspace.person = "person-3".to_owned();
+        let environment = displays();
+        let authority = Authority::new();
+        let handed = PlanContext {
+            authority: Some(&authority),
+            ..context(&environment, &workspace)
+        };
+        let package = Package {
+            id: "so.tilo.notes",
+            title: "Notes",
+            manifest: Path::new("/home/you/.local/share/tilo/apps/so.tilo.notes/manifest.toml"),
+            payload_root: Path::new("/home/you/.local/share/tilo/apps/so.tilo.notes/payload"),
+        };
+        let planned = Planned::planned_package(
+            package,
+            PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
+            None,
+            &handed,
+        )
+        .expect("a plan");
+        let at = planned
+            .args
+            .iter()
+            .position(|arg| arg == "--action-authority")
+            .expect("the launcher is told the person's authority");
+        let file = Path::new(&planned.args[at + 1]);
+        assert_eq!(
+            file.file_name().and_then(|name| name.to_str()),
+            Some("current.json"),
+            "the file the launcher binds"
+        );
+        assert!(
+            tilo_files::native::held::read(file, 64 * 1024)
+                .expect("readable")
+                .is_some(),
+            "published and held before the app starts"
+        );
+        // A workspace whose policy the session does not hold hands none: the
+        // app takes the launcher's participation.
+        let mut unsupported = workspace.clone();
+        unsupported.policy = None;
+        let blind = PlanContext {
+            authority: Some(&authority),
+            ..context(&environment, &unsupported)
+        };
+        assert!(
+            !Planned::planned_package(
+                package,
+                PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
+                None,
+                &blind,
+            )
+            .expect("a plan")
+            .args
+            .iter()
+            .any(|arg| arg == "--action-authority")
+        );
+    }
+
+    #[test]
     fn a_launch_without_a_launcher_or_an_installed_package_starts_nothing() {
         let directory = tempfile::tempdir().expect("a directory");
         let workspace = Workspace::under(directory.path(), "workspace");
@@ -504,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn a_host_app_runs_its_entries_command_line_with_the_document_it_opens() {
+    fn a_host_app_runs_through_the_launcher_with_the_document_it_opens() {
         let entry = spotify();
         let launch_env = opening(
             displays().host_launch_env(),
@@ -512,43 +675,41 @@ mod tests {
             false,
         );
         let planned = desktop_entry::launch::plan(&entry, &launch_env).expect("plans");
-        let planned = from_host_launch(planned, Kind::of_entry(&entry));
+        let launcher = PathBuf::from("/usr/libexec/tilo/tilo-launcher");
+        let planned = run_host(
+            planned,
+            None,
+            &launch_env,
+            launcher.clone(),
+            Kind::of_entry(&entry),
+        );
         assert_eq!(planned.kind, Kind::Flatpak);
         assert!(planned.kind.is_host());
-        assert_eq!(planned.program, PathBuf::from("/usr/bin/flatpak"));
+        assert_eq!(
+            planned.program, launcher,
+            "the launcher starts it, so it is born in a scope of its own"
+        );
         assert_eq!(
             planned.args,
             [
-                "run",
-                "--socket=x11",
-                "--file-forwarding",
+                "run-host",
+                "--desktop-id",
                 "com.spotify.Client",
-                "@@u",
-                "file:///home/you/track.flac",
-                "@@"
+                "--wayland-socket",
+                "/run/user/1000/wayland-4",
+                "--x11-display",
+                ":11",
+                "--open",
+                "/home/you/track.flac",
             ],
-            "the document reaches the entry's own field code"
-        );
-        assert_eq!(
-            planned.env.get("WAYLAND_DISPLAY").map(String::as_str),
-            Some("wayland-4")
-        );
-        assert_eq!(
-            planned.env.get("TILO_HOST_APP").map(String::as_str),
-            Some("1")
+            "the entry's command line and the document are the launcher's to resolve"
         );
         assert!(
-            !planned.env.contains_key("TILO_USER_ID"),
+            !planned.env.contains_key("TILO_USER_ID")
+                && !planned.env.keys().any(|key| key.starts_with("TILO_")),
             "a host app is not confined, so it is told nothing of Tilo's authority"
         );
-        assert_eq!(
-            planned.window_identities,
-            [
-                "spotify",
-                "com.spotify.Client.desktop",
-                "com.spotify.Client"
-            ]
-        );
+        assert_eq!(planned.window_identities, ["spotify", "com.spotify.Client"]);
     }
 
     #[test]
@@ -610,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn an_app_already_showing_is_asked_for_a_new_window_its_entry_declares() {
+    fn an_app_already_showing_is_asked_for_a_new_window_through_the_launcher() {
         let editor = desktop_entry::entry::parse(
             "[Desktop Entry]\nType=Application\nName=Editor\nExec=/usr/bin/editor %F\n\
              Actions=new-window;\n\n[Desktop Action new-window]\nName=New Window\n\
@@ -621,21 +782,23 @@ mod tests {
         )
         .expect("parses");
         let opened = |new_window| {
-            let planned = desktop_entry::launch::plan(
-                &editor,
-                &opening(displays().host_launch_env(), None, new_window),
+            let launch_env = opening(displays().host_launch_env(), None, new_window);
+            let planned = desktop_entry::launch::plan(&editor, &launch_env).expect("plans");
+            run_host(
+                planned,
+                None,
+                &launch_env,
+                PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
+                Kind::of_entry(&editor),
             )
-            .expect("plans");
-            from_host_launch(planned, Kind::of_entry(&editor)).args
+            .args
         };
-        assert_eq!(
-            opened(false),
-            Vec::<String>::new(),
+        assert!(
+            !opened(false).contains(&"--new-window".to_string()),
             "a cold launch runs the entry's own command line"
         );
-        assert_eq!(
-            opened(true),
-            ["--new-window"],
+        assert!(
+            opened(true).contains(&"--new-window".to_string()),
             "one already showing gets another through the action the entry declares"
         );
     }

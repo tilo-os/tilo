@@ -199,9 +199,12 @@ impl Broker {
                     match stream {
                         Ok(stream) => {
                             let inner = Arc::clone(&acceptor);
-                            let _ = std::thread::Builder::new()
+                            if let Err(error) = std::thread::Builder::new()
                                 .name("tilo-render-app".into())
-                                .spawn(move || inner.serve_app(stream));
+                                .spawn(move || inner.serve_app(stream))
+                            {
+                                tracing::warn!(%error, "a render connection could not be served");
+                            }
                         }
                         Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                         Err(error) => {
@@ -260,15 +263,19 @@ impl Broker {
 impl Inner {
     /// Serve one app's broker connection: its handshake, then its requests.
     fn serve_app(self: &Arc<Self>, mut stream: UnixStream) {
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        if let Err(error) = stream.set_read_timeout(Some(Duration::from_secs(5))) {
+            tracing::warn!(%error, "render broker: the handshake read has no timeout");
+        }
         let handshake = match wire::read_handshake(&mut stream) {
             Ok(handshake) => handshake,
             Err(error) => {
-                tracing::debug!(%error, "render broker: no handshake");
+                tracing::warn!(%error, "render broker: no handshake");
                 return;
             }
         };
-        let _ = stream.set_read_timeout(None);
+        if let Err(error) = stream.set_read_timeout(None) {
+            tracing::warn!(%error, "render broker: the connection keeps its handshake timeout");
+        }
         let mut mine: Vec<u64> = Vec::new();
         while matches!(wire::read_request(stream.as_fd()), Ok(true)) {
             mine.retain(|connection| self.live.lock_recover().contains_key(connection));

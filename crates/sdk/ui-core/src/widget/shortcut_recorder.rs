@@ -60,6 +60,10 @@ pub struct ShortcutRecorder {
     layout_theme: Option<Theme>,
     /// What a recorded chord is reported to, as a described component's binding path does.
     edits: Option<crate::component::Bound<String>>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl ShortcutRecorder {
@@ -67,6 +71,7 @@ impl ShortcutRecorder {
     pub fn new(id: &str, state: &crate::LocalState<String>, default: &str) -> Self {
         let (value, stored) = super::binding::local(state);
         Self {
+            dirty: true,
             id: id.into(),
             stored,
             rejected: None,
@@ -127,6 +132,7 @@ impl ShortcutRecorder {
 
     /// Show `chord` in place, as one set elsewhere.
     pub fn set_chord(&mut self, chord: &str) {
+        self.dirty = true;
         if self.value != chord {
             chord.clone_into(&mut self.value);
             self.capturing = false;
@@ -213,6 +219,7 @@ impl Widget for ShortcutRecorder {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        self.dirty = true;
         if let Pulled::Value(value) = self.stored.pull(state, root) {
             self.value = value;
         }
@@ -364,6 +371,7 @@ impl Widget for ShortcutRecorder {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = Some(ctx.logical(position));
@@ -408,6 +416,14 @@ impl Widget for ShortcutRecorder {
         }
     }
 
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "ShortcutRecorder"
     }
@@ -426,6 +442,7 @@ impl Widget for ShortcutRecorder {
         true
     }
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.focused = focused;
         if !focused {
             self.capturing = false;

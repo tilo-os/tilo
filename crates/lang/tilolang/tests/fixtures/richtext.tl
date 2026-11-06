@@ -49,9 +49,7 @@ action drop_task(b: Board, t: Task) {
 
 /// Posts a message, when it says something.
 action post(b: Board, body: RichText) {
-    if not body.is_empty() {
-        b.posts.insert(Post(body: body))
-    }
+    if not body.is_empty() { b.posts.insert(Post(body: body)) }
 }
 
 /// How many posts the board holds.

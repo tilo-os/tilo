@@ -29,12 +29,10 @@ use tilo_device_fabric::{
     PersonalFabricActionEnvelope,
 };
 use tilo_network_actor::HostIdentity;
-use tilo_session::fabric::MediaContinuity;
-use tilo_session::sync::{Client, OwnPresence};
+use tilo_session::fabric::Continuity;
+use tilo_session::sync::{Client, Entry, OwnPresence};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-/// How long the loopback sessions have to come up and carry what they carry.
-const DEADLINE: Duration = Duration::from_secs(30);
 /// One pass of the session's loop, as the session runs it on its own clock.
 const PASS: Duration = Duration::from_millis(20);
 
@@ -73,20 +71,23 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
     };
     sign_device_cert(&mut cert, person).expect("the person signs their own device");
     let client = Client::start(
-        Some(HostIdentity {
-            device_cert: cert,
-            device_signing_key: key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        }),
+        Entry {
+            identity: Some(HostIdentity {
+                device_cert: cert,
+                device_signing_key: key,
+                workspace_device_certs: HashMap::new(),
+                workspace_revocations: HashMap::new(),
+                identity_paths: None,
+            }),
+            own: OwnPresence::default(),
+            hosts: Vec::new(),
+            continuity: Continuity::default(),
+            wake: Arc::new(|| {}),
+        },
         None,
-        OwnPresence::default(),
-        Vec::new(),
-        MediaContinuity::default(),
-        Arc::new(|| {}),
         None,
         Vec::new(),
+        None,
     )
     .expect("a loopback endpoint binds");
     // The fabric names a device by the key its session proves.
@@ -101,10 +102,12 @@ fn pass(devices: &[&Device]) {
     }
 }
 
-/// Run the sessions' passes until `done` holds, or the deadline passes:
-/// whether `done` held.
+/// Run the sessions' passes until `done` holds: whether it held before the
+/// suite's hang bound ran out.
 fn until(devices: &[&Device], mut done: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + DEADLINE;
+    // The bound is the suite's own, so a busy machine slows the passes instead
+    // of failing them.
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         pass(devices);
         if done() {

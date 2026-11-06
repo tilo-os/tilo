@@ -462,16 +462,6 @@ impl TopBarSurface {
         } else {
             Rect::ZERO
         };
-        let clock = full
-            .and_then(|bar| {
-                bar.test_rects()
-                    .into_iter()
-                    .filter(|(name, _)| name.starts_with("clock_overlay_"))
-                    .map(|(_, rect)| rect)
-                    .filter(|rect| !rect.is_zero_area())
-                    .reduce(|a, b| a.union(b))
-            })
-            .unwrap_or(Rect::ZERO);
         let keyboard = self.bars.iter().any(|bar| bar.widget.is_focused());
         let asked = self.focus_asked && keyboard;
         Shown {
@@ -485,7 +475,6 @@ impl TopBarSurface {
             own_avatar: rect_of(TopBarChrome::own_avatar_rect),
             people: rect_of(TopBarChrome::collaborators_rect),
             tray: rect_of(TopBarChrome::tray_pill_rect),
-            clock,
             popover,
             workspace_menu: self.workspace_menu_labels(),
             profile: self.profile.is_open(),
@@ -806,6 +795,7 @@ impl Widget for TopBarSurface {
             || self.bars.iter().any(|bar| bar.widget.needs_redraw())
             || self.menu.needs_redraw()
             || self.profile.needs_redraw()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn needs_animation_frame(&self) -> bool {

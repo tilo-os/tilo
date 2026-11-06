@@ -1,18 +1,9 @@
 //! Portable display snapshots and typed chrome requests. No system probing or effects.
 use tilo_desktop_model::DesktopTree;
+/// The machine's link, as the toolkits' surfaces draw it: the bar's status
+/// cluster and the lock screen's footer share the one reading.
+pub use ui::widget::{LinkKind, LinkStatus};
 use vello::kurbo::Rect;
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LinkKind {
-    Offline,
-    Wired,
-    Wifi,
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LinkStatus {
-    pub kind: LinkKind,
-    pub name: Option<String>,
-    pub signal: u8,
-}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VolumeState {
     pub level: f32,
@@ -63,13 +54,6 @@ impl SystemStatus {
         } else {
             self.summary.clone()
         }
-    }
-}
-pub fn link_bars(link: &LinkStatus) -> u8 {
-    if link.kind == LinkKind::Wifi {
-        link.signal.clamp(1, 4)
-    } else {
-        0
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,17 +117,6 @@ pub struct ActivityFocus {
 pub struct ChromeOverlays {
     pub overview: bool,
     pub ws_settings: bool,
-    pub clock: bool,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ClockActivity {
-    pub activity_id: Option<String>,
-    pub label: String,
-    pub remaining_secs: u64,
-    pub stopwatch: bool,
-    pub paused: bool,
-    pub overlay: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -196,10 +169,12 @@ pub struct DesktopChromeSnapshot {
     pub notifications_only: bool,
     pub activity_glance: ActivityGlance,
     pub viewport_size: Option<(f64, f64)>,
-    pub clock_activity: Option<ClockActivity>,
+    /// Every activity the bar's pill names, most urgent first as the bar
+    /// orders them.
+    pub activities: Vec<ui::live_activity::Summary>,
     pub active_exposures: Vec<ActiveExposure>,
-    /// People following the workspace without taking part (spectators). The bar
-    /// counts them beside the avatars so an audience is never invisible.
+    /// Pages reading this workspace right now. The bar counts them beside
+    /// the avatars so an audience is never invisible.
     pub watching: u32,
     /// The person at this desktop as everyone here sees them, for the
     /// bar's own avatar; `None` paints none.
@@ -318,10 +293,9 @@ pub enum ChromeIntent {
     ShowPerson(String),
     /// Open History, at `focus` when the bar names one.
     ShowActivity(Option<ActivityFocus>),
-    HideClock,
-    ClockCommand {
-        command: String,
-        activity_id: Option<String>,
+    /// Bring an activity's card out of the bar's pill, by its id.
+    ExpandActivity {
+        activity: String,
     },
     /// Focus the tab another of this person's devices offered, here.
     AcceptContinuity,
@@ -342,6 +316,9 @@ pub enum ChromeIntent {
     RenameWorkspace {
         name: String,
     },
+    /// Take the active workspace off this device's desktop, leaving it to
+    /// the people in it.
+    LeaveWorkspace,
     /// Open or close the menu behind the bar's Tilo mark
     /// ([`crate::topbar::TopBarChrome::with_tilo_mark`]), under
     /// [`crate::topbar::TopBarChrome::tilo_mark_rect`].

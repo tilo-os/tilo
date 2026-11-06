@@ -73,6 +73,23 @@ pub struct Recording {
     /// The file it is written to.
     pub path: PathBuf,
     pub paused: bool,
+    /// Frames the encoder was too far behind to take so far: the file is
+    /// shorter by them, and the person is told.
+    pub skipped: u64,
+}
+
+/// A recording that ended, while its receipt says what it made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Finished {
+    /// The file it wrote, while one is there to open: a recording that could
+    /// not be finished leaves what it wrote, unless it wrote nothing.
+    pub path: Option<PathBuf>,
+    /// Frames the encoder was too far behind to take: what the file is
+    /// missing.
+    pub skipped: u64,
+    /// Why the file could not be finished, when it could not: it carries no
+    /// trailer, so it is not whole.
+    pub failure: Option<String>,
 }
 
 /// What became of sending the last screenshot: to one of the person's other
@@ -205,6 +222,10 @@ pub struct Scene {
     pub sent: Option<Sent>,
     /// The recording that runs, and whether it is paused.
     pub recording: Option<Recording>,
+    /// The recording that ended, while its receipt says what it made of it:
+    /// where its file is, and why it could not be finished when it could
+    /// not.
+    pub finished: Option<Finished>,
     /// Seconds of the last half minute kept ready to clip, while that runs.
     pub replay: Option<u8>,
     /// Which sound that buffer records, so the bar says what a clip will
@@ -245,10 +266,10 @@ pub enum Ask {
     /// Save what the replay buffer holds now.
     SaveReplay,
     StopReplay,
-    /// Open the last screenshot in the person's image app.
-    OpenLast,
-    /// Show the last screenshot in Files.
-    RevealLast,
+    /// Open the capture at `path` in the person's app for it.
+    Open(PathBuf),
+    /// Show the capture at `path` in Files.
+    Reveal(PathBuf),
     /// Copy the last screenshot to the clipboard again.
     CopyLast,
     /// Offer the last screenshot to one of the person's other devices, by its

@@ -12,7 +12,7 @@ use crate::controls::ControlsReading;
 use crate::keys::{
     ControllerKeys, DeskKeys, GuideKeys, Invocations, PressedChords, Presses, SessionKeys,
 };
-use crate::panels::{Held, Readout, ReadoutPlace, ReadoutPlaces};
+use crate::panels::{ActivityLayer, Held, Readout, ReadoutPlace, ReadoutPlaces, Reserved};
 use crate::setup::Setup;
 use crate::{BeforeDesk, Doors, SessionCommand};
 
@@ -48,6 +48,8 @@ pub(crate) struct KeyContext {
     pub(crate) fold: tilo_desktop::desk_widgets::DeskFold,
     /// What stands over the desk, which Escape closes from the top.
     pub(crate) overlays: Overlays,
+    /// The desk's own overlays: the surface up, and Alt+Tab's walk.
+    pub(crate) desk: Rc<crate::overlays::Overlays>,
     /// When each display's bar shows over the window covering it, which
     /// Super asks for.
     pub(crate) reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
@@ -81,14 +83,16 @@ pub(crate) fn mount_controls(
         displays,
         fold,
         overlays,
+        desk,
         reveals,
     }: KeyContext,
     scale: f64,
+    band: Reserved,
 ) -> Controls {
     // Where each display stands and where the person types, filled in every
     // pass: what the readout answers with.
     let places: ReadoutPlaces = Rc::new(RefCell::new(ReadoutPlace::default()));
-    let readout = Rc::new(RefCell::new(Readout::new(scale, Rc::clone(&places))));
+    let readout = Rc::new(RefCell::new(Readout::new(scale, Rc::clone(&places), band)));
     compositor.add_host(Box::new(Held(Rc::clone(&readout))));
     let shared: tilo_surface_host::Shared = readout.clone();
     doors.add(shared);
@@ -111,7 +115,7 @@ pub(crate) fn mount_controls(
             },
             portal,
             guide,
-            DeskKeys::new(fold, overlays),
+            DeskKeys::new(fold, overlays).with_switcher(desk),
             displays,
             ControllerKeys {
                 last: controller,
@@ -129,4 +133,45 @@ pub(crate) fn mount_controls(
         places,
         readout,
     )
+}
+
+/// The floating layer over the desk: every app's activity as a card, which
+/// the session's own reading of the board fills and what the person does on
+/// it reaches the apps through.
+///
+/// Under the shell nothing of it is mounted: the old shell draws the timer's
+/// own floating panel, so a layer of ours would draw a second card over it.
+pub(crate) fn mount_activities(
+    compositor: &mut Compositor,
+    doors: &mut Doors,
+    reader: &Rc<crate::chrome::Activities>,
+    banners: Reserved,
+    readout: Reserved,
+    options: &crate::Options,
+) -> Option<tilo_activities::Link> {
+    if options.shell {
+        return None;
+    }
+    let link = tilo_activities::Link::new();
+    match tilo_activities::prepare(link.clone(), &options.device, &options.person)
+        .and_then(|component| ui::App::from_component(component, (options.presentation)()))
+    {
+        Ok(app) => {
+            let surface = Rc::new(RefCell::new(ActivityLayer::new(
+                app,
+                link.clone(),
+                Rc::clone(reader),
+                banners,
+                readout,
+                options.scale,
+            )));
+            compositor.add_host(Box::new(Held(Rc::clone(&surface))));
+            doors.add(surface);
+            Some(link)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "activity layer not mounted");
+            None
+        }
+    }
 }

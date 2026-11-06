@@ -127,6 +127,17 @@ pub enum PeerPresencePayload {
     /// Appended so new decoders continue to read every older postcard frame;
     /// older peers reject only what they cannot draw of a shell's screen.
     Shell(Box<crate::presence::ShellPresence>),
+    /// The person's name, as they call themselves here: what everyone here
+    /// calls them, whichever of their devices says it. A device names itself
+    /// in its certificate; this names the person behind it, so a face, a row
+    /// and a card name a person and never a machine. Desktop presence: shells
+    /// show it, apps never receive it.
+    ///
+    /// Appended so new decoders continue to read every older postcard frame;
+    /// older peers reject only the name, and go on showing the device's.
+    Person {
+        name: String,
+    },
 }
 
 #[cfg(test)]
@@ -204,6 +215,7 @@ mod tests {
                     emoji: "🎉".into(),
                 }),
             })),
+            PeerPresencePayload::Person { name: "Ada".into() },
         ]
     }
 

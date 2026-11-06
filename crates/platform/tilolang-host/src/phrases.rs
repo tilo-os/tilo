@@ -13,8 +13,30 @@ const TRANSLATIONS: &[(&str, &str)] = &[(
     include_str!("../../tilo-ui-host/locales/de-DE.ftl"),
 )];
 
+/// `locale` as a tag this catalogue compares (`de_DE.UTF-8` is `de-DE`).
+fn normalized(locale: &str) -> String {
+    let wanted = locale.replace('_', "-");
+    wanted.split('.').next().unwrap_or_default().to_owned()
+}
+
+/// The phrases of `wanted`, in its own language when there are any, else the source's.
+fn choose(wanted: &str) -> &'static (&'static str, &'static str) {
+    let language = wanted.split('-').next().unwrap_or_default();
+    TRANSLATIONS
+        .iter()
+        .find(|(candidate, _)| *candidate == wanted)
+        .or_else(|| {
+            TRANSLATIONS
+                .iter()
+                .find(|(candidate, _)| candidate.split('-').next() == Some(language))
+        })
+        .unwrap_or(&SOURCE)
+}
+
 /// The phrases of one language.
 pub struct Phrases {
+    /// The language the host was built for, as its environment named it: the person's.
+    preference: String,
     locale: &'static str,
     catalogue: std::cell::RefCell<Catalogue>,
 }
@@ -25,32 +47,46 @@ impl Phrases {
     /// the source language.
     #[must_use]
     pub fn new(locale: &str) -> Self {
-        let wanted = locale.replace('_', "-");
-        let wanted = wanted.split('.').next().unwrap_or_default();
-        let language = wanted.split('-').next().unwrap_or_default();
-        let chosen = TRANSLATIONS
-            .iter()
-            .find(|(candidate, _)| *candidate == wanted)
-            .or_else(|| {
-                TRANSLATIONS
-                    .iter()
-                    .find(|(candidate, _)| candidate.split('-').next() == Some(language))
-            })
-            .unwrap_or(&SOURCE);
+        let wanted = normalized(locale);
+        let chosen = choose(&wanted);
         let mut sources = vec![chosen.1];
         if chosen.0 != SOURCE.0 {
             sources.push(SOURCE.1);
         }
         Self {
+            preference: wanted,
             locale: chosen.0,
             catalogue: std::cell::RefCell::new(Catalogue::new(chosen.0, &sources)),
         }
+    }
+
+    /// The phrases of the window of a package that ships `shipped`, the languages of its
+    /// catalogues: the person's when the package ships it, the package's source language
+    /// otherwise ([`tilo_history::window_language`]), so the frames' words read in the language
+    /// the window reads in throughout.
+    #[must_use]
+    pub fn for_window(&self, shipped: &[&str]) -> Self {
+        let language = tilo_history::window_language(Some(&self.preference), shipped);
+        Self::new(&language)
     }
 
     /// The language the phrases are in (`en-US`).
     #[must_use]
     pub fn locale(&self) -> &'static str {
         self.locale
+    }
+
+    /// The language the person prefers (`de` for `de-DE`), the one they type dates and times
+    /// in, whatever language the window's phrases are in.
+    #[must_use]
+    pub fn language(&self) -> String {
+        let preference = normalized(&self.preference);
+        preference
+            .split('-')
+            .next()
+            .filter(|language| !language.is_empty())
+            .unwrap_or("en")
+            .to_owned()
     }
 
     /// The phrases of the language the process's environment names.
@@ -143,6 +179,65 @@ mod tests {
         );
     }
 
+    /// A repeat and a reminder say what they do in the reader's language, the count picking the
+    /// plural: "Every 2 weeks", "Alle 2 Wochen", "3 days after done", "15 minutes before".
+    #[test]
+    fn a_repeat_and_a_reminder_read_as_words() {
+        let count = |n: &str| vec![("count".to_owned(), n.to_owned())];
+        let english = Phrases::new("en-US");
+        assert_eq!(
+            english.say("tilolang-repeat-every-weeks", &count("2")),
+            "Every 2 weeks"
+        );
+        assert_eq!(
+            english.say("tilolang-repeat-every-days", &count("1")),
+            "Every day"
+        );
+        assert_eq!(
+            english.say("tilolang-repeat-weekdays", &[]),
+            "Every weekday"
+        );
+        assert_eq!(
+            english.say("tilolang-repeat-days-after-done", &count("3")),
+            "3 days after done"
+        );
+        assert_eq!(
+            english.say("tilolang-remind-minutes-before", &count("15")),
+            "15 minutes before"
+        );
+        assert_eq!(
+            english.say("tilolang-remind-when-due", &[]),
+            "When it is due"
+        );
+        let german = Phrases::new("de_DE.UTF-8");
+        assert_eq!(
+            german.say("tilolang-repeat-every-weeks", &count("2")),
+            "Alle 2 Wochen"
+        );
+        assert_eq!(german.say("tilolang-repeat-weekdays", &[]), "Jeden Werktag");
+        assert_eq!(
+            german.say("tilolang-remind-hours-before", &count("1")),
+            "1 Stunde vorher"
+        );
+    }
+
+    /// A window speaks the language its package ships: an English-only app reads English even
+    /// where the person's own language is German.
+    #[test]
+    fn a_windows_phrases_are_in_the_language_its_package_ships() {
+        let german_host = Phrases::new("de_DE.UTF-8");
+        assert_ne!(
+            german_host.say("tilolang-empty", &[]),
+            "Nothing here yet",
+            "the host's own language is German"
+        );
+        let english_only = german_host.for_window(&["en-US"]);
+        assert_eq!(english_only.locale(), "en-US");
+        assert_eq!(english_only.say("tilolang-empty", &[]), "Nothing here yet");
+        let both = german_host.for_window(&["en-US", "de-DE"]);
+        assert_eq!(both.locale(), "de-DE", "the person's, when it ships it");
+    }
+
     #[test]
     fn the_standard_librarys_phrases_read_in_the_persons_language() {
         let english = Phrases::new("en-US");
@@ -152,6 +247,9 @@ mod tests {
             "tilolang-none-selected",
             "tilolang-sort",
             "tilolang-done",
+            "tilolang-no-date",
+            "tilolang-all-done",
+            "tilolang-add",
         ] {
             let kind = [("kind".to_owned(), "notes".to_owned())];
             assert_ne!(english.say(id, &kind), id, "{id} has a phrase");

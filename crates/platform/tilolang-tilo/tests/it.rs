@@ -12,10 +12,12 @@
 
 mod agent_queries;
 mod bundle;
+mod chained;
 mod chat;
 mod collab;
 mod columns;
 mod composer;
+mod done_days;
 mod engines;
 mod fixtures;
 mod foreign;
@@ -28,6 +30,8 @@ mod items;
 mod lanes;
 mod legacy;
 mod legibility;
+mod links;
+mod make_from;
 mod marks;
 mod naming;
 mod outbox;
@@ -39,10 +43,12 @@ mod record;
 mod records;
 mod records_service;
 mod reflection;
+mod reminders;
 mod rich_text;
 mod scenarios;
 #[cfg(feature = "record")]
 mod shell_record;
+mod suggest;
 mod surface;
 mod sync;
 mod task;

@@ -16,21 +16,23 @@ mod tests {
     use ui::i18n::I18nManager;
 
     #[test]
-    fn setup_catalog_resolves_and_preserves_the_host_locale() {
-        I18nManager::install(
-            "en-US",
-            "de-DE",
-            &[
-                ("en-US", "host-probe = Host"),
-                ("de-DE", "host-probe = Rechner"),
-            ],
-        )
-        .unwrap();
-
-        // Setup's own copy reads in the host's language, from the German
-        // catalogue the crate ships beside its source.
-        assert_eq!(t("imager-setup-action-next"), "Einrichtung fortsetzen");
-        assert_eq!(I18nManager::current_locale(), "de-DE");
-        assert_eq!(I18nManager::lookup_plain("host-probe"), "Rechner");
+    fn setup_catalog_resolves_and_ships_the_languages_beside_its_source() {
+        // A test build pins the catalogue's source language, so the copy a
+        // test asserts is the same on every machine.
+        assert_eq!(t("imager-setup-action-next"), "Continue setup");
+        assert_eq!(I18nManager::current_locale(), "en-US");
+        // The German setup screen reads the catalogue the crate ships beside
+        // its source, which a session in German picks up from the packs.
+        let german = crate::resource::CATALOG
+            .every_source()
+            .into_iter()
+            .find(|(locale, _)| *locale == "de-DE")
+            .expect("the German catalogue ships beside the source");
+        assert!(
+            german
+                .1
+                .contains("imager-setup-action-next = Einrichtung fortsetzen"),
+            "the German catalogue carries setup's own words"
+        );
     }
 }

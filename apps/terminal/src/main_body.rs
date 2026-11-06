@@ -645,6 +645,10 @@ pub struct TerminalWidget {
     runs: RunState,
     /// The last copy of terminal output, whose outcome can arrive later.
     copy: ui::CopyWatch,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 /// The person's command history this terminal adds its runs to.
@@ -734,6 +738,7 @@ impl TerminalWidget {
         let (width, height) = (80, 24);
 
         Self {
+            dirty: true,
             rect: Rect::ZERO,
             input_epoch: std::cell::Cell::new(0),
             native_editor: None,
@@ -2820,6 +2825,7 @@ impl TerminalWidget {
 
     /// Open the session, drain the PTY and mirror the document's screen.
     fn sync_document(&mut self, _state: &AppModel, _root: &ModelPath) {
+        self.dirty = true;
         if self.sessions.is_live() {
             self.ensure_session();
         }
@@ -3030,6 +3036,7 @@ impl Widget for TerminalWidget {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        self.dirty = true;
         if self.copy.failed() {
             // As for any terminal gesture that fails after it was accepted.
             tracing::warn!("the system clipboard did not accept terminal output");
@@ -3097,6 +3104,7 @@ impl Widget for TerminalWidget {
     }
 
     fn mark_drawn(&mut self) {
+        self.dirty = false;
         self.view.shown.present();
         self.view.overlay_presented = self.view.overlay_drawn;
     }
@@ -3258,6 +3266,7 @@ impl Widget for TerminalWidget {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         // The menu is app-owned overlay content, so route every event to the
         // shared primitive while it is open and do not let keys/clicks fall
         // through to the PTY. This gives it Arrow/Enter/Escape keyboard
@@ -3365,6 +3374,10 @@ impl Widget for TerminalWidget {
             }
             _ => {}
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
     }
 
     fn name(&self) -> &'static str {
@@ -5922,11 +5935,8 @@ pub fn decide_route(
     can_self_host: bool,
     runtime: Option<std::path::PathBuf>,
 ) -> ConfineRoute {
-    match target {
-        SessionTarget::Legacy { .. } => {
-            return ConfineRoute::Unavailable("The legacy VM service is not running".into());
-        }
-        _ => {}
+    if let SessionTarget::Legacy { .. } = target {
+        return ConfineRoute::Unavailable("The legacy VM service is not running".into());
     }
     if service_available {
         return ConfineRoute::Service;

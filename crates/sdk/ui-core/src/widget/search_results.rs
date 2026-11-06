@@ -231,11 +231,16 @@ pub struct SearchResultsView {
     /// What to try instead when nothing matches: the empty state then
     /// stands composed, a search glyph over its line and this hint.
     empty_hint: Option<String>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl SearchResultsView {
     pub fn new() -> Self {
         Self {
+            dirty: true,
             groups: Vec::new(),
             flat: Vec::new(),
             cursor: 0,
@@ -262,22 +267,26 @@ impl SearchResultsView {
     /// Whether the owner of the list holds the keyboard, so assistive
     /// technology reads the selected row as focused.
     pub(crate) fn set_focused(&mut self, focused: bool) {
+        self.dirty = true;
         self.focused = focused;
     }
 
     /// Space above every group or section header that follows rows.
     pub fn set_group_gap(&mut self, gap: f64) {
+        self.dirty = true;
         self.group_gap = gap.max(0.0);
     }
 
     /// The query whose words command rows mark where they match.
     pub fn set_highlight(&mut self, query: &str) {
+        self.dirty = true;
         query.clone_into(&mut self.highlight);
     }
 
     /// The modifier held now, for the alternative a selected command row
     /// shows.
     pub fn set_held_modifier(&mut self, held: Option<ActivationModifier>) {
+        self.dirty = true;
         self.held = held;
     }
 
@@ -331,12 +340,14 @@ impl SearchResultsView {
     /// Keep `height` free under the empty-state line, for controls the
     /// owner draws inside the card. The line stays centred above them.
     pub fn set_empty_footer(&mut self, height: f64) {
+        self.dirty = true;
         self.empty_footer = height.max(0.0);
     }
 
     /// Show that more results are still coming: a loading row after the
     /// last result. With no results the empty text says so instead.
     pub fn set_loading(&mut self, loading: bool) {
+        self.dirty = true;
         self.loading = loading;
     }
 
@@ -355,10 +366,12 @@ impl SearchResultsView {
     /// What to try instead when nothing matches, read under the empty
     /// line ([`Self::set_empty_text`]); `None` for the line alone.
     pub(crate) fn set_empty_hint(&mut self, hint: Option<String>) {
+        self.dirty = true;
         self.empty_hint = hint;
     }
 
     pub fn set_empty_text(&mut self, text: impl Into<String>) {
+        self.dirty = true;
         self.empty_text = text.into();
     }
 
@@ -382,6 +395,7 @@ impl SearchResultsView {
     /// Rebuilds the flat selection index and clamps the cursor so it always
     /// points at a real row (or `0` when empty).
     pub fn set_groups(&mut self, groups: Vec<SearchGroup>) {
+        self.dirty = true;
         self.replace_groups(groups);
         // New results read from their top.
         self.scroll = 0.0;
@@ -406,6 +420,7 @@ impl SearchResultsView {
 
     /// Buckets by kind in first-seen order, for callers not going through the registry's grouping.
     pub fn set_results(&mut self, results: Vec<SearchResult>) {
+        self.dirty = true;
         let mut groups: Vec<SearchGroup> = Vec::new();
         for r in results {
             if let Some(g) = groups.iter_mut().find(|g| g.kind == r.kind) {
@@ -435,6 +450,7 @@ impl SearchResultsView {
 
     /// Clamped to the row range.
     pub fn set_cursor(&mut self, index: usize) {
+        self.dirty = true;
         if !self.flat.is_empty() {
             self.cursor = index.min(self.flat.len().saturating_sub(1));
             self.reveal = true;
@@ -444,6 +460,7 @@ impl SearchResultsView {
     /// Select row `index` (clamped) where it stands, without scrolling it
     /// into view: the pointer picks the row it is over.
     pub(crate) fn set_cursor_in_place(&mut self, index: usize) {
+        self.dirty = true;
         if !self.flat.is_empty() {
             self.cursor = index.min(self.flat.len().saturating_sub(1));
         }
@@ -568,6 +585,7 @@ impl SearchResultsView {
     /// The most the overlay may stand, or `None` for as tall as its rows:
     /// past it the rows scroll and the preview band stays at the bottom.
     pub fn set_max_height(&mut self, max: Option<f64>) {
+        self.dirty = true;
         self.max_height = max;
     }
 
@@ -1686,6 +1704,7 @@ impl Widget for SearchResultsView {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
@@ -1747,6 +1766,14 @@ impl Widget for SearchResultsView {
             }
             _ => {}
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

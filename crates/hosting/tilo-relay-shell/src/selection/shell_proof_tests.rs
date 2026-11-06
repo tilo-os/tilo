@@ -50,10 +50,10 @@ pub(crate) fn binding() -> RetentionAuthority {
     )
     .unwrap()
 }
-pub(super) fn parts(payload: CoeditPayload) -> ([u8; 32], Vec<u8>, RoomInput) {
+pub(super) fn parts(payload: CoeditPayload) -> ([u8; 32], Vec<u8>, WorkspaceInput) {
     match payload {
-        CoeditPayload::Checkpoint { channel, body } => (channel, body, RoomInput::Checkpoint),
-        CoeditPayload::RetainedDelta { channel, body } => (channel, body, RoomInput::Delta),
+        CoeditPayload::Checkpoint { channel, body } => (channel, body, WorkspaceInput::Checkpoint),
+        CoeditPayload::RetainedDelta { channel, body } => (channel, body, WorkspaceInput::Delta),
     }
 }
 
@@ -61,7 +61,7 @@ pub(super) fn parts(payload: CoeditPayload) -> ([u8; 32], Vec<u8>, RoomInput) {
 fn shell_authority_binding_is_local_persistent_conflict_checked_and_workspace_bound() {
     let temp = tempfile::tempdir().unwrap();
     let authority = binding();
-    let workspace = tilo_relay::room_workspace_id(authority.room()).unwrap();
+    let workspace = tilo_relay::room_workspace_id(authority.workspace()).unwrap();
     let mut store = WorkspaceStore::open(temp.path(), workspace, true).unwrap();
     assert!(store.shell_authority().is_none());
     store.bind_shell_authority(authority.clone()).unwrap();
@@ -80,7 +80,7 @@ fn shell_authority_binding_is_local_persistent_conflict_checked_and_workspace_bo
     );
     let meta = metadata();
     let other = RetentionAuthority::new(
-        authority.room(),
+        authority.workspace(),
         serde_json::from_value(meta["certificates"][1].clone()).unwrap(),
     )
     .unwrap();
@@ -100,7 +100,7 @@ fn shell_authority_binding_is_local_persistent_conflict_checked_and_workspace_bo
 fn shell_authority_failed_or_malformed_persistence_never_installs_trust() {
     let temp = tempfile::tempdir().unwrap();
     let authority = binding();
-    let workspace = tilo_relay::room_workspace_id(authority.room()).unwrap();
+    let workspace = tilo_relay::room_workspace_id(authority.workspace()).unwrap();
     let mut store = WorkspaceStore::open(temp.path(), workspace, true).unwrap();
     let path = store.root().join("shell-authority-v1.json");
     fs::create_dir(&path).unwrap();
@@ -120,27 +120,27 @@ fn captured_shell_corrupt_room_checksum_never_proves_or_covers() {
     let frame = metadata()["room_checkpoint_frame"].as_u64().unwrap();
     let bytes = fs::read(fixture().join(format!("frames/{frame:04}.postcard"))).unwrap();
     let (channel, body, kind) = parts(CoeditPayload::decode(&bytes).unwrap());
-    let original = verify_room(&authority, source, channel, &body, kind, None).unwrap();
+    let original = verify_workspace(&authority, source, channel, &body, kind, None).unwrap();
     let mut message: NeighbourMsg = postcard::from_bytes(&body).unwrap();
     let NeighbourMsg::SyncResp { changes, .. } = &mut message else {
         panic!()
     };
     changes[0][4] ^= 1;
     let corrupted = postcard::to_allocvec(&message).unwrap();
-    let checkpoint = verify_room(
+    let checkpoint = verify_workspace(
         &authority,
         source,
         channel,
         &corrupted,
-        RoomInput::Checkpoint,
+        WorkspaceInput::Checkpoint,
         None,
     );
-    let delta = verify_room(
+    let delta = verify_workspace(
         &authority,
         source,
         channel,
         &corrupted,
-        RoomInput::Delta,
+        WorkspaceInput::Delta,
         Some(&original),
     );
     let coverage = original.covers_frame(source, channel, &corrupted);
@@ -164,7 +164,7 @@ fn captured_shell_sequence_four_is_unpaired_with_current_seven() {
         + web_time::Duration::from_nanos(meta["now_ns"].as_u64().unwrap());
     let mut peer = StatePeer::restore(
         &fs::read(fixture().join("initial-peer.postcard")).unwrap(),
-        binding.room(),
+        binding.workspace(),
         binding.governor().clone(),
         serde_json::from_value(meta["certificates"].clone()).unwrap(),
         tilo_user_identity::RevocationList::new(),
@@ -172,7 +172,7 @@ fn captured_shell_sequence_four_is_unpaired_with_current_seven() {
     )
     .unwrap();
     let mut proof = None;
-    let mut first_room = None;
+    let mut first_workspace = None;
     let mut rejected = None;
     let frames = meta["frames"].as_u64().unwrap();
     let superseded = &meta["superseded"];
@@ -183,9 +183,10 @@ fn captured_shell_sequence_four_is_unpaired_with_current_seven() {
         let (channel, body, kind) = parts(CoeditPayload::decode(&bytes).unwrap());
         let msg: NeighbourMsg = postcard::from_bytes(&body).unwrap();
         if matches!(msg, NeighbourMsg::SyncResp { .. }) {
-            let next = verify_room(&binding, source, channel, &body, kind, proof.as_ref()).unwrap();
-            if first_room.is_none() {
-                first_room = Some(next.clone());
+            let next =
+                verify_workspace(&binding, source, channel, &body, kind, proof.as_ref()).unwrap();
+            if first_workspace.is_none() {
+                first_workspace = Some(next.clone());
             }
             proof = Some(next);
         }
@@ -208,18 +209,18 @@ fn captured_shell_sequence_four_is_unpaired_with_current_seven() {
             rejected = Some((channel, body));
         }
     }
-    let room = proof.unwrap();
+    let workspace = proof.unwrap();
     let (channel, body) = rejected.unwrap();
-    let old = verify_snapshot(first_room.as_ref().unwrap(), source, channel, &body).unwrap();
+    let old = verify_snapshot(first_workspace.as_ref().unwrap(), source, channel, &body).unwrap();
     assert_eq!(
         old.coverage().sequence,
         superseded["sequence"].as_u64().unwrap()
     );
     assert!(matches!(
-        verify_snapshot(&room, source, channel, &body),
+        verify_snapshot(&workspace, source, channel, &body),
         Err(ProofError::Unpaired)
     ));
-    let coverage = room.coverages().unwrap();
+    let coverage = workspace.coverages().unwrap();
     let expected = coverage
         .get(&tilo_peer_state::coverage::route_key(&app, &record))
         .unwrap();
@@ -247,7 +248,8 @@ fn captured_shell_sequence_four_is_unpaired_with_current_seven() {
             panic!()
         };
         let (channel, body, _) = parts(CoeditPayload::decode(&delta).unwrap());
-        if let Ok(successor) = verify_snapshot(&room, author_device_public_key, channel, &body) {
+        if let Ok(successor) = verify_snapshot(&workspace, author_device_public_key, channel, &body)
+        {
             assert_eq!(successor.coverage().sequence, governed_sequence());
             assert!(successor.covers_snapshot(&old));
             found = true;

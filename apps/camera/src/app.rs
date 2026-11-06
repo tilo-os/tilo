@@ -1188,7 +1188,6 @@ impl CameraApp {
         // The staged screen shows its controls as a control's way there does:
         // the documents list the scanners this sample has.
         self.present_controls();
-        self.dirty = true;
     }
 
     /// The current time in Unix seconds.
@@ -2301,7 +2300,7 @@ impl CameraApp {
         // Only the live/disk storage drives a real capture device. The sample
         // storage backs `--shots`, the test suite and any headless render; it
         // synthesizes its viewfinder frame, so it must never enumerate or open
-        // /dev/video*. The `live-capture` feature compiles the pipeline in; this
+        // /dev/video*. The `native-capture` feature compiles the pipeline in; this
         // runtime check is what decides whether it actually runs — keeping the
         // hermetic path device-free even in a default (feature-on) build.
         if !matches!(self.storage, Storage::Disk(_)) {
@@ -3247,7 +3246,9 @@ impl Widget for CameraApp {
     }
     fn needs_redraw(&self) -> bool {
         let mut dirty = self.dirty || self.tooltip.needs_frame();
-        self.for_each_child(&mut |child| dirty |= child.needs_redraw());
+        self.for_each_child(&mut |child| {
+            dirty |= child.needs_redraw() || child.needs_animation_frame();
+        });
         dirty
     }
     fn needs_animation_frame(&self) -> bool {
@@ -3280,7 +3281,6 @@ impl Widget for CameraApp {
     }
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.motion_reduced = reduced;
-        self.dirty = true;
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;

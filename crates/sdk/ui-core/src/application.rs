@@ -973,9 +973,7 @@ impl HostContext {
         &self,
         migrate: impl FnOnce(&mut AutoCommit) -> Result<bool, String>,
     ) -> Result<bool, String> {
-        self.records
-            .with(&self.record.id, migrate)
-            .ok_or_else(|| "the record is not open".to_owned())?
+        self.records.migrate(&self.record.id, migrate)
     }
     /// Read/project an existing or initialized document. No untracked sync mutation.
     /// # Errors

@@ -25,6 +25,126 @@ impl MergeKind {
     }
 }
 
+/// What a field is to the platform, as its declaration marks it: the text that names the
+/// record, the record's substance, what the type held before, the flag saying an item is
+/// finished, and — for an item that comes round again or reminds someone — the fields a repeat
+/// counts from and a reminder reads. A
+/// host holding the record finds them here, without the app's code: which field repeats, which
+/// day it counts from, when it reminds, and whom.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldRole {
+    /// `(title)`: the text a person knows the record by.
+    Title,
+    /// `(body)`: the record's substance, shown where a title would stand.
+    Body,
+    /// `(previously)`: what the type held before, which only its migrations read.
+    Previously,
+    /// `(repeats: due)`: the field holds a `std.Repeat`, counting from the day named here.
+    Repeats { date: String },
+    /// `(reminds: due, at, who: assignee)`: the field holds a `std.Reminder` of the day named
+    /// here, at the time of day named here where the type has one, for the person named here
+    /// where it names one.
+    Reminds {
+        date: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        time: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        who: Option<String>,
+    },
+    /// `(parent)`: the field holding the item this one stands under (`Option<Task>`), the one
+    /// a type's items nest by and its derived keys read the items above and under it through
+    /// ([`crate::derived`]).
+    Parent,
+    /// `(time of: due)`: the time of day the day named here is due at, so the two read as one
+    /// fact (`Today 09:00`) wherever the day shows and one control picks both.
+    TimeOf { date: String },
+    /// `(done)`: the `Bool` that says the item is finished: what a place leaves out of its
+    /// count and folds into its foot, and what a window's complete action sets.
+    Done,
+}
+
+impl FieldRole {
+    /// The word the marker is written with, without its fields.
+    #[must_use]
+    pub const fn word(&self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::Body => "body",
+            Self::Previously => "previously",
+            Self::Done => "done",
+            Self::Repeats { .. } => "repeats",
+            Self::Reminds { .. } => "reminds",
+            Self::Parent => "parent",
+            Self::TimeOf { .. } => "time",
+        }
+    }
+
+    /// The marker as the declaration writes it, `repeats: due` or `reminds: due, at, who:
+    /// assignee`.
+    #[must_use]
+    pub fn text(&self) -> String {
+        match self {
+            Self::Title | Self::Body | Self::Previously | Self::Done | Self::Parent => {
+                self.word().to_owned()
+            }
+            Self::TimeOf { date } => format!("time of: {date}"),
+            Self::Repeats { date } => format!("repeats: {date}"),
+            Self::Reminds { date, time, who } => {
+                let mut text = format!("reminds: {date}");
+                if let Some(time) = time {
+                    text.push_str(", ");
+                    text.push_str(time);
+                }
+                if let Some(who) = who {
+                    text.push_str(", who: ");
+                    text.push_str(who);
+                }
+                text
+            }
+        }
+    }
+
+    /// Whether the field names the record (`(title)`).
+    #[must_use]
+    pub const fn is_title(&self) -> bool {
+        matches!(self, Self::Title)
+    }
+
+    /// Whether the field is the record's substance (`(body)`).
+    #[must_use]
+    pub const fn is_body(&self) -> bool {
+        matches!(self, Self::Body)
+    }
+
+    /// Whether the field is what the type held before (`(previously)`).
+    #[must_use]
+    pub const fn is_previously(&self) -> bool {
+        matches!(self, Self::Previously)
+    }
+
+    /// Whether the field holds the item this one stands under (`(parent)`).
+    #[must_use]
+    pub const fn is_parent(&self) -> bool {
+        matches!(self, Self::Parent)
+    }
+
+    /// Whether the field says the item is finished (`(done)`).
+    #[must_use]
+    pub const fn is_done(&self) -> bool {
+        matches!(self, Self::Done)
+    }
+
+    /// The day the field is the time of (`(time of: due)`), when it is one.
+    #[must_use]
+    pub fn time_of(&self) -> Option<&str> {
+        match self {
+            Self::TimeOf { date } => Some(date),
+            _ => None,
+        }
+    }
+}
+
 /// The effect class of an action, derived by the compiler (`effects`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -74,9 +194,25 @@ pub enum Ty {
     /// An instant, held as ISO-8601 UTC text `YYYY-MM-DDTHH:MM:SSZ`; not a `Text`. ISO text
     /// orders chronologically, so both compare as text.
     Time,
+    /// A length of time, held as its number of seconds (an `i64`, like an `Int`, and not one):
+    /// a literal writes it as `5m`, `2h`, `3d` or `1w`, and a moment or a day moves by it
+    /// (`now + 2h`, `today + 3d`), while two days or two moments apart are one
+    /// (`end - start`). A day moves by whole days only. Not a field's type: a stored span of
+    /// time is a number the app reads in its own unit.
+    Duration,
     /// `std.Identifier`: an account of some service, held as its URI `scheme:value`
     /// (`mailto:jane@x.com`, `tel:+4930123456`); not a `Text` (see [`crate::identifier`]).
     Identifier,
+    /// `std.Repeat`: how a repeating item comes round again, held as its RFC 5545 rule text
+    /// (`FREQ=WEEKLY;INTERVAL=2`), which carries `X-FROM=DONE` when the next occurrence counts
+    /// from the day it was completed (see [`crate::repeat`]), and its field is marked
+    /// `(repeats: due)`, naming the day it counts from; not a `Text`.
+    Repeat,
+    /// `std.Reminder`: how long before a due moment to remind, held as its RFC 5545 `TRIGGER`
+    /// duration (`-PT15M`), read against the person's zone (see [`crate::repeat`]), and its
+    /// field is marked `(reminds: due, at, who: assignee)`, naming the day, time of day and
+    /// person it reads; not a `Text`.
+    Reminder,
     /// `RichText`: formatted text in which resources are referenced (a person, a channel, a
     /// task), held as tilo-doc's rich text, the one rich-text model of the platform. A field of
     /// it merges by splices and marks.
@@ -93,6 +229,10 @@ pub enum Ty {
     Option(Box<Ty>),
     /// The built-in enum `.ok(value) | .err(error)`.
     Result(Box<Ty>, Box<Ty>),
+    /// `Filter<T>`: one filter a type declares, as a value: what `T.today` names, what
+    /// `filters(T)` lists, and what a query takes. Held as its catalogue entry, the
+    /// `host.Filter` the list's places and search's chips read.
+    Filter(TypeKey),
     /// A declared `enum`: a host handle holding the variant and its payload.
     Enum(TypeKey),
     /// `A | B`: a reference to a resource of any of these types, in order, at least two.
@@ -149,7 +289,7 @@ impl Ty {
     pub const fn repr(&self) -> Option<Vt> {
         match self {
             Self::Float | Self::Length(_) => Some(Vt::F64),
-            Self::Int | Self::Choice(_) => Some(Vt::I64),
+            Self::Int | Self::Duration | Self::Choice(_) => Some(Vt::I64),
             Self::Unit => None,
             _ => Some(Vt::I32),
         }
@@ -183,7 +323,10 @@ impl Ty {
 
     /// Whether values of this type are plain scalars in wasm (not handles).
     pub const fn is_scalar(&self) -> bool {
-        matches!(self, Self::Int | Self::Float | Self::Bool | Self::Choice(_))
+        matches!(
+            self,
+            Self::Int | Self::Duration | Self::Float | Self::Bool | Self::Choice(_)
+        )
     }
 
     /// The element type of something a `for` loop can walk.
@@ -205,6 +348,7 @@ impl Ty {
             Self::Map(t) => format!("Map<{}>", t.meta_text(own_app)),
             Self::Collection(t) => format!("Collection<{}>", t.meta_text(own_app)),
             Self::Option(t) => format!("Option<{}>", t.meta_text(own_app)),
+            Self::Filter(k) => format!("Filter<{}>", Self::Record(k.clone()).meta_text(own_app)),
             Self::Result(t, e) => {
                 format!("Result<{}, {}>", t.meta_text(own_app), e.meta_text(own_app))
             }
@@ -227,7 +371,10 @@ impl Ty {
             Self::Principal => "Principal".into(),
             Self::Date => "Date".into(),
             Self::Time => "Time".into(),
+            Self::Duration => "Duration".into(),
             Self::Identifier => "std.Identifier".into(),
+            Self::Repeat => "std.Repeat".into(),
+            Self::Reminder => "std.Reminder".into(),
             Self::RichText => "RichText".into(),
             Self::Unit => "()".into(),
             Self::Action => "Action".into(),
@@ -242,6 +389,7 @@ impl Ty {
             Self::Map(t) => format!("Map<{}>", t.display(own_app)),
             Self::Collection(t) => format!("Collection<{}>", t.display(own_app)),
             Self::Option(t) => format!("Option<{}>", t.display(own_app)),
+            Self::Filter(k) => format!("Filter<{}>", Self::Record(k.clone()).display(own_app)),
             Self::Result(t, e) => {
                 format!("Result<{}, {}>", t.display(own_app), e.display(own_app))
             }
@@ -344,27 +492,52 @@ pub fn check_date(text: &str) -> Result<(), String> {
 
 /// Why `text` is not an ISO-8601 UTC instant `YYYY-MM-DDTHH:MM:SSZ`, or nothing when it is one.
 pub fn check_time(text: &str) -> Result<(), String> {
-    let shape = || {
-        format!(
+    clock(text, Zone::Utc)
+}
+
+/// Why `text` is not a wall-clock time `YYYY-MM-DDTHH:MM[:SS]`, or nothing when it is one: a time
+/// of day of no zone, read in the person's own where a value is built from it.
+pub fn check_wall_clock(text: &str) -> Result<(), String> {
+    clock(text, Zone::Person)
+}
+
+/// Whether a time text carries its zone.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Zone {
+    /// The instant itself, in UTC (`2026-10-21T09:30:00Z`).
+    Utc,
+    /// The person's own time of day (`2026-10-21T09:30`).
+    Person,
+}
+
+fn clock(text: &str, zone: Zone) -> Result<(), String> {
+    let shape = || match zone {
+        Zone::Utc => format!(
             "`{text}` is not a time: write it in UTC as `YYYY-MM-DDTHH:MM:SSZ`, such as `2026-10-21T09:30:00Z`"
-        )
+        ),
+        Zone::Person => format!(
+            "`{text}` is not a wall-clock time: write it as `YYYY-MM-DDTHH:MM[:SS]`, such as `2026-10-21T09:30`"
+        ),
     };
     let (Some(date), Some(clock)) = (text.get(..10), text.get(10..)) else {
         return Err(shape());
     };
     let b = clock.as_bytes();
-    let ok = b.len() == 10
-        && b.first() == Some(&b'T')
+    let ok = b.first() == Some(&b'T')
         && b.get(3) == Some(&b':')
         && b.get(6) == Some(&b':')
-        && b.get(9) == Some(&b'Z');
+        && match zone {
+            Zone::Utc => b.len() == 10 && b.get(9) == Some(&b'Z'),
+            Zone::Person => matches!(b.len(), 6 | 9),
+        };
     let part = |r: std::ops::Range<usize>| -> Option<u32> {
         let p = clock.get(r)?;
         p.bytes()
             .all(|c| c.is_ascii_digit())
             .then(|| p.parse().ok())?
     };
-    let (Some(h), Some(m), Some(sec)) = (part(1..3), part(4..6), part(7..9)) else {
+    let sec = if b.len() == 9 { part(7..9) } else { Some(0) };
+    let (Some(h), Some(m), Some(sec)) = (part(1..3), part(4..6), sec) else {
         return Err(shape());
     };
     if !ok {
@@ -486,7 +659,10 @@ impl MetaTy<'_> {
             "Principal" => Some(Ty::Principal),
             "Date" => Some(Ty::Date),
             "Time" => Some(Ty::Time),
+            "Duration" => Some(Ty::Duration),
             "std.Identifier" => Some(Ty::Identifier),
+            "std.Repeat" => Some(Ty::Repeat),
+            "std.Reminder" => Some(Ty::Reminder),
             "RichText" | "std.RichText" => Some(Ty::RichText),
             "Action" => Some(Ty::Action),
             "View" => Some(Ty::View),
@@ -504,7 +680,7 @@ impl MetaTy<'_> {
                 }
                 Some(Ty::Result(ok, err))
             }
-            "List" | "Set" | "Map" | "Collection" | "Option" => {
+            "List" | "Set" | "Map" | "Collection" | "Option" | "Filter" => {
                 if !self.eat('<') {
                     return None;
                 }
@@ -517,6 +693,10 @@ impl MetaTy<'_> {
                     "Set" => Ty::Set(inner),
                     "Map" => Ty::Map(inner),
                     "Collection" => Ty::Collection(inner),
+                    "Filter" => match *inner {
+                        Ty::Record(key) => Ty::Filter(key),
+                        _ => return None,
+                    },
                     _ => Ty::Option(inner),
                 })
             }

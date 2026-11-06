@@ -13,18 +13,22 @@ use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 
+use super::Side;
 use super::units::{At, Fit};
+use crate::interaction::InteractionEnvironment;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
 use crate::widget::{AppModel, Element, ModelPath, StructureChange, TaffyTreeExt, Widget};
 
-/// What a layout reads of the theme: the `rem` and the rhythm gaps, in logical pixels.
+/// What a layout reads of the theme: the `rem`, the rhythm gaps and a control's least side,
+/// in logical pixels.
 #[derive(Clone, Copy, Debug)]
 pub struct Resolved {
     pub rem: f32,
     gaps: [f32; 5],
+    target: f32,
 }
 
 impl Resolved {
@@ -40,6 +44,7 @@ impl Resolved {
                 rhythm.get(Rhythm::Section),
                 rhythm.get(Rhythm::Group),
             ],
+            target: InteractionEnvironment::default().minimum_target(),
         }
     }
 
@@ -49,13 +54,30 @@ impl Resolved {
         Self {
             rem,
             gaps: [gap; 5],
+            target: 32.0,
         }
+    }
+
+    /// The same, for a window the person reaches with a control of `target` pixels.
+    #[must_use]
+    pub const fn with_target(mut self, target: f32) -> Self {
+        self.target = target;
+        self
+    }
+
+    /// The row lead: the gutter a row's leading control stands in, its cell and the gap after
+    /// it. A document lays its body one lead in, under the text its heading's control leads
+    /// to, at whatever size the person's controls take.
+    #[must_use]
+    pub const fn lead(&self) -> f32 {
+        self.target + self.gap(Rhythm::Related)
     }
 
     /// The gap of `step` in logical pixels.
     #[must_use]
     pub const fn gap(&self, step: Rhythm) -> f32 {
         match step {
+            Rhythm::None => 0.0,
             Rhythm::Tight => self.gaps[0],
             Rhythm::Related => self.gaps[1],
             Rhythm::Sibling => self.gaps[2],
@@ -114,12 +136,39 @@ pub fn wrapper_style() -> Style {
     }
 }
 
+/// How far `lead` leads come to, in logical pixels.
+#[must_use]
+fn lead_width(lead: i16, resolved: &Resolved) -> f32 {
+    resolved.lead() * f32::from(lead)
+}
+
+/// A container's style with the `lead` it reserves before its content: what it holds stands
+/// that many logical pixels in from its leading edge, which is where a document's body starts
+/// under the text its heading's control leads to.
+pub(super) fn lead_container(mut style: Style, lead: f32, leading: Side) -> Style {
+    if lead > 0.0 {
+        let at = taffy::style_helpers::length(lead);
+        match leading {
+            Side::Leading => style.padding.left = at,
+            Side::Trailing => style.padding.right = at,
+        }
+    }
+    style
+}
+
 /// How a primitive arranges its slots. See the module docs.
 pub trait Layout {
     fn name(&self) -> &'static str;
 
-    /// The container's style for the current arrangement.
-    fn container(&self, resolved: &Resolved) -> Style;
+    /// The container's style for the current arrangement, `lead` pixels of gutter reserved
+    /// before what it holds.
+    fn container(&self, resolved: &Resolved, lead: f32) -> Style;
+
+    /// The side the arrangement leads on: where `lead` reserves its gutter. A row written
+    /// right to left leads on the right.
+    fn leading(&self) -> Side {
+        Side::Leading
+    }
 
     /// The wrapper style of slot `index` for the current arrangement.
     fn slot(&self, index: usize, slot: &Slot, resolved: &Resolved) -> Style;
@@ -149,6 +198,11 @@ pub struct Arranged<L: Layout> {
     pub(super) slots: Vec<Slot>,
     node: Option<NodeId>,
     resolved: Resolved,
+    /// Leads this container reserves before its content: a document's body stands one lead
+    /// in, under the text its heading's control leads to.
+    lead: i16,
+    /// How the person reaches the window, which sizes a lead.
+    interaction: InteractionEnvironment,
     rect: Rect,
     id: Option<String>,
     /// How the slots changed since the host last read it: replaced wholesale
@@ -164,6 +218,8 @@ impl<L: Layout> Arranged<L> {
             slots: Vec::new(),
             node: None,
             resolved: Resolved::fixed(16.0, 8.0),
+            lead: 0,
+            interaction: InteractionEnvironment::default(),
             rect: Rect::ZERO,
             id: None,
             structure: StructureChange::None,
@@ -295,6 +351,28 @@ impl<L: Layout> Arranged<L> {
         self.structure = self.structure.join(StructureChange::Described);
     }
 
+    /// Reserve `lead` leads before what this container holds (`lead: 1`), or none.
+    pub fn set_lead(&mut self, lead: i16) {
+        self.lead = lead;
+    }
+
+    /// How many leads this container reserves before its content.
+    #[must_use]
+    pub const fn lead(&self) -> i16 {
+        self.lead
+    }
+
+    /// The container's style: what its layout arranges with, and the lead it reserves before
+    /// its content.
+    fn container_style(&self) -> Style {
+        let lead = if self.lead > 0 {
+            lead_width(self.lead, &self.resolved)
+        } else {
+            0.0
+        };
+        self.layout.container(&self.resolved, lead)
+    }
+
     /// Style the container and its slots again for what the layout settled on. Where the node
     /// sits in its parent stays as the parent set it: a parent that places it (a virtual list
     /// positions its rows) changed those after the layout styled it, and settling changes how
@@ -303,7 +381,7 @@ impl<L: Layout> Arranged<L> {
         let Some(node) = self.node else {
             return false;
         };
-        let mut style = self.layout.container(&self.resolved);
+        let mut style = self.container_style();
         if let Ok(placed) = tree.style(node) {
             style.position = placed.position;
             style.inset = placed.inset;
@@ -364,7 +442,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.resolved = Resolved::of(theme);
+        self.resolved = Resolved::of(theme).with_target(self.interaction.minimum_target());
         self.layout.items(self.slots.len());
         let resolved = self.resolved;
         let mut wrappers = Vec::with_capacity(self.slots.len());
@@ -389,12 +467,30 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
                 if grown.flex_grow == 0.0 {
                     grown.flex_grow = 1.0;
                 }
+                // A slot whose height the layout gives (a page that fills, a filled layer)
+                // holds its child to it; the mark is read before the wrapper below takes a
+                // height of its own.
+                let given = style.size.height;
+                // A view that clips what it holds (a scroll view, a table) asks for the whole
+                // height because that height is its viewport: through a wrapper that hugs its
+                // content it would never see it. The wrapper takes the height the container
+                // gives its slots, and the view scrolls inside it. Where the container has
+                // none, both stay as tall as the content.
+                let full = taffy::style_helpers::percent(1.0_f32);
+                let clips = current.overflow.x != taffy::Overflow::Visible
+                    || current.overflow.y != taffy::Overflow::Visible;
+                if current.size.height == full
+                    && clips
+                    && style.size.height == taffy::Dimension::auto()
+                {
+                    style.size.height = full;
+                }
                 // A wrapper whose height is given (a filled layer, a filled share of a stack)
                 // holds the child to it: the child shrinks to that height, and what it holds
                 // scrolls or overflows inside it rather than pushing past the wrapper. A layer
                 // straddling an edge stands in a wrapper of no height and keeps its own.
                 let zero = taffy::style_helpers::length(0.0_f32);
-                let filled_layer = style.size.height == taffy::style_helpers::percent(1.0_f32);
+                let filled_layer = given == taffy::style_helpers::percent(1.0_f32);
                 let filled_share = style.flex_grow > 0.0
                     && style.flex_basis == zero
                     && style.min_size.height == zero
@@ -410,7 +506,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
             slot.wrapper = Some(wrapper);
             wrappers.push(wrapper);
         }
-        let node = tree.parent_node(self.layout.container(&resolved), &wrappers);
+        let node = tree.parent_node(self.container_style(), &wrappers);
         self.node = Some(node);
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
@@ -548,6 +644,13 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
             .collect()
     }
 
+    /// Receive how the person reaches the window: a lead is a gutter for a control, and a
+    /// control answers to the least target the window offers.
+    fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
+        self.interaction = environment;
+        crate::widget::defaults::set_interaction_environment(self.children_mut(), environment);
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
         let mut dirty = std::mem::take(&mut self.structure).rebuilds();
         for slot in &mut self.slots {
@@ -582,10 +685,10 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     /// every part is conditional and none stands — dirty forever, drawing a frame each time
     /// it was asked.
     fn needs_redraw(&self) -> bool {
-        self.slots
-            .iter()
-            .enumerate()
-            .any(|(index, slot)| !self.layout.hidden(index) && slot.element.needs_redraw())
+        self.slots.iter().enumerate().any(|(index, slot)| {
+            !self.layout.hidden(index)
+                && (slot.element.needs_redraw() || slot.element.needs_animation_frame())
+        })
     }
 
     fn name(&self) -> &str {

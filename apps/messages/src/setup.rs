@@ -164,7 +164,7 @@ impl SetupView {
                     id.as_str() == account
                         && row.type_id == service
                         && row.enabled
-                        && matches!(service.as_str(), "tilo" | "signal" | "whatsapp" | "sms")
+                        && matches!(service.as_str(), "signal" | "whatsapp" | "sms")
                 }) {
                     return Err(CATALOG.t("messages-no-account"));
                 }
@@ -285,7 +285,7 @@ impl SetupView {
         // the row's title, the account its second line.
         let mut rows: Vec<Element> = Vec::new();
         for (id, account) in sources.accounts().accounts.iter().filter(|(_, row)| {
-            row.enabled && matches!(row.type_id.as_str(), "tilo" | "signal" | "whatsapp" | "sms")
+            row.enabled && matches!(row.type_id.as_str(), "signal" | "whatsapp" | "sms")
         }) {
             let selected = state.selected.as_ref().is_some_and(|chosen| {
                 chosen.service == account.type_id && chosen.account == id.as_str()
@@ -363,9 +363,6 @@ impl SetupView {
         content = content.push(Box::new(Text::new(
             &CATALOG.t(&format!("messages-account-{}", lifecycle.as_str())),
         )));
-        if account.service == "tilo" {
-            return content;
-        }
         let begin = actions.bind_effect_invocation(
             Button::new("messages.setup-start", "messages-start-link").with_enabled(
                 native.is_some()

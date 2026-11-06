@@ -78,6 +78,7 @@ action rename(n: Note, t: Text) (label: "Rename", on: n.title != "") {
 type Task {
     title: Text (title)
     due: Option<Date> = .none
+    at: Option<Time> (time of: due) = .none
     start: Date = Date("2026-10-24")
     done_at: Option<Time> = .none
     seen: Text
@@ -106,10 +107,7 @@ view task(t: Task) {
         text(t.start)
         ui.DateField(bind: t.due, optional: true)
         ui.DateField(bind: t.start)
-        facts {
-            "Due": t.due
-            "Done": t.done_at
-        }
+        facts(t)
     }
 }
 
@@ -185,10 +183,6 @@ view rows(l: Tasks) {
         let text = of_kind(view.tree(), "ui.Text")[0].clone();
         assert_eq!(text_prop(&text, "value"), "2026-10-24");
         assert_eq!(text_prop(&text, "value:as"), "date");
-        let facts = of_kind(view.tree(), "ui.Property");
-        assert_eq!(text_prop(facts[0], "value"), "", "none is the empty text");
-        assert_eq!(text_prop(facts[0], "value:as"), "date");
-        assert_eq!(text_prop(facts[1], "value:as"), "time");
         let dates = of_kind(view.tree(), "ui.DateField");
         assert_eq!(
             dates[0].props.get("optional"),
@@ -196,6 +190,24 @@ view rows(l: Tasks) {
             "a date that may be none can be cleared"
         );
         assert!(!dates[1].props.contains_key("optional"));
+        // The page's own facts are the chips its type's days make, after the controls the
+        // view writes: the day it is due, then the day it starts. The one it is due pairs the
+        // time of day it is due at, whose control stands in the chip's popover.
+        assert_eq!(
+            dates.len(),
+            4,
+            "two controls, two day facts: {}",
+            dump(view.tree())
+        );
+        let chip = dates[2].clone();
+        assert_eq!(
+            view.bound_value(&chip.key),
+            Some(Value::none()),
+            "none is the day a page holds none of"
+        );
+        let times = of_kind(&chip, "ui.TimeField");
+        assert_eq!(times.len(), 1, "the time of day: {}", dump(&chip));
+        assert_eq!(view.bound_value(&times[0].key), Some(Value::none()));
         let control = dates[0].key.clone();
         assert_eq!(view.bound_value(&control), Some(Value::none()));
         view.edit(&control, &Value::text("2026-12-24")).unwrap();
@@ -212,8 +224,12 @@ view rows(l: Tasks) {
         )
         .unwrap();
         view.poll_patches().unwrap();
-        let facts = of_kind(view.tree(), "ui.Property");
-        assert_eq!(text_prop(facts[0], "value"), "2026-11-02");
+        let dates = of_kind(view.tree(), "ui.DateField");
+        assert_eq!(
+            view.bound_value(&dates[2].key),
+            Some(Value::some(Value::text("2026-11-02"))),
+            "the chip shows the day the action set"
+        );
     }
 
     const BOARD: &str = r#"app so.tilo.board "Board"

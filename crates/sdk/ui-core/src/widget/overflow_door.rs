@@ -19,7 +19,9 @@
 //! - [`OverflowDoor`] — the button and the menu of what the plan put behind
 //!   it. `NavShell`'s header row uses the same door for actions that do not
 //!   fit ([`crate::widget::NavShell`]), so an app's own row and the shell's
-//!   header overflow the same way, into the same face.
+//!   header overflow the same way, into the same face. While the menu is up
+//!   its rows are named to assistive technology, so a command a row keeps
+//!   behind the door stays reachable without a pointer.
 //!
 //! A composed row usually wants the shared [`Toolbar`](crate::widget::Toolbar)
 //! instead, which does its own overflow; this door is for the rows a painted
@@ -121,6 +123,9 @@ pub struct OverflowDoor {
     menu: ContextMenu,
     requested: Rc<Cell<bool>>,
     chosen: Option<usize>,
+    /// What each row of the open menu stands for: a command, or the run of commands a group
+    /// row opens (`MenuItem::fold_numbered`).
+    picks: Vec<crate::widget::MenuPick>,
     rect: Rect,
     viewport: Rect,
     /// Some items did not fit: the button stands in the row. Otherwise it is
@@ -129,10 +134,12 @@ pub struct OverflowDoor {
 }
 
 impl OverflowDoor {
-    /// A shut door with `id` on its button, named "More actions".
+    /// A shut door with `id` on its button, named by the toolkit's own
+    /// `window-toolbar-more` message, so the door reads in the window's
+    /// language like the rest of the chrome and the commands behind it.
     #[must_use]
     pub fn new(id: &str) -> Self {
-        Self::with_label(id, "More actions")
+        Self::with_label(id, &crate::i18n!("window-toolbar-more"))
     }
 
     /// [`Self::new`] with the name assistive technology reads, and the
@@ -149,6 +156,7 @@ impl OverflowDoor {
             menu: ContextMenu::new(),
             requested,
             chosen: None,
+            picks: Vec::new(),
             rect: Rect::ZERO,
             viewport: Rect::ZERO,
             shown: false,
@@ -178,6 +186,19 @@ impl OverflowDoor {
     /// Open the menu with `items` — one per control that did not fit, in the
     /// row's order — anchored at the button, inside `viewport`.
     pub fn open(&mut self, items: Vec<MenuItem>, viewport: Rect) {
+        let rows = items.into_iter().enumerate().collect();
+        self.open_picked(rows, viewport);
+    }
+
+    /// Open the menu with `rows`, each standing for the action numbered with it, as
+    /// [`MenuItem::fold_numbered`] folds them: a row of a group opens its run's actions.
+    pub fn open_numbered(&mut self, rows: Vec<(usize, MenuItem)>, viewport: Rect) {
+        self.open_picked(rows, viewport);
+    }
+
+    fn open_picked(&mut self, rows: Vec<(usize, MenuItem)>, viewport: Rect) {
+        let (items, picks) = MenuItem::fold_numbered(rows);
+        self.picks = picks;
         self.menu = ContextMenu::new();
         for item in items {
             self.menu.push(item);
@@ -220,7 +241,17 @@ impl OverflowDoor {
     /// that drives the door without a pointer.
     pub fn choose(&mut self, row: usize) {
         self.menu.close();
-        self.chosen = Some(row);
+        self.chosen = self.pick_of(row, usize::MAX);
+    }
+
+    /// The action index the picked row stands for: the row's own, or the run member at
+    /// `nested` for a row that opened a run.
+    fn pick_of(&self, row: usize, nested: usize) -> Option<usize> {
+        match self.picks.get(row) {
+            Some(crate::widget::MenuPick::One(index)) => Some(*index),
+            Some(crate::widget::MenuPick::Group(indices)) => indices.get(nested).copied(),
+            None => Some(row),
+        }
     }
 }
 
@@ -276,8 +307,16 @@ impl Widget for OverflowDoor {
         if self.menu.is_open() {
             self.menu
                 .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
-            if let Some(row) = self.menu.take_selection() {
-                self.chosen = Some(row);
+            self.chosen = self
+                .menu
+                .take_submenu_selection()
+                .and_then(|(row, nested)| self.pick_of(row, nested))
+                .or_else(|| {
+                    let row = self.menu.take_selection()?;
+                    self.pick_of(row, usize::MAX)
+                })
+                .or(self.chosen);
+            if self.chosen.is_some() {
                 *ctx.handled = true;
             }
             return;
@@ -312,6 +351,53 @@ impl Widget for OverflowDoor {
 
     fn wants_pointer_capture(&self) -> bool {
         self.menu.is_open()
+    }
+
+    /// The button, and while its menu is up, the commands behind it: the menu
+    /// paints its rows itself, so a person using a screen reader reaches those
+    /// commands here rather than nowhere.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let mut node = Widget::accessibility(&self.button)?;
+        node.state.expanded = Some(self.menu.is_open());
+        if self.menu.is_open()
+            && let Some(menu) = Widget::accessibility(&self.menu)
+        {
+            node.children.push(menu);
+        }
+        Some(node)
+    }
+
+    /// The door's node is its button's, so the button is not exported again
+    /// beside it: assistive technology hears "More actions" once.
+    fn accessibility_represents_child(&self, child_index: usize) -> bool {
+        child_index == 0
+    }
+
+    /// A command chosen from the menu by assistive technology, which sends no
+    /// pointer event: the row is the door's choice, as a click on it is.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        if self
+            .menu
+            .perform_semantic_action(target, action, state, path)
+        {
+            self.chosen = self
+                .menu
+                .take_submenu_selection()
+                .and_then(|(row, nested)| self.pick_of(row, nested))
+                .or_else(|| {
+                    let row = self.menu.take_selection()?;
+                    self.pick_of(row, usize::MAX)
+                })
+                .or(self.chosen);
+            return true;
+        }
+        Widget::perform_semantic_action(&mut self.button, target, action, state, path)
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -407,5 +493,80 @@ mod tests {
     #[test]
     fn an_empty_row_has_no_door() {
         assert_eq!(plan(0.0, [], 8.0, 40.0), 0);
+    }
+
+    /// The rows a header keeps behind the door read as the menu of the run they came from:
+    /// a run of three stands as one row, and choosing its second member chooses the second
+    /// action behind the door, not the row.
+    #[test]
+    fn a_run_behind_the_door_is_one_row_that_picks_its_own_member() {
+        let mut door = OverflowDoor::new("more");
+        let rows = vec![
+            (0, MenuItem::selection("Complete")),
+            (1, MenuItem::selection("Today").with_group("Due")),
+            (2, MenuItem::selection("Tomorrow").with_group("Due")),
+            (3, MenuItem::selection("Delete")),
+        ];
+        door.open_numbered(rows, Rect::new(0.0, 0.0, 800.0, 600.0));
+        assert_eq!(
+            door.menu_labels(),
+            ["Complete", "Due", "Delete"],
+            "the two of one run fold into its row"
+        );
+        door.choose(0);
+        assert_eq!(door.take_choice(), Some(0), "a row on its own");
+        door.open_numbered(
+            vec![
+                (0, MenuItem::selection("Complete")),
+                (1, MenuItem::selection("Today").with_group("Due")),
+                (2, MenuItem::selection("Tomorrow").with_group("Due")),
+                (3, MenuItem::selection("Delete")),
+            ],
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
+        door.choose(1);
+        assert_eq!(door.take_choice(), None, "a run's own row runs nothing");
+        assert_eq!(
+            door.pick_of(1, 1),
+            Some(2),
+            "the run's second member is the second action behind the door"
+        );
+        assert_eq!(
+            door.pick_of(2, 0),
+            Some(3),
+            "the row after it keeps its place"
+        );
+    }
+
+    #[test]
+    fn the_commands_behind_the_door_are_named_to_assistive_technology() {
+        let mut door = OverflowDoor::new("more");
+        door.set_shown(true);
+        let shut = door.accessibility().expect("the button names itself");
+        assert_eq!(shut.role, crate::a11y::Role::Button);
+        assert_eq!(shut.name.as_deref(), Some("More actions"));
+        assert_eq!(shut.state.expanded, Some(false));
+        assert!(shut.children.is_empty(), "a shut door names no command");
+        assert!(
+            door.accessibility_represents_child(0),
+            "the door is the button: the button is not named again beside it"
+        );
+
+        door.open(
+            vec![
+                MenuItem::selection("Snooze until…"),
+                MenuItem::selection("Remove"),
+            ],
+            Rect::new(0.0, 0.0, 1280.0, 800.0),
+        );
+        let open = door.accessibility().expect("the button names itself");
+        assert_eq!(open.state.expanded, Some(true));
+        let menu = open.children.first().expect("the menu is named while up");
+        let rows: Vec<Option<&str>> = menu
+            .children
+            .iter()
+            .map(|row| row.name.as_deref())
+            .collect();
+        assert_eq!(rows, [Some("Snooze until…"), Some("Remove")]);
     }
 }

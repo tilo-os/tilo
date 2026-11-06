@@ -1,4 +1,4 @@
-//! The strips a persistent room's shared desktop has: the named places its
+//! The strips a persistent workspace's shared desktop has: the named places its
 //! operator lists, so the first person in finds them in the top bar. The
 //! desktop is the record members' pages keep their windows in, one entry
 //! per workspace, strip, group and window
@@ -10,7 +10,7 @@ use tilo_desktop_model::{
     DesktopTree, IdMinter, Strip, StripId, Workspace, WorkspaceSlot, shared_record,
 };
 
-/// The room record members' pages keep the shared desktop in.
+/// The workspace record members' pages keep the shared desktop in.
 pub(crate) const DESKTOP: (&str, &str) = ("so.tilo.browser-desktop", "desktop");
 /// The longest strip name, the same as one a person names in the top bar.
 const STRIP_NAME_MAX: usize = 48;
@@ -25,13 +25,13 @@ pub(crate) fn strip_name(name: &str) -> Result<String, String> {
     Ok(name.to_owned())
 }
 
-/// Give the room's shared desktop a strip named each of `names`, in order,
-/// in its first workspace where none has that name yet. A room with no
+/// Give the workspace's shared desktop a strip named each of `names`, in order,
+/// in its first workspace where none has that name yet. A workspace with no
 /// desktop starts one: a workspace named `shown` holding those strips.
 /// Returns whether it changed the desktop.
 pub(crate) fn settle_strips(
     doc: &mut automerge::AutoCommit,
-    room: &str,
+    workspace: &str,
     shown: &str,
     names: &[String],
 ) -> Result<bool, String> {
@@ -40,7 +40,7 @@ pub(crate) fn settle_strips(
     }
     let mut desktop = shared_record::read(doc, None).unwrap_or_default();
     let tree = &mut desktop.tree;
-    let mut minter = Minter::new(room, tree);
+    let mut minter = Minter::new(workspace, tree);
     if tree.workspaces.is_empty() {
         let workspace = Workspace::new(WorkspaceSlot(minter.mint()), shown);
         tree.active = workspace.slot;
@@ -65,7 +65,7 @@ pub(crate) fn settle_strips(
     shared_record::write(doc, &desktop).map_err(|error| error.to_string())
 }
 
-/// Ids for the strips the room adds: under a namespace of the room's own,
+/// Ids for the strips the workspace adds: under a namespace of the workspace's own,
 /// never one the desktop already holds.
 struct Minter {
     ids: IdMinter,
@@ -73,8 +73,9 @@ struct Minter {
 }
 
 impl Minter {
-    fn new(room: &str, tree: &DesktopTree) -> Self {
-        let hash = blake3::hash(format!("room strips {room}").as_bytes());
+    fn new(workspace: &str, tree: &DesktopTree) -> Self {
+        // The salt's derivation keeps the bytes it was first derived with.
+        let hash = blake3::hash(format!("room strips {workspace}").as_bytes());
         let [a, b, ..] = *hash.as_bytes();
         // Salt 0 is no namespace at all, and the reserved one is nobody's.
         let salt = tilo_desktop_model::ids::device_salt(u16::from_le_bytes([a, b]));
@@ -126,7 +127,7 @@ mod tests {
             .collect()
     }
 
-    /// A room without a desktop starts one: a workspace with the room's
+    /// A workspace without a desktop starts one: a workspace with the workspace's
     /// name and the listed strips.
     #[test]
     fn a_room_without_a_desktop_starts_with_the_listed_strips() {

@@ -42,10 +42,12 @@ pub mod calendar;
 mod checker;
 pub mod cli;
 mod codegen;
+pub mod derived;
 pub mod describe;
 pub mod diag;
 pub mod duration;
 mod effects;
+pub mod entry;
 mod hash;
 pub mod host;
 pub mod identifier;
@@ -61,10 +63,12 @@ pub mod parser;
 pub mod pred;
 mod prims;
 pub mod print;
+pub mod repeat;
 pub mod resolve;
 pub mod search;
 pub mod source;
 pub mod stdlib;
+pub mod text;
 pub mod toolkit;
 pub mod types;
 pub mod written;
@@ -72,11 +76,11 @@ pub mod written;
 pub use checker::{RESOURCE_TYPE_NAME, resource_key};
 pub use diag::{Diagnostic, Span, diagnostics_json, did_you_mean};
 pub use host::{
-    HOST_APP, INVOCATION_TYPE, RESULT_ERR, RESULT_ERROR, RESULT_OK, RESULT_TYPE, RESULT_VALUE,
-    host_meta,
+    HOST_APP, INVOCATION_TYPE, LINK_HOW_TYPE, RESULT_ERR, RESULT_ERROR, RESULT_OK, RESULT_TYPE,
+    RESULT_VALUE, host_meta,
 };
 pub use ids::{Entropy, IdsError, IdsLock, OsEntropy, SeededEntropy};
-pub use meta::{PackageMeta, custom_section};
+pub use meta::{PERSONAL_RECORD_KIND, PackageMeta, custom_section};
 pub use package::{
     Binding, BlockKind, Compiled, CompiledBlock, CompiledProgram, FileSyntax, PROGRAM_APP_PREFIX,
     check, check_package, compile_block, compile_block_for, compile_package,

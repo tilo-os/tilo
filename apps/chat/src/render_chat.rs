@@ -107,7 +107,7 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let field_w = self.center_right() - self.center_left() - 2.0 * self.chrome.gutter;
-        let width = composer_editor_width(field_w, theme, self.direct_person.is_none());
+        let width = composer_editor_width(field_w, theme, self.direct_person().is_none());
         self.composer_main.measure(width, f32::INFINITY, theme, tr);
         let area = self.messages_rect();
         // The timeline paints inside its clip, its grip and fade in the
@@ -118,16 +118,7 @@ impl ChatApp {
         parts.draw(scene, "chat-messages", column, |scene| {
             if area.width() > 0.0 && area.height() >= self.chrome.body_line {
                 push_clip(scene, tf, area);
-                if self.direct_person.is_some() {
-                    self.draw_person_messages(
-                        PaintCtx::new(scene, tf, tr, theme),
-                        presence,
-                        area,
-                        hits,
-                    );
-                } else {
-                    self.draw_messages(PaintCtx::new(scene, tf, tr, theme), presence, area, hits);
-                }
+                self.draw_messages(PaintCtx::new(scene, tf, tr, theme), presence, area, hits);
                 scene.pop_layer();
             }
             self.draw_conversation_grip(scene, tf, theme, area, hits);
@@ -168,20 +159,27 @@ impl ChatApp {
             let (band, ink) = mention_colors(self, user, self.is_me(user), theme, ground);
             ui::widget::marks::MentionColors { ink, band }
         };
-        let entries: Vec<(String, ui::widget::marks::MentionColors)> = self
-            .participants()
-            .into_iter()
-            .map(|participant| {
-                let painted = colors(&participant.id);
-                (participant.id, painted)
-            })
-            .collect();
+        let participants = self.participant_ids();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        for (user, painted) in &entries {
+        // Every message a frame lays out asks for this, so the fingerprint is
+        // taken from the values themselves: a colour hashes as its components
+        // and a participant as their id, never as formatted text.
+        for (user, _) in &participants {
+            let painted = colors(user);
             user.hash(&mut hasher);
-            format!("{:?}{:?}", painted.ink, painted.band).hash(&mut hasher);
+            painted.ink.components.map(f32::to_bits).hash(&mut hasher);
+            painted
+                .band
+                .map(|band| band.components.map(f32::to_bits))
+                .hash(&mut hasher);
         }
-        format!("{:?}", theme.tokens.colors.text_primary).hash(&mut hasher);
+        theme
+            .tokens
+            .colors
+            .text_primary
+            .components
+            .map(f32::to_bits)
+            .hash(&mut hasher);
         let fingerprint = hasher.finish();
         if let Some((cached, paint)) = self.mention_paint_cache.borrow().as_ref()
             && *cached == fingerprint
@@ -192,8 +190,10 @@ impl ChatApp {
             ink: theme.tokens.colors.text_primary,
             band: None,
         };
-        let map: std::collections::HashMap<String, ui::widget::marks::MentionColors> =
-            entries.into_iter().collect();
+        let map: std::collections::HashMap<String, ui::widget::marks::MentionColors> = participants
+            .into_iter()
+            .map(|(user, _)| (user.to_owned(), colors(user)))
+            .collect();
         let paint: ui::widget::marks::MentionPaint =
             std::rc::Rc::new(move |user: &str| map.get(user).copied().unwrap_or(fallback));
         *self.mention_paint_cache.borrow_mut() = Some((fingerprint, std::rc::Rc::clone(&paint)));
@@ -536,7 +536,7 @@ impl ChatApp {
         area: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        if self.direct_person.is_none() || self.conversation_surface || area.width() <= 0.0 {
+        if self.direct_person().is_none() || self.conversation_surface || area.width() <= 0.0 {
             return;
         }
         let control = ButtonFace::height(ControlSize::Regular, theme);
@@ -560,21 +560,13 @@ impl ChatApp {
         } else {
             String::new()
         };
-        if let Some(peer) = &self.direct_person {
-            return HeaderIdentityText {
-                name: self.person_display_name(peer),
-                kind: Some(crate::i18n::t("chat-person-chat-private")),
-                context: String::new(),
-            };
-        }
-
-        let (name, topic) = self.channel(&self.active_channel).map_or_else(
-            || (String::new(), String::new()),
-            |channel| (channel.name.clone(), channel.topic.clone()),
+        let (name, topic, direct) = self.channel(&self.active_channel).map_or_else(
+            || (String::new(), String::new(), false),
+            |channel| (channel.name.clone(), channel.topic.clone(), channel.direct),
         );
         HeaderIdentityText {
             name,
-            kind: None,
+            kind: direct.then(|| crate::i18n::t("chat-person-chat-private")),
             context: if context.is_empty() { topic } else { context },
         }
     }

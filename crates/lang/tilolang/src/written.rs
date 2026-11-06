@@ -247,6 +247,7 @@ fn item_span(item: &crate::ast::Item) -> Span {
         Item::Enum(e) => e.span,
         Item::Root(r) => r.span,
         Item::DefaultView(d) | Item::RowView(d) => d.span,
+        Item::Views(d) => d.span,
         Item::Scenario(s) => s.span,
         Item::Action(a) => a.span,
         Item::Flow(f) => f.span,

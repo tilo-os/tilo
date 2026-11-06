@@ -16,10 +16,27 @@ fn type_into(menu: &mut ContextMenu, text: &str) {
     }
 }
 
+/// The commands of a file's menu, as many as a menu needs to take typing.
+const COMMANDS: [&str; 13] = [
+    "Open",
+    "Rename",
+    "Copy link",
+    "Move to Trash",
+    "Duplicate",
+    "Pin",
+    "Share",
+    "Archive",
+    "Compress",
+    "Get info",
+    "Move to folder",
+    "Send to Ana",
+    "New folder",
+];
+
 /// A menu the context-menu gesture opened, whose rows record what ran.
 fn context_menu(ran: &Rc<RefCell<Vec<&'static str>>>) -> ContextMenu {
     let mut menu = ContextMenu::new();
-    for label in ["Open", "Rename", "Copy link", "Move to Trash"] {
+    for label in COMMANDS {
         let ran = Rc::clone(ran);
         menu.push(MenuItem::action(label, move || {
             ran.borrow_mut().push(label)
@@ -47,7 +64,7 @@ fn typing_narrows_the_rows_best_first_and_enter_runs_the_best_match() {
     assert!(menu.takes_typing());
     assert_eq!(
         menu.shown_rows(),
-        &[0, 1, 2, 3, 4],
+        &(0..=COMMANDS.len()).collect::<Vec<_>>(),
         "nothing typed: every row"
     );
     let top = menu.get_rect().y0;
@@ -97,19 +114,23 @@ fn a_sentence_no_row_answers_is_asked_and_never_reported_as_a_row() {
     crate::shared_selection::set_agent_host_available(false);
     assert_eq!(
         menu.shown_rows(),
-        &[0, 1, 2, 3, 4],
+        &(0..=COMMANDS.len()).collect::<Vec<_>>(),
         "no row to ask until something is typed"
     );
     type_into(&mut menu, "rename");
+    let asked_at = menu.items().len() - 1;
     assert_eq!(
         menu.shown_rows(),
-        &[1, 5],
+        &[1, asked_at],
         "a match, then asking the sentence"
     );
     assert_eq!(menu.hovered(), Some(1), "Enter would rename");
     menu.set_query("summarise this for Ana");
-    assert_eq!(menu.shown_rows(), &[5], "only asking");
-    assert_eq!(menu.items()[5].label(), Some("Ask: summarise this for Ana"));
+    assert_eq!(menu.shown_rows(), &[asked_at], "only asking");
+    assert_eq!(
+        menu.items()[asked_at].label(),
+        Some("Ask: summarise this for Ana")
+    );
     dispatch(&mut menu, &named_key(NamedKey::Enter));
     assert!(ran.borrow().is_empty(), "no row ran");
     assert_eq!(menu.take_selection(), None);
@@ -125,7 +146,7 @@ fn a_sentence_no_row_answers_is_asked_and_never_reported_as_a_row() {
 fn an_owner_that_answers_typing_takes_the_sentence_itself() {
     crate::shared_selection::set_agent_host_available(false);
     // Opened with the keyboard, not the context-menu gesture: an owner that
-    // answers typing still gets a field.
+    // answers typing still gets a field, however short the menu.
     note_input(&crate::synthetic_input::mouse_input(
         ElementState::Pressed,
         MouseButton::Left,
@@ -143,6 +164,30 @@ fn an_owner_that_answers_typing_takes_the_sentence_itself() {
     assert_eq!(menu.take_ask(), None, "taken once");
     assert_eq!(menu.take_selection(), None);
     assert!(!menu.is_open());
+}
+
+#[test]
+fn a_menu_of_a_few_commands_opens_as_a_plain_list() {
+    crate::shared_selection::set_agent_host_available(false);
+    note_input(&crate::synthetic_input::mouse_input(
+        ElementState::Pressed,
+        MouseButton::Right,
+    ));
+    let mut menu = ContextMenu::with_items(vec![
+        MenuItem::action("Complete", || {}),
+        MenuItem::action("Duplicate", || {}),
+        MenuItem::action("Delete", || {}),
+    ]);
+    menu.open_anchored(
+        Rect::new(40.0, 40.0, 40.0, 40.0),
+        Rect::new(0.0, 0.0, 800.0, 600.0),
+    );
+    assert!(
+        !menu.takes_typing(),
+        "three commands are read at a glance: no field over them"
+    );
+    assert_eq!(menu.items().len(), 3, "and the menu adds no row");
+    assert_eq!(menu.shown_rows(), &[0, 1, 2], "every command is shown");
 }
 
 #[test]

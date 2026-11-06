@@ -389,6 +389,10 @@ pub struct MapsApp {
     /// Authoritative combined-output bounds supplied by the shell. Standalone
     /// app/test hosts leave this empty and fall back to the app rect.
     floating_surface_bounds: Rect,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Default for MapsApp {
@@ -1013,6 +1017,14 @@ impl Widget for MapsApp {
             }
             _ => {}
         }
+    }
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

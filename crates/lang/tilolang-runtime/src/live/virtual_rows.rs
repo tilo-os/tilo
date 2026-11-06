@@ -30,6 +30,10 @@ use crate::store::{Listing, Splice};
 use crate::value::{CollRef, Value};
 use crate::view::{Patch, RowStep, RowsChange, UiNode, row_steps};
 
+/// The rows a virtual list holds built: each row's place and boundary, and the fragments that
+/// stand for the rows in the list.
+type BuiltRows = (Vec<(usize, BoundId)>, Vec<(usize, UiNode)>);
+
 /// The rows of a virtual list as the host holds them: what they are made of, as of the last
 /// steps the host was given.
 #[derive(Clone)]
@@ -37,26 +41,78 @@ pub(crate) enum Rows {
     Coll {
         coll: Rc<CollRef>,
         listing: Rc<Listing>,
+        /// The rows the person's own changes took out of the listing, kept where they stand
+        /// (`place`, item) until the view is left: see [`Live::keep_rows`].
+        kept: Vec<(usize, Rc<str>)>,
     },
-    List(Rc<[Value]>),
+    List {
+        values: Rc<[Value]>,
+        /// The rows the person's own changes took out of the list, kept where they stand
+        /// (`place`, item) until the view is left: see [`still_kept_list`].
+        kept: Vec<(usize, Value)>,
+    },
 }
 
 impl Rows {
     fn len(&self) -> usize {
         match self {
-            Self::Coll { listing, .. } => listing.len(),
-            Self::List(values) => values.len(),
+            Self::Coll { listing, kept, .. } => listing.len().saturating_add(kept.len()),
+            Self::List { values, kept } => values.len().saturating_add(kept.len()),
+        }
+    }
+
+    /// The collection whose items the rows are, if they are a collection's.
+    fn coll(&self) -> Option<Rc<CollRef>> {
+        match self {
+            Self::Coll { coll, .. } => Some(Rc::clone(coll)),
+            Self::List { .. } => None,
+        }
+    }
+
+    /// The collection's item of row `index`, kept rows counted.
+    fn coll_row(&self, index: usize) -> Option<Rc<str>> {
+        let Self::Coll { listing, kept, .. } = self else {
+            return None;
+        };
+        let before = kept.partition_point(|(place, _)| *place < index);
+        if let Some((place, item)) = kept.get(before)
+            && *place == index
+        {
+            return Some(Rc::clone(item));
+        }
+        listing.get(index.saturating_sub(before))
+    }
+
+    /// The list item of row `index`, kept rows counted.
+    fn list_row(&self, index: usize) -> Option<&Value> {
+        let Self::List { values, kept } = self else {
+            return None;
+        };
+        let before = kept.partition_point(|(place, _)| *place < index);
+        if let Some((place, item)) = kept.get(before)
+            && *place == index
+        {
+            return Some(item);
+        }
+        values.get(index.saturating_sub(before))
+    }
+
+    /// The rows of a collection kept for the viewer, and where they stand.
+    fn kept(&self) -> &[(usize, Rc<str>)] {
+        match self {
+            Self::Coll { kept, .. } => kept,
+            Self::List { .. } => &[],
         }
     }
 
     /// The key of row `index`, built from `template` without a reference to its item.
     fn key(&self, template: &RowsOf, index: usize) -> Option<String> {
         match self {
-            Self::Coll { coll, listing } => listing
-                .get(index)
+            Self::Coll { coll, .. } => self
+                .coll_row(index)
                 .map(|id| template.coll_row_key(coll, &id)),
-            Self::List(values) => values
-                .get(index)
+            Self::List { .. } => self
+                .list_row(index)
                 .map(|item| template.key_of(&item_key(item, index))),
         }
     }
@@ -64,8 +120,29 @@ impl Rows {
     /// The item of row `index`.
     fn item(&self, core: &Core, index: usize) -> Option<Value> {
         match self {
-            Self::Coll { coll, listing } => listing.get(index).map(|id| core.item_ref(coll, &id)),
-            Self::List(values) => values.get(index).cloned(),
+            Self::Coll { coll, .. } => self.coll_row(index).map(|id| core.item_ref(coll, &id)),
+            Self::List { .. } => self.list_row(index).cloned(),
+        }
+    }
+
+    /// The rows kept for the viewer settle: the view they stood in is left.
+    fn settle(&mut self) {
+        match self {
+            Self::Coll { kept, .. } => kept.clear(),
+            Self::List { kept, .. } => kept.clear(),
+        }
+    }
+
+    /// These rows as a listing a store reads (`crate::store::moved_steps`): the listing, with
+    /// the rows kept for the viewer at their places. `None` for rows of values.
+    fn listing(&self) -> Option<Rc<Listing>> {
+        match self {
+            Self::Coll { listing, kept, .. } if kept.is_empty() => Some(Rc::clone(listing)),
+            Self::Coll { listing, kept, .. } => Some(Rc::new(Listing::paged(Rc::new(KeptRows {
+                base: Rc::clone(listing),
+                kept: kept.clone(),
+            })))),
+            Self::List { .. } => None,
         }
     }
 
@@ -74,24 +151,42 @@ impl Rows {
         match (self, other) {
             (
                 Self::Coll {
-                    coll: a,
-                    listing: x,
+                    coll: mine_coll,
+                    listing: mine_listing,
+                    kept: kept_coll_mine,
                 },
                 Self::Coll {
-                    coll: b,
-                    listing: y,
+                    coll: theirs_coll,
+                    listing: theirs_listing,
+                    kept: kept_coll_theirs,
                 },
             ) => {
-                a == b
-                    && (Rc::ptr_eq(x, y)
+                mine_coll == theirs_coll
+                    && kept_coll_mine == kept_coll_theirs
+                    && (Rc::ptr_eq(mine_listing, theirs_listing)
                         // A listing that checks its items as it reads them knows only the most
                         // it can have: as many rows as before, and not sure it has them all,
                         // keeps the rows built and lets the host ask, rather than read them
                         // all to say they are the same.
-                        || (!x.len_is_exact() && x.len() == y.len())
-                        || (x.len_is_exact() && y.len_is_exact() && x == y))
+                        || (!mine_listing.len_is_exact()
+                            && mine_listing.len() == theirs_listing.len())
+                        || (mine_listing.len_is_exact()
+                            && theirs_listing.len_is_exact()
+                            && mine_listing == theirs_listing))
             }
-            (Self::List(a), Self::List(b)) => Rc::ptr_eq(a, b) || a == b,
+            (
+                Self::List {
+                    values: mine_values,
+                    kept: kept_mine,
+                },
+                Self::List {
+                    values: theirs_values,
+                    kept: kept_theirs,
+                },
+            ) => {
+                kept_mine == kept_theirs
+                    && (Rc::ptr_eq(mine_values, theirs_values) || mine_values == theirs_values)
+            }
             _ => false,
         }
     }
@@ -101,6 +196,50 @@ impl Rows {
         (0..self.len())
             .filter_map(|index| self.key(template, index))
             .collect()
+    }
+}
+
+/// A listing with the rows the viewer's own changes took out of it kept at their places: what
+/// the rows of a list stand for until the view is left.
+#[derive(Debug)]
+struct KeptRows {
+    base: Rc<Listing>,
+    /// Sorted by place.
+    kept: Vec<(usize, Rc<str>)>,
+}
+
+impl KeptRows {
+    /// How many kept rows stand before `index`.
+    fn before(&self, index: usize) -> usize {
+        self.kept.partition_point(|(place, _)| *place < index)
+    }
+}
+
+impl crate::store::PagedItems for KeptRows {
+    fn len(&self) -> usize {
+        self.base.len().saturating_add(self.kept.len())
+    }
+
+    fn len_is_exact(&self) -> bool {
+        self.base.len_is_exact()
+    }
+
+    fn get(&self, index: usize) -> Option<Rc<str>> {
+        let before = self.before(index);
+        if let Some((place, item)) = self.kept.get(before)
+            && *place == index
+        {
+            return Some(Rc::clone(item));
+        }
+        self.base.get(index.saturating_sub(before))
+    }
+
+    fn position(&self, id: &str) -> Option<Option<usize>> {
+        if let Some((place, _)) = self.kept.iter().find(|(_, item)| &**item == id) {
+            return Some(Some(*place));
+        }
+        let index = self.base.position(id)?;
+        Some(index.map(|index| index.saturating_add(self.before(index.saturating_add(1)))))
     }
 }
 
@@ -133,6 +272,39 @@ impl Live {
         if let Some(rows) = self.lists.get_mut(list) {
             rows.lost = true;
         }
+    }
+
+    /// The rows kept for the viewer settle in the lists the moved view state `left` encloses:
+    /// the view they stood in is left.
+    pub(super) fn settle_kept(&mut self, left: &[BoundId]) {
+        let settling: Vec<String> = self
+            .lists
+            .iter()
+            .filter(|(_, list)| left.iter().any(|moved| self.encloses(*moved, list.holder)))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in settling {
+            if let Some(list) = self.lists.get_mut(&key) {
+                // The rows of a query were never steps the host took: the list alone knows it
+                // held them, so where one stood the host reads the list anew when its holder
+                // runs, as it does when another filter is chosen.
+                if !list.rows.kept().is_empty() {
+                    list.lost = true;
+                }
+                list.rows.settle();
+            }
+        }
+    }
+
+    /// Whether the boundary `outer` holds the boundary `inner`: itself, or a call it makes.
+    fn encloses(&self, outer: BoundId, inner: BoundId) -> bool {
+        if outer == inner {
+            return true;
+        }
+        let (Some(outer), Some(inner)) = (self.bound(outer), self.bound(inner)) else {
+            return false;
+        };
+        inner.path.starts_with(&outer.path)
     }
 
     /// Treat every list as holding all its rows, built: for a host that draws the whole tree,
@@ -183,6 +355,9 @@ impl Live {
             return Ok(None);
         };
         let holder = rows.holder;
+        // Where the row stands among the rows of the collection it is a row of, which its body
+        // reads the rows around it by.
+        let among = rows.rows.coll().map(|coll| (coll, index));
         let (key, args) = rows.template.row(&item, index);
         let fragment = rows.template.fragment(key.clone(), Vec::new());
         let place = rows.built.partition_point(|(other, _)| *other < index);
@@ -201,7 +376,7 @@ impl Live {
             _ => return Ok(None),
         }
         self.place_built(list, &at);
-        self.render_row(core, id)?;
+        self.render_row(core, id, among)?;
         // After the row is rendered: its render sets the fragment's children.
         self.divide_unread(&item, &key, &at);
         Ok(Some(key))
@@ -291,12 +466,21 @@ impl Live {
         let Some(at) = self.virtual_path(list) else {
             return Ok(false);
         };
+        if let Some(lingered) = self.linger_in_list(list, step) {
+            return Ok(lingered);
+        }
+        // Only a step the person's rows did keep is one the host takes no step for: one that
+        // cannot keep them reads no store and falls through to the host's own steps.
+        if self.linger_in_query(core, list, step) == Some(true) {
+            return Ok(true);
+        }
         let parent = self.keys_at(&at);
         let found;
         let step_splices = match &step.steps {
             Steps::Splices(splices) => splices,
             Steps::Moved(ids) => {
-                let Some(steps) = self.moved_in_query(core, list, &step.rows, ids) else {
+                let Some(steps) = self.moved_in_query(core, list, &step.rows, ids, step.mine)
+                else {
                     return Ok(false);
                 };
                 found = steps;
@@ -322,6 +506,7 @@ impl Live {
                     Patch::Move {
                         parent: parent.clone(),
                         key,
+                        from: *from,
                         to: *to,
                     }
                 }
@@ -376,30 +561,183 @@ impl Live {
         Ok(true)
     }
 
+    /// What the steps of `step` do to `list` when its rows are the values its holder made: what
+    /// the guest made of them says which items they are, so a row the person's own change took
+    /// out of it stands where it is — the host's rows do not move and the holder runs again to
+    /// keep it — and anyone else's change makes the rows new, as a query's steps do. `None` for
+    /// a list whose rows are a query's.
+    fn linger_in_list(&mut self, list: &str, step: &Pending) -> Option<bool> {
+        if !matches!(
+            self.lists.get(list).map(|held| &held.rows),
+            Some(Rows::List { .. })
+        ) {
+            return None;
+        }
+        let Steps::Moved(ids) = &step.steps else {
+            return Some(false);
+        };
+        if !step.mine || ids.is_empty() {
+            return Some(false);
+        }
+        self.mine_items.extend(ids.iter().cloned());
+        self.dirty.insert(step.holder);
+        Some(true)
+    }
+
+    /// What a step that only takes rows out of `list`, a query of a collection, does when the
+    /// change is the person's: every row it takes out is still in the collection, so each stands
+    /// where it is, the host's rows untouched, until the view is left ([`Rows::settle`] settles
+    /// them). `None` when the rows are a list of values' or the step is not one that only takes
+    /// rows out, or is someone else's.
+    fn linger_in_query(&mut self, core: &Core, list: &str, step: &Pending) -> Option<bool> {
+        let Steps::Splices(splices) = &step.steps else {
+            return Some(false);
+        };
+        if !step.mine || splices.is_empty() {
+            return Some(false);
+        }
+        let held = self.lists.get(list)?;
+        let Rows::Coll {
+            coll,
+            listing,
+            kept,
+        } = &held.rows
+        else {
+            return Some(false);
+        };
+        let (coll, listing, kept) = (Rc::clone(coll), Rc::clone(listing), kept.clone());
+        if *coll != *step.rows.coll {
+            return Some(false);
+        }
+        let before = Rows::Coll {
+            coll: Rc::clone(&coll),
+            listing,
+            kept: kept.clone(),
+        }
+        .listing()?;
+        let mut keeping = kept;
+        for (removed, splice) in splices.iter().enumerate() {
+            let Splice::Remove { at, item } = splice else {
+                return Some(false);
+            };
+            if keeps(core, &coll, item) != Some(true)
+                || keeping.iter().any(|(_, held)| &**held == item.as_str())
+            {
+                return Some(false);
+            }
+            keeping.push((at.saturating_add(removed), Rc::from(item.as_str())));
+        }
+        keeping.sort_unstable_by_key(|(place, _)| *place);
+        let now = core.coll_listing(&step.rows.coll).ok()?;
+        let after = Rows::Coll {
+            coll: Rc::clone(&coll),
+            listing: now,
+            kept: keeping,
+        };
+        let after_listing = after.listing()?;
+        if after_listing.len() != before.len() {
+            return Some(false);
+        }
+        for (place, item) in after.kept() {
+            if after_listing.position(item) != Some(Some(*place)) {
+                return Some(false);
+            }
+        }
+        if let Some(held) = self.lists.get_mut(list) {
+            held.rows = after;
+        }
+        Some(true)
+    }
+
     /// The steps that take the rows of `list`, a query of a collection (filtered or sorted), from
     /// the listing they stand for to the query's listing now, when only the items `ids` came,
     /// went or moved: each found where it was and where it is, which reads a page or two per
-    /// item whatever the listing's length. `None` when the rows are not of that query, or a
-    /// listing cannot say where an item is.
+    /// item whatever the listing's length. And the rows kept after it: a row the person's own
+    /// change took out of the query stands where it is ([`Self::keep_rows`]). `None` when the
+    /// rows are not of that query, or a listing cannot say where an item is.
     fn moved_in_query(
-        &self,
+        &mut self,
         core: &Core,
         list: &str,
         rows: &crate::render::LoopRows,
         ids: &std::collections::BTreeSet<String>,
+        mine: bool,
     ) -> Option<Vec<Splice>> {
-        let Rows::Coll {
-            coll,
-            listing: before,
-        } = &self.lists.get(list)?.rows
-        else {
-            return None;
+        let (coll, before) = match &self.lists.get(list)?.rows {
+            Rows::Coll {
+                coll,
+                listing,
+                kept,
+            } => (
+                Rc::clone(coll),
+                Rows::Coll {
+                    coll: Rc::clone(coll),
+                    listing: Rc::clone(listing),
+                    kept: kept.clone(),
+                }
+                .listing()?,
+            ),
+            Rows::List { .. } => return None,
         };
-        if !Rc::ptr_eq(coll, &rows.coll) && **coll != *rows.coll {
+        if !Rc::ptr_eq(&coll, &rows.coll) && *coll != *rows.coll {
             return None;
         }
         let now = core.coll_listing(&rows.coll).ok()?;
-        crate::store::moved_steps(before, &now, ids.iter().map(String::as_str))
+        let kept = self.keep_rows(core, list, &coll, &before, &now, ids, mine)?;
+        let after = Rows::Coll {
+            coll,
+            kept,
+            listing: now,
+        };
+        let steps = crate::store::moved_steps(
+            before.as_ref(),
+            after.listing()?.as_ref(),
+            ids.iter().map(String::as_str),
+        )?;
+        // The rows the person's own change took out of the query are kept, and the steps just
+        // left them where they are: the list stands for `after` from now on.
+        if let Some(held) = self.lists.get_mut(list) {
+            held.rows = after;
+        }
+        Some(steps)
+    }
+
+    /// The rows kept after the change of the query `now`: those kept before that the query still
+    /// does not hold, and — for the person's own change — each row built whose item `ids` names
+    /// and that the change took out of the query, at its place. A row someone else's change
+    /// takes out moves as it ever did; one the query holds again (an undo) is the query's own
+    /// row now ([`still_kept`]).
+    fn keep_rows(
+        &self,
+        core: &Core,
+        list: &str,
+        coll: &CollRef,
+        before: &Listing,
+        now: &Listing,
+        ids: &std::collections::BTreeSet<String>,
+        mine: bool,
+    ) -> Option<Vec<(usize, Rc<str>)>> {
+        let held = self.lists.get(list)?;
+        let mut kept = still_kept(core, coll, now, held.rows.kept());
+        if !mine {
+            return Some(kept);
+        }
+        // A row the change takes out of the query stands where it stood, whether the host has
+        // built it yet or not: the host takes no step for it.
+        for id in ids {
+            if kept.iter().any(|(_, held)| &**held == id.as_str()) || now.position(id) != Some(None)
+            {
+                continue;
+            }
+            let Some(Some(place)) = before.position(id) else {
+                continue;
+            };
+            kept.push((place, Rc::from(id.as_str())));
+        }
+        kept.sort_unstable_by_key(|(place, _)| *place);
+        // A row the change took out of the collection itself goes; only what the query left
+        // stands where it is.
+        Some(still_kept(core, coll, now, &kept))
     }
 
     /// Move the row keyed `key` from index `from` to `to` among the rows of `list`, its node
@@ -506,17 +844,24 @@ impl Live {
         let Some(list) = self.lists.get(&rows.parent) else {
             return false;
         };
-        let fits = list.len == listing.len()
+        // The rows of a list of values are what its holder made of them: they fit it as it
+        // stands, and its holder keeps them when it runs again.
+        if matches!(list.rows, Rows::List { .. }) {
+            return true;
+        }
+        let now = Rows::Coll {
+            coll: Rc::clone(&rows.coll),
+            kept: still_kept(core, &rows.coll, &listing, list.rows.kept()),
+            listing,
+        };
+        let fits = list.len == now.len()
             && list.built.iter().all(|(index, id)| {
-                let key = listing.get(*index).map(|item| rows.row_key(&item));
+                let key = now.key(&list.template, *index);
                 self.bound(*id)
                     .is_some_and(|b| Some(&b.key) == key.as_ref())
             });
         if fits && let Some(list) = self.lists.get_mut(&rows.parent) {
-            list.rows = Rows::Coll {
-                coll: Rc::clone(&rows.coll),
-                listing,
-            };
+            list.rows = now;
         }
         fits
     }
@@ -565,17 +910,132 @@ impl Live {
     }
 }
 
+/// The rows of `kept` that stand: those `listing` still does not hold — one the query holds
+/// again (an undo) is the query's own row now — and whose items its collection still has, a
+/// removed item's row going as it goes.
+fn still_kept(
+    core: &Core,
+    coll: &CollRef,
+    listing: &Listing,
+    kept: &[(usize, Rc<str>)],
+) -> Vec<(usize, Rc<str>)> {
+    if kept.is_empty() {
+        return Vec::new();
+    }
+    // The collection's own listing, whatever the query holds of it.
+    let plain = Rc::new(CollRef {
+        filter: None,
+        order: None,
+        ..coll.clone()
+    });
+    let Ok(all) = core.coll_listing(&plain) else {
+        return Vec::new();
+    };
+    kept.iter()
+        .filter(|(_, item)| matches!(listing.position(item), Some(None)))
+        .filter(|(_, item)| matches!(all.position(item), Some(Some(_))))
+        .map(|(place, item)| (*place, Rc::clone(item)))
+        .collect()
+}
+
+/// Whether the collection of the query `coll` still holds the item `id`: `Some(false)` when it
+/// no longer does, `None` when its listing cannot say.
+fn keeps(core: &Core, coll: &CollRef, id: &str) -> Option<bool> {
+    // The collection's own listing, whatever the query holds of it.
+    let plain = Rc::new(CollRef {
+        filter: None,
+        order: None,
+        ..coll.clone()
+    });
+    let all = core.coll_listing(&plain).ok()?;
+    all.position(id).map(|place| place.is_some())
+}
+
+/// The rows of a list of values the person looking took out of it that still stand: those kept
+/// before, and those this change named, where they stood in it. They stand there while the list
+/// is the one that kept them — its other rows there still, in order — and the items are still
+/// there: a row the list holds again is its own row, and one whose item is gone has no row.
+fn still_kept_list(
+    core: &Core,
+    before: &Rows,
+    values: &[Value],
+    named: &std::collections::BTreeSet<String>,
+) -> Vec<(usize, Value)> {
+    let Rows::List { kept: old, .. } = before else {
+        return Vec::new();
+    };
+    if old.is_empty() && named.is_empty() {
+        return Vec::new();
+    }
+    let mut keep = old.clone();
+    if !named.is_empty() {
+        for index in 0..before.len() {
+            let Some(item) = before.list_row(index) else {
+                continue;
+            };
+            let named = item_ref_id(item).is_some_and(|id| named.contains(id));
+            if named && keep.iter().all(|(place, _)| *place != index) {
+                keep.push((index, item.clone()));
+            }
+        }
+    }
+    let rest = (0..before.len())
+        .filter(|index| keep.iter().all(|(place, _)| place != index))
+        .filter_map(|index| before.list_row(index).cloned());
+    if !stands_in(rest, values) {
+        return Vec::new();
+    }
+    keep.into_iter()
+        .filter(|(_, item)| !values.contains(item) && still_there(core, item))
+        .collect()
+}
+
+/// Whether `rest` stands in `values` in that order: the list is the one that kept rows, with
+/// some items gone, another's changes to it and all.
+fn stands_in(rest: impl Iterator<Item = Value>, values: &[Value]) -> bool {
+    let mut values = values.iter();
+    rest.into_iter()
+        .all(|item| values.any(|there| *there == item))
+}
+
+/// Whether the item of a kept row is still there to draw.
+fn still_there(core: &Core, item: &Value) -> bool {
+    match item {
+        Value::Ref(item) => core.store.borrow().type_of(&item.target).is_ok(),
+        _ => false,
+    }
+}
+
 /// Whether `now` is made of another query than `before`: another collection, filter or order,
 /// or a collection where there were values or values where there was a collection.
 fn another_query(before: &Rows, now: &Rows) -> bool {
     match (before, now) {
         (Rows::Coll { coll: a, .. }, Rows::Coll { coll: b, .. }) => !Rc::ptr_eq(a, b) && a != b,
-        (Rows::List(_), Rows::List(_)) => false,
+        (Rows::List { .. }, Rows::List { .. }) => false,
         _ => true,
     }
 }
 
 impl Builder<'_> {
+    /// The rows the person's own changes took out of the list stand where they are for as long
+    /// as the view is there, so a list built again keeps them; one the list holds again is its
+    /// own row now.
+    fn carry_kept(&self, before: Option<&Virtual>, rows: &mut Rows) {
+        let Some(before) = before else {
+            return;
+        };
+        match rows {
+            Rows::Coll {
+                coll,
+                listing,
+                kept,
+            } => *kept = still_kept(self.core, coll, listing, before.rows.kept()),
+            Rows::List { values, kept } => {
+                *kept = still_kept_list(self.core, &before.rows, values, &self.live.mine_items);
+            }
+        }
+    }
+
     /// The rows of a virtual list as the boundary holding it runs: those built before that still
     /// stand, rendered again if they changed, as the list's children. What became of the rows
     /// is kept for the diff.
@@ -585,15 +1045,22 @@ impl Builder<'_> {
             rows: template,
             source,
         } = list;
-        let rows = match source {
+        let mut rows = match source {
             RowSource::Coll(coll) => {
                 let listing = self
                     .core
                     .coll_listing(&coll)
                     .map_err(RuntimeError::Package)?;
-                Rows::Coll { coll, listing }
+                Rows::Coll {
+                    coll,
+                    listing,
+                    kept: Vec::new(),
+                }
             }
-            RowSource::List(values) => Rows::List(values),
+            RowSource::List(values) => Rows::List {
+                values,
+                kept: Vec::new(),
+            },
         };
         let before = self
             .live
@@ -601,6 +1068,7 @@ impl Builder<'_> {
             .remove(&key)
             .filter(|old| old.holder == self.id && !old.lost)
             .filter(|old| !another_query(&old.rows, &rows));
+        self.carry_kept(before.as_ref(), &mut rows);
         let Some(before) = before else {
             // A list new to the tree: the host reads its rows.
             self.live
@@ -620,47 +1088,45 @@ impl Builder<'_> {
             );
             return Ok(Vec::new());
         };
-        // Where each row built before is now, by key.
-        let (steps, places): (Vec<RowStep>, Vec<(usize, usize)>) =
-            if before.rows.same(&rows) && before.len == rows.len() {
-                let kept = before
-                    .built
-                    .iter()
-                    .map(|(index, _)| (*index, *index))
-                    .collect();
-                (Vec::new(), kept)
-            } else {
-                let old = before.rows.keys(&before.template);
-                let new = rows.keys(&template);
-                let at: HashMap<&str, usize> = new
-                    .iter()
-                    .enumerate()
-                    .map(|(index, key)| (key.as_str(), index))
-                    .collect();
-                let kept = before
-                    .built
-                    .iter()
-                    .filter_map(|(index, _)| {
-                        let key = old.get(*index)?;
-                        at.get(key.as_str()).map(|now| (*index, *now))
-                    })
-                    .collect();
-                let fragment = |key: &str| template.fragment(key.to_owned(), Vec::new());
-                (row_steps(&old, &new, &fragment), kept)
-            };
-        let mut built: Vec<(usize, BoundId)> = Vec::with_capacity(places.len());
-        let mut children: Vec<(usize, UiNode)> = Vec::with_capacity(places.len());
-        for (_, now) in places {
-            let Some(item) = rows.item(self.core, now) else {
-                continue;
-            };
-            let (row_key, args) = template.row(&item, now);
-            let (id, content) = self.keep_row(template.stub(&row_key, args))?;
-            built.push((now, id));
-            children.push((now, template.fragment(row_key, content)));
-        }
-        built.sort_unstable_by_key(|(index, _)| *index);
-        children.sort_unstable_by_key(|(index, _)| *index);
+        let same = before.rows.same(&rows)
+            && before.len == rows.len()
+            && before.template.makes_as(&template);
+        let (steps, (built, children)): (Vec<RowStep>, BuiltRows) = if same {
+            // Nothing the list shows changed and none of its rows moved.
+            (Vec::new(), self.keep_built(&before.built, &template)?)
+        } else {
+            // Where each row built before is now, by key.
+            let old = before.rows.keys(&before.template);
+            let new = rows.keys(&template);
+            let at: HashMap<&str, usize> = new
+                .iter()
+                .enumerate()
+                .map(|(index, key)| (key.as_str(), index))
+                .collect();
+            let fragment = |key: &str| template.fragment(key.to_owned(), Vec::new());
+            let placed: Vec<(usize, usize)> = before
+                .built
+                .iter()
+                .filter_map(|(index, _)| {
+                    let key = old.get(*index)?;
+                    at.get(key.as_str()).map(|now| (*index, *now))
+                })
+                .collect();
+            let mut built: Vec<(usize, BoundId)> = Vec::with_capacity(placed.len());
+            let mut children: Vec<(usize, UiNode)> = Vec::with_capacity(placed.len());
+            for (_, now) in placed {
+                let Some(item) = rows.item(self.core, now) else {
+                    continue;
+                };
+                let (row_key, args) = template.row(&item, now);
+                let (id, content) = self.keep_row(template.stub(&row_key, args))?;
+                built.push((now, id));
+                children.push((now, template.fragment(row_key, content)));
+            }
+            built.sort_unstable_by_key(|(index, _)| *index);
+            children.sort_unstable_by_key(|(index, _)| *index);
+            (row_steps(&old, &new, &fragment), (built, children))
+        };
         self.live
             .row_changes
             .insert(key.clone(), RowsChange::Steps(steps));
@@ -677,6 +1143,40 @@ impl Builder<'_> {
             },
         );
         Ok(children.into_iter().map(|(_, node)| node).collect())
+    }
+
+    /// The rows `before` built, kept: the list's rows are the same and none of them moved, so
+    /// each is still a boundary of its holder and its fragment stands under the same key.
+    /// Building each one's item reference, key and arguments again would read every shown item
+    /// of the list to say nothing about it changed. A row that read what changed runs again.
+    fn keep_built(
+        &mut self,
+        before: &[(usize, BoundId)],
+        template: &RowsOf,
+    ) -> Result<BuiltRows, RuntimeError> {
+        let mut built: Vec<(usize, BoundId)> = Vec::with_capacity(before.len());
+        let mut children: Vec<(usize, UiNode)> = Vec::with_capacity(before.len());
+        for (index, id) in before {
+            // Dropped rows leave the list's `built` (see `forget_rows_of`): a row here is one
+            // still in the tree.
+            let Some(b) = self.live.bound(*id) else {
+                continue;
+            };
+            let row_key = b.key.clone();
+            let fresh = b.rendered && !self.live.dirty.contains(id);
+            self.new.push(*id);
+            if fresh {
+                self.live.reused.insert(row_key.clone());
+                children.push((*index, template.fragment(row_key, Vec::new())));
+            } else {
+                let content = vec![self.live.render(self.core, *id)?];
+                children.push((*index, template.fragment(row_key, content)));
+            }
+            built.push((*index, *id));
+        }
+        built.sort_unstable_by_key(|(index, _)| *index);
+        children.sort_unstable_by_key(|(index, _)| *index);
+        Ok((built, children))
     }
 
     /// A row built before, kept: its subtree as it is when its view, arguments and reads are

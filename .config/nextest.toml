@@ -43,28 +43,53 @@ command = ["bash", "tools/test-env-setup.sh", "audio"]
 [scripts.setup.ntfs-fixtures]
 command = ["bash", "tools/test-env-setup.sh", "ntfs"]
 
-# The session's tests start the click-test client, the launcher, first-party
-# apps and the runtime host an agent's MCP client starts, which
-# tilo_test_env::sibling_binary would otherwise build inside the first test
-# that asks, against its hang bound (tools/build-sibling-binaries.sh).
+# The programs the session's tests start beside their own: the lock screen,
+# the on-screen keyboard and the quick-settings panel are apps of other
+# packages, which Cargo builds for no test. The harness builds them before any
+# test starts, in one Cargo invocation (tools/build-sibling-binaries.sh), and
+# hands each path to the run's tests as TILO_SIBLING_BIN_<bin>, which
+# tilo_test_env::sibling_binary answers with. A test starts only programs its
+# run built: one that asked Cargo for its own would resolve and compile the
+# workspace a second time, inside the run, in every test process that needs it.
+#
+# Every profile but `default` inherits these registrations (the `ci` profile
+# runs this setup too), so a profile that would run its tests elsewhere names
+# only what it adds.
 [scripts.setup.session-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
-    "click-test-client:click_test_client", "launcher:tilo-launcher",
-    "notes:notes", "file-explorer:file-explorer", "tasks:tasks",
+    "tilo-lock-screen:tilo-lock-screen", "osk:osk",
     "tilo-quick-settings:tilo-quick-settings",
-    "tilo-runtime:tilo-runtime-mcp",
 ]
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session)"
+filter = "package(tilo-session) or package(tilo-quick-settings)"
 setup = "session-siblings"
+
+# Chat's acceptance drives the app itself, as a desktop starts it: the app, the
+# launcher that starts it and the runtime host the app runs on are packages of
+# other crates, which Cargo builds for no test of the session's.
+[scripts.setup.chat-siblings]
+command = [
+    "bash", "tools/build-sibling-binaries.sh",
+    "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime",
+]
+
+[[profile.default.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-session) and binary(chat_2x2)"
+setup = "chat-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
 filter = "all()"
 setup = ["test-runtime", "headless-audio"]
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-session) and binary(chat_2x2)"
+setup = "chat-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
@@ -118,17 +143,6 @@ success-output = "final"
 filter = 'package(agent) and binary(it) and test(presence_semantics::)'
 test-group = "agent-collaboration"
 
-# A call's lane paces 50 Opus frames a second for real and holds each received
-# frame 200 ms (the voice receive budget) before it counts as late. Beside the
-# parallel suite a host stall longer than that budget costs the playout every
-# frame it was holding (42 of 60 played, 19 late in one run), which measures
-# the runner, not the lane; its delivery, tone and latency assertions stay as
-# they are and it runs with the pool to itself.
-[[profile.default.overrides]]
-filter = 'package(tilo-call-lane) and binary(tone)'
-threads-required = "num-cpus"
-priority = 100
-
 # Every app's every view laid out at every window size, display scale and text
 # size: each window is laid out on a core of its own, so the sweep takes the
 # runner's CPUs rather than sharing them with the tests beside it.
@@ -136,6 +150,14 @@ priority = 100
 filter = 'package(tilolang-cli) and test(=the_apps_show_no_layout_problem_their_allow_list_does_not_name)'
 threads-required = "num-cpus"
 priority = 100
+
+# Each app gate seeds a workspace of a thousand items and one of ten thousand and
+# runs the open, the filter and the changes over both: 42 s of CPU a gate on a quiet
+# machine, and a loaded one reached the eight-minute suite-wide bound without a
+# finish. The bound only has to catch a gate that stopped.
+[[profile.default.overrides]]
+filter = 'package(tilolang-tilo) and binary(budgets)'
+slow-timeout = { period = "30s", terminate-after = 40 }
 
 [[profile.default.overrides]]
 filter = '(package(notes) and binary(it) and (test(scenarios::) or test(capture_runtime::)))'

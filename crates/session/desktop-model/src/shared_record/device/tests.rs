@@ -20,6 +20,9 @@ struct Device {
     actor: u64,
     workspace: Workspace,
     doc: AutoCommit,
+    /// The record each window this device runs shows, as its session notes
+    /// them.
+    notes: BTreeMap<u64, String>,
 }
 
 impl Device {
@@ -33,6 +36,7 @@ impl Device {
                 "Home",
             ),
             doc: AutoCommit::new().with_actor(automerge::ActorId::from(vec![actor; 16])),
+            notes: BTreeMap::new(),
         }
     }
 
@@ -65,11 +69,14 @@ impl Device {
         let actor = self.actor;
         let mine = move |id: u64| id / 1000 == actor;
         let former = former_ids(&self.doc);
+        let notes = self.notes.clone();
+        let records = move |id: u64| notes.get(&id).cloned();
         let writer = Writer {
             person: Some(PERSON),
             mine: &mine,
             retained: &|_| false,
             carried: &|id| former.contains(&id),
+            records: &records,
         };
         let published = self.published();
         let changed = write(&mut self.doc, self.workspace.id(), &published, &writer).unwrap();
@@ -137,6 +144,8 @@ fn notes(id: u64) -> Tab {
             surface_id: id,
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 
@@ -150,6 +159,8 @@ fn editor(id: u64) -> Tab {
             surface_id: 77,
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 
@@ -486,4 +497,55 @@ fn a_workspace_laid_out_before_the_record_brings_its_windows_over() {
     );
     // Not as the desk's: nobody's until the workspace says otherwise.
     assert!(!shared.authors.contains_key(&NOTES));
+}
+
+/// What the record holds of which record each window shows.
+fn noted(doc: &AutoCommit) -> Vec<(u64, String)> {
+    crate::shared_record::read(doc, None)
+        .expect("the record")
+        .records
+}
+
+/// A notes window's record: the workspace's one notebook.
+const NOTEBOOK: &str = "derived:default@tab:0000000000000000";
+
+#[test]
+fn a_window_notes_the_record_it_shows_on_every_device() {
+    let (mut laptop, mut desk) = two_devices();
+    assert!(noted(&laptop.doc).is_empty(), "nothing noted yet");
+
+    // The notes window on the laptop shows the workspace's notebook.
+    laptop.notes.insert(NOTES, NOTEBOOK.into());
+    assert!(laptop.write());
+    assert_eq!(noted(&laptop.doc), vec![(NOTES, NOTEBOOK.to_owned())]);
+    desk.hear(&mut laptop);
+    assert_eq!(
+        noted(&desk.doc),
+        vec![(NOTES, NOTEBOOK.to_owned())],
+        "the desk knows which record the laptop's window is on"
+    );
+
+    // Writing the same note again changes nothing.
+    assert!(!laptop.write());
+    assert_eq!(noted(&laptop.doc), vec![(NOTES, NOTEBOOK.to_owned())]);
+
+    // The desk lays the window out elsewhere, noting nothing of its own:
+    // what the laptop noted stays.
+    desk.change(|w| move_tab(w, NOTES, LATER, LATER_GROUP));
+    assert_eq!(noted(&desk.doc), vec![(NOTES, NOTEBOOK.to_owned())]);
+    laptop.hear(&mut desk);
+    assert_eq!(noted(&laptop.doc), vec![(NOTES, NOTEBOOK.to_owned())]);
+}
+
+#[test]
+fn a_window_that_closes_takes_its_note_out_of_the_record() {
+    let (mut laptop, mut desk) = two_devices();
+    laptop.notes.insert(NOTES, NOTEBOOK.into());
+    laptop.write();
+    desk.hear(&mut laptop);
+
+    desk.change(|w| close(w, NOTES));
+    assert!(noted(&desk.doc).is_empty(), "no window, no note");
+    laptop.hear(&mut desk);
+    assert!(noted(&laptop.doc).is_empty());
 }

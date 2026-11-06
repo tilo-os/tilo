@@ -430,6 +430,7 @@ fn sub_issues(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
             .push(crate::new_issue(
                 cx,
                 Some(id.clone()),
+                None,
                 "tasks-sub-issue-new",
             )),
     )

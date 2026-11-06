@@ -11,8 +11,10 @@ fn the_shipped_catalogue_is_the_one_the_toolkit_generates() {
     eprintln!("CATALOGUE-BEGIN\n{generated}CATALOGUE-END");
     assert!(
         shipped == generated,
-        "crates/dev/ui-graph/components.json is stale; write it again with \
-         `cargo run -p tilo-ui --example component-catalogue > crates/dev/ui-graph/components.json`"
+        "crates/dev/ui-graph/components.json is stale: a widget's description changed after it \
+         was last written, and tilolang and the tools read that file as the package `ui`. Write \
+         it again and commit it:\n\
+         \x20   cargo run -p tilo-ui --example component-catalogue > crates/dev/ui-graph/components.json"
     );
 }
 
@@ -111,7 +113,8 @@ fn given(key: &str, props: &[(&str, Value)]) -> Given {
 /// A value of `ty` for a required prop.
 fn sample(ty: &Type) -> Value {
     match ty {
-        Type::Text => Value::Text("x".into()),
+        // Text, and a case a binding holds, travel as their words.
+        Type::Text | Type::Enum => Value::Text("x".into()),
         Type::Int => Value::Int(1),
         Type::Float => Value::Float(1.0),
         Type::Bool => Value::Bool(true),
@@ -284,13 +287,10 @@ impl Source for ItemSource<'_> {
     ) -> Result<usize, String> {
         match slot {
             "row" => {
-                let mut row = given(
+                let row = given(
                     &self.item.key,
                     &[("title", Value::Text(self.item.title.clone()))],
                 );
-                if self.item.avatar {
-                    row.props.insert("avatar_space".into(), Value::Bool(false));
-                }
                 read(&mut AvatarRow {
                     row,
                     avatar: self.item.avatar,
@@ -457,6 +457,65 @@ impl Source for ListSource {
     }
 }
 
+/// A list whose items a test gives whole, each a `ui.ListItem` of the props it names.
+struct WholeList {
+    props: BTreeMap<String, Value>,
+    items: Vec<Given>,
+}
+
+impl Source for WholeList {
+    fn key(&self) -> &str {
+        "list"
+    }
+
+    fn prop(&mut self, name: &str) -> Option<Value> {
+        self.props.get(name).cloned()
+    }
+
+    fn event(&mut self, _name: &str) -> Event {
+        Event::None
+    }
+
+    fn binding(&mut self, _name: &str) -> Option<BoundValue> {
+        None
+    }
+
+    fn children(&mut self, _slot: &str) -> Vec<Element> {
+        Vec::new()
+    }
+
+    fn components(
+        &mut self,
+        slot: &str,
+        read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+    ) -> Result<usize, String> {
+        if slot != "rows" {
+            return Ok(0);
+        }
+        for item in &mut self.items {
+            read(item)?;
+        }
+        Ok(self.items.len())
+    }
+}
+
+/// The list `title` heads the rows that name no group with, over the items of `items`, each a
+/// key and the group it names.
+fn grouped_list(title: Option<&str>, items: &[(&str, &str)]) -> crate::widget::DescribedList {
+    let mut props = BTreeMap::new();
+    props.insert("in_column".to_owned(), Value::Bool(true));
+    if let Some(title) = title {
+        props.insert("ungrouped_title".to_owned(), Value::Text(title.into()));
+    }
+    let items = items
+        .iter()
+        .map(|(key, group)| given(key, &[("group", Value::Text((*group).into()))]))
+        .collect();
+    let mut source = WholeList { props, items };
+    let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
+    <crate::widget::DescribedList as Described>::from_props("list", props)
+}
+
 fn rendered_list(items: Vec<Item>) -> (crate::widget::DescribedList, crate::Intents<Fired>) {
     let (list, queue, _) = rendered_list_and_rows(items);
     (list, queue)
@@ -589,6 +648,48 @@ fn a_rendered_row_that_changes_keeps_the_windows_tree() {
     assert!(
         shown.contains("Q3 plan!!!"),
         "the row shows what it says now"
+    );
+}
+
+#[test]
+fn rows_that_name_no_group_stand_under_their_own_heading() {
+    use crate::widget::RowGroup;
+    let list = grouped_list(
+        Some("No date"),
+        &[("a", "Jul 1"), ("b", ""), ("c", "Jul 1")],
+    );
+    let model = list.list().expect("the list").model();
+    assert_eq!(
+        crate::widget::ListModel::group_at(model, 0),
+        Some(RowGroup::heading("Jul 1"))
+    );
+    assert_eq!(
+        crate::widget::ListModel::group_at(model, 1),
+        Some(RowGroup::heading("No date")),
+        "a row whose item names no group is not the last group's"
+    );
+    // A list given no heading for them leaves those rows among the others, as before.
+    let list = grouped_list(None, &[("a", "Jul 1"), ("b", "")]);
+    let model = list.list().expect("the list").model();
+    assert_eq!(crate::widget::ListModel::group_at(model, 1), None);
+    // A row standing in for an item removed unseen stays out of every fold, headed or not.
+    let mut props = BTreeMap::new();
+    props.insert("ungrouped_title".to_owned(), Value::Text("No date".into()));
+    let mut source = WholeList {
+        props,
+        items: vec![given(
+            "a",
+            &[
+                ("group", Value::Text("Jul 1".into())),
+                ("removed", Value::Bool(true)),
+            ],
+        )],
+    };
+    let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
+    let list = <crate::widget::DescribedList as Described>::from_props("list", props);
+    assert_eq!(
+        crate::widget::ListModel::group_at(list.list().expect("the list").model(), 0),
+        None
     );
 }
 

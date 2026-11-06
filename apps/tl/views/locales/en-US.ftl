@@ -68,7 +68,7 @@ d-dif5k2ju = New view
 d-eejphgeg = Keep
     .doc = Keeps a view among the person's own.
 
-d-gawp3qw5 = Discard
+d-gawp3qw5 = Delete view
     .doc = Throws a view away, and with it how a type showed through it.
 
 d-w2bt45l7 = Show this type with it
@@ -88,9 +88,3 @@ d-2dc3zfxw = Views list
 d-unwqgbdt = View row
 
 d-p33c52uw = View page
-
-d-2dc3zfxw-row0 = Views list for p
-
-d-2dc3zfxw-row1 = Views list for x
-
-d-2dc3zfxw-row2 = Views list for x

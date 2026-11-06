@@ -104,6 +104,20 @@ impl App {
         &mut self,
     ) -> Result<Option<(collab_types::DocumentMutation, Vec<automerge::ChangeHash>)>, String> {
         if !self.prepare_primary_document()? {
+            // A route's first publication in a session is the document
+            // whole: what this device held before the route opened — a
+            // record its launch seeded, or one it reopened from its store —
+            // reaches no peer in an incremental of this replica's own
+            // changes, and one made now would build on history they lack.
+            if !self.document_routes.primary_whole {
+                let heads = self.state.doc.get_heads();
+                return Ok((!heads.is_empty()).then(|| {
+                    (
+                        collab_types::DocumentMutation::Snapshot(self.state.doc.save()),
+                        heads,
+                    )
+                }));
+            }
             let (delta, heads) = self.state.pending_outbound_delta();
             return Ok((!delta.is_empty())
                 .then_some((collab_types::DocumentMutation::Incremental(delta), heads)));
@@ -129,7 +143,7 @@ impl App {
                     return (!heads.is_empty())
                         .then(|| (collab_types::DocumentMutation::Snapshot(doc.save()), heads));
                 }
-                let (delta, heads) = frontier.pending_delta(doc);
+                let (delta, heads) = frontier.pending_delta(doc, &actions.writers.borrow());
                 (!delta.is_empty())
                     .then_some((collab_types::DocumentMutation::Incremental(delta), heads))
             })
@@ -141,6 +155,7 @@ impl App {
             sync.frontier.advance(heads);
             sync.whole = true;
         } else {
+            self.document_routes.primary_whole = true;
             self.state.advance_outbound(heads);
         }
     }

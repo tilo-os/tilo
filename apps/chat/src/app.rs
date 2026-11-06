@@ -364,18 +364,14 @@ pub struct ChatApp {
     pub(crate) workspace_agents: Vec<Id>,
     /// Explicit shot fixture; never set on the live launch path.
     capture_agent_presence: Option<PresenceCtx>,
-    pub(crate) direct_person: Option<String>,
-    pub(crate) person_subscription: Option<uuid::Uuid>,
-    pub(crate) person_contacts: Vec<ui::person_chat::Contact>,
-    pub(crate) person_messages: Vec<ui::person_chat::Message>,
-    pub(crate) person_error: Option<String>,
-    /// The conversation being opened, until the workspace answers.
-    pub(crate) person_opening: Option<crate::person_conversation::Opening>,
-    /// Opens another one replaced: each lane they open is released.
-    pub(crate) person_abandoned: Vec<crate::person_conversation::Opening>,
-    /// The message the composer is sending, until the workspace accepts it.
-    pub(crate) person_sending: Option<crate::person_conversation::Sending>,
-    pub(crate) person_body_views: HashMap<String, (String, crate::composer::MessageEditor)>,
+    /// The direct conversations that hold messages, by conversation id: the
+    /// ones the sidebar lists beside the one open.
+    pub(crate) direct_held: std::collections::HashSet<String>,
+    /// The conversations the record itself holds, by id: the ones this window
+    /// has item resources to publish effects on. A conversation with a person
+    /// neither has written in yet is one the app derives from the workspace's
+    /// people, and has no item of its own.
+    pub(crate) recorded_channels: std::collections::HashSet<String>,
     /// Retained direct conversations currently owned by the shared
     /// floating-surface host, keyed by their deterministic conversation id.
     /// The person's reduced-motion setting, applied to every floating
@@ -764,15 +760,8 @@ impl ChatApp {
             workspace_colors: HashMap::new(),
             workspace_agents: Vec::new(),
             capture_agent_presence: None,
-            direct_person: None,
-            person_subscription: None,
-            person_contacts: Vec::new(),
-            person_messages: Vec::new(),
-            person_error: None,
-            person_opening: None,
-            person_abandoned: Vec::new(),
-            person_sending: None,
-            person_body_views: HashMap::new(),
+            direct_held: std::collections::HashSet::new(),
+            recorded_channels: std::collections::HashSet::new(),
             motion_reduced: false,
             agent_surfaces: HashMap::new(),
             agent_surface_requests: VecDeque::new(),
@@ -1212,14 +1201,48 @@ impl ChatApp {
     }
 
     pub(crate) fn main_composer_can_edit(&self) -> bool {
-        if let Some(peer) = &self.direct_person {
-            return self
-                .person_contacts
-                .iter()
-                .any(|contact| &contact.public_key == peer)
-                && self.person_error.is_none();
-        }
         self.can_participate()
+    }
+
+    /// What the composer says it is for, in the conversation `channel`: a
+    /// channel's name, or the person a direct conversation is with.
+    pub(crate) fn conversation_placeholder(&self, channel: &str) -> String {
+        match self.channel(channel) {
+            Some(row) if row.direct => crate::i18n::t("chat-person-chat-placeholder"),
+            Some(row) => format!("Message #{}", row.name),
+            None => String::new(),
+        }
+    }
+
+    /// What the person `public_key` is called here now: the name the open
+    /// conversation with them shows, else the unnamed person's tag. Never
+    /// blank.
+    pub(crate) fn person_display_name(&self, public_key: &str) -> String {
+        self.channels
+            .iter()
+            .find(|row| {
+                row.direct
+                    && row
+                        .participants
+                        .iter()
+                        .filter_map(|key| crate::record::Participant::parse(key))
+                        .any(|participant| participant.id() == public_key)
+            })
+            .map_or_else(
+                || crate::identity::unnamed_label(public_key),
+                |row| row.name.clone(),
+            )
+    }
+
+    /// The person this window is talking to in the open conversation, when it
+    /// is a direct one: its participant that is not this window's person.
+    pub(crate) fn direct_person(&self) -> Option<String> {
+        crate::record::Chat::direct_participants(&ui::tilo_resource::Id::from_raw(
+            self.active_channel.clone(),
+        ))?
+        .into_iter()
+        .find(|participant| !participant.is_agent() && participant.id() != self.me.id)
+        .map(|participant| participant.id().to_owned())
     }
 
     pub(crate) fn channel(&self, id: &str) -> Option<&Channel> {
@@ -1307,9 +1330,8 @@ impl ChatApp {
     /// active channel changed (the caller must reload so the message list
     /// refreshes).
     pub(crate) fn ensure_selection(&mut self) -> bool {
-        let channel_changed = self.direct_person.is_none()
-            && !self.active_channel.is_empty()
-            && self.channel(&self.active_channel).is_none();
+        let channel_changed =
+            !self.active_channel.is_empty() && self.channel(&self.active_channel).is_none();
         if channel_changed {
             self.active_channel.clear();
         }
@@ -1646,7 +1668,6 @@ impl Widget for ChatApp {
         self.settle_device_files();
         self.settle_refused_post();
         self.settle_attachment_import();
-        self.refresh_person_conversation();
         {
             use automerge::transaction::Transactable as _;
             // Reload and repaint only when the document moved: committed heads
@@ -2111,17 +2132,13 @@ impl Widget for ChatApp {
         let conversation = self.conversation_accessibility();
         let mut children: Vec<AccessNode> = controls;
         children.extend(self.right_flap.resize_accessibility());
-        if let Some(peer) = &self.direct_person {
-            children.push(
-                AccessNode::new(Role::Heading { level: 1 })
-                    .with_name(self.person_display_name(peer))
-                    .with_description(crate::i18n::t("chat-person-chat-private"))
-                    .with_hashed_key(("person-conversation-heading", &self.active_channel)),
-            );
-        }
         if let Some(channel) = self.channel(&self.active_channel) {
             let mut heading = AccessNode::new(Role::Heading { level: 1 })
-                .with_name(channel.kind.label(&channel.name))
+                .with_name(if channel.direct {
+                    channel.name.clone()
+                } else {
+                    channel.kind.label(&channel.name)
+                })
                 .with_hashed_key(("conversation-heading", &channel.id));
             if !channel.topic.trim().is_empty() {
                 // The desktop header deliberately elides the topic before the
@@ -2253,9 +2270,6 @@ impl Widget for ChatApp {
         ) {
             return false;
         }
-        if matches!(hit, Hit::Send) && self.direct_person.is_some() {
-            return self.send_person_focused();
-        }
         let messages_before = matches!(hit, Hit::Send).then(|| {
             crate::projection::read(state)
                 .message_rows(&self.held_messages(), &self.active_channel)
@@ -2365,6 +2379,7 @@ impl Widget for ChatApp {
                 .arriving_wake
                 .get()
                 .is_some_and(|at| at <= ui::motion::frame_now())
+            || ui::widget::Widget::needs_animation_frame(self)
     }
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         if self.needs_redraw() || self.paint_damage.is_recorded() {

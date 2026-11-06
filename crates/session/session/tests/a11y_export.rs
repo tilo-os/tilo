@@ -18,6 +18,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::time::Duration;
 
 use tilo_compositor::OutputConfig;
@@ -144,15 +146,13 @@ fn activating_a_button_through_the_export_performs_its_action() {
         session.a11y_perform(place, opener, &Action::Activate),
         "the desk took the press its window offers"
     );
-    for _ in 0..400 {
-        session.step(REFRESH).expect("a turn of the session");
-        if session.handle().search_open() {
-            break;
-        }
-    }
-    assert!(
-        session.handle().search_open(),
-        "the palette opened from the button assistive technology pressed"
+    common::wait_for(
+        &mut session,
+        "the palette to open from the button",
+        |session| {
+            session.step(REFRESH).expect("a turn of the session");
+            session.handle().search_open().then_some(())
+        },
     );
 }
 
@@ -192,15 +192,16 @@ fn an_app_the_session_hosts_is_exported_with_working_controls() {
         "the app took the press on its button"
     );
     let mut asked = Vec::new();
-    for _ in 0..400 {
+    let confirmed = common::wait_maybe(&mut session, |session| {
         session.step(REFRESH).expect("a turn of the session");
         asked.extend(seat.take_asked());
-        if asked
+        asked
             .iter()
             .any(|effect| matches!(effect, PortalEffect::Confirm { .. }))
-        {
-            return;
-        }
+            .then_some(())
+    });
+    if confirmed.is_some() {
+        return;
     }
     let (_, sheet) = window(&session.a11y_windows(), "System question");
     let names: Vec<&str> = sheet

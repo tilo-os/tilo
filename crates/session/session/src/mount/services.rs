@@ -10,6 +10,8 @@ use tilo_service::Started;
 use tilo_surface_host::{Doors, Published};
 use ui::host_operation::ResourceOperationStart;
 
+use tilo_action_broker::collab_broker::FanoutState;
+
 use crate::plane::{DeskAuthority, Sealed, ShortcutLibrary};
 use crate::{
     ActionPlane, DesktopHandle, Options, Plane, Service, Services, activity, activity_provider,
@@ -42,7 +44,12 @@ impl surfaces::ActionDoor for tilo_surface_host::Doors {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError> {
-        tilo_surface_host::Doors::invoke(self, address, arguments)
+        tilo_surface_host::Doors::invoke(
+            self,
+            address,
+            arguments,
+            &mut tilo_surface_host::Look::none(),
+        )
     }
 }
 
@@ -75,6 +82,7 @@ impl Published for ServiceDoor {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        _look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         match self
             .services
@@ -105,8 +113,17 @@ pub(crate) struct Collaboration<'a> {
     /// written through, whatever the session's collaboration plane.
     pub engine: Option<std::sync::Arc<crate::engine::Engine>>,
     pub sealed: Sealed,
+    /// What the broker hands the apps that have a record open: the one this
+    /// session hands a sibling's writes to, so those reach the apps on the
+    /// route this device's own writes do.
+    pub fanout: std::sync::Arc<FanoutState>,
     /// The records' content this session keeps and asks the workspaces for.
     pub content: Option<std::sync::Arc<crate::content::Plane>>,
+    /// The programs agents write in this session's tasks, run by its door.
+    pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
+    /// This session's Nearby Send: the fabric it reaches the person's other
+    /// devices on, and the spool a file leaves from.
+    pub nearby: Option<std::sync::Arc<crate::nearby_transfer::NearbyTransfer>>,
 }
 
 /// Where this session's apps reach its services, when it serves them: the
@@ -186,6 +203,18 @@ fn attach_remote_use(actions: &crate::device_actions::DeviceActions, options: &O
     }
 }
 
+/// The device fabric this session acts on: the one its collaboration endpoint
+/// runs, or a stand-in a test handed its options.
+fn acting_fabric(
+    options: &Options,
+    sync: Option<&crate::sync::Client>,
+) -> Option<tilo_device_fabric::link::SharedLink> {
+    options
+        .fabric
+        .clone()
+        .or_else(|| sync.and_then(crate::sync::Client::fabric))
+}
+
 /// The plane the apps read and invoke this session's services on, when it
 /// serves one: the socket the launcher hands its apps, and the link the loop
 /// answers their calls through.
@@ -208,34 +237,16 @@ pub(crate) fn start_action_plane(
         sync,
         engine,
         sealed,
+        fanout,
         content,
+        task_programs,
+        nearby,
     } = collaboration;
     let Some(path) = action_plane_path(options)? else {
         return Ok(None);
     };
     let link = plane::Link::new(options.wake.handle());
-    // What the broker decides against, from this pass on: the desk as it is
-    // before the person touches anything, and every desk it shows after. It
-    // journals what it admits on the person's behalf beside this device's
-    // desk, so a shortcut a trigger starts survives the session stopping
-    // mid-run — once, as it would have run.
-    let journal = match options.state.as_deref() {
-        Some(state) => {
-            let mut path = crate::desk_doc::path(state).into_os_string();
-            path.push(".invocations");
-            let path = std::path::PathBuf::from(path);
-            if let Some(directory) = path.parent() {
-                std::fs::create_dir_all(directory)?;
-            }
-            Some(path)
-        }
-        None => None,
-    };
-    let desk = std::sync::Arc::new(DeskAuthority::new(
-        handle.read(Clone::clone),
-        revocations,
-        journal,
-    ));
+    let desk = desk_authority(options, handle, revocations)?;
     // The workspace's activity, as the apps this session runs read it: the
     // same model the desk serves its own windows.
     let activity_wire = activity_provider::wire(activity.requests());
@@ -244,37 +255,7 @@ pub(crate) fn start_action_plane(
     // the service, the session says the channel in its presence, and what the
     // workspace says of its calls is what the app's channels show.
     let calls = crate::calls::Calls::new();
-    let calls_service = sync.map(|sync| {
-        calls.follow(sync, None);
-        let service = tilo_native_media::NativeMediaService::new();
-        // A call's lane runs on the session's own endpoint, sealed with the
-        // workspace's channel keys and admitted by the workspace's
-        // governance: what every member of the workspace needs to be in the
-        // channel's call.
-        let roster = sync.engine().map_or_else(
-            || {
-                std::sync::Arc::new(|_: &str| Vec::new())
-                    as std::sync::Arc<dyn Fn(&str) -> Vec<[u8; 32]> + Send + Sync>
-            },
-            |engine| {
-                let engine = std::sync::Arc::clone(engine);
-                std::sync::Arc::new(move |workspace: &str| {
-                    engine.roster_devices(workspace).unwrap_or_default()
-                })
-            },
-        );
-        let sources = crate::calls::Sources::carrier(
-            std::sync::Arc::clone(&calls),
-            sync.endpoint_handle(),
-            sync.lane().clone(),
-            sync.engine().map(|engine| engine.keys()),
-            roster,
-            options.questions.clone(),
-            sync.own().user,
-        );
-        service.install_factory(std::sync::Arc::new(crate::calls::Factory::new(sources)));
-        service
-    });
+    let calls_service = calls_service(sync, &calls, options);
     // An app's action on another of the person's own devices leaves through
     // the plane the collaboration endpoint runs.
     let actions = sync.and_then(crate::sync::Client::device_actions);
@@ -286,11 +267,25 @@ pub(crate) fn start_action_plane(
     // sooner: the round asks them over that same plane, and what the device
     // that wins produced is kept in the content this session keeps.
     let action_offload = offload_route(actions.as_ref(), content.as_ref());
+    // The fabric this session acts on, and what its services offer on it.
+    let fabric = acting_fabric(options, sync);
+    // Files' clipboard lives beside the broker that answers it, and its copies
+    // reach the loop that has the compositor through the same wake.
+    let file_clipboard = std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
+        options.wake.handle(),
+    ));
+    // The person's own records this session keeps, open to their other
+    // devices: what the broker keeps them in as well as the desktop, and what
+    // a sibling's writes reach this session's apps through.
+    let personal = sync
+        .and_then(crate::sync::Client::personal)
+        .map(|personal| personal.sync().clone());
+    let channels = std::sync::Arc::clone(&sealed.broker);
     let broker = plane::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
         std::sync::Arc::clone(&options.launches),
-        options.fabric.clone(),
+        fabric,
         plane::Hosted {
             live_activities: std::sync::Arc::clone(live_activities),
             native_media: calls_service.clone(),
@@ -318,8 +313,33 @@ pub(crate) fn start_action_plane(
             // Files' waits for the drive and app lists to change, which the
             // tools service answers.
             tools,
+            task_programs,
+            nearby,
+            // What a person copies or cuts in Files, pasted here, and what
+            // the loop puts on the desktop's clipboard for another app.
+            file_clipboard: std::sync::Arc::clone(&file_clipboard),
+            personal,
+            fanout: std::sync::Arc::clone(&fanout),
         },
     )?;
+    // The store's link is answered by this session's own endpoint, in `sync`:
+    // the door takes it from there, once the broker is up to hand what a
+    // sibling writes to the apps that have the record open.
+    let personal = match (sync, sync.and_then(crate::sync::Client::endpoint)) {
+        (Some(sync), Some(endpoint)) => sync.personal().map(|personal| {
+            // The person's other devices are dialled as this session's
+            // siblings too: the session between two of their desks tells each
+            // the workspaces the other holds.
+            personal.serve(
+                tilo_rt::app().handle(),
+                endpoint,
+                channels,
+                fanout,
+                sync.sibling_dials(),
+            )
+        }),
+        _ => None,
+    };
     // What arrives on this device's action plane is answered by the broker
     // that now serves: another of the person's devices runs nothing here the
     // person in front of it could not.
@@ -335,7 +355,75 @@ pub(crate) fn start_action_plane(
         broker,
         calls,
         calls_service,
+        file_clipboard,
+        _personal: personal,
     }))
+}
+
+/// What the broker decides against, from this pass on: the desk as it is
+/// before the person touches anything, and every desk it shows after. It
+/// journals what it admits on the person's behalf beside this device's desk,
+/// so a shortcut a trigger starts survives the session stopping mid-run —
+/// once, as it would have run.
+fn desk_authority(
+    options: &Options,
+    handle: &DesktopHandle,
+    revocations: crate::engine::Revocations,
+) -> Result<std::sync::Arc<DeskAuthority>, Error> {
+    let journal = match options.state.as_deref() {
+        Some(state) => {
+            let mut path = crate::desk_doc::path(state).into_os_string();
+            path.push(".invocations");
+            let path = std::path::PathBuf::from(path);
+            if let Some(directory) = path.parent() {
+                std::fs::create_dir_all(directory)?;
+            }
+            Some(path)
+        }
+        None => None,
+    };
+    Ok(std::sync::Arc::new(DeskAuthority::new(
+        handle.read(Clone::clone),
+        revocations,
+        journal,
+    )))
+}
+
+/// The calls the apps reach on this session's collaboration plane, or none
+/// when it has no endpoint.
+fn calls_service(
+    sync: Option<&crate::sync::Client>,
+    calls: &std::sync::Arc<crate::calls::Calls>,
+    options: &Options,
+) -> Option<tilo_native_media::NativeMediaService> {
+    let sync = sync?;
+    calls.follow(sync, None);
+    let service = tilo_native_media::NativeMediaService::new();
+    // A call's lane runs on the session's own endpoint, sealed with the
+    // workspace's channel keys and admitted by the workspace's governance:
+    // what every member of the workspace needs to be in the channel's call.
+    let roster = sync.engine().map_or_else(
+        || {
+            std::sync::Arc::new(|_: &str| Vec::new())
+                as std::sync::Arc<dyn Fn(&str) -> Vec<[u8; 32]> + Send + Sync>
+        },
+        |engine| {
+            let engine = std::sync::Arc::clone(engine);
+            std::sync::Arc::new(move |workspace: &str| {
+                engine.roster_devices(workspace).unwrap_or_default()
+            })
+        },
+    );
+    let sources = crate::calls::Sources::carrier(
+        std::sync::Arc::clone(calls),
+        sync.endpoint_handle(),
+        sync.engine().map(|engine| engine.keys()),
+        roster,
+        options.questions.clone(),
+        sync.own().user,
+    );
+    service.install_factory(std::sync::Arc::new(crate::calls::Factory::new(sources)));
+    Some(service)
 }
 
 /// Where an app's offloadable action runs: the round this device's plane asks
@@ -349,54 +437,6 @@ fn offload_route(
 ) -> Option<std::sync::Arc<dyn tilo_actions::offload::ActionOffload>> {
     let (actions, content) = (actions?, content?);
     actions.offload_route(std::sync::Arc::clone(content))
-}
-
-/// The person's private messages, published beside the other services: the
-/// conversations this device keeps and the action that sends a text. It
-/// answers peers on this session's own endpoint, so it is mounted with the
-/// collaboration plane and only there.
-pub(crate) fn mount_messages(
-    options: &mut Options,
-    sync: Option<&crate::sync::Client>,
-) -> Option<crate::messages::Messages> {
-    let sync = sync?;
-    let service = match crate::messages::Messages::new(&options.wake) {
-        Ok(service) => service,
-        Err(error) => {
-            tracing::warn!(%error, "private messages do not start");
-            return None;
-        }
-    };
-    if let Some(identity) = crate::sync::device_identity() {
-        service.act_as(identity, hex::encode(sync.publisher().as_bytes()));
-    }
-    service
-        .reached_at(serde_json::to_value(sync.endpoint_addr()).unwrap_or(serde_json::Value::Null));
-    // The lane this device's endpoint carries, bound when the peer actor
-    // hands it over: until then a send says this device carries none.
-    if let Some(answer) = sync.private_messages() {
-        let binding = service.clone();
-        let thread = std::thread::Builder::new()
-            .name("tilo-messages-bind".into())
-            .spawn(move || {
-                match answer.blocking_recv() {
-                    Ok(transport) => {
-                        if let Err(error) = binding.bind(transport) {
-                            tracing::warn!(?error, "private messages answer no peer");
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "no endpoint carries private messages");
-                    }
-                }
-                binding.wake();
-            });
-        if let Err(error) = thread {
-            tracing::warn!(%error, "private messages answer no peer");
-        }
-    }
-    options.services.push(Box::new(service.clone()));
-    Some(service)
 }
 
 /// The services, published on the door.

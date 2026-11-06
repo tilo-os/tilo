@@ -125,7 +125,7 @@ fn a_lock_screen_that_will_not_stay_up_is_drawn_by_the_session() {
     // The process goes away as soon as it is up, every time: a screen that
     // cannot stay on the screen. The session keeps starting it, and then
     // draws the lock itself: the lock never lifts.
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         session.stop_surface("lock");
         session.step(Duration::from_millis(16)).expect("step");

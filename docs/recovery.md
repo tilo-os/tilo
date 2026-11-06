@@ -199,9 +199,10 @@ report to `/var/lib/tilo/boot-fallback/<when>-<composefs>/`:
 The same happens when a person picks the previous entry from the boot menu
 after the new one failed: the failed one stays on the disk, but it no longer
 boots next. An entry that was never tried, or one that booted well before, was
-chosen deliberately and is left alone. At the next sign-in the person gets a
-notification that stays until dismissed (`tilo-boot-fallback-notice`), and
-`tilo status` shows the last fallback with the path of its report.
+chosen deliberately and is left alone. The session reads those reports with
+the rest of its update state and tells the person at the next sign-in, once
+per report, in a notification that stays until dismissed; `tilo status` shows
+the last fallback with the path of its report.
 
 The fallback order is:
 

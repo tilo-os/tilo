@@ -1,7 +1,5 @@
-//! The People tab: how many share the workspace and where its ownership
-//! stands, with the one ownership action the person can take, then a row
-//! per person whose role and Remove move under the name where the two do
-//! not fit beside it.
+//! The People tab: how many share the workspace, then a row per person whose
+//! role and Remove move under the name where the two do not fit beside it.
 //!
 //! A role is chosen from the role button's menu, each role with what it
 //! allows. Removing someone asks first, with the way to their activity
@@ -14,7 +12,7 @@ use ui::widget::{
     Row, Section,
 };
 
-use super::general::{button, caption};
+use super::general::caption;
 use super::{Confirm, Parts, Settings, WorkspaceSettingsEffect};
 
 /// What a person's row offers the viewer.
@@ -70,10 +68,8 @@ pub struct Decision {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct People {
     pub count: String,
-    /// Where ownership stands, or what removing someone does.
+    /// What removing someone does.
     pub status: String,
-    /// The ownership action the viewer can take, by what it does.
-    pub ownership: Option<String>,
     pub header: String,
     pub you_tag: String,
     pub remove: String,
@@ -90,20 +86,7 @@ pub struct People {
 /// The People tab of `settings`.
 pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
     let people = &settings.people;
-    let mut summary = vec![caption(&people.status)];
-    if let Some(label) = &people.ownership {
-        summary.push(Box::new(
-            Row::new()
-                .with_rhythm(Rhythm::Related)
-                .align_start()
-                .push(Box::new(button(
-                    parts,
-                    "ws-people-ownership",
-                    label,
-                    || WorkspaceSettingsEffect::Ownership,
-                ))),
-        ));
-    }
+    let summary = vec![caption(&people.status)];
     let mut groups: Vec<Element> = vec![Box::new(Section::titled(people.count.clone(), summary))];
     if people.people.is_empty() {
         let (title, detail) = &people.empty;
@@ -227,8 +210,7 @@ pub(super) fn sample() -> People {
     };
     People {
         count: "3 members".to_owned(),
-        status: "You own this workspace.".to_owned(),
-        ownership: Some("Transfer ownership".to_owned()),
+        status: "Removing someone blocks future sync and edits.".to_owned(),
         header: "People".to_owned(),
         you_tag: "You".to_owned(),
         remove: "Remove".to_owned(),
@@ -259,8 +241,6 @@ pub(super) fn sample() -> People {
 /// The People tab as an editor sees it: everyone, and nothing to change.
 pub(super) fn sample_member() -> People {
     let mut people = sample();
-    people.ownership = None;
-    "Bob Hellauer owns this workspace.".clone_into(&mut people.status);
     for person in &mut people.people {
         person.you = person.key == "ada";
         person.can_manage = false;

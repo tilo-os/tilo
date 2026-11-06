@@ -88,6 +88,8 @@ pub(crate) struct Framing<'a> {
     pub(crate) snapshots: &'a crate::snapshot::Snapshots,
     /// The HDR planes of the windows that carry one.
     pub(crate) hdr: &'a crate::hdr::HdrSurfaces,
+    /// The compositor's state: what a window's id is.
+    pub(crate) state: &'a crate::state::State,
 }
 
 /// What a window's effect draws: its live surfaces, or the last frame it
@@ -313,10 +315,10 @@ where
     R: Renderer + ImportAll + ImportMem,
     R::TextureId: Clone + Send + 'static,
 {
-    let id = crate::state::window_id(window);
+    let id = crate::state::window_id(framing.state, window);
     let elements = match crate::hdr::pieces(
         renderer,
-        framing.hdr,
+        framing.state,
         window,
         origin,
         output_scale,
@@ -396,6 +398,13 @@ where
     R::TextureId: Clone + Send + 'static,
 {
     let size = content.size();
+    // A window placed across a pixel or two is a line of its colour, not a
+    // picture: what a renderer can fit of a whole buffer there is nothing to
+    // sample. The view that placed it draws it again once it gives it room.
+    let placed_pixels = size.to_f64() * (placement.scale * output_scale);
+    if placed_pixels.w < 2.0 || placed_pixels.h < 2.0 {
+        return Vec::new();
+    }
     let origin = (placement.at - content.origin().to_f64()).to_physical_precise_round(output_scale);
     let unscaled = Rectangle::<i32, Physical>::new(
         placement.at.to_physical_precise_round(output_scale),

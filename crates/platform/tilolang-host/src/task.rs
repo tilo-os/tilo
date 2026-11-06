@@ -14,9 +14,18 @@
 //! while the program runs, the host asks `{"record": {app, record}}` for a record it reads
 //! (answered `{"ok": {"document": base64}}`, `{"absent": true}` or `{"err": why}`: the record's
 //! committed content, read-only, which the host reads itself with the app's package,
-//! [`RecordReads`]) and `{"invoke": {app, resource, action, arguments}}` (answered `{"ok":
-//! output}`, `{"failed": why}`, `{"refused": why}` or `{"asks": why}`), and it ends with
-//! `{"answer": …}` ([`tilolang_tilo::task::TaskSession::run`]).
+//! [`RecordReads`]), `{"children": {app, resource}}` for the resources a native app lists under
+//! one of its own (answered `{"ok": {"rows": [{id, kind, key, name}]}}` or `{"err": why}`: the
+//! app's directory, the record at its top and what it holds under it: a row's `id` names it
+//! under its parent, which is what an invocation addresses, and its `key` is what the app's
+//! `read` takes as its item), `{"reads": {app, resource}}` for whether a resource the app
+//! publishes answers a read of itself (answered `{"ok": {"reads": bool}}` or `{"err": why}`: a
+//! resource that does not is read by the record, which takes it as its `item`) and
+//! `{"invoke": {app, resource, action, arguments}}` (answered `{"ok": output}`, `{"failed": why}`,
+//! `{"refused": why}` or `{"asks": why}`), and it ends with `{"answer": …}`
+//! ([`tilolang_tilo::task::TaskSession::run`]). A native app's record is read by the app itself
+//! ([`tilolang_tilo::native`]), so the host's read of one is its `read` action, invoked like any
+//! other.
 
 use std::cell::RefCell;
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -25,9 +34,12 @@ use std::os::unix::net::UnixStream;
 use std::rc::Rc;
 
 use base64::Engine as _;
-use runtime_portal::tilolang_host::{TaskFds, TaskRequest, decode_modules};
+use runtime_portal::tilolang_host::{App, TaskFds, TaskRequest, decode_apps};
 use serde_json::{Value as Json, json};
 use tilolang_tilo::bundle::Bundle;
+use tilolang_tilo::catalogue::NativeSurface;
+use tilolang_tilo::native::{Calls, Native, NativeReads};
+use tilolang_tilo::runtime::meta::PackageMeta;
 use tilolang_tilo::task::{Answered, TaskDoor, TaskSession};
 use tilolang_tilo::task_records::{RecordReads, RecordSource};
 
@@ -91,21 +103,30 @@ impl RecordSource for Line {
 }
 
 /// What the task's programs reach the workspace through: the records, read here from what the
-/// door hands over ([`RecordReads`]), and invocations, which go to the door.
+/// door hands over ([`RecordReads`]), a native app's record, read by the app itself
+/// ([`NativeReads`]), and invocations, which go to the door.
 struct Door {
     line: Rc<Line>,
     reads: RecordReads,
+    /// The native apps the task reaches, and the record each publishes.
+    native: Rc<Native>,
     /// The author of the program running now, as the actions it plans for a preview see their
     /// caller.
     caller: RefCell<tilolang_tilo::publish::Caller>,
 }
 
 impl TaskDoor for Door {
-    fn read(&self, app: &str, item: &str) -> Result<Json, String> {
+    fn read(&self, app: &str, item: &str, ty: &str) -> Result<Json, String> {
+        if self.native.is(app) {
+            return NativeReads::new(&self.native, self).read(app, item, ty);
+        }
         self.reads.read(app, item)
     }
 
     fn query(&self, app: &str, request: &Json) -> Result<Json, String> {
+        if self.native.is(app) {
+            return NativeReads::new(&self.native, self).query(app, request);
+        }
         self.reads.query(app, request)
     }
 
@@ -137,7 +158,11 @@ impl TaskDoor for Door {
         };
         // What the program reads of the app next holds what its change made: the origin says
         // what it wrote, which goes into the record this program read.
-        if let Some(app) = call.get("app").and_then(Json::as_str) {
+        if let Some(app) = call
+            .get("app")
+            .and_then(Json::as_str)
+            .filter(|app| !self.native.is(app))
+        {
             let wrote = reply.get("change").and_then(Line::change_bytes);
             let taken = match wrote {
                 Some(Ok(change)) => self.reads.take_in(app, &change),
@@ -150,6 +175,38 @@ impl TaskDoor for Door {
             }
         }
         Line::answered(&reply)
+    }
+}
+
+impl Calls for Door {
+    fn call(&self, call: &Json) -> Answered {
+        self.invoke(call)
+    }
+
+    fn children(&self, app: &str, resource: &str) -> Result<Vec<Json>, String> {
+        let reply = self
+            .line
+            .ask(&json!({"children": {"app": app, "resource": resource}}))?;
+        if let Some(rows) = reply.pointer("/ok/rows").and_then(Json::as_array) {
+            return Ok(rows.clone());
+        }
+        Err(reply.get("err").and_then(Json::as_str).map_or_else(
+            || format!("the door answered a listing with neither ok nor err: {reply}"),
+            str::to_owned,
+        ))
+    }
+
+    fn reads(&self, app: &str, resource: &str) -> Result<bool, String> {
+        let reply = self
+            .line
+            .ask(&json!({"reads": {"app": app, "resource": resource}}))?;
+        if let Some(reads) = reply.pointer("/ok/reads").and_then(Json::as_bool) {
+            return Ok(reads);
+        }
+        Err(reply.get("err").and_then(Json::as_str).map_or_else(
+            || format!("the door answered a read question with neither ok nor err: {reply}"),
+            str::to_owned,
+        ))
     }
 }
 
@@ -226,10 +283,10 @@ pub struct Task {
 
 impl Task {
     /// The task `request`, its programs coming in on `fds.program` and compiled against the
-    /// modules in `fds.modules`.
+    /// apps in `fds.apps`.
     ///
     /// # Errors
-    /// The modules cannot be read or loaded, or the connection is unusable.
+    /// The apps cannot be read or loaded, or the connection is unusable.
     pub fn open(request: &TaskRequest, fds: TaskFds) -> Result<Self, String> {
         Self::open_with(request, fds, None)
     }
@@ -239,13 +296,13 @@ impl Task {
     /// agent's own calls, each on a connection of its own, so they share its `let`s.
     ///
     /// # Errors
-    /// The modules cannot be read or loaded, or a connection is unusable.
+    /// The apps cannot be read or loaded, or a connection is unusable.
     pub fn open_with(
         request: &TaskRequest,
         fds: TaskFds,
         person: Option<UnixStream>,
     ) -> Result<Self, String> {
-        let bundles = bundles(&fds.modules, request.modules_len)?;
+        let apps = apps(&fds.apps, request.apps_len)?;
         let stream = UnixStream::from(fds.program);
         let writer = stream.try_clone().map_err(|error| error.to_string())?;
         let watched = OwnedFd::from(stream.try_clone().map_err(|error| error.to_string())?);
@@ -254,14 +311,16 @@ impl Task {
             writer: RefCell::new(writer),
         });
         let reads = RecordReads::new(
-            &bundles,
+            &apps.bundles,
             request.records_under.clone(),
             request.person.as_deref(),
             Rc::clone(&line) as Rc<dyn RecordSource>,
         );
+        let native = Rc::new(Native::of(&apps.bundles, &apps.native));
         let door = Rc::new(Door {
             line: Rc::clone(&line),
             reads,
+            native: Rc::clone(&native),
             // Each program names its author; this is no one's until the first does.
             caller: RefCell::new(tilolang_tilo::publish::Caller {
                 actor: String::new(),
@@ -272,11 +331,13 @@ impl Task {
         let session = TaskSession::new(
             request.person.as_deref(),
             &(Rc::clone(&door) as Rc<dyn TaskDoor>),
-            &bundles,
+            &apps.bundles,
+            native,
         )?;
         tracing::info!(
             task = request.task,
-            apps = bundles.len(),
+            apps = apps.bundles.len(),
+            native = apps.native.len(),
             "task host started"
         );
         let task = Self {
@@ -315,6 +376,7 @@ impl Task {
                 None,
                 Rc::clone(&line) as Rc<dyn RecordSource>,
             ),
+            native: Rc::new(Native::of(&[], &[])),
             caller: RefCell::new(tilolang_tilo::publish::Caller {
                 actor: String::new(),
                 agent: true,
@@ -572,35 +634,68 @@ fn program(message: &Json) -> Result<(String, bool, tilolang_tilo::publish::Call
     Ok((source.to_owned(), confirm, author))
 }
 
-/// The bundles the sealed memfd `fd` holds, `len` bytes of them.
-fn bundles(fd: &OwnedFd, len: u64) -> Result<Vec<Bundle>, String> {
+/// What the session says a task's programs may name: the tilolang apps it runs, whose modules
+/// run a program's reads, and the native apps it holds, read as packages from their surfaces.
+struct Apps {
+    bundles: Vec<Bundle>,
+    native: Vec<PackageMeta>,
+}
+
+/// The apps the sealed memfd `fd` holds, `len` bytes of them.
+fn apps(fd: &OwnedFd, len: u64) -> Result<Apps, String> {
     let len = usize::try_from(len).map_err(|error| error.to_string())?;
     let mapping = tilo_render_protocol::shm::Mapping::map_sealed(fd, true, len, len)
         .map_err(|error| error.to_string())?;
     let bytes = mapping
         .get(0, len)
-        .ok_or("the modules are shorter than they say")?;
-    decode_modules(bytes)
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .map(|module| {
-            Bundle::from_parts(module.wasm, module.ids, &module.imports)
-                .map_err(|error| error.to_string())
-        })
-        .collect()
+        .ok_or("the apps are shorter than they say")?;
+    let mut apps = Apps {
+        bundles: Vec::new(),
+        native: Vec::new(),
+    };
+    for app in decode_apps(bytes).map_err(|error| error.to_string())? {
+        match app {
+            App::Module(module) => apps.bundles.push(
+                Bundle::from_parts(module.wasm, module.ids, &module.imports)
+                    .map_err(|error| error.to_string())?,
+            ),
+            App::Surface {
+                app,
+                title,
+                surface,
+            } => apps.native.push(
+                NativeSurface {
+                    app,
+                    title,
+                    surface,
+                }
+                .package()?,
+            ),
+        }
+    }
+    Ok(apps)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     /// A task over no packages, its program connection's far end returned as the door's.
     fn task() -> (Task, BufReader<UnixStream>, UnixStream) {
+        task_with(&[])
+    }
+
+    /// A task over the apps `native`, read as packages from their surfaces, its program
+    /// connection's far end returned as the door's.
+    fn task_with(native: &[PackageMeta]) -> (Task, BufReader<UnixStream>, UnixStream) {
         let (ours, door) = UnixStream::pair().expect("a socket pair");
         let line = Rc::new(Line {
             reader: RefCell::new(BufReader::new(ours.try_clone().expect("a clone"))),
             writer: RefCell::new(ours.try_clone().expect("a clone")),
         });
+        let apps = Rc::new(Native::of(&[], native));
         let reached = Rc::new(Door {
             line: Rc::clone(&line),
             reads: RecordReads::new(
@@ -609,13 +704,14 @@ mod tests {
                 None,
                 Rc::clone(&line) as Rc<dyn RecordSource>,
             ),
+            native: Rc::clone(&apps),
             caller: RefCell::new(tilolang_tilo::publish::Caller {
                 actor: "agent:task".to_owned(),
                 agent: true,
                 on_behalf_of: None,
             }),
         });
-        let session = TaskSession::new(None, &(Rc::clone(&reached) as Rc<dyn TaskDoor>), &[])
+        let session = TaskSession::new(None, &(Rc::clone(&reached) as Rc<dyn TaskDoor>), &[], apps)
             .expect("a session");
         let task = Task {
             line,
@@ -680,5 +776,511 @@ mod tests {
         let _ends = asking.join().expect("the door");
         let why = read.expect_err("an unreadable reply fails the read");
         assert!(why.contains("not JSON"), "{why}");
+    }
+
+    /// The native app `app` named `title`, read from `surface` as its committed `surface.toml`
+    /// reads.
+    fn native(app: &str, title: &str, surface: &str) -> PackageMeta {
+        NativeSurface {
+            app: app.to_owned(),
+            title: title.to_owned(),
+            surface: surface.to_owned(),
+        }
+        .package()
+        .expect("the surface reads")
+    }
+
+    /// Chat, as the app publishes it.
+    fn chat() -> PackageMeta {
+        native(
+            "so.tilo.chat",
+            "Chat",
+            include_str!("../../../../apps/chat/surface.toml"),
+        )
+    }
+
+    /// Tasks, as the app publishes it.
+    fn tasks() -> PackageMeta {
+        native(
+            "so.tilo.tasks",
+            "Tasks",
+            include_str!("../../../../apps/tasks/surface.toml"),
+        )
+    }
+
+    /// Answer the `count` invocations the door is sent with `answer` (one JSON line), and hand
+    /// back the invocations it was sent.
+    fn answering(
+        door: UnixStream,
+        count: usize,
+        answer: &'static str,
+    ) -> std::thread::JoinHandle<Vec<Json>> {
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(door.try_clone().expect("a clone"));
+            let mut door = door;
+            let mut seen = Vec::new();
+            for _ in 0..count {
+                let mut line = String::new();
+                if reader.read_line(&mut line).expect("a call") == 0 {
+                    break;
+                }
+                let message: Json = serde_json::from_str(&line).expect("a JSON call");
+                seen.push(message["invoke"].clone());
+                door.write_all(answer.as_bytes()).expect("answered");
+                door.write_all(b"\n").expect("answered");
+            }
+            seen
+        })
+    }
+
+    /// What a program run answered, and how it ended.
+    fn ran(task: &Task, source: &str) -> Json {
+        task.session.run(
+            source,
+            false,
+            &tilolang_tilo::runtime::Principal::new("agent:task"),
+        )
+    }
+
+    /// A directory row an app lists for the item `key`, which its `read` takes as its `item`,
+    /// under the id the window publishing it binds it by.
+    fn row(key: &str, name: &str) -> Json {
+        let bound = format!("bound:{key}");
+        json!({"id": bound, "kind": "item", "key": key, "name": name})
+    }
+
+    /// The row an app's directory lists its record by: the key its `read` takes, under an id the
+    /// publishing window binds, which is no name the app itself knows.
+    fn record_row(record: &str, name: &str) -> Json {
+        json!({"id": format!("bound:{record}"), "kind": record, "key": record, "name": name})
+    }
+
+    /// An app's own answers: the resources its directory lists under its record, which of them
+    /// answer a read of themselves, and what its `read` answers of each item, its model's JSON.
+    struct Reads {
+        app: &'static str,
+        record: &'static str,
+        /// The resources that answer a read of themselves, by the id the directory lists them
+        /// as; every other resource is read by the record, which takes it as its `item`.
+        reading: &'static [&'static str],
+        rows: Vec<Json>,
+        items: Vec<(&'static str, Json)>,
+    }
+
+    impl Reads {
+        /// The door's answers to what a program asks of the app.
+        fn door(self) -> impl FnMut(&Json) -> Json + Send + 'static {
+            move |message| self.answer(message)
+        }
+
+        /// How the app answers `message`: its directory, whether a resource reads itself, or its
+        /// own `read` of an item.
+        fn answer(&self, message: &Json) -> Json {
+            if let Some(listing) = message.get("children") {
+                assert_eq!(listing["app"], self.app, "{message:#}");
+                // The record sits at the top of the app's directory, the resources under it.
+                let rows = match listing["resource"].as_str() {
+                    Some("") => vec![record_row(self.record, self.record)],
+                    Some(resource) if resource == format!("bound:{}", self.record) => {
+                        self.rows.clone()
+                    }
+                    other => panic!("{} lists nothing under {other:?}", self.app),
+                };
+                return json!({"ok": {"rows": rows}});
+            }
+            if let Some(question) = message.get("reads") {
+                assert_eq!(question["app"], self.app, "{message:#}");
+                let resource = question["resource"].as_str().unwrap_or_default();
+                return json!({"ok": {"reads": self.reading.contains(&resource)}});
+            }
+            let call = &message["invoke"];
+            assert_eq!(call["app"], self.app, "{message:#}");
+            assert_eq!(call["action"], "read", "{message:#}");
+            // A resource that reads itself is read by its own id; every other by the record the
+            // app publishes it as, which takes the resource's key as its `item`.
+            let key = if let Some(key) = call["arguments"]["item"].as_str() {
+                assert_eq!(
+                    call["resource"],
+                    format!("bound:{}", self.record),
+                    "{message:#}"
+                );
+                key
+            } else {
+                let id = call["resource"].as_str().unwrap_or_default();
+                assert!(self.reading.contains(&id), "{message:#}");
+                self.rows
+                    .iter()
+                    .find(|row| row["id"] == id)
+                    .and_then(|row| row["key"].as_str())
+                    .unwrap_or_else(|| panic!("{} lists no {id}", self.app))
+            };
+            match self.items.iter().find(|(held, _)| *held == key) {
+                Some((_, content)) => json!({"ok": {"value": content, "resources": []}}),
+                None => json!({"failed": format!("{} holds no {key}", self.app)}),
+            }
+        }
+    }
+
+    /// Close the test's end of the door once the program ran: the task sends nothing more.
+    fn closed(door: &UnixStream) {
+        door.shutdown(std::net::Shutdown::Both)
+            .expect("the door closed");
+    }
+
+    /// A door that answers every message with `answer` until its far end closes (the test shuts
+    /// the returned stream down once the program ran), handing back what the task sent it.
+    fn scripted(
+        door: &UnixStream,
+        mut answer: impl FnMut(&Json) -> Json + Send + 'static,
+    ) -> std::thread::JoinHandle<Vec<Json>> {
+        let mut door = door.try_clone().expect("a clone");
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(door.try_clone().expect("a clone"));
+            let mut seen = Vec::new();
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let message: Json = serde_json::from_str(&line).expect("a JSON message");
+                let mut reply = serde_json::to_vec(&answer(&message)).expect("JSON");
+                reply.push(b'\n');
+                door.write_all(&reply).expect("answered");
+                seen.push(message);
+            }
+            seen
+        })
+    }
+
+    #[test]
+    fn a_program_reads_a_native_apps_record_fields_through_the_app() {
+        let (task, _reader, door) = task_with(&[tasks()]);
+        let calls = scripted(
+            &door,
+            Reads {
+                app: "so.tilo.tasks",
+                record: "tasks.tracker",
+                reading: &["bound:tasks.tracker/issues/one"],
+                rows: vec![row("tasks.tracker/issues/one", "Ship the reads")],
+                items: vec![(
+                    "tasks.tracker/issues/one",
+                    json!({
+                        "number": 7,
+                        "title": "Ship the reads",
+                        "body": "One read path.",
+                        "assignee": "person:ada",
+                        "labels": ["review", "urgent"],
+                    }),
+                )],
+            }
+            .door(),
+        );
+        let answer = ran(
+            &task,
+            "for i in find(tasks.Issue) {\n    print(i.title)\n    print(i.assignee)\n    \
+             print(i.labels.len())\n    print(i.number)\n}",
+        );
+        assert_eq!(answer["state"], "done", "{answer:#}");
+        // Each field as the app's surface types it: text, the text an option holds, a set's
+        // members, a count.
+        assert_eq!(
+            answer["output"],
+            json!(["Ship the reads", "person:ada", "2", "7"]),
+            "{answer:#}"
+        );
+        closed(&door);
+        let calls = calls.join().expect("the door");
+        // The app listed its directory and what its record published holds; reading the
+        // resource the program asked about, it listed the directory again to address that
+        // resource, asked whether it reads itself, and read through its own `read`, once.
+        assert_eq!(
+            calls,
+            [
+                json!({"children": {"app": "so.tilo.tasks", "resource": ""}}),
+                json!({"children": {"app": "so.tilo.tasks", "resource": "bound:tasks.tracker"}}),
+                json!({"children": {"app": "so.tilo.tasks", "resource": ""}}),
+                json!({"children": {"app": "so.tilo.tasks", "resource": "bound:tasks.tracker"}}),
+                json!({
+                    "reads": {
+                        "app": "so.tilo.tasks",
+                        "resource": "bound:tasks.tracker/issues/one",
+                    },
+                }),
+                json!({
+                    "invoke": {
+                        "app": "so.tilo.tasks",
+                        "resource": "bound:tasks.tracker/issues/one",
+                        "action": "read",
+                        "arguments": {"item": null, "version": null},
+                    },
+                }),
+            ],
+            "{calls:#?}"
+        );
+    }
+
+    #[test]
+    fn a_program_filters_a_native_apps_resources_by_their_fields() {
+        let (task, _reader, door) = task_with(&[tasks()]);
+        let calls = scripted(
+            &door,
+            Reads {
+                app: "so.tilo.tasks",
+                record: "tasks.tracker",
+                reading: &[
+                    "bound:tasks.tracker/issues/one",
+                    "bound:tasks.tracker/issues/two",
+                ],
+                rows: vec![
+                    row("tasks.tracker/issues/one", "Ship the reads"),
+                    row("tasks.tracker/issues/two", "Review Ada's portfolio"),
+                ],
+                items: vec![
+                    (
+                        "tasks.tracker/issues/one",
+                        json!({"title": "Ship the reads", "assignee": "person:ada"}),
+                    ),
+                    (
+                        "tasks.tracker/issues/two",
+                        json!({"title": "Review Ada's portfolio", "assignee": "person:bob"}),
+                    ),
+                ],
+            }
+            .door(),
+        );
+        let answer = ran(
+            &task,
+            "for i in find(tasks.Issue).filter(i -> i.assignee == \"person:ada\") {\n    \
+             print(i.title)\n}",
+        );
+        assert_eq!(answer["state"], "done", "{answer:#}");
+        assert_eq!(answer["output"], json!(["Ship the reads"]), "{answer:#}");
+        closed(&door);
+        let calls = calls.join().expect("the door");
+        // Its directory and its record's resources; the two the predicate reads, each by its
+        // own `read`; and the one the program prints, addressed again.
+        assert_eq!(calls.len(), 10, "{calls:#?}");
+    }
+
+    #[test]
+    fn a_program_reads_a_native_apps_channels() {
+        let (task, _reader, door) = task_with(&[chat()]);
+        // Chat's record reads itself and takes an item: its channels are read through it.
+        let calls = scripted(
+            &door,
+            Reads {
+                app: "so.tilo.chat",
+                record: "chat.workspace",
+                reading: &[],
+                rows: vec![
+                    row("chat.workspace/channels/general", "general"),
+                    row("chat.workspace/channels/design", "design"),
+                ],
+                items: vec![
+                    (
+                        "chat.workspace/channels/general",
+                        json!({"name": "general", "kind": "text", "archived": false}),
+                    ),
+                    (
+                        "chat.workspace/channels/design",
+                        json!({"name": "design", "kind": "voice", "archived": true}),
+                    ),
+                ],
+            }
+            .door(),
+        );
+        let answer = ran(
+            &task,
+            "for c in find(chat.Conversation) {\n    print(c.name, c.kind, c.archived)\n}",
+        );
+        assert_eq!(answer["state"], "done", "{answer:#}");
+        assert_eq!(
+            answer["output"],
+            json!(["design .voice 1", "general .text 0"]),
+            "{answer:#}"
+        );
+        closed(&door);
+        let calls = calls.join().expect("the door");
+        // The app listed its directory, its record's resources, and for each channel the
+        // program read, the directory once more and the question of what reads it: its record
+        // does, taking the channel as its `item`. The listing read no channel's fields.
+        assert_eq!(calls.len(), 10, "{calls:#?}");
+    }
+
+    #[test]
+    fn a_native_read_the_policy_refuses_fails_the_program_with_why() {
+        let (task, _reader, door) = task_with(&[tasks()]);
+        let calls = scripted(&door, |message| {
+            if let Some(listing) = message.get("children") {
+                let rows = match listing["resource"].as_str() {
+                    Some("") => vec![record_row("tasks.tracker", "Tasks")],
+                    _ => vec![row("tasks.tracker/issues/one", "Ship it")],
+                };
+                return json!({"ok": {"rows": rows}});
+            }
+            if message.get("reads").is_some() {
+                return json!({"ok": {"reads": true}});
+            }
+            json!({"refused": "these are a person's private tasks"})
+        });
+        let answer = ran(&task, "for i in find(tasks.Issue) {\n    print(i.title)\n}");
+        closed(&door);
+        let calls = calls.join().expect("the door");
+        assert_eq!(calls.len(), 6, "{calls:#?}");
+        assert_eq!(answer["state"], "failed", "{answer:#}");
+        let why = answer["detail"].as_str().unwrap_or_default();
+        assert!(
+            why.contains("so.tilo.tasks refused the read: these are a person's private tasks"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn a_program_names_a_native_apps_fields_and_reads_no_other() {
+        let (task, _reader, _door) = task_with(&[chat()]);
+        // A field the app does not publish is an error in the program, as in `tilolang check`.
+        let wrong = ran(
+            &task,
+            "for c in find(chat.Conversation) {\n    print(c.colour)\n}",
+        );
+        assert_eq!(wrong["state"], "rejected", "{wrong:#}");
+    }
+
+    #[test]
+    fn a_native_apps_record_is_a_root_a_program_names() {
+        let (task, _reader, _door) = task_with(&[chat(), tasks()]);
+        let catalogue = task.session.catalogue();
+        let roots = |app: &str| -> Vec<(String, String)> {
+            catalogue[app]["signatures"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|signature| signature["kind"] == "root")
+                .map(|signature| {
+                    (
+                        signature["name"].as_str().unwrap_or_default().to_owned(),
+                        signature["call"].as_str().unwrap_or_default().to_owned(),
+                    )
+                })
+                .collect()
+        };
+        // The app the program invokes the record of, and how it writes it.
+        assert_eq!(
+            roots("chat"),
+            [("workspace".to_owned(), "chat.workspace".to_owned())],
+            "{catalogue:#}"
+        );
+        assert_eq!(
+            roots("tasks"),
+            [("tracker".to_owned(), "tasks.tracker".to_owned())],
+            "{catalogue:#}"
+        );
+    }
+
+    #[test]
+    fn a_program_changes_native_apps_through_their_actions() {
+        let (task, _reader, door) = task_with(&[chat(), tasks()]);
+        let calls = answering(door, 2, r#"{"ok": {}}"#);
+        let answer = ran(
+            &task,
+            "chat.rename_channel(chat.workspace, \"general\", \"town\")\ntasks.create(tasks.tracker, \"Ship it\")",
+        );
+        let calls = calls.join().expect("the door");
+        assert_eq!(answer["state"], "done", "{answer:#}");
+        assert_eq!(
+            calls,
+            [
+                json!({
+                    "app": "so.tilo.chat",
+                    "resource": "chat.workspace",
+                    "action": "rename-channel",
+                    "arguments": {"channel": "general", "name": "town"},
+                }),
+                json!({
+                    "app": "so.tilo.tasks",
+                    "resource": "tasks.tracker",
+                    "action": "create",
+                    "arguments": {
+                        "title": "Ship it",
+                        "parent": null,
+                        "body": null,
+                        "status": null,
+                        "assignee": null,
+                    },
+                }),
+            ]
+        );
+        assert_eq!(answer["changed"], 2, "{answer:#}");
+        // Both steps reach the task's history on the records the apps publish, so `undo task`
+        // takes them back like any tl app's.
+        assert_eq!(
+            answer["history"],
+            json!([
+                {"app": "so.tilo.chat", "resource": "chat.workspace", "published": false},
+                {"app": "so.tilo.tasks", "resource": "tasks.tracker", "published": false},
+            ])
+        );
+    }
+
+    #[test]
+    fn a_native_action_the_app_refuses_fails_the_program_and_changes_nothing() {
+        let (task, _reader, door) = task_with(&[chat()]);
+        let calls = answering(
+            door,
+            1,
+            r#"{"refused": "the workspace asks its members before renaming"}"#,
+        );
+        let answer = ran(
+            &task,
+            "chat.rename_channel(chat.workspace, \"general\", \"town\")",
+        );
+        let calls = calls.join().expect("the door");
+        assert_eq!(calls.len(), 1, "{calls:#?}");
+        assert_eq!(answer["state"], "failed", "{answer:#}");
+        let why = answer["detail"].as_str().unwrap_or_default();
+        assert!(why.contains("asks its members before renaming"), "{why}");
+        assert_eq!(answer["changed"], 0, "{answer:#}");
+        assert_eq!(answer["history"], json!([]), "{answer:#}");
+    }
+
+    #[test]
+    fn a_task_names_only_the_apps_its_session_hands_it() {
+        let (task, _reader, _door) = task_with(&[]);
+        let answer = ran(
+            &task,
+            "for c in find(chat.Conversation) {\n    print(c.name)\n}",
+        );
+        assert_eq!(answer["state"], "rejected", "{answer:#}");
+        let why = format!("{:#}", answer["detail"]);
+        assert!(
+            why.contains("chat") || why.contains("chat.Conversation"),
+            "{why}"
+        );
+    }
+
+    /// `tilolang check`'s packages: what the apps' directories publish.
+    fn checked() -> Vec<PackageMeta> {
+        let chat = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/chat");
+        tilolang_tilo::catalogue::published_packages(&[chat]).expect("the surfaces read")
+    }
+
+    #[test]
+    fn check_and_a_task_compile_against_the_same_catalogue() {
+        let checked = checked();
+        let program =
+            "for c in find(chat.Conversation) {\n    print(c.name)\n    print(c.colour)\n}";
+        let Err(diagnostics) = tilolang::compile_program_reading(program, &checked, &[], &[])
+        else {
+            panic!("`colour` is no field of a chat conversation");
+        };
+        let expected: Vec<String> = diagnostics
+            .iter()
+            .map(|d| format!("{}:{}: {} {}", d.line, d.col, d.code, d.message))
+            .collect();
+        let (task, _reader, _door) = task_with(&[chat()]);
+        let answer = ran(&task, program);
+        assert_eq!(answer["state"], "rejected", "{answer:#}");
+        assert_eq!(answer["detail"], serde_json::json!(expected), "{answer:#}");
     }
 }

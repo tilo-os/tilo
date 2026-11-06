@@ -101,45 +101,121 @@ impl CpuSurface {
         &self.pixels
     }
 
-    /// Draw `scene` (physical pixels) in the `regions` of the surface, as
-    /// `(x, y, width, height)`; the first draw covers all of it, and a
-    /// surface draws nothing outside its own pixels. `true` where pixels
-    /// were drawn.
-    pub fn draw(&mut self, scene: &vello::Scene, regions: &[(u32, u32, u32, u32)]) -> bool {
+    /// Draw `scene` (physical pixels) over the pixels already here, in the
+    /// `damage` regions of the surface as `(x, y, width, height)`; the first
+    /// draw covers all of it, and a surface draws nothing outside its own
+    /// pixels. Returns the regions drawn, or `None` where no pixel changed.
+    ///
+    /// The regions drawn are the ones this rasterizer saw its prepared
+    /// scenes differ in ([`tilo_cpu_raster::CpuRasterizer::changes`]): the
+    /// pixels are its own and it keeps the frame before, so it proves what a
+    /// caller cannot, more finely than `damage` says and for nothing when
+    /// nothing changed. Pixels that only moved, as they do in a strip that
+    /// slides, are moved rather than drawn. `damage` is what the caller knows
+    /// of the change, drawn where that proof is too large to list, and a
+    /// change listed in more places than [`MAX_REGIONS`] is drawn in the
+    /// region they cover.
+    pub fn draw(
+        &mut self,
+        scene: &vello::Scene,
+        damage: Option<&[(u32, u32, u32, u32)]>,
+    ) -> Option<Vec<(u32, u32, u32, u32)>> {
         let (width, height) = self.size;
-        let drawn: Vec<tilo_cpu_raster::Region> = if self.valid {
-            regions
-                .iter()
-                .filter_map(|&(x, y, w, h)| {
-                    let x = x.min(width);
-                    let y = y.min(height);
-                    let w = w.min(width.saturating_sub(x));
-                    let h = h.min(height.saturating_sub(y));
-                    (w > 0 && h > 0).then(|| tilo_cpu_raster::Region::new(x, y, w, h))
-                })
-                .collect()
-        } else {
-            vec![tilo_cpu_raster::Region::new(0, 0, width, height)]
-        };
-        if drawn.is_empty() {
-            return false;
-        }
-        let stride = (width as usize).saturating_mul(4);
-        let Ok(mut target) = tilo_cpu_raster::Target::new(&mut self.pixels, width, height, stride)
-        else {
-            return false;
-        };
         self.rasterizer.prepare(scene.encoding());
+        let whole = tilo_cpu_raster::Region::new(0, 0, width, height);
+        let inside = |&(x, y, w, h): &(u32, u32, u32, u32)| {
+            let x = x.min(width);
+            let y = y.min(height);
+            let w = w.min(width.saturating_sub(x));
+            let h = h.min(height.saturating_sub(y));
+            (w > 0 && h > 0).then(|| tilo_cpu_raster::Region::new(x, y, w, h))
+        };
+        let mut moved = Vec::new();
+        let mut shift = None;
+        let drawn: Vec<tilo_cpu_raster::Region> = if !self.valid {
+            vec![whole]
+        } else if let Some(changes) = self.rasterizer.changes(width, height) {
+            let work = changes.work(width, height, MOVED_TILE);
+            moved = work.moved;
+            shift = changes.motion.map(|motion| (motion.dx, motion.dy));
+            work.drawn
+        } else {
+            match damage {
+                Some(regions) => regions.iter().filter_map(inside).collect(),
+                None => vec![whole],
+            }
+        };
+        if drawn.is_empty() && moved.is_empty() {
+            return None;
+        }
+        // The rasterizer walks its scene once per region, so a frame that
+        // changed in many places is drawn in their bounds instead: the walk
+        // is what it pays for, and a hundred small regions cost more than
+        // the picture they cover.
+        let drawn = if drawn.len() > MAX_REGIONS {
+            vec![bounds(&drawn, width, height)]
+        } else {
+            drawn
+        };
+        let stride = (width as usize).saturating_mul(4);
+        let mut target =
+            tilo_cpu_raster::Target::new(&mut self.pixels, width, height, stride).ok()?;
+        if let Some((dx, dy)) = shift.filter(|_| !moved.is_empty()) {
+            tilo_cpu_raster::move_pixels(&mut target, &moved, dx, dy);
+        }
         // Where the app draws nothing the surface stays transparent, so the
         // desktop shows through.
-        self.rasterizer.render_prepared(
-            &mut target,
-            Some(&drawn),
-            tilo_cpu_raster::color::AlphaColor::new([0.0, 0.0, 0.0, 0.0]),
-        );
+        if !drawn.is_empty() {
+            self.rasterizer.render_prepared(
+                &mut target,
+                Some(&drawn),
+                tilo_cpu_raster::color::AlphaColor::new([0.0, 0.0, 0.0, 0.0]),
+            );
+        }
         self.valid = true;
-        true
+        let mut changed = drawn;
+        changed.extend(moved);
+        Some(
+            changed
+                .into_iter()
+                .map(|region| (region.x, region.y, region.width, region.height))
+                .collect(),
+        )
     }
+}
+
+/// Tiles a change's motion is proven in, and the regions around it are drawn
+/// in: fine enough that little is redrawn beside what moved.
+const MOVED_TILE: u32 = 16;
+
+/// Regions a frame is drawn in before it is drawn in their bounds: each one
+/// walks the prepared scene, and past this many that walk costs more than
+/// drawing what lies between them.
+const MAX_REGIONS: usize = 32;
+
+/// What `regions` cover together, as one region of a `width` x `height`
+/// surface.
+fn bounds(regions: &[tilo_cpu_raster::Region], width: u32, height: u32) -> tilo_cpu_raster::Region {
+    let left = regions.iter().map(|region| region.x).min().unwrap_or(0);
+    let top = regions.iter().map(|region| region.y).min().unwrap_or(0);
+    let right = regions
+        .iter()
+        .map(|region| region.x.saturating_add(region.width))
+        .max()
+        .unwrap_or(width)
+        .min(width);
+    let bottom = regions
+        .iter()
+        .map(|region| region.y.saturating_add(region.height))
+        .max()
+        .unwrap_or(height)
+        .min(height);
+    tilo_cpu_raster::Region::new(
+        left,
+        top,
+        right.saturating_sub(left),
+        bottom.saturating_sub(top),
+    )
 }
 
 /// The CPU rasterizer [`render_on_cpu`] draws with, kept for the glyph
@@ -177,6 +253,7 @@ mod tests {
     )]
 
     use super::render_on_cpu;
+    use crate::offscreen::CpuSurface;
     use vello::Scene;
     use vello::kurbo::{Affine, Rect};
     use vello::peniko::{Color, Fill};
@@ -229,5 +306,158 @@ mod tests {
                 .all(|pixel| pixel == [0x33, 0x44, 0x55, 0xff]),
             "every pixel is the backdrop"
         );
+    }
+
+    /// A frame is drawn where this surface saw its own frames differ, more
+    /// finely than a caller's damage says, and a frame that changed nothing
+    /// costs nothing. What it leaves behind is a full render of the last
+    /// frame all the same.
+    #[test]
+    fn a_frame_is_drawn_only_where_its_own_raster_saw_it_change() {
+        let (width, height) = (64, 48);
+        let mut surface = CpuSurface::new(width, height, 1).expect("the CPU rasterizer draws it");
+        let chip = |x: f64| {
+            let mut scene = Scene::new();
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgb8(0x20, 0x60, 0xc0),
+                None,
+                &Rect::new(x, 8.0, x + 16.0, 24.0),
+            );
+            scene
+        };
+        let first = surface
+            .draw(&chip(8.0), None)
+            .expect("the first frame covers the surface");
+        assert_eq!(first, vec![(0, 0, width, height)]);
+
+        // The caller says nothing changed; the pixels this surface keeps say
+        // the chip moved, and they are the ones drawn.
+        let moved = surface
+            .draw(&chip(40.0), Some(&[]))
+            .expect("a moved chip changed pixels");
+        let covered = |x: u32, y: u32| {
+            moved
+                .iter()
+                .any(|&(rx, ry, rw, rh)| x >= rx && x < rx + rw && y >= ry && y < ry + rh)
+        };
+        assert!(covered(8, 16) && covered(55, 16), "where it was and is");
+        assert!(!covered(30, 40), "the pixels it never touched");
+        let full = render_on_cpu(&chip(40.0), width, height, Color::TRANSPARENT).expect("drawn");
+        assert_eq!(
+            pixel(surface.pixels(), width, 44, 16),
+            pixel(&full, width, 44, 16),
+            "the chip is where a whole render of the frame puts it"
+        );
+        assert_eq!(
+            pixel(surface.pixels(), width, 12, 16),
+            [0, 0, 0, 0],
+            "and the surface kept nothing of where it was"
+        );
+
+        assert!(
+            surface.draw(&chip(40.0), None).is_none(),
+            "an unchanged frame draws nothing"
+        );
+    }
+
+    /// A frame that only moved, as a strip that slides does, is moved rather
+    /// than drawn again, and what it leaves behind is a full render all the
+    /// same: the pixels it left and the pixels it reached.
+    #[test]
+    fn a_frame_that_only_moves_leaves_a_full_render_behind() {
+        let (width, height) = (200, 120);
+        let mut surface = CpuSurface::new(width, height, 1).expect("the CPU rasterizer draws it");
+        let block = |x: f64| {
+            let mut scene = Scene::new();
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgb8(0x20, 0x60, 0xc0),
+                None,
+                &Rect::new(x, 10.0, x + 120.0, 100.0),
+            );
+            scene
+        };
+        let first = surface
+            .draw(&block(10.0), None)
+            .expect("the first frame covers the surface");
+        assert_eq!(first, vec![(0, 0, width, height)]);
+
+        surface
+            .draw(&block(50.0), Some(&[]))
+            .expect("the block moved");
+        let full = render_on_cpu(&block(50.0), width, height, Color::TRANSPARENT).expect("drawn");
+        let differing: Vec<(u32, u32)> = surface
+            .pixels()
+            .chunks_exact(4)
+            .zip(full.chunks_exact(4))
+            .enumerate()
+            .filter(|(_, (moved, drawn))| {
+                moved
+                    .iter()
+                    .zip(drawn.iter())
+                    .any(|(a, b)| a.abs_diff(*b) > 1)
+            })
+            .map(|(at, _)| {
+                let at = at as u32;
+                (at % width, at / width)
+            })
+            .collect();
+        assert!(
+            differing.is_empty(),
+            "moved and drawn pixels equal a whole render: {differing:?}"
+        );
+        assert_eq!(
+            pixel(surface.pixels(), width, 11, 12),
+            [0, 0, 0, 0],
+            "the surface kept nothing of where the block was"
+        );
+    }
+
+    /// A frame that changed in more places than a scene walk is worth is
+    /// drawn in one region covering them, and leaves the same picture
+    /// behind.
+    #[test]
+    fn many_changed_places_are_drawn_in_their_bounds() {
+        let (width, height) = (200, 100);
+        let mut surface = CpuSurface::new(width, height, 1).expect("the CPU rasterizer draws it");
+        let chips = |shift: f64| {
+            let mut scene = Scene::new();
+            for index in 0..40 {
+                let x = 2.0 + f64::from(index) * 4.0 + shift;
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    Color::from_rgb8(0x20, 0x60, 0xc0),
+                    None,
+                    &Rect::new(x, 10.0, x + 2.0, 12.0),
+                );
+            }
+            scene
+        };
+        let first = surface
+            .draw(&chips(0.0), None)
+            .expect("the first frame covers the surface");
+        assert_eq!(first, vec![(0, 0, width, height)]);
+
+        let moved = surface
+            .draw(&chips(20.0), Some(&[]))
+            .expect("every chip moved");
+        assert_eq!(
+            moved,
+            vec![(2, 10, 178, 2)],
+            "the chips and where they were are drawn as the one region they cover"
+        );
+        let full = render_on_cpu(&chips(20.0), width, height, Color::TRANSPARENT).expect("drawn");
+        for index in [0_u32, 20, 39] {
+            let x = 2 + index * 4 + 20;
+            assert_eq!(
+                pixel(surface.pixels(), width, x, 10),
+                pixel(&full, width, x, 10),
+                "the chip at {x} is where a whole render of the frame puts it"
+            );
+        }
     }
 }

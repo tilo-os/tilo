@@ -19,13 +19,23 @@ view places(p: Places) {
                 ui.Text("Another, beside it.", role: .caption, secondary: true)
             }
         }
-        ui.MapPin(name: .some("Window"), x: .some(80), y: .some(300), width: .some(360), height: .some(200)) {
+        ui.MapPin(
+            name: .some("Window"),
+            x: .some(80),
+            y: .some(300),
+            width: .some(360),
+            height: .some(200),
+        ) {
             ui.WindowFrame(name: .some("A window"), focused: true, fill) {
                 controls: {
                     ui.Button("Close", icon: .x, icon_only: true, role: .bar)
                 }
                 body: {
-                    ui.Text("A window on the desk: its bar, its controls, what it shows.", role: .caption, secondary: true)
+                    ui.Text(
+                        "A window on the desk: its bar, its controls, what it shows.",
+                        role: .caption,
+                        secondary: true,
+                    )
                 }
             }
         }

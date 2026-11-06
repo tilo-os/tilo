@@ -21,11 +21,13 @@
 //! the stream came on; the sender's own rule decides whether they reach the
 //! window.
 //!
-//! Another member's input reaches the window through the compositor's
-//! remote-input path ([`Compositor::input_remote`]), and only while the
-//! person allows it: a member the person did not let in reaches nothing, and
-//! the compositor's firewall refuses every member's input after the cut chord
-//! or while the session is locked.
+//! Another member's input reaches the window through a seat of its own
+//! ([`Compositor::open_seat`]): its pointer and its keys act in that window
+//! and nowhere else, and only while the person allows it. A member the person
+//! did not let in reaches nothing, and the compositor's firewall refuses every
+//! member's input after the cut chord or while the session is locked. What a
+//! member types, composes or pastes goes where the person's own keyboard and
+//! clipboard go, and its close closes the window.
 //!
 //! What the bar says of it ([`DesktopChromeSnapshot::active_exposures`]) is
 //! read from the same shares ([`WindowShares::exposures`]).
@@ -54,8 +56,8 @@ use tilo_actions::{
     ActionAddress, ActionContract, ActionParam, ActionSpec, DoorError, EncodedAction,
     ExecutionMode, OperationKind, ParamType, ResourceSpec, ResultSpec,
 };
-use tilo_compositor::Compositor;
 use tilo_compositor::capture::Target;
+use tilo_compositor::{Compositor, InputEvent, Selection};
 use tilo_desktop::chrome::ActiveExposure;
 use tilo_desktop_model::window_share::{window_node, window_share_id, window_shares};
 use tilo_desktop_model::{
@@ -203,6 +205,9 @@ pub(crate) struct WindowShares {
     /// says another member shares the window there, by the workspace id it says
     /// it in: what it takes away again when the share ends.
     governed: BTreeMap<TabId, Governed>,
+    /// The seat each member controlling a shared window acts at: its own
+    /// pointer and keyboard in that window, beside the person's.
+    seats: BTreeMap<(PeerId, SurfaceId), tilo_compositor::Seat>,
 }
 
 /// A window another member shares, as this session shows it on the desk.
@@ -479,6 +484,7 @@ impl WindowShares {
                     self.retract(desk, tab);
                     self.asked.retain(|(asking, _), _| *asking != tab);
                     self.renegotiate.remove(&tab);
+                    self.close_seats(compositor, tab, None);
                     self.changed();
                 }
                 ShareCommand::AllowInput { tab, on } => {
@@ -499,6 +505,9 @@ impl WindowShares {
                         hosted.controlled.extend(peers);
                     } else {
                         hosted.controlled.clear();
+                    }
+                    if !allow {
+                        self.close_seats(compositor, tab, None);
                     }
                     self.changed();
                 }
@@ -705,6 +714,8 @@ impl WindowShares {
                         host_label: host_label.clone(),
                     },
                     app_title: None,
+                    view: String::new(),
+                    pinned: false,
                 }],
                 active_tab: tab,
                 width: WindowWidth::Normal,
@@ -877,7 +888,7 @@ impl WindowShares {
 
     /// End the shares whose window closed, and the ones whose workspace this
     /// session no longer takes part in.
-    fn end_gone(&mut self, compositor: &Compositor, desk: &DesktopHandle, sync: &Client) {
+    fn end_gone(&mut self, compositor: &mut Compositor, desk: &DesktopHandle, sync: &Client) {
         if self.hosted.is_empty() {
             return;
         }
@@ -903,6 +914,7 @@ impl WindowShares {
             // stops naming it.
             self.retract(desk, tab);
             self.asked.retain(|(asking, _), _| *asking != tab);
+            self.close_seats(compositor, tab, None);
             self.changed();
         }
     }
@@ -1208,32 +1220,148 @@ impl WindowShares {
     /// only while the share lets that member control it and the
     /// compositor's firewall lets remote input through at all.
     fn apply_input(
-        &self,
+        &mut self,
         compositor: &mut Compositor,
         peer: PeerId,
         surface: SurfaceId,
         event: &[u8],
     ) {
-        let Some(hosted) = self.hosted.get(&surface) else {
+        let Some((window, size)) = self.hosted.get(&surface).and_then(|hosted| {
+            hosted
+                .controlled
+                .contains(&peer)
+                .then(|| (hosted.window.clone(), hosted.share.dimensions()))
+        }) else {
             return;
         };
-        if !hosted.controlled.contains(&peer) {
-            return;
-        }
         let Ok(event) = postcard::from_bytes::<SharedInput>(event) else {
             tracing::debug!(peer, surface, "dropping malformed remote input");
             return;
         };
-        let Some(event) = remote_event(
-            compositor,
-            &hosted.window,
-            hosted.share.dimensions(),
-            &event,
-        ) else {
+        // The person's cut, their own hand on this machine, and a locked
+        // session hold a viewer back like any input from another device.
+        if let Some(refusal) = compositor.remote_input_refusal() {
+            tracing::debug!(refusal, peer, "remote input refused");
+            return;
+        }
+        let Some(seat) = self.seat_for(compositor, peer, surface, &window) else {
             return;
         };
-        if let Err(error) = compositor.input_remote(event) {
+        let delivered = match &event {
+            SharedInput::PointerMotion { x, y } => {
+                match remote_point(compositor, &window, size, *x, *y) {
+                    Some((x, y)) => compositor
+                        .seat_input(seat, &InputEvent::PointerMotion { x, y })
+                        .map(drop),
+                    None => Ok(()),
+                }
+            }
+            SharedInput::PointerButton { button, pressed } => compositor
+                .seat_input(
+                    seat,
+                    &InputEvent::PointerButton {
+                        button: *button,
+                        pressed: *pressed,
+                    },
+                )
+                .map(drop),
+            SharedInput::PointerAxis { dx, dy } => compositor
+                .seat_input(
+                    seat,
+                    &InputEvent::PointerAxis {
+                        horizontal: *dx,
+                        vertical: *dy,
+                    },
+                )
+                .map(drop),
+            SharedInput::Key {
+                keysym, pressed, ..
+            } => compositor
+                .seat_input(
+                    seat,
+                    &InputEvent::Key {
+                        keycode: *keysym,
+                        pressed: *pressed,
+                    },
+                )
+                .map(drop),
+            // What the viewer composed arrives as text, into the field the
+            // window has focused, as this seat's own input method writes it.
+            SharedInput::Text { text } => compositor.seat_text(seat, text).map(drop),
+            // What the viewer pasted becomes this desktop's clipboard, so the
+            // window's own paste reads it.
+            SharedInput::ClipboardText { text } => {
+                let offer = [
+                    (
+                        "text/plain;charset=utf-8".to_owned(),
+                        text.clone().into_bytes(),
+                    ),
+                    ("text/plain".to_owned(), text.clone().into_bytes()),
+                ]
+                .into_iter()
+                .collect();
+                compositor.set_selection(Selection::Clipboard, offer)
+            }
+            // The viewer closed its view: the window is asked to close, as a
+            // person's close of its tab does.
+            SharedInput::Close => {
+                compositor.seat_close_window(seat);
+                Ok(())
+            }
+            // Where a viewer's pointer is and which surface it is on is the
+            // seat's own: it acts in the window it watches, and no other.
+            SharedInput::PointerEnter { .. }
+            | SharedInput::PointerLeave { .. }
+            | SharedInput::KeyboardFocus { .. } => Ok(()),
+        };
+        if let Err(error) = delivered {
             tracing::warn!(%error, "remote input did not reach the window");
+        }
+    }
+
+    /// The seat `peer` acts at in the window of `surface`, opened the first
+    /// time it controls it.
+    fn seat_for(
+        &mut self,
+        compositor: &mut Compositor,
+        peer: PeerId,
+        surface: SurfaceId,
+        window: &str,
+    ) -> Option<tilo_compositor::Seat> {
+        if let Some(seat) = self.seats.get(&(peer, surface))
+            && compositor.seat_view(*seat).is_some()
+        {
+            return Some(*seat);
+        }
+        let seat = compositor.open_seat();
+        if let Err(error) = compositor.seat_aim_window(seat, window) {
+            tracing::warn!(%error, peer, "a viewer's seat found no window to act in");
+            compositor.close_seat(seat);
+            return None;
+        }
+        self.seats.insert((peer, surface), seat);
+        Some(seat)
+    }
+
+    /// Close the seats acting in the window of `tab`: all of them, or the one
+    /// `peer` acts at.
+    fn close_seats(&mut self, compositor: &mut Compositor, tab: TabId, peer: Option<PeerId>) {
+        let ended: Vec<tilo_compositor::Seat> = self
+            .seats
+            .iter()
+            .filter(|((viewer, surface), _)| {
+                *surface == tab && peer.is_none_or(|peer| *viewer == peer)
+            })
+            .map(|(_, seat)| *seat)
+            .collect();
+        if ended.is_empty() {
+            return;
+        }
+        self.seats.retain(|(viewer, surface), _| {
+            *surface != tab || peer.is_some_and(|peer| *viewer != peer)
+        });
+        for seat in ended {
+            compositor.close_seat(seat);
         }
     }
 
@@ -1369,6 +1497,7 @@ impl WindowShares {
                     // A locked or asleep screen sends nothing, and the share
                     // goes on when it wakes.
                     Err(error) => {
+                        // ignored-failure: each pass captures the windows it can
                         tracing::debug!(%error, window = %hosted.window, "a shared window is not captured this pass");
                     }
                 }
@@ -1494,9 +1623,9 @@ fn hosted_window(tree: &DesktopTree, tab: TabId) -> Option<(String, String)> {
 /// desktop model names a hosted window's device by.
 fn device_key(host: &str) -> Option<EndpointId> {
     hex::decode(host)
-        .ok()
+        .ok() // ignored-failure: a host that is no device key hosts no window
         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-        .and_then(|bytes| EndpointId::from_bytes(&bytes).ok())
+        .and_then(|bytes| EndpointId::from_bytes(&bytes).ok()) // ignored-failure: 32 bytes that are no endpoint name no device to host a window with
 }
 
 /// Whether the desk shows the tab `tab` anywhere.
@@ -1547,55 +1676,23 @@ fn remove_governed_tile(tree: &mut DesktopTree, tab: TabId, strip: Option<StripI
     }
 }
 
-/// A member's input, in this device's terms: the window's place in the
-/// layout and the stream's size turn its surface-local point into the
-/// layout's.
+/// A viewer's pointer, in this device's terms: the point on the picture it
+/// watches, in the layout the window stands at.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "the wire carries input offsets as surface pixels, which are integers"
 )]
-fn remote_event(
+fn remote_point(
     compositor: &Compositor,
     window: &str,
     size: (u32, u32),
-    event: &SharedInput,
-) -> Option<tilo_compositor::InputEvent> {
-    use tilo_compositor::InputEvent;
-    Some(match event {
-        SharedInput::PointerMotion { x, y } => {
-            let (left, top, width, height) = compositor.shareable_window_rect(window)?;
-            let scale_x = f64::from(width.max(1)) / f64::from(size.0.max(1));
-            let scale_y = f64::from(height.max(1)) / f64::from(size.1.max(1));
-            InputEvent::PointerMotion {
-                x: f64::from(left) + x * scale_x,
-                y: f64::from(top) + y * scale_y,
-            }
-        }
-        SharedInput::PointerButton { button, pressed } => InputEvent::PointerButton {
-            button: *button,
-            pressed: *pressed,
-        },
-        SharedInput::PointerAxis { dx, dy } => InputEvent::PointerAxis {
-            horizontal: *dx,
-            vertical: *dy,
-        },
-        SharedInput::Key {
-            keysym, pressed, ..
-        } => InputEvent::Key {
-            keycode: *keysym,
-            pressed: *pressed,
-        },
-        // What the share's wire carries beyond a pointing device has no
-        // path into this device's seat yet: a viewer's clipboard, text and
-        // close are the old shell's per-viewer seats, which this session
-        // does not keep.
-        SharedInput::PointerEnter { .. }
-        | SharedInput::PointerLeave { .. }
-        | SharedInput::KeyboardFocus { .. }
-        | SharedInput::ClipboardText { .. }
-        | SharedInput::Close
-        | SharedInput::Text { .. } => return None,
-    })
+    x: f64,
+    y: f64,
+) -> Option<(f64, f64)> {
+    let (left, top, width, height) = compositor.shareable_window_rect(window)?;
+    let scale_x = f64::from(width.max(1)) / f64::from(size.0.max(1));
+    let scale_y = f64::from(height.max(1)) / f64::from(size.1.max(1));
+    Some((f64::from(left) + x * scale_x, f64::from(top) + y * scale_y))
 }
 
 /// The session's resource: the shares as they stand, and the actions that
@@ -1709,6 +1806,7 @@ fn workspace_argument() -> ActionParam {
 /// The tab an action names, by its decimal id.
 fn tab_of(args: &tilo_actions::ActionArgs) -> TabId {
     args.text("tab")
+        // ignored-failure: text that is no tab id names no tab
         .and_then(|tab| tab.trim().parse().ok())
         .unwrap_or(0)
 }

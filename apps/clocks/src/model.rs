@@ -167,6 +167,19 @@ impl WeekdayKey {
     fn bit(self) -> u8 {
         1 << (self as u8)
     }
+
+    /// The same day as `chrono` names it.
+    pub fn weekday(self) -> Weekday {
+        match self {
+            Self::Mon => Weekday::Mon,
+            Self::Tue => Weekday::Tue,
+            Self::Wed => Weekday::Wed,
+            Self::Thu => Weekday::Thu,
+            Self::Fri => Weekday::Fri,
+            Self::Sat => Weekday::Sat,
+            Self::Sun => Weekday::Sun,
+        }
+    }
 }
 
 impl From<Weekday> for WeekdayKey {

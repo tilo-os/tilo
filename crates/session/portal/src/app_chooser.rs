@@ -60,7 +60,9 @@ fn valid_choices(choices: Vec<String>) -> Vec<String> {
 
 /// `ids` with what their installed entries say about them.
 fn described(ids: &[String]) -> Vec<AppChoice> {
-    let scan = desktop_entry::cache::cached_scan();
+    let scan = desktop_entry::cache::cached_scan(&desktop_entry::locale::language_candidates(
+        ui::i18n::preferred_language().as_deref(),
+    ));
     ids.iter()
         .map(|id| {
             let entry = scan.find(id);

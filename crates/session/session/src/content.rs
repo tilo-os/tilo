@@ -47,7 +47,7 @@ use tilo_content::{ContentStore, hash_bytes};
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::{RecordContentDelivery, WorkspaceId, workspace_topic_id};
-use tilo_runtime::offload::{BindError, BlobScope, MediaFuture, RoomMedia};
+use tilo_runtime::offload::{BindError, BlobScope, MediaFuture, WorkspaceMedia};
 
 use crate::sync::Outgoing;
 
@@ -117,10 +117,25 @@ impl Plane {
         Arc::new(Puts(Arc::clone(&self.shelf)))
     }
 
+    /// Keep `bytes` as content of `workspace`, under the same store the
+    /// content put door serves its apps: what the session itself makes of a
+    /// workspace — the picture a window it does not run shows — is read by
+    /// the same addresses as what the workspace's apps store.
+    ///
+    /// # Errors
+    /// The workspace names no content, or the store refused the bytes.
+    pub(crate) fn keep(&self, workspace: &str, bytes: &[u8]) -> Result<String, String> {
+        let puts = self.puts();
+        let mut sink = puts.begin(workspace)?;
+        sink.append(bytes)?;
+        let (hash, _) = sink.finish()?;
+        Ok(hash)
+    }
+
     /// This device's content as an offload route reads and keeps it: the
     /// invoking app's scope in its workspace, through the same store the
     /// app's own `offerBlob` and `wantBlob` reach.
-    pub(crate) fn media(self: &Arc<Self>) -> Arc<dyn RoomMedia> {
+    pub(crate) fn media(self: &Arc<Self>) -> Arc<dyn WorkspaceMedia> {
         Arc::new(Media(Arc::clone(&self.shelf)))
     }
 
@@ -403,7 +418,7 @@ fn scoped(scope: &BlobScope) -> ContentScope {
     }
 }
 
-impl RoomMedia for Media {
+impl WorkspaceMedia for Media {
     fn len<'a>(
         &'a self,
         scope: &'a BlobScope,

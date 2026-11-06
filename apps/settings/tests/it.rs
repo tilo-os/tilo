@@ -210,6 +210,8 @@ mod alignment_review;
 
 #[path = "page_layout.rs"]
 mod page_layout;
+#[path = "painted_pages.rs"]
+mod painted_pages;
 #[path = "pane_geometry.rs"]
 mod pane_geometry;
 

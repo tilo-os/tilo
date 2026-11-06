@@ -10,8 +10,8 @@ use tilo_actions::remote::{
     workspace_governance_resource,
 };
 use tilo_actions::{ActionAddress, InvocationId};
-use tilo_relay::rooms::{HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, LIST_ROOMS};
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
+use tilo_relay::workspaces::{HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, LIST_ROOMS};
 
 use super::*;
 
@@ -230,16 +230,19 @@ async fn the_owner_invites_through_the_rooms_action_and_an_editor_cannot() {
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
-    let rooms = relay.rooms().unwrap();
-    let room = rooms.create("Design review").await.unwrap();
-    rooms.enter(&room.room, &laptop.cert).await.unwrap();
-    super::members::admit(&relay, &host, &phone, &room.room).await;
+    let workspaces = relay.workspaces().unwrap();
+    let room = workspaces.create("Design review").await.unwrap();
+    workspaces
+        .enter(&room.workspace, &laptop.cert)
+        .await
+        .unwrap();
+    super::members::admit(&relay, &host, &phone, &room.workspace).await;
 
     // Alice's laptop invites through the action: the room records it, as
     // the administration door would have.
     let owner = subscribed(&relay, &laptop, room.workspace_id).await;
     let RemoteActionMessage::Receipt(receipt) =
-        ask(&owner, &host, room.workspace_id, invite(&room.room)).await
+        ask(&owner, &host, room.workspace_id, invite(&room.workspace)).await
     else {
         panic!("an invocation is answered with a receipt");
     };
@@ -248,8 +251,8 @@ async fn the_owner_invites_through_the_rooms_action_and_an_editor_cannot() {
     };
     let invite_id = output.value.unwrap()["invite"].as_str().unwrap().to_owned();
     assert!(
-        rooms
-            .pending(&room.room, &host.cert)
+        workspaces
+            .pending(&room.workspace, &host.cert)
             .await
             .unwrap()
             .iter()
@@ -273,7 +276,7 @@ async fn the_owner_invites_through_the_rooms_action_and_an_editor_cannot() {
     else {
         panic!("a catalogue request is answered with a page");
     };
-    let resource = format!("workspace.permissions:{}", room.room);
+    let resource = format!("workspace.permissions:{}", room.workspace);
     assert!(result.unwrap().rows.iter().any(|row| {
         row.resource.id == resource
             && row
@@ -285,7 +288,7 @@ async fn the_owner_invites_through_the_rooms_action_and_an_editor_cannot() {
     // Bob, an Editor the room grants nothing, is not offered it.
     let member = subscribed(&relay, &phone, room.workspace_id).await;
     let RemoteActionMessage::Receipt(receipt) =
-        ask(&member, &host, room.workspace_id, invite(&room.room)).await
+        ask(&member, &host, room.workspace_id, invite(&room.workspace)).await
     else {
         panic!("an invocation is answered with a receipt");
     };
@@ -312,7 +315,7 @@ async fn the_relays_person_shares_through_its_host_actions_and_a_member_cannot()
     // creates the room with Bob's invitation, finds it listed and enters it,
     // answered the invitation it redeems itself.
     let home = connected(&relay, &laptop).await;
-    let created: CreatedRoom = host_action(
+    let created: CreatedWorkspace = host_action(
         &home,
         CREATE_ROOM,
         serde_json::json!({
@@ -322,13 +325,17 @@ async fn the_relays_person_shares_through_its_host_actions_and_a_member_cannot()
         }),
     )
     .await;
-    assert_eq!(created.room.name, "Design review");
-    let listed: Vec<RoomListing> = host_action(&home, LIST_ROOMS, serde_json::json!({})).await;
-    assert!(listed.iter().any(|room| room.room == created.room.room));
-    let entered: EnteredRoom = host_action(
+    assert_eq!(created.workspace.name, "Design review");
+    let listed: Vec<WorkspaceListing> = host_action(&home, LIST_ROOMS, serde_json::json!({})).await;
+    assert!(
+        listed
+            .iter()
+            .any(|room| room.workspace == created.workspace.workspace)
+    );
+    let entered: EnteredWorkspace = host_action(
         &home,
         ENTER_ROOM,
-        serde_json::json!({ "room": created.room.room }),
+        serde_json::json!({ "room": created.workspace.workspace }),
     )
     .await;
     assert!(entered.changed);
@@ -362,12 +369,15 @@ async fn the_relays_person_shares_through_its_host_actions_and_a_member_cannot()
         )
         .await
         .unwrap();
-    let workspace = created.room.workspace_id;
+    let workspace = created.workspace.workspace_id;
     let member = subscribed(&relay, &phone, workspace).await;
     for (action, argument) in [
         (LIST_ROOMS, serde_json::json!({})),
         (CREATE_ROOM, serde_json::json!({ "name": "Bob's" })),
-        (ENTER_ROOM, serde_json::json!({ "room": created.room.room })),
+        (
+            ENTER_ROOM,
+            serde_json::json!({ "room": created.workspace.workspace }),
+        ),
     ] {
         assert_eq!(
             outcome(ask_host_of(&member, host_operation(action, argument)).await),
@@ -390,7 +400,7 @@ async fn the_relays_person_shares_through_its_host_actions_and_a_member_cannot()
         panic!("a catalogue request is answered with a page");
     };
     assert!(result.unwrap().rows.is_empty());
-    assert_eq!(relay.rooms().unwrap().list().await.len(), 1);
+    assert_eq!(relay.workspaces().unwrap().list().await.len(), 1);
     relay.shutdown().await;
 }
 
@@ -403,10 +413,13 @@ async fn the_owner_removes_a_member_whose_next_session_is_refused() {
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
-    let rooms = relay.rooms().unwrap();
-    let room = rooms.create("Design review").await.unwrap();
-    rooms.enter(&room.room, &laptop.cert).await.unwrap();
-    super::members::admit(&relay, &host, &phone, &room.room).await;
+    let workspaces = relay.workspaces().unwrap();
+    let room = workspaces.create("Design review").await.unwrap();
+    workspaces
+        .enter(&room.workspace, &laptop.cert)
+        .await
+        .unwrap();
+    super::members::admit(&relay, &host, &phone, &room.workspace).await;
     assert!(admitted(&relay, &phone, room.workspace_id).await);
 
     // The owner's own request is the confirmation removing asks for.
@@ -418,7 +431,7 @@ async fn the_owner_removes_a_member_whose_next_session_is_refused() {
             room.workspace_id,
             invocation(
                 WORKSPACE_GOVERNANCE_PROVIDER,
-                workspace_governance_resource(&room.room),
+                workspace_governance_resource(&room.workspace),
                 "remove-member",
                 serde_json::json!({ "person": hex::encode(bob.user_pk) }),
             ),

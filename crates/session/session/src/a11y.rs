@@ -15,6 +15,11 @@
 //! wakes the loop; trees are built, and actions run, on the loop in
 //! [`Accessibility::step`]. An idle desktop therefore answers an assistive
 //! client without waiting for input, which is the endpoint's contract.
+//!
+//! The controls it finds and presses are the desk's own chrome and those of
+//! the windows in processes of their own, whose apps describe their content
+//! over their `shell-ui` connection ([`ui::window_targets`]) and take a
+//! press as an assistive technology's activation does.
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -27,6 +32,9 @@ use ui::accesskit::{
     ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, TreeUpdate,
 };
 use ui::accesskit_bridge::accesskit_action_to_ours;
+use ui::window_targets::TargetAction;
+
+use crate::Session;
 
 /// What an assistive client asks of the loop.
 enum Request {
@@ -301,6 +309,29 @@ impl Accessibility {
     }
 }
 
+/// The controls of the windows the session shows, by name and place, for
+/// anything that reads the desk as an assistive technology does.
+impl Session {
+    /// Every control the session shows by name, each with where it stands on
+    /// the desk: the desk's own chrome, and the controls the apps that draw
+    /// the windows describe of their content
+    /// ([`ui::window_targets`]).
+    #[must_use]
+    pub fn controls(&self) -> Vec<(String, (f64, f64, f64, f64))> {
+        self.shared.doors.controls()
+    }
+
+    /// Act on the control `name` as `action` says, as an assistive technology
+    /// does on the surface showing it.
+    ///
+    /// # Errors
+    /// No surface shows a control by that name, or it answers nothing of
+    /// `action`.
+    pub fn press_action(&self, name: &str, action: TargetAction) -> Result<(), String> {
+        self.shared.doors.press_action(name, action)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +355,7 @@ mod tests {
             &mut self,
             address: &ui::tilo_actions::ActionAddress,
             _arguments: &serde_json::Map<String, serde_json::Value>,
+            _look: &mut tilo_surface_host::Look<'_>,
         ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError>
         {
             Err(ui::tilo_actions::DoorError::Unknown(address.clone()))

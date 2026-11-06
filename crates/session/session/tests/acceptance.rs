@@ -26,15 +26,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Map, json};
-use tilo_agent_runs::{AgentRuns, wire};
+use tilo_agent_runs::AgentRuns;
 use tilo_compositor::OutputConfig;
 use tilo_reference::{ProgramStep, ResourceAt, ResourceRef, StepOutcome};
 use tilo_session::{Options, Session};
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 use common::{
-    HEIGHT, MAIL, PERSON, Repl, SUBJECT, WIDTH, on_screen, placed_resources, press, press_sheet,
-    private_home, seeded_session, seeded_session_with, type_text, until,
+    CANVAS_ENTRY, HEIGHT, MAIL, PERSON, Repl, SUBJECT, WIDTH, on_screen, placed_resources,
+    preset_menu, press, press_sheet, private_home, seeded_session, seeded_session_with, type_text,
+    until,
 };
 
 /// Step 1: the session starts with the tilolang shell as the whole screen — its bar across the
@@ -72,16 +73,23 @@ fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
         "the shell covers the display"
     );
 
-    // The preset switch: the three ways of showing the same places.
-    for chip in ["Strips", "Frames", "Spaces"] {
+    // The preset switch: the bar's own menu, saying the preset the desk shows, offering the
+    // ways of showing the same places.
+    let menu = preset_menu(&session).expect("the desk's preset menu");
+    press(&mut session, &menu);
+    for preset in ["Strips", "Frames", "Spaces", "Desktop"] {
         assert!(
-            on_screen(&session, chip).is_some(),
-            "the preset switch shows {chip}: {:?}",
+            on_screen(&session, preset).is_some(),
+            "the preset switch offers {preset}: {:?}",
             session.accessible_labels()
         );
     }
+    press(&mut session, "Strips");
+    until(&mut session, "the menu closed", |session| {
+        on_screen(session, "Frames").is_none()
+    });
     assert!(
-        on_screen(&session, "Typed").is_none(),
+        on_screen(&session, CANVAS_ENTRY).is_none(),
         "the strips stand first, not the canvas"
     );
 
@@ -124,10 +132,21 @@ fn step_2_the_repl_connects_and_lists_the_sessions_resources() {
         desk.contains("shell:arrangement") || desk.contains("arrangement"),
         "the arrangement is among them: {desk}"
     );
-    assert!(desk.contains("Desktop"), "the desk is: {desk}");
+    // A listing names the roots of what the session publishes: the desk is a row of its own,
+    // by the kind its resource is, and what it holds is read a level down.
+    assert!(
+        desk.lines().any(|line| line.contains("  desktop  ")),
+        "the desk is: {desk}"
+    );
 
-    // Each action as a program calls it, what it may go without included.
-    let (chrome, failed) = repl.call(&mut session, "tilo_ls", &json!({"path": "session/Desktop"}));
+    // Each action as a program calls it, what it may go without included. The chrome by its
+    // key: a window's control reads under the window's name, and the desk's window is another
+    // `Desktop`.
+    let (chrome, failed) = repl.call(
+        &mut session,
+        "tilo_ls",
+        &json!({"path": "session/desktop:chrome"}),
+    );
     assert!(!failed, "{chrome}");
     assert!(
         chrome
@@ -164,7 +183,7 @@ fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
 
     // The framed canvas first: the entry typed at stands, and no strip does.
     assert!(
-        on_screen(&session, "Typed").is_some(),
+        on_screen(&session, CANVAS_ENTRY).is_some(),
         "the canvas stands: {:?}",
         session.accessible_labels()
     );
@@ -176,7 +195,8 @@ fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
     );
     assert!(!failed, "the REPL switches the preset: {answer}");
     until(&mut session, "the strips", |session| {
-        on_screen(session, "Typed").is_none() && on_screen(session, "Strips").is_some()
+        on_screen(session, CANVAS_ENTRY).is_none()
+            && preset_menu(session).as_deref() == Some("Showing Strips")
     });
 
     // The traditional desktop: no preset switch at all, its own top bar instead.
@@ -186,7 +206,7 @@ fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
     );
     assert!(!failed, "the REPL switches to the desktop: {answer}");
     until(&mut session, "the traditional desktop", |session| {
-        on_screen(session, "Strips").is_none()
+        preset_menu(session).is_none()
     });
 }
 
@@ -302,15 +322,17 @@ fn step_6_asking_places_the_conversation_and_a_reference_opens_on_press() {
         session
             .arrangement()
             .borrow()
-            .strips()
-            .places()
+            .reading()
+            .places
+            .iter()
             .any(|place| place.record.starts_with("agent-run:"))
     });
     let run = session
         .arrangement()
         .borrow()
-        .strips()
-        .places()
+        .reading()
+        .places
+        .iter()
         .find_map(|place| place.record.strip_prefix("agent-run:").map(str::to_owned))
         .expect("the conversation's run");
     until(&mut session, "the conversation drawn", |session| {
@@ -337,7 +359,7 @@ fn step_6_asking_places_the_conversation_and_a_reference_opens_on_press() {
         session.shell_says("Groceries")
     });
     assert!(
-        session.arrangement().borrow().strips().places().count() == 1,
+        common::places(&session).len() == 1,
         "only the conversation stands on the canvas yet"
     );
 
@@ -347,8 +369,9 @@ fn step_6_asking_places_the_conversation_and_a_reference_opens_on_press() {
         session
             .arrangement()
             .borrow()
-            .strips()
-            .places()
+            .reading()
+            .places
+            .iter()
             .any(|place| place.record == note)
     });
 }
@@ -406,6 +429,19 @@ fn step_7_what_the_repl_types_runs_the_same_as_the_agents_program() {
 /// missing is the traditional desk itself, which this test drives the same way.)
 #[test]
 fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
+    fn offered(resources: &[tilo_actions::ResourceSpec], id: &str, label: &str) -> Option<String> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                resource
+                    .actions
+                    .iter()
+                    .find(|offered| offered.label == label)
+                    .map(|offered| offered.id.clone())
+            } else {
+                offered(&resource.children, id, label)
+            }
+        })
+    }
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
@@ -419,7 +455,7 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     );
     assert!(!failed, "the desk is the traditional one: {answer}");
     until(&mut session, "the traditional desktop", |session| {
-        on_screen(session, "Strips").is_none() && on_screen(session, "Dock").is_some()
+        preset_menu(session).is_none() && on_screen(session, "Dock").is_some()
     });
 
     // A dock press opens what its item stands for.
@@ -434,19 +470,6 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     // its pin control toggles; unpinning it through the note's own published action leaves a
     // note whose bar offers "Pin", as one it would pin does.
     let note = seeded_note(&session, "Groceries");
-    fn offered(resources: &[tilo_actions::ResourceSpec], id: &str, label: &str) -> Option<String> {
-        resources.iter().find_map(|resource| {
-            if resource.id.as_str() == id {
-                resource
-                    .actions
-                    .iter()
-                    .find(|offered| offered.label == label)
-                    .map(|offered| offered.id.clone())
-            } else {
-                offered(&resource.children, id, label)
-            }
-        })
-    }
     let pin = offered(&session.resources(), &note, "Pin").expect("the note offers its pin");
     session
         .invoke(&note, &pin, &Map::new())
@@ -486,7 +509,8 @@ fn step_9_a_theme_switch_changes_looks_only() {
     }
 
     // Where the desk's own parts stand, and what the screen looks like.
-    let controls = ["Strips", "Frames", "Spaces", "Notifications", "Launcher"];
+    let menu = preset_menu(&session).expect("the desk's preset menu");
+    let controls = [menu.as_str(), "Notifications", "Launcher"];
     let before: Vec<(String, (f64, f64, f64, f64))> = controls
         .iter()
         .filter_map(|name| {
@@ -514,19 +538,18 @@ fn step_9_a_theme_switch_changes_looks_only() {
             ]),
         )
         .expect("the theme is kept");
-        let mut drew = None;
-        for _ in 0..200 {
-            session.step(Duration::from_millis(1)).expect("step");
-            let frame = session
-                .compositor()
-                .screenshot("HEADLESS-1")
-                .expect("a frame");
-            if frame.rgba != shot.rgba {
-                drew = Some(frame);
-                break;
-            }
-        }
-        let drawn = drew.unwrap_or_else(|| panic!("the desk draws in {theme}"));
+        let drawn = common::wait_for(
+            &mut session,
+            format!("the desk to draw in {theme}"),
+            |session: &mut Session| {
+                session.step(Duration::from_millis(1)).expect("step");
+                let frame = session
+                    .compositor()
+                    .screenshot("HEADLESS-1")
+                    .expect("a frame");
+                (frame.rgba != shot.rgba).then_some(frame)
+            },
+        );
         shot = drawn;
 
         // Only how it looks: the same parts in the same places, the same places on the canvas.
@@ -590,9 +613,9 @@ fn typing_in_the_canvas_entry_shows_what_is_typed() {
     let root = private_home();
     let mut session = seeded_session(root.path());
     until(&mut session, "the canvas entry", |session| {
-        on_screen(session, "Typed").is_some()
+        on_screen(session, CANVAS_ENTRY).is_some()
     });
-    press(&mut session, "Typed");
+    press(&mut session, CANVAS_ENTRY);
     type_text(&mut session, "groceries");
     until(&mut session, "the typed words in the entry", |session| {
         session.shell_says("groceries")

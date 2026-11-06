@@ -63,12 +63,35 @@ impl Snapshot {
             root: root.to_owned(),
             branch: None,
         };
-        if worktree.head() != self.provenance.source_commit
-            || listed_paths(root)? != self.paths
-            || verify(root, self.file.path())? != self.digest
-        {
+        // What changed is what the person holding the tree changed, and the
+        // worktree is theirs while the layers build from it: name it rather
+        // than the digest it moved.
+        if worktree.head() != self.provenance.source_commit {
+            return Err(CliError::InvalidInput(format!(
+                "the worktree's commit moved from {} to {} while the layers were building; a remote \
+                 build delivers one source set, so the swap was not applied: re-run it on a \
+                 worktree left alone until it finishes",
+                self.provenance
+                    .source_commit
+                    .as_deref()
+                    .unwrap_or("an unborn branch"),
+                worktree.head().as_deref().unwrap_or("an unborn branch"),
+            )));
+        }
+        if listed_paths(root)? != self.paths {
             return Err(CliError::InvalidInput(
-                "source inventory changed during delivery".into(),
+                "files were added to or removed from the worktree while the layers were building; a \
+                 remote build delivers one source set, so the swap was not applied: re-run it on a \
+                 worktree left alone until it finishes"
+                    .into(),
+            ));
+        }
+        if verify(root, self.file.path())? != self.digest {
+            return Err(CliError::InvalidInput(
+                "a source file changed while the layers were building; a remote build delivers one \
+                 source set, so the swap was not applied: re-run it on a worktree left alone until \
+                 it finishes"
+                    .into(),
             ));
         }
         Ok(())
@@ -213,9 +236,10 @@ mod tests {
         assert_eq!(verify(root.path(), &path).unwrap(), snapshot.digest);
         snapshot.unchanged(root.path()).unwrap();
         std::fs::write(root.path().join("new-input.rs"), "new source").unwrap();
+        let detail = snapshot.unchanged(root.path()).unwrap_err().to_string();
         assert!(
-            snapshot.unchanged(root.path()).is_err(),
-            "new source files must not enter a frozen cohort"
+            detail.contains("files were added to or removed"),
+            "new source files must not enter a frozen cohort, and the refusal names them: {detail}"
         );
         std::fs::remove_file(root.path().join("new-input.rs")).unwrap();
         git(&[
@@ -228,9 +252,10 @@ mod tests {
             "-qm",
             "different head",
         ]);
+        let detail = snapshot.unchanged(root.path()).unwrap_err().to_string();
         assert!(
-            snapshot.unchanged(root.path()).is_err(),
-            "source commit changes must invalidate the cohort"
+            detail.contains("commit moved"),
+            "source commit changes must invalidate the cohort, and the refusal names it: {detail}"
         );
         git(&["reset", "--soft", "HEAD~1"]);
         snapshot.unchanged(root.path()).unwrap();

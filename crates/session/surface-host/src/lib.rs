@@ -12,6 +12,7 @@
 mod desktop;
 mod door;
 mod frames;
+mod i18n;
 pub mod shell_part;
 pub mod slot_view;
 mod well_policy;
@@ -20,7 +21,7 @@ mod widget;
 pub use desktop::{
     DeskGesture, DesktopHost, PointerSamples, StripPolicy, WindowObserver, desktop, desktop_with,
 };
-pub use door::{Doors, Published, Shared, through_door};
+pub use door::{Doors, Look, Published, Shared, Shot, through_door};
 pub use shell_part::{DeskReading, SessionLink, ShellPart, ShellWork};
 pub use well_policy::{DeskHost, WellDesk, WellPolicy, well_policy};
 pub use widget::WidgetHost;
@@ -281,6 +282,7 @@ impl Published for AppHost {
         &mut self,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        _look: &mut crate::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
         // Through the app's own door, as every caller on this device.
         let door = self.door.clone();

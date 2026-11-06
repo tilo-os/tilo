@@ -11,7 +11,7 @@ use crate::widget::ControlSize;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::badge::{BadgeMetrics, CountBadge};
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::{AppModel, ModelPath, Tone};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -36,10 +36,20 @@ pub struct Button {
     /// icon-only button, used as the accessible name when none was set
     /// explicitly.
     tooltip: Option<String>,
+    /// Why it cannot be pressed now, where that says more than the label (an action whose
+    /// requirement does not hold): spoken as its description, beside the name it announces.
+    description: Option<String>,
     /// Original presentation captured while a responsive toolbar displays
     /// this button icon-first. Kept separately so an app's explicit tooltip
     /// and accessible name are restored exactly when space returns.
     compact_presentation: Option<(String, Option<String>, Option<String>)>,
+    /// It belongs in its header's menu, not in the row: the row's More
+    /// button holds it, whatever room the row has.
+    menu_only: bool,
+    /// The run of its owner's actions it stands in (`group: "Due"`), as the
+    /// app names it: the header's menu keeps rows of one run together, under
+    /// the run's own row.
+    menu_group: Option<String>,
     rect: Rect,
     is_hovered: bool,
     /// The press this button took, carried to a rebuilt button in its place.
@@ -59,6 +69,15 @@ pub struct Button {
     /// Who is here, as their faces ([`Self::with_faces`]): the button's whole face, and the
     /// label names them to assistive technology.
     faces: Vec<String>,
+    /// One person this face leads with ([`Self::with_avatar`]): their avatar before the label,
+    /// as a person field's chip shows who it holds.
+    avatar: Option<(String, String)>,
+    /// The label stands for no value yet (`Self::with_placeholder`): painted in the secondary
+    /// ink a field shows an empty value in.
+    placeholder: bool,
+    /// What the face says means something ([`Self::tone`]): the icon and the label take the
+    /// tone's colour, the face under them stays the role's.
+    content_tone: Option<Tone>,
     /// A media transport's control (previous, play/pause, next), drawn as
     /// its [`crate::widget::TransportFace`] at that face's side.
     transport: Option<(crate::widget::TransportControl, f64)>,
@@ -116,6 +135,9 @@ pub struct Button {
     solver_placed: bool,
     i18n_revision: u64,
     interaction: crate::interaction::InteractionEnvironment,
+    /// It stands in a window bar: drawn at the bar's control height whatever the
+    /// pointer, with a finger's target in its hit rect.
+    in_window_bar: bool,
     /// Snapshot the cache was emitted from; any change invalidates it.
     last_state: (bool, bool, bool, bool), // (hovered, pressed, focused, enabled)
     /// The theme roles the cached face was painted from, so a theme change
@@ -179,7 +201,10 @@ impl Button {
             label: label.to_string(),
             accessible_name: None,
             tooltip: None,
+            description: None,
             compact_presentation: None,
+            menu_only: false,
+            menu_group: None,
             rect: Rect::ZERO,
             is_hovered: false,
             press: crate::pointer_replay::HeldPress::default(),
@@ -188,6 +213,9 @@ impl Button {
             icon: None,
             image: None,
             faces: Vec::new(),
+            avatar: None,
+            placeholder: false,
+            content_tone: None,
             transport: None,
             badge: None,
             count: None,
@@ -215,6 +243,7 @@ impl Button {
             solver_placed: false,
             i18n_revision: crate::i18n::I18nManager::revision(),
             interaction: crate::interaction::InteractionEnvironment::default(),
+            in_window_bar: false,
             last_state: (false, false, false, true),
             last_theme: None,
             motion: crate::part_paint::PartMotion::new(crate::part_paint::States::REST),
@@ -357,6 +386,49 @@ impl Button {
         self
     }
 
+    /// A header action that belongs in its header's menu rather than in the row: the row's
+    /// More button holds it, whatever room the row has, so a header keeps its everyday
+    /// actions in reach and the rest one press away (a row of every action reads as noise).
+    /// Its label, icon, checked state and enabled state are the menu row's.
+    #[must_use]
+    pub fn in_menu(mut self) -> Self {
+        self.menu_only = true;
+        self
+    }
+
+    /// Name the run of its owner's actions the button stands in (`group: "Due"`): the
+    /// header's menu keeps a run's rows together, under the run's own row.
+    #[must_use]
+    pub fn with_menu_group(mut self, group: impl Into<String>) -> Self {
+        self.menu_group = Some(group.into());
+        self
+    }
+
+    /// What kind of action it is, as a menu row of the same command shows it.
+    pub(crate) fn kind(&self) -> ButtonRole {
+        self.role
+    }
+
+    /// The run of its owner's actions it stands in, when it names one.
+    pub(crate) fn menu_group(&self) -> Option<&str> {
+        self.menu_group.as_deref()
+    }
+
+    /// Its glyph, where it shows one.
+    pub(crate) fn glyph(&self) -> Option<crate::icons::Icon> {
+        self.icon
+    }
+
+    /// The plain key that presses it, where the app declared one.
+    pub(crate) fn declared_key(&self) -> Option<crate::platform::Shortcut> {
+        self.shortcut.clone()
+    }
+
+    /// Why it cannot be pressed now, where that says more than its label.
+    pub(crate) fn why_disabled(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
     /// Draw `image` where the icon would be, and a small pill with `badge`
     /// on its bottom-right corner. Only an icon-only button shows either.
     #[must_use]
@@ -377,6 +449,70 @@ impl Button {
         self.layout_dirty = true;
         self.dirty = true;
         self
+    }
+
+    /// Lead the face with one person's avatar, before the label: a chip that names someone
+    /// shows who they are as well as what they are called. A button with no label draws the
+    /// avatar alone, as its face.
+    #[must_use]
+    pub fn with_avatar(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
+        self.avatar = Some((name.into(), identity.into()));
+        self.layout_dirty = true;
+        self.dirty = true;
+        self
+    }
+
+    /// The label stands for no value yet: it is painted in the secondary ink, as a field shows
+    /// an empty value, while the face stays a control the person presses.
+    #[must_use]
+    pub fn with_placeholder(mut self) -> Self {
+        self.placeholder = true;
+        self.dirty = true;
+        self
+    }
+
+    /// What the face says means something ([`Tone::Neutral`] is no tone): the icon and the
+    /// label take the tone's colour, so a fact that is late reads late in the chip that states
+    /// it, while the face stays the role's.
+    #[must_use]
+    pub fn tone(mut self, tone: Tone) -> Self {
+        self.set_tone(tone);
+        self
+    }
+
+    /// Say what the face says means something, in place, as [`Self::tone`] does.
+    pub fn set_tone(&mut self, tone: Tone) {
+        let tone = (tone != Tone::Neutral).then_some(tone);
+        if tone == self.content_tone {
+            return;
+        }
+        self.content_tone = tone;
+        self.dirty = true;
+    }
+
+    /// It opens something over itself: it wears the trailing chevron every choice control
+    /// wears, so a row of them reads as one kind of thing.
+    #[must_use]
+    pub fn showing_choice(mut self) -> Self {
+        self.opens_menu = true;
+        self.dirty = true;
+        self
+    }
+
+    /// Show `label`, and whether it stands for no value yet: what the control is for changed
+    /// elsewhere (a field following its binding), so the face changes in place and keeps what
+    /// stands on it.
+    pub fn set_label(&mut self, label: impl Into<String>, placeholder: bool) {
+        let label = label.into();
+        if label == self.label && placeholder == self.placeholder {
+            return;
+        }
+        if label != self.label {
+            self.layout_dirty = true;
+        }
+        self.label = label;
+        self.placeholder = placeholder;
+        self.dirty = true;
     }
 
     /// Stand `content` on the icon's top-trailing corner, centred on it, in `style`: how many
@@ -470,6 +606,24 @@ impl Button {
 
     pub fn set_tooltip(&mut self, text: Option<String>) {
         self.tooltip = text;
+    }
+
+    /// Why it cannot be pressed now, where the label does not say: an action whose requirement
+    /// does not hold. Assistive technology reads it as the button's description, so the name it
+    /// announces stays the action's own.
+    #[must_use]
+    pub fn with_description(mut self, why: impl Into<String>) -> Self {
+        self.description = Some(why.into());
+        self
+    }
+
+    /// Change why it cannot be pressed, as its state does ("Nothing is done yet" once the last
+    /// done task is cleared).
+    pub fn set_description(&mut self, why: Option<String>) {
+        if self.description != why {
+            self.description = why;
+            self.dirty = true;
+        }
     }
 
     /// Change what an icon-only button is announced (and published) as, for
@@ -710,6 +864,12 @@ impl Button {
         self.compact_presentation.is_some()
     }
 
+    /// A header action that stands in its header's menu rather than in the row
+    /// ([`Self::in_menu`]).
+    pub(crate) fn is_menu_only(&self) -> bool {
+        self.menu_only
+    }
+
     /// The counterpart to `TextInput::apply_layout_external` for an app
     /// that hand-positions a shared control over its own painted chrome;
     /// the button still owns its focus / a11y / activation contract, only
@@ -720,6 +880,9 @@ impl Button {
         let size_changed = rect.width().to_bits() != self.rect.width().to_bits()
             || rect.height().to_bits() != self.rect.height().to_bits();
         self.rect = rect;
+        // The caller has just laid it out: whatever asked for a measure is
+        // answered by this geometry.
+        self.layout_dirty = false;
         if size_changed {
             self.dirty = true;
         }
@@ -1090,6 +1253,9 @@ impl FaceSizer {
             icon,
             image: None,
             faces: &[],
+            avatar: None,
+            placeholder: false,
+            tone: None,
             badge: None,
             label,
             hint: None,
@@ -1118,6 +1284,12 @@ struct FaceContent<'a> {
     image: Option<&'a vello::peniko::ImageData>,
     /// Who is here, as their faces; empty for every face that is not a group of people.
     faces: &'a [String],
+    /// One person's avatar before the label, as a person chip leads with it.
+    avatar: Option<(&'a str, &'a str)>,
+    /// The label names no value yet: painted in the secondary ink.
+    placeholder: bool,
+    /// What the content marks means: its colour, where the face's own ink would stand.
+    tone: Option<Tone>,
     badge: Option<&'a str>,
     label: &'a str,
     hint: Option<String>,
@@ -1145,7 +1317,7 @@ impl FaceContent<'_> {
         }
         let pad = if self.flush { 0.0 } else { metrics.pad_x };
         let mut width = 2.0 * pad;
-        if self.icon.is_some() {
+        if self.icon.is_some() || self.avatar.is_some() {
             width += metrics.icon + metrics.icon_gap;
         }
         if !self.label.is_empty() {
@@ -1238,10 +1410,21 @@ impl FaceContent<'_> {
         ink: vello::peniko::Color,
         hint_ink: vello::peniko::Color,
     ) {
+        let ink = self.tone.map_or(ink, |tone| tone.colour(ctx.theme));
         let icon_px = metrics.icon.min(rect.height());
         if self.label.is_empty() {
             if !self.faces.is_empty() {
                 self.draw_faces(ctx, rect);
+                return;
+            }
+            if let Some((name, identity)) = self.avatar {
+                let face = Rect::new(
+                    rect.center().x - icon_px / 2.0,
+                    rect.center().y - icon_px / 2.0,
+                    rect.center().x + icon_px / 2.0,
+                    rect.center().y + icon_px / 2.0,
+                );
+                crate::widget::AvatarFace::new(name, identity).paint(ctx, face);
                 return;
             }
             if let Some(image) = self.image {
@@ -1266,7 +1449,7 @@ impl FaceContent<'_> {
             return;
         }
         let style = &metrics.label_style;
-        let lead = if self.icon.is_some() {
+        let lead = if self.icon.is_some() || self.avatar.is_some() {
             icon_px + metrics.icon_gap
         } else {
             0.0
@@ -1302,9 +1485,16 @@ impl FaceContent<'_> {
                 ink,
             );
         }
+        if let Some((name, identity)) = self.avatar {
+            let iy = rect.center().y - icon_px / 2.0;
+            let face = Rect::new(start_x, iy, start_x + icon_px, iy + icon_px);
+            crate::widget::AvatarFace::new(name, identity).paint(ctx, face);
+        }
         let text_y = rect.y0 + (rect.height() - f64::from(label_h)) / 2.0;
         let label_x = start_x + lead;
-        ctx.text(&label, style, ink, Point::new(label_x, text_y), None);
+        // A label that names no value yet reads quieter than one that does.
+        let label_ink = if self.placeholder { hint_ink } else { ink };
+        ctx.text(&label, style, label_ink, Point::new(label_x, text_y), None);
         if let Some((hint, _)) = hint {
             let hint_x = label_x + f64::from(label_w) + metrics.hint_gap;
             ctx.text(hint, style, hint_ink, Point::new(hint_x, text_y), None);
@@ -1564,6 +1754,8 @@ impl FacePaint<'_> {
 pub struct ButtonFace<'a> {
     rect: Rect,
     label: &'a str,
+    /// What the face says means something; the icon and the label take its colour.
+    tone: Option<Tone>,
     icon: Option<crate::icons::Icon>,
     role: ButtonRole,
     confirms: bool,
@@ -1579,6 +1771,7 @@ impl<'a> ButtonFace<'a> {
         Self {
             rect,
             label,
+            tone: None,
             icon: None,
             role: ButtonRole::Secondary,
             confirms: false,
@@ -1600,6 +1793,13 @@ impl<'a> ButtonFace<'a> {
     #[must_use]
     pub fn role(mut self, role: ButtonRole) -> Self {
         self.role = role;
+        self
+    }
+    /// What the face says means something ([`Tone::Neutral`] is no tone): the
+    /// icon and the label take the tone's colour.
+    #[must_use]
+    pub fn tone(mut self, tone: Tone) -> Self {
+        self.tone = (tone != Tone::Neutral).then_some(tone);
         self
     }
     /// The confirmation step of a destructive action, the one place a
@@ -1683,6 +1883,9 @@ impl<'a> ButtonFace<'a> {
             icon: self.icon,
             image: None,
             faces: &[],
+            avatar: None,
+            placeholder: false,
+            tone: None,
             badge: None,
             label: &label,
             hint: self.shortcut.as_ref().map(shortcut_text),
@@ -1746,6 +1949,9 @@ impl<'a> ButtonFace<'a> {
                 icon: self.icon,
                 image: None,
                 faces: &[],
+                avatar: None,
+                placeholder: false,
+                tone: self.tone,
                 badge: None,
                 label,
                 hint: self.shortcut.as_ref().map(shortcut_text),
@@ -1818,10 +2024,12 @@ impl Button {
 
     /// The face height in the current theme. A fine pointer keeps the
     /// size's height and reaches the minimum target through the hit rect
-    /// ([`Self::hit_rect`]); a coarse pointer grows the face to it.
+    /// ([`Self::hit_rect`]); a coarse pointer grows the face to it — except
+    /// in a window bar, which keeps its control height and leaves the
+    /// grown target to the hit rect.
     fn face_height(&self) -> f64 {
         let height = self.transport.map_or(self.metrics.height, |(_, side)| side);
-        if self.interaction.supports_hover() {
+        if self.in_window_bar || self.interaction.supports_hover() {
             height
         } else {
             height.max(f64::from(self.interaction.minimum_target()))
@@ -1841,6 +2049,12 @@ impl Button {
                 icon: self.icon,
                 image: None,
                 faces: &self.faces,
+                avatar: self
+                    .avatar
+                    .as_ref()
+                    .map(|(name, identity)| (name.as_str(), identity.as_str())),
+                placeholder: self.placeholder,
+                tone: None,
                 badge: None,
                 label: &label,
                 hint,
@@ -1959,6 +2173,15 @@ impl Widget for Button {
             self.interaction = environment;
             self.is_hovered &= environment.supports_hover();
             // An icon's square and a label's padding follow the face's height.
+            self.measured_width = None;
+            self.layout_dirty = true;
+            self.dirty = true;
+        }
+    }
+
+    fn set_window_bar_control(&mut self, in_bar: bool) {
+        if self.in_window_bar != in_bar {
+            self.in_window_bar = in_bar;
             self.measured_width = None;
             self.layout_dirty = true;
             self.dirty = true;
@@ -2172,6 +2395,12 @@ impl Widget for Button {
                 icon: self.icon,
                 image: self.image.as_ref(),
                 faces: &self.faces,
+                avatar: self
+                    .avatar
+                    .as_ref()
+                    .map(|(name, identity)| (name.as_str(), identity.as_str())),
+                placeholder: self.placeholder,
+                tone: self.content_tone,
                 badge: self.badge.as_deref(),
                 label: &label,
                 hint,
@@ -2221,14 +2450,17 @@ impl Widget for Button {
         self.layout_dirty = false;
     }
 
-    /// The `Rect::ZERO` sentinel keeps the first frame's
-    /// `compute_layout` running so `apply_layout` can populate the rect;
-    /// after that it stays clean (pure translation handled via the
-    /// cache's append transform, no taffy involvement). The sentinel is the
-    /// laid-out rect, not the paint cache's: a button that is not drawn
-    /// (scrolled or panned out of view) has nothing new to measure.
+    /// A missing rect keeps the first frame's `compute_layout` running so
+    /// `apply_layout` can populate it; after that it stays clean (pure
+    /// translation handled via the cache's append transform, no taffy
+    /// involvement). Only a button the solver has *never* placed counts as
+    /// missing: a slot its parent gives no room is placed at zero size, and
+    /// asking for that measure again every frame kept a still window
+    /// recomposing. The rect is the laid-out one, not the paint cache's: a
+    /// button that is not drawn (scrolled or panned out of view) has
+    /// nothing new to measure.
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+        (!self.solver_placed && self.rect == Rect::ZERO)
             || self.layout_dirty
             || self.i18n_revision != crate::i18n::I18nManager::revision()
     }
@@ -2239,9 +2471,7 @@ impl Widget for Button {
         // A button only its host places has no node for the solver to
         // measure: the host sizes it, however hidden or unplaced it is.
         self.solver_placed
-            && (self.rect == Rect::ZERO
-                || self.layout_dirty
-                || self.i18n_revision != crate::i18n::I18nManager::revision())
+            && (self.layout_dirty || self.i18n_revision != crate::i18n::I18nManager::revision())
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -2443,10 +2673,17 @@ impl Widget for Button {
         };
         let node = AccessNode::new(role)
             .with_semantic_key(&self.id)
-            // A painted button is spoken where it is drawn.
-            .with_bounds(self.painted_hit.as_ref().map_or(self.rect, |hit| {
-                vello::kurbo::Shape::bounding_box(hit) + self.rect.origin().to_vec2()
-            }))
+            // A button is spoken where a press reaches it: the shape it draws, grown to the
+            // target the person's pointer needs — in a window bar the finger's target stands
+            // beyond the drawn face, and assistive technology touches the same target.
+            .with_bounds(self.painted_hit.as_ref().map_or_else(
+                || self.hit_rect(),
+                |hit| {
+                    self.interaction.minimum_target_rect(
+                        vello::kurbo::Shape::bounding_box(hit) + self.rect.origin().to_vec2(),
+                    )
+                },
+            ))
             .with_optional_name(name)
             .with_interface_name(interface)
             .with_state(AccessState {
@@ -2456,7 +2693,16 @@ impl Widget for Button {
                 checked: self.toggled,
                 ..Default::default()
             });
-        Some(node)
+        // Why it cannot be pressed now, if it says: read beside its name, never instead of it.
+        let description = self
+            .description
+            .as_deref()
+            .map(|why| i18n!(why))
+            .filter(|why| !why.trim().is_empty());
+        Some(match description {
+            Some(why) => node.with_description(why),
+            None => node,
+        })
     }
 }
 

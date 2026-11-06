@@ -80,6 +80,12 @@ pub(super) fn set_interaction_environment(
     }
 }
 
+pub(super) fn set_window_bar_control(children: ChildrenMut<'_>, in_bar: bool) {
+    for child in children {
+        child.set_window_bar_control(in_bar);
+    }
+}
+
 pub(super) fn sync(children: ChildrenMut<'_>, state: &AppModel, path: &ModelPath) {
     for child in children {
         child.sync(state, path);
@@ -357,6 +363,31 @@ pub(super) fn modal_capture(each: EachChild<'_>) -> Option<Rect> {
     capture
 }
 
+/// Close every modal among `children`, as a widget's own default does: the
+/// children's own dismissals, in turn.
+pub(super) fn dismiss_presented_modal(children: ChildrenMut<'_>) -> bool {
+    let mut dismissed = false;
+    for child in children {
+        dismissed |= child.dismiss_presented_modal();
+    }
+    dismissed
+}
+
+/// Whether a widget presenting `capture` or having `children` presents a
+/// modal still drawn: its own, or one of its children's.
+pub(super) fn presents_modal(capture: Option<Rect>, each: EachChild<'_>) -> bool {
+    if capture.is_some() {
+        return true;
+    }
+    let mut presented = false;
+    each(&mut |child| {
+        if !presented {
+            presented = child.presents_modal();
+        }
+    });
+    presented
+}
+
 pub(super) fn take_structure_dirty(children: ChildrenMut<'_>) -> bool {
     let mut dirty = false;
     for child in children {
@@ -390,8 +421,14 @@ fn any_child(each: EachChild<'_>, dirty: fn(&dyn Widget) -> bool) -> Option<bool
     has_children.then_some(found)
 }
 
+/// Whether a container must draw again: a child is dirty, or one of them is
+/// on its way (`needs_animation_frame`) and paints other pixels this frame.
+/// A cache is only as fresh as the child that can repaint itself.
 pub(super) fn needs_redraw(each: EachChild<'_>) -> bool {
-    any_child(each, |child| child.needs_redraw()).unwrap_or(true)
+    any_child(each, |child| {
+        child.needs_redraw() || child.needs_animation_frame()
+    })
+    .unwrap_or(false)
 }
 
 pub(super) fn is_layout_dirty(each: EachChild<'_>) -> bool {
@@ -445,12 +482,12 @@ mod tests {
         assert_eq!(key_action_path("dialog:1:primary"), None);
     }
 
-    /// A widget without children asks for a redraw and counts as laid out
-    /// anew; with children it answers what they answer.
+    /// A widget without children is clean and counts as laid out anew; with
+    /// children it answers what they answer.
     #[test]
-    fn a_childless_widget_is_dirty_and_a_container_answers_for_its_children() {
+    fn a_childless_widget_is_clean_and_a_container_answers_for_its_children() {
         let none: EachChild<'_> = &|_| {};
-        assert!(needs_redraw(none));
+        assert!(!needs_redraw(none));
         assert!(is_layout_dirty(none));
         assert_eq!(layout_needs_measure(none), None);
         let label = crate::widget::Text::new("x");

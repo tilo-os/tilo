@@ -28,7 +28,7 @@ fn rename_from_a_layer_rows_menu_takes_the_typed_name() {
     app.harness()
         .perform_semantic_named(
             "canvas-layer-tree",
-            Some(&format!("node:{}", position + 1)),
+            Some(&format!("key:{}", position + 1)),
             &ui::a11y::Action::Activate,
         )
         .unwrap();
@@ -82,7 +82,7 @@ fn rename_chosen_with_the_pointer_takes_the_typed_name() {
     app.harness()
         .perform_semantic_named(
             "canvas-layer-tree",
-            Some(&format!("node:{}", position + 1)),
+            Some(&format!("key:{}", position + 1)),
             &ui::a11y::Action::Activate,
         )
         .unwrap();

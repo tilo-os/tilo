@@ -72,7 +72,7 @@ pub fn send_attachment(door: &Descriptor, connection: &Descriptor) -> io::Result
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
-        crate::jobs::send(door.as_fd(), &[ATTACH_VERB], &[connection.as_fd()])
+        crate::door::send(door.as_fd(), &[ATTACH_VERB], &[connection.as_fd()])
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -96,11 +96,11 @@ pub fn receive_attachment(door: &Descriptor) -> io::Result<Option<Descriptor>> {
         use std::os::fd::AsFd as _;
         let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_owned());
         let mut buffer = vec![0_u8; 64];
-        let Some((length, fds)) = crate::jobs::receive(door.as_fd(), &mut buffer)? else {
+        let Some((length, fds)) = crate::door::receive(door.as_fd(), &mut buffer)? else {
             return Ok(None);
         };
         let message = buffer.get(..length).unwrap_or_default();
-        if crate::jobs::decode(message).as_slice() != [ATTACH_VERB] {
+        if crate::door::decode(message).as_slice() != [ATTACH_VERB] {
             return Err(invalid(
                 "the connector's door carried something other than an attachment",
             ));

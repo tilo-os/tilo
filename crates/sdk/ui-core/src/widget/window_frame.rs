@@ -1,5 +1,6 @@
 //! A window standing on a desktop, as a described component: what a shell draws for a place on
-//! a floating desk (`shell.md` §4, `frame_classic`).
+//! a floating desk (`shell.md` §4, `frame_classic`) and for a strip of places (`strips_view`),
+//! which is the same thing: a window.
 //!
 //! Its ground is the window level of the design language ([`SurfaceLevel::Window`]): the app's
 //! content colour, the window edge and the window's soft shadow, at the theme's window radius,
@@ -7,13 +8,22 @@
 //! behind it, a floating shadow under its own, as a desktop shows which window has the
 //! keyboard.
 //!
-//! A window has one bar, never two stacked: the frame offers its window bar to the content's
-//! header row ([`WindowHeader::set_window_bar`](crate::widget::WindowHeader)), as a desktop
-//! window does, and its controls stand at that row's trailing end, so the app's title and
-//! actions and the frame's controls read as one bar. Content with no header row of its own (a
-//! foreign window in its well) gets the frame's own bar instead: the window's name, with the
-//! controls at its end. A view says which window is in front and what its controls are; the
-//! theme decides everything the frame is made of.
+//! A window has one bar, never two stacked, and the bar says what state the window is in:
+//!
+//! - it shows several places: the bar is their tabs, and the window's content is the place in
+//!   front of them;
+//! - it shows one place whose own view has a header row: the frame offers its window bar to
+//!   that row ([`WindowHeader::set_window_bar`](crate::widget::WindowHeader)), so the app's
+//!   title and actions and the frame's controls read as one bar;
+//! - it shows one place with no header row of its own (a foreign window in its well), in front:
+//!   the frame's own bar names the place;
+//! - it shows one such place behind: the bar is the window's decorations alone, as a desktop
+//!   draws a window nobody is typing into.
+//!
+//! The window's own controls stand in a pill of the floating material at the trailing end of
+//! the bar in every one of those states, so a bar says the same thing about them wherever the
+//! frame puts them, and the app's own slots stay the app's. A view says which window is in
+//! front and what its controls are; the theme decides everything the frame is made of.
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -25,9 +35,11 @@ use crate::component::{Component, Described, SlotViews};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::{SpacingStep, TextRole};
+use crate::tokens::{Rhythm, SpacingStep, TextRole};
 use crate::widget::arrange::{Align, At, Fit, Layers, Length, Slot, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};
+use crate::widget::tabs::{TAB_BAR_HEIGHT, TabStrip};
+use crate::widget::window_controls::WindowControls;
 use crate::widget::{Decorator, Element, Spacer, Text, Widget, WindowBar};
 
 /// A window standing on a desktop: the window surface with its edge and shadow, holding the
@@ -35,8 +47,13 @@ use crate::widget::{Decorator, Element, Spacer, Text, Widget, WindowBar};
 #[derive(Component, Default)]
 #[component(name = "WindowFrame", role = "Group", label = "name")]
 pub struct WindowFrameProps {
+    /// The window's key where it stands: what finds the frame by id, as the row it arrived in
+    /// pans to show it.
+    #[component(key)]
+    pub key: String,
     /// The window's name: what assistive technology reads, and the title of the frame's own
     /// bar when the content has no header row to hold the controls.
+    #[component(data)]
     pub name: Option<String>,
     /// Whether it is the window in front, the one the keyboard goes to.
     pub focused: bool,
@@ -48,22 +65,54 @@ pub struct WindowFrameProps {
     /// trailing end of the window's bar.
     #[component(slot)]
     pub controls: Option<Element>,
+    /// The places the window shows, as its tabs: the bar is theirs while there are any, and
+    /// the content is the tab in front. Empty for a window of one place, whose bar is the
+    /// place's own header or the frame's.
+    #[component(slot)]
+    pub tabs: Option<Element>,
     /// The window's content, filling the window.
     #[component(slot(default))]
     pub body: Option<Element>,
 }
 
+/// What the frame's own bar shows this layout: the window's tabs, the place it shows, the
+/// window's decorations alone, or nothing at all because the app's header holds the bar.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum BarShape {
+    /// The content's header row holds the window's bar.
+    #[default]
+    Merged,
+    /// The tabs of the window's places.
+    Tabs,
+    /// The place the window shows, in front, with no header row to name it.
+    Title,
+    /// The window's decorations alone: a window nobody is typing into.
+    Bare,
+}
+
 /// [`WindowFrameProps`] built: layers on the window surface, the content (under the frame's
 /// own bar while it needs one) and the controls over its bar's trailing end.
 pub struct WindowFrame {
+    /// Its key where it stands, as the surface laying it out names it.
+    key: String,
     name: Option<String>,
     focused: bool,
     lists_actions: bool,
     layers: Layers,
-    /// The slot a host is changing: 0 for the controls, 1 for the content.
+    /// The slot a host is changing: 0 for the controls, 1 for the tabs, 2 for the content.
     editing: usize,
+    /// The window shows tabs: its bar is theirs, and the content's header row takes no bar.
+    tabbed: bool,
     /// The content's header row holds the window's bar, so the frame shows no bar of its own.
     merged: bool,
+    /// The bar the frame draws of its own, this layout.
+    shape: BarShape,
+    /// The name the frame's own bar shows, and whether the window was in front: pressing the
+    /// bar again is nothing, so the name is built again only when it says something else.
+    title: Option<(String, bool)>,
+    /// The name the bar last built: the window's name elided to one line in the room the bar
+    /// has, and nothing while the bar has no room for a name at all.
+    shown: Option<(String, bool)>,
     /// How wide the controls were laid out, the room the content's header row keeps for
     /// them.
     controls_width: f64,
@@ -72,6 +121,10 @@ pub struct WindowFrame {
     /// The header row's measures in the theme of the last layout.
     metrics: Option<HeaderRowMetrics>,
     rect: Rect,
+    /// The window's bar this layout: where the tabs, the name and the controls stand.
+    bar: Rect,
+    /// The pill around the controls, over the bar's ground or over the app's header row.
+    pill: Rect,
 }
 
 /// The layer holding the content, and the one holding the controls.
@@ -80,9 +133,42 @@ const CONTROLS: usize = 1;
 /// In the content's column: the frame's own bar, then the content.
 const OWN_BAR: usize = 0;
 const BODY: usize = 1;
+/// The room the frame's own bar keeps for the window's name, logical pixels: below it a name
+/// would be an ellipsis and nothing more, so the bar shows the decorations alone. Six steps of
+/// the spacing scale, so it follows the theme's own.
+fn name_room(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.s16 + theme.tokens.spacing.s8)
+}
+
+/// In the frame's own bar: the window's tabs, its name, then the room the controls keep.
+const TABS: usize = 0;
+const NAME: usize = 1;
+const AFTER: usize = 2;
 
 fn empty() -> Element {
     Box::new(Spacer::token(SpacingStep::S0))
+}
+
+/// How the tabs stand in the frame's own bar: the bar of a window of several places is
+/// theirs, so they take its room; a window of one leaves that slot empty.
+fn tabs_fit(tabbed: bool) -> Fit {
+    if tabbed { Fit::fill(1.0) } else { Fit::hug() }
+}
+
+/// How the room after the tabs stands in the bar: what the tabs leave, which a window of one
+/// gives to its name.
+fn after_fit(tabbed: bool) -> Fit {
+    if tabbed { Fit::hug() } else { Fit::fill(1.0) }
+}
+
+/// Whether `widget` holds the window's tabs: a view names the tabs slot on every window, so
+/// what the slot holds says whether this window has tabs, never the slot's mere presence.
+fn holds_tabs(widget: &dyn Widget) -> bool {
+    let tabs = widget
+        .as_any()
+        .and_then(|any| any.downcast_ref::<TabStrip>())
+        .is_some();
+    tabs || widget.children().iter().any(|child| holds_tabs(*child))
 }
 
 fn slot(element: Element, fit: Fit) -> Slot {
@@ -91,21 +177,47 @@ fn slot(element: Element, fit: Fit) -> Slot {
     slot
 }
 
+/// The fit of a bar: at least one bar tall, hugging what it holds across. A window narrow
+/// enough that its name wraps stands a taller bar rather than a title past it.
+fn bar_fit(shown: bool) -> Fit {
+    let mut fit = Fit::hug();
+    if shown {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a tab bar measure fits f32"
+        )]
+        let height = Length::Dp(TAB_BAR_HEIGHT as f32);
+        fit.height.min = Some(height);
+    }
+    fit
+}
+
 impl Described for WindowFrame {
     type Props = WindowFrameProps;
 
     fn from_props(_key: &str, props: WindowFrameProps) -> Self {
         let WindowFrameProps {
+            key,
             name,
             focused,
             lists_actions,
             controls,
+            tabs,
             body,
         } = props;
+        let tabbed = tabs.as_deref().is_some_and(holds_tabs);
+        let own = Stack::row()
+            .align(Align::Center)
+            .push_slot(slot(tabs.unwrap_or_else(empty), tabs_fit(tabbed)))
+            .push_slot(slot(empty(), Fit::hug()))
+            .push_slot(slot(empty(), after_fit(tabbed)));
         let column = Stack::stack()
             .fill_width()
             .fill_height()
-            .push_slot(slot(empty(), Fit::hug()))
+            // The bar sits on the content: a window is one surface, so nothing separates the
+            // two, whichever bar the window shows.
+            .gap(Rhythm::None)
+            .push_slot(slot(Box::new(own), bar_fit(tabbed)))
             .push_slot(slot(body.unwrap_or_else(empty), Fit::fill(1.0)));
         let controls = Stack::row()
             .align(Align::Center)
@@ -114,27 +226,40 @@ impl Described for WindowFrame {
             .push_slot(slot(Box::new(column), Fit::fill(1.0)))
             .push_at(Box::new(controls), At::TopTrailing);
         Self {
+            key,
             name,
             focused,
             lists_actions,
             layers,
-            editing: 1,
-            merged: true,
+            editing: 2,
+            tabbed,
+            merged: !tabbed,
+            shape: if tabbed {
+                BarShape::Tabs
+            } else {
+                BarShape::Merged
+            },
+            title: None,
+            shown: None,
             controls_width: 0.0,
             relayout: false,
             metrics: None,
             rect: Rect::ZERO,
+            bar: Rect::ZERO,
+            pill: Rect::ZERO,
         }
     }
 
     fn set_props(&mut self, props: WindowFrameProps) -> bool {
         let changed = self.focused != props.focused
             || self.name != props.name
-            || self.lists_actions != props.lists_actions;
-        if self.name != props.name && !self.merged {
+            || self.lists_actions != props.lists_actions
+            || self.tabbed != props.tabs.as_deref().is_some_and(holds_tabs);
+        if self.name != props.name {
             // The own bar shows the name: build it again with the new one.
-            self.merged = true;
+            self.title = None;
         }
+        self.key = props.key;
         self.name = props.name;
         self.focused = props.focused;
         self.lists_actions = props.lists_actions;
@@ -144,14 +269,15 @@ impl Described for WindowFrame {
     fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
         self.editing = match slot {
             "controls" => 0,
-            "body" => 1,
+            "tabs" => 1,
+            "body" => 2,
             _ => return None,
         };
         Some(self)
     }
 }
 
-/// The view of the slot being changed: the controls, or the content.
+/// The view of the slot being changed: the controls, the tabs, or the content.
 impl SlotViews for WindowFrame {
     fn len(&self) -> usize {
         1
@@ -161,10 +287,10 @@ impl SlotViews for WindowFrame {
         if index != 0 {
             return None;
         }
-        if self.editing == 0 {
-            self.controls_row()?.child_mut(0)
-        } else {
-            self.column()?.child_mut(BODY)
+        match self.editing {
+            0 => self.controls_row()?.child_mut(0),
+            1 => self.own_bar_row()?.child_mut(TABS),
+            _ => self.column()?.child_mut(BODY),
         }
     }
 
@@ -201,102 +327,193 @@ impl WindowFrame {
         self.stack_at(CONTROLS)
     }
 
+    /// The row of the frame's own bar: the window's tabs, its name, and the room the controls
+    /// keep.
+    fn own_bar_row(&mut self) -> Option<&mut Stack> {
+        self.column()?
+            .child_mut(OWN_BAR)?
+            .as_any_mut()?
+            .downcast_mut::<Stack>()
+    }
+
+    /// The content the window shows.
+    fn body_mut(&mut self) -> Option<&mut Element> {
+        self.column()?.child_mut(BODY)
+    }
+
     /// Put `view` in the slot being changed.
     fn put(&mut self, view: Element) {
-        if self.editing == 0 {
-            if let Some(row) = self.controls_row() {
-                let _ = row.replace(0, view);
+        match self.editing {
+            0 => {
+                if let Some(row) = self.controls_row() {
+                    let _ = row.replace(0, view);
+                }
             }
-        } else if let Some(column) = self.column() {
-            let _ = column.replace(BODY, view);
-            // New content: whether it has a header row to hold the bar is asked again.
-            self.merged = true;
+            1 => {
+                if let Some(row) = self.own_bar_row() {
+                    let _ = row.replace(TABS, view);
+                }
+                self.tabbed = self
+                    .own_bar_row()
+                    .and_then(|row| row.children().get(TABS).copied())
+                    .is_some_and(holds_tabs);
+                let tabbed = self.tabbed;
+                if let Some(row) = self.own_bar_row() {
+                    row.set_placement(TABS, tabs_fit(tabbed), 1, None);
+                    row.set_placement(AFTER, after_fit(tabbed), 1, None);
+                }
+            }
+            _ => {
+                if let Some(column) = self.column() {
+                    let _ = column.replace(BODY, view);
+                }
+                // New content: whether it has a header row to hold the bar is asked again.
+                self.merged = false;
+            }
         }
     }
 
-    /// Offer the content's header row the window's bar, and show the frame's own bar when
-    /// no row takes it.
+    /// Offer the content's header row the window's bar — or take it away while the window's
+    /// own tabs are the bar — and show the frame's own bar when nothing takes it.
     fn offer_bar(&mut self, m: &HeaderRowMetrics) {
+        if self.tabbed {
+            if let Some(body) = self.body_mut() {
+                crate::widget::window_header::offer_window_bar(body.as_mut(), None);
+            }
+            self.merged = false;
+            return;
+        }
         let bar = WindowBar {
             controls_width: self.controls_width + m.inset,
             revealed: true,
             top_inset: 0.0,
             lists_actions: self.lists_actions,
         };
-        let merged = self
-            .column()
-            .and_then(|column| column.child_mut(BODY))
-            .is_some_and(|body| {
-                crate::widget::window_header::offer_window_bar(body.as_mut(), Some(bar))
-            });
-        if merged == self.merged {
+        self.merged = self.body_mut().is_some_and(|body| {
+            crate::widget::window_header::offer_window_bar(body.as_mut(), Some(bar))
+        });
+    }
+
+    /// The bar the frame draws of its own, this layout.
+    fn shape(&self) -> BarShape {
+        if self.tabbed {
+            BarShape::Tabs
+        } else if self.merged {
+            BarShape::Merged
+        } else if self.focused {
+            BarShape::Title
+        } else {
+            BarShape::Bare
+        }
+    }
+
+    /// Build the frame's own bar for `shape`: one bar tall, nothing in it while the app's
+    /// header holds the bar, else its name — and never a second bar of the app's under it.
+    fn build_bar(&mut self, shape: BarShape, m: &HeaderRowMetrics, theme: &Theme, room: f64) {
+        self.shape = shape;
+        let bar = shape != BarShape::Merged;
+        if let Some(column) = self.column() {
+            column.set_placement(OWN_BAR, bar_fit(bar), 1, None);
+        }
+        let title = match shape {
+            BarShape::Title => Some((self.name.clone().unwrap_or_default(), self.focused)),
+            _ => None,
+        };
+        let shown = title
+            .clone()
+            .map(|(name, focused)| (self.elided(&name, m, theme, room), focused));
+        if title == self.title && shown == self.shown {
             return;
         }
-        self.merged = merged;
-        let own: Element = if merged {
-            empty()
-        } else {
-            let mut title =
-                Text::new(self.name.as_deref().unwrap_or_default()).with_role(TextRole::Label);
-            if !self.focused {
-                title = title.dimmed();
-            }
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "a header row measure fits f32"
-            )]
-            let (gutter, height) = (m.gutter as f32, m.height as f32);
-            let mut row = Stack::row()
-                .align(Align::Center)
-                .push(Box::new(Spacer::fixed(gutter)))
-                .push(Box::new(title));
-            row = row.push_slot(slot(empty(), Fit::fill(1.0)));
-            let mut fit = Fit::fill(1.0);
-            fit.height.fill = None;
-            fit.height.min = Some(Length::Dp(height));
-            fit.height.max = Some(Length::Dp(height));
-            let mut placed = Stack::stack().fill_width();
-            placed = placed.push_slot(slot(Box::new(row), fit));
-            Box::new(placed)
-        };
-        if let Some(column) = self.column() {
-            let _ = column.replace(OWN_BAR, own);
+        self.title = title;
+        self.shown = shown;
+        let element = self.name_element(m);
+        if let Some(own) = self.own_bar_row() {
+            let _ = own.replace(NAME, element);
         }
+    }
+
+    /// The window's name, elided to one line of the room `room` the bar has for it, as a tab's
+    /// title is: a name too long for the bar ends in an ellipsis, never in a second line taller
+    /// than the bar. Below the room a name needs at all the bar shows no name: the decorations
+    /// alone say whose window it is.
+    fn elided(&self, name: &str, m: &HeaderRowMetrics, theme: &Theme, room: f64) -> String {
+        let budget = room - m.gutter;
+        if room < name_room(theme) || budget <= 0.0 {
+            return String::new();
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a window's bar room fits f32"
+        )]
+        let budget = budget as f32;
+        let style = theme.text(TextRole::Label);
+        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            text.elide_to_width_style(name, budget, &style)
+        })
+    }
+
+    /// The name the frame's own bar shows: nothing while the bar has no room for it, so a window
+    /// too narrow for its name shows its decorations alone instead of a name folded into a column.
+    fn name_element(&self, m: &HeaderRowMetrics) -> Element {
+        let Some((name, focused)) = self.shown.clone().filter(|(name, _)| !name.is_empty()) else {
+            return empty();
+        };
+        let mut title = Text::new(&name).with_role(TextRole::Label);
+        if !focused {
+            title = title.dimmed();
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a header row measure fits f32"
+        )]
+        let gutter = Spacer::fixed(m.gutter as f32);
+        let row = Stack::row()
+            .align(Align::Center)
+            .push(Box::new(gutter))
+            .push(Box::new(title))
+            .push_slot(slot(empty(), Fit::fill(1.0)));
+        Box::new(row)
     }
 
     /// The bar's row: the content's header row when it holds the bar, else the frame's own.
     fn bar_row(&self, m: &HeaderRowMetrics) -> Rect {
-        self.merged
-            .then(|| {
-                self.layers
-                    .children()
-                    .first()
-                    .and_then(|column| crate::widget::window_header::window_bar_slot(*column))
-                    .map(|slot| slot.row)
-            })
-            .flatten()
-            .unwrap_or_else(|| {
-                Rect::new(
-                    self.rect.x0,
-                    self.rect.y0,
-                    self.rect.x1,
-                    self.rect.y0 + m.height,
-                )
-            })
+        if self.merged {
+            return self
+                .layers
+                .children()
+                .first()
+                .and_then(|column| crate::widget::window_header::window_bar_slot(*column))
+                .map_or_else(
+                    || {
+                        Rect::new(
+                            self.rect.x0,
+                            self.rect.y0,
+                            self.rect.x1,
+                            self.rect.y0 + m.height,
+                        )
+                    },
+                    |slot| slot.row,
+                );
+        }
+        self.layers
+            .children()
+            .first()
+            .and_then(|column| column.children().get(OWN_BAR).copied())
+            .map_or(Rect::ZERO, Widget::get_rect)
     }
 
     /// How far the controls move from the frame's top trailing corner, where the layers put
     /// them, to stand on the bar's row, `inset` in from its trailing end, as the header row's
     /// own buttons stand from theirs. Both ends are laid out on device pixels, so the move is
     /// too.
-    fn controls_offset(&self, m: &HeaderRowMetrics) -> Vec2 {
+    fn controls_offset(&self, m: &HeaderRowMetrics, bar: Rect) -> Vec2 {
         let Some(controls) = self.layers.children().get(CONTROLS).map(|c| c.get_rect()) else {
             return Vec2::ZERO;
         };
-        let row = self.bar_row(m);
         Vec2::new(
-            row.x1.min(self.rect.x1) - m.inset - controls.x1,
-            row.y0 - controls.y0,
+            bar.x1.min(self.rect.x1) - m.inset - controls.x1,
+            bar.y0 - controls.y0,
         )
     }
 }
@@ -320,17 +537,49 @@ impl Decorator for WindowFrame {
     ) -> NodeId {
         let m = HeaderRowMetrics::resolve(theme);
         self.offer_bar(&m);
+        // The room the bar has left of its controls' pill: what its tabs and its name share.
+        let room = self.rect.width()
+            - self.controls_width
+            - crate::widget::window_controls::EDGE_INSET
+            - crate::widget::window_controls::LEAD_GAP;
+        self.build_bar(self.shape(), &m, theme, room);
         // The controls stand in a row as tall as the bar's, centred in it.
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a header row measure fits f32"
         )]
-        let height = Length::Dp(m.height as f32);
+        let height = Length::Dp(if self.merged {
+            m.height as f32
+        } else {
+            TAB_BAR_HEIGHT as f32
+        });
         let mut fit = Fit::hug();
         fit.height.min = Some(height);
         fit.height.max = Some(height);
         self.layers
             .set_placement(CONTROLS, fit, 1, Some(At::TopTrailing));
+        // The tabs and the name have the room the controls leave, never more: a window narrow
+        // enough that its bar cannot hold them both squeezes them, and the strip shows the
+        // titles it can, rather than the two covering each other.
+        if room > 0.0 {
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a window's bar room fits f32"
+            )]
+            let room = Length::Dp(room as f32);
+            // A window of several places shows them as its bar: the strip takes that room
+            // whole. The name beside it is the bar of a window of one, so it hugs what it
+            // says.
+            let tabbed = self.tabbed;
+            if let Some(row) = self.own_bar_row() {
+                let mut tabs = tabs_fit(tabbed);
+                tabs.width.max = Some(room);
+                let mut name = Fit::hug();
+                name.width.max = Some(room);
+                row.set_placement(TABS, tabs, 1, None);
+                row.set_placement(NAME, name, 1, None);
+            }
+        }
         self.metrics = Some(m);
         self.relayout = false;
         self.layers.build_layout(taffy, theme, node_map)
@@ -340,10 +589,21 @@ impl Decorator for WindowFrame {
         self.layers.apply_layout(taffy, node, origin);
         self.rect = self.layers.get_rect();
         if let Some(m) = self.metrics {
-            let by = self.controls_offset(&m);
+            self.bar = self.bar_row(&m);
+            let by = self.controls_offset(&m, self.bar);
             if by != Vec2::ZERO {
                 self.layers.offset_child(taffy, CONTROLS, by);
             }
+            let controls = self
+                .layers
+                .children()
+                .get(CONTROLS)
+                .map_or(Rect::ZERO, |c| c.get_rect());
+            let pill = WindowControls::around(self.bar, controls);
+            if pill != self.pill {
+                self.relayout = true;
+            }
+            self.pill = pill;
         }
         let width = self
             .layers
@@ -357,7 +617,7 @@ impl Decorator for WindowFrame {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.relayout || self.layers.needs_redraw()
+        self.relayout || (self.layers.needs_redraw() || self.layers.needs_animation_frame())
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
@@ -391,7 +651,23 @@ impl Decorator for WindowFrame {
             transform,
             &RoundedRect::from_rect(rect, radius),
         );
-        self.layers.draw(scene, transform, text, &on, presence);
+        // The content under the window's own pill under the window's own controls: the pill
+        // stands over the app's header row where the app's row holds the bar, and over the
+        // frame's bar otherwise, so the window's controls are the frame's wherever they are.
+        let pill = self.pill;
+        {
+            let mut children = self.layers.children_mut();
+            if let Some(content) = children.get_mut(CONTENT) {
+                content.draw(scene, transform, text, &on, presence);
+            }
+        }
+        crate::widget::window_controls::paint_pill(scene, transform, pill, theme);
+        {
+            let mut children = self.layers.children_mut();
+            if let Some(controls) = children.get_mut(CONTROLS) {
+                controls.draw(scene, transform, text, &on, presence);
+            }
+        }
         scene.pop_layer();
         // A shadow barely shows on a dark ground, so the window in front is told apart by its
         // edge too: the theme's edge of the window with the keyboard, heavier than the rest
@@ -430,6 +706,12 @@ impl Decorator for WindowFrame {
         "WindowFrame"
     }
 
+    /// The window is found by the key it stands under, so a surface that pans can bring the
+    /// one that just arrived into view.
+    fn test_id(&self) -> Option<&str> {
+        (!self.key.is_empty()).then_some(self.key.as_str())
+    }
+
     /// The frame is a group named for the window, and what it holds is read inside it.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.name.as_ref().map(|name| {
@@ -442,7 +724,37 @@ impl Decorator for WindowFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::component::Described;
+    use crate::component::{Described, Event, ResourceId};
+    use crate::widget::{TabItemProps, TabStrip, TabStripProps};
+
+    /// A window's tabs, as the shell's strip hands them to its frame: two places, the first in
+    /// front.
+    fn two_places() -> Box<TabStrip> {
+        let tab = |key: &str, title: &str| TabItemProps {
+            key: key.to_owned(),
+            item: Some(ResourceId(format!("@notes.Note:{key}"))),
+            title: Some(title.to_owned()),
+            icon: None,
+            attention: false,
+            modified: false,
+            busy: false,
+            presence: Vec::new(),
+        };
+        let tabs = vec![tab("a", "Sorting"), tab("b", "Second")];
+        Box::new(TabStrip::from_props(
+            "frame",
+            TabStripProps {
+                key: "frame".to_owned(),
+                active: tabs.first().and_then(|t| t.item.clone()),
+                focused: true,
+                activate: Event::None,
+                close: Event::None,
+                reorder: Event::None,
+                detach: Event::None,
+                tabs,
+            },
+        ))
+    }
 
     /// The window drawn on its ground at `rect`, rendered: what a person sees around its edge.
     fn rendered(theme: &Theme, focused: bool, rect: Rect) -> Vec<u8> {
@@ -519,5 +831,103 @@ mod tests {
                 shadow(&front)
             );
         }
+    }
+
+    /// Lay `frame` out at `rect`, twice: the host lays a window out again once its controls
+    /// have measured.
+    fn laid_out(frame: &mut WindowFrame, rect: Rect) {
+        let theme = Theme::dark();
+        let mut text = crate::font_catalog::fixture_renderer();
+        for _ in 0..2 {
+            crate::widget::layout::lay_out_detached(frame, rect, &theme, &mut text)
+                .expect("the window lays out");
+        }
+    }
+
+    /// The frame's own bar and its content, laid out.
+    fn parts(frame: &WindowFrame) -> (Rect, Rect) {
+        let content = frame.layers.children()[CONTENT].children();
+        (content[OWN_BAR].get_rect(), content[BODY].get_rect())
+    }
+
+    #[test]
+    fn the_window_fills_its_frame_under_one_bar() {
+        let rect = Rect::new(0.0, 0.0, 480.0, 360.0);
+        let mut frame = WindowFrame::from_props(
+            "w",
+            WindowFrameProps {
+                name: Some("A terminal".to_owned()),
+                focused: true,
+                body: Some(Box::new(Spacer::new())),
+                ..WindowFrameProps::default()
+            },
+        );
+        laid_out(&mut frame, rect);
+        let (bar, body) = parts(&frame);
+        assert!(
+            (bar.height() - TAB_BAR_HEIGHT).abs() < 0.5,
+            "the window's bar is one bar tall: {bar:?}"
+        );
+        assert!(
+            (body.y0 - bar.y1).abs() < 0.5 && (body.y1 - rect.y1).abs() < 0.5,
+            "the window's content fills it under its one bar: {body:?} under {bar:?}"
+        );
+    }
+
+    #[test]
+    fn a_window_of_several_places_is_its_tabs_and_the_place_in_front() {
+        let rect = Rect::new(0.0, 0.0, 480.0, 360.0);
+        let mut frame = WindowFrame::from_props(
+            "w",
+            WindowFrameProps {
+                name: Some("Two notes".to_owned()),
+                focused: true,
+                tabs: Some(two_places()),
+                body: Some(Box::new(Spacer::new())),
+                ..WindowFrameProps::default()
+            },
+        );
+        laid_out(&mut frame, rect);
+        assert_eq!(frame.shape, BarShape::Tabs, "the tabs are the window's bar");
+        let (bar, body) = parts(&frame);
+        assert!(
+            (bar.height() - TAB_BAR_HEIGHT).abs() < 0.5,
+            "one bar: {bar:?}"
+        );
+        // The frame draws no name of its own over the tabs, and the content stands under them.
+        let own = frame.layers.children()[CONTENT].children();
+        let own = own[OWN_BAR].children();
+        assert!(
+            own[NAME].get_rect().height() < 0.5,
+            "the tabs name the window, not the frame: {:?}",
+            own[NAME].get_rect()
+        );
+        assert!(
+            (body.y0 - bar.y1).abs() < 0.5 && (body.y1 - rect.y1).abs() < 0.5,
+            "the place in front fills the window under the tabs: {body:?} under {bar:?}"
+        );
+    }
+
+    #[test]
+    fn a_window_behind_is_its_decorations_alone() {
+        let rect = Rect::new(0.0, 0.0, 480.0, 360.0);
+        let mut frame = WindowFrame::from_props(
+            "w",
+            WindowFrameProps {
+                name: Some("A terminal".to_owned()),
+                focused: false,
+                body: Some(Box::new(Spacer::new())),
+                ..WindowFrameProps::default()
+            },
+        );
+        laid_out(&mut frame, rect);
+        assert_eq!(frame.shape, BarShape::Bare);
+        let own = frame.layers.children()[CONTENT].children();
+        let own = own[OWN_BAR].children();
+        assert!(
+            own[NAME].get_rect().height() < 0.5,
+            "a window behind shows no name of its own: {:?}",
+            own[NAME].get_rect()
+        );
     }
 }

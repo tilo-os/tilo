@@ -14,6 +14,7 @@ use crate::usage::Usage;
 pub trait DesktopSearchApi {
     fn is_open(&self) -> bool;
     fn waiting(&self) -> bool;
+    fn answering(&self) -> bool;
     fn settled(&self) -> bool;
     fn filling_in(&self) -> bool;
     fn open(&mut self, data: SearchData);
@@ -43,6 +44,9 @@ impl DesktopSearchApi for DesktopSearch {
     }
     fn waiting(&self) -> bool {
         Self::waiting(self)
+    }
+    fn answering(&self) -> bool {
+        Self::answering(self)
     }
     fn settled(&self) -> bool {
         Self::settled(self)
@@ -179,9 +183,17 @@ impl LazyDesktopSearch {
         self.search.as_ref().is_some_and(|search| search.waiting())
     }
 
-    /// Whether the search has a frame's work of its own left: a source
-    /// still to ask, or rows to cut to the card's room. Nothing is open
-    /// while its code is on its way.
+    /// Whether a source of the open search still owes an answer: it answers
+    /// on a worker, which wakes the desk when it is in.
+    pub fn answering(&self) -> bool {
+        self.search
+            .as_ref()
+            .is_some_and(|search| search.answering())
+    }
+
+    /// Whether the search has a frame's work of its own left: a source that
+    /// holds the frame's state still to ask, or rows to cut to the card's
+    /// room. Nothing is open while its code is on its way.
     pub fn filling_in(&self) -> bool {
         self.search
             .as_ref()

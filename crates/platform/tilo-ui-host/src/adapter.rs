@@ -287,6 +287,23 @@ impl<'a> NodeSource<'a> {
     }
 
     fn value(&self, name: &str, ty: &Type) -> Option<Prop> {
+        // The tone of a date fact is the presenter's, not the view's: a component that declares
+        // `<prop>_tone` reads it off the date `<prop>` holds, so a day gone by is overdue in
+        // every list, card and chip alike.
+        if let (Type::Choice { name: choice, .. }, Some(base)) = (ty, name.strip_suffix("_tone"))
+            && choice == "Tone"
+            && !self.node.props.contains_key(name)
+            && let Some(tone) = crate::date::shown_tone(self.node, base)
+        {
+            let case = match tone {
+                ui::widget::Tone::Danger => "danger",
+                ui::widget::Tone::Warning => "warning",
+                ui::widget::Tone::Success => "success",
+                ui::widget::Tone::Info => "info",
+                ui::widget::Tone::Neutral | ui::widget::Tone::Presence(_) => "neutral",
+            };
+            return Some(Prop::Choice(case.to_owned()));
+        }
         let value = self.node.props.get(name)?;
         let text = match ty {
             Type::Option(inner) => **inner == Type::Text && !matches!(value, Value::Opt(None)),
@@ -446,7 +463,23 @@ impl Source for NodeSource<'_> {
 
     fn binding(&mut self, name: &str) -> Option<BoundValue> {
         let Some(binding) = self.node.binding.as_ref() else {
-            return shown_value(self.node, self.description, self.reconciler, name);
+            if let Some(shown) = shown_value(self.node, self.description, self.reconciler, name) {
+                return Some(shown);
+            }
+            // A text field the view gave no value is its own draft, keyed by where it stands:
+            // the entry at the end of a list keeps what is typed into it across the app's own
+            // changes, and commits it through its submit.
+            let ty = &self.description.binding(name)?.ty;
+            if *ty != Type::Text || self.node.kind != kind("TextInput") {
+                return None;
+            }
+            let key = self.node.key.clone();
+            return Some(BoundValue::Text(Bound {
+                state: self.reconciler.text_state(&key),
+                edits: None,
+                name: String::new(),
+                path: Vec::new(),
+            }));
         };
         let named = match self.node.props.get("bind") {
             Some(Value::Text(bound)) => bound == name,
@@ -465,8 +498,9 @@ impl Source for NodeSource<'_> {
         let path = presence_path(self.node);
         let key = self.node.key.clone();
         Some(match ty {
-            // A moment is held as its ISO text (or the day it names): what its widget shows.
-            Type::Text | Type::Time => BoundValue::Text(Bound {
+            // A moment is held as its ISO text (or the day it names), a person as their
+            // identity, and a case as its name: what its widget shows, and what an edit carries.
+            Type::Text | Type::Time | Type::Principal | Type::Enum => BoundValue::Text(Bound {
                 state: self.reconciler.text_state(&key),
                 edits,
                 name: called,

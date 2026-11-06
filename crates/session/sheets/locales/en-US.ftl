@@ -177,9 +177,18 @@ directory-title = Join a workspace
 directory-search = Search public workspaces, or paste a link or code
 directory-link-or-code = Join with a link or code
 directory-loading = Looking for public workspaces…
-directory-empty = No public workspaces here yet. Type a site like tilo.coffee and press Enter to see its workspaces.
-directory-no-match = Nothing matches “{ $query }”. Press Enter to look it up as a site.
-directory-failed = The directory could not be read: { $error }
+directory-empty-title = No public workspaces yet
+directory-empty = Type a site like tilo.coffee and press Enter to see its workspaces.
+directory-no-match-title = Nothing matches “{ $query }”
+directory-no-match = Press Enter to look it up as a site.
+directory-failed-title = Couldn't read the workspaces
+directory-error-no-workspace = that site has no public workspaces to show
+directory-error-unreachable = the site could not be reached
+directory-error-unreadable = the site answered with something that is not a directory
+directory-error-status = the site would not share its workspaces just now
+directory-here-more = +{ $count }
+directory-sites-unread = Some sites could not be read, so this list is short: { $error }
+directory-listing-gone = That workspace is no longer listed. Read the site again.
 directory-join = Join
 directory-open = Open
 directory-joining = Joining…
@@ -525,3 +534,20 @@ network-agent-risk-something = do something that cannot be undone
 network-device-unlock-title = Unlock { $device }?
 network-device-unlock-detail = It is starting up and asks you for the half of its disk key that this device holds for it, for { $slot }. Compare the code above with the one on its boot screen.
 network-device-unlock-allow = Release its key
+
+## What each sheet's resource is called, keyed by its kind with separators
+## as dashes (`power.session` is `power-session`). The label a sheet declares
+## is the English text here, so a desktop in another language names the
+## resource it publishes in that language.
+power-session = Power
+lock-screen = Lock screen
+dictation-session = Dictation
+uninstall-question = Uninstall
+add-app-question = Add to apps
+file-chooser-request = File chooser
+shortcut-guide-guide = Keyboard shortcuts
+workspace-directory-listing = Public workspaces
+display-sheet-layouts = Displays
+display-confirm-question = Display change
+portal-sheet-question = System question
+workspace-settings-lens = Workspace settings

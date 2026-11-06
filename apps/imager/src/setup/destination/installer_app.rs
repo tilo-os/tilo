@@ -665,6 +665,10 @@ pub struct InstallerApp {
     console: Option<imager_backend::destination::console::ConsoleServer>,
     /// What the window shares with the view it stands in.
     published: Rc<std::cell::RefCell<crate::window_view::Published>>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Default for InstallerApp {
@@ -781,6 +785,7 @@ impl InstallerApp {
     /// and this computer's report.
     pub fn with_disks(disks: Vec<Disk>) -> Self {
         Self {
+            dirty: true,
             network: InstallerNetwork::default(),
             disks,
             selected_disk: None,
@@ -1583,6 +1588,7 @@ impl InstallerApp {
     }
 
     fn sync_accounts(&mut self) {
+        self.dirty = true;
         use crate::setup::destination::accounts_view::{AccountsCommand, AccountsStatus};
         if self.step != Step::Accounts {
             return;
@@ -3750,6 +3756,7 @@ impl Widget for InstallerApp {
     /// assistive activation queued since the last event run here, then the
     /// view state is noticed and the composed controls sync.
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        self.dirty = true;
         let staged = self.published.borrow_mut().take_staged();
         if let Some(crate::window_view::Staged(scenario)) = staged {
             self.stage(scenario.as_deref());
@@ -3837,6 +3844,7 @@ impl Widget for InstallerApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         // Forward to the composed card FIRST so a focused field can
         // consume the event before the wizard interprets it. This matters
         // for the Options-step time-zone `Dropdown`: when it's open, Enter
@@ -3938,6 +3946,14 @@ impl Widget for InstallerApp {
         self.composed
             .element()
             .is_some_and(Widget::wants_pointer_capture)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

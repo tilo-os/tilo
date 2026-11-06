@@ -969,9 +969,9 @@ fn messages_channels_and_categories_change_only_through_their_actions() {
     let before = chat.state().unwrap();
     let channels = Chat::paths().channels;
     let categories = Chat::paths().categories;
-    let channel = Channel {
+    let channel = Conversation {
         name: "sneaky".into(),
-        ..Channel::default()
+        ..Conversation::default()
     };
     let category = Category {
         name: "Sneaky".into(),
@@ -1474,6 +1474,39 @@ fn the_migration_opens_the_users_chat_with_everything_in_it() {
             ],
             "every channel stays, in the category it was in"
         );
+        let scribe = chat
+            .channels
+            .get(&id(OLD_AGENT_CHANNEL))
+            .expect("the agent's conversation stays");
+        assert_eq!(
+            scribe
+                .participants
+                .iter()
+                .map(|key| key.0.as_str())
+                .collect::<Vec<_>>(),
+            ["agent:scribe"],
+            "the agent the conversation was with is now its participant"
+        );
+        let row = chat
+            .conversation_rows(ADA)
+            .into_iter()
+            .find(|row| row.id == OLD_AGENT_CHANNEL)
+            .expect("the agent's conversation is listed");
+        assert!(
+            row.direct,
+            "it is a conversation, not the workspace's channel"
+        );
+        assert_eq!(row.name, "Scribe", "a conversation with a name keeps it");
+        {
+            use automerge::ReadDoc as _;
+            let (_, channels) = doc.get(automerge::ROOT, "channels").unwrap().unwrap();
+            let (_, held) = doc.get(&channels, OLD_AGENT_CHANNEL).unwrap().unwrap();
+            let (_, entry) = doc.get(&held, "v").unwrap().unwrap();
+            assert!(
+                doc.get(&entry, "conversation_with").unwrap().is_none(),
+                "the old field is gone with the migration, not read beside it"
+            );
+        }
         assert_eq!(
             chat.categories
                 .iter()
@@ -1501,26 +1534,38 @@ fn the_migration_opens_the_users_chat_with_everything_in_it() {
             ui::tilo_resource::read_key::<String>(&doc, &home, "name").unwrap(),
             "My Workspace"
         );
-        let mut app = crate::ChatApp::new_ephemeral();
-        app.reload(&doc);
-        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
-        ui::Widget::draw(
-            &mut app,
-            &mut vello::Scene::new(),
-            vello::kurbo::Affine::IDENTITY,
-            &mut ui::text_render::TextRenderer::new(),
-            &ui::theme::Theme::dark(),
-            &ui::presence::PresenceCtx::empty(),
-        );
-        let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
-        assert!(
-            root.children.iter().all(|node| node
-                .name
-                .as_deref()
-                .is_none_or(|name| !name.contains("Workspace"))),
-            "Chat shows no workspace of its own"
-        );
     }
+}
+
+/// The migrated chat, drawn, lists the workspace's channels and the person's
+/// conversations: it has no workspace tab of its own.
+#[test]
+fn the_migrated_chat_draws_no_workspace_of_its_own() {
+    use ui::tilo_resource::evolution;
+    let mut doc = users_chat(false);
+    assert!(
+        evolution::migrate::<Chat>(&mut doc).unwrap(),
+        "migrated once"
+    );
+    let mut app = crate::ChatApp::new_ephemeral();
+    app.reload(&doc);
+    app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
+    ui::Widget::draw(
+        &mut app,
+        &mut vello::Scene::new(),
+        vello::kurbo::Affine::IDENTITY,
+        &mut ui::text_render::TextRenderer::new(),
+        &ui::theme::Theme::dark(),
+        &ui::presence::PresenceCtx::empty(),
+    );
+    let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
+    assert!(
+        root.children.iter().all(|node| node
+            .name
+            .as_deref()
+            .is_none_or(|name| !name.contains("Workspace"))),
+        "Chat shows no workspace of its own"
+    );
 }
 
 #[test]
@@ -1614,4 +1659,92 @@ fn reactors(group: &crate::model::Reaction) -> Vec<String> {
         .iter()
         .map(|reactor| reactor.by.clone())
         .collect()
+}
+
+#[test]
+fn a_person_the_workspace_has_no_name_for_goes_by_their_tag() {
+    let mut ada = workspace();
+    let mut bo = ada.fork().as_author(BO);
+    bo.apply(Chat::INTRODUCE.with(chat::Introduce {
+        name: String::new(),
+        initials: "BO".into(),
+        color: 2,
+    }))
+    .unwrap();
+    ada.sync_with(&mut bo).unwrap();
+    let chat = ada.state().unwrap();
+    let with_bo = Chat::direct_id([Participant::person(ADA), Participant::person(BO)]);
+    let row = chat
+        .conversation_rows(ADA)
+        .into_iter()
+        .find(|row| row.id == with_bo.to_string())
+        .expect("Ada lists her conversation with Bo");
+    assert!(row.direct, "it is a conversation, not a channel");
+    assert_eq!(row.name, crate::identity::unnamed_label(BO));
+    let row = chat
+        .conversation_rows(BO)
+        .into_iter()
+        .find(|row| row.id == with_bo.to_string())
+        .expect("Bo lists it too");
+    assert_eq!(row.name, "Ada", "each of them names the other");
+}
+
+/// A conversation's participants say who it is with, not who may use it:
+/// every member reads any conversation, and a member who is not one of its
+/// participants posts to it like anyone else.
+#[test]
+fn a_conversation_is_about_its_participants_not_who_may_read_it() {
+    const CY: &str = "u_cy";
+    let with_bo = Chat::direct_id([Participant::person(ADA), Participant::person(BO)]);
+    let mut ada = Talk::new();
+    let mut cy = ada.fork_as(CY);
+    cy.apply(post_to(with_bo.as_str(), "in their conversation"))
+        .unwrap();
+    ada.sync_with(&mut cy);
+    let rows = ada.rows(with_bo.as_str());
+    let row = rows
+        .iter()
+        .find(|row| row.text == "in their conversation")
+        .expect("a member who is not a participant posts to the conversation");
+    assert_eq!(row.author, CY);
+    assert_eq!(
+        ada.chat
+            .state()
+            .unwrap()
+            .conversation_participants(&with_bo)
+            .len(),
+        2,
+        "and the conversation stays Ada's and Bo's"
+    );
+}
+
+/// Two devices opening the same conversation at once make one: its id names
+/// its participants, so neither has to write it first and neither can make a
+/// second.
+#[test]
+fn two_devices_opening_the_same_conversation_at_once_share_one() {
+    let mut ada = Talk::new();
+    let mut bo = ada.fork_as(BO);
+    let from_ada = Chat::direct_id([Participant::person(ADA), Participant::person(BO)]);
+    let from_bo = Chat::direct_id([Participant::person(BO), Participant::person(ADA)]);
+    assert_eq!(from_ada, from_bo, "the id is the set, in any order");
+    ada.apply(post_to(from_ada.as_str(), "from Ada")).unwrap();
+    bo.apply(post_to(from_bo.as_str(), "from Bo")).unwrap();
+    ada.sync_with(&mut bo);
+    let rows = ada.rows(from_ada.as_str());
+    for text in ["from Ada", "from Bo"] {
+        assert!(
+            rows.iter().any(|row| row.text == text),
+            "both messages are in the one conversation: {rows:?}"
+        );
+    }
+    let chat = ada.chat.state().unwrap();
+    assert!(
+        !chat.channels.contains(&from_ada),
+        "the conversation is never written first: its id is enough"
+    );
+    assert_eq!(
+        Chat::direct_participants(&from_ada).map(|participants| participants.len()),
+        Some(2)
+    );
 }

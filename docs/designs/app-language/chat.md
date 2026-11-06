@@ -1,4 +1,4 @@
-# Chat: the flagship
+# Chat
 
 A Discord-class chat (text and voice channels in categories, threads, replies, reactions,
 mentions, slash commands, uploads) written in as little tilolang as the language allows, and as

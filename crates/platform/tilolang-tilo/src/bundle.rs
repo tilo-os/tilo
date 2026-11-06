@@ -135,6 +135,13 @@ impl Bundle {
         .checked()
     }
 
+    /// The languages the package ships, as `(locale, Fluent text)`, the source language first:
+    /// what its window chooses its one language among.
+    #[must_use]
+    pub fn catalogues(&self) -> Vec<(String, String)> {
+        tilolang::meta::locales_from_wasm(&self.wasm)
+    }
+
     /// The bundle in the payload directory `dir`.
     ///
     /// # Errors

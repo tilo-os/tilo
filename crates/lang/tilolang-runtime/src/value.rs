@@ -148,6 +148,10 @@ pub struct ActionRef {
     pub action: ActionId,
     pub args: Vec<Value>,
     pub author: Option<ModuleHash>,
+    /// The resource the invocation is made from, when it is made from one: what the resources
+    /// it creates were made from (`created(r)?.from`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<ResourceRef>,
 }
 
 impl ActionRef {
@@ -156,7 +160,15 @@ impl ActionRef {
             action: action.into(),
             args,
             author: None,
+            from: None,
         }
+    }
+
+    /// The action as invoked from `from`: what the resources it creates were made from.
+    #[must_use]
+    pub fn made_from(mut self, from: Option<&ResourceRef>) -> Self {
+        self.from = from.cloned();
+        self
     }
 }
 
@@ -448,6 +460,24 @@ impl Value {
     }
 }
 
+/// The fields a reference is stored as: the id it names and the type it points at.
+fn ref_fields(target: &ResourceRef) -> Map<String, Json> {
+    let mut m = Map::new();
+    m.insert("ref".into(), Json::String(target.id_string()));
+    m.insert("ty".into(), Json::String(target.ty.clone()));
+    m
+}
+
+/// The reference [`ref_fields`] wrote, when `json` holds one.
+fn ref_from_json(json: &Json) -> Option<ResourceRef> {
+    let Json::Object(m) = json else {
+        return None;
+    };
+    let id = m.get("ref")?.as_str()?;
+    let ty = m.get("ty")?.as_str()?;
+    ResourceRef::parse_id(id, ty)
+}
+
 /// Encode a value as JSON, for registers, journals and change messages.
 ///
 /// # Errors
@@ -482,9 +512,7 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
             Json::Object(m)
         }
         Value::Ref(r) => {
-            let mut m = Map::new();
-            m.insert("ref".into(), Json::String(r.target.id_string()));
-            m.insert("ty".into(), Json::String(r.target.ty.clone()));
+            let mut m = ref_fields(&r.target);
             if let Some(a) = &r.author {
                 m.insert("author".into(), Json::String(a.0.clone()));
             }
@@ -496,6 +524,9 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
             m.insert("args".into(), items_to_json(&a.args)?);
             if let Some(author) = &a.author {
                 m.insert("author".into(), Json::String(author.0.clone()));
+            }
+            if let Some(from) = &a.from {
+                m.insert("from".into(), Json::Object(ref_fields(from)));
             }
             Json::Object(m)
         }
@@ -557,6 +588,44 @@ fn from_json_items(j: &Json) -> Result<Vec<Value>, String> {
         .collect()
 }
 
+/// The resources a value names, as ids ([`ResourceRef::id_string`]): every reference it holds,
+/// through options, lists, tuples and enum payloads, and every resource its rich text mentions.
+/// What links a resource to another through a field (`linked(r)`,
+/// [`crate::store::Store::linked`]).
+#[must_use]
+pub fn references_in(value: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_references(value, &mut out);
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn collect_references(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Ref(r) => out.push(r.target.id_string()),
+        Value::Opt(Some(inner)) => collect_references(inner, out),
+        Value::List(items) | Value::Tuple(items) => {
+            for item in items {
+                collect_references(item, out);
+            }
+        }
+        Value::Enum(e) => {
+            for value in e.fields.values() {
+                collect_references(value, out);
+            }
+        }
+        Value::Rich(rich) => {
+            for reference in rich.references() {
+                if let Some(id) = crate::rich::resource_id(&reference) {
+                    out.push(id.to_owned());
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn author_of(m: &Map<String, Json>) -> Option<ModuleHash> {
     m.get("author")
         .and_then(Json::as_str)
@@ -612,6 +681,7 @@ fn from_json_object(m: &Map<String, Json>) -> Result<Value, String> {
             action: action.clone(),
             args: from_json_items(args)?,
             author: author_of(m),
+            from: m.get("from").and_then(ref_from_json),
         }));
     }
     Err("an object that is not an encoded value".into())

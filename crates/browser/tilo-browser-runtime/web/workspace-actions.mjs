@@ -28,6 +28,10 @@
  */
 export const NEW_WORKSPACE = Object.freeze({id: 'new-workspace', title: 'New workspace',
   subtitle: 'Create a workspace on a machine you set up', source: 'workspace'});
+/** Join a workspace a site lists: the desktop's directory sheet, which the
+ * desktop opens itself (it needs nothing of the page but its site). */
+export const JOIN_WORKSPACE = Object.freeze({id: 'join-workspace', title: 'Join a workspace',
+  label: 'Join a workspace…', subtitle: 'Browse the workspaces this site lists', source: 'workspace'});
 export const INVITE = Object.freeze({id: 'invite-someone', title: 'Invite someone',
   subtitle: 'Copy a link that asks to join this workspace'});
 /** Invite people in a public workspace: its link is the invitation. */
@@ -87,6 +91,7 @@ export function createWorkspaceActions({
   const inWorkspace = Boolean(peer?.workspace && peer.createInvitation);
   const actions = () => [
     ...(ownHost(peer) || machines().length ? [NEW_WORKSPACE] : []),
+    JOIN_WORKSPACE,
     ...(inWorkspace ? [publicLink() ? INVITE_PUBLIC : INVITE] : []),
     ...(lettingIn ? [WAITING] : []),
   ];

@@ -16,6 +16,7 @@ mod cases {
 type Note {
     title: Text (title)
     pinned: Bool = false
+    due: Option<Date> = .none
 }
 
 type Notebook {
@@ -43,6 +44,10 @@ primary action add(nb: Notebook, title: Text, pinned: Bool) -> Note (icon: .plus
     return nb.notes.insert(Note(title: title, pinned: pinned))
 }
 
+action plan(n: Note) {
+    n.due = .some(Date("2026-11-02"))
+}
+
 view note_row(n: Note) {
     row(n.title, mark: if n.pinned { .pin })
 }
@@ -62,10 +67,7 @@ view detail(n: Note) {
     lens shown: NoteFilter = .pinned
     std.document(n) {
         choice(bind: shown)
-        facts {
-            "Title": n.title
-            "Pinned": n.pinned
-        }
+        facts(n)
     }
 }
 "#;
@@ -160,32 +162,44 @@ view detail(n: Note) {
         let row = of_kind(&items[0], "ui.ListRow")[0];
         assert_eq!(view.bound_value(&row.key), Some(Value::Bool(true)));
 
-        // A notebook with nothing in it says so. Its primary action takes a title the empty
-        // state has none of: it offers it as its form, which asks for the title.
+        // A notebook with nothing in it says so, and its primary action takes a title the
+        // person has none of to give: the bar offers it as its form, which asks for the title.
         let empty = rt.create("Notebook").unwrap();
         let view = rt
             .open_view(&me(), &app.view("notebook"), vec![Value::resource(&empty)])
             .unwrap();
         let state = of_kind(view.tree(), "ui.EmptyState")[0];
         assert_eq!(text_prop(state, "title"), "No notes yet");
-        assert_eq!(text_prop(state, "action"), "Add…", "{}", dump(state));
+        let add = of_kind(view.tree(), "ui.Button")
+            .into_iter()
+            .find(|button| button.props.get("label") == Some(&Value::text("Add…")))
+            .unwrap_or_else(|| panic!("the bar offers the primary: {}", dump(view.tree())));
+        assert_eq!(add.props.get("role"), Some(&Value::text("primary")));
     }
 
     #[test]
-    fn the_sort_is_view_state_and_the_places_the_item_types_filters_with_counts() {
+    fn the_sort_is_view_state_and_its_places_show_no_count() {
         let (rt, app, nb) = setup();
         let mut view = rt
             .open_view(&me(), &app.view("notebook"), vec![Value::resource(&nb)])
             .unwrap();
-        let counts = |tree: &UiNode| -> Vec<Value> {
+        // A place counts what it holds where its role says the count is one people read: the
+        // one waiting to be sorted, the one due. This type's places are not those, so they
+        // show no count.
+        let counts = |tree: &UiNode| -> Vec<Option<Value>> {
             ["all", "is:pinned"]
                 .iter()
-                .map(|place| node_with(tree, "ui.NavItem", "key", place).props["count"].clone())
+                .map(|place| {
+                    node_with(tree, "ui.NavItem", "key", place)
+                        .props
+                        .get("count")
+                        .cloned()
+                })
                 .collect()
         };
         let tree = view.tree();
         assert_eq!(text_prop(of_kind(tree, "ui.NavList")[0], "selected"), "all");
-        assert_eq!(counts(tree), [Value::Int(3), Value::Int(1)]);
+        assert_eq!(counts(tree), [None, None]);
         let checked = |tree: &UiNode, label: &str| {
             node_with(tree, "ui.MenuItem", "label", label)
                 .props
@@ -209,8 +223,8 @@ view detail(n: Note) {
         assert_eq!(titles(tree), ["Q3 plan"]);
         assert_eq!(
             counts(tree),
-            [Value::Int(3), Value::Int(1)],
-            "the counts do not depend on the filter shown"
+            [None, None],
+            "the places show no count whichever is chosen"
         );
         let title = node_with(tree, "ui.MenuItem", "label", "Title").key.clone();
         view.fire(&title, "choose").unwrap();
@@ -263,18 +277,24 @@ view detail(n: Note) {
             text_prop(of_kind(view.tree(), "choice")[0], "selected"),
             "all"
         );
-        let facts = of_kind(view.tree(), "ui.Property");
-        // The view's own facts, and nothing of the document's history.
-        let pairs: Vec<(String, Value)> = facts
-            .iter()
-            .map(|f| (text_prop(f, "label"), f.props["value"].clone()))
-            .collect();
+        // The page's facts are the chips its type's fields make, bound to those fields: the
+        // day it is due, which is a day a note need not hold.
+        let chip = |view: &tilolang_runtime::ViewInstance| -> Value {
+            let tree = view.tree();
+            let chips = of_kind(tree, "ui.DateField");
+            assert_eq!(chips.len(), 1, "one day fact: {}", dump(tree));
+            assert_eq!(chips[0].props.get("optional"), Some(&Value::Int(1)));
+            view.bound_value(&chips[0].key).expect("the chip is bound")
+        };
+        assert_eq!(chip(&view), Value::none(), "a note holds no day yet");
+        let plan = app.action("plan");
+        rt.invoke_action(&me(), (plan.as_str(), vec![Value::resource(&note.target)]))
+            .unwrap();
+        view.poll_patches().unwrap();
         assert_eq!(
-            pairs,
-            vec![
-                ("Title".to_string(), Value::text("Q3 plan")),
-                ("Pinned".to_string(), Value::Int(1)),
-            ]
+            chip(&view),
+            Value::some(Value::text("2026-11-02")),
+            "the chip shows the day the action set"
         );
     }
 }

@@ -1,16 +1,9 @@
-//! Presence slot coding for [`super::EnvelopeV2::PresenceBatch`].
+//! Presence batches for [`super::EnvelopeV2::PresenceBatch`].
 //!
-//! Successive presence messages in one slot — a pointer's moves, a caret's
-//! positions — repeat almost all of their bytes: the author key, the user
-//! and presence key, the colour. Each session remembers the last payload it
-//! received in each of its slots, and the relay sends the next payload in that
-//! slot as the bytes that changed between a kept prefix and a kept suffix.
-//! [`PresenceEncoder`] is the relay's half and the session reader's
-//! [`PresenceSlots`] the receiver's; both see every batch of one session in
-//! order, so their tables never diverge.
-
-use std::collections::HashMap;
-use std::sync::Arc;
+//! A session reads a batch's items in order and each item is a whole payload.
+//! Items still decode the slot coding an older relay wrote — a payload with
+//! its first and last bytes kept from the one before it in the same slot — so
+//! a session reads what a peer running an older build sends.
 
 use serde::{Deserialize, Serialize};
 use tilo_relay_client::frame::FrameError;
@@ -18,13 +11,12 @@ use tilo_relay_protocol::transport::MAX_FRAME_BYTES;
 
 use super::PRESENCE_BATCH_KIND;
 
-/// Slots one session's presence coding remembers: the relay reuses the
-/// least recently used one beyond this, and a reader refuses a higher index.
+/// Slots a session's presence reader remembers what an older relay coded
+/// against; a higher slot index is refused.
 pub const MAX_PRESENCE_SLOTS: usize = 256;
 
-/// Largest payload kept in a presence slot. A larger presence travels whole
-/// and unslotted, so a session's slot table stays within
-/// `MAX_PRESENCE_SLOTS * MAX_SLOTTED_PRESENCE_BYTES` (512 KiB).
+/// Largest payload an older relay kept in a presence slot; a coded item can
+/// never rebuild a larger one.
 pub const MAX_SLOTTED_PRESENCE_BYTES: usize = 2048;
 
 /// One presence payload in a [`super::EnvelopeV2::PresenceBatch`].
@@ -40,120 +32,6 @@ pub struct PresenceItem {
     pub keep_suffix: u32,
     #[serde(with = "serde_bytes")]
     pub middle: Vec<u8>,
-}
-
-/// Whose presence a slot holds on the relay: one author's slot in one room.
-/// Only the encoder sees it; the wire carries the session's slot index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PresenceSlotKey {
-    pub workspace_id: u64,
-    pub author: [u8; 32],
-    pub slot: u64,
-}
-
-/// The relay's half of one session's presence slots. It assigns each
-/// [`PresenceSlotKey`] a session slot (reusing the least recently used one
-/// past [`MAX_PRESENCE_SLOTS`]) and codes each payload against what the
-/// session holds there. It belongs to exactly one session and must code
-/// every item written to it, in the order written.
-#[derive(Default)]
-pub struct PresenceEncoder {
-    index: HashMap<PresenceSlotKey, u16>,
-    slots: Vec<EncodedSlot>,
-    clock: u64,
-}
-
-struct EncodedSlot {
-    key: PresenceSlotKey,
-    /// What the session holds in this slot now.
-    last: Arc<[u8]>,
-    used: u64,
-}
-
-impl PresenceEncoder {
-    /// Code `payload` for this session. `key` is `None` for presence that
-    /// is not latest-state, which travels whole.
-    pub fn item(&mut self, key: Option<PresenceSlotKey>, payload: &Arc<[u8]>) -> PresenceItem {
-        let whole = || PresenceItem {
-            slot: None,
-            keep_prefix: 0,
-            keep_suffix: 0,
-            middle: payload.to_vec(),
-        };
-        let Some(key) = key.filter(|_| payload.len() <= MAX_SLOTTED_PRESENCE_BYTES) else {
-            return whole();
-        };
-        self.clock = self.clock.saturating_add(1);
-        let index = match self.index.get(&key) {
-            Some(index) => usize::from(*index),
-            None => self.assign(key),
-        };
-        let (Ok(slot), Some(entry)) = (u16::try_from(index), self.slots.get_mut(index)) else {
-            return whole();
-        };
-        let (prefix, suffix) = common_ends(&entry.last, payload);
-        let (Ok(keep_prefix), Ok(keep_suffix)) = (u32::try_from(prefix), u32::try_from(suffix))
-        else {
-            return whole();
-        };
-        let middle = payload
-            .get(prefix..payload.len().saturating_sub(suffix))
-            .unwrap_or_default()
-            .to_vec();
-        entry.last = payload.clone();
-        entry.used = self.clock;
-        PresenceItem {
-            slot: Some(slot),
-            keep_prefix,
-            keep_suffix,
-            middle,
-        }
-    }
-
-    /// A session slot for `key`: a fresh one while fewer than
-    /// [`MAX_PRESENCE_SLOTS`] exist, else the least recently used. A reused
-    /// slot keeps its payload as the base, since the session still holds it.
-    fn assign(&mut self, key: PresenceSlotKey) -> usize {
-        let index = if self.slots.len() < MAX_PRESENCE_SLOTS {
-            self.slots.push(EncodedSlot {
-                key,
-                last: Arc::from(Vec::new()),
-                used: self.clock,
-            });
-            self.slots.len().saturating_sub(1)
-        } else {
-            let index = self
-                .slots
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, slot)| slot.used)
-                .map_or(0, |(index, _)| index);
-            if let Some(slot) = self.slots.get_mut(index) {
-                self.index.remove(&slot.key);
-                slot.key = key;
-            }
-            index
-        };
-        if let Ok(short) = u16::try_from(index) {
-            self.index.insert(key, short);
-        }
-        index
-    }
-}
-
-/// The longest common prefix of `base` and `next`, then the longest common
-/// suffix of what is left of both.
-fn common_ends(base: &[u8], next: &[u8]) -> (usize, usize) {
-    let prefix = base.iter().zip(next).take_while(|(a, b)| a == b).count();
-    let room = base.len().min(next.len()).saturating_sub(prefix);
-    let suffix = base
-        .iter()
-        .rev()
-        .zip(next.iter().rev())
-        .take(room)
-        .take_while(|(a, b)| a == b)
-        .count();
-    (prefix, suffix)
 }
 
 /// The session reader's half: what it last received in each slot.
@@ -210,7 +88,7 @@ pub fn encode_presence_batch(
         workspace_id: u64,
         items: &'a [PresenceItem],
     }
-    // Room for the length prefix, written once the length is known.
+    // Workspace for the length prefix, written once the length is known.
     let mut out = vec![0, 0, 0, 0, PRESENCE_BATCH_KIND];
     out = postcard::to_extend(
         &Fields {
@@ -234,80 +112,42 @@ pub fn encode_presence_batch(
 mod tests {
     use super::*;
 
-    fn key(slot: u64) -> PresenceSlotKey {
-        PresenceSlotKey {
-            workspace_id: 1,
-            author: [7; 32],
+    fn item(slot: Option<u16>, keep_prefix: u32, keep_suffix: u32, middle: &[u8]) -> PresenceItem {
+        PresenceItem {
             slot,
+            keep_prefix,
+            keep_suffix,
+            middle: middle.to_vec(),
         }
     }
 
-    fn payload(bytes: &[u8]) -> Arc<[u8]> {
-        Arc::from(bytes.to_vec())
-    }
-
+    /// An older relay sent a slot's payload as the bytes that changed: the
+    /// reader rebuilds it from what it holds in that slot.
     #[test]
-    fn a_slot_sends_only_what_changed_and_the_reader_rebuilds_it() {
-        let mut encoder = PresenceEncoder::default();
+    fn a_coded_item_rebuilds_the_payload_it_names() {
         let mut reader = PresenceSlots::default();
-        let first = payload(b"author|user|key|x=0100,y=0200|ts=1|teal");
-        let second = payload(b"author|user|key|x=0103,y=0202|ts=2|teal");
-        let item = encoder.item(Some(key(9)), &first);
-        assert_eq!(item.middle.len(), first.len(), "nothing to keep yet");
-        assert_eq!(reader.expand(item).unwrap(), first.to_vec());
-        let item = encoder.item(Some(key(9)), &second);
-        assert_eq!(item.slot, Some(0));
-        assert!(
-            item.middle.len() < 15,
-            "{} changed bytes",
-            item.middle.len()
-        );
-        assert_eq!(reader.expand(item).unwrap(), second.to_vec());
-        for next in [
-            &b"author|x|teal"[..],
-            b"author|user|key|x=1|y=2|z=3|ts=33|teal",
-        ] {
-            let item = encoder.item(Some(key(9)), &payload(next));
-            assert_eq!(reader.expand(item).unwrap(), next.to_vec());
-        }
-        // Identical again: nothing in the middle.
-        let same = payload(b"author|x|teal");
-        let _ = reader.expand(encoder.item(Some(key(9)), &same)).unwrap();
-        let item = encoder.item(Some(key(9)), &same);
-        assert!(item.middle.is_empty());
-        assert_eq!(reader.expand(item).unwrap(), same.to_vec());
-    }
-
-    #[test]
-    fn unslotted_and_oversized_presence_travels_whole() {
-        let mut encoder = PresenceEncoder::default();
-        let mut reader = PresenceSlots::default();
-        let event = payload(b"heartbeat");
-        let item = encoder.item(None, &event);
         assert_eq!(
-            (item.slot, item.keep_prefix, item.keep_suffix),
-            (None, 0, 0)
+            reader.expand(item(Some(0), 0, 0, b"author|x=01")).unwrap(),
+            b"author|x=01"
         );
-        assert_eq!(reader.expand(item).unwrap(), event.to_vec());
-        let big = payload(&vec![3; MAX_SLOTTED_PRESENCE_BYTES + 1]);
-        let item = encoder.item(Some(key(1)), &big);
-        assert_eq!(item.slot, None);
-        assert_eq!(reader.expand(item).unwrap(), big.to_vec());
+        assert_eq!(
+            reader.expand(item(Some(0), 10, 0, b"7")).unwrap(),
+            b"author|x=07"
+        );
+        assert_eq!(
+            reader.expand(item(Some(0), 6, 2, b"y=")).unwrap(),
+            b"authory=07"
+        );
     }
 
+    /// A whole payload is read as it stands, with no slot remembered.
     #[test]
-    fn slots_past_the_limit_reuse_the_least_recent_and_stay_in_step() {
-        let mut encoder = PresenceEncoder::default();
+    fn a_whole_payload_reads_as_itself() {
         let mut reader = PresenceSlots::default();
-        let total = u64::try_from(MAX_PRESENCE_SLOTS).unwrap() + 40;
-        for round in 0..3u8 {
-            for slot in 0..total {
-                let body = payload(format!("slot {slot} round {round}").as_bytes());
-                let item = encoder.item(Some(key(slot)), &body);
-                assert!(usize::from(item.slot.unwrap()) < MAX_PRESENCE_SLOTS);
-                assert_eq!(reader.expand(item).unwrap(), body.to_vec());
-            }
-        }
+        assert_eq!(
+            reader.expand(item(None, 0, 0, b"heartbeat")).unwrap(),
+            b"heartbeat"
+        );
     }
 
     #[test]

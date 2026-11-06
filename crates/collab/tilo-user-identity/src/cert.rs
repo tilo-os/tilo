@@ -244,6 +244,20 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
 }
 
 impl DeviceCapabilities {
+    /// Whether these capabilities grant nothing `held` does not: a renewal
+    /// may narrow what a device may do, never widen it. A certificate that
+    /// stops being foreign may not become so, and vice versa.
+    #[must_use]
+    pub fn grants_no_more_than(&self, held: &Self) -> bool {
+        let within = |renewed: bool, held: bool| !renewed || held;
+        within(self.can_own_workspaces, held.can_own_workspaces)
+            && within(self.can_admit_devices, held.can_admit_devices)
+            && within(self.can_act_as_host, held.can_act_as_host)
+            && within(self.can_read_all_workspaces, held.can_read_all_workspaces)
+            && within(self.can_administer_devices, held.can_administer_devices)
+            && (self.foreign || !held.foreign)
+    }
+
     /// A device the person uses themselves on a Tilo-controlled system: it
     /// owns workspaces and is neither a host nor foreign. The person's
     /// devices of this kind find, dial and trust each other.
@@ -405,6 +419,22 @@ impl DeviceCert {
     /// `now_ns`. A cert with `expires_at_ns == None` never expires.
     pub fn is_expired_at(&self, now_ns: u64) -> bool {
         matches!(self.expires_at_ns, Some(e) if now_ns >= e)
+    }
+
+    /// Whether `self` is `held` reissued for the same device by the same
+    /// person's root, later, granting nothing more: the one certificate that
+    /// replaces another instead of adding a device. Validity and signature
+    /// are the caller's to check where each certificate is taken in.
+    ///
+    /// This is the single rule a workspace, a fleet and a person's devices
+    /// share: a renewal keeps the device the member it was, so it may never
+    /// widen what it grants or come from another root.
+    #[must_use]
+    pub fn renews(&self, held: &Self) -> bool {
+        self.device_public_key == held.device_public_key
+            && self.user_public_key == held.user_public_key
+            && self.issued_at_ns > held.issued_at_ns
+            && self.capabilities.grants_no_more_than(&held.capabilities)
     }
 }
 

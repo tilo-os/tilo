@@ -44,9 +44,11 @@
 //! the person can't `..` out of them, and every chosen path is checked
 //! against their real paths again before it is answered.
 
+mod places;
 mod reading;
 pub mod semantic;
 
+use places::default_places;
 use reading::{Kind, Real};
 
 use crate::widget::ModelPath;
@@ -182,100 +184,6 @@ impl Place {
             |key| crate::i18n::widget_format(key, &[]),
         )
     }
-}
-
-/// Recent (when there is something to show), Home, the usual folders under
-/// it that are `present` (read off the UI thread), then every other
-/// accessible root (the workspace folders), each only if the caller may
-/// enter it.
-fn default_places(
-    roots: &[PathBuf],
-    home: Option<&Path>,
-    recent: bool,
-    present: &[PathBuf],
-) -> Vec<Place> {
-    let allowed = |p: &Path| roots.iter().any(|root| p.starts_with(root));
-    let mut places: Vec<Place> = Vec::new();
-    if recent {
-        places.push(Place {
-            key: Some("widget-filepicker-place-recent"),
-            name: String::new(),
-            path: PathBuf::new(),
-            icon: Icon::History,
-            recent: true,
-        });
-    }
-    if let Some(home) = home.filter(|h| h.is_absolute()).map(Path::to_path_buf) {
-        let well_known = [
-            (
-                None,
-                "widget-filepicker-place-home",
-                Icon::Home,
-                home.clone(),
-            ),
-            (
-                Some("Documents"),
-                "widget-filepicker-place-documents",
-                Icon::FileText,
-                home.join("Documents"),
-            ),
-            (
-                Some("Downloads"),
-                "widget-filepicker-place-downloads",
-                Icon::Download,
-                home.join("Downloads"),
-            ),
-            (
-                Some("Pictures"),
-                "widget-filepicker-place-pictures",
-                Icon::Image,
-                home.join("Pictures"),
-            ),
-            (
-                Some("Music"),
-                "widget-filepicker-place-music",
-                Icon::Music,
-                home.join("Music"),
-            ),
-            (
-                Some("Videos"),
-                "widget-filepicker-place-videos",
-                Icon::Video,
-                home.join("Videos"),
-            ),
-        ];
-        for (folder, key, icon, path) in well_known {
-            if folder.is_some() && !present.contains(&path) {
-                continue;
-            }
-            if allowed(&path) {
-                places.push(Place {
-                    key: Some(key),
-                    name: String::new(),
-                    path,
-                    icon,
-                    recent: false,
-                });
-            }
-        }
-    }
-    for root in roots {
-        if places.iter().any(|p| &p.path == root) {
-            continue;
-        }
-        let name = root.file_name().map_or_else(
-            || root.to_string_lossy().into_owned(),
-            |n| n.to_string_lossy().into_owned(),
-        );
-        places.push(Place {
-            key: None,
-            name,
-            path: root.clone(),
-            icon: Icon::Folder,
-            recent: false,
-        });
-    }
-    places
 }
 
 /// The Fluent key of a toolkit message, resolved in the desktop's language.
@@ -728,6 +636,10 @@ pub struct FilePicker {
     /// in both paint and accessibility semantics.
     focus: Option<PickerFocus>,
     has_keyboard_focus: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl FilePicker {
@@ -755,6 +667,7 @@ impl FilePicker {
         let places = default_places(&roots, None, false, &[]);
         let metrics = PickerMetrics::default();
         let mut me = Self {
+            dirty: true,
             places,
             place_cursor: None,
             hover_place: None,
@@ -1017,6 +930,7 @@ impl FilePicker {
     /// Put `name` in the filename field with the name selected but not its
     /// extension, so typing replaces the name and keeps the type.
     fn set_filename(&mut self, name: &str) {
+        self.dirty = true;
         self.name_error = None;
         self.filename.set_text(name);
         let stem = name.rfind('.').filter(|&i| i > 0).unwrap_or(name.len());
@@ -1037,6 +951,7 @@ impl FilePicker {
 
     /// Set the selection without a click, for tests/hosts.
     pub fn set_selection(&mut self, index: usize) {
+        self.dirty = true;
         if index < self.entries.len() {
             self.selection.select_only(index);
             self.scroll_to(index);
@@ -1861,6 +1776,7 @@ impl FilePicker {
 
     /// Hand the table the rows, when they changed, and the selection.
     fn sync_table(&mut self) {
+        self.dirty = true;
         if self.rows_dirty {
             self.rows_dirty = false;
             let elsewhere = self.listing != Listing::Folder;
@@ -2168,6 +2084,7 @@ impl FilePicker {
     /// Each text field holds the caret exactly while it is the focused
     /// control of a focused picker.
     fn sync_text_focus(&mut self) {
+        self.dirty = true;
         let on = |control| self.has_keyboard_focus && self.focus == Some(control);
         let (filename, search, location) = (
             on(PickerFocus::Filename),
@@ -2317,6 +2234,7 @@ impl FilePicker {
 
     /// Choose filter `index` from the type menu.
     pub fn set_filter(&mut self, index: usize) {
+        self.dirty = true;
         if index < self.filters.len() && index != self.active_filter {
             self.active_filter = index;
             self.selection.clear();
@@ -2883,6 +2801,7 @@ impl Widget for FilePicker {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         if self.replace_prompt.is_some() {
             self.on_replace_prompt_event(event, ctx);
             return;
@@ -2957,6 +2876,8 @@ impl Widget for FilePicker {
             );
         }
     }
+
+    crate::redraw_flag!();
 
     fn name(&self) -> &'static str {
         "FilePicker"
@@ -3184,6 +3105,7 @@ impl Widget for FilePicker {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.has_keyboard_focus = focused;
         if focused {
             self.ensure_valid_focus();

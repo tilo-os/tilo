@@ -43,6 +43,22 @@ pub(crate) struct Sheets {
     pub(crate) lock_view: Option<LockSeat>,
 }
 
+/// What this session offers of locking and the computer's power, for the
+/// power menu and for the rows the Tilo menu and search list: the host's
+/// power is the host's, so a session in a window of another desktop offers
+/// no switching user, suspending or restarting, and a session that could
+/// not be left again offers no locking. Something to show the lock is
+/// always there — the lock screen's app, or the session's own view of it —
+/// so a password that can be checked is all locking needs.
+pub(crate) fn power_offers(options: &Options) -> tilo_sheets::power::Offers {
+    tilo_sheets::power::Offers {
+        user_switching: options.machine.is_owned(),
+        host_power: options.machine.is_owned(),
+        locking: options.verifier.available(),
+        hangs_from: 0.0,
+    }
+}
+
 pub(crate) fn mount_sheets(
     compositor: &mut Compositor,
     doors: &mut Doors,
@@ -58,17 +74,7 @@ pub(crate) fn mount_sheets(
         options,
     );
     if let Some(power) = &power {
-        // The host's power is the host's: a session in a window offers no
-        // switching user, suspending or restarting, and a session that could
-        // not be left again offers no locking. Something to show the lock is
-        // always there — the lock screen's app, or the session's own view of
-        // it — so a password that can be checked is all locking needs.
-        power.set_offers(tilo_sheets::power::Offers {
-            user_switching: options.machine.is_owned(),
-            host_power: options.machine.is_owned(),
-            locking: options.verifier.available(),
-            hangs_from: 0.0,
-        });
+        power.set_offers(power_offers(options));
     }
     let workspace_settings = mount_sheet(
         compositor,

@@ -90,11 +90,13 @@ fn workspace_menu(tree: &DesktopTree) -> WorkspaceMenuModel {
             WorkspaceAction {
                 id: "new-workspace".into(),
                 title: "New workspace".into(),
+                icon: Some(ui::icons::Icon::Plus),
                 destructive: false,
             },
             WorkspaceAction {
                 id: "join-workspace".into(),
-                title: "Join a workspace…".into(),
+                title: "Join a workspace".into(),
+                icon: Some(ui::icons::Icon::Link),
                 destructive: false,
             },
         ],

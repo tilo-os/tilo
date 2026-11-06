@@ -20,7 +20,7 @@ use tilo_connector::BlobAccess as _;
 use tilo_peer_state::peer_handle;
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
 use tilo_relay::room_bots::installed::FsBlobs;
-use tilo_relay::rooms::RoomSummary;
+use tilo_relay::workspaces::WorkspaceSummary;
 use tilo_relay::{Relay, RelayClient, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -41,10 +41,13 @@ async fn device_endpoint(device: &TestDevice) -> iroh::Endpoint {
 async fn member_in_a_new_room(
     relay: &Relay,
     member: &TestDevice,
-) -> (RoomSummary, RelayCoeditSession) {
-    let rooms = relay.rooms().unwrap();
-    let room = rooms.create("Bridged").await.unwrap();
-    rooms.enter(&room.room, &member.cert).await.unwrap();
+) -> (WorkspaceSummary, RelayCoeditSession) {
+    let workspaces = relay.workspaces().unwrap();
+    let room = workspaces.create("Bridged").await.unwrap();
+    workspaces
+        .enter(&room.workspace, &member.cert)
+        .await
+        .unwrap();
     let client = RelayClient::connect_to_pinned_host(
         device_endpoint(member).await,
         relay.node_addr(),
@@ -87,7 +90,7 @@ async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
     let avatar: Vec<u8> = (0..300_000_u32).map(|i| (i % 251) as u8).collect();
     let hash = blobs.store(&avatar).unwrap();
     relay
-        .rooms()
+        .workspaces()
         .expect("the host governs rooms")
         .serve_content(blobs);
 
@@ -98,7 +101,7 @@ async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
         postcard::to_stdvec(&NeighbourMsg::RecordContentWant {
             requester,
             app_id: CHAT.into(),
-            cluster_id: room.room.clone(),
+            cluster_id: room.workspace.clone(),
             hash: hash.into(),
         })
         .unwrap()
@@ -146,7 +149,7 @@ async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
                     cluster_id.as_str(),
                     piece_hash.as_str()
                 ),
-                (requester, CHAT, room.room.as_str(), hash.as_str()),
+                (requester, CHAT, room.workspace.as_str(), hash.as_str()),
                 "only the asked-for avatar is answered"
             );
             assert_eq!(offset, received.len() as u64, "pieces arrive in order");

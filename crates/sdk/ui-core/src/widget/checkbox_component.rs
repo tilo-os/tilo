@@ -1,6 +1,6 @@
 //! [`Checkbox`] as a described component.
 
-use crate::component::{Bound, Component, Described, Value};
+use crate::component::{Bound, Component, Described, Event, Value};
 
 use super::Checkbox;
 
@@ -20,6 +20,10 @@ pub struct CheckboxProps {
     pub indeterminate: bool,
     /// Whether it can be chosen now.
     pub enabled: bool,
+    /// It was pressed: what a mark is, in the app's words. A task and every step under it are
+    /// done in one thing to undo; with no `check`, a press changes the bound value.
+    #[component(event)]
+    pub check: Event,
     /// The pace its mark plays at: the theme's unless it says otherwise.
     pub motion: crate::motion::Feel,
 }
@@ -31,6 +35,7 @@ impl Default for CheckboxProps {
             label: None,
             indeterminate: false,
             enabled: true,
+            check: Event::None,
             motion: crate::motion::Feel::Standard,
         }
     }
@@ -45,14 +50,19 @@ impl Described for Checkbox {
             label,
             indeterminate,
             enabled,
+            check,
             motion,
         } = props;
-        let edits = value.clone();
         let mut boxed = Self::from_state(&value.state)
-            .on_change(move |marked| edits.edited(Value::Bool(marked)))
             .with_id(key)
             .with_enabled(enabled)
             .with_feel(motion);
+        if check.is_none() {
+            let edits = value.clone();
+            boxed = boxed.on_change(move |marked| edits.edited(Value::Bool(marked)));
+        } else {
+            boxed = boxed.on_change(move |_| check.fire(None));
+        }
         if let Some(label) = label {
             boxed = boxed.with_label(label);
         }

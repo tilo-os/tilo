@@ -38,8 +38,11 @@ fn calendar_literals_are_dates_times_and_months() {
         "E105",
         "fn f(c: C) -> Bool {\n    c.due == .some(2026-08)\n}",
     );
+    // A time of no zone is a wall-clock time: the person's own time of day, resolved where it
+    // runs.
+    ok("fn f() -> Time {\n    2026-06-29T07:02\n}");
+    ok("fn f() -> Time {\n    2026-06-29T07:02:05\n}");
     expect("E004", "fn f() -> Date {\n    2026-02-30\n}");
-    expect("E004", "fn f() -> Time {\n    2026-06-29T07:02\n}");
     expect("E020", "fn f() -> Date {\n    2026-06-29T07:02Z\n}");
     let src = format!("app t.x \"X\"\n{C}fn f() -> Time {{\n    2026-06-29T07:02Z\n}}\n");
     let printed = tilolang::print_module(&tilolang::parse(&src).expect("parses"));
@@ -158,6 +161,20 @@ fn an_optional_view_renders_when_given() {
     );
     ok(
         "view frame<R>(of: R, extra: Option<View> = .none) {\n    stack {\n        if let e = extra {\n            e\n        } else {\n            text(\"nothing\")\n        }\n    }\n}\nview w(c: C) {\n    frame(c)\n}",
+    );
+}
+
+#[test]
+fn a_row_block_names_the_values_it_draws_with() {
+    // A view of items that draws a row with the item it stands under takes a block naming
+    // both: the item and the one it stands under.
+    ok(
+        "view listed<T>(items: List<T>, row: (T, Option<T>) -> View) {\n    stack {\n        for x in items {\n            row(x, .none)\n        }\n    }\n}\nview w(c: C) {\n    listed(c.items) { (x, under) ->\n        text(x.t)\n    }\n}",
+    );
+    // A block naming another number of values is refused, saying how many the view takes.
+    expect(
+        "E022",
+        "view listed<T>(items: List<T>, row: (T, Option<T>) -> View) {\n    stack {\n        for x in items {\n            row(x, .none)\n        }\n    }\n}\nview w(c: C) {\n    listed(c.items) { x ->\n        text(x.t)\n    }\n}",
     );
 }
 
@@ -287,8 +304,53 @@ fn sort_by_takes_a_key_path_that_may_be_absent() {
 }
 
 #[test]
+fn a_moment_reads_as_the_day_it_falls_on() {
+    // `t.day()` is the day a moment falls on for the person, as `today` is the day it is: a day
+    // a list groups its rows by, and a date a row shows.
+    ok("fn f(c: C) -> Date {\n    let at = c.at ?? 2026-06-29T07:02Z\n    at.day()\n}");
+    ok("action a(c: C) {\n    c.due = now.day()\n    c.at = now\n}");
+    ok(
+        "view w(c: C) {\n    ui.VirtualList {\n        for x in c.items {\n            let heading: Option<Date> = if let at = x.at { .some(at.day()) } else { .none }\n            ui.ListItem(item: x, group: heading) {\n            }\n        }\n    }\n}",
+    );
+    // A day's `day` is the day of its month, and a moment's is the day it falls on.
+    expect("E020", "fn f(d: Date) -> Date {\n    d.day()\n}");
+    expect("E020", "fn f(t: Time) -> Int {\n    t.day()\n}");
+    // The names the language used before are gone, with no aliases left behind.
+    expect(
+        "E014",
+        "action a(c: C) {\n    c.due = .some(day_of(now))\n}",
+    );
+    expect(
+        "E014",
+        "action a(c: C) {\n    c.due = .some(dated(\"tomorrow\", now))\n}",
+    );
+}
+
+#[test]
+fn descendants_and_ancestors_follow_the_parent_an_item_names() {
+    const TREE: &str = "type N {\n    p: Option<N> = .none\n    items: Collection<N>\n}\n";
+    // The items under one, and the ones it is under: a tree the list itself holds.
+    ok(&format!(
+        "{TREE}fn f(all: List<N>, n: N) -> List<N> {{\n    all.descendants(n, x -> x.p)\n}}"
+    ));
+    ok(&format!(
+        "{TREE}fn f(n: N, t: N) -> Bool {{\n    n.items.ancestors(t, .p).any(a -> a == t)\n}}"
+    ));
+    // An item's parent is an Option of the item, and the call names one to start from.
+    expect(
+        "E051",
+        "type N {\n    p: Option<N> = .none\n}\nfn f(all: List<N>) -> List<N> {\n    all.descendants(.p)\n}",
+    );
+    expect(
+        "E020",
+        "type N {\n    t: Text\n}\nfn f(all: List<N>, n: N) -> List<N> {\n    all.descendants(n, x -> x.t)\n}",
+    );
+}
+
+#[test]
 fn a_ui_let_writes_the_type_its_value_is_read_as() {
-    // What `std.rows` writes: a heading that is absent when the app names no group.
+    // What `std.rows` writes: a heading of the key the caller groups by, absent when the item
+    // names none.
     ok(
         "view w(c: C) {\n    ui.VirtualList {\n        let heading: Option<Date> = if let d = c.due { d } else { .none }\n        ui.ListItem(item: c, group: heading) {\n        }\n    }\n}",
     );
@@ -296,6 +358,36 @@ fn a_ui_let_writes_the_type_its_value_is_read_as() {
     expect(
         "E020",
         "view w(c: C) {\n    ui.VirtualList {\n        let heading = if let d = c.due { d } else { .none }\n        ui.ListItem(item: c, group: heading) {\n        }\n    }\n}",
+    );
+}
+
+#[test]
+fn a_function_argument_binds_the_type_its_result_names() {
+    // The key a list groups by is whatever the caller reads: `.due` makes its heading a day
+    // the host presents as one, `x -> .some(x.t)` the text it is. A template's type parameter
+    // is not a variable, so what the function makes is read where the call passes it.
+    const ROWS: &str = "view rows<T, K>(items: List<T>, group: Option<(T) -> Option<K>> = .none) {\n    ui.VirtualList {\n        for x in items {\n            let heading: Option<K> = if let g = group { g(x) } else { .none }\n            ui.ListItem(item: x, group: heading) {\n            }\n        }\n    }\n}\n";
+    let compiled = |rest: &str| {
+        crate::common::compile_with(&format!("app t.x \"X\"\n{C}{ROWS}{rest}"), &[])
+            .unwrap_or_else(|d| panic!("{rest}\n{d:#?}"))
+    };
+    let day = compiled("view w(c: C) {\n    rows(c.items, group: .due)\n}");
+    let has = |name: &str| day.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    assert!(has("group:as"), "a day's heading is dated for the host");
+    crate::common::validate(&day.wasm);
+    let word = compiled("view w(c: C) {\n    rows(c.items, group: x -> .some(x.t))\n}");
+    let has = |name: &str| word.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    assert!(!has("group:as"), "a word's heading is the word it is");
+    crate::common::validate(&word.wasm);
+    // A list that groups nothing names no key at all, and rows keep no heading.
+    let plain = compiled("view w(c: C) {\n    rows(c.items)\n}");
+    let has = |name: &str| plain.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    assert!(!has("group"), "a plain list has no heading");
+    crate::common::validate(&plain.wasm);
+    // A function that makes something else than the key is told so.
+    expect(
+        "E020",
+        &format!("{ROWS}view w(c: C) {{\n    rows(c.items, group: x -> x.t)\n}}"),
     );
 }
 
@@ -330,10 +422,9 @@ fn an_action_label_reads_its_arguments_where_it_is_applied() {
 
 #[test]
 fn a_slot_of_a_component_takes_a_view_that_is_that_component() {
-    let base =
-        "type Card {\n    title: Text (title)\n}\ntype B {\n    cards: Collection<Card>\n}\n";
+    let base = "type Card {\n    title: Text (title)\n}\ntype B {\n    cards: Collection<Card>\n}\nview line(c: Card) {\n    row(c.title)\n}\n";
     let good = format!(
-        "{base}view tile(c: Card) {{\n    ui.BoardCard(c, title: c.title)\n}}\nview board(b: B) {{\n    ui.Board {{\n        ui.BoardLane(b, title: \"All\") {{\n            for c in b.cards {{\n                tile(c)\n            }}\n        }}\n    }}\n}}"
+        "{base}view tile(c: Card) {{\n    ui.BoardCard(c) {{\n        line(c)\n    }}\n}}\nview board(b: B) {{\n    ui.Board {{\n        ui.BoardLane(b, title: \"All\") {{\n            for c in b.cards {{\n                tile(c)\n            }}\n        }}\n    }}\n}}"
     );
     assert!(codes(&good).is_empty(), "{:?}", codes(&good));
     let bad = format!(

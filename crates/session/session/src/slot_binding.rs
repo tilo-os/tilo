@@ -163,7 +163,11 @@ impl Session {
                 .map(|(name, value)| (name.clone(), value.clone()))
                 .collect();
             doors
-                .invoke(&ActionAddress::new(&ask.resource, &ask.action), &arguments)
+                .invoke(
+                    &ActionAddress::new(&ask.resource, &ask.action),
+                    &arguments,
+                    &mut tilo_surface_host::Look::none(),
+                )
                 .map(drop)
                 .map_err(|error| error.to_string())
         });

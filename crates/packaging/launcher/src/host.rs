@@ -48,14 +48,14 @@
 //! subject to them.
 //!
 //! And the lifetime. Like every packaged app, each launch runs in its own
-//! cgroup: the compositor's spawner starts it born in one of the session's
-//! delegated app tree ([`crate::app_cgroup`]), and a launcher started any
-//! other way asks for a transient `app-tilo-<id>-<pid>.scope` of the systemd
-//! user manager (see [`crate::scope`]). A logout or a compositor crash stops
-//! the application and everything it forked, `cgroup.kill` ends it even when
-//! it left its process tree, and resource accounting and OOM handling see one
-//! app as one unit. A manager that is unreachable or refuses costs the
-//! cgroup, never the launch.
+//! cgroup: the launcher moves itself into a transient
+//! `app-tilo-<id>-<pid>.scope` of the systemd user manager before it forks the
+//! program (see [`crate::scope`]), so this process and the program are in it
+//! together. A logout or a compositor crash stops the application and
+//! everything it forked, `cgroup.kill` ends it even when it left its process
+//! tree, and resource accounting and OOM handling see one app as one unit. A
+//! manager that is unreachable or refuses costs the cgroup, never the
+//! launch.
 
 use std::os::unix::process::CommandExt as _;
 use std::path::Path;
@@ -64,6 +64,16 @@ use std::time::Duration;
 
 use crate::scope;
 use desktop_entry::launch::{HostLaunch, HostLaunchError, LaunchEnv, plan_by_id, plan_file};
+
+/// The `Name[xx]` candidates of the person's interface language: the entry a
+/// host app starts from is named in it, so a German machine with English
+/// chosen says `Files` rather than `Dateien` in what it reports.
+#[must_use]
+pub fn locales() -> Vec<String> {
+    desktop_entry::locale::language_candidates(
+        settings_store::appearance::preferred_language().as_deref(),
+    )
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
@@ -94,7 +104,7 @@ impl HostError {
 /// [`HostError::Spawn`] if the resolved program cannot be spawned or waited
 /// on.
 pub fn run_host(desktop_id: &str, env: &LaunchEnv) -> Result<ExitStatus, HostError> {
-    let launch = plan_host(desktop_id, env)?;
+    let launch = plan_host(desktop_id, env, &locales())?;
     spawn(&launch)
 }
 
@@ -107,8 +117,12 @@ pub fn run_host(desktop_id: &str, env: &LaunchEnv) -> Result<ExitStatus, HostErr
 ///
 /// Returns [`HostError::Plan`] if `desktop_id` does not resolve to an
 /// installed `.desktop` entry.
-pub fn plan_host(desktop_id: &str, env: &LaunchEnv) -> Result<HostLaunch, HostError> {
-    Ok(plan_by_id(desktop_id, env)?)
+pub fn plan_host(
+    desktop_id: &str,
+    env: &LaunchEnv,
+    locales: &[String],
+) -> Result<HostLaunch, HostError> {
+    Ok(plan_by_id(desktop_id, env, locales)?)
 }
 
 /// [`plan_host`] for a desktop file named by path, such as an XDG autostart entry.
@@ -116,8 +130,12 @@ pub fn plan_host(desktop_id: &str, env: &LaunchEnv) -> Result<HostLaunch, HostEr
 /// # Errors
 ///
 /// Returns [`HostError::Plan`] if the file is unreadable or not a runnable entry.
-pub fn plan_host_file(path: &std::path::Path, env: &LaunchEnv) -> Result<HostLaunch, HostError> {
-    Ok(plan_file(path, env)?)
+pub fn plan_host_file(
+    path: &std::path::Path,
+    env: &LaunchEnv,
+    locales: &[String],
+) -> Result<HostLaunch, HostError> {
+    Ok(plan_file(path, env, locales)?)
 }
 
 /// [`plan_host`] for a program file run by itself, such as a downloaded
@@ -149,8 +167,8 @@ pub fn make_runnable(path: &Path) -> Result<(), HostError> {
 /// waited on.
 pub fn spawn(launch: &HostLaunch) -> Result<ExitStatus, HostError> {
     crate::chromium_frame::prepare(launch);
-    // Started by the compositor's spawner, it was born in its app cgroup and
-    // asks the manager for nothing.
+    // A launcher already inside an app's cgroup (an app running a program of
+    // its own) stays in it and asks the manager for nothing.
     let busctl = Path::new(scope::BUSCTL);
     let ask_manager = busctl.is_file() && !crate::app_cgroup::current_is_app_cgroup();
     spawn_with(launch, ask_manager.then_some(busctl), scope::JOIN_TIMEOUT)
@@ -307,7 +325,7 @@ mod tests {
             "[Desktop Entry]\nType=Application\nName=Probe\nExec=sh -c \"exit 7\"\n",
         )
         .expect("write the probe entry");
-        let launch = plan_host_file(&entry, &LaunchEnv::default()).expect("the probe plans");
+        let launch = plan_host_file(&entry, &LaunchEnv::default(), &[]).expect("the probe plans");
         let stand_in = |name: &str, status: u8| {
             let path = dir.path().join(name);
             std::fs::write(

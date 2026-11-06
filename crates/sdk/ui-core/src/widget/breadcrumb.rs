@@ -71,6 +71,10 @@ pub struct Breadcrumb {
     /// trail is a window's location.
     role: TextRole,
     rect: Rect,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Breadcrumb {
@@ -78,6 +82,7 @@ impl Breadcrumb {
     /// rendered non-interactively; everything before it is clickable.
     pub fn new(segments: Vec<String>) -> Self {
         Self {
+            dirty: true,
             segments,
             on_navigate: None,
             choice: None,
@@ -650,6 +655,7 @@ impl Widget for Breadcrumb {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical = ctx.logical(position);
@@ -711,6 +717,14 @@ impl Widget for Breadcrumb {
             }
             _ => {}
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

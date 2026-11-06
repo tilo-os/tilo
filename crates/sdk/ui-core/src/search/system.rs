@@ -1035,6 +1035,21 @@ pub fn command_entries<Row: SearchRow>(groups: &[KindGroup<Row>]) -> Vec<Command
     }
     entries
 }
+
+/// Whether a person may take `spec` from a palette row now: offered to
+/// people, available in the window's state, and asking no more than a row can
+/// collect ([`tilo_actions::ActionSpec::takes_a_row_answer`]).
+///
+/// The one rule every palette lists by, so the desktop's window search and a
+/// window's own palette offer the same commands; an action that fails it is
+/// not listed at all rather than listed disabled. What a row cannot collect
+/// (a record, a person, several arguments) is picked where it lives, by the
+/// surface that owns that pick.
+#[must_use]
+pub fn a_row_a_person_can_take(spec: &tilo_actions::ActionSpec) -> bool {
+    spec.reaches_people() && spec.contract.availability.is_available() && spec.takes_a_row_answer()
+}
+
 pub fn icon_for_kind(kind: &ResourceKind) -> crate::icons::Icon {
     use crate::icons::Icon;
     use ResourceKind as K;

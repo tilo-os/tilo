@@ -14,13 +14,12 @@ pub struct Overlays {
     pub collaborators: bool,
     pub workspace_activity: bool,
     pub ws_settings: bool,
-    pub clock: bool,
 }
 pub struct State {
     pub tree: DesktopTree,
     pub overlays: Overlays,
     pub glance: ActivityGlance,
-    pub clock_activity: Option<ClockActivity>,
+    pub activities: Vec<ui::live_activity::Summary>,
     pub active_exposures: Vec<ActiveExposure>,
     pub watching: u32,
     pub intents: Vec<ChromeIntent>,
@@ -62,7 +61,7 @@ impl FixtureChrome {
             tree,
             overlays: Overlays::default(),
             glance: ActivityGlance::default(),
-            clock_activity: None,
+            activities: Vec::new(),
             active_exposures: Vec::new(),
             watching: 0,
             intents: Vec::new(),
@@ -92,10 +91,9 @@ impl DesktopChromeSource for FixtureChrome {
             overlays: ChromeOverlays {
                 overview: state.overlays.overview,
                 ws_settings: state.overlays.ws_settings,
-                clock: state.overlays.clock,
             },
             activity_glance: state.glance.clone(),
-            clock_activity: state.clock_activity.clone(),
+            activities: state.activities.clone(),
             active_exposures: state.active_exposures.clone(),
             watching: state.watching,
             own: state.own.clone(),
@@ -120,7 +118,6 @@ impl DesktopChromeSource for FixtureChrome {
             }
             // History opens as a tab the host places; no overlay moves.
             ChromeIntent::ShowActivity(_) => state.overlays.collaborators = false,
-            ChromeIntent::HideClock => state.overlays.clock = false,
             ChromeIntent::SwitchWorkspace(delta) => {
                 let Some(index) = state
                     .tree

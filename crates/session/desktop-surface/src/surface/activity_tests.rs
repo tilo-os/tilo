@@ -49,6 +49,8 @@ impl TileSource for Activity {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         })
     }
 }
@@ -148,6 +150,8 @@ impl Served {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         };
         let tree = seed_tree(&mut minter, "Desk", vec![tab]);
         let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Activity));

@@ -23,7 +23,16 @@ scenario "the default shell on a desk" {
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
     s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
-    s.dock_items.insert(DockItem(key: "chat", title: "Chat", icon: "message-square", running: true, badge: 2, attention: true))
+    s.dock_items.insert(
+        DockItem(
+            key: "chat",
+            title: "Chat",
+            icon: "message-square",
+            running: true,
+            badge: 2,
+            attention: true,
+        ),
+    )
     s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
 }
 
@@ -47,7 +56,9 @@ scenario "a full dock" {
     let s = shell
     s.dock_items.insert(DockItem(key: "a01", title: "Notes", icon: "file-text"))
     s.dock_items.insert(DockItem(key: "a02", title: "Mail", icon: "mail", badge: 12))
-    s.dock_items.insert(DockItem(key: "a03", title: "Chat", icon: "message-square", running: true, attention: true))
+    s.dock_items.insert(
+        DockItem(key: "a03", title: "Chat", icon: "message-square", running: true, attention: true),
+    )
     s.dock_items.insert(DockItem(key: "a04", title: "Calendar", icon: "calendar"))
     s.dock_items.insert(DockItem(key: "a05", title: "Tasks", icon: "list-checks", badge: 4))
     s.dock_items.insert(DockItem(key: "a06", title: "Files", icon: "folder"))
@@ -170,7 +181,10 @@ scenario "a rearranged bar" {
     seed(shell)
     let s = shell
     if let clock = s.bar_parts.find(p -> p.slot == Slot.clock) { s.bar_parts.move(clock, to: 0) }
-    if let tasks = s.bar_parts.find(p -> p.slot == Slot.tasks), status = s.bar_parts.find(p -> p.slot == Slot.status) { s.bar_parts.move(tasks, after: status) }
+    if let tasks = s.bar_parts.find(p -> p.slot == Slot.tasks),
+        status = s.bar_parts.find(p -> p.slot == Slot.status) {
+        s.bar_parts.move(tasks, after: status)
+    }
     s.tuned = true
     s.based_on = .tilo
 }

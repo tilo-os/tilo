@@ -42,11 +42,6 @@ pub struct McpServer<H> {
     caller: Caller,
     /// The agent run every invocation of this connection is attributed to.
     run: std::sync::Mutex<Option<tilo_actions::WorkGroup>>,
-    /// Pixel fallback, when the host runs beside a compositor.
-    computer: Option<std::sync::Arc<crate::computer::Computer>>,
-    /// Tasks learned in legacy apps, kept in the profile so they survive the
-    /// connection that learned them.
-    adapters: Option<std::sync::Arc<crate::adapters::Adapters>>,
     /// The page `tilo_query` answers when a call names no `detail`; a client
     /// that parses v1 rows pins `full` for its session at `initialize`.
     detail: std::sync::Mutex<Detail>,
@@ -639,8 +634,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             actor,
             caller,
             run: std::sync::Mutex::new(None),
-            computer: None,
-            adapters: None,
             detail: std::sync::Mutex::new(Detail::Compact),
             invoking: InFlight::default(),
             handles: std::sync::Mutex::default(),
@@ -1232,24 +1225,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         value
     }
-    /// Offer the canonical `computer` tools, driving `computer`.
-    #[must_use]
-    pub fn with_computer(
-        mut self,
-        computer: Option<std::sync::Arc<crate::computer::Computer>>,
-    ) -> Self {
-        self.computer = computer;
-        self
-    }
-    /// Offer the adapter tools, keeping what is learned in `adapters`.
-    #[must_use]
-    pub fn with_adapters(
-        mut self,
-        adapters: Option<std::sync::Arc<crate::adapters::Adapters>>,
-    ) -> Self {
-        self.adapters = adapters;
-        self
-    }
     fn tools(&self) -> Vec<Value> {
         let mut tools = match self.surface {
             Surface::Classic => tool_definitions().to_vec(),
@@ -1258,85 +1233,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if self.host.content_puts().is_some() {
             tools.extend(put::tool_definitions());
         }
-        if self.computer.is_some() {
-            tools.extend(crate::computer::tool_definitions());
-        }
-        if self.adapters.is_some() {
-            tools.extend(crate::adapter_tools::tool_definitions());
-        }
         tools
-    }
-    /// Run a `computer` or `computer_batch` call off the async runtime.
-    async fn computer(&self, name: &str, args: Value) -> Value {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Batch {
-            actions: Vec<crate::computer::Action>,
-            #[serde(default)]
-            app_id: Option<String>,
-        }
-        let Some(computer) = self.computer.clone() else {
-            return tool_result(Err("Unknown tool".into()));
-        };
-        let batch = name == "computer_batch";
-        let actions = if batch {
-            parse::<Batch>(args).map(|batch| {
-                let Batch {
-                    mut actions,
-                    app_id,
-                } = batch;
-                for action in &mut actions {
-                    if action.app_id.is_none() {
-                        action.app_id.clone_from(&app_id);
-                    }
-                }
-                actions
-            })
-        } else {
-            parse::<crate::computer::Action>(args).map(|action| vec![action])
-        };
-        let actions = match actions {
-            Ok(actions) => actions,
-            Err(error) => return tool_result(Err(error)),
-        };
-        let agent = self.agent();
-        match tokio::task::spawn_blocking(move || computer.run_as(agent.as_ref(), &actions, batch))
-            .await
-        {
-            Ok(Ok(outcomes)) => crate::computer::content(&outcomes, batch),
-            Ok(Err(error)) => tool_result(Err(error)),
-            Err(error) => tool_result(Err(error.to_string())),
-        }
-    }
-    /// The agent this connection's pixel actions act for: its agent run, so
-    /// concurrent agents get separate seats and strips.
-    fn agent(&self) -> Option<crate::computer::Agent> {
-        self.agent_run().map(|run| crate::computer::Agent {
-            id: run.id,
-            label: run.label,
-        })
-    }
-    /// End this connection's agent on the compositor: it releases whatever
-    /// the agent still holds and the agent's claim on its strip. Blocking
-    /// socket I/O; for a transport whose connection just closed.
-    pub fn leave_computer(&self) {
-        let (Some(computer), Some(agent)) = (self.computer.as_ref(), self.agent()) else {
-            return;
-        };
-        if let Err(error) = computer.leave(&agent) {
-            tracing::debug!(%error, "agent seat release");
-        }
-    }
-    /// Seat this connection's agent before it opens something through the
-    /// workspace, so the window lands in the agent's strip. Best effort: an
-    /// app opened without a seat still opens, beside whatever has focus.
-    async fn seat_for_launch(&self) {
-        let (Some(computer), Some(agent)) = (self.computer.clone(), self.agent()) else {
-            return;
-        };
-        if let Ok(Err(error)) = tokio::task::spawn_blocking(move || computer.seat(&agent)).await {
-            tracing::debug!(%error, "agent seat before a workspace action");
-        }
     }
     /// Attribute every invocation of this connection to one agent run, so
     /// history, undo and activity tell concurrent agents apart. Provenance
@@ -1458,29 +1355,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         structured: bool,
     ) -> Result<Value, String> {
         match call {
-            Ok(call)
-                if self.computer.is_some()
-                    && matches!(call.name.as_str(), "computer" | "computer_batch") =>
-            {
-                Ok(self.computer(&call.name, call.arguments).await)
-            }
-            Ok(call)
-                if self.adapters.is_some() && crate::adapter_tools::is_adapter_tool(&call.name) =>
-            {
-                let Some(adapters) = self.adapters.clone() else {
-                    return Ok(tool_result(Err("Unknown tool".into())));
-                };
-                Ok(tool_result(
-                    crate::adapter_tools::call(
-                        &call.name,
-                        call.arguments,
-                        adapters.as_ref(),
-                        self.computer.clone(),
-                        self.agent(),
-                    )
-                    .await,
-                ))
-            }
             Ok(call) if put::is_put_tool(&call.name) => {
                 Ok(self.put_call(&call.name, call.arguments).await)
             }
@@ -2295,9 +2169,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             return Err("revision must not be empty".into());
         }
         let Addressed { provider, app_id } = a.provider;
-        if a.workspace {
-            self.seat_for_launch().await;
-        }
         let launching = Self::launched_app(&a.resource, &a.action, a.workspace);
         // The workspace launches the app empty; the path goes to the app's
         // own open action once it runs.

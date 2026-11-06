@@ -3,9 +3,9 @@
 //! The runtime runs the same workspace host every device runs
 //! ([`HostMode::Device`](tilo_room_host::host::HostMode::Device)), in
 //! process: the host creates the profile's workspace and issues this device the
-//! invitation its replica redeems ([`RoomHost::place_own_workspace`]), and from
+//! invitation its replica redeems ([`WorkspaceHost::place_own_workspace`]), and from
 //! then on the workspace is one of the workspaces this profile joined, its session
-//! carried in process ([`RoomHost::connect_local`]). The host takes part in
+//! carried in process ([`WorkspaceHost::connect_local`]). The host takes part in
 //! the workspace's channels as this device's one peer, asking this device's own
 //! channel service for their keys.
 //!
@@ -24,7 +24,7 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::owner::session::Reach;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use tilo_relay_session::{CoeditPayload, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
-use tilo_room_host::host::RoomHost;
+use tilo_room_host::host::WorkspaceHost;
 
 /// How long a write waits for the workspace's session and for its host to keep it.
 const KEPT_WITHIN: Duration = Duration::from_secs(10);
@@ -53,7 +53,7 @@ impl RecordCreation {
 
 /// The workspace host this profile runs, and what it lets apps create there.
 pub(super) struct OwnHost {
-    host: Arc<RoomHost>,
+    host: Arc<WorkspaceHost>,
     creation: RecordCreation,
 }
 
@@ -66,7 +66,7 @@ impl Joined {
     /// A host is already running.
     pub(in crate::standalone) fn install_host(
         &self,
-        host: Arc<RoomHost>,
+        host: Arc<WorkspaceHost>,
         creation: RecordCreation,
     ) -> Result<(), String> {
         self.own_host
@@ -74,7 +74,7 @@ impl Joined {
             .map_err(|_| "this profile runs one workspace host".into())
     }
 
-    fn room_host(&self) -> Option<&Arc<RoomHost>> {
+    fn room_host(&self) -> Option<&Arc<WorkspaceHost>> {
         self.own_host.get().map(|own| &own.host)
     }
 
@@ -207,7 +207,7 @@ impl Joined {
             // which signs the workspace's history under this device's key.
             own_host
                 .host
-                .rooms()
+                .workspaces()
                 .commit_own_membership(
                     &workspace.to_string(),
                     &self.custody.device_cert,
@@ -306,51 +306,79 @@ impl Joined {
 #[cfg(test)]
 impl Joined {
     /// `app`'s `record` as this device's host keeps it in `workspace`: its latest
-    /// whole write, opened with the channel's keys. Waits on the host: call
-    /// it from a thread that may block.
+    /// whole write, opened with the channel's keys. `Err` says where the write
+    /// stops on the way there, so one that never arrives is explained rather
+    /// than just missing. Waits on the host: call it from a thread that may
+    /// block.
     pub(in crate::standalone) fn test_kept_document(
         &self,
         workspace: WorkspaceId,
         app: &str,
         record: &str,
-    ) -> Option<Vec<u8>> {
-        let host = Arc::clone(self.room_host()?);
-        let ws = super::workspace_topic(workspace).ok()?;
+    ) -> Result<Vec<u8>, String> {
+        let host = Arc::clone(
+            self.room_host()
+                .ok_or("this profile runs no workspace host")?,
+        );
+        let ws = super::workspace_topic(workspace)?;
         let retained = tilo_rt::app()
             .handle()
-            .block_on(async move { host.room_records().retained(ws).await })
-            .ok()?;
+            .block_on(async move { host.workspace_records().retained(ws).await })?;
         let route = collab_types::ChannelRoute::new(app, record);
         let keys = self
             .channel_keys()
-            .get()?
-            .record_keys(workspace, &route)?
-            .ok()?;
-        retained.iter().rev().find_map(|kept| {
+            .get()
+            .ok_or("this device holds no channel keys")?
+            .record_keys(workspace, &route)
+            .ok_or_else(|| {
+                format!(
+                    "the host keeps {} bodies but this device takes part in no channel of {app}'s {record}",
+                    retained.len()
+                )
+            })?
+            .map_err(|error| {
+                format!(
+                    "the host keeps {} bodies but this device holds no keys for {app}'s {record}: {error}",
+                    retained.len()
+                )
+            })?;
+        let mut kept_of_the_record = 0_usize;
+        for kept in retained.iter().rev() {
             let neighbour_wire::NeighbourMsg::AppDocument {
                 app_id,
                 record_id,
                 envelope,
                 ..
-            } = postcard::from_bytes(&kept.body).ok()?
+            } = postcard::from_bytes(&kept.body)
+                .map_err(|error| format!("the host keeps an unreadable body: {error}"))?
             else {
-                return None;
+                continue;
             };
             if app_id != app || record_id != record {
-                return None;
+                continue;
             }
-            let metadata = envelope.encryption?;
-            let ciphertext = collab_types::sealed_ciphertext(&envelope).ok()?;
+            kept_of_the_record = kept_of_the_record.saturating_add(1);
+            let metadata = envelope
+                .encryption
+                .ok_or_else(|| format!("{app}'s {record} reached the host unsealed"))?;
+            let ciphertext = collab_types::sealed_ciphertext(&envelope)
+                .map_err(|error| format!("{app}'s {record} is not sealed as one frame: {error}"))?;
             let plaintext = keys
                 .open_content(envelope.artifact, &metadata, &ciphertext)
-                .ok()?;
-            match collab_types::DocumentFrame::decode(&plaintext).ok()? {
+                .map_err(|error| format!("{app}'s {record} does not open: {error}"))?;
+            match collab_types::DocumentFrame::decode(&plaintext)
+                .map_err(|error| format!("{app}'s {record} is not a document frame: {error}"))?
+            {
                 collab_types::DocumentFrame::Whole(
                     collab_types::DocumentMutation::Snapshot(bytes)
                     | collab_types::DocumentMutation::Incremental(bytes),
-                ) => Some(bytes),
-                collab_types::DocumentFrame::Segment(_) => None,
+                ) => return Ok(bytes),
+                collab_types::DocumentFrame::Segment(_) => {}
             }
-        })
+        }
+        Err(format!(
+            "the host keeps {} bodies, {kept_of_the_record} of them {app}'s {record}, none whole",
+            retained.len()
+        ))
     }
 }

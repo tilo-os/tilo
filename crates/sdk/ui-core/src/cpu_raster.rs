@@ -3,14 +3,10 @@
 //! Every host draws a software adapter's frames through this canvas, native
 //! or in a page, so both produce the same pixels from the same frame.
 
-use tilo_cpu_raster::{CpuRasterizer, Options, Region, Target};
+use tilo_cpu_raster::{CANVAS_THREADS, CpuRasterizer, Options, Region, Target};
 
 use crate::damage::bounded_present_damage;
 use crate::retained_raster::FrameContent;
-
-/// Threads a large region rasterizes on: a native host has them, a page has
-/// one thread and [`Options::threads`] is a no-op there.
-const THREADS: u16 = if cfg!(target_arch = "wasm32") { 0 } else { 4 };
 
 pub(crate) struct CpuCanvas {
     rasterizer: CpuRasterizer,
@@ -36,7 +32,7 @@ impl CpuCanvas {
     pub(crate) fn new() -> Self {
         Self {
             rasterizer: CpuRasterizer::new(Options {
-                threads: THREADS,
+                threads: CANVAS_THREADS,
                 ..Options::default()
             }),
             pixels: Vec::new(),

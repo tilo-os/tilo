@@ -43,6 +43,9 @@ tilo-actions = { path = "../../crates/collab/actions" }
 tilo-document = { path = "../../crates/doc/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 chrono = { workspace = true, features = ["std", "clock"] }
+# RRULE/EXDATE expansion and the one fold/gap wall-time policy, shared with
+# every other iCalendar consumer.
+tilo-recurrence = { path = "../../crates/sdk/tilo-recurrence" }
 # RFC 5545 TZID values are IANA names.  Keep the transition database in the
 # app so imported wall times resolve identically on every peer, including DST
 # gaps/folds, rather than depending on the host's current `/usr/share/zoneinfo`.

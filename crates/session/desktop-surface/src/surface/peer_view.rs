@@ -39,7 +39,9 @@ use tilo_callstream::surface_decoder::{DecodedFrame, DecodedPixels, VideoDecoder
 use tilo_color_pipeline::color_pipeline::{OutputColorState, SurfaceColorOp, plan_surface_op};
 pub use tilo_color_pipeline::hdr_display::DisplayCapabilities;
 use tilo_color_pipeline::hdr_tonemap::{HdrTonemapConfig, tonemap_p010_to_rgba8};
-use tilo_desktop_model::{DesktopTree, Tab, TabId, TileContent as ModelTile, Workspace};
+use tilo_desktop_model::{
+    DesktopTree, Tab, TabId, TileContent as ModelTile, Workspace, WorkspaceSlot,
+};
 pub use tilo_media::realtime::PictureWake;
 use tilo_window_share::streaming::{InputEvent, ShareRegistry, StreamingShare};
 use ui::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
@@ -1608,6 +1610,10 @@ impl crate::TileSource for PeerTiles {
 
     fn window_record(&self, tab: TabId) -> Option<(String, String)> {
         self.inner.window_record(tab)
+    }
+
+    fn carry(&self, tab: TabId, to: WorkspaceSlot) -> bool {
+        self.inner.carry(tab, to)
     }
 
     fn workspace_id(&self) -> Option<String> {

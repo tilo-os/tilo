@@ -39,6 +39,11 @@ pub struct Thumb {
     target: Option<(LocalState<String>, String)>,
     /// A part of the artwork instead of all of it, as an export takes it.
     framing: Option<Framing>,
+    /// The ring it last painted, so a change of selection repaints it.
+    ringed: bool,
+    /// What this picture paints changed: it repaints once, and rests after
+    /// the frame draws it.
+    dirty: bool,
 }
 
 impl Thumb {
@@ -61,6 +66,8 @@ impl Thumb {
             renderer,
             target: None,
             framing: None,
+            ringed: false,
+            dirty: true,
         }
     }
 
@@ -78,13 +85,24 @@ impl Thumb {
         self
     }
 
-    /// Show the artwork as the document holds it now: whether it changed.
+    /// Show the artwork as the document holds it now, and the ring the
+    /// selection asks for: whether either changed.
     fn follow(&mut self) -> bool {
-        let Some(art) = self.live.changed_since(&mut self.presented) else {
-            return false;
-        };
-        self.art = art;
-        true
+        let mut changed = false;
+        if let Some(art) = self.live.changed_since(&mut self.presented) {
+            self.art = art;
+            changed = true;
+        }
+        let ringed = self
+            .target
+            .as_ref()
+            .is_some_and(|(chosen, id)| chosen.with(|chosen| chosen == id));
+        if ringed != self.ringed {
+            self.ringed = ringed;
+            changed = true;
+        }
+        self.dirty |= changed;
+        changed
     }
 }
 
@@ -192,6 +210,8 @@ impl Widget for Thumb {
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         self.follow()
     }
+
+    ui::redraw_flag!();
 
     fn name(&self) -> &'static str {
         "Thumb"

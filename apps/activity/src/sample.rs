@@ -63,13 +63,14 @@ fn entry(
         resource: Some(resource.to_owned()),
         group: (n <= 3).then(|| "press".to_owned()),
         redacted: false,
+        refused: Vec::new(),
     }
 }
 
 fn feed() -> wire::Feed {
     let ada = person("Ada", [214, 96, 77]);
     let grace = person("Grace", [70, 150, 110]);
-    let entries = vec![
+    let mut entries = vec![
         entry(
             1,
             ada.clone(),
@@ -95,6 +96,17 @@ fn feed() -> wire::Feed {
         entry(5, grace, 95, "Checked off the catering", "Checklist"),
         entry(6, ada, 26 * 60, "Created the launch plan", "Plan"),
     ];
+    // A change the launch's owner stopped taking: its row says where it is
+    // not and why.
+    if let Some(refused) = entries.get_mut(4) {
+        refused.refused.push(wire::Refusal {
+            change: id(5),
+            device: "ada-laptop".to_owned(),
+            label: "Ada's laptop".to_owned(),
+            reason: "no permission".to_owned(),
+            permanent: true,
+        });
+    }
     wire::Feed {
         workspace: "Launch".to_owned(),
         scope: wire::Scope::ThisWorkspace,

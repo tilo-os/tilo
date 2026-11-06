@@ -48,9 +48,11 @@ const MAX_CATEGORY_BYTES: usize = 128;
 pub const REPLY_WITH_TEXT: &str = "im.reply-with-text";
 /// The daemon's key for a notification's default action.
 const DEFAULT: &str = "default";
-/// What the default action is listed as until the session says it in the
-/// person's language.
-const DEFAULT_LABEL: &str = "Open";
+/// What the default action is listed as: the portal names no label for it,
+/// so it reads in the person's language.
+fn default_label() -> String {
+    crate::i18n::t("notification-open")
+}
 
 /// The categories the backend reads: what they stand for decides the
 /// sound and how a banner treats it.
@@ -454,7 +456,7 @@ fn actions(
                 target: clone_field(notification, "default-action-target"),
             },
         );
-        listed.push((DEFAULT.to_owned(), DEFAULT_LABEL.to_owned()));
+        listed.push((DEFAULT.to_owned(), default_label()));
     }
     let buttons =
         option::<Vec<HashMap<String, OwnedValue>>>(notification, "buttons").unwrap_or_default();

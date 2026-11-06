@@ -185,6 +185,7 @@ pub mod edge_autoscroll;
 pub mod element_pictures;
 pub mod evdev;
 pub mod fact;
+pub mod floating_layer;
 pub mod floating_surface;
 pub mod focus_visible;
 pub mod font_catalog;
@@ -226,11 +227,13 @@ pub mod image_decoders;
 pub mod image_store;
 pub mod ime;
 pub mod input;
+pub mod input_generation;
 pub mod interaction;
 pub mod keycaps;
 pub mod keys;
 pub mod latin_chord;
 pub mod launch;
+pub mod live_activity;
 pub mod live_collaboration;
 pub mod local_identity;
 pub mod local_state;
@@ -240,6 +243,7 @@ pub mod native;
 pub mod nav_stack;
 pub mod num;
 pub mod offscreen;
+pub mod outside_paint;
 pub mod overlay;
 pub mod paint;
 pub mod paragraph;
@@ -279,9 +283,7 @@ pub mod desk_widgets {
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
 pub mod deferred;
 pub mod lazy_code;
-pub use ::collaboration::person_chat;
 pub mod personal_dictionary;
-pub mod private_draft;
 pub mod text_assistance;
 pub mod text_break;
 pub mod text_detect;
@@ -368,6 +370,7 @@ pub mod window_name;
 pub mod window_pictures;
 pub mod window_share;
 pub mod window_slots;
+pub mod window_targets;
 pub mod window_toolbar;
 pub mod workspace_emoji;
 #[cfg(feature = "native")]
@@ -434,7 +437,9 @@ pub use local_state::{
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
 pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
-pub use platform::{DialogActionOrder, Platform, PlatformConventions, Shortcut, spell_shortcut};
+pub use platform::{
+    DialogActionOrder, HostShortcut, Platform, PlatformConventions, Shortcut, spell_shortcut,
+};
 pub use portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 pub use profiling::{
     FRAME_BUDGET_US, FrameProfiler, FrameTiming, Pass, PerfReport, PerfScenario, PerfStep,

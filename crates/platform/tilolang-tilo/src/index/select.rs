@@ -13,6 +13,7 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use tilolang::pred::{CmpOp, Operand};
 use tilolang_runtime::query::Order;
 use tilolang_runtime::store::{FieldRead, Listing, Lit, Pred, StoreError, lit_of, ordered_cmp};
 
@@ -133,7 +134,51 @@ fn run_bounds(
     Ok(bounds(pages, run))
 }
 
+/// Whether `residual` is the type's done test, `not done`: the items a place leaves out of its
+/// count and draws only in its foot. `not done` reads as the flag set, negated, or as the flag
+/// compared with `false`.
+fn is_open_test(schema: &TypeSchema, residual: &Pred) -> bool {
+    let Some(done) = schema.done() else {
+        return false;
+    };
+    let set = |field: &FieldRead, value: bool| value && field.spec.id == done;
+    match residual {
+        Pred::Not(inner) => match inner.as_ref() {
+            Pred::Cmp(CmpOp::Eq, Operand::Field(field), Operand::Lit(Lit::Bool(value))) => {
+                set(field, *value)
+            }
+            _ => false,
+        },
+        Pred::Cmp(CmpOp::Eq, Operand::Field(field), Operand::Lit(Lit::Bool(false))) => {
+            field.spec.id == done
+        }
+        _ => false,
+    }
+}
+
 impl View<'_> {
+    /// How many of the run `run` of the column `column` are open, from the counts of
+    /// [`columns::open_list`]: `None` when the column's entries are not counted apart.
+    fn open_count(
+        &self,
+        (resource, field): (&str, &str),
+        schema: &crate::schema::TypeSchema,
+        column: &crate::schema::ColumnSchema,
+        run: &(String, String),
+    ) -> Result<Option<usize>, StoreError> {
+        if !columns::open_split(column, schema.done()) {
+            return Ok(None);
+        }
+        let list = columns::open_list(&scope_list(resource, field, &column.name));
+        let mut open = 0usize;
+        for (value, count) in self.snapshot.counts(&list).map_err(index_error)? {
+            if columns::holds_value(&value, run) {
+                open = open.saturating_add(usize::try_from(count).unwrap_or(usize::MAX));
+            }
+        }
+        Ok(Some(open))
+    }
+
     /// The items of the collection `field` of `resource` (of the type `schema`) that `pred`
     /// holds of (all of them for none), in `order` (the collection's for none).
     ///
@@ -149,6 +194,15 @@ impl View<'_> {
         let Some(conj) = conjuncts(pred)? else {
             return Ok(Listing::default());
         };
+        // A named filter keeps a column holding whether its predicate does: the column answers
+        // the predicate whole, so its run is read rather than a conjunct of it, which names
+        // every item that conjunct holds of and leaves the rest to be checked one by one.
+        let id = |f: &FieldRead| f.spec.id.clone();
+        let conj: Vec<&Pred> =
+            match pred.filter(|whole| columns::named(schema, whole, &id).is_some()) {
+                Some(whole) => vec![whole],
+                None => conj,
+            };
         let member = member_list(resource, field);
         let read: Vec<String> = conj
             .iter()
@@ -243,27 +297,29 @@ impl View<'_> {
         if !in_order {
             return Ok(None);
         }
-        let list = scope_list(resource, field, &a.column);
-        let pages = self.snapshot.pages(&list).map_err(index_error)?;
-        let (start, end) =
-            run_bounds(self.snapshot, (&list, &pages), column, run).map_err(index_error)?;
-        let base = Base::Slice {
-            pages,
-            start,
-            end,
-            reversed: descending,
-        };
-        let (added, removed) = self.moved_in_run(
+        let counted_run = run.clone();
+        let run = self.run_as_written(
             (resource, field),
             schema,
             (&a.column, conj.get(at).copied()),
+            run,
+            descending,
             touched,
         )?;
         let locate = self.locate((resource, field), Some((&schema.id, &a.column)));
-        let run = Merged::new(base, added, &removed);
         let Some(residual) = rest(conj, Some(at)) else {
             return Ok(Some(Listing::paged(Rc::new(run.locating(locate)))));
         };
+        // A run narrowed to the items open: how many it holds is the column's open counts,
+        // read from the index before any of its entries is checked. The open writes are not in
+        // those counts yet, so a run one changed keeps the most it can have.
+        let mut known = None;
+        if touched.is_empty()
+            && is_open_test(schema, &residual)
+            && let Some(column) = column
+        {
+            known = self.open_count((resource, field), schema, column, &counted_run)?;
+        }
         // The listing outlives this read, so it holds the snapshot and the schema itself: a
         // check of the run reads the index's fields, which hold the open writes too.
         let Some(keep_schema) = crate::schema::lookup(&schema.id) else {
@@ -282,9 +338,12 @@ impl View<'_> {
             view.holds(&child(&resource, id), keep_schema, &residual)
                 .unwrap_or(false)
         });
-        Ok(Some(Listing::paged(Rc::new(
-            Filtered::new(run, keep).locating(locate),
-        ))))
+        let filtered = Filtered::new(run, keep).locating(locate);
+        let filtered = match known {
+            Some(open) => filtered.known(open),
+            None => filtered,
+        };
+        Ok(Some(Listing::paged(Rc::new(filtered))))
     }
 
     /// [`Self::query`]'s order read from the index's columns: the key the order falls back to
@@ -361,9 +420,9 @@ impl View<'_> {
         let Some(keep_schema) = crate::schema::lookup(&schema.id) else {
             return Ok(None);
         };
-        // The most items the conjuncts can name: the run one exact conjunct answers is no
-        // longer than every item of the column.
-        let bound = self.run_count((resource, field), schema, conj, chosen)?;
+        // The most items the conjuncts can name: the run one exact conjunct answers, as the open
+        // writes leave it, is no longer than every item of the column.
+        let bound = self.run_count((resource, field), schema, conj, chosen, touched)?;
         let residual = rest(conj, None);
         let mut reads: Vec<Filtered> = Vec::new();
         let mut most = None;
@@ -464,13 +523,16 @@ impl View<'_> {
     }
 
     /// The length of the run one exact conjunct of `conj` answers, when `chosen` is that one: no
-    /// more items than that can hold of every conjunct.
+    /// more items than that can hold of every conjunct. The run is counted as the open writes
+    /// leave it: one counted from the index alone is short of what was just written, and a list
+    /// sized by it shows none of that.
     fn run_count(
         &self,
         (resource, field): (&str, &str),
         schema: &TypeSchema,
         conj: &[&Pred],
         chosen: Option<&(usize, Vec<Access>)>,
+        touched: &std::collections::BTreeSet<String>,
     ) -> Result<Option<usize>, StoreError> {
         let Some((at, access)) = chosen else {
             return Ok(None);
@@ -486,12 +548,42 @@ impl View<'_> {
         {
             return Ok(None);
         }
-        let list = scope_list(resource, field, &a.column);
+        let held = self.run_as_written(
+            (resource, field),
+            schema,
+            (&a.column, conj.get(*at).copied()),
+            run,
+            false,
+            touched,
+        )?;
+        Ok(Some(held.len()))
+    }
+
+    /// The run `run` of the column `column` that `pred` chose, as the open writes leave it: the
+    /// entries of its run of the column's list, in its order (`descending` from the last), with
+    /// those the writes put in and took out.
+    fn run_as_written(
+        &self,
+        (resource, field): (&str, &str),
+        schema: &TypeSchema,
+        (column, pred): (&str, Option<&Pred>),
+        run: &(String, String),
+        descending: bool,
+        touched: &std::collections::BTreeSet<String>,
+    ) -> Result<Merged, StoreError> {
+        let list = scope_list(resource, field, column);
         let pages = self.snapshot.pages(&list).map_err(index_error)?;
-        let column = schema.column(&a.column);
-        let (start, end) =
-            run_bounds(self.snapshot, (&list, &pages), column, run).map_err(index_error)?;
-        Ok(Some(end.saturating_sub(start)))
+        let (start, end) = run_bounds(self.snapshot, (&list, &pages), schema.column(column), run)
+            .map_err(index_error)?;
+        let base = Base::Slice {
+            pages,
+            start,
+            end,
+            reversed: descending,
+        };
+        let (added, removed) =
+            self.moved_in_run((resource, field), schema, (column, pred), touched)?;
+        Ok(Merged::new(base, added, &removed))
     }
 
     /// [`Self::query`] read whole: the candidates the chosen access reads (every item when

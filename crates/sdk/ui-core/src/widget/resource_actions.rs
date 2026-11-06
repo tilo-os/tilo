@@ -436,7 +436,7 @@ impl Widget for ResourceActionHost {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.root.needs_redraw()
+        self.root.needs_redraw() || self.root.needs_animation_frame()
     }
 
     fn mark_drawn(&mut self) {

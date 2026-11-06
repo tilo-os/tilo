@@ -1,0 +1,11 @@
+# tilolang ids: generated, commit it. Edit only through `tilolang ids --rename`.
+Board = wcffhwhc
+Board.columns = c6tw6kof
+Card = 2s7qlxtg
+Card.title = 5ubdxu2m
+Column = sge76x4s
+Column.cards = fc3pxwy6
+Column.title = mc2lhwxj
+board = gk3clcnt
+card_row = w4jhammz
+scenario "a board" = ky6oearf

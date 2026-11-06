@@ -400,6 +400,10 @@ pub struct ContainersApp {
     /// The structure changed (a dialog opened or closed, the shell was
     /// rebuilt): the host lays the tree out again.
     structure_dirty: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Default for ContainersApp {
@@ -488,6 +492,7 @@ impl ContainersApp {
             dispatcher: None,
         };
         Self {
+            dirty: true,
             state: Rc::new(RefCell::new(state)),
             document: None,
             presented: None,
@@ -1845,6 +1850,7 @@ impl Widget for ContainersApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         self.follow_document();
         self.state.borrow_mut().tick();
         self.follow_state();
@@ -1960,6 +1966,7 @@ impl Widget for ContainersApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         let dialogs = self.open_dialogs().len();
         if dialogs > 0 {
@@ -2020,6 +2027,14 @@ impl Widget for ContainersApp {
             out.push(dialog);
         }
         out
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

@@ -23,6 +23,8 @@ pub mod child_records;
 pub mod child_resources;
 #[path = "confirmation.rs"]
 pub mod confirmation;
+#[path = "direct_records.rs"]
+pub mod direct_records;
 #[path = "each_window.rs"]
 pub mod each_window;
 #[path = "edit_answers.rs"]

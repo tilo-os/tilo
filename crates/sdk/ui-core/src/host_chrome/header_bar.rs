@@ -18,7 +18,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use super::HostChrome;
 use super::model::{CommandGroup, HostCommand};
 use crate::i18n::I18nManager;
 use crate::icons::Icon;
@@ -78,6 +77,10 @@ pub(crate) struct HeaderBar {
     rect: Rect,
     last_press: Option<crate::time::Instant>,
     swallow_release: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl HeaderBar {
@@ -169,6 +172,7 @@ impl HeaderBar {
                 })));
         }
         Self {
+            dirty: true,
             presented: presented(title, commands),
             row,
             menu,
@@ -191,6 +195,7 @@ impl HeaderBar {
 
     /// The window area the History menu may open into.
     pub(crate) fn set_viewport(&mut self, viewport: Rect) {
+        self.dirty = true;
         self.viewport = viewport;
     }
 
@@ -291,6 +296,7 @@ fn control(id: &str, icon: Icon, key: &str) -> Button {
 
 impl Widget for HeaderBar {
     fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        self.dirty = true;
         // A press the host's tick answered after the event that made it
         // reaches the bar here, in the frame that press asks for.
         self.take_menu_request();
@@ -353,6 +359,7 @@ impl Widget for HeaderBar {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         if self.menu.is_open() {
             self.menu
                 .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
@@ -418,6 +425,14 @@ impl Widget for HeaderBar {
         self.menu.modal_capture()
     }
 
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "HeaderBar"
     }
@@ -428,18 +443,6 @@ impl Widget for HeaderBar {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-}
-
-/// Whether the app draws its own frame, once the first configure has
-/// settled `xdg-decoration` (`server_side`); `None` until then. Only a host
-/// with no chrome of its own that also leaves decorations to the client
-/// gets the bar.
-pub(crate) fn app_draws_frame(chrome: HostChrome, server_side: Option<bool>) -> Option<bool> {
-    match (chrome, server_side) {
-        (HostChrome::InWindow, None) => None,
-        (HostChrome::InWindow, Some(server_side)) => Some(!server_side),
-        (HostChrome::TiloShell | HostChrome::Native, _) => Some(false),
     }
 }
 
@@ -471,10 +474,9 @@ pub(crate) fn resize_edge(
 
 #[cfg(test)]
 mod tests {
-    use super::{HeaderBar, HeaderRequest, app_draws_frame, resize_edge};
+    use super::{HeaderBar, HeaderRequest, resize_edge};
     use crate::app::App;
     use crate::headless::FrameHarness;
-    use crate::host_chrome::HostChrome;
     use crate::host_chrome::model::{CommandGroup, HostCommand};
     use crate::widget::Widget;
 
@@ -685,32 +687,6 @@ mod tests {
             driver.root_mut::<HeaderBar>().take_requests(),
             [HeaderRequest::Move, HeaderRequest::ToggleMaximize]
         );
-    }
-
-    #[test]
-    fn only_client_side_decoration_outside_tilo_gets_the_bar() {
-        assert_eq!(
-            app_draws_frame(HostChrome::InWindow, None),
-            None,
-            "wait for the first configure"
-        );
-        assert_eq!(
-            app_draws_frame(HostChrome::InWindow, Some(false)),
-            Some(true),
-            "GNOME leaves the frame to the app"
-        );
-        assert_eq!(
-            app_draws_frame(HostChrome::InWindow, Some(true)),
-            Some(false),
-            "KDE and X11 window managers draw it"
-        );
-        for server_side in [None, Some(false), Some(true)] {
-            assert_eq!(
-                app_draws_frame(HostChrome::TiloShell, server_side),
-                Some(false),
-                "the Tilo shell owns the chrome"
-            );
-        }
     }
 
     #[test]

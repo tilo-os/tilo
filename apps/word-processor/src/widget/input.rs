@@ -222,7 +222,7 @@ impl Editor {
         if self.view.styles_panel_visible && self.panel_rect.contains(self.pointer) {
             if let Some(id) = self.style_chip_at(self.pointer) {
                 self.style_menu.open(&id, self.pointer);
-                self.style_menu.menu_mut().constrain_to(self.rect);
+                self.style_menu.menu_mut().set_viewport(Some(self.rect));
                 self.lifecycle.dirty = true;
                 *handled = true;
             }

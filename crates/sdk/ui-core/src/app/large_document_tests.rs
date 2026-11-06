@@ -57,11 +57,15 @@ fn received(ops: &[collab_types::SignedOp]) -> Vec<collab_types::DocumentMutatio
     out
 }
 
+/// The next complete mutation after the `seen` the broker had already
+/// carried: a change still arriving as segments is not one yet.
 fn wait_for_mutation(
     probe: &dyn Fn() -> Vec<collab_types::SignedOp>,
+    seen: usize,
 ) -> collab_types::DocumentMutation {
     tilo_test_env::wait_for("the broker to receive the complete change", || {
-        received(&probe()).pop()
+        let all = received(&probe());
+        (all.len() > seen).then(|| all.into_iter().next_back())?
     })
 }
 
@@ -93,19 +97,63 @@ fn a_change_larger_than_one_frame_reaches_the_broker_before_the_frontier_moves()
         app.pending_primary_document().unwrap().is_none(),
         "an accepted change advances the frontier"
     );
-    let collab_types::DocumentMutation::Incremental(delta) = wait_for_mutation(&*probe) else {
-        panic!("a live edit travels as an incremental change");
+    let collab_types::DocumentMutation::Snapshot(snapshot) = wait_for_mutation(&*probe, 0) else {
+        panic!("a route's first publication is the record whole");
     };
+    let sent = probe().len();
+    assert!(sent > 1, "it travelled as several signed segments");
     let mut peer = automerge::AutoCommit::new();
-    peer.load_incremental(&delta).unwrap();
+    peer.load_incremental(&snapshot).unwrap();
     assert_eq!(
         automerge::ReadDoc::get(&peer, automerge::ROOT, "body")
             .unwrap()
             .and_then(|(value, _)| value.as_bytes().map(<[u8]>::to_vec)),
         Some(body),
+        "the peer receives the whole record"
+    );
+
+    // The edit made once the route holds the record travels on as a change,
+    // assembled from as many signed segments as it takes.
+    let edited = bytes(7 * MIB / 2, 12);
+    app.state
+        .doc
+        .put(
+            automerge::ROOT,
+            "body",
+            automerge::ScalarValue::Bytes(edited.clone()),
+        )
+        .unwrap();
+    app.state.doc.commit_edit("fixture", "fixture");
+    assert!(
+        app.pending_primary_document()
+            .unwrap()
+            .is_some_and(|(mutation, _)| {
+                mutation.data().len() > collab_types::MAX_DOCUMENT_MUTATION_BYTES
+            }),
+        "precondition: the live edit does not fit one signed frame either"
+    );
+
+    app.broadcast_doc_delta();
+
+    assert!(
+        app.pending_primary_document().unwrap().is_none(),
+        "an accepted change advances the frontier"
+    );
+    let collab_types::DocumentMutation::Incremental(delta) = wait_for_mutation(&*probe, 1) else {
+        panic!("a live edit travels as an incremental change");
+    };
+    assert!(
+        probe().len() > sent + 1,
+        "it travelled as several signed segments"
+    );
+    peer.load_incremental(&delta).unwrap();
+    assert_eq!(
+        automerge::ReadDoc::get(&peer, automerge::ROOT, "body")
+            .unwrap()
+            .and_then(|(value, _)| value.as_bytes().map(<[u8]>::to_vec)),
+        Some(edited),
         "the peer receives the whole change"
     );
-    assert!(probe().len() > 1, "it travelled as several signed segments");
     assert!(
         probe()
             .iter()

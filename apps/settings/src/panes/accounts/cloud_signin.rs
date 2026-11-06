@@ -653,9 +653,7 @@ impl SignInFlow {
                             return Ok(Outcome::NeedsAuthorization(cloud));
                         }
                     }
-                    let vault = custodian
-                        .config_root()
-                        .map_or_else(accounts::SecretVault::open, accounts::SecretVault::open_in);
+                    let vault = accounts::SecretVault::open_person(custodian.config_root());
                     if let Some(error) = vault.recovery_error() {
                         return Err(CustodyError::Storage(error.to_string()));
                     }

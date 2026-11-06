@@ -26,8 +26,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     Avatar, AvatarSize, Button, ButtonRole, ColorSwatch, ColorSwatchPicker, Column, Container,
-    Divider, ListRow, Popover, PopoverSide, Row, Segment, Text, TextInput, Toggle, ToggleGroup,
-    Widget,
+    Divider, Fact, Facts, ListRow, Popover, PopoverSide, Row, Segment, Text, TextInput, Toggle,
+    ToggleGroup, Widget,
 };
 use ui::{LocalState, TextRole};
 use vello::kurbo::{Point, Rect};
@@ -129,15 +129,15 @@ pub struct ProfileModel {
     /// The host keeps the person's status, colour and what people see:
     /// the card offers them.
     pub offers_presence: bool,
-    /// Whether the people here see them at all: a spectator only watches,
-    /// and the card says so in place of how they are seen.
-    pub seen: Seen,
     /// Whether the desktop's control hints show; `None` where the host has
     /// none to offer.
     pub control_hints: Option<bool>,
     /// The person's root key (hex): the id that stays theirs on every
     /// device and never changes, shown short with Copy.
     pub key: Option<String>,
+    /// The devices the person is here on, each as it calls itself and as it
+    /// said it was: which of their machines are here.
+    pub devices: Vec<crate::here::PersonDevice>,
     /// The card is about someone else: what they say they are doing and
     /// what this person can do with them. `None` for the person's own card.
     pub other: Option<OtherPerson>,
@@ -153,12 +153,15 @@ pub struct OtherPerson {
     pub status: Option<crate::collaborators::RosterStatus>,
     /// Where they are ("In Chat"), when it adds to the status.
     pub place: Option<String>,
+    /// How they said they are here; `None` for an agent, which says nothing
+    /// of it.
+    pub presence: Option<ui::Availability>,
     /// This person follows their view now.
     pub following: bool,
     /// The host can follow them (bring forward what they are in).
     pub can_follow: bool,
-    /// The host can open a direct conversation with them in Chat: their
-    /// root key is known and Chat holds person-only conversations here.
+    /// The host can open the conversation this person has with them: their
+    /// root key is known and the app that holds it is here.
     pub can_message: bool,
     /// Their accounts elsewhere, as their profile names them.
     pub linked: Vec<tilo_app::linked_accounts::ProfileLink>,
@@ -209,16 +212,6 @@ pub fn short_key(key: &str) -> String {
     format!("{head}…{tail}")
 }
 
-/// Whether the people here see the person.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Seen {
-    /// They are here: everyone sees them as the card shows.
-    #[default]
-    Here,
-    /// They only watch, as the workspace's spectator: nobody here sees them.
-    Watching,
-}
-
 /// What the people in one workspace see of the person.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceSight {
@@ -256,8 +249,8 @@ pub enum ProfileChoice {
     ControlHints(bool),
     /// Follow this person (roster id), or stop following them.
     Follow(String),
-    /// Open a direct conversation in Chat with this person (root key, hex):
-    /// person to person, never through a bridge.
+    /// Open the conversation this person has with them in Chat (root key,
+    /// hex), on Chat's row for it, its composer ready.
     Message(String),
 }
 
@@ -282,6 +275,8 @@ impl ProfileChoice {
 struct CardFocus {
     rect: Rect,
     focused: bool,
+    /// Its paint changed since the last frame drew it.
+    dirty: bool,
     /// What the card is called: theirs, or yours.
     label: String,
 }
@@ -291,12 +286,22 @@ impl CardFocus {
         Self {
             rect: Rect::ZERO,
             focused: false,
+            dirty: true,
             label,
         }
     }
 }
 
 impl Widget for CardFocus {
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -334,6 +339,9 @@ impl Widget for CardFocus {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        if self.focused != focused {
+            self.dirty = true;
+        }
         self.focused = focused;
     }
 
@@ -474,6 +482,16 @@ impl ProfileCard {
                     .with_role(TextRole::Subheading)
                     .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph),
             ));
+        // How they are here, under their name: their presence, before
+        // anything about where they are.
+        if let Some(presence) = other.presence {
+            who = who.push(Box::new(
+                Text::new(&t(availability_key(presence)))
+                    .with_id("profile-other-availability")
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            ));
+        }
         if let Some(place) = &other.place {
             who = who.push(Box::new(
                 Text::new(place).with_role(TextRole::Caption).dimmed(),
@@ -487,6 +505,7 @@ impl ProfileCard {
         let mut body = Column::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
+            .with_intrinsic_height()
             .push(Box::new(CardFocus::new(t_args(
                 "profile-card-of",
                 &[("name", model.name.clone().into())],
@@ -497,6 +516,11 @@ impl ProfileCard {
         }
         for link in &other.linked {
             body = body.push(Self::linked_to(link));
+        }
+        if !model.devices.is_empty() {
+            body = body
+                .push(Box::new(Divider::horizontal()))
+                .push(Box::new(Self::devices_section(&model.devices)));
         }
         if let Some(key) = &model.key {
             body = body
@@ -544,6 +568,28 @@ impl ProfileCard {
                 .push(Box::new(actions));
         }
         body
+    }
+
+    /// The devices someone is here on, each named as it calls itself and as
+    /// it said it was: the secondary row under who they are. The two are
+    /// separate facts, laid out with space between them.
+    fn devices_section(devices: &[crate::here::PersonDevice]) -> Column {
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_rhythm(ui::tokens::Rhythm::Tight)
+            .with_intrinsic_height()
+            .push(Box::new(
+                Text::new(&t("profile-section-devices"))
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            ));
+        for device in devices {
+            column = column.push(Box::new(Facts::new(vec![
+                Fact::text(device.label.clone()),
+                Fact::text(t(availability_key(device.availability))),
+            ])));
+        }
+        column
     }
 
     /// Change the picture, and take it away again, where the host offers
@@ -603,12 +649,11 @@ impl ProfileCard {
                 t("profile-add-your-name"),
             ))
         } else {
-            let hint = if model.seen == Seen::Watching {
-                "profile-watching-hint"
-            } else {
-                "profile-name-hint"
-            };
-            Box::new(Text::new(&t(hint)).with_role(TextRole::Caption).dimmed())
+            Box::new(
+                Text::new(&t("profile-name-hint"))
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            )
         };
         let who = Column::new()
             .with_no_padding()
@@ -627,9 +672,13 @@ impl ProfileCard {
             return self.other_body(model, other);
         }
         let header = self.own_header(model);
+        // As tall as what the card says: the card is placed by its own
+        // content, so a column filling its parent would measure the card
+        // short and draw its last rows outside it.
         let mut body = Column::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
+            .with_intrinsic_height()
             // First in the card's focus order: the card opens focused on
             // itself, not in its name field.
             .push(Box::new(CardFocus::new(t("profile-card"))))
@@ -928,8 +977,8 @@ impl ProfileCard {
         let mut column = Column::new()
             .with_no_padding()
             .with_rhythm(ui::tokens::Rhythm::Tight)
-            // As tall as what it says: filling the card's column pushed
-            // the rows after it out of the card.
+            // As tall as what it says: the card's body measures itself by
+            // its rows, and this one must answer with its own height.
             .with_intrinsic_height();
         match &account.state {
             LinkState::Unlinked { connect, elsewhere } => {
@@ -1317,7 +1366,7 @@ impl Widget for ProfileCard {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.popover.needs_redraw()
+        self.popover.needs_redraw() || self.popover.needs_animation_frame()
     }
 
     fn name(&self) -> &'static str {
@@ -1603,7 +1652,11 @@ impl Widget for LazyProfileCard {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.opening.is_some() || self.card.as_ref().is_some_and(|card| card.needs_redraw())
+        self.opening.is_some()
+            || self
+                .card
+                .as_ref()
+                .is_some_and(|card| card.needs_redraw() || card.needs_animation_frame())
     }
 
     // Before its code is in, the card is an empty leaf whose size never
@@ -1843,31 +1896,6 @@ mod tests {
         let said = says(&mut named);
         assert!(!said.contains("Add your name"), "{said}");
         assert!(said.contains(&t("profile-name-hint")));
-    }
-
-    /// A spectator's card says nobody here sees them, and asks nothing
-    /// about what they share.
-    #[test]
-    fn a_spectators_card_says_nobody_sees_them() {
-        ui::i18n::I18nManager::init("en-US");
-        let mut card = ProfileCard::new();
-        card.toggle(
-            &ProfileModel {
-                name: "Spectator".into(),
-                can_rename: false,
-                seen: Seen::Watching,
-                sharing: None,
-                ..model()
-            },
-            Rect::new(1200.0, 2.0, 1220.0, 22.0),
-            Rect::new(0.0, 0.0, 1280.0, 720.0),
-        );
-        let mut card =
-            ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark());
-        let said = says(&mut card);
-        assert!(said.contains(&t("profile-watching-hint")), "{said}");
-        assert!(!said.contains(&t("profile-name-hint")), "{said}");
-        assert!(!said.contains(&t("profile-sharing")), "{said}");
     }
 
     /// Of the host's ways to keep who you are, the card offers one: the
@@ -2117,7 +2145,8 @@ mod tests {
         }
 
         fn needs_redraw(&self) -> bool {
-            self.next.borrow().is_some() || self.card.needs_redraw()
+            self.next.borrow().is_some()
+                || (self.card.needs_redraw() || self.card.needs_animation_frame())
         }
 
         fn name(&self) -> &'static str {
@@ -2209,7 +2238,7 @@ mod tests {
 
     /// Where the host keeps only how what they do is shared (a page), the
     /// card still has the field for what they are doing in their own
-    /// words, holding what they said; a spectator's has none.
+    /// words, holding what they said.
     #[test]
     fn a_page_card_offers_what_they_are_doing_in_their_own_words() {
         ui::i18n::I18nManager::init("en-US");
@@ -2322,6 +2351,7 @@ mod tests {
                     source: status,
                 }),
                 place: None,
+                presence: Some(ui::Availability::Available),
                 following: false,
                 can_follow: true,
                 can_message,

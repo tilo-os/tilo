@@ -75,7 +75,16 @@ impl SystemdApply {
         session: &Session,
         uid: u32,
     ) -> Result<Vec<(String, String)>, DaemonError> {
-        let pid = self.session_pid(session).ok_or_else(|| {
+        // A board's seat stops one backend before it starts the next
+        // (tilo-seat-session), so for a moment neither unit has a main
+        // process while the seat is on its way to the other. The session is
+        // the account's either way, so it is waited for like any session.
+        let pid = match self.session_pid(session) {
+            Some(pid) => Some(pid),
+            None if !session.stand_in => wait_session_process(|| self.session_pid(session)),
+            None => None,
+        };
+        let pid = pid.ok_or_else(|| {
             DaemonError::InvalidParams("the admitted session has no live process".into())
         })?;
         cohort_process_environment(pid, uid)
@@ -100,6 +109,10 @@ const DEVICE_SESSION_TEMPLATE: &str = "tilo-board-headless-session@";
 /// connected, a PAM login on seat0. The headless compositor runs in the
 /// account's user manager, which gets the layers anyway.
 const DEVICE_SESSION_UNITS: &[&str] = &["tilo-board-drm-session.service"];
+/// The unit the account's own user manager runs the compositor in while the
+/// seat has no display sink (os/usr/libexec/tilo-seat-session), so it is
+/// reached through that manager rather than the system one.
+const DEVICE_HEADLESS_UNIT: &str = "tilo-board-session.service";
 
 /// The board session's unit among `systemctl list-units --plain
 /// --no-legend` lines: the active instance, else the first one listed.
@@ -216,13 +229,111 @@ fn cgroup_members(pid: u32) -> Vec<u32> {
         .collect()
 }
 
+/// The processes `wrapper` started.
+///
+/// `/proc/<pid>/task/<tid>/children` exists only on kernels built with
+/// `CONFIG_PROC_CHILDREN`, so the parent each process reports is what names
+/// the wrapper's children here.
+fn children_of(wrapper: u32) -> Vec<u32> {
+    let Ok(processes) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    processes
+        .flatten()
+        .filter_map(|process| {
+            process
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+        })
+        .filter(|pid| parent_of(*pid) == Some(wrapper))
+        .collect()
+}
+
 /// The running compositor `wrapper` (a `tilo-session`) started.
 fn compositor_of(wrapper: u32) -> Option<u32> {
-    fs::read_to_string(format!("/proc/{wrapper}/task/{wrapper}/children"))
-        .ok()?
-        .split_whitespace()
-        .filter_map(|c| c.parse::<u32>().ok())
+    children_of(wrapper)
+        .into_iter()
         .find(|c| comm(*c).is_some_and(|name| COMPOSITORS.contains(&name.as_str())) && !zombie(*c))
+}
+
+/// The session's own process: the one whose environment and mount namespace
+/// are the session's.
+///
+/// A login's is its compositor, else the `tilo-session` around it. A device's
+/// session unit supervises a seat that runs as root and starts the compositor
+/// in a unit of its own — a PAM login on seat0 while a display is connected,
+/// the account's user manager when it is headless — so the supervisor is the
+/// machine, not the session, and is no answer here. A stand-in slot's unit
+/// runs the compositor itself.
+fn session_process_pid(
+    session: &Session,
+    unit_pid: impl Fn(&str) -> Option<u32>,
+    headless_pid: impl Fn() -> Option<u32>,
+) -> Option<u32> {
+    if let Some(login) = &session.login {
+        let wrapper = login.wrapper?;
+        return compositor_of(wrapper)
+            .or_else(|| (comm(wrapper).as_deref() == Some(LOGIN_WRAPPER)).then_some(wrapper));
+    }
+    if !session.stand_in {
+        return session
+            .units
+            .iter()
+            .find_map(|unit| unit_pid(unit))
+            .or_else(headless_pid);
+    }
+    unit_pid(&session.unit)
+}
+
+/// A session's process once it has one, waiting out a seat that is switching
+/// backends. Bounded like [`SystemdApply::wait_session_ready`]: a session that
+/// never comes up is reported, not waited on forever.
+fn wait_session_process(mut find: impl FnMut() -> Option<u32>) -> Option<u32> {
+    const WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(pid) = find() {
+            return Some(pid);
+        }
+        if started.elapsed() >= WAIT {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// A unit's main process, when it runs one.
+fn unit_main_pid(unit: &str) -> Option<u32> {
+    let output = Command::new("systemctl")
+        .args(["show", "--property=MainPID", "--value", unit])
+        .output()
+        .ok()?;
+    main_pid_of(&output.stdout)
+}
+
+/// A user unit's main process, through `user`'s own user manager.
+fn user_unit_main_pid(user: &str, unit: &str) -> Option<u32> {
+    let output = Command::new("systemctl")
+        .args([
+            "--user",
+            &format!("--machine={user}@"),
+            "show",
+            "--property=MainPID",
+            "--value",
+            unit,
+        ])
+        .output()
+        .ok()?;
+    main_pid_of(&output.stdout)
+}
+
+fn main_pid_of(stdout: &[u8]) -> Option<u32> {
+    String::from_utf8_lossy(stdout)
+        .trim()
+        .parse()
+        .ok()
+        .filter(|p| *p > 0)
 }
 
 fn zombie(pid: u32) -> bool {
@@ -1004,22 +1115,9 @@ impl Apply for SystemdApply {
     }
 
     fn session_pid(&mut self, session: &Session) -> Option<u32> {
-        // A login: its compositor, whose environment has the session's
-        // variables, else the tilo-session around it.
-        if let Some(login) = &session.login {
-            let wrapper = login.wrapper?;
-            return compositor_of(wrapper)
-                .or_else(|| (comm(wrapper).as_deref() == Some(LOGIN_WRAPPER)).then_some(wrapper));
-        }
-        let output = Command::new("systemctl")
-            .args(["show", "--property=MainPID", "--value", &session.unit])
-            .output()
-            .ok()?;
-        String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .parse()
-            .ok()
-            .filter(|p| *p > 0)
+        session_process_pid(session, unit_main_pid, || {
+            user_unit_main_pid(&session.user, DEVICE_HEADLESS_UNIT)
+        })
     }
 
     fn session_environment(&mut self, session: &Session) -> Vec<(String, String)> {
@@ -1393,6 +1491,11 @@ fn cohort_account_command(
         "--property=NoNewPrivileges=yes",
         "--property=RuntimeMaxSec=300",
         "--",
+        // systemd resolves the unit's executable in the manager's own mount
+        // namespace, before the view is bound over `/usr`, so the candidate
+        // installer cannot be the unit's command: `env` exists on both sides
+        // and execs it inside the view.
+        "/usr/bin/env",
         "/usr/libexec/tilo/tilo-install",
     ]);
     command
@@ -1710,6 +1813,51 @@ fn control_command(
 
 #[cfg(test)]
 mod tests {
+    /// A login's compositor shares the wrapper's process name, so only its
+    /// being the wrapper's child and running a binary of that name tells it
+    /// apart: found through the parent each process reports, which every
+    /// kernel has, rather than through the children file, which only kernels
+    /// built with `CONFIG_PROC_CHILDREN` have.
+    #[test]
+    fn a_wrappers_compositor_is_found_as_its_child() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use tilo_test_env::SpawnUnderEnvLock as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let binaries = dir.path().join("bin");
+        std::fs::create_dir(&binaries).unwrap();
+        let binary = binaries.join(super::COMPOSITORS[0]);
+        std::fs::copy("/bin/sleep", &binary).unwrap();
+        let wrapper = dir.path().join(super::LOGIN_WRAPPER);
+        std::fs::write(
+            &wrapper,
+            format!("#!/bin/sh\n\"{}\" 600 &\nwait\n", binary.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut login = std::process::Command::new(&wrapper).spawn_locked().unwrap();
+        let wrapper_pid = login.id();
+        let compositor = tilo_test_env::wait_for(wrapper_pid, || super::compositor_of(wrapper_pid));
+
+        assert_eq!(
+            super::children_of(wrapper_pid),
+            vec![compositor],
+            "the compositor is the wrapper's child"
+        );
+        assert_eq!(
+            super::compositor_of(wrapper_pid),
+            Some(compositor),
+            "and the compositor the wrapper started is found again"
+        );
+
+        let _ = std::process::Command::new("kill")
+            .arg(compositor.to_string())
+            .status_locked();
+        let _ = login.kill();
+        let _ = login.wait();
+    }
+
     #[test]
     fn control_runs_the_sessions_own_client_in_its_namespace() {
         let command = super::control_command(
@@ -2135,6 +2283,44 @@ mod userspace_tests {
     use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
+    fn a_device_sessions_process_is_the_compositor_its_seat_started() {
+        let session = Session {
+            slot: "device".into(),
+            user: "quickuser".into(),
+            unit: "tilo-board-headless-session@quickuser.service".into(),
+            units: vec!["tilo-board-drm-session.service".into()],
+            control_socket: PathBuf::from("/run/user/1000/tilo-session/control.sock"),
+            stand_in: false,
+            login: None,
+        };
+        let drm = |unit: &str| {
+            assert_eq!(unit, "tilo-board-drm-session.service");
+            Some(700)
+        };
+        assert_eq!(session_process_pid(&session, drm, || None), Some(700));
+        let no_drm = |_: &str| None;
+        assert_eq!(
+            session_process_pid(&session, no_drm, || Some(800)),
+            Some(800)
+        );
+        // Neither runs the session: its supervisor is the machine's, so no
+        // process here is the session's.
+        assert_eq!(session_process_pid(&session, no_drm, || None), None);
+        // A stand-in slot's own unit runs the compositor.
+        let stand_in = Session {
+            stand_in: true,
+            unit: "tilo-vm-slot-review.service".into(),
+            units: Vec::new(),
+            ..session
+        };
+        let own = |unit: &str| (unit == "tilo-vm-slot-review.service").then_some(900);
+        assert_eq!(
+            session_process_pid(&stand_in, own, || panic!("no seat")),
+            Some(900)
+        );
+    }
+
+    #[test]
     fn cohort_store_environment_is_read_from_the_admitted_process() {
         use std::io::BufRead as _;
         use std::process::{Command, Stdio};
@@ -2202,11 +2388,20 @@ mod userspace_tests {
             "--property=BindReadOnlyPaths=/verified/view/usr:/usr /verified/view/opt:/opt",
             "--property=NoNewPrivileges=yes",
             "--preserve-held",
+            "/usr/bin/env",
             "/usr/libexec/tilo/tilo-install",
             "/staged/app.tapp",
         ] {
             assert!(args.iter().any(|arg| arg == required), "{args:?}");
         }
+        // systemd resolves the unit's command in the manager's namespace, so
+        // the candidate installer is reached through an executable the image
+        // has at the same path.
+        let env = args.iter().position(|arg| arg == "/usr/bin/env").unwrap();
+        assert_eq!(
+            args.get(env + 1).map(String::as_str),
+            Some("/usr/libexec/tilo/tilo-install")
+        );
         assert!(
             !args
                 .iter()

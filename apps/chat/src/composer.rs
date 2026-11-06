@@ -286,29 +286,6 @@ impl RichTextSource for ComposerSource {
     }
 }
 
-/// The private route of a direct conversation with a certified person.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ConversationKey {
-    Person {
-        workspace: String,
-        public_key: String,
-    },
-}
-
-impl ConversationKey {
-    pub(crate) fn draft_key(&self) -> String {
-        let Self::Person {
-            workspace,
-            public_key,
-        } = self;
-        format!(
-            "person:{}:{workspace}:{}:{public_key}",
-            workspace.len(),
-            public_key.len()
-        )
-    }
-}
-
 /// The SDK editor as a chat composer.
 pub struct Composer<S: RichTextSource + 'static> {
     host: RichTextComposer<S>,
@@ -416,10 +393,6 @@ impl DraftComposer {
         self.host.widget_mut().source_mut().read_only = read_only;
     }
 
-    pub fn set_conversation_draft(&mut self, conversation: &ConversationKey) {
-        self.set_private_draft(conversation.draft_key());
-    }
-
     /// Edit the draft kept in memory on this device under `key`.
     fn set_private_draft(&mut self, key: String) {
         if self.host.widget().source().private_key.as_ref() == Some(&key) {
@@ -443,95 +416,6 @@ impl DraftComposer {
     /// Plain text currently held by the attached private draft.
     pub fn private_plain(&self) -> Option<String> {
         self.host.widget().source().private_plain()
-    }
-
-    pub(crate) fn set_conversation_text(&mut self, conversation: &ConversationKey, text: &str) {
-        self.set_conversation_draft(conversation);
-        self.host
-            .widget_mut()
-            .source_mut()
-            .private
-            .update(|drafts| {
-                let draft = drafts
-                    .entry(conversation.draft_key())
-                    .or_insert_with(Draft::new);
-                draft.reset(&[BlockContent::paragraph("", text)]);
-            });
-        self.host.widget_mut().source_mut().observe();
-        self.host.widget_mut().present_now();
-    }
-
-    /// Adopt only into an empty private draft: never overwrite an unsent Chat edit.
-    pub(crate) fn adopt_private_editor(
-        &mut self,
-        conversation: &ConversationKey,
-        editor: &ui::private_draft::Editor,
-    ) -> Result<(), String> {
-        editor.validate()?;
-        self.set_conversation_draft(conversation);
-        if self.private_plain().is_some_and(|text| !text.is_empty()) {
-            return Err("Chat already has an unsent draft for this conversation".into());
-        }
-        self.set_conversation_text(conversation, &editor.text);
-        self.pending_selection = None;
-        self.set_focus(true);
-        self.select(editor.anchor, editor.caret);
-        let block = self
-            .host
-            .widget()
-            .editor()
-            .focused_index()
-            .ok_or("private draft editor focus unavailable")?;
-        if let Some(line) = self
-            .host
-            .widget_mut()
-            .editor_mut()
-            .blocks_mut()
-            .get_mut(block)
-        {
-            line.line
-                .inner_mut()
-                .restore_private_preedit(&editor.preedit, editor.preedit_cursor);
-        } else {
-            return Err("private draft editor unavailable".into());
-        }
-        self.remember_private_selection();
-        Ok(())
-    }
-
-    pub(crate) fn conversation_revision(&self, conversation: &ConversationKey) -> Option<u64> {
-        self.host.widget().source().private.with(|drafts| {
-            drafts
-                .get(&conversation.draft_key())
-                .and_then(tilo_rich_text::RichTextSource::revision)
-        })
-    }
-
-    pub(crate) fn clear_conversation_revision(
-        &mut self,
-        conversation: &ConversationKey,
-        revision: u64,
-    ) -> bool {
-        if self.conversation_revision(conversation) != Some(revision) {
-            return false;
-        }
-        self.clear_conversation_draft(conversation);
-        true
-    }
-
-    pub(crate) fn clear_conversation_draft(&mut self, conversation: &ConversationKey) {
-        let key = conversation.draft_key();
-        self.host
-            .widget_mut()
-            .source_mut()
-            .private
-            .update(|drafts| {
-                if let Some(draft) = drafts.get_mut(&key) {
-                    draft.clear();
-                }
-            });
-        self.host.widget_mut().source_mut().observe();
-        self.host.widget_mut().present_now();
     }
 
     pub(crate) fn share_private_store_from(&mut self, other: &Self) {
@@ -908,47 +792,5 @@ impl<S: RichTextSource + 'static> Composer<S> {
             })
             .flatten()
             .collect()
-    }
-}
-
-#[cfg(test)]
-mod private_handoff_tests {
-    use super::*;
-
-    #[test]
-    fn private_adoption_retains_reverse_selection_and_display_only_preedit() {
-        let key = ConversationKey::Person {
-            workspace: "workspace".into(),
-            public_key: "a".repeat(64),
-        };
-        let mut composer = DraftComposer::shared();
-        let editor = ui::private_draft::Editor {
-            text: "private text".into(),
-            anchor: 8,
-            caret: 2,
-            preedit: "候補".into(),
-            preedit_cursor: Some((0, 3)),
-        };
-        composer.adopt_private_editor(&key, &editor).unwrap();
-        assert_eq!(composer.private_plain().as_deref(), Some("private text"));
-        assert_eq!(composer.selection(), (8, 2));
-        let block = composer.host.widget().editor().focused_index().unwrap();
-        let captured = composer.host.widget().editor().blocks()[block]
-            .line
-            .inner()
-            .private_draft_editor();
-        assert_eq!(captured.preedit, "候補");
-        assert_eq!(captured.preedit_cursor, Some((0, 3)));
-        assert!(
-            !composer.value().contains("候補"),
-            "preedit is not committed draft content"
-        );
-        let newer = ui::private_draft::Editor {
-            text: "replacement".into(),
-            ..editor
-        };
-        assert!(composer.adopt_private_editor(&key, &newer).is_err());
-        assert_eq!(composer.private_plain().as_deref(), Some("private text"));
-        assert_eq!(composer.selection(), (8, 2));
     }
 }

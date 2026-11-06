@@ -753,12 +753,6 @@ impl ChatApp {
         self.menu = None;
         match hit {
             Hit::Channel(id) => self.on_hit_channel(id, doc),
-            Hit::DirectPerson(public_key) => {
-                self.call.expanded = false;
-                if let Err(error) = self.open_person_conversation(&public_key) {
-                    self.person_error = Some(error);
-                }
-            }
             Hit::AgentWindow => {
                 if self.conversation_surface {
                     self.conversation_return_requested = true;
@@ -957,10 +951,10 @@ impl ChatApp {
     }
 
     fn on_hit_channel(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
-        if self.direct_person.is_some() {
+        let leaving_agent_route = self.direct_person().is_some();
+        if leaving_agent_route {
             self.leave_floated_agent_route();
         }
-        self.close_person_conversation();
         self.not_sent = None;
         let kind = self.channel(&id).map(|c| c.kind);
         if kind == Some(ChannelKind::Voice) {
@@ -1735,10 +1729,6 @@ impl ChatApp {
     }
 
     fn send_focused(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        if self.direct_person.is_some() {
-            self.send_person_focused();
-            return;
-        }
         // Posting is a write into the workspace: gated by the OS permission
         // context (a View-only / ungranted peer can read but not send).
         if !self.can_participate() {

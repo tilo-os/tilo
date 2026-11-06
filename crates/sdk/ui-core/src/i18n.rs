@@ -454,33 +454,24 @@ fn parse_locale(locale: &str) -> Result<LanguageIdentifier, I18nError> {
         .ok_or_else(|| I18nError::InvalidLocale(locale.to_owned()))
 }
 
-/// The language the person chose for the interface
-/// (`settings_store::appearance::LANGUAGE`, which Settings › Region &
-/// Language writes), or else the host's preferred locale
-/// ([`crate::host::HostEnvironment::locale`]).
+/// The language this desktop speaks, as a BCP 47 tag: the one the person
+/// chose in Settings, or else the locale the device runs in
+/// ([`settings_store::appearance::preferred_language`]). Every surface and
+/// app resolves its language, and the language of the dates it formats, from
+/// this one answer.
+#[must_use]
+pub fn preferred_language() -> Option<String> {
+    settings_store::appearance::preferred_language()
+}
+
+/// [`preferred_language`] as the identifier the catalogue manager installs.
 fn preferred_locale() -> Option<LanguageIdentifier> {
-    configured_language()
-        .or_else(|| parse_locale(crate::host::environment().locale.as_deref()?).ok())
-}
-
-/// The interface language in the person's settings, if they chose one.
-fn configured_language() -> Option<LanguageIdentifier> {
-    language_in(&settings_store::load())
-}
-
-/// The interface language a settings document names, if it names one that
-/// parses.
-fn language_in(
-    document: &serde_json::Map<String, serde_json::Value>,
-) -> Option<LanguageIdentifier> {
-    settings_store::appearance::LANGUAGE
-        .from_document(document)
-        .and_then(|language| parse_locale(&language).ok())
+    preferred_language().and_then(|language| parse_locale(&language).ok())
 }
 
 /// Select the language the person chose on this thread, when it is not the
 /// one selected: a choice made in Settings while the app runs relabels it
-/// (the [`I18nManager::revision`] moves). With no choice, the host's
+/// (the [`I18nManager::revision`] moves). With no choice, the system
 /// locale; with neither, the source locale.
 pub fn follow_configured_language() {
     match preferred_locale() {
@@ -500,6 +491,40 @@ pub fn follow_configured_language() {
         }
         None => I18nManager::set_locale_or_source("C"),
     }
+}
+
+/// The language a window speaks, chosen once from the person's preference and the languages
+/// what the window shows ships (`shipped`, the locales of its catalogues): the language they
+/// prefer when it is among them, the same language in another region when that is, the source
+/// language when it ships that, else the first it ships. One window speaks one language, so an
+/// app that ships a translation leaves none of its chrome, its frames' words or its dates in
+/// another. See [`tilo_history::window_language`].
+#[must_use]
+pub fn window_language(shipped: &[&str]) -> String {
+    let preference = preferred_locale().map(|locale| locale.to_string());
+    tilo_history::window_language(preference.as_deref(), shipped)
+}
+
+/// Install a package's catalogues (`(locale, Fluent text)`) and make this window speak one
+/// language: the person's when the package ships it, the package's source language otherwise.
+/// The toolkit's own words and the platform's formats follow the same language, so a window of
+/// an app written in one language reads in that language throughout. A host that draws one
+/// window on a thread calls this when the package loads; its language stays as the window's.
+pub fn speak_window_language(catalogues: &[(String, String)]) -> String {
+    // The toolkit's own labels first: on a thread with no catalogue yet they install it, in
+    // the desktop's language, so the window's language is chosen over a catalogue that exists
+    // rather than one built after it and left speaking the desktop's.
+    I18nManager::register_widget_messages();
+    for (locale, text) in catalogues {
+        I18nManager::add_resource(locale, text.clone());
+    }
+    let shipped: Vec<&str> = catalogues
+        .iter()
+        .map(|(locale, _)| locale.as_str())
+        .collect();
+    let language = window_language(&shipped);
+    I18nManager::set_locale(&language);
+    language
 }
 
 fn new_bundle(locale: &LanguageIdentifier) -> Bundle {
@@ -584,6 +609,15 @@ pub(crate) fn widget_format(key: &str, args: &[(&str, ArgValue)]) -> String {
     I18nManager::format(key, args)
 }
 
+/// A resource's name in the language this thread reads: the catalogue entry
+/// for its kind ([`tilo_resource::label::message_key`]) when one is loaded,
+/// and nothing when none is, so the resource keeps the name it declares.
+fn resource_label(key: &str) -> Option<String> {
+    manager_id()?;
+    let said = I18nManager::lookup(key, None);
+    (said != key).then_some(said)
+}
+
 impl I18nManager {
     /// Register shared widget labels in every bundled language without
     /// replacing an application's catalogs or its selected language. A host
@@ -626,6 +660,9 @@ impl I18nManager {
             *slot.borrow_mut() = Some(manager);
         });
         WIDGET_CATALOG.ensure();
+        // From here on every resource this thread publishes is named in the
+        // language it just selected, and named again when that moves.
+        tilo_resource::label::install(resource_label);
     }
 
     /// Whether a catalogue was added for `locale`, parsed or not.
@@ -738,8 +775,9 @@ impl I18nManager {
         Ok(())
     }
 
-    /// Install catalogs using the process/user locale (`LC_ALL`,
-    /// `LC_MESSAGES`, `LANGUAGE`, then `LANG`) with source-locale fallback.
+    /// Install catalogs in the interface language ([`preferred_language`]: the
+    /// person's choice in Settings, else the system locale) with source-locale
+    /// fallback.
     ///
     /// # Errors
     ///
@@ -1309,8 +1347,9 @@ impl EmbeddedCatalog {
         self.catalogs
     }
 
-    /// A thread with no manager gets one selecting the user's locale from the
-    /// environment (see [`I18nManager::install_system`]).
+    /// A thread with no manager gets one selecting the interface language
+    /// from the person's settings, the system locale as its default (see
+    /// [`I18nManager::install_system`]).
     #[must_use]
     pub const fn with_system_locale(mut self) -> Self {
         self.fresh_locale = FreshLocale::System;
@@ -1520,29 +1559,90 @@ mod tests {
     /// A catalogue embeds only its source; its other languages come from the
     /// language packs, here the crate's own `locales/` directory.
     /// The language the person picks in Settings is the one the interface
-    /// shows; a document naming none, or a tag that does not parse, leaves
-    /// the choice to the host.
+    /// shows, on a machine whose system locale says otherwise; with no
+    /// choice the system locale decides (see
+    /// [`settings_store::appearance::preferred_language_from`]).
     #[test]
     fn the_interface_language_is_the_one_the_settings_name() {
-        let document = |value: serde_json::Value| value.as_object().cloned().unwrap_or_default();
+        let _restore = RestoreLookupState::capture();
+        let document = serde_json::json!({"appearance": {"language": "en-US"}})
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let _settings = settings_store::scoped_source(Some(std::sync::Arc::new(
+            settings_store::HostDocument::new(document, |_| Ok(())),
+        )));
+        assert_eq!(preferred_language().as_deref(), Some("en-US"));
+        I18nManager::install_system(
+            "en-US",
+            &[
+                ("en-US", "greeting = Hello"),
+                ("de-DE", "greeting = Guten Tag"),
+            ],
+        )
+        .unwrap();
         assert_eq!(
-            language_in(&document(
-                serde_json::json!({"appearance": {"language": "de-DE"}})
-            ))
-            .map(|locale| locale.to_string()),
-            Some("de-DE".to_owned())
+            I18nManager::current_locale(),
+            "en-US",
+            "the settings' language, not the machine's"
         );
+        assert_eq!(I18nManager::lookup_plain("greeting"), "Hello");
+        // Dates read in that same language, not in the machine's: the lock
+        // screen's date and every other formatted day resolve here.
+        let day = chrono::NaiveDate::from_ymd_opt(2025, 11, 5).unwrap();
         assert_eq!(
-            language_in(&document(
-                serde_json::json!({"appearance": {"mode": "dark"}})
-            )),
-            None
+            crate::format::day_heading(day, false),
+            "Wednesday, November 5"
         );
+        I18nManager::set_locale("de-DE");
         assert_eq!(
-            language_in(&document(
-                serde_json::json!({"appearance": {"language": "C"}})
-            )),
-            None
+            crate::format::day_heading(day, false),
+            "Mittwoch, 5. November"
+        );
+    }
+
+    /// A window speaks one language: an app that ships English only leaves the toolkit's words
+    /// and the platform's formats English too, whatever the person's preference.
+    #[test]
+    fn an_english_only_app_leaves_the_window_english() {
+        let _restore = RestoreLookupState::capture();
+        I18nManager::install(
+            "en-US",
+            "de-DE",
+            &[
+                ("en-US", "en-only = English"),
+                ("de-DE", "de-only = Deutsch"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(I18nManager::lookup_plain("de-only"), "Deutsch");
+        let language = speak_window_language(&[("en-US".to_owned(), "d-new = New".to_owned())]);
+        assert_eq!(
+            language, "en-US",
+            "the app ships English only, so its window does"
+        );
+        assert_eq!(I18nManager::current_locale(), "en-US");
+        assert_eq!(I18nManager::lookup_plain("d-new"), "New");
+        assert_eq!(
+            I18nManager::lookup_plain("de-only"),
+            "de-only",
+            "the window stopped speaking German"
+        );
+    }
+
+    #[test]
+    fn a_window_speaks_its_language_over_the_toolkits_own_words() {
+        let _restore = RestoreLookupState::capture();
+        // A thread that has drawn nothing yet: its first catalogue is the toolkit's, installed
+        // in the desktop's language, and the window's language must win over it.
+        let language = speak_window_language(&[("en-US".to_owned(), "d-new = New".to_owned())]);
+        assert_eq!(language, "en-US");
+        assert_eq!(I18nManager::current_locale(), "en-US");
+        assert_eq!(I18nManager::lookup_plain("d-new"), "New");
+        assert_eq!(
+            I18nManager::lookup_plain("date-field-add"),
+            "Add date",
+            "the toolkit's own words follow the window's language"
         );
     }
 
@@ -1651,8 +1751,12 @@ mod tests {
 
         type Catalogs = &'static [(&'static str, &'static str)];
         let cases: &[(&str, &str, Catalogs, Catalogs)] = &[
+            // The active language answers before the source does, the
+            // toolkit's own words included: its German catalogue is part of
+            // every manager, so a key the host only has in its source reads
+            // in the toolkit's German rather than in English.
             (
-                "app locale and source override the shared toolkit fallback",
+                "the active language answers before the source, toolkit words included",
                 "de-DE",
                 &[
                     (
@@ -1663,8 +1767,8 @@ mod tests {
                 ],
                 &[
                     ("history-mode-title", "Verlauf"),
-                    ("standalone-search-title", "App search"),
-                    ("proposal-accept", "Apply"),
+                    ("standalone-search-title", "Suchen"),
+                    ("proposal-accept", "Übernehmen"),
                 ],
             ),
             (

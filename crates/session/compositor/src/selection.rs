@@ -90,8 +90,8 @@ impl From<Selection> for SelectionTarget {
 /// Who serves a selection the compositor set on the seat.
 #[derive(Clone, Debug)]
 pub enum Served {
-    /// An X11 client, through the window manager.
-    X11,
+    /// An X11 client of `xwm`'s display, through its window manager.
+    X11(XwmId),
     /// A hosted surface app: these bytes per format.
     Host(Arc<BTreeMap<String, Vec<u8>>>),
 }
@@ -265,7 +265,7 @@ impl State {
                 set_primary_selection(&display, &self.seat, mimes.clone(), served);
             }
         }
-        self.offer_to_x11(selection, Some(mimes.clone()));
+        self.offer_to_x11(selection, Some(mimes.as_slice()));
         self.selections.set_offered(selection, mimes);
     }
 
@@ -295,7 +295,7 @@ impl State {
                 serve(fd, bytes.to_vec());
                 Ok(())
             }
-            Some(Served::X11) => self.send_to_x11_reader(selection, mime.to_owned(), fd),
+            Some(Served::X11(xwm)) => self.send_to_x11_reader(xwm, selection, mime.to_owned(), fd),
             None => match selection {
                 Selection::Clipboard => {
                     request_data_device_client_selection(&self.seat, mime.to_owned(), fd)
@@ -309,9 +309,11 @@ impl State {
         }
     }
 
-    /// Ask the X11 owner of `selection` for `mime` into `fd`.
+    /// Ask the X11 owner of `selection` on `xwm`'s display for `mime` into
+    /// `fd`.
     fn send_to_x11_reader(
         &mut self,
+        xwm: XwmId,
         selection: Selection,
         mime: String,
         fd: OwnedFd,
@@ -320,20 +322,34 @@ impl State {
             .loop_handle
             .clone()
             .ok_or_else(|| "no event loop".to_owned())?;
-        let xwm = self
-            .xwm
-            .as_mut()
-            .ok_or_else(|| "Xwayland is not running".to_owned())?;
-        xwm.send_selection(selection.into(), mime, fd, handle)
+        let wm = self
+            .x11_server_mut(xwm)
+            .map(|server| &mut server.wm)
+            .ok_or_else(|| "the display's Xwayland is not running".to_owned())?;
+        wm.send_selection(selection.into(), mime, fd, handle)
             .map_err(|error| format!("{error:?}"))
     }
 
-    /// Tell X11 clients what `selection` offers now (`None`: nothing).
-    fn offer_to_x11(&mut self, selection: Selection, mimes: Option<Vec<String>>) {
-        if let Some(xwm) = self.xwm.as_mut()
-            && let Err(error) = xwm.new_selection(selection.into(), mimes)
-        {
-            tracing::warn!(?error, "X11 clients not told of the selection");
+    /// Tell the displays what `selection` offers now (`None`: nothing).
+    ///
+    /// An X11 client's copy stays on its display: the apps of its workspace
+    /// read it there, and no other display is told of it. What a Wayland
+    /// client or a hosted app copied goes to every display, as it does to
+    /// every Wayland client.
+    fn offer_to_x11(&mut self, selection: Selection, mimes: Option<&[String]>) {
+        let owner = match self.served(selection) {
+            Some(Served::X11(xwm)) => Some(xwm),
+            _ => None,
+        };
+        for server in &mut self.xwms {
+            let offered = if owner.is_none_or(|owner| owner == server.id()) {
+                mimes.map(<[String]>::to_vec)
+            } else {
+                None
+            };
+            if let Err(error) = server.wm.new_selection(selection.into(), offered) {
+                tracing::warn!(?error, "X11 clients not told of the selection");
+            }
         }
     }
 
@@ -358,30 +374,37 @@ impl State {
         self.x11_focused(xwm)
     }
 
-    /// An X11 client reads `selection` as `mime` into `fd`.
+    /// An X11 client reads `selection` as `mime` into `fd`, from the display
+    /// that serves it.
     pub(crate) fn x11_reads_selection(&mut self, selection: Selection, mime: &str, fd: OwnedFd) {
         if let Err(error) = self.receive_selection(selection, mime, fd) {
             tracing::debug!(%error, "X11 selection read refused");
         }
     }
 
-    /// An X11 client set `selection`.
-    pub(crate) fn x11_set_selection(&mut self, selection: Selection, mimes: Vec<String>) {
+    /// An X11 client of `xwm`'s display set `selection`.
+    pub(crate) fn x11_set_selection(
+        &mut self,
+        xwm: XwmId,
+        selection: Selection,
+        mimes: Vec<String>,
+    ) {
         let display = self.display.clone();
         match selection {
             Selection::Clipboard => {
-                set_data_device_selection(&display, &self.seat, mimes.clone(), Served::X11);
+                set_data_device_selection(&display, &self.seat, mimes.clone(), Served::X11(xwm));
             }
             Selection::Primary => {
-                set_primary_selection(&display, &self.seat, mimes.clone(), Served::X11);
+                set_primary_selection(&display, &self.seat, mimes.clone(), Served::X11(xwm));
             }
         }
         self.selections.set_offered(selection, mimes);
     }
 
-    /// An X11 client dropped `selection`; cleared if it still owns it.
-    pub(crate) fn x11_cleared_selection(&mut self, selection: Selection) {
-        if !matches!(self.served(selection), Some(Served::X11)) {
+    /// An X11 client of `xwm`'s display dropped `selection`; cleared if it
+    /// still owns it.
+    pub(crate) fn x11_cleared_selection(&mut self, xwm: XwmId, selection: Selection) {
+        if !matches!(self.served(selection), Some(Served::X11(owner)) if owner == xwm) {
             return;
         }
         let display = self.display.clone();
@@ -390,6 +413,22 @@ impl State {
             Selection::Primary => clear_primary_selection(&display, &self.seat),
         }
         self.selections.set_offered(selection, Vec::new());
+    }
+
+    /// The server of `xwm`'s display is gone: a selection its clients owned
+    /// is gone with it.
+    pub(crate) fn forget_x11_selection(&mut self, xwm: XwmId) {
+        for selection in [Selection::Clipboard, Selection::Primary] {
+            if !matches!(self.served(selection), Some(Served::X11(owner)) if owner == xwm) {
+                continue;
+            }
+            let display = self.display.clone();
+            match selection {
+                Selection::Clipboard => clear_data_device_selection(&display, &self.seat),
+                Selection::Primary => clear_primary_selection(&display, &self.seat),
+            }
+            self.selections.set_offered(selection, Vec::new());
+        }
     }
 
     /// Send keyboard focus's client the selections (`wl_data_device` and
@@ -423,7 +462,7 @@ impl SelectionHandler for State {
         let mimes = source.map(|source| source.mime_types());
         self.selections
             .set_offered(ty.into(), mimes.clone().unwrap_or_default());
-        self.offer_to_x11(ty.into(), mimes);
+        self.offer_to_x11(ty.into(), mimes.as_deref());
     }
 
     fn send_selection(
@@ -442,8 +481,8 @@ impl SelectionHandler for State {
                     tracing::debug!(mime_type, "selection asked for a format it does not offer");
                 }
             }
-            Served::X11 => {
-                if let Err(error) = self.send_to_x11_reader(ty.into(), mime_type, fd) {
+            Served::X11(xwm) => {
+                if let Err(error) = self.send_to_x11_reader(*xwm, ty.into(), mime_type, fd) {
                     tracing::debug!(%error, "X11 selection not read");
                 }
             }

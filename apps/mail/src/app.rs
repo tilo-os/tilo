@@ -965,7 +965,6 @@ impl MailApp {
             }
             _ => {}
         }
-        self.dirty = true;
     }
 
     /// The newest message from `sender` open in the reader.
@@ -1075,7 +1074,6 @@ impl MailApp {
             self.shared.borrow_mut().push_intent(Intent::Reply(id));
             self.process_intents();
         }
-        self.dirty = true;
     }
 }
 
@@ -4607,6 +4605,7 @@ impl Widget for MailApp {
             || self.nav.needs_redraw()
             || self.compose.needs_redraw()
             || self.shortcuts.needs_redraw()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {

@@ -96,7 +96,11 @@ impl Requesters {
 
     /// The id of the installed entry whose program is `exe`.
     fn entry_running(&self, exe: &Path) -> Option<String> {
-        let scan = desktop_entry::scan::scan_dirs(&self.applications, &[]);
+        let scan = desktop_entry::scan::scan_dirs(
+            &self.applications,
+            &[],
+            &desktop_entry::locale::language_candidates(ui::i18n::preferred_language().as_deref()),
+        );
         scan.entries
             .iter()
             .find(|entry| {

@@ -120,6 +120,8 @@ mod tests {
                     note: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             }],
             active_tab: id,
             width: WindowWidth::Normal,
@@ -173,6 +175,7 @@ mod tests {
                 mine: &mine,
                 retained: &|_| false,
                 carried: tilo_desktop_model::shared_record::device::Writer::NOTHING_CARRIED,
+                records: tilo_desktop_model::shared_record::device::Writer::NOTHING_NOTED,
             },
         )?;
         doc.commit();

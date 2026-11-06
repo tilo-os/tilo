@@ -43,9 +43,6 @@ pub use enrollment::{
     EnrollmentReviewFuture, SimChoice, SimChoicesFuture,
 };
 
-#[cfg(feature = "room")]
-pub mod room;
-
 #[cfg(feature = "service-client")]
 pub mod service;
 

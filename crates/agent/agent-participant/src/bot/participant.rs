@@ -91,7 +91,6 @@ impl BotParticipant {
                 cert: identity.cert.clone(),
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),
-                watching: false,
                 background: false,
             },
             Arc::new(identity.key.clone()),
@@ -99,7 +98,6 @@ impl BotParticipant {
         );
         let events = peer.events();
         peer.join(workspace_id)?;
-        peer.live_join(workspace_id)?;
         Ok(Self {
             pending: Unopened::new(&config.workspace),
             identity,
@@ -165,13 +163,6 @@ impl BotParticipant {
                 frame,
             } if workspace_id == self.workspace_id => {
                 self.live.receive(from, &frame, now);
-            }
-            PeerEvent::LiveMember {
-                workspace_id,
-                device,
-                active,
-            } if workspace_id == self.workspace_id => {
-                self.live.member(device, active);
             }
             _ => {}
         }
@@ -337,13 +328,7 @@ impl BotParticipant {
             focus.as_ref(),
             None,
         );
-        crate::presence::say(
-            &self.peer,
-            &self.identity.cert.device_public_key,
-            &self.workspace,
-            self.workspace_id,
-            view,
-        );
+        crate::presence::say(&self.peer, &self.workspace, self.workspace_id, view);
     }
 
     /// The bot's device key.
@@ -432,7 +417,7 @@ impl super::door::DoorParticipant for BotParticipant {
 fn bounded(activity: &str) -> String {
     let mut end = activity
         .len()
-        .min(tilo_relay_protocol::live::MAX_PARTICIPANT_ACTIVITY_BYTES);
+        .min(collab_types::presence::MAX_ACTIVITY_BYTES);
     while !activity.is_char_boundary(end) {
         end = end.saturating_sub(1);
     }

@@ -129,11 +129,6 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
     // wrong in a way only a screenshot review notices. The cache is keyed by
     // what it was prepared from, so any prepared catalog whose manifest is
     // this build's is the catalog this build expects.
-    // A build materializes the pinned catalog into the machine's font cache
-    // (`tools/font-catalog.py`) and bakes *that* path in, so a binary built on
-    // another machine names a directory this one does not have. The cache is
-    // keyed by what it was prepared from; any catalog in it that this build
-    // can read is the catalog this build expects.
     let paths = &crate::host::environment().paths;
     for cache in paths.font_artifact_cache.iter().cloned().chain(
         paths

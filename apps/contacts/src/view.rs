@@ -477,7 +477,10 @@ impl Widget for ContactList {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.scrolled || self.seen != self.shared.borrow().revision
+        self.dirty
+            || self.scrolled
+            || self.seen != self.shared.borrow().revision
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     /// A scroll that changed nothing else offers the host a copy of the

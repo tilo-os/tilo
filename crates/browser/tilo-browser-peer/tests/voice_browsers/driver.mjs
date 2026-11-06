@@ -1,7 +1,7 @@
 // One browser participant of one governed call (voice_browsers.rs serves the
-// page and carries its turns to the call's lane): the page joins with a fake
-// microphone, hears the native participant's tone and sees its picture, sends
-// its own camera to it, mutes, and leaves.
+// page and carries what it makes to the call's plane): the page joins with a
+// fake microphone, publishes its frames as its plane's voice, sees the native
+// participant's picture, sends its own camera to it, mutes, and leaves.
 //
 // usage: node driver.mjs FIXTURE_URL
 //   FIXTURE_URL  the fixture's page origin (http://127.0.0.1:PORT)
@@ -60,11 +60,9 @@ try {
   assert.equal(await evaluate('window.voice.stats().captureActive'), false, 'joining captures nothing');
   await gesture('window.act({op: "set_muted", muted: false})');
   await waitFor('window.voice.stats().captureActive === true', 10_000);
-  // The native device's tone plays here, decoded: the level the audio thread
-  // measures says the native participant is speaking.
-  await waitFor(`(window.speechCounts[${JSON.stringify(native)}] ?? 0) > 20`);
-  assert.ok((await evaluate(`window.played[${JSON.stringify(native)}] ?? 0`)) > 100, 'the native tone is played');
-  await waitFor(`window.heardSpeaking.has(${JSON.stringify(native)})`, 30_000);
+  // What the microphone makes is published as the page's voice, frame by
+  // frame, as it is made.
+  await waitFor('window.publishedFrames > 20', 15_000);
 
   // The page's camera goes into the call, and the page shows the native
   // device's camera: each sees the other's picture.
@@ -73,25 +71,27 @@ try {
   const alice = await evaluate(`window.voice.state.participants.find(participant => participant.device === ${JSON.stringify(native)})?.user ?? null`);
   assert.ok(alice, 'the native participant is named in the page\'s call');
   await evaluate(`window.voice.showPictures([{person: ${JSON.stringify(alice)}, source: "camera", layer: "low"}])`);
-  await waitFor('window.voice.stats().turns.pictures > 5');
+  await waitFor('window.voice.stats().counters.pictures > 5');
   const seen = await evaluate('window.voice.takePictures(0, 10000000)');
   result.seen = seen.pictures.map(picture => ({person: picture.person, stream: picture.stream, source: picture.source, bytes: picture.object.length}));
   assert.ok(seen.pictures.some(picture => picture.stream.startsWith(native)), 'the native picture reached the page');
   assert.ok(seen.pictures.every(picture => picture.person === alice), 'the picture names the native participant');
 
-  // The page's own pictures went out too: the native device's camera is
-  // shown here only after the pages show it, so the camera was encoding.
+  // The page's own pictures went out too: the native device shows its camera
+  // in the call, so the page's camera encodes and publishes as it makes them.
   await sleep(1500);
-  assert.ok((await evaluate('window.voice.stats().turns.pictures')) > 5, 'the page collects the native pictures as they come');
+  assert.ok((await evaluate('window.voice.stats().counters.sent')) > 5, 'the page publishes its own pictures as it encodes them');
 
   // Mutually: blocking the page stops what it sends.
   await mark('page-muted');
   await gesture('window.act({op: "set_muted", muted: true})');
   assert.equal(await evaluate('window.voice.stats().captureActive'), false, 'mute releases the fake microphone track');
-  const mutedAt = await evaluate('window.voice.stats().turns.audio');
+  const mutedAt = await evaluate('window.publishedFrames');
+  await sleep(300);
+  assert.equal(await evaluate('window.publishedFrames'), mutedAt, 'a muted microphone publishes nothing');
   await mark('page-unmuted');
   await gesture('window.act({op: "set_muted", muted: false})');
-  await waitFor(`window.voice.stats().turns.audio > ${mutedAt}`);
+  await waitFor(`window.publishedFrames > ${mutedAt}`);
 
   // Leaving ends the call here and closes everything it opened.
   await mark('page-left');

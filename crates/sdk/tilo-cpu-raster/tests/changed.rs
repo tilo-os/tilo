@@ -173,8 +173,25 @@ fn panned(offset: f64, by_transform: bool) -> Scene {
     scene
 }
 
-fn tile_of(x: u32, y: u32) -> (u32, u32) {
-    (x / 16, y / 16)
+/// A change that is not a move is drawn where it is, and nothing is moved.
+#[test]
+fn a_change_that_did_not_move_is_only_drawn() {
+    let before = scene(Color::from_rgb8(40, 90, 200), false);
+    let after = scene(Color::from_rgb8(200, 90, 40), false);
+    let mut raster = CpuRasterizer::new(Options::default());
+    let mut frame = vec![0u8; (W * H * 4) as usize];
+    {
+        let mut target = Target::new(&mut frame, W, H, W as usize * 4).unwrap();
+        raster.render(before.encoding(), &mut target, None, Color::BLACK);
+    }
+    raster.prepare(after.encoding());
+    let changes = raster.changes(W, H).unwrap();
+    let work = changes.work(W, H, 16);
+    assert!(work.moved.is_empty(), "nothing moved: {:?}", work.moved);
+    assert_eq!(
+        work.drawn, changes.regions,
+        "what changed is drawn as it is"
+    );
 }
 
 #[test]
@@ -198,7 +215,8 @@ fn a_pan_moves_the_opaque_pixels_and_draws_only_the_rest() {
         let changes = raster.changes(PW, PH).unwrap();
         let motion = changes.motion.clone().expect("the window moved as a whole");
         assert_eq!((motion.dx, motion.dy), (24, 0));
-        let movable = motion.movable(PW, PH, 16);
+        let work = changes.work(PW, PH, 16);
+        let (movable, redraw) = (work.moved, work.drawn);
         let moved_px: u32 = movable.iter().map(|r| r.width * r.height).sum();
         assert!(
             moved_px >= 16 * 16 * 8,
@@ -208,32 +226,29 @@ fn a_pan_moves_the_opaque_pixels_and_draws_only_the_rest() {
             !covers(&movable, 105, 105),
             "the static badge is drawn over the window"
         );
-
-        // Tiles that changed and are not moved are drawn.
-        let mut moved_tiles = std::collections::HashSet::new();
-        for r in &movable {
-            for y in (r.y..r.y + r.height).step_by(16) {
-                for x in (r.x..r.x + r.width).step_by(16) {
-                    moved_tiles.insert(tile_of(x, y));
-                }
-            }
-        }
-        let mut redraw = Vec::new();
-        for ty in 0..PH.div_ceil(16) {
-            for tx in 0..PW.div_ceil(16) {
+        let drawn_px: u32 = redraw.iter().map(|r| r.width * r.height).sum();
+        let touched_px: u32 = (0..PH.div_ceil(16))
+            .flat_map(|ty| (0..PW.div_ceil(16)).map(move |tx| (tx, ty)))
+            .filter(|&(tx, ty)| {
                 let (x, y) = (tx * 16, ty * 16);
                 let tile = Region::new(x, y, 16.min(PW - x), 16.min(PH - y));
-                let touched = changes.regions.iter().any(|r| {
+                changes.regions.iter().any(|r| {
                     r.x < tile.x + tile.width
                         && tile.x < r.x + r.width
                         && r.y < tile.y + tile.height
                         && tile.y < r.y + r.height
-                });
-                if touched && !moved_tiles.contains(&(tx, ty)) {
-                    redraw.push(tile);
-                }
-            }
-        }
+                })
+            })
+            .map(|(tx, ty)| {
+                let (x, y) = (tx * 16, ty * 16);
+                16.min(PW - x) * 16.min(PH - y)
+            })
+            .sum();
+        assert_eq!(
+            moved_px + drawn_px,
+            touched_px,
+            "every tile the change touches is moved or drawn, once ({moved_px} + {drawn_px})"
+        );
         {
             let mut target = Target::new(&mut frame, PW, PH, PW as usize * 4).unwrap();
             tilo_cpu_raster::move_pixels(&mut target, &movable, motion.dx, motion.dy);

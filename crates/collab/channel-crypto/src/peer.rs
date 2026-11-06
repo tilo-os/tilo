@@ -22,7 +22,11 @@
 //!   this) and applies the winner; if the group still differs from the
 //!   projection, its next reconcile commits again on top. The device that
 //!   committed the winner publishes it again when it sees the loser, so a
-//!   host that keeps only a channel's newest frame keeps the winner.
+//!   host that keeps only a channel's newest frame keeps the winner. Two
+//!   commits for one epoch that followed different frames compete the same
+//!   way, by the digest each branch reached: the device holding the higher
+//!   one cannot follow the other from where it stands, so it starts over and
+//!   asks again (below).
 //! - **Any participant creates the group, once.** A participant that holds
 //!   no state for a channel waits and asks; one that sees no genesis
 //!   ([`ChannelPeer::found`]) creates the group, and one that has seen a
@@ -74,6 +78,22 @@ use crate::{
     ChannelContentKeys, ChannelGroup, ContentKeyring, Error, KeyPackage, MemberKey, Result,
     VaultKey,
 };
+
+/// Whether the membership `allowed` backs `frame`: it is signed by a device
+/// the membership names, and a commit changes the group only by devices the
+/// membership names. A genesis carries no add or remove, so this is its whole
+/// rule.
+pub fn backs(frame: &MlsGovernanceFrame, allowed: &BTreeSet<Ed25519PublicKey>) -> bool {
+    if !allowed.contains(&frame.signed_by) {
+        return false;
+    }
+    let removed: BTreeSet<_> = frame.removed().iter().collect();
+    let added: BTreeSet<_> = frame.added().iter().collect();
+    !added.iter().any(|device| !allowed.contains(*device))
+        && !removed
+            .iter()
+            .any(|device| allowed.contains(*device) && !added.contains(*device))
+}
 
 /// Requests one channel keeps, one per device.
 const MAX_REQUESTS: usize = 4096;
@@ -480,13 +500,12 @@ impl ChannelPeer {
 
     /// What a broker checks every document op of this channel against.
     pub fn gate(&self) -> ChannelGate {
-        let head_epoch = match &self.record {
-            MemberRecord::Joined(group) => Some(group.epoch()),
-            MemberRecord::Waiting(_) | MemberRecord::Removed => self.seen_epoch,
-        };
         ChannelGate {
-            encryption_required: self.genesis.is_some(),
-            head_epoch,
+            // A device that knows the channel has a group (it saw its
+            // genesis or a commit of it, or is in it) must never take the
+            // record for plaintext, whether or not it ever saw the genesis
+            // itself: a member admitted later only ever sees a Welcome.
+            encryption_required: self.knows_group(),
         }
     }
 
@@ -952,18 +971,12 @@ impl ChannelPeer {
                 self.receive_genesis(&frame, incoming, vault)
             }
             MlsGovernanceAction::Commit { .. } => {
-                if let Some(allowed) = allowed {
-                    let removed: BTreeSet<_> = frame.removed().iter().collect();
-                    let added: BTreeSet<_> = frame.added().iter().collect();
-                    if added.iter().any(|device| !allowed.contains(*device))
-                        || removed
-                            .iter()
-                            .any(|device| allowed.contains(*device) && !added.contains(*device))
-                    {
-                        return Err(governance(
-                            "commit adds or removes a device the membership does not",
-                        ));
-                    }
+                if let Some(allowed) = allowed
+                    && !backs(&frame, allowed)
+                {
+                    return Err(governance(
+                        "commit adds or removes a device the membership does not",
+                    ));
                 }
                 match &self.record {
                     MemberRecord::Joined(_) => self.receive_commit(frame, incoming, allowed, vault),
@@ -1062,7 +1075,23 @@ impl ChannelPeer {
                 }
             };
         }
-        if frame.epoch <= head_epoch {
+        if frame.epoch == head_epoch {
+            // Participants committed this epoch each on their own head, so the
+            // two commits never met again. They compete like siblings, by the
+            // lower digest of the branch they reached; this device holds the
+            // lower one and publishes it again for a host that kept the other,
+            // or the higher one and cannot reach the frame from where it
+            // stands, so it starts over and asks again.
+            if incoming > head_digest {
+                if head.signed_by == self.device {
+                    self.republish_head();
+                    self.save(vault)?;
+                }
+                return Ok(PeerEvent::Ignored);
+            }
+            return self.desynchronise(vault);
+        }
+        if frame.epoch < head_epoch {
             return Ok(PeerEvent::Ignored);
         }
         if frame.epoch == head_epoch.saturating_add(1) {

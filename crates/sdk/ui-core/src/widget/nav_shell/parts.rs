@@ -4,6 +4,33 @@ use super::{Column, HistoryControl, INERT_PART, NavShell, Part, at};
 use crate::widget::Widget;
 
 impl NavShell {
+    /// Tell every part that stands in a row of the window's bar that it does: its
+    /// controls keep the bar's control height whatever the pointer reaches.
+    pub(super) fn apply_bar_controls(&mut self, parts: &[Part]) {
+        for part in parts {
+            let in_bar = matches!(
+                part,
+                Part::Title(..)
+                    | Part::Leading(..)
+                    | Part::Action(..)
+                    | Part::More(..)
+                    | Part::Controls
+                    | Part::Filter
+                    | Part::Toggle
+                    | Part::Back
+                    | Part::InspectorToggle
+                    | Part::History(..)
+                    | Part::StatusAction
+            );
+            if !in_bar {
+                continue;
+            }
+            if let Some(widget) = self.part_mut(*part) {
+                widget.set_window_bar_control(true);
+            }
+        }
+    }
+
     pub(super) fn part(&self, part: Part) -> Option<&dyn Widget> {
         match part {
             Part::Body(Column::Sidebar) => self.sidebar.as_deref(),

@@ -5,6 +5,7 @@ use crate::icons::Icon;
 use crate::widget::{AvatarProps, Element};
 
 use super::{Leading, ListRow};
+use crate::widget::Tone;
 
 /// A row of a list: what an item is, in one line, with the start of its content under it and a
 /// quiet fact on its trailing edge. Pressing it activates it: a list opens what it shows.
@@ -22,37 +23,57 @@ pub struct ListRowProps {
     /// What the item is: its title. A row that names none shows its item's.
     #[component(positional)]
     pub title: String,
+    /// A quiet word before the title, on the same line and in the weaker ink: where an item came
+    /// from, what it answers. The title shares its line, so a row that says one takes the room
+    /// left after it.
+    pub prefix: Option<String>,
     /// The resource the row shows, which activating the row opens.
     pub item: Option<ResourceId>,
     /// The line under the title: the start of the item's content, the last message.
     pub secondary: Option<String>,
-    /// A quiet fact on the trailing edge: when it happened, how many.
+    /// A line of the row's own under its text: what waits on the item and is not its content,
+    /// as a proposal about it reads ("Suggested: move this to the end"). One line, elided;
+    /// empty shows nothing.
+    pub note: Option<String>,
+    /// When it happened or is due: the first fact of the row's facts column.
     pub meta: Option<String>,
-    /// The item's value on the trailing edge, as a setting shows it.
+    /// The tone the trailing fact reads in, where the item it states has one: a day gone by
+    /// is overdue. The UI host reads it off the day itself, as the one presenter gives it.
+    pub meta_tone: Tone,
+    /// The item's figure among its facts, as a setting shows it.
     pub value: Option<String>,
     /// A short code in the leading column: a method, a kind.
     pub badge: Option<String>,
-    /// A mark after the title: pinned, starred.
+    /// A mark on the row's edge, after every other fact: pinned, starred, an item's priority.
     pub mark: Option<Icon>,
+    /// The tone the mark and the row's checkbox ring read in: the item's priority, a theme
+    /// role rather than a colour. `Neutral` draws them as the row's quiet ink.
+    pub tone: Tone,
     /// A glyph in the leading column: what kind of item it is.
     pub icon: Option<Icon>,
     /// Whether the row is selected in its list.
     pub selected: bool,
-    /// Keep the room an avatar takes without showing one, so the row's text lines up with the
-    /// rows of its list that show one.
-    pub avatar_space: bool,
-    /// The avatar in the leading column: who the item is, or who last wrote in it.
+    /// Who the item is: their face among its facts, between when it is due and how far it
+    /// has got.
     #[component(slot)]
     pub avatar: Option<AvatarProps>,
     /// A control on the trailing edge, which moves under the text when the row is narrow.
     #[component(slot)]
     pub trailing: Option<Element>,
-    /// A checkbox in the leading column, bound to whether the item is done.
+    /// A checkbox in the leading column, bound to whether the item is done. A press on it asks
+    /// the row's `check`, when it names one, instead of changing what it is bound to.
     #[component(bind)]
     pub checkbox: Option<Bound<bool>>,
+    /// The checkbox was pressed: what a check is, in the app's words. A task and every step
+    /// under it are done in one thing to undo; with no `check`, a press changes the bound value.
+    #[component(event)]
+    pub check: Event,
     /// The pace the row's own motion plays at: its mark coming and going, and the row arriving,
     /// leaving and changing places in its list. Unset, the theme's.
     pub motion: Option<crate::motion::Feel>,
+    /// The row stands dense: one quiet line at the caption's size with the small glyph, as tall
+    /// as that line and its inset, for a reference under content rather than a list of items.
+    pub dense: bool,
     /// The row was activated (a click, Enter, an assistive technology): open what it shows.
     #[component(event)]
     pub activate: Event,
@@ -69,19 +90,24 @@ impl ListRowProps {
         Some(Self {
             key: self.key.clone(),
             title: self.title.clone(),
+            prefix: self.prefix.clone(),
             item: self.item.clone(),
             secondary: self.secondary.clone(),
+            note: self.note.clone(),
             meta: self.meta.clone(),
+            meta_tone: self.meta_tone,
             value: self.value.clone(),
             badge: self.badge.clone(),
             mark: self.mark,
+            tone: self.tone,
             icon: self.icon,
             selected: self.selected,
-            avatar_space: self.avatar_space,
             avatar: self.avatar.clone(),
             trailing: None,
             checkbox: self.checkbox.clone(),
+            check: self.check.clone(),
             motion: self.motion,
+            dense: self.dense,
             activate: self.activate.clone(),
         })
     }
@@ -115,8 +141,6 @@ impl Described for ListRow {
 #[derive(PartialEq, Eq)]
 enum Kind {
     None,
-    Avatar,
-    Space,
     Icon,
     Badge,
     Checkbox,
@@ -126,8 +150,6 @@ enum Kind {
 fn leading_kind(leading: Option<&Leading>) -> Kind {
     match leading {
         None => Kind::None,
-        Some(Leading::Avatar { .. }) => Kind::Avatar,
-        Some(Leading::AvatarSpace) => Kind::Space,
         Some(Leading::Icon(_)) => Kind::Icon,
         Some(Leading::Badge(_)) => Kind::Badge,
         Some(Leading::Checkbox { .. }) => Kind::Checkbox,
@@ -138,10 +160,6 @@ fn leading_kind(leading: Option<&Leading>) -> Kind {
 fn props_kind(props: &ListRowProps) -> Kind {
     if props.checkbox.is_some() {
         Kind::Checkbox
-    } else if props.avatar.is_some() {
-        Kind::Avatar
-    } else if props.avatar_space {
-        Kind::Space
     } else if props
         .badge
         .as_deref()
@@ -156,61 +174,81 @@ fn props_kind(props: &ListRowProps) -> Kind {
 }
 
 impl ListRow {
-    /// Take every described part of `props`. One leading column shows, in this order of
-    /// precedence: the checkbox, the avatar, the avatar's room, the badge, the icon.
+    /// Take every described part of `props`. The leading column shows one of them, in this
+    /// order of precedence: the checkbox, the badge, the icon. The avatar is a fact of the
+    /// facts column, and its room is kept there.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the props of a row are taken into the row in one place, in their own order"
+    )]
     fn apply(&mut self, props: ListRowProps) {
         let ListRowProps {
             key: _,
             title,
+            prefix,
             item: _,
             secondary,
+            note,
             meta,
+            meta_tone,
             value,
             badge,
             mark,
+            tone,
             icon,
             selected,
-            avatar_space,
             avatar,
             trailing,
             checkbox,
+            check,
             motion,
+            dense,
             activate,
         } = props;
         // An empty line is no line: a row of a note without a body is one line high.
         let shown = |text: Option<String>| text.filter(|text| !text.is_empty());
         let badge = shown(badge);
         self.title = title;
+        self.prefix = shown(prefix);
         self.secondary = shown(secondary);
+        self.note = shown(note);
         self.meta = shown(meta);
+        self.meta_spans = match shown(self.meta.clone()) {
+            Some(text) if meta_tone != Tone::Neutral => vec![(text, meta_tone)],
+            _ => Vec::new(),
+        };
         self.value = shown(value).map(|value| (value, super::RowValue::Body));
         self.mark = mark;
+        self.mark_tone = tone;
+        self.avatar = avatar.map(|avatar| {
+            let (name, identity) = avatar.name_and_identity();
+            super::FactAvatar {
+                name,
+                identity,
+                image: None,
+                square: avatar.square,
+                glyph: avatar.glyph,
+            }
+        });
         self.selected = selected;
         self.feel = motion.unwrap_or(crate::motion::Feel::Standard);
+        self.dense = dense;
         self.check_binding = None;
         self.leading = if let Some(bound) = checkbox {
             // The box follows the value it is bound to: one set elsewhere (another device, an
             // agent, an undo) shows in the row rather than only in the state behind it.
             let (checked, binding) = crate::widget::binding::local(&bound.state);
             self.check_binding = Some(binding);
-            Some(Leading::Checkbox {
-                checked,
-                on_toggle: Box::new(move |checked| {
+            let on_toggle: Box<dyn FnMut(bool)> = if check.is_none() {
+                Box::new(move |checked| {
                     bound.state.set(checked);
                     bound.edited(Value::Bool(checked));
-                }),
-            })
-        } else if let Some(avatar) = avatar {
-            let (name, identity) = avatar.name_and_identity();
-            Some(Leading::Avatar {
-                name,
-                identity,
-                image: None,
-                square: avatar.square,
-                glyph: avatar.glyph,
-            })
-        } else if avatar_space {
-            Some(Leading::AvatarSpace)
+                })
+            } else {
+                // The app says what a press means; the box shows what it did on the next frame.
+                Box::new(move |_| check.fire(None))
+            };
+            Some(Leading::Checkbox { checked, on_toggle })
         } else if let Some(badge) = badge {
             Some(Leading::Badge(badge))
         } else {

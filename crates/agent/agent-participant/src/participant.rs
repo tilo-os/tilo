@@ -408,7 +408,6 @@ impl AgentParticipant {
                 cert: identity.cert.clone(),
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),
-                watching: false,
                 background: false,
             },
             Arc::new(identity.key.clone()),
@@ -418,7 +417,6 @@ impl AgentParticipant {
         let woken = Arc::clone(&control);
         peer.on_change(Arc::new(move || woken.wake()));
         peer.join(workspace_id)?;
-        peer.live_join(workspace_id)?;
         let unopened = unopened::Unopened::new(&config.workspace);
         // The workspace's own pictures go to the model's provider only where the
         // person running the agent said so.
@@ -725,17 +723,12 @@ impl AgentParticipant {
             } if workspace_id == self.workspace_id && from != self.device() => {
                 self.remote.push((from, frame));
             }
-            PeerEvent::LiveMember {
-                workspace_id,
-                device,
-                active,
-            } if workspace_id == self.workspace_id => {
-                self.live.member(device, active);
-            }
-            PeerEvent::Presence {
+            PeerEvent::LivePlane {
                 workspace_id,
                 from,
+                track: tilo_browser_peer::Track::Presence,
                 body,
+                ..
             } if workspace_id == self.workspace_id && from != self.device() => {
                 self.member_said(from, &body);
             }
@@ -2182,7 +2175,7 @@ impl AgentParticipant {
         self.control.activity().map(|activity| {
             let mut end = activity
                 .len()
-                .min(tilo_relay_protocol::live::MAX_PARTICIPANT_ACTIVITY_BYTES);
+                .min(collab_types::presence::MAX_ACTIVITY_BYTES);
             while !activity.is_char_boundary(end) {
                 end = end.saturating_sub(1);
             }
@@ -2269,13 +2262,7 @@ impl AgentParticipant {
             self.focus.as_ref(),
             self.place.as_ref(),
         );
-        crate::presence::say(
-            &self.peer,
-            &self.identity.cert.device_public_key,
-            &self.workspace,
-            self.workspace_id,
-            view,
-        );
+        crate::presence::say(&self.peer, &self.workspace, self.workspace_id, view);
         self.presence_at_ms = now;
     }
 

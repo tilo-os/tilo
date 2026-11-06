@@ -17,8 +17,7 @@ use ui::theme::Theme;
 use ui::time::Instant;
 use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::Fill;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::MouseScrollDelta;
 use winit::keyboard::{Key, NamedKey};
 
@@ -767,6 +766,16 @@ fn leading_label(layout: &CenterLayout) -> String {
         t("drill-in-back")
     } else {
         t("notification-center-close")
+    }
+}
+
+/// The tone a notification's severity marks, for the rail a warning or a
+/// failure keeps; plain information carries no rail.
+fn severity_tone(severity: super::model::NotificationSeverity) -> Option<ui::widget::Tone> {
+    match severity {
+        super::model::NotificationSeverity::Info => None,
+        super::model::NotificationSeverity::Warning => Some(ui::widget::Tone::Warning),
+        super::model::NotificationSeverity::Error => Some(ui::widget::Tone::Danger),
     }
 }
 
@@ -2264,36 +2273,34 @@ impl NotificationCenter {
             title_width,
             &title_style,
         );
-        let (title_w, title_h) = text_renderer.measure_style(&title, None, &title_style);
-        let title_x = if layout.title_leads() {
-            title_rect.x0
+        let title_line = ui::widget::TextLineFace::styled(&title, &title_style, TextRole::Label);
+        let placed = if layout.title_leads() {
+            title_rect
         } else {
-            title_rect.center().x - f64::from(title_w) / 2.0
+            let (w, _) = title_line.measure(text_renderer);
+            Rect::new(
+                title_rect.center().x - w / 2.0,
+                title_rect.y0,
+                title_rect.center().x + w / 2.0,
+                title_rect.y1,
+            )
         };
-        text_renderer.draw_style(
-            scene,
-            &title,
+        title_line.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            placed,
             colors.text_primary,
-            transform
-                .pre_translate((title_x, title_rect.center().y - f64::from(title_h) / 2.0).into()),
-            Some(title_width),
-            &title_style,
         );
         let quiet = layout.quiet_rect();
         if quiet.height() > 0.0
             && let Some(status) = host.quiet_status()
         {
-            let width = f32_of_f64(quiet.width().max(1.0));
-            let status = preview_line(text_renderer, &status, width, &caption_style);
-            let (status_w, _) = text_renderer.measure_style(&status, None, &caption_style);
-            text_renderer.draw_style(
-                scene,
-                &status,
+            // The quiet line is one centred caption, from the shared text-line
+            // painter.
+            let line = ui::widget::TextLineFace::styled(&status, &caption_style, TextRole::Caption);
+            line.paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                quiet,
                 colors.text_dim,
-                transform
-                    .pre_translate((quiet.center().x - f64::from(status_w) / 2.0, quiet.y0).into()),
-                Some(width),
-                &caption_style,
             );
         }
         let rows = self.rows(host);
@@ -2375,12 +2382,13 @@ impl NotificationCenter {
                     let Some(newest) = history.get(*newest) else {
                         continue;
                     };
-                    ui::surface::card(
+                    ui::widget::paint_control_row(
                         scene,
                         transform,
+                        theme,
                         row,
-                        qs::control_radius(theme, row),
-                        qs::control_fill(theme, hovered(row)),
+                        hovered(row),
+                        false,
                     );
                     Self::draw_group_row(
                         scene,
@@ -2418,31 +2426,22 @@ impl NotificationCenter {
             let leading_control = controls.1.unwrap_or(controls.0);
             // A row is a resting Control surface (HIG §9.5): the lift floor
             // with its derived edge, never a ramp-slot wash.
-            ui::surface::card(
-                scene,
-                transform,
-                row,
-                qs::control_radius(theme, row),
-                qs::control_fill(theme, hovered(row)),
-            );
+            ui::widget::paint_control_row(scene, transform, theme, row, hovered(row), false);
             // A warning or failure keeps a rail beside its text, scannable
             // without taking another line; plain information carries no
             // colour, so the rail means something wherever it appears. The
             // accessibility description names the severity too, so colour
             // is never the only signal.
-            if notification.severity != super::model::NotificationSeverity::Info {
-                let severity_rail = Rect::new(
-                    row.x0,
-                    row.y0 + qs::CONTROL_PAD,
-                    row.x0 + 3.0,
-                    row.y0 + layout.text_extent(&shape) - qs::CONTROL_PAD,
-                );
-                scene.fill(
-                    Fill::NonZero,
+            if let Some(tone) = severity_tone(notification.severity) {
+                // A warning or failure keeps its rail beside its text, from
+                // the shared painter; plain information carries none.
+                ui::widget::paint_severity_rail(
+                    scene,
                     transform,
-                    notification.severity.color(theme),
-                    None,
-                    &RoundedRect::from_rect(severity_rail, 1.5),
+                    theme,
+                    row,
+                    tone,
+                    qs::CONTROL_PAD,
                 );
             }
             // Source/time, title, body: measured lines on the control
@@ -2471,60 +2470,68 @@ impl NotificationCenter {
             } else {
                 text_right - f64::from(time_width) - qs::RELATED_GAP
             };
+            let caption_line_h = layout.caption_lh;
             if let Some(source) = source_label(notification) {
-                let source_width = f32_of_f64((source_right - x).max(0.0));
-                let source = preview_line(text_renderer, &source, source_width, &caption_style);
-                text_renderer.draw_style(
-                    scene,
+                let source_width = (source_right - x).max(0.0);
+                let source = preview_line(
+                    text_renderer,
                     &source,
-                    colors.text_dim,
-                    transform.pre_translate((x, source_y).into()),
-                    Some(source_width),
+                    f32_of_f64(source_width),
                     &caption_style,
                 );
+                // The source line is one shared caption, starting at the row's
+                // inset and elided to the room beside the controls.
+                ui::widget::TextLineFace::styled(&source, &caption_style, TextRole::Caption)
+                    .start()
+                    .paint(
+                        &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                        Rect::new(x, source_y, x + source_width, source_y + caption_line_h),
+                        colors.text_dim,
+                    );
             }
             if !reveal {
-                text_renderer.draw_style(
-                    scene,
-                    &age,
-                    colors.text_dim,
-                    transform.pre_translate((text_right - f64::from(time_width), source_y).into()),
-                    None,
-                    &caption_style,
-                );
+                ui::widget::TextLineFace::styled(&age, &caption_style, TextRole::Caption)
+                    .start()
+                    .paint(
+                        &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                        Rect::new(
+                            text_right - f64::from(time_width),
+                            source_y,
+                            text_right,
+                            source_y + caption_line_h,
+                        ),
+                        colors.text_dim,
+                    );
             }
             let title_style = label_style.clone().with_weight(TextWeight::Semibold);
-            let title_width = f32_of_f64((clear_of(title_y) - x).max(0.0));
+            let title_width = (clear_of(title_y) - x).max(0.0);
             let title = preview_line(
                 text_renderer,
                 &notification.title,
-                title_width,
+                f32_of_f64(title_width),
                 &title_style,
             );
-            text_renderer.draw_style(
-                scene,
-                &title,
-                colors.text_primary,
-                transform.pre_translate((x, title_y).into()),
-                Some(title_width),
-                &title_style,
-            );
+            ui::widget::TextLineFace::styled(&title, &title_style, TextRole::Label)
+                .start()
+                .paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                    Rect::new(x, title_y, x + title_width, title_y + layout.label_lh),
+                    colors.text_primary,
+                );
             if notification.show_preview && !notification.body.is_empty() {
-                let body_width = f32_of_f64((clear_of(body_y) - x).max(0.0));
+                let body_width = (clear_of(body_y) - x).max(0.0);
                 let body = preview_lines(
                     text_renderer,
                     &notification.body,
-                    body_width,
+                    f32_of_f64(body_width),
                     &caption_style,
                     shape.body_lines().max(1),
                 );
-                text_renderer.draw_style(
-                    scene,
-                    &body,
+                let body_h = caption_line_h * ui::num::f64_of_usize(shape.body_lines().max(1));
+                ui::widget::TextBlockFace::new(&body, &caption_style).paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                    Rect::new(x, body_y, x + body_width, body_y + body_h),
                     colors.text_dim,
-                    transform.pre_translate((x, body_y).into()),
-                    Some(body_width),
-                    &caption_style,
                 );
             }
             // The notification's own choices, as on its banner: always
@@ -2603,13 +2610,7 @@ impl NotificationCenter {
         (cursor, focus): (Option<Point>, Option<ActionFocus>),
     ) {
         let footer = layout.footer();
-        ui::surface::card(
-            scene,
-            transform,
-            footer,
-            qs::control_radius(theme, footer),
-            qs::control_fill(theme, false),
-        );
+        ui::widget::paint_control_row(scene, transform, theme, footer, false, false);
         let (newer, older) = layout.pager();
         let newer_on = start > 0;
         let older_on = start.saturating_add(shown) < total;
@@ -2651,22 +2652,13 @@ impl NotificationCenter {
                 ("total", total.into()),
             ],
         );
-        let (w, h) = text_renderer.measure_style(&position, None, &caption_style);
+        let (w, _h) = text_renderer.measure_style(&position, None, &caption_style);
         let workspace = older.x0 - newer.x1 - 2.0 * qs::RELATED_GAP;
         if f64::from(w) <= workspace {
-            text_renderer.draw_style(
-                scene,
-                &position,
+            ui::widget::TextLineFace::styled(&position, &caption_style, TextRole::Caption).paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                footer,
                 theme.tokens.colors.text_dim,
-                transform.pre_translate(
-                    (
-                        footer.center().x - f64::from(w) / 2.0,
-                        footer.center().y - f64::from(h) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-                &caption_style,
             );
         }
     }
@@ -2706,22 +2698,16 @@ impl NotificationCenter {
         let colors = &theme.tokens.colors;
         let style = theme.text(TextRole::Caption);
         let status = layout.cleared_band();
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.lift(0.35),
-            None,
-            &RoundedRect::from_rect(status, qs::control_radius(theme, status)),
-        );
+        ui::widget::paint_control_row(scene, transform, theme, status, false, false);
         let label = layout.cleared_label_rect();
-        text_renderer.draw_style(
-            scene,
-            &t("notification-center-cleared"),
-            colors.text_primary,
-            transform.pre_translate((label.x0, label.y0).into()),
-            Some(f32_of_f64(label.width().max(1.0))),
-            &style,
-        );
+        let cleared = t("notification-center-cleared");
+        ui::widget::TextLineFace::styled(&cleared, &style, TextRole::Caption)
+            .start()
+            .paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                label,
+                colors.text_primary,
+            );
         Self::chip(
             scene,
             transform,
@@ -2769,51 +2755,51 @@ impl NotificationCenter {
             "notification-center-group-count",
             &[("count", count.into())],
         );
-        text_renderer.draw_style(
-            scene,
-            &count_label,
-            colors.text_dim,
-            transform.pre_translate((x, source_y).into()),
-            Some(f32_of_f64(
-                row.x1 - qs::CONTROL_INSET - f64::from(time_width) - qs::RELATED_GAP - x,
-            )),
-            &caption_style,
-        );
+        let count_right = row.x1 - qs::CONTROL_INSET - f64::from(time_width) - qs::RELATED_GAP;
+        ui::widget::TextLineFace::styled(&count_label, &caption_style, TextRole::Caption)
+            .start()
+            .paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                Rect::new(x, source_y, count_right, source_y + layout.caption_lh),
+                colors.text_dim,
+            );
         // Dismiss-all stands where the time is while it is shown.
         if !reveal {
-            text_renderer.draw_style(
-                scene,
-                &age,
-                colors.text_dim,
-                transform.pre_translate(
-                    (row.x1 - qs::CONTROL_INSET - f64::from(time_width), source_y).into(),
-                ),
-                None,
-                &caption_style,
-            );
+            ui::widget::TextLineFace::styled(&age, &caption_style, TextRole::Caption)
+                .start()
+                .paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                    Rect::new(
+                        row.x1 - qs::CONTROL_INSET - f64::from(time_width),
+                        source_y,
+                        row.x1 - qs::CONTROL_INSET,
+                        source_y + layout.caption_lh,
+                    ),
+                    colors.text_dim,
+                );
         }
         let text_w = f32_of_f64(dismiss.x0 - qs::RELATED_GAP - x);
         let title_y = source_y + layout.caption_lh;
         let title_style = label_style.with_weight(TextWeight::Semibold);
         let label = preview_line(text_renderer, label, text_w, &title_style);
-        text_renderer.draw_style(
-            scene,
-            &label,
-            colors.text_primary,
-            transform.pre_translate((x, title_y).into()),
-            Some(text_w),
-            &title_style,
-        );
+        let label_right = x + f64::from(text_w);
+        ui::widget::TextLineFace::styled(&label, &title_style, TextRole::Label)
+            .start()
+            .paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                Rect::new(x, title_y, label_right, title_y + layout.label_lh),
+                colors.text_primary,
+            );
         if !expanded {
             let title = preview_line(text_renderer, &newest.title, text_w, &caption_style);
-            text_renderer.draw_style(
-                scene,
-                &title,
-                colors.text_dim,
-                transform.pre_translate((x, title_y + layout.label_lh).into()),
-                Some(text_w),
-                &caption_style,
-            );
+            let top = title_y + layout.label_lh;
+            ui::widget::TextLineFace::styled(&title, &caption_style, TextRole::Caption)
+                .start()
+                .paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                    Rect::new(x, top, label_right, top + layout.caption_lh),
+                    colors.text_dim,
+                );
         }
     }
 
@@ -2893,13 +2879,8 @@ impl NotificationCenter {
 
     /// Ring the keyboard-selected row.
     fn draw_selection(scene: &mut Scene, transform: Affine, theme: &Theme, row: Rect) {
-        scene.stroke(
-            &vello::kurbo::Stroke::new(2.0),
-            transform,
-            theme.border_focus,
-            None,
-            &RoundedRect::from_rect(row, qs::control_radius(theme, row)),
-        );
+        // The keyboard's selection is the shared focus ring.
+        ui::widget::paint_focus_ring(scene, transform, row, qs::control_radius(theme, row), theme);
     }
 }
 

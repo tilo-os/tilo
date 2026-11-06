@@ -38,105 +38,6 @@ use crate::model::{self, AgentWork, Attachment, Message};
 use crate::paint::{line_in, line_of, text, width_of};
 
 impl ChatApp {
-    pub(super) fn draw_person_messages(
-        &mut self,
-        mut paint: PaintCtx<'_>,
-        presence: &PresenceCtx,
-        area: Rect,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) {
-        let gap = f64::from(paint.theme.tokens.spacing.s3);
-        let width = (area.width() - 2.0 * self.chrome.gutter).max(1.0);
-        let style = paint.theme.text(TextRole::Caption);
-        let heading_h = self.chrome.body_line;
-        let mut heights = Vec::new();
-        for message in &self.person_messages {
-            let (previous, editor) = self
-                .person_body_views
-                .entry(message.id.clone())
-                .or_insert_with(|| (String::new(), crate::composer::MessageEditor::local()));
-            if previous != &message.text {
-                editor.set_text(&message.text);
-                previous.clone_from(&message.text);
-            }
-            heights.push(
-                editor.measure(width, f32::INFINITY, paint.theme, paint.text) + heading_h + gap,
-            );
-        }
-        let total: f64 = heights.iter().sum();
-        self.scroll_content = total;
-        self.scroll_viewport = area.height();
-        let overflow = (total - area.height()).max(0.0);
-        self.scroll = self.scroll.clamp(0.0, overflow);
-        let mut y = area.y0 - overflow + self.scroll;
-        if let Some(error) = &self.person_error {
-            let color = paint.theme.text_dim;
-            line_in(
-                &mut paint,
-                error,
-                &style,
-                color,
-                area.x0 + self.chrome.gutter,
-                area,
-                width,
-            );
-            return;
-        }
-        if self.person_messages.is_empty() {
-            let label = crate::i18n::t("chat-person-chat-empty-conversation");
-            let color = paint.theme.text_dim;
-            line_in(
-                &mut paint,
-                &label,
-                &style,
-                color,
-                area.x0 + self.chrome.gutter,
-                area,
-                width,
-            );
-        }
-        for (message, height) in self.person_messages.iter().zip(heights) {
-            let author = if Some(&message.author) == self.direct_person.as_ref() {
-                self.person_display_name(&message.author)
-            } else {
-                self.me.name.clone()
-            };
-            let heading = Rect::new(
-                area.x0 + self.chrome.gutter,
-                y,
-                area.x1 - self.chrome.gutter,
-                y + heading_h,
-            );
-            let color = paint.theme.text_dim;
-            let shown = line_in(
-                &mut paint, &author, &style, color, heading.x0, heading, width,
-            );
-            // Each line's author opens their card, as in a channel.
-            if heading.y1 > area.y0 && heading.y0 < area.y1 {
-                ChatApp::push_hit(
-                    hits,
-                    Rect::new(heading.x0, heading.y0, heading.x0 + shown, heading.y1),
-                    Hit::ShowPerson {
-                        person: message.author.clone(),
-                        place: message.id.clone(),
-                    },
-                );
-            }
-            if let Some((_, editor)) = self.person_body_views.get_mut(&message.id) {
-                let body = Rect::new(heading.x0, heading.y1, heading.x1, y + height - gap);
-                editor.layout(body, paint.theme, paint.text);
-                editor.draw(
-                    paint.scene,
-                    paint.transform,
-                    paint.text,
-                    paint.theme,
-                    presence,
-                );
-            }
-            y += height;
-        }
-    }
-
     fn draw_empty_messages(&mut self, paint: PaintCtx<'_>, area: Rect) {
         let PaintCtx {
             scene,
@@ -171,10 +72,10 @@ impl ChatApp {
     /// The line under an empty channel's title: its topic, else, for
     /// someone who may write, an invitation to say the first thing.
     pub(crate) fn empty_channel_message(&self) -> Option<String> {
-        if self.direct_person.is_some() {
+        let channel = self.channel(&self.active_channel)?;
+        if channel.direct {
             return None;
         }
-        let channel = self.channel(&self.active_channel)?;
         if !channel.topic.trim().is_empty() {
             return Some(channel.topic.clone());
         }

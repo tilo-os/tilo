@@ -1418,7 +1418,10 @@ impl Widget for DiffMergeApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.invalidation.paint || self.diff.needs_redraw() || self.merge.needs_redraw()
+        self.invalidation.paint
+            || self.diff.needs_redraw()
+            || self.merge.needs_redraw()
+            || Widget::needs_animation_frame(self)
     }
 
     /// Keep ticking while a host-portal open is in flight so the off-thread

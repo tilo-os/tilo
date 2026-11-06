@@ -177,7 +177,7 @@ async fn until_sheet_by(
 async fn retained_by(hosted: &super::Hosted, workspace: u64, author: [u8; 32]) -> Vec<String> {
     hosted
         .relay
-        .room_records()
+        .workspace_records()
         .retained(workspace)
         .await
         .unwrap()
@@ -207,7 +207,7 @@ async fn retained_sealed(
         collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record);
     let bodies: Vec<bool> = hosted
         .relay
-        .room_records()
+        .workspace_records()
         .retained(workspace)
         .await
         .unwrap()
@@ -247,19 +247,20 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     let member_device = enrol(&other, "member", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let workspaces = hosted.relay.rooms().unwrap().clone();
+    let workspaces = hosted.relay.workspaces().unwrap().clone();
     let workspace = workspaces.create("An agent's own session").await.unwrap();
     let elsewhere = workspaces.create("Not the agent's").await.unwrap();
     admit_person(
         &hosted,
         &host,
-        &workspace.room,
+        &workspace.workspace,
         &member_device,
         MemberRole::Editor,
     )
     .await;
-    let mut page = Browser::open_workspace(&hosted, &page_device, &host, &workspace.room).await;
-    let mut member = open_admitted_peer(&hosted, &member_device, &host, &workspace.room).await;
+    let mut page =
+        Browser::open_workspace(&hosted, &page_device, &host, &workspace.workspace).await;
+    let mut member = open_admitted_peer(&hosted, &member_device, &host, &workspace.workspace).await;
     let approver = approve_agents(&hosted.relay, owner.clone(), &laptop);
 
     // One consent step: Ada's page asks, her laptop approves the agent with
@@ -270,7 +271,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
         REQUEST_GRANT_ACTION,
         json(&serde_json::json!({
             "label": "Scribe",
-            "rooms": [workspace.room],
+            "rooms": [workspace.workspace],
             "apps": [SHEETS],
             "expiresInSecs": 3600,
         })),
@@ -291,7 +292,12 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     // The approved grant puts the agent on the roster of the workspace it names,
     // and of no other workspace this host governs.
     let deadline = tilo_test_env::hang_deadline();
-    while workspaces.agents(&workspace.room).await.unwrap().is_empty() {
+    while workspaces
+        .agents(&workspace.workspace)
+        .await
+        .unwrap()
+        .is_empty()
+    {
         assert!(
             Instant::now() < deadline,
             "the approved agent never joined the workspace's roster"
@@ -299,7 +305,11 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(
-        workspaces.agents(&elsewhere.room).await.unwrap().is_empty(),
+        workspaces
+            .agents(&elsewhere.workspace)
+            .await
+            .unwrap()
+            .is_empty(),
         "an agent is never on the roster of a workspace its grant does not name"
     );
 
@@ -311,7 +321,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
         json(&serde_json::json!({
             "grant": grant,
             "task": "Add a new sheet named \"Ledger\"",
-            "room": workspace.room,
+            "room": workspace.workspace,
         })),
     )
     .await;
@@ -337,7 +347,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
         panic!(
             "the member never read the agent's sealed change.\nagents: {agents:#?}\n\
              roster: {:?}\nretained by the agent: {:?}\nmember: {}\npage: {}",
-            workspaces.agents(&workspace.room).await,
+            workspaces.agents(&workspace.workspace).await,
             retained_by(&hosted, workspace.workspace_id, agent_key).await,
             member.peer.status().channels,
             page.peer.status().channels,
@@ -366,7 +376,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     );
 
     // The roster names the agent as Ada's, acting.
-    let roster = workspaces.agents(&workspace.room).await.unwrap();
+    let roster = workspaces.agents(&workspace.workspace).await.unwrap();
     assert_eq!(roster.len(), 1, "{roster:?}");
     let agent = &roster[0];
     assert_eq!(agent.device_public_key, agent_key);
@@ -385,7 +395,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     .await;
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let roster = workspaces.agents(&workspace.room).await.unwrap();
+        let roster = workspaces.agents(&workspace.workspace).await.unwrap();
         if roster
             .iter()
             .any(|agent| agent.device_public_key == agent_key && !agent.acting)

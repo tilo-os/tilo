@@ -1,5 +1,5 @@
-//! The pinned roster's code: the people overlay with its peek and message
-//! box (`tilo_desktop::people_overlay`).
+//! The pinned roster's code: the people overlay with its peek
+//! (`tilo_desktop::people_overlay`).
 //!
 //! Without `deferred-people-overlay` it is linked in. With it, the bundling
 //! crate hands over a loader ([`defer_people_overlay`]) that fetches the
@@ -24,7 +24,7 @@ pub trait PinnedRoster {
     fn is_visible(&self) -> bool;
     /// Whose peek is open.
     fn peeked(&self) -> Option<&str>;
-    /// Whether the message box holds the keyboard.
+    /// Whether a field of the overlay holds the keyboard.
     fn composing(&self) -> bool;
     fn contains(&self, point: Point) -> bool;
     fn wants_pointer_capture(&self) -> bool;
@@ -47,8 +47,6 @@ pub trait PinnedRoster {
     ) -> Option<PeopleHit>;
     /// `Some` when the key was the overlay's, with what it asks for.
     fn key(&mut self, key: &Key, modifiers: ModifiersState) -> Option<Option<PeopleHit>>;
-    /// The message box's message went: it empties.
-    fn sent(&mut self);
     /// What it shows, for assistive technology: its rows and controls.
     fn accessibility_children(&self) -> Vec<ui::a11y::AccessNode>;
     /// Assistive technology pressed one of them (its action target).
@@ -115,10 +113,6 @@ impl PinnedRoster for PeopleOverlay {
 
     fn key(&mut self, key: &Key, modifiers: ModifiersState) -> Option<Option<PeopleHit>> {
         PeopleOverlay::key(self, key, modifiers)
-    }
-
-    fn sent(&mut self) {
-        PeopleOverlay::sent(self);
     }
 
     fn accessibility_children(&self) -> Vec<ui::a11y::AccessNode> {

@@ -22,12 +22,17 @@ pub struct WorkspaceView {
     /// drill (`motion::Drill`, a whole-view change in depth).
     slide: crate::motion::MotionValue<f64>,
     rect: Rect,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl WorkspaceView {
     pub fn new(workspace_count: usize, active_index: usize) -> Self {
         let wc = workspace_count.max(1);
         Self {
+            dirty: true,
             workspace_count: wc,
             active_index: active_index.min(wc.saturating_sub(1)),
             slide: crate::motion::MotionValue::new(0.0).with_tolerance(0.25),
@@ -140,6 +145,7 @@ impl Widget for WorkspaceView {
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         if let WindowEvent::KeyboardInput {
             event:
                 winit::event::KeyEvent {
@@ -165,6 +171,14 @@ impl Widget for WorkspaceView {
                 _ => {}
             }
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
         "WorkspaceView"

@@ -105,6 +105,10 @@ pub enum CommitTarget {
     JoinAdmission {
         device: [u8; 32],
     },
+    /// Retired with the pair it named: a conversation is an ordinary record of
+    /// the workspace. It keeps the variants after it at their encoded
+    /// positions.
+    RetiredDirectPair,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitBinding {

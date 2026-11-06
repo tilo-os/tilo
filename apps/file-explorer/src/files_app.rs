@@ -4166,6 +4166,14 @@ impl FilesState {
             FileCommand::Click { index, ctrl, shift } => self.apply_click(index, ctrl, shift),
             FileCommand::ContextSelect(target) => self.apply_context_select(target),
             FileCommand::Activate(index) => self.apply_activate(index),
+            FileCommand::ContextMenuAt { index, at } => {
+                // Select what the menu acts on, exactly as a right-press does,
+                // then open the one menu the window has at the row.
+                self.apply_context_select(Some(index));
+                self.last_cursor = at;
+                self.open_context_menu(at);
+                true
+            }
             FileCommand::MoveSelection { index, extend } => {
                 if index < self.displayed_entries().len() {
                     self.selection.move_to(index, extend);
@@ -9559,6 +9567,18 @@ impl FilesState {
     /// Take in what finished on the app runtime since; whether the window
     /// shows something new.
     fn poll_frame(&mut self) -> bool {
+        // A row a screen reader, the agent or a test acted on through the
+        // accessibility tree: the table the view paints records the request
+        // where no pointer event delivers it, and it is applied here as the
+        // double-click and the right-press apply theirs.
+        let (opened, menu) = self.list_slot.take_row_requests();
+        let mut restored = false;
+        if let Some(index) = opened {
+            restored |= self.apply_command(FileCommand::Activate(index));
+        }
+        if let Some((index, at)) = menu {
+            restored |= self.apply_command(FileCommand::ContextMenuAt { index, at });
+        }
         // Service calls finishing on the app runtime wake the event loop.
         let received = self.poll_received_share();
         let transfers = self.follow_transfers(ui::time::now());
@@ -9574,6 +9594,7 @@ impl FilesState {
         self.poll_share_result()
             | self.poll_history_result()
             | received
+            | restored
             | transfers
             | previewed
             | sprang

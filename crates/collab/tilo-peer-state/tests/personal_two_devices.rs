@@ -15,8 +15,10 @@ use durable_store::DurableStore as _;
 use ed25519_dalek::SigningKey;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use std::time::Duration;
-use tilo_peer_state::{PERSONAL_ALPN, PersonalStore, PersonalSync};
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+use tilo_peer_state::{PERSONAL_ALPN, PersonalStore, PersonalSync, RefusalReason};
+use tilo_user_identity::{
+    DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
+};
 use ui::permissions::UserId;
 use ui::record::RecordKind;
 use ui::record::person::PersonRecords;
@@ -556,4 +558,199 @@ async fn a_record_kept_before_the_store_reads_on_the_persons_other_device() {
         (&b_key, &b_cert),
     )
     .await;
+}
+
+/// The person's root revokes `device`: the fact one of their devices signs
+/// and their others hand on.
+fn revocation(root: &SigningKey, device: &SigningKey) -> RevocationEntry {
+    let mut entry = RevocationEntry {
+        user_public_key: root.verifying_key().to_bytes(),
+        revoked_device_public_key: device.verifying_key().to_bytes(),
+        revoked_at_ns: 1,
+        reason: RevocationReason::Compromised,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut entry, root).unwrap();
+    entry
+}
+
+/// The changes `change` writes, as the ids a refusal names and a history row
+/// carries.
+fn written_hashes(change: &collab_types::DocumentMutation) -> Vec<[u8; 32]> {
+    let collab_types::DocumentMutation::Incremental(bytes) = change else {
+        panic!("a change of the record");
+    };
+    collab_types::parse_changes(bytes)
+        .unwrap()
+        .iter()
+        .map(|change| change.hash().0)
+        .collect()
+}
+
+/// Two stores meeting over a link: `a` serves its records, `b` dials, and
+/// both are up until the meeting parts.
+struct Meeting {
+    a_endpoint: Endpoint,
+    b_endpoint: Endpoint,
+    router: iroh::protocol::Router,
+    link: tokio::task::JoinHandle<Result<(), String>>,
+}
+
+impl Meeting {
+    /// Serve `a`'s store and dial it as `b`, each device at its own key.
+    async fn of(
+        a: &PersonalSync,
+        a_key: &SigningKey,
+        b: &PersonalSync,
+        b_key: &SigningKey,
+    ) -> Self {
+        let a_endpoint = endpoint(a_key).await;
+        let router = iroh::protocol::Router::builder(a_endpoint.clone())
+            .accept(PERSONAL_ALPN, a.clone())
+            .spawn();
+        let b_endpoint = endpoint(b_key).await;
+        let link = tokio::spawn({
+            let b = b.clone();
+            let b_endpoint = b_endpoint.clone();
+            let a_addr = addr(&a_endpoint);
+            async move { b.connect(&b_endpoint, a_addr).await }
+        });
+        Self {
+            a_endpoint,
+            b_endpoint,
+            router,
+            link,
+        }
+    }
+
+    /// Part the two: the link ends, the server stops serving, and the dialling
+    /// device's endpoint closes.
+    async fn part(self) {
+        self.link.abort();
+        let _ = self.link.await;
+        self.router.shutdown().await.unwrap();
+        self.b_endpoint.close().await;
+        self.a_endpoint.close().await;
+    }
+}
+
+/// The device `cert` certifies, opening the store its identity keeps at
+/// `root_key` as it stands now.
+fn device_store(
+    root_key: [u8; 32],
+    cert: &DeviceCert,
+    key: &SigningKey,
+    now: SystemTime,
+) -> PersonalSync {
+    PersonalSync::new(
+        PersonalStore::open(root_key, cert.clone(), now).unwrap(),
+        key.clone(),
+    )
+}
+
+/// A write a device refuses reaches its author, whose own history then says
+/// where the write is not: on the link that carried the write, and, after
+/// both stores restart from what they kept, on the next link. A device the
+/// person took away writes nothing that lands.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_write_reaches_its_author_over_the_link_and_the_next_one() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let root_key = root.verifying_key().to_bytes();
+    let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
+    let (b_key, b_cert) = device(&root, 3, DeviceCapabilities::member());
+    let now = SystemTime::now();
+    let a = device_store(root_key, &a_cert, &a_key, now);
+    let b = device_store(root_key, &b_cert, &b_key, now);
+    a.publish(|store, key, now| store.publish(APP, RECORD, &record("theme", "dark"), key, now))
+        .unwrap();
+
+    // B catches up on the record, and A holds B's certificate.
+    let meeting = Meeting::of(&a, &a_key, &b, &b_key).await;
+    until(&b, |store| store.holds_document(APP, RECORD)).await;
+    until(&a, |store| {
+        store
+            .devices()
+            .iter()
+            .any(|cert| cert.device_public_key == b_key.verifying_key().to_bytes())
+    })
+    .await;
+    meeting.part().await;
+
+    // The person's identity takes B's device away, and A hears it from a
+    // sibling's hello while B is away: A says nothing of it to B yet.
+    assert!(
+        a.store()
+            .write(|store| store.revoke(revocation(&root, &b_key)))
+            .unwrap()
+    );
+
+    // B writes on with no link, and knows nothing yet.
+    let font = change("font", "serif");
+    let refused = written_hashes(&font);
+    b.publish(move |store, key, now| store.publish(APP, RECORD, &font, key, now))
+        .unwrap();
+    assert!(
+        b.store()
+            .document(APP, RECORD)
+            .is_some_and(|doc| field(&doc, "font").is_some())
+    );
+    // The store as B keeps it before any link: what a restart of B opens.
+    let before_reply = b.store().durable().unwrap();
+
+    // B links again: A's record takes none of the write, A files its verdict,
+    // and B hears it on the stream that carried the write.
+    let meeting = Meeting::of(&a, &a_key, &b, &b_key).await;
+    until(&b, |store| !store.write_refusals().is_empty()).await;
+    let heard = b.store().write_refusals();
+    assert_eq!(heard.len(), 1, "one verdict, one author: {heard:?}");
+    assert_eq!(heard[0].by, a_key.verifying_key().to_bytes());
+    assert_eq!(heard[0].author, b_key.verifying_key().to_bytes());
+    assert_eq!(heard[0].reason, RefusalReason::Revoked);
+    assert_eq!(
+        heard[0].changes, refused,
+        "the history row the write left is the one the refusal names"
+    );
+    assert!(
+        a.store()
+            .document(APP, RECORD)
+            .is_some_and(|doc| field(&doc, "font").is_none())
+    );
+
+    // The verdict is kept, not only said: both stores restart from the bytes
+    // they kept, B's from before it heard anything.
+    let a_kept = a.store().durable().unwrap();
+    meeting.part().await;
+    let a = PersonalSync::new(
+        PersonalStore::restore(&a_kept, &a_cert, now).unwrap(),
+        a_key.clone(),
+    );
+    let b = PersonalSync::new(
+        PersonalStore::restore(&before_reply, &b_cert, now).unwrap(),
+        b_key.clone(),
+    );
+    assert!(
+        b.store().write_refusals().is_empty(),
+        "this copy of B never heard A's verdict"
+    );
+
+    // The next link teaches B from what A kept: no live receipt was needed.
+    let meeting = Meeting::of(&a, &a_key, &b, &b_key).await;
+    until(&b, |store| {
+        store
+            .write_refusals()
+            .iter()
+            .any(|refusal| refusal.changes == refused)
+    })
+    .await;
+    let heard = b.store().write_refusals();
+    assert_eq!(heard.len(), 1, "a revoked device is told once: {heard:?}");
+    assert_eq!(heard[0].reason, RefusalReason::Revoked);
+    assert!(
+        a.store()
+            .document(APP, RECORD)
+            .is_some_and(|doc| field(&doc, "font").is_none())
+    );
+    // What the person took away stays out of B's hands too.
+    assert!(!b.store().holds_document(APP, RECORD));
+    meeting.part().await;
 }

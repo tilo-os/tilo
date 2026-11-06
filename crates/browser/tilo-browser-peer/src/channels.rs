@@ -112,7 +112,6 @@ pub fn document_admission(
 ) -> collab_types::inbound::OpAdmission {
     let keys = sealed.then_some(channel_crypto::ChannelGate {
         encryption_required: true,
-        head_epoch: None,
     });
     channel_crypto::admission(
         gate.into_iter().chain(keys),

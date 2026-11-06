@@ -84,7 +84,6 @@ pub(crate) struct Seams {
     pub(crate) audio_output: Seam<Arc<dyn AudioOutputServices>>,
     pub(crate) workspace_memberships: Seam<Arc<dyn WorkspaceMemberships>>,
     pub(crate) tracker_runs: Seam<Arc<dyn TrackerRuns>>,
-    pub(crate) person_chat: Seam<tilo_action_broker::services::person_chat::PersonChatService>,
     pub(crate) native_certificates:
         Seam<Arc<dyn tilo_action_broker::certificate_authority::CertificateAuthority>>,
     pub(crate) local_person: Seam<Arc<dyn LocalPersonServices>>,
@@ -133,7 +132,6 @@ impl Seams {
             audio_output: self.audio_output.into_option(),
             workspace_memberships: self.workspace_memberships.into_option(),
             tracker_runs: self.tracker_runs.into_option(),
-            person_chat: self.person_chat.into_option(),
             native_certificates: self.native_certificates.into_option(),
             local_person: self.local_person.into_option(),
             record_changes: self.record_changes.into_option(),
@@ -186,7 +184,6 @@ impl Seams {
                 self.workspace_memberships.decision(),
             ),
             ("tracker_runs", self.tracker_runs.decision()),
-            ("person_chat", self.person_chat.decision()),
             ("native_certificates", self.native_certificates.decision()),
             ("local_person", self.local_person.decision()),
             ("record_changes", self.record_changes.decision()),
@@ -251,14 +248,38 @@ pub(crate) fn declared_access(
 #[cfg(test)]
 pub(crate) const EVERY_APP: &[&str] = &["published", "settings", "launcher"];
 
-/// What a shipped app calls beyond [`EVERY_APP`], by package id.
+/// How a shipped app's source reaches a seam of the action door: a marker in
+/// its code, and the seam that answers the call. A marker here is a call, so
+/// an app that starts calling a seam it did not is found by the guard.
 #[cfg(test)]
-pub(crate) const SHIPPED: &[(&str, &[&str])] = &[
-    // Its Display pane reads and changes the displays.
-    ("so.tilo.settings", &["display_control"]),
-    // A timer or a stopwatch shows while its window is not.
-    ("so.tilo.clocks", &["live_activities"]),
+pub(crate) const CALLED_SEAMS: &[(&str, &str)] = &[
+    (
+        "ui::collaboration::wifi_continuity_command",
+        "wifi_continuity",
+    ),
+    ("ui::collaboration::speaker_command", "speakers"),
+    ("ui::collaboration::display_control", "display_control"),
+    (
+        "ui::collaboration::browser_service_sessions",
+        "browser_service_sessions",
+    ),
+    ("ui::collaboration::record_content", "record_content"),
+    (
+        "ui::collaboration::channel_live_activity",
+        "live_activities",
+    ),
+    ("ui::collaboration::open_selected", "file_clipboard"),
+    ("ui::collaboration::file_clipboard", "file_clipboard"),
+    ("ui::collaboration::write_attribution", "file_clipboard"),
+    ("NearbyTransferCommand", "nearby_transfer"),
 ];
+
+/// The seams shipped apps still call that this session serves nothing of: a
+/// list that only shrinks, each entry a call that does not work yet. Serving
+/// one, or moving the app off it, removes its line; a call to a seam this
+/// session leaves unserved and this list does not name fails the guard.
+#[cfg(test)]
+pub(crate) const UNSERVED_BUT_CALLED: &[&str] = &[];
 
 #[cfg(test)]
 mod tests {

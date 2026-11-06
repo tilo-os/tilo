@@ -40,6 +40,7 @@ activity-group-unnamed = Work group
 activity-group-select = Select
 activity-day-unknown = Undated
 activity-entry-on-behalf = { $agent } for { $person }
+activity-entry-not-on = not on { $device }: { $reason }
 activity-select-through = Select through here
 
 activity-detail-title = Details

@@ -165,8 +165,8 @@ impl Checker<'_> {
                         }
                         None => self.expr(value, None),
                     };
-                    let id = self.declare(&name.name, v.ty.clone());
-                    self.emit(Stmt::Set(id, v));
+                    let bound = v.ty.clone();
+                    self.bind_let(&name.name, bound, v, s.span);
                 }
                 UiKind::If { cond, then, els } => {
                     let c = self.expr_as(cond, &Ty::Bool);
@@ -209,8 +209,14 @@ impl Checker<'_> {
                 UiKind::Match { scrutinee, arms } => {
                     self.match_ui(scrutinee, arms, parent, s.span);
                 }
-                UiKind::Fact { node, label, value } => {
-                    self.fact(*node, label, value, parent, s.span);
+                UiKind::Fact { label, value, .. } => {
+                    self.err(
+                        "E098",
+                        s.span,
+                        "a fact is a chip derived from the field it shows: `facts(t) { ... }` holds the chips only the view can offer, never a `\"Label\": value`",
+                    );
+                    let _ = self.expr(label, None);
+                    let _ = self.expr(value, None);
                 }
                 UiKind::Slot { name, .. } => {
                     self.err(
@@ -388,10 +394,6 @@ impl Checker<'_> {
                         return id;
                     }
                     self.err("E060", span, format!("`{name}` is a variable of type {}; only a View variable can be placed in a view", self.show(&ty)));
-                    return self.dead_node();
-                }
-                if self.st.ui.parent == "facts" {
-                    self.err("E098", span, "`facts { }` holds facts, one `\"Label\": value` per line; put other content outside it");
                     return self.dead_node();
                 }
                 if let Some(msg) = removed_prim(name) {
@@ -750,6 +752,11 @@ impl Checker<'_> {
             self.prop(Ex::local(n, Ty::View), "view", v, a.value.span);
             return;
         }
+        if p.name == "show" && name == "row" {
+            let v = self.expr_as(&a.value, &Ty::Bool);
+            self.prop(Ex::local(n, Ty::View), "row", v, a.value.span);
+            return;
+        }
         if p.name == "show" && name == "of" {
             let v = self.expr(&a.value, None);
             if !matches!(v.ty, Ty::Record(_) | Ty::Error) {
@@ -900,11 +907,7 @@ impl Checker<'_> {
     pub(super) fn prop(&mut self, node: Ex, name: &str, v: Ex, span: Span) {
         let v = match self.dated(v) {
             Ok((text, kind)) => {
-                self.emit(Stmt::Eval(Ex::host(
-                    Imp::UiPropH,
-                    vec![node.clone(), Ex::str(name), text],
-                    Ty::Unit,
-                )));
+                self.prop_text(node.clone(), name, text);
                 self.emit(Stmt::Eval(Ex::host(
                     Imp::UiPropH,
                     vec![node, Ex::str(&format!("{name}:as")), Ex::str(kind)],
@@ -940,24 +943,46 @@ impl Checker<'_> {
         }
     }
 
-    /// `bind:` to a field or view state whose type is one of `allowed`; `titled` when the
-    /// control draws a document's title, bound to the field marked `(title)`.
+    /// Sets the prop `name` to the text `text`, and nothing of what the text is: a companion of
+    /// a prop (`meta:time`) is read beside the prop it completes, never formatted on its own.
+    pub(super) fn prop_text(&mut self, node: Ex, name: &str, text: Ex) {
+        self.emit(Stmt::Eval(Ex::host(
+            Imp::UiPropH,
+            vec![node, Ex::str(name), text],
+            Ty::Unit,
+        )));
+    }
+
+    /// `bind:` to a field or view state whose type is one of `allowed`, or — with `enum_case` —
+    /// of whichever enum the field declares; `titled` when the control draws a document's title,
+    /// bound to the field marked `(title)`.
     pub(super) fn bind_typed(
         &mut self,
         node: &Ex,
         value: &ast::Expr,
         allowed: &[Ty],
+        enum_case: bool,
         titled: bool,
     ) -> Option<Ty> {
-        let names = allowed
-            .iter()
-            .map(|t| self.show(t))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let takes = |ty: &Ty| allowed.contains(ty) || (enum_case && matches!(ty, Ty::Enum(_)));
+        let names = {
+            let mut names = allowed
+                .iter()
+                .map(|t| self.show(t))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if enum_case {
+                if !names.is_empty() {
+                    names.push_str(", ");
+                }
+                names.push_str("a case of an enum");
+            }
+            names
+        };
         if let ExprKind::Ident(n) = &value.kind
             && let Some(state) = self.state_named(n)
         {
-            if !allowed.contains(&state.ty) {
+            if !takes(&state.ty) {
                 let t = self.show(&state.ty);
                 self.err("E062", value.span, format!("this binds view state of type {names}; `{n}` is {t}; change it with `on: set({n}, value)`"));
                 return None;
@@ -1020,7 +1045,7 @@ impl Checker<'_> {
             );
             return None;
         };
-        if f.ty.is_container() || !allowed.contains(&f.ty) {
+        if f.ty.is_container() || !takes(&f.ty) {
             let t = self.show(&f.ty);
             self.err(
                 "E062",
@@ -1038,7 +1063,12 @@ impl Checker<'_> {
         // does: the field is text, and the control declares `title`, so one that does not is
         // never sent a prop it does not declare. Any other control is given the value it binds
         // alone; a document's body is placed by the view as `ui.BlockEditor(bind: doc.body)`.
-        if titled && f.ty == Ty::Text && f.role.as_deref() == Some("title") {
+        if titled
+            && f.ty == Ty::Text
+            && f.role
+                .as_ref()
+                .is_some_and(crate::types::FieldRole::is_title)
+        {
             self.emit(Stmt::Eval(Ex::host(
                 Imp::UiPropI,
                 vec![node.clone(), Ex::str("title"), Ex::int(1)],
@@ -1153,7 +1183,7 @@ fn removed_prim(name: &str) -> Option<&'static str> {
             "`heading` is gone: the window's title is the root resource's `(title)` field, and the platform draws it in the header. Group content with `section(\"Title\") { }`, or write `text(x, role: .title)`"
         }
         "list_row" => {
-            "`list_row` is now `row(title, secondary: ...)`, inside a list's item block (`list(xs) { x -> row(x.title) }`) or as a `row view`"
+            "`list_row` is now `row(title, secondary: ...)`, inside a list's item block (`list(xs) { x -> row(x.title) }`), as a `row view`, or as the body of a view of the item it draws"
         }
         "column" => "`column` is `stack`: a column of content",
         "card" => {

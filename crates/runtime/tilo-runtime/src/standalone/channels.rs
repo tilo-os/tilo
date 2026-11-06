@@ -17,107 +17,31 @@ use std::{
     collections::BTreeSet,
     io,
     path::Path,
-    sync::{
-        Arc, Condvar, Mutex, PoisonError,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tilo_action_broker::{
     channel_encryption::{
-        ChannelAccess, ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig,
-        ChannelKeyAccess, ChannelKeyProvider, GovernanceTransport,
+        ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
+        ChannelKeyProvider, GovernancePump,
     },
     collab_core::BrokerChannels,
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity_host::provisioning::IdentityStorage;
-use tilo_lock::MutexRecover as _;
 
 /// Sealed channel state, and where a Linux profile keeps the key that seals
 /// it (owner-only).
 const CHANNEL_STATE: &str = "channels";
 const CHANNEL_STATE_KEY: &str = "channel-state.key";
-/// How often governance is pumped while a channel is live: reconciliation
-/// and requests run on deadlines, as on the desktop's drainer. With no channel the pump parks until woken.
-const LIVE_INTERVAL: Duration = Duration::from_secs(1);
+/// How long a first write to a route's channel waits for its group to be
+/// created and admit this device.
+const OPEN_WAIT: Duration = Duration::from_secs(5);
 
 /// The running channel service; stops when dropped.
 pub(super) struct Channels {
     pub(super) keys: ChannelKeyProvider,
-    _pump: Pump,
-}
-
-/// Wakes the governance pump: a frame arrived, an endpoint opened a channel,
-/// or the service stops. A poke that arrives before the pump waits is kept,
-/// so a frame queued just before it parks is not left behind.
-#[derive(Default)]
-pub(super) struct PumpWake {
-    pending: Mutex<bool>,
-    ready: Condvar,
-}
-
-impl PumpWake {
-    pub(super) fn poke(&self) {
-        let mut pending = self.pending.lock_recover();
-        *pending = true;
-        drop(pending);
-        self.ready.notify_one();
-    }
-
-    /// Sleep until poked, or for at most `timeout` when there is one.
-    fn wait(&self, timeout: Option<Duration>) {
-        let pending = self.pending.lock_recover();
-        let mut pending = match timeout {
-            Some(timeout) => {
-                self.ready
-                    .wait_timeout_while(pending, timeout, |pending| !*pending)
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .0
-            }
-            None => self
-                .ready
-                .wait_while(pending, |pending| !*pending)
-                .unwrap_or_else(PoisonError::into_inner),
-        };
-        *pending = false;
-    }
-}
-
-/// The `tilo-runtime-channels` thread; stops when dropped.
-struct Pump {
-    wake: Arc<PumpWake>,
-    stop: Arc<AtomicBool>,
-}
-
-impl Drop for Pump {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        self.wake.poke();
-    }
-}
-
-/// Run `access`'s governance over `transport` on its own thread: once per
-/// [`LIVE_INTERVAL`] while a channel is live, otherwise only when `wake` is
-/// poked.
-fn spawn_pump(
-    access: ChannelKeyAccess,
-    transport: Arc<dyn GovernanceTransport + Send + Sync>,
-    wake: Arc<PumpWake>,
-) -> io::Result<Pump> {
-    let stop = Arc::new(AtomicBool::new(false));
-    let stopped = Arc::clone(&stop);
-    let woken = Arc::clone(&wake);
-    std::thread::Builder::new()
-        .name("tilo-runtime-channels".into())
-        .spawn(move || {
-            while !stopped.load(Ordering::Relaxed) {
-                access.pump(&*transport);
-                let timeout = access.has_live_channels().then_some(LIVE_INTERVAL);
-                woken.wait(timeout);
-            }
-        })?;
-    Ok(Pump { wake, stop })
+    _pump: GovernancePump,
 }
 
 /// Open this device's channel state in `profile`, whose workspace `profile_workspace`
@@ -142,12 +66,12 @@ pub(super) fn open(
         }),
         broker,
     )?;
-    let wake = joined.governance_wake();
-    let poke = Arc::clone(&wake);
+    let park = joined.governance_wake();
+    let poke = Arc::clone(&park);
     let access = ChannelKeyAccess::with_wake(service, Arc::new(move || poke.poke()));
     let keys = joined.channel_keys();
     keys.set(Some(access.clone()));
-    let pump = spawn_pump(access, joined, wake)?;
+    let pump = GovernancePump::spawn("tilo-runtime-channels", park, Some(access), joined, || {})?;
     Ok(Channels { keys, _pump: pump })
 }
 
@@ -156,10 +80,6 @@ struct Directory {
 }
 
 impl ChannelDirectory for Directory {
-    fn governor_of(&self, workspace: WorkspaceId) -> Option<Ed25519PublicKey> {
-        self.joined.governor_of(workspace)
-    }
-
     /// The member devices the workspace's governance lets read the channel's
     /// record.
     fn allowed_devices(
@@ -175,19 +95,43 @@ impl ChannelDirectory for Directory {
 
 /// The workspace host this runtime runs holds no channel keys of its own: it
 /// takes part in a workspace's channels as this device's one peer, asking this
-/// device's channel service for them ([`tilo_room_host::rooms::ChannelKeys`]),
+/// device's channel service for them ([`tilo_room_host::workspaces::ChannelKeys`]),
 /// so the host and the device never found two groups under one leaf.
 pub(super) struct DeviceChannelKeys {
     keys: ChannelKeyProvider,
 }
 
 impl DeviceChannelKeys {
-    pub(super) fn handle(keys: ChannelKeyProvider) -> tilo_room_host::rooms::DeviceKeys {
-        Arc::new(Self { keys })
+    /// This device's channel service as the workspace host this runtime runs
+    /// asks for it: the keys it opens and seals records with, and the sink
+    /// the channel governance its members' sessions carry is handed to, since
+    /// the service runs here, on this same device.
+    pub(super) fn device(
+        keys: ChannelKeyProvider,
+        joined: &Arc<Joined>,
+    ) -> tilo_room_host::workspaces::DeviceChannels {
+        tilo_room_host::workspaces::DeviceChannels {
+            keys: Arc::new(Self { keys }),
+            sink: Some(Arc::new(DeviceChannelSink {
+                joined: Arc::clone(joined),
+            })),
+        }
     }
 }
 
-impl tilo_room_host::rooms::ChannelKeys for DeviceChannelKeys {
+/// Where the workspace host this runtime runs hands the channel governance its
+/// members send: this device's channel service, which runs in this process.
+struct DeviceChannelSink {
+    joined: Arc<Joined>,
+}
+
+impl tilo_room_host::workspaces::ChannelSink for DeviceChannelSink {
+    fn take(&self, messages: Vec<neighbour_wire::NeighbourMsg>) {
+        self.joined.take_channel_governance(messages);
+    }
+}
+
+impl tilo_room_host::workspaces::ChannelKeys for DeviceChannelKeys {
     fn channel_keys<'a>(
         &'a self,
         workspace: &'a str,
@@ -204,27 +148,11 @@ impl tilo_room_host::rooms::ChannelKeys for DeviceChannelKeys {
         let keys = self.keys.clone();
         let (workspace, route) = (workspace.to_owned(), route.clone());
         Box::pin(async move {
-            // Asked off the caller's task: the service takes its lock and
-            // reads its state on that thread, never on the host's.
-            let asked = tokio::task::spawn_blocking(move || {
-                let Some(access) = keys.get() else {
-                    return Some(Err("this device's channel service is not running".into()));
-                };
-                let workspace = WorkspaceId::parse(&workspace)?;
-                if create {
-                    match access.access_record(workspace, &route).0 {
-                        ChannelAccess::Ready(keys) => Some(Ok(keys)),
-                        ChannelAccess::Waiting | ChannelAccess::Removed => {
-                            Some(Err("the channel's keys are not ready".into()))
-                        }
-                        ChannelAccess::Unavailable | ChannelAccess::NoSecretStore => None,
-                    }
-                } else {
-                    access.record_keys(workspace, &route)
-                }
-            })
-            .await;
-            asked.unwrap_or_else(|error| Some(Err(error.to_string())))
+            if keys.get().is_none() {
+                return Some(Err("this device's channel service is not running".into()));
+            }
+            keys.channel_keys(&workspace, &route, create, OPEN_WAIT)
+                .await
         })
     }
 }

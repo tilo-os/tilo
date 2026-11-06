@@ -3,6 +3,7 @@
 
 #![allow(
     clippy::unwrap_used,
+    clippy::panic,
     reason = "test fixtures: a failed lookup is the assertion"
 )]
 
@@ -49,6 +50,8 @@ impl TileSource for Notices {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         })
     }
 
@@ -89,6 +92,8 @@ fn tab(minter: &mut IdMinter, title: &str) -> Tab {
             note: String::new(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 
@@ -189,28 +194,58 @@ fn chrome_at(handle: &DesktopHandle, size: (u32, u32)) -> ui::headless::FrameHar
 
 /// What the person types into the open palette's field: search's card is the
 /// chrome's, over the windows, so the keys go there, and the desk takes up
-/// what the card asked before the card draws it again.
+/// what the card asked before the card draws it again. The search's sources
+/// answer on workers, so what they answered is in before the test reads a
+/// row.
 fn type_search(
     desk: &mut ui::headless::FrameHarness,
     chrome: &mut ui::headless::FrameHarness,
+    handle: &DesktopHandle,
     text: &str,
 ) {
     chrome.type_text(text);
     chrome.relayout();
     desk.relayout();
     chrome.relayout();
+    settle_search(desk, chrome, handle);
 }
 
 /// A key pressed in the open palette's field, taken up as [`type_search`] is.
 fn key_search(
     desk: &mut ui::headless::FrameHarness,
     chrome: &mut ui::headless::FrameHarness,
+    handle: &DesktopHandle,
     key: &str,
 ) {
+    settle_search(desk, chrome, handle);
     chrome.key(key);
     chrome.relayout();
     desk.relayout();
     chrome.relayout();
+    settle_search(desk, chrome, handle);
+}
+
+/// Draw the desk's and the card's frames until the search has ended. A source
+/// answers on a worker, and its answer wakes the desk: a test pumps what the
+/// wake asks for and draws the frame it brings, as a host does.
+fn settle_search(
+    desk: &mut ui::headless::FrameHarness,
+    chrome: &mut ui::headless::FrameHarness,
+    handle: &DesktopHandle,
+) {
+    let background = ui::background::Background::current();
+    let now = ui::time::now();
+    let deadline = now.checked_add(Duration::from_secs(5)).unwrap_or(now);
+    loop {
+        desk.relayout();
+        chrome.relayout();
+        if !handle.search_searching() {
+            return;
+        }
+        assert!(ui::time::now() < deadline, "the search never finished");
+        let now = ui::time::now();
+        background.park(now.checked_add(Duration::from_millis(2)).unwrap_or(now));
+    }
 }
 
 #[test]
@@ -353,6 +388,7 @@ fn an_idle_desktop_asks_its_host_for_no_frame() {
         let schedule = driver.frame_schedule();
         !schedule.queued_work
             && !schedule.needs_animation_frame
+            && !schedule.needs_redraw
             && schedule.next_wake_deadline.is_none()
     };
     assert!(idle(&driver), "{:?}", driver.frame_schedule());
@@ -588,6 +624,81 @@ impl ui::widget::AppWidget for Hosted {
 
 struct Apps(Rc<std::cell::RefCell<Option<ui::widget::RouteHandle>>>);
 
+thread_local! {
+    /// Where the wide view is scrolled to, as its app keeps it.
+    static WIDE: Rc<std::cell::Cell<f64>> = Rc::new(std::cell::Cell::new(0.0));
+}
+
+/// A view wider than its window that scrolls sideways with a sideways
+/// wheel, as a wide page or a spreadsheet does: it takes the wheel while
+/// it can still move that way and leaves it at its edge.
+struct WideView {
+    rect: ui::kurbo::Rect,
+    offset: Rc<std::cell::Cell<f64>>,
+}
+
+impl WideView {
+    /// How far the view scrolls: three windows' width.
+    const WIDTH: f64 = 1800.0;
+}
+
+impl ui::widget::Widget for WideView {
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        _: &ui::Theme,
+        _: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>,
+    ) -> ui::taffy::NodeId {
+        taffy
+            .new_leaf(ui::taffy::Style {
+                flex_grow: 1.0,
+                ..Default::default()
+            })
+            .unwrap()
+    }
+
+    fn apply_layout(
+        &mut self,
+        taffy: &ui::taffy::TaffyTree<()>,
+        node: ui::taffy::NodeId,
+        origin: ui::kurbo::Point,
+    ) {
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &ui::winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        let ui::winit::event::WindowEvent::MouseWheel { delta, .. } = event else {
+            return;
+        };
+        let travel = match delta {
+            ui::winit::event::MouseScrollDelta::PixelDelta(p) => -p.x / ctx.scale_factor,
+            ui::winit::event::MouseScrollDelta::LineDelta(x, _) => -f64::from(*x) * 40.0,
+        };
+        if travel == 0.0 {
+            return;
+        }
+        let max = (Self::WIDTH - self.rect.width()).max(0.0);
+        let next = (self.offset.get() + travel).clamp(0.0, max);
+        if (next - self.offset.get()).abs() < 0.001 {
+            return;
+        }
+        self.offset.set(next);
+        *ctx.handled = true;
+    }
+
+    fn name(&self) -> &'static str {
+        "WideView"
+    }
+
+    fn get_rect(&self) -> ui::kurbo::Rect {
+        self.rect
+    }
+}
+
 impl TileSource for Apps {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
         let content: ui::widget::Element = match tab.title.as_str() {
@@ -607,6 +718,10 @@ impl TileSource for Apps {
                     .with_height(600.0)
                     .with_child(Box::new(ui::widget::Spacer::fixed(5000.0))),
             ),
+            "Wide" => Box::new(WideView {
+                rect: ui::kurbo::Rect::ZERO,
+                offset: WIDE.with(Rc::clone),
+            }),
             "Greedy" => Box::new(TakesEveryWheel::default()),
             caret if caret.starts_with("Caret") => Box::new(CaretProbe::new(caret)),
             _ => {
@@ -856,7 +971,7 @@ fn on_clock<T>(after: Duration, step: impl FnOnce() -> T) -> T {
         .checked_add(after)
         .unwrap();
     CLOCK.set(Some(at));
-    tilo_clock::testing::with_monotonic_time(at, step)
+    ui::time::testing::with_monotonic_time(at, step)
 }
 
 /// Send one page wheel event as winit's web backend reports it: negated,
@@ -1090,7 +1205,7 @@ fn resting_on_the_window_bars_magnifier_shows_what_it_searches() {
         .frame_schedule()
         .next_wake_deadline
         .expect("the host is woken when the dwell runs out");
-    let shown = tilo_clock::testing::with_monotonic_time(reveal, || {
+    let shown = ui::time::testing::with_monotonic_time(reveal, || {
         driver.poll_frame().expect("the frame lays out");
         driver
             .drawn_tooltip()
@@ -1205,29 +1320,103 @@ fn a_wheel_the_strip_does_not_pan_with_ticks_at_once() {
     assert_eq!(phase_calls(&rows, "ui.host_tick"), 1, "{rows:?}");
 }
 
-#[test]
-fn a_trackpad_swipe_the_strip_cannot_follow_is_the_apps() {
-    let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
-    assert!(pan_offset(&handle).abs() < 0.5, "at home");
-    // Backwards from home the strip cannot move, so the gesture is the
-    // app's, even once it reverses toward later windows.
-    for _ in 0..10 {
-        page_wheel(&mut driver, -12.0, 0.0);
-    }
-    for _ in 0..10 {
-        page_wheel(&mut driver, 12.0, 0.0);
-    }
-    assert!(pan_offset(&handle).abs() < 0.5);
+/// Move the pointer onto the shown window's content, where the row routes
+/// the wheel into the app it runs.
+fn point_at_the_window(driver: &mut ui::headless::FrameHarness, handle: &DesktopHandle) {
+    let Some((_, window)) = handle.shown_tabs().first().copied() else {
+        panic!("the desk shows no window to point at");
+    };
+    let at = window.center();
+    driver.send(&ui::winit::event::WindowEvent::CursorMoved {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        position: (at.x, at.y).into(),
+    });
+}
 
-    let (mut driver, handle, _) = mount_apps(&["A"]);
+/// The app under the pointer has the sideways scroll first, and the strip
+/// takes what the app leaves: whichever way the gesture goes, all of it
+/// stays with the one that took its first event.
+#[test]
+fn the_app_under_the_pointer_has_the_sideways_scroll_first() {
+    // An app that takes every wheel keeps the whole gesture, backwards and
+    // forwards, though the strip could pan far both ways.
+    let (mut driver, handle, _) = mount_apps(&["Greedy", "B", "C", "D", "E"]);
     let max = handle.snapshot("g", vec![]).desktop_pan.unwrap().max;
-    assert!(max < 0.5, "one window fits: {max}");
-    for &dx in &trackpad_swipe() {
+    assert!(max > 1000.0, "the strip could pan: {max}");
+    point_at_the_window(&mut driver, &handle);
+    let home = pan_offset(&handle);
+    for _ in 0..10 {
+        page_wheel(&mut driver, 24.0, 0.0);
+    }
+    for _ in 0..10 {
+        page_wheel(&mut driver, -24.0, 0.0);
+    }
+    assert!(
+        (pan_offset(&handle) - home).abs() < 0.5,
+        "the app's, whichever way it goes: {}",
+        pan_offset(&handle)
+    );
+
+    // An app that scrolls only up and down leaves the sideways scroll to
+    // the strip, which pans by it from the gesture's first event.
+    let (mut driver, handle, _) = mount_apps(&["Long", "B", "C", "D", "E"]);
+    point_at_the_window(&mut driver, &handle);
+    let home = pan_offset(&handle);
+    let swipe = trackpad_swipe();
+    let total: f64 = swipe.iter().sum();
+    for &dx in &swipe {
         page_wheel(&mut driver, dx, 0.0);
     }
     assert!(
-        pan_offset(&handle).abs() < 0.5,
-        "a lone window's app scrolls sideways"
+        (pan_offset(&handle) - home - total).abs() < 0.5,
+        "the strip pans what the app leaves: {} of {total}",
+        pan_offset(&handle) - home
+    );
+}
+
+/// A view wide enough to scroll sideways itself keeps the sideways scroll:
+/// its app moves it, and the strip stays where it was.
+#[test]
+fn a_wide_view_keeps_the_sideways_scroll_and_the_strip_stays_home() {
+    WIDE.with(|offset| offset.set(0.0));
+    let (mut driver, handle, _) = mount_apps(&["Wide", "B", "C", "D", "E"]);
+    point_at_the_window(&mut driver, &handle);
+    let home = pan_offset(&handle);
+    for _ in 0..5 {
+        page_wheel(&mut driver, 40.0, 0.0);
+    }
+    let scrolled = WIDE.with(|offset| offset.get());
+    assert!(
+        (scrolled - 200.0).abs() < 0.5,
+        "the view scrolled sideways by the wheel: {scrolled}"
+    );
+    assert!(
+        (pan_offset(&handle) - home).abs() < 0.5,
+        "and the strip did not: {}",
+        pan_offset(&handle)
+    );
+    // Reversing inside the gesture is still the view's.
+    for _ in 0..5 {
+        page_wheel(&mut driver, -40.0, 0.0);
+    }
+    assert!(WIDE.with(|offset| offset.get()) < scrolled);
+    assert!((pan_offset(&handle) - home).abs() < 0.5);
+
+    // A flick that reaches the view's edge inside the gesture stays the
+    // view's: the rest of the gesture does not fall through to the strip.
+    pause();
+    for _ in 0..40 {
+        page_wheel(&mut driver, 80.0, 0.0);
+    }
+    let max = WideView::WIDTH - handle.shown_tabs()[0].1.width();
+    assert!(
+        (WIDE.with(|offset| offset.get()) - max).abs() < 0.5,
+        "the view scrolled to its edge anyway"
+    );
+    assert!(
+        (pan_offset(&handle) - home).abs() < 0.5,
+        "the gesture stays the view's past its edge: {}",
+        pan_offset(&handle)
     );
 }
 
@@ -1443,7 +1632,7 @@ fn a_sideways_wheel_spin_pans_the_strip_and_focus_follows_to_where_it_stopped() 
     }
     relayout(&mut driver);
     assert!(
-        (pan_offset(&handle) - before - 960.0).abs() < 0.5,
+        (pan_offset(&handle) - before - 4.0 * 6.0 * ui::widget::line_of_wheel()).abs() < 0.5,
         "four notches pan the strip four notches' travel"
     );
     assert_eq!(
@@ -1519,7 +1708,7 @@ fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
         settle(&mut driver);
     }
     assert!(
-        (pan_offset(&handle) - (from - 20.0 * 40.0)).abs() < 0.5,
+        (pan_offset(&handle) - (from - 20.0 * ui::widget::line_of_wheel())).abs() < 0.5,
         "twenty slow notches pan twenty lines: {} from {from}",
         pan_offset(&handle)
     );
@@ -1634,8 +1823,8 @@ fn the_search_shortcut_then_an_app_name_and_enter_opens_the_app() {
         "Ctrl+K opens search where Ctrl is the command key"
     );
     assert!(find(&chrome.inspection().root, "ActionPalette").is_some());
-    type_search(&mut driver, &mut chrome, "sheets");
-    key_search(&mut driver, &mut chrome, "Enter");
+    type_search(&mut driver, &mut chrome, &handle, "sheets");
+    key_search(&mut driver, &mut chrome, &handle, "Enter");
     assert!(!handle.search_open(), "choosing a row closes search");
     let snapshot = handle.snapshot("g", vec![]);
     assert!(
@@ -1663,7 +1852,7 @@ fn search_from_navigation_focuses_an_open_window_and_escape_dismisses() {
     let mut chrome = chrome_at(&handle, (1200, 800));
     dispatch(&mut driver, &handle, verb("search", serde_json::json!({})));
     assert!(handle.search_open());
-    key_search(&mut driver, &mut chrome, "Escape");
+    key_search(&mut driver, &mut chrome, &handle, "Escape");
     assert!(!handle.search_open(), "Escape dismisses");
     assert_eq!(
         handle.snapshot("g", vec![]).entries.len(),
@@ -1677,7 +1866,7 @@ fn search_from_navigation_focuses_an_open_window_and_escape_dismisses() {
         verb("search", serde_json::json!({"query":"scratch"})),
     );
     assert!(handle.search_open());
-    key_search(&mut driver, &mut chrome, "Enter");
+    key_search(&mut driver, &mut chrome, &handle, "Enter");
     let snapshot = handle.snapshot("g", vec![]);
     assert_eq!(
         snapshot.entries.len(),
@@ -1709,7 +1898,7 @@ fn escape_clears_what_was_typed_before_it_closes_search() {
     assert!(handle.search_open());
     assert_eq!(handle.search_rows().0, "sheets");
 
-    key_search(&mut driver, &mut chrome, "Escape");
+    key_search(&mut driver, &mut chrome, &handle, "Escape");
     assert!(handle.search_open(), "the first Escape keeps search open");
     assert_eq!(handle.search_rows().0, "", "…and clears the query");
     assert!(
@@ -1722,7 +1911,7 @@ fn escape_clears_what_was_typed_before_it_closes_search() {
         handle.search_rows().1
     );
 
-    key_search(&mut driver, &mut chrome, "Escape");
+    key_search(&mut driver, &mut chrome, &handle, "Escape");
     assert!(!handle.search_open(), "Escape on the empty field closes");
 }
 
@@ -1743,13 +1932,13 @@ fn an_app_chosen_from_search_while_its_window_is_open_is_focused_not_opened_twic
     handle.open_search(Scope::Workspace, Some("sheets".into()));
     driver.relayout();
     chrome.relayout();
-    choose_row(&mut driver, &mut chrome, "Sheets");
+    choose_row(&mut driver, &mut chrome, &handle, "Sheets");
     assert!(handle.focus_app("so.tilo.notes"));
     driver.relayout();
     handle.open_search(Scope::Workspace, Some("sheets".into()));
     driver.relayout();
     chrome.relayout();
-    choose_row(&mut driver, &mut chrome, "Sheets");
+    choose_row(&mut driver, &mut chrome, &handle, "Sheets");
     let snapshot = handle.snapshot("g", vec![]);
     assert_eq!(
         labels(&snapshot),
@@ -1774,8 +1963,7 @@ fn windows_titled_alike_say_which_one_each_is() {
     let (mut driver, handle, _) = mount_with(&["Chat", "Chat", "Notes"]);
     let mut chrome = chrome_at(&handle, (1200, 800));
     handle.open_search(Scope::Workspace, Some("chat".into()));
-    driver.relayout();
-    chrome.relayout();
+    settle_search(&mut driver, &mut chrome, &handle);
     let chats: Vec<String> = result_rows(&chrome)
         .into_iter()
         .filter(|row| row.name.as_deref() == Some("Chat"))
@@ -1803,7 +1991,7 @@ fn the_search_shortcut_closes_open_search_and_a_host_can_toggle_it() {
     driver.relayout();
     assert!(handle.search_open());
     chrome.set_modifiers(&["super".into()]);
-    key_search(&mut driver, &mut chrome, "k");
+    key_search(&mut driver, &mut chrome, &handle, "k");
     chrome.set_modifiers(&[]);
     assert!(!handle.search_open());
     handle.toggle_search();
@@ -1821,7 +2009,7 @@ fn a_host_command_from_search_runs_against_the_focused_window() {
     handle.open_search(Scope::Workspace, Some("close window".into()));
     driver.relayout();
     chrome.relayout();
-    key_search(&mut driver, &mut chrome, "Enter");
+    key_search(&mut driver, &mut chrome, &handle, "Enter");
     assert_eq!(
         handle.snapshot("g", vec![]).entries.len(),
         1,
@@ -1858,6 +2046,7 @@ fn assistive_technology_and_agents_search_through_the_palette_semantics() {
     chrome.relayout();
     driver.relayout();
     chrome.relayout();
+    settle_search(&mut driver, &mut chrome, &handle);
     let palette = find(&chrome.inspection().root, "ActionPalette")
         .unwrap()
         .semantics
@@ -1884,8 +2073,10 @@ fn assistive_technology_and_agents_search_through_the_palette_semantics() {
 fn choose_row(
     desk: &mut ui::headless::FrameHarness,
     chrome: &mut ui::headless::FrameHarness,
+    handle: &DesktopHandle,
     name: &str,
 ) {
+    settle_search(desk, chrome, handle);
     let rows = result_rows(chrome);
     let names: Vec<_> = rows.iter().map(|row| row.name.clone()).collect();
     let row = rows.iter().find(|row| row.name.as_deref() == Some(name));
@@ -1903,6 +2094,84 @@ fn choose_row(
     chrome.relayout();
 }
 
+/// The open palette's result titles.
+fn result_names(chrome: &ui::headless::FrameHarness) -> Vec<String> {
+    result_rows(chrome)
+        .into_iter()
+        .filter_map(|row| row.name)
+        .collect()
+}
+
+/// A source answers on a worker, and its answer is what asks for the frame
+/// that shows it: the desk draws no frame of its own while a source works, so
+/// nothing on a clock asks the sources again.
+#[test]
+fn an_answer_asks_for_the_frame_that_shows_it() {
+    let (services, _recorder) = ui::host::HostServices::recording();
+    let pumped = ui::rt::background::Pumped::new();
+    let _background = pumped.background().enter();
+    ui::host::scoped(&services, || {
+        let (mut desk, handle, _) = mount();
+        let mut chrome = chrome_at(&handle, (1200, 800));
+        handle.open_search(Scope::Workspace, Some("notes".into()));
+        // The frames the desk owes itself: asking the sources that hold its
+        // own state, and cutting the rows to the card. The sources on
+        // workers have not run yet, so they have not answered.
+        let mut frames = 0;
+        loop {
+            let (open, filling) = {
+                let palette = handle.search_palette();
+                let palette = palette.borrow();
+                (palette.is_open(), palette.filling_in())
+            };
+            if open && !filling {
+                break;
+            }
+            desk.relayout();
+            chrome.relayout();
+            frames += 1;
+            assert!(frames < 32, "the desk asks itself for the search forever");
+        }
+        assert!(
+            handle.search_open(),
+            "the desk opened the palette it was asked for"
+        );
+        assert!(
+            handle.search_searching(),
+            "the sources out on workers still owe an answer"
+        );
+        assert!(
+            !desk.frame_schedule().queued_work,
+            "a source still working asks for no frame: the desk polls nothing"
+        );
+        assert!(
+            !result_names(&chrome).iter().any(|name| name == "Notes"),
+            "the answer on the worker is not in yet: {:?}",
+            result_names(&chrome)
+        );
+
+        // The answer asks for the frame that shows it, and that frame shows
+        // the row it brings.
+        pumped.run_pending();
+        assert!(
+            desk.frame_schedule().queued_work,
+            "the answer woke the desk holding the search"
+        );
+        let mut frames = 0;
+        while handle.search_searching() {
+            desk.relayout();
+            chrome.relayout();
+            frames += 1;
+            assert!(frames < 32, "the answer's frame never showed the search");
+        }
+        assert!(
+            result_names(&chrome).iter().any(|name| name == "Notes"),
+            "the frame the answer asked for carries its row: {:?}",
+            result_names(&chrome)
+        );
+    });
+}
+
 /// Search over everything answers what is not a name, as the native shell's
 /// does: a sum and a unit conversion lead and are copied, and any query can
 /// be searched on the web, which opens where the host opens addresses (a
@@ -1916,8 +2185,7 @@ fn search_works_out_sums_and_conversions_and_searches_the_web() {
         let (mut driver, handle, _) = mount();
         let mut chrome = chrome_at(&handle, (1200, 800));
         handle.open_search(Scope::Workspace, Some("12*7".into()));
-        driver.relayout();
-        chrome.relayout();
+        settle_search(&mut driver, &mut chrome, &handle);
         assert_eq!(
             result_rows(&chrome)
                 .first()
@@ -1926,18 +2194,21 @@ fn search_works_out_sums_and_conversions_and_searches_the_web() {
             Some("84"),
             "the sum leads"
         );
-        key_search(&mut driver, &mut chrome, "Enter");
+        key_search(&mut driver, &mut chrome, &handle, "Enter");
         assert!(!handle.search_open(), "choosing the answer closes search");
 
         handle.open_search(Scope::Workspace, Some("5 km in miles".into()));
-        driver.relayout();
-        chrome.relayout();
-        choose_row(&mut driver, &mut chrome, "3.1069 mi");
+        settle_search(&mut driver, &mut chrome, &handle);
+        choose_row(&mut driver, &mut chrome, &handle, "3.1069 mi");
 
         handle.open_search(Scope::Workspace, Some("tilo desktop".into()));
-        driver.relayout();
-        chrome.relayout();
-        choose_row(&mut driver, &mut chrome, "Search the web for tilo desktop");
+        settle_search(&mut driver, &mut chrome, &handle);
+        choose_row(
+            &mut driver,
+            &mut chrome,
+            &handle,
+            "Search the web for tilo desktop",
+        );
         assert!(!handle.search_open());
     });
     pumped.run_pending();
@@ -1977,6 +2248,7 @@ fn search_opens_an_app_the_node_runs_for_this_desktop() {
     chrome.relayout();
     driver.relayout();
     chrome.relayout();
+    settle_search(&mut driver, &mut chrome, &handle);
     let palette = find(&chrome.inspection().root, "ActionPalette")
         .unwrap()
         .semantics
@@ -2148,8 +2420,8 @@ fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
         labels(&before),
         "nothing opens before an application is chosen"
     );
-    type_search(&mut driver, &mut chrome, "sheets");
-    key_search(&mut driver, &mut chrome, "Enter");
+    type_search(&mut driver, &mut chrome, &handle, "sheets");
+    key_search(&mut driver, &mut chrome, &handle, "Enter");
     assert!(!handle.search_open());
     let after = handle.snapshot("g", vec![]);
     let active = after.active.clone().unwrap();
@@ -2162,8 +2434,8 @@ fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
     handle.toggle_search();
     driver.relayout();
     chrome.relayout();
-    type_search(&mut driver, &mut chrome, "writer");
-    key_search(&mut driver, &mut chrome, "Enter");
+    type_search(&mut driver, &mut chrome, &handle, "writer");
+    key_search(&mut driver, &mut chrome, &handle, "Enter");
     let last = handle.snapshot("g", vec![]);
     assert_ne!(last.active.as_ref().unwrap().group, group);
     assert_eq!(windows(&last).len(), windows(&before).len() + 1);
@@ -2569,3 +2841,77 @@ fn a_wheel_scrolls_the_window_under_the_pointer_not_the_one_before_it() {
 
 #[path = "surface/actions.rs"]
 mod actions;
+
+/// A desk nobody touches has nothing to draw: a settled desk declines the
+/// frame its host offers, so a window's bar and its search lane paint nothing
+/// until what they show changes.
+#[test]
+fn a_settled_idle_desk_repaints_nothing() {
+    let (mut driver, _handle, _) = mount();
+    driver.relayout();
+    driver.settle_for_capture(Duration::from_millis(2000));
+    let schedule = driver.frame_schedule();
+    assert!(
+        !schedule.needs_redraw,
+        "an idle desk needs no repaint: {schedule:?} from {:?}",
+        driver.redraw_sources()
+    );
+    for _ in 0..3 {
+        assert!(
+            !driver.poll_frame().unwrap(),
+            "an offered frame draws nothing: {:?}",
+            driver.redraw_sources()
+        );
+    }
+}
+
+/// A desk whose windows hold apps whose first frame is still on its way: the
+/// native session's tabs before a client draws at all. Their placeholders
+/// are deadlines, not animations, so such a desk at rest has nothing to draw
+/// either.
+#[test]
+fn a_settled_idle_desk_of_arriving_windows_repaints_nothing() {
+    struct Arriving;
+
+    impl TileSource for Arriving {
+        fn tile(&mut self, _: &Workspace, _: &Tab) -> TileHost {
+            TileHost::new(ui::widget::TileContent::Arriving)
+        }
+    }
+
+    let mut minter = IdMinter::new(7);
+    let tabs = ["Writer", "Sheets"]
+        .into_iter()
+        .map(|title| tab(&mut minter, title))
+        .collect();
+    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Arriving));
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    driver.set_caller_palette_enabled(false);
+    driver.relayout();
+    driver.settle_for_capture(Duration::from_millis(2000));
+    // A host presents the frame settling made due; the offers after it find
+    // nothing.
+    driver.profile_frame();
+    for _ in 0..3 {
+        let schedule = driver.frame_schedule();
+        assert!(
+            !schedule.needs_redraw && !schedule.needs_animation_frame,
+            "an idle desk of arriving windows has nothing to draw: {schedule:?} from {:?}",
+            driver.redraw_sources()
+        );
+        assert!(
+            !driver.poll_frame().unwrap(),
+            "an offered frame draws nothing: {:?}",
+            driver.redraw_sources()
+        );
+    }
+}

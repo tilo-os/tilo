@@ -22,6 +22,7 @@
 //! primary action a person runs shows what it made.
 
 pub mod form;
+mod person_state;
 #[cfg(feature = "record")]
 pub mod record;
 pub mod rows;
@@ -36,7 +37,6 @@ use serde_json::Value as Json;
 use tilo_actions::{ActionAddress, ControlInvocation, InvocationId};
 use tilo_render_protocol::patch::{self as ui, Lane, ToApp, ToUi, Transport, Words};
 
-use crate::background::Waker;
 use crate::bundle::Bundle;
 use crate::host::{Host, Opening, Package, RootView};
 use crate::publish::{COMMIT, HOST_RESOURCE};
@@ -102,86 +102,10 @@ pub trait Publication {
     }
 }
 
-/// What an instance asks of whatever runs it.
-pub trait Platform {
-    /// Load what a window of the package runs into `host`: the installed package, or the latest
-    /// later build of it, with the packages it uses. The later build it
-    /// loaded, 0 for the installed package.
-    fn load(&self, host: &Host) -> u64;
+mod platform;
 
-    /// The latest later build of the package, once a development session handed one over.
-    fn latest(&self) -> Option<Update> {
-        None
-    }
+pub use platform::{Platform, PlatformWords};
 
-    /// Wake this instance when a later build arrives. Called once, when it first follows them.
-    fn follow_updates(&self) {}
-
-    /// Whether this process follows later builds at all.
-    fn follows_updates(&self) -> bool {
-        false
-    }
-
-    /// A later build took over: what the package declares on the door is its now.
-    fn surface_changed(&self, app: &str, bundle: &Bundle) {
-        let _ = (app, bundle);
-    }
-
-    /// The platform's phrase `id` with `args`, in the person's language: what the standard
-    /// library's frames say.
-    fn phrase(&self, id: &str, args: &[(String, String)]) -> String;
-
-    /// Takes in a package's catalogues, `(locale, Fluent text)`, so [`Self::phrase`] says its
-    /// messages too (i18n.md). A platform without catalogues of its own shows the source words.
-    fn add_words(&self, catalogues: &[(String, String)]) {
-        let _ = catalogues;
-    }
-
-    /// What the words resolve at now: it moves when the person's language, or a catalogue of
-    /// theirs, does, so a package's published labels and nouns are published again in it.
-    fn words_revision(&self) -> u64 {
-        0
-    }
-
-    /// The time now, as `now` reads it: ISO-8601 UTC text.
-    fn now(&self) -> String;
-
-    /// How many seconds the person's clock is ahead of UTC: the zone `dated` reads "tomorrow
-    /// 9am" in. UTC unless the platform knows the person's.
-    fn zone(&self) -> i64 {
-        0
-    }
-
-    /// What wakes the instance when work it waits for is ready (an index read off the frame).
-    fn waker(&self) -> Waker;
-
-    /// Publish what `host` holds until the returned hold is dropped; `wake` is called when
-    /// records read off the frame are ready to be taken in.
-    fn publish(&self, host: &Host, wake: Waker) -> Option<Box<dyn Publication>> {
-        let _ = (host, wake);
-        None
-    }
-}
-
-/// The words an instance shows, in the person's language: every package's catalogues go to
-/// the platform, and a key says what the platform's phrases say of it, or the source words where
-/// no catalogue holds it (a phrase no catalogue holds is its own key) (i18n.md).
-struct PlatformWords(Rc<dyn Platform>);
-
-impl crate::runtime::Words for PlatformWords {
-    fn add(&self, catalogues: &[(String, String)]) {
-        self.0.add_words(catalogues);
-    }
-
-    fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
-        let said = self.0.phrase(key, args);
-        if said == key { source.to_owned() } else { said }
-    }
-
-    fn revision(&self) -> u64 {
-        self.0.words_revision()
-    }
-}
 /// How an instance starts.
 pub struct Config {
     /// The package the window runs.
@@ -546,6 +470,12 @@ impl Instance {
         Rc::clone(&self.open_requests)
     }
 
+    /// Show what the person's own step made, as a press of the action that made it does: it
+    /// comes to the front as their input does, and takes the keyboard.
+    pub fn opens_what_it_made(&mut self, anchor: String) {
+        self.pressed_opens.push(anchor);
+    }
+
     /// Where the door's answers to effects mark work for the next frame.
     #[must_use]
     pub fn door_work(&self) -> Rc<Cell<bool>> {
@@ -807,6 +737,10 @@ impl Instance {
         host.set_clock(move || platform.now());
         let platform = Rc::clone(&self.platform);
         host.runtime().set_zone(move || platform.zone());
+        let platform = Rc::clone(&self.platform);
+        host.runtime().set_zone_name(move || platform.zone_name());
+        let platform = Rc::clone(&self.platform);
+        host.runtime().set_week_start(move || platform.week_start());
         host.set_words(PlatformWords(Rc::clone(&self.platform)));
         if let Some(sink) = self.sink.take() {
             host.runtime().set_sink(crate::origin::RoutingSink {
@@ -829,20 +763,19 @@ impl Instance {
         Some(host)
     }
 
-    /// The name a bound control is announced by: the field or view state it edits.
+    /// The name a bound control is announced by: the field it edits, through what the host
+    /// declares of that field.
     fn field_name(host: &Host, binding: &Binding) -> String {
-        let (target, field) = match &binding.target {
-            BindTarget::State { name, .. } => return sentence(name),
-            BindTarget::Field { target, field } => (target, field),
-        };
-        type_of(host, &target.ty)
-            .and_then(|(_, ty)| {
-                ty.fields
-                    .iter()
-                    .find(|declared| declared.id == *field)
-                    .map(|declared| sentence(&declared.name))
-            })
-            .unwrap_or_default()
+        announced(binding, |target, field| {
+            type_of(host, &target.ty)
+                .and_then(|(_, ty)| {
+                    ty.fields
+                        .iter()
+                        .find(|declared| declared.id == field)
+                        .map(|declared| sentence(&declared.name))
+                })
+                .unwrap_or_default()
+        })
     }
 
     // ----- later builds --------------------------------------------------------------------
@@ -1112,6 +1045,18 @@ impl Instance {
             view.lists.insert(list, rows);
         }
         self.out.extend(sent);
+    }
+
+    /// Whether a view has something to run again: a reading it took moved, the time it read
+    /// passed, or a record it shows changed ([`ViewInstance::is_stale`]). A slot the host fills
+    /// moves one — the person's own state, given back when their window opens or kept on another
+    /// device of theirs, and what they have seen — so the frame runs the views that read it
+    /// rather than waiting for a change of the person's here.
+    fn views_stale(&self) -> bool {
+        [Lane::Root, Lane::Detail]
+            .into_iter()
+            .filter_map(|lane| self.lane(lane))
+            .any(|shown| shown.view.borrow().is_stale())
     }
 
     /// Re-run the views whose reads changed, and send the window what changed: their trees'
@@ -2333,7 +2278,8 @@ impl Instance {
             || lenses
             || renamed
             || members
-            || timed;
+            || timed
+            || self.views_stale();
         if changed {
             self.poll_views();
         }
@@ -2375,35 +2321,6 @@ impl Instance {
         );
         self.members_from = Some((standing.person, standing.policy, self.people.clone()));
         true
-    }
-
-    /// What the person has seen, as the system keeps it in their own record (task-legibility
-    /// §2): per resource the newest version they saw (`None` takes a mark back), and the task
-    /// runs they reviewed. What `unseen(r)` and the marks the host draws read; each view that
-    /// read one runs again.
-    pub fn set_seen(
-        &mut self,
-        marks: impl IntoIterator<Item = (String, Option<crate::runtime::seen::SeenMark>)>,
-        runs: &[String],
-    ) {
-        let Some(host) = self.host() else {
-            return;
-        };
-        let person = host.viewer().0.clone();
-        let runtime = host.runtime();
-        for (resource, mark) in marks {
-            runtime.set_seen(&person, &resource, mark);
-        }
-        runtime.set_seen_runs(&person, runs);
-    }
-
-    /// What the person marked seen in this window since last asked (opening, reviewing,
-    /// a mark's Mark seen), for the host to keep in their own record with the system's
-    /// `mark seen` action.
-    pub fn take_seen(&mut self) -> Vec<crate::runtime::seen::SeenWrite> {
-        self.host()
-            .map(|host| host.runtime().take_seen())
-            .unwrap_or_default()
     }
 
     /// Which person each participant presence reports is a device of, `(participant,
@@ -2876,6 +2793,21 @@ pub fn type_of(host: &Host, ty: &str) -> Option<(Meta, TypeMeta)> {
     })
 }
 
+/// The name a bound control is announced by, as `field` says what a field of a resource is
+/// called. A view state's name is a name in the code (`draft`, `step`), not a word a person
+/// says: a control bound to one is named by what the view says it is for — its placeholder,
+/// its label — and carries no name of ours.
+#[must_use]
+pub fn announced(binding: &Binding, field: impl FnOnce(&ResourceRef, &str) -> String) -> String {
+    match &binding.target {
+        BindTarget::State { .. } => String::new(),
+        BindTarget::Field {
+            target,
+            field: name,
+        } => field(target, name),
+    }
+}
+
 /// A name in sentence case: `new_note` and `NewNote` read "New note".
 #[must_use]
 pub fn sentence(name: &str) -> String {
@@ -2910,10 +2842,12 @@ pub fn title_of(host: &Host, resource: &ResourceRef) -> String {
     let Some((meta, ty)) = type_of(host, &resource.ty) else {
         return String::new();
     };
-    let titled = ty
-        .fields
-        .iter()
-        .find(|field| field.role.as_deref() == Some("title"));
+    let titled = ty.fields.iter().find(|field| {
+        field
+            .role
+            .as_ref()
+            .is_some_and(tilolang_runtime::meta::FieldRole::is_title)
+    });
     if let Some(field) = titled
         && let Ok(value) = host.runtime().read(resource, &field.id)
     {
@@ -2978,6 +2912,32 @@ mod tests {
         assert_eq!(sentence("toggle_pin"), "Toggle pin");
         assert_eq!(sentence("Note"), "Note");
         assert_eq!(sentence(""), "");
+    }
+
+    /// A control bound to view state is not announced by that state's name in the code, which
+    /// a person never says; it is announced by what the view says it is for.
+    #[test]
+    fn a_bound_control_is_not_named_by_a_name_in_the_code() {
+        let state = Binding {
+            target: BindTarget::State {
+                key: crate::runtime::StateKey::lens("w", "person:me", "draft"),
+                name: "draft".to_owned(),
+                ty: "Text".to_owned(),
+            },
+            author: crate::runtime::ModuleHash(String::new()),
+        };
+        assert_eq!(
+            announced(&state, |_, _| "should not be asked".to_owned()),
+            ""
+        );
+        let field = Binding {
+            target: BindTarget::Field {
+                target: ResourceRef::parse_id("r1", String::new()).expect("a resource id"),
+                field: "due".to_owned(),
+            },
+            author: crate::runtime::ModuleHash(String::new()),
+        };
+        assert_eq!(announced(&field, |_, field| sentence(field)), "Due");
     }
 
     #[test]

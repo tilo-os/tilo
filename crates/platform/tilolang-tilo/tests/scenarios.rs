@@ -71,6 +71,32 @@ fn every_scenario_of_every_app_seeds_its_root_and_the_first_fills_a_list_past_a_
     }
 }
 
+/// A scenario's `person("Mia")` is someone in the workspace it stages: a view that offers the
+/// members offers them too, by the name the scenario gave.
+#[test]
+fn a_scenarios_named_person_is_a_member_of_the_workspace() {
+    let packages = vec![app!("tasks")];
+    let (mut replica, loaded) = Replica::new("ada", AutoCommit::new(), &packages);
+    replica.host.root_of("so.tilo.lang.tasks").unwrap();
+    replica.commit();
+    let scenario = loaded[0]
+        .meta
+        .scenarios
+        .iter()
+        .find(|scenario| scenario.name == "a task's subtasks")
+        .expect("Tasks stages a task's subtasks");
+    replica
+        .host
+        .runtime()
+        .invoke_action(&Principal::new("ada"), (scenario.action.as_str(), vec![]))
+        .unwrap();
+    let members = replica.host.runtime().members();
+    assert!(
+        members.iter().any(|member| member.who.0 == "scenario:Mia"),
+        "Mia is one of the workspace's: {members:?}"
+    );
+}
+
 /// Today reads the roots of the apps it uses by name: opened before they are made, it shows them
 /// once their scenarios fill them.
 #[test]
@@ -92,14 +118,15 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
         replica.commit();
     }
     view.poll_patches().unwrap();
-    // Each card counts what its app's scenario made: the open todos (nine tasks, and the three
-    // open subtasks under the launch post), the pinned notes, and the conversations at the top
-    // of Chat's sidebar — six, its four channels and categories plus the direct conversation
-    // with Leo and the conversation with yourself, the notes, which Chat's scenario opens.
+    // Each card counts what its app's scenario made: the open todos (ten tasks, the three open
+    // subtasks under the launch post, and the three under the landlord call), the pinned notes,
+    // and the conversations at the top of Chat's sidebar — six, its four channels and categories
+    // plus the direct conversation with Leo and the conversation with yourself, the notes, which
+    // Chat's scenario opens.
     let counts: Vec<String> = format!("{:?}", view.tree())
         .split("\"count\": Int(")
         .skip(1)
         .filter_map(|rest| rest.split(')').next().map(str::to_owned))
         .collect();
-    assert_eq!(counts, ["12", "3", "6"]);
+    assert_eq!(counts, ["16", "3", "6"]);
 }

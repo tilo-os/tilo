@@ -186,7 +186,7 @@ impl Fleet {
             user_public_key: self.user_public_key,
             relay_secret_key: self.relay.sk.to_bytes(),
             relay_cert: self.relay.cert.clone(),
-            rooms: self
+            workspaces: self
                 .rooms
                 .iter()
                 .map(|room| {
@@ -546,7 +546,7 @@ impl Collaborator {
     fn app_presence(&self, payload: PeerPresencePayload) -> anyhow::Result<()> {
         let timed = matches!(payload, PeerPresencePayload::Caret { .. }).then_some(Timed::Caret);
         self.presence(
-            &NeighbourMsg::AppPresenceV2 {
+            &NeighbourMsg::RetiredAppPresenceV2 {
                 peer: self.handle,
                 app_id: APP.into(),
                 cluster_id: self.room.clone(),
@@ -563,7 +563,7 @@ impl Collaborator {
     /// One pointer move along a fixed path.
     fn point(&self, step: u32) -> anyhow::Result<()> {
         self.presence(
-            &NeighbourMsg::PresenceMoved {
+            &NeighbourMsg::RetiredPresenceMoved {
                 peer: self.handle,
                 user: self.user.clone(),
                 key: self.pointer_key.clone(),

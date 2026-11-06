@@ -3,17 +3,17 @@
 [[resources]]
 kind = "chat.workspace"
 label = "Chat"
-version = 7
+version = 8
 fields = [
   { path = "categories", type = { collection = { named = "Category" } }, readonly = true, stored = "collection" },
   { path = "categories.*.name", type = "text", label = true, readonly = true },
-  { path = "channels", type = { collection = { named = "Channel" } }, readonly = true, stored = "collection" },
+  { path = "channels", type = { collection = { named = "Conversation" } }, readonly = true, stored = "collection" },
   { path = "channels.*.category", type = { option = "text" }, readonly = true },
   { path = "channels.*.name", type = "text", label = true, readonly = true },
   { path = "channels.*.topic", type = "text", readonly = true },
   { path = "channels.*.kind", type = { named = "ChannelKind" }, readonly = true },
   { path = "channels.*.archived", type = "bool", readonly = true },
-  { path = "channels.*.conversation_with", type = { option = "text" }, readonly = true },
+  { path = "channels.*.participants", type = { list = "text" }, readonly = true },
   { path = "people", type = { collection = { named = "Person" } }, stored = "keyed" },
   { path = "people.*.id", type = "text", readonly = true },
   { path = "people.*.name", type = "text", label = true },
@@ -305,17 +305,6 @@ fields = [
 ]
 
 [[resources.types]]
-name = "Channel"
-fields = [
-  { name = "category", type = { option = "text" } },
-  { name = "name", type = "text" },
-  { name = "topic", type = "text" },
-  { name = "kind", type = { named = "ChannelKind" } },
-  { name = "archived", type = "bool" },
-  { name = "conversation_with", type = { option = "text" } },
-]
-
-[[resources.types]]
 name = "ChannelKind"
 cases = [
   { name = "text" },
@@ -334,6 +323,17 @@ name = "ContextField"
 fields = [
   { name = "key", type = "text" },
   { name = "value", type = "text" },
+]
+
+[[resources.types]]
+name = "Conversation"
+fields = [
+  { name = "category", type = { option = "text" } },
+  { name = "name", type = "text" },
+  { name = "topic", type = "text" },
+  { name = "kind", type = { named = "ChannelKind" } },
+  { name = "archived", type = "bool" },
+  { name = "participants", type = { list = "text" } },
 ]
 
 [[resources.types]]
@@ -549,13 +549,6 @@ fields = [
 ]
 
 [[resources.types]]
-name = "WorkspaceFiles"
-fields = [
-  { name = "largest", type = "int" },
-  { name = "member_hourly", type = "int" },
-]
-
-[[resources.types]]
 name = "Ruling"
 fields = [
   { name = "outcome", type = { named = "Outcome2" } },
@@ -619,6 +612,13 @@ cases = [
   { name = "reopen" },
   { name = "duplicate", fields = [{ name = "report", type = "text" }] },
   { name = "task", fields = [{ name = "reference", type = { named = "ResourceRef" } }] },
+]
+
+[[resources.types]]
+name = "WorkspaceFiles"
+fields = [
+  { name = "largest", type = "int" },
+  { name = "member_hourly", type = "int" },
 ]
 
 [[resources]]

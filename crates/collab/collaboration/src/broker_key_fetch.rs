@@ -16,7 +16,7 @@ pub(super) fn answered_keys(
             answered: true,
         },
         Err(error) => {
-            tracing::debug!(?error, "collab: identity service refused channel keys");
+            tracing::warn!(?error, "collab: identity service refused channel keys");
             KeysAnswer {
                 reply: runtime_identity::wire::ChannelKeysReply {
                     access: runtime_identity::wire::ChannelAccess::Unavailable,

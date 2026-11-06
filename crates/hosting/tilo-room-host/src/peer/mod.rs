@@ -53,7 +53,7 @@ use session::{finish_peer_outcome, run_peer_stream};
 pub use session::{run_peer, run_peer_until};
 use state::{
     FanoutStamp, LiveEnvelope, PreparedRecipients, SelectedPublication, SessionLease, SessionLives,
-    StateCommit, authorized_state_source, captured_live_current, desktop_refusal,
+    StateCommit, authorized_state_source, captured_live_current, desktop_refusal, file_refusal_of,
     gated_checkpoint_channel, governor_notice, handle_delta, handle_delta_prefix, live_audience,
     unpublished,
 };
@@ -73,8 +73,7 @@ use dispatch::handle_inbound_frame;
 use dispatch::{handle_envelope, unserved_private};
 use hello::handle_host_hello;
 use live::{
-    handle_live, handle_live_join, handle_live_leave, handle_presence, handle_voice,
-    route_record_content,
+    handle_content_want, handle_live_join, handle_presence, handle_voice, route_record_content,
 };
 use records::handle_open_record;
 pub use subscribe::get_or_autobind_workspace;
@@ -92,12 +91,12 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::auth::AuthenticatedPeer;
 use crate::persistence::{ReplayAdvance, ReplayHandle, ReplayTicket, WrittenBatch};
-use crate::room_access::{self, Decision, RelayTrust, RoomOperation};
 use crate::store::StoreError;
 use crate::store::bounded::WorkLimit;
 use crate::store::replay::Step;
 use crate::transport::Envelope;
 use crate::workspace::{SharedWorkspace, Subscriber};
+use crate::workspace_access::{self, Decision, RelayTrust, WorkspaceOperation};
 use tilo_delivery_protocol::refusal::UnavailableReason;
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
 
@@ -195,15 +194,15 @@ pub struct PeerContext {
     pub compactor: Option<crate::compaction::Compactor>,
     /// Per-person limits of a public host; `None` limits nobody.
     pub member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
-    /// The rooms whose calls this host carries: a room a person owns
+    /// The workspaces whose calls this host carries: a workspace a person owns
     /// (synced across their devices through this host) holds its calls
     /// there. `None` holds no carried call.
-    pub carried_calls: Option<crate::rooms::WeakRooms>,
+    pub carried_calls: Option<crate::workspaces::WeakWorkspaces>,
 }
 
 /// Agent devices by device key: their verified delegation, or `None` once
 /// the agent was withdrawn. An agent device is confined to its delegated
-/// rooms, is its own principal for remote actions, and a withdrawn one is
+/// workspaces, is its own principal for remote actions, and a withdrawn one is
 /// refused like a revoked device.
 pub type AgentRegistry = Arc<
     std::sync::RwLock<
@@ -237,14 +236,14 @@ struct SessionCtx<'a> {
     member_limits: Option<&'a crate::member_limits::MemberLimits>,
     /// This connection's resume log per resumed workspace.
     resumes: &'a std::sync::Mutex<HashMap<u64, ResumeLog>>,
-    /// Rooms whose live deliveries this connection could not take.
+    /// Workspaces whose live deliveries this connection could not take.
     lag: &'a Arc<Lag>,
-    /// Where this connection's rooms post the presence they fan out to it;
+    /// Where this connection's workspaces post the presence they fan out to it;
     /// `None` takes each presence on the frame queue.
     presence: Option<&'a Arc<crate::presence_mailbox::PresenceMailbox>>,
-    /// The rooms whose calls this host carries; `None` holds no carried
+    /// The workspaces whose calls this host carries; `None` holds no carried
     /// call.
-    carried_calls: Option<crate::rooms::WeakRooms>,
+    carried_calls: Option<crate::workspaces::WeakWorkspaces>,
 }
 
 impl SessionCtx<'_> {
@@ -258,24 +257,24 @@ impl SessionCtx<'_> {
         }
     }
 
-    /// The room admission decision for `peer` on `op`.
+    /// The workspace admission decision for `peer` on `op`.
     fn decide(
         &self,
-        room: &crate::workspace::WorkspaceRuntime,
+        workspace: &crate::workspace::WorkspaceRuntime,
         peer: &AuthenticatedPeer,
-        op: RoomOperation,
+        op: WorkspaceOperation,
     ) -> Decision {
-        room_access::decide(room, &self.trust(), peer, op)
+        workspace_access::decide(workspace, &self.trust(), peer, op)
     }
 
-    /// Whether `peer` may act in `room` on `op` now, without enrolment.
+    /// Whether `peer` may act in `workspace` on `op` now, without enrolment.
     fn admits(
         &self,
-        room: &crate::workspace::WorkspaceRuntime,
+        workspace: &crate::workspace::WorkspaceRuntime,
         peer: &AuthenticatedPeer,
-        op: RoomOperation,
+        op: WorkspaceOperation,
     ) -> bool {
-        self.decide(room, peer, op).admitted()
+        self.decide(workspace, peer, op).admitted()
     }
 }
 

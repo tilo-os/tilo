@@ -288,8 +288,8 @@ impl Surface {
         self
     }
 
-    /// What the app reads of the surface it is to become, beside the
-    /// `WAYLAND_SOCKET` it is handed.
+    /// What the app reads of the surface it is to become and of the desktop
+    /// it runs on, beside the `WAYLAND_SOCKET` it is handed.
     #[must_use]
     pub fn environment(&self) -> Vec<(String, String)> {
         let mut environment = vec![
@@ -328,6 +328,13 @@ impl Surface {
         if self.lock {
             environment.push((String::from("TILO_SURFACE_LOCK"), String::from("1")));
         }
+        // A surface app is Tilo's own app, whatever desktop this session was
+        // started inside: its appearance and its menu entries come from the
+        // session's settings, never from a host desktop around it.
+        environment.extend(
+            tilo_app_launch::env::desktop_variables()
+                .map(|(name, value)| (name.to_owned(), value.to_owned())),
+        );
         environment
     }
 }
@@ -500,15 +507,24 @@ impl Connection {
     fn of(stream: UnixStream, wake: Option<tilo_service::Wake>) -> Self {
         let (outgoing, writes) = mpsc::channel();
         let (incoming_sender, incoming) = mpsc::channel();
-        if let Ok(reader) = stream.try_clone() {
-            std::thread::Builder::new()
-                .name("surface-actions".into())
-                .spawn(move || read_messages(reader, &incoming_sender, wake.as_ref()))
-                .ok();
-            std::thread::Builder::new()
-                .name("surface-actions-writes".into())
-                .spawn(move || write_messages(stream, &writes))
-                .ok();
+        match stream.try_clone() {
+            Ok(reader) => {
+                if let Err(error) = std::thread::Builder::new()
+                    .name("surface-actions".into())
+                    .spawn(move || read_messages(reader, &incoming_sender, wake.as_ref()))
+                {
+                    tracing::warn!(%error, "a surface's news is not read");
+                }
+                if let Err(error) = std::thread::Builder::new()
+                    .name("surface-actions-writes".into())
+                    .spawn(move || write_messages(stream, &writes))
+                {
+                    tracing::warn!(%error, "a surface's news is not sent");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "a surface's connection could not be split; nothing is sent to or heard from it");
+            }
         }
         Self {
             outgoing,
@@ -758,7 +774,7 @@ impl Surfaces {
         let display = match compositor.bind_surface_display() {
             Ok(display) => Some(display),
             Err(error) => {
-                tracing::debug!(
+                tracing::warn!(
                     surface = %surface.name,
                     %error,
                     "a surface app has no display of its own: it cannot speak the input protocols"
@@ -827,7 +843,7 @@ impl Surfaces {
             compositor
                 .accept_surface_clients(display, child.id(), surface.output.clone())
                 .map_err(|error| {
-                    tracing::debug!(
+                    tracing::warn!(
                         surface = %surface.name,
                         %error,
                         "a surface app's own display did not listen"
@@ -1099,10 +1115,10 @@ fn answer(
         } => {
             let resources = door.resources();
             let revision = revision(&resources);
-            let rows: Vec<CatalogueRow> = tilo_actions::door::survey(&resources)
+            let rows: Vec<CatalogueRow> = tilo_actions::door::survey_placed(&resources)
                 .into_iter()
-                .map(|descriptor| {
-                    CatalogueRow::for_action(SESSION_PROVIDER, SESSION_PROVIDER, descriptor)
+                .map(|placed| {
+                    CatalogueRow::for_placed_action(SESSION_PROVIDER, SESSION_PROVIDER, placed)
                 })
                 .collect();
             Some(RemoteActionMessage::CatalogueResponse {
@@ -1251,6 +1267,25 @@ mod tests {
             !environment.contains_key("TILO_SURFACE_LOCK"),
             "the bar is no lock screen"
         );
+    }
+
+    #[test]
+    fn a_surface_app_starts_as_an_app_of_this_desktop() {
+        // A surface reads its appearance and its menu entries from the
+        // session's settings: told nothing of the desktop, it would take them
+        // from a host desktop the session happens to run inside.
+        let environment: std::collections::BTreeMap<String, String> =
+            Surface::new("quick-settings", "/usr/bin/tilo-quick-settings")
+                .environment()
+                .into_iter()
+                .collect();
+        for (name, value) in tilo_app_launch::env::desktop_variables() {
+            assert_eq!(
+                environment.get(name).map(String::as_str),
+                Some(value),
+                "{name}"
+            );
+        }
     }
 
     #[test]

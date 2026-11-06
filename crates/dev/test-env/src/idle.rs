@@ -12,7 +12,8 @@
 //! - one thread of the test process: [`spawned_thread`] finds the thread a
 //!   service starts, [`named_thread`] one already running,
 //!   [`assert_stays_asleep`] fails if it is scheduled at all
-//!   while idle, and [`context_switches`] reads its count;
+//!   while idle, and [`context_switches`] and [`asleep_runs`] read its
+//!   counts;
 //! - a whole process tree, such as a compositor the test spawned and every
 //!   app it started: [`idle_wakeups`] samples every thread of it over a
 //!   window and returns per-thread rates, as [`Wakeups`].
@@ -112,6 +113,17 @@ pub fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
 /// `/proc/self/task` cannot be listed, or not exactly one thread has that
 /// name.
 pub fn named_thread(comm: &str) -> String {
+    named_threads(comm).unwrap_or_else(|named| panic!("{named} live threads named {comm}, not one"))
+}
+
+/// The id of this process's one live thread named `comm`, if there is
+/// exactly one: a thread names itself once it runs, so a thread just
+/// spawned may not be there yet.
+pub fn live_named(comm: &str) -> Option<String> {
+    named_threads(comm).ok()
+}
+
+fn named_threads(comm: &str) -> Result<String, usize> {
     let named: Vec<_> = own_thread_ids()
         .into_iter()
         .filter(|tid| {
@@ -119,35 +131,99 @@ pub fn named_thread(comm: &str) -> String {
                 .is_ok_and(|name| name.trim() == comm)
         })
         .collect();
-    let [tid] = <[String; 1]>::try_from(named)
-        .unwrap_or_else(|named| panic!("{} live threads named {comm}, not one", named.len()));
-    tid
+    match <[String; 1]>::try_from(named) {
+        Ok([tid]) => Ok(tid),
+        Err(named) => Err(named.len()),
+    }
 }
 
-/// Whether thread `tid` of this process is asleep: blocked on a timer, a
-/// poll, a lock or a channel rather than running or runnable.
-fn asleep(tid: &str) -> bool {
-    std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).is_ok_and(|stat| {
-        stat.rsplit_once(") ")
-            .is_some_and(|(_, rest)| rest.starts_with('S'))
+/// What `/proc` says about thread `tid` at one moment.
+struct Sample {
+    /// Blocked in the kernel (state `S`): on a timer, a poll, a lock or a
+    /// channel rather than running or runnable.
+    asleep: bool,
+    /// Context switches so far. A thread counts one when it goes to sleep,
+    /// a moment *after* the kernel marks it asleep.
+    switches: u64,
+    /// Times the thread has been scheduled in so far, counted as it wakes.
+    runs: u64,
+}
+
+/// The state letter of a `/proc/self/task/<tid>/status` text: `S` asleep,
+/// `R` running or runnable, `D` waiting for IO.
+fn state_of(status: &str) -> Option<char> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("State:"))?
+        .trim_start()
+        .chars()
+        .next()
+}
+
+/// A thread's state and counts, or `None` for a thread that cannot be read
+/// because it is gone.
+fn sample(tid: &str) -> Option<Sample> {
+    let status = std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).ok()?;
+    let (voluntary, involuntary) = switch_counts(&status);
+    let asleep = state_of(&status) == Some('S');
+    // `/proc/<tid>/schedstat`: CPU nanoseconds, runqueue nanoseconds, and how
+    // many time slices the thread has run, which is one per scheduling in.
+    let schedstat = std::fs::read_to_string(format!("/proc/self/task/{tid}/schedstat")).ok()?;
+    let runs = schedstat.split_whitespace().nth(2)?.parse().ok()?;
+    Some(Sample {
+        asleep,
+        switches: voluntary.saturating_add(involuntary),
+        runs,
     })
 }
 
-/// The context switches of thread `tid` once it is asleep. A woken thread is
-/// runnable until it has run and gone back to sleep, which counts a switch,
-/// so the count is final for everything that happened before the call.
-///
-/// # Panics
-/// The thread has exited, does not fall asleep within the hang bound, or
-/// its counts cannot be read.
-pub fn asleep_switches(tid: &str) -> u64 {
+/// A count of thread `tid` read once it is asleep.
+fn asleep_count(tid: &str, pick: impl Fn(&Sample) -> u64) -> u64 {
     crate::wait_for(format_args!("thread {tid} to fall asleep"), || {
         assert!(
             std::path::Path::new(&format!("/proc/self/task/{tid}")).exists(),
             "thread {tid} has exited, so it can never fall asleep"
         );
-        asleep(tid).then(|| context_switches(tid))
+        sample(tid)
+            .filter(|sample| sample.asleep)
+            .map(|sample| pick(&sample))
     })
+}
+
+/// The context switches of thread `tid` once it is asleep.
+///
+/// The count lags: a thread on its way to sleep has already set its state,
+/// and the kernel counts the switch a moment later, so the count read here
+/// can still owe the switch of the park it was settled on. Use this where
+/// switches are the subject; [`asleep_runs`] counts how often a thread was
+/// scheduled in.
+///
+/// # Panics
+/// The thread has exited, does not fall asleep within the hang bound, or
+/// its counts cannot be read.
+pub fn asleep_switches(tid: &str) -> u64 {
+    asleep_count(tid, |sample| sample.switches)
+}
+
+/// How often thread `tid` has been scheduled in, counted once it is asleep.
+///
+/// This is the exact count of the thread's wakeups, and the one an idle gate
+/// wants: a thread is scheduled in as it wakes, so a sleeping thread's count
+/// is final, however long the kernel then takes to count the switch it took
+/// to get there.
+///
+/// # Panics
+/// The thread has exited, does not fall asleep within the hang bound, its
+/// counts cannot be read, or it has never run (the kernel's scheduling
+/// statistics are off, so the count cannot see its wakeups).
+pub fn asleep_runs(tid: &str) -> u64 {
+    let runs = asleep_count(tid, |sample| sample.runs);
+    assert!(
+        runs > 0,
+        "thread {tid} has never been scheduled in, so the kernel's scheduling statistics \
+         are off and this count cannot see its wakeups"
+    );
+    runs
 }
 
 /// Whether thread `tid` of this process is blocked in the kernel (state
@@ -158,19 +234,24 @@ pub fn asleep_switches(tid: &str) -> u64 {
 /// that a held lock has not been granted, waits until this holds instead of
 /// sleeping for a while and hoping the thread got there.
 pub fn blocked(tid: &str) -> bool {
-    asleep(tid)
+    std::fs::read_to_string(format!("/proc/self/task/{tid}/status"))
+        .is_ok_and(|status| state_of(&status) == Some('S'))
 }
 
 /// Fail if thread `tid`, once asleep, is scheduled at all during an idle
 /// 400 ms. It may start or finish work first, however slowly: the window
 /// opens once it has gone to sleep, and closes once it is asleep again.
 ///
+/// What it counts is [`asleep_runs`], not context switches: a switch is
+/// counted a moment after the thread is marked asleep, so a settle can catch
+/// a park that is still being counted and report it inside the window.
+///
 /// # Panics
 /// The thread was scheduled, or its counts cannot be read.
 pub fn assert_stays_asleep(tid: &str, what: &str) {
-    let settled = asleep_switches(tid);
+    let settled = asleep_runs(tid);
     std::thread::sleep(Duration::from_millis(400));
-    let woke = asleep_switches(tid).saturating_sub(settled);
+    let woke = asleep_runs(tid).saturating_sub(settled);
     assert_eq!(woke, 0, "idle {what} woke {woke} times in 400 ms");
 }
 
@@ -742,6 +823,33 @@ mod tests {
         let me = current_thread_id().expect("this thread's id");
         let threads = sample_process(std::process::id()).expect("sample this process");
         assert!(threads.iter().any(|thread| thread.tid == me), "{threads:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_parked_thread_runs_once_per_wakeup() {
+        use std::io::{Read as _, Write as _};
+        use std::os::unix::net::UnixStream;
+
+        let (mut driver, mut parked) = UnixStream::pair().expect("a socket pair");
+        std::thread::Builder::new()
+            .name("idle-runs-probe".into())
+            .spawn(move || {
+                let mut byte = [0_u8; 1];
+                while parked.read(&mut byte).is_ok_and(|read| read == 1) {}
+            })
+            .expect("spawn the parked thread");
+        let tid = named_thread("idle-runs-probe");
+        assert_stays_asleep(&tid, "a thread parked on a socket");
+        let settled = asleep_runs(&tid);
+        driver.write_all(&[1]).expect("wake the parked thread");
+        assert_stays_asleep(&tid, "the thread after one wakeup");
+        // The write is the one thing that woke it since; a preemption before
+        // it parked again is another run, but no window of sleep is.
+        assert!(
+            asleep_runs(&tid) > settled,
+            "the write did not wake the parked thread"
+        );
     }
 
     #[cfg(target_os = "linux")]

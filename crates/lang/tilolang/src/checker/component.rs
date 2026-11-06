@@ -144,7 +144,7 @@ impl Checker<'_> {
     ) -> LocalId {
         let span = c.call.span;
         let key = self.node_key(c);
-        let n = self.new_node(&toolkit::kind(&d.name), key);
+        let n = self.new_node(&toolkit::kind(&d.name), key.clone());
         let positional: Vec<&str> = d.positional().map(|p| p.name.as_str()).collect();
         let mut given: HashSet<String> = HashSet::new();
         let mut at = 0usize;
@@ -182,7 +182,7 @@ impl Checker<'_> {
                 );
                 continue;
             }
-            self.component_arg(n, d, &name, &a.value);
+            self.component_arg(n, d, &name, &a.value, &key);
         }
         for p in d.props.iter().filter(|p| p.required) {
             if !given.contains(&p.name) {
@@ -217,6 +217,7 @@ impl Checker<'_> {
         d: &'static Description,
         name: &str,
         value: &ast::Expr,
+        key: &Ex,
     ) {
         if let Some(msg) = super::ui::removed_arg(&d.name, name) {
             self.err("E096", value.span, msg);
@@ -236,7 +237,7 @@ impl Checker<'_> {
                     ),
                 );
             } else {
-                self.binding_prop(n, d, value, &d.bindings);
+                self.binding_prop(n, d, value, &d.bindings, key);
             }
             return;
         }
@@ -245,7 +246,7 @@ impl Checker<'_> {
             if !p.data && self.st.ctx == Ctx::View && shows_words(&p.ty) {
                 self.mark_shown(value);
             }
-            self.typed_prop(n, d, name, &p.ty, &p.doc, value);
+            self.typed_prop(n, d, name, &p.ty, &p.doc, value, p.identity);
         } else if let Some(b) = d.binding(name)
             && d.event("change").is_some()
             && !self.is_place(value)
@@ -253,11 +254,11 @@ impl Checker<'_> {
             // A value the view does not hold (a device's volume, read from its reading) is
             // given, not bound: the control shows it, and the person's change goes to the
             // view's `on change(v)`, which asks whoever holds the value to change it.
-            self.typed_prop(n, d, name, &b.ty, &b.doc, value);
+            self.typed_prop(n, d, name, &b.ty, &b.doc, value, false);
         } else if let Some(b) = d.binding(name) {
-            self.binding_prop(n, d, value, std::slice::from_ref(b));
+            self.binding_prop(n, d, value, std::slice::from_ref(b), key);
         } else if let Some(s) = d.state(name) {
-            self.typed_prop(n, d, name, &s.ty, &s.doc, value);
+            self.typed_prop(n, d, name, &s.ty, &s.doc, value, false);
         } else if prims::NODE_ARGS.contains(&name) {
             self.apply_arg(n, "", name, value);
         } else {
@@ -284,27 +285,137 @@ impl Checker<'_> {
     /// A binding of the component `d` bound to what `value` names: checked against the binding's
     /// own type, and the node carries the binding's name, which is the name the host merges
     /// under. Of `bindings`, the one whose type the bound place has is the one bound.
-    fn binding_prop(
+    pub(super) fn binding_prop(
         &mut self,
         n: LocalId,
         d: &'static Description,
         value: &ast::Expr,
         bindings: &[tilo_ui_graph::component::Binding],
+        key: &Ex,
     ) {
         let node = Ex::local(n, Ty::View);
         let want: Vec<Ty> = bindings.iter().flat_map(|b| binding_types(&b.ty)).collect();
+        let enum_case = bindings.iter().any(|b| b.ty == Type::Enum);
         // A document's title is drawn by a control that declares it, as TextInput does.
         let titled = d.prop("title").is_some_and(|title| title.ty == Type::Bool);
-        let Some(ty) = self.bind_typed(&node, value, &want, titled) else {
+        let Some(ty) = self.bind_typed(&node, value, &want, enum_case, titled) else {
             return;
         };
-        let Some(b) = bindings.iter().find(|b| binding_types(&b.ty).contains(&ty)) else {
+        let Some(b) = bindings.iter().find(|b| binds(&b.ty, &ty)) else {
             return;
         };
         self.emit(host(
             Imp::UiPropH,
             vec![node, Ex::str("bind"), Ex::str(&b.name)],
         ));
+        // A day the type pairs a time of day with reads as one fact: the day's control says the
+        // time of day beside the day, and picks it in its own popover.
+        self.paired_control(n, d, value, &ty, key);
+    }
+
+    /// The day's control `n` takes the time of day its type pairs with it: the record `b` of
+    /// the type `info`, its field `day`. The chip says the day and the time it is due at as one
+    /// fact, and the toolkit's `TimeField` picks it inside the day's popover, in its `time` slot
+    /// — never as a second control beside it.
+    fn paired_control(
+        &mut self,
+        n: LocalId,
+        d: &Description,
+        value: &ast::Expr,
+        ty: &Ty,
+        key: &Ex,
+    ) {
+        if d.name != "DateField" || !matches!(ty, Ty::Date | Ty::Option(_)) {
+            return;
+        }
+        let ast::ExprKind::Field { base, name } = &value.kind else {
+            return;
+        };
+        if !matches!(
+            base.kind,
+            ast::ExprKind::Ident(_) | ast::ExprKind::Field { .. }
+        ) {
+            return;
+        }
+        let b = self.expr(base, None);
+        let Ty::Record(record) = b.ty.clone() else {
+            return;
+        };
+        let env = self.env;
+        let Some(info) = env.type_info(&record).cloned() else {
+            return;
+        };
+        let Some(day) = info.field(&name.name).cloned() else {
+            return;
+        };
+        self.date_control(&Ex::local(n, Ty::View), key, &b, &day, &info, value.span);
+    }
+
+    /// Give the day's control `node` the time of day the type pairs with `day`
+    /// (`at: Option<Time> (time of: due)`): what the chip says after the day, and the control
+    /// that picks it, in the day's popover above its calendar.
+    pub(super) fn date_control(
+        &mut self,
+        node: &Ex,
+        key: &Ex,
+        b: &Ex,
+        day: &crate::resolve::FieldInfo,
+        info: &crate::resolve::TypeInfo,
+        span: Span,
+    ) {
+        let Some(time) = info.time_of(&day.name) else {
+            return;
+        };
+        // What the chip says after the day: the time of day it is due at.
+        let at = self.field_read(
+            b.clone(),
+            &ast::Ident {
+                name: time.name.clone(),
+                span,
+            },
+        );
+        self.emit(host(Imp::UiPropH, vec![node.clone(), Ex::str("at"), at]));
+        // The control that picks it: bound to the time of day, as the day's is to the day.
+        let env = self.env;
+        let Some(d) = env.toolkit.and_then(|toolkit| toolkit.get("TimeField")) else {
+            return;
+        };
+        let Some(binding) = d.bindings.first() else {
+            return;
+        };
+        let n = self.new_node(
+            &toolkit::kind(&d.name),
+            Ex::host(
+                Imp::StrConcat,
+                vec![key.clone(), Ex::str("#time")],
+                Ty::Text,
+            ),
+        );
+        let picker = Ex::local(n, Ty::View);
+        self.emit(host(
+            Imp::UiBind,
+            vec![picker.clone(), b.clone(), Ex::str(&time.id)],
+        ));
+        self.emit(host(
+            Imp::UiPropH,
+            vec![picker.clone(), Ex::str("bind"), Ex::str(&binding.name)],
+        ));
+        // It stands in the day's popover, above the calendar: the day's `time` slot.
+        let slot = self.new_node(
+            "slot",
+            Ex::host(
+                Imp::StrConcat,
+                vec![key.clone(), Ex::str("#time-slot")],
+                Ty::Text,
+            ),
+        );
+        let held = Ex::local(slot, Ty::View);
+        self.emit(host(
+            Imp::UiPropH,
+            vec![held.clone(), Ex::str("name"), Ex::str("time")],
+        ));
+        self.emit(host(Imp::UiChild, vec![held.clone(), picker]));
+        self.emit(host(Imp::UiChild, vec![node.clone(), held]));
     }
 
     /// Whether `value` names somewhere a control can be bound to: a field, or a piece of the
@@ -326,8 +437,21 @@ impl Checker<'_> {
         ty: &Type,
         doc: &str,
         value: &ast::Expr,
+        identity: bool,
     ) {
         let node = Ex::local(n, Ty::View);
+        // A filter names the item it is: the host compares the prop's text with its siblings'
+        // keys, so the query the filter asks is what it is given.
+        let keyed =
+            matches!(ty, Type::Text) || matches!(ty, Type::Option(inner) if **inner == Type::Text);
+        if identity
+            && keyed
+            && let Some(filter) = self.filter_shaped(value)
+        {
+            let text = Self::filter_query(filter);
+            self.prop(node, name, text, value.span);
+            return;
+        }
         let mismatch = |this: &mut Self, found: &Ty| {
             let t = this.show(found);
             this.err(
@@ -353,7 +477,10 @@ impl Checker<'_> {
             Type::Option(inner)
                 if matches!(**inner, Type::Icon | Type::Choice { .. } | Type::Picture) =>
             {
-                self.typed_prop(n, d, name, inner, doc, value);
+                self.typed_prop(n, d, name, inner, doc, value, identity);
+            }
+            Type::Option(inner) if **inner == Type::Action => {
+                self.action_prop(n, name, value, &mismatch);
             }
             Type::Option(inner) => {
                 let held = lang_type(inner);
@@ -418,22 +545,7 @@ impl Checker<'_> {
                     self.arg_prop(node, name, v);
                 }
             }
-            Type::Action => {
-                let v = self.expr(value, None);
-                if v.ty.is_error() {
-                    return;
-                }
-                if fits(ty, &v.ty) {
-                    let one = Ex::host(Imp::ListNew, Vec::new(), Ty::List(Box::new(v.ty.clone())));
-                    let tmp = self.fresh(one.ty.clone());
-                    self.emit(Stmt::Set(tmp, one));
-                    let list = Ex::local(tmp, Ty::List(Box::new(v.ty.clone())));
-                    self.emit(host(Imp::ListPushH, vec![list.clone(), v]));
-                    self.emit(host(Imp::UiActions, vec![node, Ex::str(name), list]));
-                } else {
-                    mismatch(self, &v.ty);
-                }
-            }
+            Type::Action => self.action_prop(n, name, value, &mismatch),
             _ => {
                 let v = self.expr(value, Some(&lang_type(ty)));
                 if v.ty.is_error() {
@@ -446,6 +558,62 @@ impl Checker<'_> {
                 }
             }
         }
+    }
+
+    /// The value of an identity prop, when it is a filter: `selected: place`, `ui.NavItem(Task.today)`.
+    /// A filter typed by name, or one a view state or a parameter holds. A value that is not one
+    /// takes the prop's own path, unchanged.
+    fn filter_shaped(&mut self, value: &ast::Expr) -> Option<Ex> {
+        let named = |this: &Self, base: &ast::Expr, name: &ast::Ident| {
+            let Some(Ty::Record(key)) = this.type_named(base) else {
+                return false;
+            };
+            this.env
+                .type_info(&key)
+                .is_some_and(|info| info.search.filter(&name.name).is_some())
+        };
+        let filters = match &value.kind {
+            ExprKind::Field { base, name } => named(self, base, name),
+            ExprKind::Call { callee, .. } => match &callee.kind {
+                ExprKind::Field { base, name } => named(self, base, name),
+                _ => false,
+            },
+            ExprKind::Ident(name) => self
+                .lookup(name)
+                .and_then(|(local, _)| self.st.locals.get(local as usize))
+                .is_some_and(|ty| matches!(ty, Ty::Filter(_))),
+            _ => false,
+        };
+        filters.then(|| self.expr(value, None))
+    }
+
+    /// A prop that is one action offered to the person (`ui.NavSection(add: g.add)`): the node
+    /// holds it as its control shows it, and the node's event `name` runs it.
+    fn action_prop(
+        &mut self,
+        node: LocalId,
+        name: &str,
+        value: &ast::Expr,
+        mismatch: &impl Fn(&mut Self, &Ty),
+    ) {
+        fn offered(ty: &Ty) -> bool {
+            match ty {
+                Ty::Action => true,
+                Ty::Option(inner) => offered(inner),
+                Ty::Record(key) => key.app == crate::host::HOST_APP && key.name == "Action",
+                _ => false,
+            }
+        }
+        let v = self.expr(value, None);
+        if v.ty.is_error() {
+            return;
+        }
+        if !offered(&v.ty) {
+            mismatch(self, &v.ty);
+            return;
+        }
+        let n = Ex::local(node, Ty::View);
+        self.emit(host(Imp::UiAction, vec![n, Ex::str(name), v]));
     }
 
     /// `image: "tilo-blob://<hash>"` or `image: a.photo`: a picture by where its bytes are, as
@@ -472,6 +640,23 @@ impl Checker<'_> {
         self.push_sink();
         let inner = Self::unwrap_opt(opt, held);
         self.prop(node.clone(), name, inner, span);
+        let then = self.pop_sink();
+        self.emit(Stmt::If(test, then, Vec::new()));
+    }
+
+    /// Set the companion `name` to the time of day the `Option<Time>` `v` holds, and leave it
+    /// unset while it holds none: the instant (`2026-11-03T17:00:00Z`) that reads with the day
+    /// beside it as one fact. A companion says nothing of its own kind — the day it completes
+    /// does.
+    pub(super) fn set_time_when_some(&mut self, node: &Ex, name: &str, v: Ex) {
+        let ty = v.ty.clone();
+        let tmp = self.fresh(ty.clone());
+        self.emit(Stmt::Set(tmp, v));
+        let opt = Ex::local(tmp, ty);
+        let test = Ex::host(Imp::IsSome, vec![opt.clone()], Ty::Bool);
+        self.push_sink();
+        let inner = Self::unwrap_opt(opt, &Ty::Time).typed(Ty::Text);
+        self.prop_text(node.clone(), name, inner);
         let then = self.pop_sink();
         self.emit(Stmt::If(test, then, Vec::new()));
     }
@@ -544,6 +729,16 @@ impl Checker<'_> {
                 }
             }
             _ => {
+                // A tone the view states is the tone its case's declaration gives it
+                // (`high (icon: .flag, tone: .warning)`): an enum value names the tone it
+                // holds, as a row's mark does.
+                let given = self.expr(e, None);
+                if choice == "Tone"
+                    && matches!(e.kind, ExprKind::Ident(_) | ExprKind::Field { .. })
+                    && self.enum_tone(&Ex::local(n, Ty::View), prop, given, e.span)
+                {
+                    return;
+                }
                 self.err(
                     "E065",
                     e.span,
@@ -553,7 +748,6 @@ impl Checker<'_> {
                         cases.first().map_or("", String::as_str)
                     ),
                 );
-                let _ = self.expr(e, None);
             }
         }
     }
@@ -1028,7 +1222,7 @@ fn names_cases(ty: &Type) -> bool {
 
 /// The language's types a binding of the description's `ty` takes: a moment is a Date, a Time,
 /// or one that may be none.
-fn binding_types(ty: &Type) -> Vec<Ty> {
+pub(super) fn binding_types(ty: &Type) -> Vec<Ty> {
     match ty {
         Type::Text => vec![Ty::Text],
         Type::Bool => vec![Ty::Bool],
@@ -1041,7 +1235,18 @@ fn binding_types(ty: &Type) -> Vec<Ty> {
             Ty::Option(Box::new(Ty::Time)),
         ],
         Type::RichText => vec![Ty::RichText],
+        // A person, or nobody: the field holds the identity, and may be cleared.
+        Type::Principal => vec![Ty::Principal, Ty::Option(Box::new(Ty::Principal))],
         _ => Vec::new(),
+    }
+}
+
+/// Whether a binding described as `ty` takes a field of the language type `field`: a case
+/// binding takes a field of whichever enum the app declares, whose cases are the field's.
+fn binds(ty: &Type, field: &Ty) -> bool {
+    match ty {
+        Type::Enum => matches!(field, Ty::Enum(_)),
+        other => binding_types(other).contains(field),
     }
 }
 
@@ -1062,7 +1267,8 @@ fn lang_type(ty: &Type) -> Ty {
         Type::Action => super::platform::host_ty("Action"),
         // A `Cases` set is the `ui` package's enum of that name (components.md §4.1).
         Type::Cases { name } => Ty::Enum(toolkit::key(name)),
-        Type::Resource | Type::Icon | Type::Choice { .. } => Ty::Error,
+        // A case is whichever enum the bound field declares, which a description does not name.
+        Type::Resource | Type::Icon | Type::Choice { .. } | Type::Enum => Ty::Error,
     }
 }
 

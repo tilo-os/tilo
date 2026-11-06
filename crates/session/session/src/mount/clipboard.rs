@@ -136,7 +136,7 @@ impl Clipboard {
                 });
             }
             Err(error) => {
-                tracing::debug!(%error, "the selection could not be read");
+                tracing::warn!(%error, "the selection could not be read");
                 self.seen.set(change);
             }
         }
@@ -253,13 +253,16 @@ impl Clipboard {
             tracing::debug!("the clipboard holds no files to paste");
             return;
         };
-        *self.paste.borrow_mut() = Some(clipboard_files::Paste::start(
+        let paste = clipboard_files::Paste::start(
             &files,
             destination,
             conflict,
             ui::time::unix_now_ms(),
             &self.wake,
-        ));
+        );
+        if let Some(paste) = paste {
+            *self.paste.borrow_mut() = Some(paste);
+        }
     }
 
     /// What the paste that just ended has to tell the person, if anything.
@@ -450,7 +453,7 @@ impl Clipboard {
         };
         let press = |compositor: &mut Compositor, keycode: u32, pressed: bool| {
             if let Err(error) = compositor.input(InputEvent::Key { keycode, pressed }) {
-                tracing::debug!(%error, keycode, pressed, "the paste chord was not sent");
+                tracing::warn!(%error, keycode, pressed, "the paste chord was not sent");
             }
         };
         if ctrl {
@@ -545,11 +548,15 @@ impl Service for Served {
             ClipboardAction::PasteFiles {
                 destination,
                 conflict,
-            } => self.clipboard.paste_files(
-                Path::new(&destination),
-                clipboard_files::Conflict::parse(conflict.as_deref())
-                    .unwrap_or(clipboard_files::Conflict::KeepBoth),
-            ),
+            } => {
+                let Some(chosen) = clipboard_files::Conflict::parse(conflict.as_deref()) else {
+                    return Err(DoorError::InvalidArguments(format!(
+                        "{:?} is not a paste conflict policy: keep-both, skip or replace",
+                        conflict.as_deref().unwrap_or_default()
+                    )));
+                };
+                self.clipboard.paste_files(Path::new(&destination), chosen);
+            }
         }
         Ok(Started::Done(ActionOutput::default()))
     }
@@ -664,3 +671,22 @@ fn copy_of(stored: StoredCopy) -> Option<Copy> {
 const KEY_LEFTCTRL: u32 = 29;
 const KEY_LEFTSHIFT: u32 = 42;
 const KEY_V: u32 = 47;
+
+/// Offer the files `files` names on the desktop's clipboard, as a file
+/// manager does: the copy a person pastes into any app, and which the
+/// clipboard's next read takes in as their own copy.
+pub(crate) fn offer_files(compositor: &mut Compositor, files: &CopiedFiles) {
+    let offer = vec![
+        (
+            ui::dnd::COPIED_FILES_MIME.to_owned(),
+            ui::dnd::copied_files_list(&files.paths, files.cut).into_bytes(),
+        ),
+        (
+            ui::dnd::URI_LIST_MIME.to_owned(),
+            ui::dnd::uri_list(&files.paths).into_bytes(),
+        ),
+    ];
+    if let Err(error) = compositor.set_selection(Selection::Clipboard, offer) {
+        tracing::warn!(%error, "the copied files could not be put on the clipboard");
+    }
+}

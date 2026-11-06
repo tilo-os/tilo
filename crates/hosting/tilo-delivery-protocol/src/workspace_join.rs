@@ -23,7 +23,7 @@ pub const MAX_WORKSPACE_JOIN_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 pub enum WorkspaceHostMode {
     /// Dedicated home/cloud host certified with `can_act_as_host`.
     CertifiedHost,
-    /// One-room native owner whose own device terminates service.
+    /// One-workspace native owner whose own device terminates service.
     NativeInteractiveWorkspaceOwner,
 }
 
@@ -36,7 +36,7 @@ pub enum WorkspaceHostMode {
 pub enum WorkspaceHostTrust {
     /// Existing dedicated-host authentication remains capability-gated.
     CertifiedHost,
-    /// Narrow exception for an owner device serving its own room.
+    /// Narrow exception for an owner device serving its own workspace.
     InteractiveOwner(InteractiveOwnerTrust),
 }
 
@@ -59,7 +59,7 @@ pub struct WorkspaceJoinAdmission {
 }
 
 impl InteractiveOwnerTrust {
-    /// Canonical room UUID this exception covers.
+    /// Canonical workspace UUID this exception covers.
     pub fn room(&self) -> &str {
         &self.room
     }
@@ -79,7 +79,7 @@ impl InteractiveOwnerTrust {
         self.service_public_key
     }
 
-    /// Verify that `host` may serve exactly `room`/`workspace_id` right now, and bind
+    /// Verify that `host` may serve exactly `workspace`/`workspace_id` right now, and bind
     /// that scope to the Iroh service key terminating it.
     pub fn verify(
         room: String,
@@ -122,7 +122,7 @@ pub struct IrohWorkspaceHostHintV1 {
     pub version: u32,
     /// Explicit trust mode; never inferred from an unsigned local setting.
     pub mode: WorkspaceHostMode,
-    /// Canonical governed room UUID served by this endpoint.
+    /// Canonical governed workspace UUID served by this endpoint.
     pub room: String,
     /// Exact governed workspace ID served by this endpoint.
     pub workspace_id: u64,
@@ -137,8 +137,8 @@ pub struct IrohWorkspaceHostHintV1 {
 }
 
 /// A signed hint as an earlier build wrote it: it also named the device
-/// that governed the room then. Restarts still read hints their devices
-/// pinned, which is written beside the rooms they hold.
+/// that governed the workspace then. Restarts still read hints their devices
+/// pinned, which is written beside the workspaces they hold.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredHint {
@@ -150,7 +150,7 @@ struct StoredHint {
     host_user_public_key: [u8; 32],
     host_device_certificate: DeviceCert,
     packet_relay_url: String,
-    /// The room's governor in a hint from before it named its host alone:
+    /// The workspace's governor in a hint from before it named its host alone:
     /// read, never written.
     #[serde(default, rename = "governing_authority")]
     _governing_authority: Option<DeviceCert>,

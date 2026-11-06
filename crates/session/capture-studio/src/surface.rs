@@ -29,6 +29,10 @@ use crate::resource::{Capture, CaptureEffect};
 const SENT_SHOWN: ui::time::Duration = ui::time::Duration::from_millis(5_500);
 
 /// The capture bar over the desktop, over the studio's seat.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each one is a different thing the studio may have to say"
+)]
 pub struct StudioSurface {
     widget: CaptureStudio,
     studio: Studio,
@@ -40,10 +44,18 @@ pub struct StudioSurface {
     /// The scene shown, and the generation it was published with.
     scene: Scene,
     shown: u64,
+    /// The file of the recording that ended, while its receipt offers to
+    /// play or show it: a recording that could not be finished leaves
+    /// nothing to play.
+    finished: Option<std::path::PathBuf>,
     /// Whether the person sent the last screenshot somewhere the session is
     /// still delivering it: the bar went down with the picker, and the studio
     /// stays up to say what became of it.
     sending: bool,
+    /// The studio itself put the bar away. What the session then says of the
+    /// capture comes back up, rather than being lost on a sheet the shell has
+    /// already taken down; a sheet the shell took down stays down.
+    put_away: bool,
     /// What the studio says of that send, and since when.
     saying: Option<(String, ui::time::Instant)>,
     /// Where that was drawn, for tests to find it.
@@ -66,7 +78,9 @@ impl StudioSurface {
             opening: None,
             scene: Scene::default(),
             shown: 0,
+            finished: None,
             sending: false,
+            put_away: false,
             saying: None,
             chip: Rect::ZERO,
             rect: Rect::ZERO,
@@ -123,6 +137,7 @@ impl StudioSurface {
     fn catch_up(&mut self) {
         let opened = self.follow();
         self.take_scene();
+        self.come_back();
         if opened {
             self.choose_how_it_opened();
             self.choose_what_is_asked();
@@ -151,15 +166,36 @@ impl StudioSurface {
                 // last send belongs to the receipt that is gone.
                 self.sending = false;
                 self.saying = None;
+                self.put_away = false;
                 self.widget.open();
                 true
             }
             Phase::Leaving | Phase::Closed if self.widget.is_open() => {
+                // The shell took the studio down: it stays down, whatever the
+                // bar was saying.
+                self.put_away = false;
                 self.widget.close();
                 false
             }
             _ => false,
         }
+    }
+
+    /// The session said something of the capture after the studio put its own
+    /// bar away: the bar comes back up, and the shell shows the studio again.
+    fn come_back(&mut self) {
+        if self.own || !self.put_away || !self.widget.is_open() {
+            return;
+        }
+        self.put_away = false;
+        let presentation = self.studio.presentation();
+        if presentation.is_open() {
+            return;
+        }
+        // The same studio shown again, not a new opening over what it has to
+        // say.
+        presentation.open(false);
+        self.opening = Some(presentation.openings());
     }
 
     /// The bar comes up on what somebody outside the studio opened it for: a
@@ -227,16 +263,34 @@ impl StudioSurface {
         self.dirty = true;
     }
 
-    /// Show the recording that runs, or that the last one ended.
+    /// Show the recording that runs, and what became of the one that ended:
+    /// the frames it had to skip, or why its file could not be finished, and
+    /// the receipt that plays or shows it.
     fn show_recording(&mut self, scene: &Scene) {
         let was = self.scene.recording.is_some();
         match &scene.recording {
             Some(recording) => {
                 self.widget.set_recording_active(true);
                 self.widget.set_recording_paused(recording.paused);
+                self.widget.set_recording_skipped(recording.skipped);
             }
             None if was => self.widget.set_recording_active(false),
             None => {}
+        }
+        if scene.finished == self.scene.finished {
+            return;
+        }
+        match &scene.finished {
+            Some(finished) => {
+                self.finished.clone_from(&finished.path);
+                match &finished.failure {
+                    Some(reason) => self
+                        .widget
+                        .set_recording_failed(reason.clone(), finished.path.is_some()),
+                    None => self.widget.set_recording_finished(finished.skipped),
+                }
+            }
+            None => self.finished = None,
         }
     }
 
@@ -270,11 +324,21 @@ impl StudioSurface {
         // Post-capture commands act on what was made; they never capture
         // again.
         if let Some(command) = intent.screenshot_command {
+            // What the receipt acts on: the screenshot it shows.
+            let kept = self.scene.kept.as_ref().map(|kept| kept.path.clone());
             match command {
                 ScreenshotCommand::OpenLast
                 | ScreenshotCommand::MarkupLast
-                | ScreenshotCommand::PinLast => link.ask(Ask::OpenLast),
-                ScreenshotCommand::RevealLast => link.ask(Ask::RevealLast),
+                | ScreenshotCommand::PinLast => {
+                    if let Some(path) = kept {
+                        link.ask(Ask::Open(path));
+                    }
+                }
+                ScreenshotCommand::RevealLast => {
+                    if let Some(path) = kept {
+                        link.ask(Ask::Reveal(path));
+                    }
+                }
                 ScreenshotCommand::CopyLast => link.ask(Ask::CopyLast),
                 ScreenshotCommand::SendLast(ScreenshotSendTarget::Device(id)) => {
                     let label = self
@@ -315,8 +379,18 @@ impl StudioSurface {
                 RecordingCommand::Pause => link.ask(Ask::PauseRecording),
                 RecordingCommand::Resume => link.ask(Ask::ResumeRecording),
                 RecordingCommand::Stop => link.ask(Ask::StopRecording),
-                RecordingCommand::OpenLast => link.ask(Ask::OpenLast),
-                RecordingCommand::RevealLast => link.ask(Ask::RevealLast),
+                // The receipt acts on the recording it is about, never on a
+                // screenshot taken since.
+                RecordingCommand::OpenLast => {
+                    if let Some(path) = self.finished.clone() {
+                        link.ask(Ask::Open(path));
+                    }
+                }
+                RecordingCommand::RevealLast => {
+                    if let Some(path) = self.finished.clone() {
+                        link.ask(Ask::Reveal(path));
+                    }
+                }
             }
             return;
         }
@@ -331,7 +405,7 @@ impl StudioSurface {
 
     /// Take the studio down once the bar closed itself (a capture, a
     /// button, Escape), and say when nothing of it is drawn.
-    fn dismiss(&self) {
+    fn dismiss(&mut self) {
         if self.own {
             return;
         }
@@ -342,6 +416,9 @@ impl StudioSurface {
         }
         let presentation = self.studio.presentation();
         if !self.widget.is_open() && presentation.phase() == Phase::Open {
+            // The studio put the bar away itself: what the session says of
+            // the capture may still bring it back.
+            self.put_away = true;
             presentation.dismissed();
         }
         if presentation.phase() == Phase::Leaving {
@@ -537,7 +614,10 @@ impl Widget for StudioSurface {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.behind() || (self.shown_open() && self.widget.needs_redraw())
+        self.dirty
+            || self.behind()
+            || (self.shown_open()
+                && (self.widget.needs_redraw() || self.widget.needs_animation_frame()))
     }
 
     fn needs_animation_frame(&self) -> bool {

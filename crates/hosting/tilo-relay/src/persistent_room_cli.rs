@@ -1,19 +1,18 @@
-//! `tilo-relay room --persistent`: one always-on public room. The room's
+//! `tilo-relay workspace --persistent`: one always-on public workspace. The workspace's
 //! owner root comes from the operator's encrypted secrets (mounted as a
 //! file) and is kept in this host's secret store, never in a record, the
 //! environment or a log. This is the documented exception to "the host
-//! never holds a room's root": nobody is present to approve guests, and
-//! the room is public anyway. Each guest is pre-admitted as their own
-//! person; the operator decides who may join.
+//! never holds a workspace's root": nobody is present to approve guests, and
+//! the workspace is public anyway.
 //!
-//! Visitors who only watch (a page embedding the room) are not members one
-//! by one: they all act as the room's one spectator person, a Viewer whose
-//! root this host also keeps, with short-lived device certificates that
-//! carry no capabilities.
+//! Anyone who joins is their own person, with the role the workspace's
+//! listing gives them, through the same door as any public workspace
+//! ([`Workspaces::publish`] and [`Workspaces::admit_listed`]); an unlisted
+//! one takes people by invitation.
 
 #![allow(
     clippy::similar_names,
-    reason = "a room and its root are the two things this module is about"
+    reason = "a workspace and its root are the two things this module is about"
 )]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,49 +21,44 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail, ensure};
-use base64::Engine as _;
-use ed25519_dalek::{Signer as _, SigningKey};
+use ed25519_dalek::SigningKey;
 use tilo_relay::daemon::RelayIdentity;
-use tilo_relay::rooms::{PreAdmitRequest, Rooms, WaitListed};
 use tilo_relay::web::WebHandle;
-use tilo_relay_protocol::room_operator::{self, OperatorCommand, RoomEvent, hex32};
-use tilo_relay_protocol::rooms::{JoinReply, JoinStep, PreAdmission, RoomRole, join_proof_digest};
-use tilo_relay_session::rooms::SetMemberRoleRequest;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_relay::workspaces::{WaitListed, Workspaces};
+use tilo_relay_protocol::directory::Listing;
+use tilo_relay_protocol::operator::{self, OperatorCommand, OperatorEvent, hex32};
+use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_relay_session::workspaces::SetMemberRoleRequest;
+use tilo_user_identity::{DeviceCert, RevocationList};
 
-use crate::web_cli::{RoomArgs, enrol, operator_lines, start_relay_lending, web_config};
+use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_relay_lending, web_config};
 
 mod bots;
-use bots::{hand_to_discord, offer_sign_in, start_bots};
+mod discord_sign_in;
+mod http;
+use bots::{offer_sign_in, start_bots};
 
-/// The secret store this host keeps room roots in.
+/// The secret store this host keeps workspace roots in.
 pub(crate) const SECRET_APP: &str = "so.tilo.relay";
-/// How long a pre-admitted invitation stays redeemable: a visitor who
-/// closes the tab leaves nothing redeemable behind for long.
-pub(crate) const PRE_ADMISSION_SECS: u64 = 600;
-/// How long a spectator's device certificate is valid. The embedding page
-/// asks again on its next load; nothing about a spectator is kept.
-pub(crate) const SPECTATOR_CERT_SECS: u64 = 3600;
-/// The member-list name of the spectator person.
-pub(crate) const SPECTATOR_NAME: &str = "Watching visitors";
 const MINUTE_MS: u64 = 60 * 1000;
-/// Guests pruned in one governance change: the room is held while it
+/// Guests pruned in one governance change: the workspace is held while it
 /// commits, and each removal costs time in proportion to its members.
 const PRUNE_BATCH: usize = 100;
-const NS_PER_SEC: u64 = 1_000_000_000;
+/// `--author-app none`: the workspace authors nothing and is read-only.
+const NO_AUTHORED_APPS: &str = "none";
 
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PersistentArgs {
-    /// Run one persistent public room with this name instead of a
+    /// Run one persistent public workspace with this name instead of a
     /// short-lived one.
     #[arg(long, value_name = "NAME", requires_all = ["root_file", "room_id_file"])]
     pub persistent: Option<String>,
-    /// The name people see for the persistent room; its operator name with
-    /// a capital first letter when absent. A room already created under
+    /// The name people see for the persistent workspace; its operator name with
+    /// a capital first letter when absent. A workspace already created under
     /// another name is renamed at start.
     #[arg(long = "workspace-name", value_name = "NAME", requires = "persistent")]
     pub workspace_name: Option<String>,
-    /// A channel the room's Chat opens with while it has none, by name
+    /// A channel the workspace's Chat opens with while it has none, by name
     /// (lowercase letters, digits and `-`); repeatable, in order. Its id is
     /// `c_<name>` with `-` as `_`, the same on every start, so what maps
     /// onto it (a bridged Discord server's channels) finds it again.
@@ -75,8 +69,8 @@ pub struct PersistentArgs {
         value_parser = crate::room_chat::channel_name
     )]
     pub chat_channels: Vec<String>,
-    /// The channel, by name, the room's members report problems to: kept
-    /// in the room's Chat on every start, after its other channels, since
+    /// The channel, by name, the workspace's members report problems to: kept
+    /// in the workspace's Chat on every start, after its other channels, since
     /// the site's pages send reports to it by its id (`c_<name>`).
     #[arg(
         long = "feedback-channel",
@@ -85,7 +79,7 @@ pub struct PersistentArgs {
         value_parser = crate::room_chat::channel_name
     )]
     pub feedback_channel: Option<String>,
-    /// A strip, by name, the room's shared desktop has in its first
+    /// A strip, by name, the workspace's shared desktop has in its first
     /// workspace; repeatable, in order. Added at start where missing; the
     /// strips people made are kept.
     #[arg(
@@ -95,10 +89,10 @@ pub struct PersistentArgs {
         value_parser = crate::room_strips::strip_name
     )]
     pub strips: Vec<String>,
-    /// A text published outside the room, announced so its readers find a
+    /// A text published outside the workspace, announced so its readers find a
     /// discussion thread to arrive in: `<address>=<title>`, the address of
     /// the text and the title its thread is named; repeatable. A text whose
-    /// thread the room keeps is left as it is.
+    /// thread the workspace keeps is left as it is.
     #[arg(
         long = "discussion",
         value_name = "ADDRESS=TITLE",
@@ -106,37 +100,61 @@ pub struct PersistentArgs {
         value_parser = crate::room_discussions::parse
     )]
     pub discussions: Vec<crate::room_discussions::Published>,
-    /// The room's owner root: a file of 64 hex characters (the Ed25519
+    /// The workspace's owner root: a file of 64 hex characters (the Ed25519
     /// seed), mounted from the operator's encrypted secrets.
     #[arg(long = "root-file", value_name = "PATH")]
     pub root_file: Option<PathBuf>,
-    /// Where the room's UUID is kept across restarts.
+    /// Where the workspace's UUID is kept across restarts.
     #[arg(long = "room-id-file", value_name = "PATH")]
     pub room_id_file: Option<PathBuf>,
     /// Apply per-person change and content budgets to members.
     #[arg(long = "member-limits")]
     pub member_limits: bool,
-    /// Visitors watching the room at once. Each watching page reads the
-    /// room as its spectator person and writes nothing; past this many the
-    /// relay refuses the next one's subscription.
-    #[arg(long = "max-spectators", default_value_t = 1000)]
-    pub max_spectators: usize,
-    /// A person (user public key, hex) made an Owner of the room once they
+    /// List the workspace in the public directory with this description, so
+    /// anyone may join it through its door at `--default-role`. Settled at
+    /// every start; without it the workspace is not listed.
+    #[arg(
+        long = "listing-description",
+        value_name = "TEXT",
+        requires = "persistent"
+    )]
+    pub listing_description: Option<String>,
+    /// The role everyone who joins through the directory gets while the
+    /// workspace is listed: `viewer` unless the host says otherwise.
+    #[arg(
+        long = "default-role",
+        value_name = "ROLE",
+        requires = "listing_description",
+        value_parser = parse_role
+    )]
+    pub default_role: Option<WorkspaceRole>,
+    /// A person (user public key, hex) made an Owner of the workspace once they
     /// joined; repeatable. A key removed from the list loses the role.
     #[arg(long = "owner", value_name = "HEX")]
     pub owners: Vec<String>,
     /// A person made a Moderator once they joined; repeatable.
     #[arg(long = "moderator", value_name = "HEX")]
     pub moderators: Vec<String>,
-    /// Take people by invitation: the door pre-admits only the room's
-    /// members (another tab of theirs is another device), and members may
-    /// invite someone with an invitation of their own, which they let in.
-    /// Settled at every start.
-    #[arg(long = "members-only")]
+    /// Take people by invitation: an unlisted workspace's door lets nobody new
+    /// in, and members may invite someone with an invitation of their own,
+    /// which they let in. Settled at every start. A listed workspace lets anyone
+    /// in through its door, so this goes with no `--listing-description`.
+    #[arg(long = "members-only", conflicts_with = "listing_description")]
     pub members_only: bool,
-    /// How many requests left at the door the room keeps while it takes
+    /// List the workspace, its door admitting only people invited or
+    /// pre-admitted: a member's invitation, or the one this door issued a
+    /// person it let in. Anyone else is told the workspace is joined by
+    /// invitation instead of being handed one. Settled at every start; goes
+    /// with --listing-description, which --members-only cannot.
+    #[arg(
+        long = "invitation-only",
+        requires = "listing_description",
+        conflicts_with = "members_only"
+    )]
+    pub invitation_only: bool,
+    /// How many requests left at the door the workspace keeps while it takes
     /// people by invitation: each is an address (an email) someone who asked
-    /// without an invitation leaves, on the room's wait list for whoever
+    /// without an invitation leaves, on the workspace's wait list for whoever
     /// may invite until they take it off. `0`: the door keeps none.
     #[arg(
         long = "wait-list-max",
@@ -145,7 +163,7 @@ pub struct PersistentArgs {
         requires = "members_only"
     )]
     pub wait_list_max: usize,
-    /// Whoever runs the room sends mail from the web entry DOOR (a URL
+    /// Whoever runs the workspace sends mail from the web entry DOOR (a URL
     /// ending in `/`): members may ask it to mail an invitation on that
     /// door to a confirmed address on the wait list, which it hears as an
     /// `invite_mail` event.
@@ -157,14 +175,14 @@ pub struct PersistentArgs {
     pub wait_list_mail: Option<String>,
     /// A file of more owners and moderators, `{"owners": [hex],
     /// "moderators": [hex]}`, read again whenever it changes, so a role is
-    /// granted or taken back while the room runs.
+    /// granted or taken back while the workspace runs.
     #[arg(long = "roles-file", value_name = "PATH")]
     pub roles_file: Option<PathBuf>,
-    /// An app authored into the room at its first start; repeatable.
+    /// An app authored into the workspace at its first start; repeatable.
     #[arg(long = "seed-app", value_name = "APP_ID")]
     pub seed_apps: Vec<String>,
-    /// Whether the room shares its members' windows and strips: `personal`
-    /// (each member's stay on their device; the room shares its records and
+    /// Whether the workspace shares its members' windows and strips: `personal`
+    /// (each member's stay on their device; the workspace shares its records and
     /// people) or `shared`. Settled at every start.
     #[arg(
         long = "layout",
@@ -173,23 +191,26 @@ pub struct PersistentArgs {
         value_parser = parse_layout
     )]
     pub layout: tilo_desktop_model::projection::WorkspaceLayout,
-    /// An app the room's members write through: it authors the room's
-    /// content, so a member whose role lets them change the room (a guest
+    /// An app the workspace's members write through: it authors the workspace's
+    /// content, so a member whose role lets them change the workspace (a guest
     /// is an Editor) can talk in its Chat; repeatable. Settled at every
-    /// start: an app named here no longer stops authoring the room.
+    /// start: an app named here no longer stops authoring the workspace.
+    /// Naming none authors every first-party app and every seeded one, since a
+    /// workspace's app list is its policy and a public workspace offers its
+    /// members every app; `none` authors none, and the workspace is read-only.
     #[arg(long = "author-app", value_name = "APP_ID")]
     pub author_apps: Vec<String>,
     /// A member with no session for this many days stops being one; they
     /// join again through the door as the same person. Membership persists:
     /// a person stays a member until they leave, the host removes them, or
     /// they have been away this long. Being offline for an hour removes
-    /// nobody; who is here now is the room's presence, not its membership.
+    /// nobody; who is here now is the workspace's presence, not its membership.
     #[arg(long = "inactive-after-days", default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=3650))]
     pub inactive_after_days: u64,
-    /// What to install at the room's first start, approved by the room's
+    /// What to install at the workspace's first start, approved by the workspace's
     /// root, with its inputs (`<source> key=value …`); repeatable. The source
     /// is a bot directory entry, or a program file on this host, which the
-    /// room runs under the program's own name.
+    /// workspace runs under the program's own name.
     #[arg(long = "bot", value_name = "SPEC")]
     pub bot_specs: Vec<String>,
     /// The Discord bot token, mounted from the operator's encrypted
@@ -198,26 +219,40 @@ pub struct PersistentArgs {
     pub discord_token_file: Option<PathBuf>,
     /// The Discord application members sign in with to link their
     /// account (OAuth 2, `identify`); with the redirect and consent page
-    /// below, the room offers "Connect Discord". The room's host keeps the
+    /// below, the workspace offers "Connect Discord". The workspace's host keeps the
     /// client secret and trades the code itself.
-    #[arg(long = "discord-client-id", value_name = "ID", requires_all = ["discord_redirect_url", "discord_authorize_url"])]
+    #[arg(long = "discord-client-id", value_name = "ID", requires_all = ["discord_redirect_url", "discord_authorize_url", "discord_client_secret_file"])]
     pub discord_client_id: Option<String>,
-    /// Where Discord sends the browser back: the room host's callback.
+    /// Where Discord sends the browser back: the workspace host's callback,
+    /// which `--http` serves.
     #[arg(long = "discord-redirect-url", value_name = "URL")]
     pub discord_redirect_url: Option<String>,
     /// Discord's consent page.
     #[arg(long = "discord-authorize-url", value_name = "URL")]
     pub discord_authorize_url: Option<String>,
+    /// The application's client secret, mounted from the operator's encrypted
+    /// secrets. The callback trades the code for the account with it, and it
+    /// never leaves this host.
+    #[arg(
+        long = "discord-client-secret-file",
+        value_name = "PATH",
+        requires = "discord_client_id"
+    )]
+    pub discord_client_secret_file: Option<PathBuf>,
+    /// Where Discord's API is (`/api/v10` is appended): Discord's own host
+    /// unless set.
+    #[arg(long = "discord-api-base", value_name = "URL")]
+    pub discord_api_base: Option<String>,
     /// The worker binary of a connector (`APP=PATH`), where it is not
     /// `<name>-worker` beside this binary; repeatable.
     #[arg(long = "connector-worker", value_name = "APP=PATH")]
     pub connector_workers: Vec<String>,
-    /// The model API key the room's moderation agent asks with, mounted
+    /// The model API key the workspace's moderation agent asks with, mounted
     /// from the operator's encrypted secrets; kept in this host's secret
-    /// store. Without it the room has no moderation agent and reports wait
+    /// store. Without it the workspace has no moderation agent and reports wait
     /// for its human Moderators. The same model looks over the reports its
     /// members write in the feedback channel before they send them, asked
-    /// through the room, so their pages never hold the key.
+    /// through the workspace, so their pages never hold the key.
     #[arg(long = "moderation-key-file", value_name = "PATH")]
     pub moderation_key_file: Option<PathBuf>,
     /// The model the moderation agent asks.
@@ -237,12 +272,17 @@ pub struct PersistentArgs {
     /// The public URL `--public-avatars` is served at.
     #[arg(long = "public-avatars-url", value_name = "URL")]
     pub public_avatars_url: Option<String>,
-    /// The largest file a member posts in the room's Chat that the room
+    /// Serve the deployment's plain-HTTP routes at this address: the health
+    /// page (`/mode`), the published avatars (`/avatars/<name>`) and Discord's
+    /// sign-in callback (`/discord/callback`), as an ingress publishes them.
+    #[arg(long = "http", value_name = "ADDR", requires = "persistent")]
+    pub http: Option<std::net::SocketAddr>,
+    /// The largest file a member posts in the workspace's Chat that the workspace
     /// keeps once they left, in MiB; a larger one stays with its poster.
     #[arg(long = "attachment-max-mib", default_value_t = 25, value_parser = clap::value_parser!(u64).range(0..=64))]
     pub attachment_max_mib: u64,
     /// What one member's kept files may take together, in MiB; past it
-    /// their oldest go first. The room takes in no more of one member's
+    /// their oldest go first. The workspace takes in no more of one member's
     /// files in an hour either.
     #[arg(long = "attachment-member-mib", default_value_t = 250)]
     pub attachment_member_mib: u64,
@@ -252,20 +292,15 @@ pub struct PersistentArgs {
     pub attachment_room_mib: u64,
 }
 
-/// What every part of the persistent room works with.
+/// What every part of the persistent workspace works with.
 pub(crate) struct PersistentRoom {
-    pub rooms: Rooms,
-    pub room: String,
-    pub root: SigningKey,
-    pub spectator: SigningKey,
+    pub workspaces: Workspaces,
+    pub workspace: String,
     pub host_cert: DeviceCert,
     pub web: WebHandle,
-    /// The Discord connector a bridge runs on, which a sign-in with Discord
-    /// that came back to the service is handed to.
-    pub discord: Option<Arc<tilo_connector::ConnectorProcess>>,
 }
 
-/// The workspace name people see for the persistent room `name` (a lowercase
+/// The workspace name people see for the persistent workspace `name` (a lowercase
 /// operator name such as `plaza`): its first letter capitalized.
 pub(crate) fn workspace_name(name: &str) -> String {
     let mut chars = name.chars();
@@ -277,114 +312,43 @@ pub(crate) fn workspace_name(name: &str) -> String {
 pub(crate) fn read_root_file(path: &Path) -> anyhow::Result<SigningKey> {
     let text = std::fs::read_to_string(path).with_context(|| {
         format!(
-            "persistent mode refuses to start without its room root ({})",
+            "persistent mode refuses to start without its workspace root ({})",
             path.display()
         )
     })?;
-    let seed =
-        hex32(text.trim()).context("the room root file must hold 64 lowercase hex characters")?;
+    let seed = hex32(text.trim())
+        .context("the workspace root file must hold 64 lowercase hex characters")?;
     Ok(SigningKey::from_bytes(&seed))
 }
 
 pub(crate) fn keep_root(
     store: &tilo_secrets::SecretStore,
-    room: &str,
+    workspace: &str,
     root: &SigningKey,
 ) -> anyhow::Result<()> {
     store
-        .item("room-root", room)
+        .item("room-root", workspace)
         .put_blocking(&root.to_bytes())
-        .context("keep the room root in the host's secret store")
+        .context("keep the workspace root in the host's secret store")
 }
 
 pub(crate) fn check_stored_root(
     store: &tilo_secrets::SecretStore,
-    room: &str,
+    workspace: &str,
     root: &SigningKey,
 ) -> anyhow::Result<()> {
     let stored = store
-        .item("room-root", room)
+        .item("room-root", workspace)
         .get_blocking()
-        .context("read the room root from the host's secret store")?
-        .context("this room's owner root is missing from the host's secret store")?;
+        .context("read the workspace root from the host's secret store")?
+        .context("this workspace's owner root is missing from the host's secret store")?;
     // A different mounted root would mint a different owner; refuse rather
-    // than govern the room with a key it does not know.
+    // than govern the workspace with a key it does not know.
     ensure!(
         stored.expose() == root.to_bytes(),
-        "the mounted room root is not this room's owner"
+        "the mounted workspace root is not this workspace's owner"
     );
     Ok(())
-}
-
-/// The spectator person's root: generated at the room's first start and
-/// kept beside the owner root, so every restart serves the same person.
-pub(crate) fn spectator_root(
-    store: &tilo_secrets::SecretStore,
-    room: &str,
-) -> anyhow::Result<SigningKey> {
-    let item = store.item("spectator-root", room);
-    if let Some(stored) = item
-        .get_blocking()
-        .context("read the spectator root from the host's secret store")?
-    {
-        let seed = <[u8; 32]>::try_from(stored.expose())
-            .map_err(|_| anyhow::anyhow!("the stored spectator root is corrupt"))?;
-        return Ok(SigningKey::from_bytes(&seed));
-    }
-    let root = SigningKey::from_bytes(&rand::random());
-    item.put_blocking(&root.to_bytes())
-        .context("keep the spectator root in the host's secret store")?;
-    Ok(root)
-}
-
-/// A certificate for one watching browser's in-memory device key: the
-/// spectator person, valid for [`SPECTATOR_CERT_SECS`], no capabilities.
-pub(crate) fn spectator_cert(
-    spectator: &SigningKey,
-    device_public_key: [u8; 32],
-    now_ns: u64,
-) -> anyhow::Result<DeviceCert> {
-    let mut cert = DeviceCert {
-        user_public_key: spectator.verifying_key().to_bytes(),
-        device_public_key,
-        device_label: "Watching visitor".into(),
-        capabilities: DeviceCapabilities {
-            can_own_workspaces: false,
-            can_admit_devices: false,
-            can_act_as_host: false,
-            can_read_all_workspaces: false,
-            foreign: false,
-            can_administer_devices: false,
-        },
-        issued_at_ns: now_ns,
-        expires_at_ns: Some(now_ns.saturating_add(SPECTATOR_CERT_SECS * NS_PER_SEC)),
-        signature: [0; 64],
-    };
-    sign_device_cert(&mut cert, spectator).context("sign a spectator certificate")?;
-    Ok(cert)
-}
-
-pub(crate) fn pre_admission(
-    root: &SigningKey,
-    room: &str,
-    token_sha256: [u8; 32],
-    label: &str,
-    role: RoomRole,
-    now_ns: u64,
-) -> anyhow::Result<PreAdmission> {
-    let mut grant = PreAdmission {
-        room: room.to_owned(),
-        role,
-        token_sha256,
-        label: label.to_owned(),
-        expires_at_ns: now_ns.saturating_add(PRE_ADMISSION_SECS * NS_PER_SEC),
-        owner_user_public_key: root.verifying_key().to_bytes(),
-        signature: [0; 64],
-    };
-    grant.signature = root
-        .sign(&grant.digest().map_err(anyhow::Error::msg)?)
-        .to_bytes();
-    Ok(grant)
 }
 
 pub(crate) fn newly_removed(
@@ -411,17 +375,23 @@ pub(crate) enum RoleChange {
 
 /// What makes the member list match the declared lists: promote declared
 /// people who joined and do not hold their role, demote people declared
-/// before and no longer listed. People not yet in the room wait until they
-/// join; the governance change of their join triggers this again.
+/// before and no longer listed. People not yet in the workspace wait until they
+/// join; the governance change of their join triggers this again. The owner
+/// root is the workspace's own person, not one the lists declare: its role is
+/// the workspace's, so no list takes it.
 pub(crate) fn role_changes(
     members: &[tilo_peer_state::GovernedMember],
     owners: &BTreeSet<[u8; 32]>,
     moderators: &BTreeSet<[u8; 32]>,
     previously_declared: &BTreeSet<[u8; 32]>,
+    owner: [u8; 32],
 ) -> Vec<RoleChange> {
     let mut changes = Vec::new();
     for member in members.iter().filter(|member| !member.removed) {
         let key = member.user_public_key;
+        if key == owner {
+            continue;
+        }
         if owners.contains(&key) {
             if !member.administrator {
                 changes.push(RoleChange::Administrator(key));
@@ -443,8 +413,8 @@ fn is_moderator(member: &tilo_peer_state::GovernedMember) -> bool {
     member.role == tilo_peer_state::join::MemberRole::Moderator
 }
 
-/// Guests (not declared, not an administrator, not the spectator person)
-/// whose last session is older than `days`. A member with no record yet is
+/// Guests (not declared, not an administrator) whose last session is older
+/// than `days`. A member with no record yet is
 /// recorded as seen now by the caller and never pruned on the same pass.
 pub(crate) fn idle_guests(
     members: &[tilo_peer_state::GovernedMember],
@@ -504,9 +474,17 @@ fn input_value(text: &str) -> serde_json::Value {
         .unwrap_or_else(|| serde_json::Value::String(text.to_owned()))
 }
 
-fn token_digest(token: &[u8]) -> [u8; 32] {
-    use sha2::Digest as _;
-    sha2::Sha256::digest(token).into()
+/// `--default-role`: `viewer`, `commenter` or `editor`. A moderator is chosen,
+/// never handed out at the door.
+fn parse_role(role: &str) -> Result<WorkspaceRole, String> {
+    match role {
+        "viewer" => Ok(WorkspaceRole::Viewer),
+        "commenter" => Ok(WorkspaceRole::Commenter),
+        "editor" => Ok(WorkspaceRole::Editor),
+        other => Err(format!(
+            "{other:?} is not a role people who join on their own may hold: say viewer, commenter or editor"
+        )),
+    }
 }
 
 /// `--layout`: `shared` or `personal`.
@@ -566,11 +544,11 @@ fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> anyhow::Result<()>
         .with_context(|| format!("write {}", path.display()))
 }
 
-/// The governed room: the one named in `room_id_file`, else the only room
+/// The governed workspace: the one named in `room_id_file`, else the only workspace
 /// this relay governs (a start interrupted between keeping the root and
 /// writing the file), else a new one.
 async fn governed_room(
-    rooms: &Rooms,
+    workspaces: &Workspaces,
     shown: &str,
     id_file: &Path,
     store: &tilo_secrets::SecretStore,
@@ -579,94 +557,37 @@ async fn governed_room(
     let known = match std::fs::read_to_string(id_file) {
         Ok(text) => Some(text.trim().to_owned()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error).context("read the room id file"),
+        Err(error) => return Err(error).context("read the workspace id file"),
     };
-    let room = match known {
-        Some(room) => room,
-        None => match rooms.list().await.as_slice() {
-            [only] => only.room.clone(),
+    let workspace = match known {
+        Some(workspace) => workspace,
+        None => match workspaces.list().await.as_slice() {
+            [only] => only.workspace.clone(),
             [] => {
-                // The root goes into the store before the room exists, so a
+                // The root goes into the store before the workspace exists, so a
                 // crash in between is re-adopted above, never orphaned.
-                let created = rooms.create(shown).await.map_err(anyhow::Error::msg)?;
-                keep_root(store, &created.room, root)?;
-                created.room
+                let created = workspaces.create(shown).await.map_err(anyhow::Error::msg)?;
+                keep_root(store, &created.workspace, root)?;
+                created.workspace
             }
-            _ => bail!("this relay governs several rooms; a persistent room governs one"),
+            _ => bail!("this relay governs several rooms; a persistent workspace governs one"),
         },
     };
-    check_stored_root(store, &room, root)?;
-    rooms
-        .rename(&room, shown)
+    check_stored_root(store, &workspace, root)?;
+    workspaces
+        .rename(&workspace, shown)
         .await
-        .map_err(|error| anyhow::anyhow!("name the room {shown:?}: {error}"))?;
-    write_atomic(id_file, room.as_bytes(), false).context("write the room id file")?;
-    Ok(room)
+        .map_err(|error| anyhow::anyhow!("name the workspace {shown:?}: {error}"))?;
+    write_atomic(id_file, workspace.as_bytes(), false).context("write the workspace id file")?;
+    Ok(workspace)
 }
 
-async fn issue_pre_admission(
-    rooms: &Rooms,
-    host_cert: &DeviceCert,
-    root: &SigningKey,
-    room: &str,
-    user: [u8; 32],
-    digest: [u8; 32],
-    label: &str,
-    role: RoomRole,
-) -> anyhow::Result<tilo_relay_session::rooms::IssuedInvitation> {
-    let grant = pre_admission(root, room, digest, label, role, tilo_clock::unix_now_ns())?;
-    let request = PreAdmitRequest {
-        // One token, one invitation: a repeated command is a retry.
-        request_id: *blake3::hash(&digest).as_bytes(),
-        grant,
-        recipient_user_public_key: Some(user),
-        inviter_name: Some("Tilo".into()),
-    };
-    rooms
-        .pre_admit(host_cert, request)
-        .await
-        .map_err(|error| anyhow::anyhow!("{error}"))
-}
-
-/// What answering one pre-admission needs, owned, so the room answers a
-/// crowd's side by side rather than one after another.
-#[derive(Clone)]
-struct Admitter {
-    rooms: Rooms,
-    host_cert: DeviceCert,
-    root: SigningKey,
-    room: String,
-    spectator: [u8; 32],
-    removals: Removals,
-    /// The door lets in only the room's members (`--members-only`).
-    members_only: bool,
-}
-
-impl Admitter {
-    fn of(context: &PersistentRoom, removals: Removals, members_only: bool) -> Self {
-        Self {
-            rooms: context.rooms.clone(),
-            host_cert: context.host_cert.clone(),
-            root: context.root.clone(),
-            room: context.room.clone(),
-            spectator: context.spectator.verifying_key().to_bytes(),
-            removals,
-            members_only,
-        }
-    }
-}
-
-/// How long a person moderation removed is refused pre-admission: the day
-/// the room service's door also turns away the address they joined from.
-const REMOVED_FOR_MS: u64 = 24 * 3600 * 1000;
-
-/// Whom the room has taken in as removed, and when moderation removed each
-/// person, kept in the room's state so a restart lets nobody back early.
-/// Shared by the operator loop, which takes removals in, and every
-/// pre-admission, which may run before the loop has.
+/// Whom the workspace has taken in as removed, so each removal is reported
+/// once. Shared by the operator loop, which takes removals in, and the
+/// pruning, which accounts for the guests it prunes itself. Whom the door
+/// keeps out is the workspace's own ([`Workspaces::removed_within_the_day`]).
 #[derive(Clone)]
 struct Removals {
-    file: PathBuf,
     state: Arc<std::sync::Mutex<RemovalState>>,
 }
 
@@ -674,34 +595,20 @@ struct RemovalState {
     /// Every person accounted for as removed, by moderation or pruned after
     /// an absence, so each removal is reported once.
     seen: BTreeSet<[u8; 32]>,
-    /// When moderation removed each person, in Unix milliseconds.
-    at: BTreeMap<[u8; 32], u64>,
 }
 
 impl Removals {
-    /// The removals of a room whose members are `members` now: everyone
-    /// listed as removed is accounted for, and the removal times kept in
-    /// `file` that are still within the day hold.
-    fn load(
-        file: PathBuf,
-        members: &[tilo_peer_state::GovernedMember],
-        now_ms: u64,
-    ) -> anyhow::Result<Self> {
-        let stored: BTreeMap<String, u64> = read_json(&file)?;
-        let at = stored
-            .iter()
-            .filter(|(_, at)| now_ms.saturating_sub(**at) < REMOVED_FOR_MS)
-            .filter_map(|(key, at)| hex32(key).map(|key| (key, *at)))
-            .collect();
+    /// The removals of a workspace whose members are `members` now: everyone
+    /// listed as removed is accounted for.
+    fn load(members: &[tilo_peer_state::GovernedMember]) -> Self {
         let seen = members
             .iter()
             .filter(|member| member.removed)
             .map(|member| member.user_public_key)
             .collect();
-        Ok(Self {
-            file,
-            state: Arc::new(std::sync::Mutex::new(RemovalState { seen, at })),
-        })
+        Self {
+            state: Arc::new(std::sync::Mutex::new(RemovalState { seen })),
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, RemovalState> {
@@ -724,131 +631,9 @@ impl Removals {
     }
 
     /// The people moderation removed since the last call, noted as removed
-    /// now and written down.
-    fn taken_in(
-        &self,
-        members: &[tilo_peer_state::GovernedMember],
-        now_ms: u64,
-    ) -> anyhow::Result<Vec<[u8; 32]>> {
-        let mut state = self.lock();
-        let fresh = newly_removed(&mut state.seen, members);
-        if fresh.is_empty() {
-            return Ok(fresh);
-        }
-        state
-            .at
-            .retain(|_, at| now_ms.saturating_sub(*at) < REMOVED_FOR_MS);
-        for person in &fresh {
-            state.at.insert(*person, now_ms);
-        }
-        let stored: BTreeMap<String, u64> = state
-            .at
-            .iter()
-            .map(|(key, at)| (hex::encode(key), *at))
-            .collect();
-        drop(state);
-        write_json(&self.file, &stored)?;
-        Ok(fresh)
-    }
-
-    /// Whether `person` is kept out: moderation removed them within the
-    /// day, or the room lists them as removed and the loop has not taken
-    /// that in yet (a removed guest's page asks again the moment the room
-    /// drops it, which may be before the loop hears of the change).
-    fn refuses(
-        &self,
-        person: [u8; 32],
-        members: &[tilo_peer_state::GovernedMember],
-        now_ms: u64,
-    ) -> bool {
-        let state = self.lock();
-        if state
-            .at
-            .get(&person)
-            .is_some_and(|at| now_ms.saturating_sub(*at) < REMOVED_FOR_MS)
-        {
-            return true;
-        }
-        !state.seen.contains(&person)
-            && members
-                .iter()
-                .any(|member| member.user_public_key == person && member.removed)
-    }
-}
-
-/// Pre-admissions the room answers at once. The room service waits a few
-/// seconds for each answer before it turns the visitor into a spectator;
-/// answered one at a time, a launch's crowd queued behind each other's
-/// writes, while side by side the relay writes everything staged meanwhile
-/// in one go. Past this many, the next commands wait their turn.
-const PRE_ADMITTING_AT_ONCE: usize = 64;
-
-async fn answer_pre_admit(
-    context: Admitter,
-    user_public_key: String,
-    token_sha256: String,
-    label: String,
-    role: RoomRole,
-) -> RoomEvent {
-    let refused = |reason: String| RoomEvent::PreAdmitRefused {
-        token_sha256: token_sha256.clone(),
-        reason,
-        removed: false,
-        invite_only: false,
-    };
-    let (Some(user), Some(digest)) = (hex32(&user_public_key), hex32(&token_sha256)) else {
-        return refused("the guest key and token digest must be 64 hex characters".into());
-    };
-    if user == context.spectator {
-        return refused("the spectator person joins no other way".into());
-    }
-    let members = match context.rooms.summary(&context.room).await {
-        Ok(summary) => summary.members,
-        Err(error) => return refused(format!("{error}")),
-    };
-    if context
-        .removals
-        .refuses(user, &members, tilo_clock::unix_now_ms())
-    {
-        return RoomEvent::PreAdmitRefused {
-            token_sha256,
-            reason: "the person was removed from the room within the day".into(),
-            removed: true,
-            invite_only: false,
-        };
-    }
-    // Taking people by invitation, the door still lets a member in again
-    // (another tab of theirs is another device), and nobody else.
-    if context.members_only
-        && !members
-            .iter()
-            .any(|member| member.user_public_key == user && !member.removed)
-    {
-        return RoomEvent::PreAdmitRefused {
-            token_sha256,
-            reason: "the workspace takes people by invitation only".into(),
-            removed: false,
-            invite_only: true,
-        };
-    }
-    match issue_pre_admission(
-        &context.rooms,
-        &context.host_cert,
-        &context.root,
-        &context.room,
-        user,
-        digest,
-        &label,
-        role,
-    )
-    .await
-    {
-        Ok(issued) => RoomEvent::PreAdmitted {
-            token_sha256,
-            invitation: base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .encode(issued.signed_invitation),
-        },
-        Err(error) => refused(format!("{error:#}")),
+    /// now.
+    fn taken_in(&self, members: &[tilo_peer_state::GovernedMember]) -> Vec<[u8; 32]> {
+        newly_removed(&mut self.lock().seen, members)
     }
 }
 
@@ -862,12 +647,12 @@ struct WaitListAsk {
 }
 
 /// Keep the request someone left at the door without an invitation, while
-/// the room takes people by invitation and keeps a wait list.
+/// the workspace takes people by invitation and keeps a wait list.
 async fn answer_wait_list(
     context: &PersistentRoom,
     governance: &Governance,
     ask: WaitListAsk,
-) -> RoomEvent {
+) -> OperatorEvent {
     let WaitListAsk {
         request,
         contact,
@@ -875,13 +660,13 @@ async fn answer_wait_list(
         confirm_sha256,
         language,
     } = ask;
-    let refused = |reason: String, full: bool| RoomEvent::WaitListRefused {
+    let refused = |reason: String, full: bool| OperatorEvent::WaitListRefused {
         request: request.clone(),
         reason,
         full,
     };
     if !governance.members_only || governance.wait_list_max == 0 {
-        return refused("the room keeps no wait list".into(), false);
+        return refused("the workspace keeps no wait list".into(), false);
     }
     let Some(removal) = hex32(&removal_sha256) else {
         return refused("the removal digest must be 64 hex characters".into(), false);
@@ -896,11 +681,11 @@ async fn answer_wait_list(
             );
         }
     };
-    let secrets = tilo_relay::rooms::WaitListSecrets { removal, confirm };
+    let secrets = tilo_relay::workspaces::WaitListSecrets { removal, confirm };
     match context
-        .rooms
+        .workspaces
         .wait(
-            &context.room,
+            &context.workspace,
             &contact,
             secrets,
             &language,
@@ -908,12 +693,12 @@ async fn answer_wait_list(
         )
         .await
     {
-        Ok(WaitListed::Added { mail }) => RoomEvent::WaitListed {
+        Ok(WaitListed::Added { mail }) => OperatorEvent::WaitListed {
             request,
             added: true,
             mail,
         },
-        Ok(WaitListed::Already { mail }) => RoomEvent::WaitListed {
+        Ok(WaitListed::Already { mail }) => OperatorEvent::WaitListed {
             request,
             added: false,
             mail,
@@ -923,8 +708,8 @@ async fn answer_wait_list(
     }
 }
 
-fn mailbox(mailbox: tilo_relay::rooms::Mailbox) -> room_operator::WaitListMailbox {
-    room_operator::WaitListMailbox {
+fn mailbox(mailbox: tilo_relay::workspaces::Mailbox) -> operator::WaitListMailbox {
+    operator::WaitListMailbox {
         contact: mailbox.contact,
         language: mailbox.language,
     }
@@ -937,24 +722,24 @@ async fn answer_unlist(
     context: &PersistentRoom,
     request: String,
     removal_sha256: &str,
-) -> RoomEvent {
+) -> OperatorEvent {
     let Some(removal) = hex32(removal_sha256) else {
-        return RoomEvent::WaitListFailed {
+        return OperatorEvent::WaitListFailed {
             request,
             reason: "the removal digest must be 64 hex characters".into(),
         };
     };
     match context
-        .rooms
-        .leave_wait_list_for_operator(&context.room, removal)
+        .workspaces
+        .leave_wait_list_for_operator(&context.workspace, removal)
         .await
     {
-        Ok((told, contact)) => RoomEvent::Unlisted {
+        Ok((told, contact)) => OperatorEvent::Unlisted {
             request,
             told: told.map(mailbox),
             contact_sha256: contact.map(hex::encode),
         },
-        Err(error) => RoomEvent::WaitListFailed {
+        Err(error) => OperatorEvent::WaitListFailed {
             request,
             reason: error.to_string(),
         },
@@ -966,20 +751,20 @@ async fn answer_confirm(
     context: &PersistentRoom,
     request: String,
     confirm_sha256: &str,
-) -> RoomEvent {
+) -> OperatorEvent {
     let Some(confirm) = hex32(confirm_sha256) else {
-        return RoomEvent::WaitListFailed {
+        return OperatorEvent::WaitListFailed {
             request,
             reason: "the confirmation digest must be 64 hex characters".into(),
         };
     };
     match context
-        .rooms
-        .confirm_wait_list(&context.room, confirm)
+        .workspaces
+        .confirm_wait_list(&context.workspace, confirm)
         .await
     {
-        Ok(confirmed) => RoomEvent::Confirmed { request, confirmed },
-        Err(error) => RoomEvent::WaitListFailed {
+        Ok(confirmed) => OperatorEvent::Confirmed { request, confirmed },
+        Err(error) => OperatorEvent::WaitListFailed {
             request,
             reason: error.to_string(),
         },
@@ -991,20 +776,20 @@ async fn answer_standing(
     context: &PersistentRoom,
     request: String,
     removal_sha256: &str,
-) -> RoomEvent {
+) -> OperatorEvent {
     let Some(removal) = hex32(removal_sha256) else {
-        return RoomEvent::WaitListFailed {
+        return OperatorEvent::WaitListFailed {
             request,
             reason: "the removal digest must be 64 hex characters".into(),
         };
     };
     match context
-        .rooms
-        .wait_list_standing(&context.room, removal)
+        .workspaces
+        .wait_list_standing(&context.workspace, removal)
         .await
     {
-        Ok(standing) => RoomEvent::Standing { request, standing },
-        Err(error) => RoomEvent::WaitListFailed {
+        Ok(standing) => OperatorEvent::Standing { request, standing },
+        Err(error) => OperatorEvent::WaitListFailed {
             request,
             reason: error.to_string(),
         },
@@ -1016,7 +801,7 @@ async fn answer_wait_list_command(
     context: &PersistentRoom,
     governance: &Governance,
     command: OperatorCommand,
-) -> RoomEvent {
+) -> OperatorEvent {
     match command {
         OperatorCommand::WaitList {
             request,
@@ -1046,7 +831,7 @@ async fn answer_wait_list_command(
             request,
             removal_sha256,
         } => answer_standing(context, request, &removal_sha256).await,
-        _ => RoomEvent::WaitListFailed {
+        _ => OperatorEvent::WaitListFailed {
             request: String::new(),
             reason: "not a wait-list command".into(),
         },
@@ -1055,11 +840,11 @@ async fn answer_wait_list_command(
 
 /// The event that has the operator mail an invitation a member asked for.
 fn invite_mail(
-    mail: tilo_relay::rooms::WaitListMail,
+    mail: tilo_relay::workspaces::WaitListMail,
     request: String,
-) -> (RoomEvent, tokio::sync::oneshot::Sender<bool>) {
+) -> (OperatorEvent, tokio::sync::oneshot::Sender<bool>) {
     (
-        RoomEvent::InviteMail {
+        OperatorEvent::InviteMail {
             request,
             to: mailbox(mail.to),
             link: mail.link,
@@ -1071,7 +856,7 @@ fn invite_mail(
 
 type MailAcks = std::collections::BTreeMap<String, tokio::sync::oneshot::Sender<bool>>;
 
-fn publish_invite_mail(asked: tilo_relay::rooms::WaitListMail, mail_acks: &mut MailAcks) {
+fn publish_invite_mail(asked: tilo_relay::workspaces::WaitListMail, mail_acks: &mut MailAcks) {
     mail_acks.retain(|_, sender| !sender.is_closed());
     if mail_acks.len() >= 512 {
         let _ = asked.queued.send(false);
@@ -1080,92 +865,6 @@ fn publish_invite_mail(asked: tilo_relay::rooms::WaitListMail, mail_acks: &mut M
         let (event, queued) = invite_mail(asked, request.clone());
         mail_acks.insert(request, queued);
         println!("{}", event.to_line());
-    }
-}
-
-fn answer_spectate(context: &PersistentRoom, device_public_key: String) -> RoomEvent {
-    let Some(device) = hex32(&device_public_key) else {
-        return RoomEvent::SpectateRefused {
-            device_public_key,
-            reason: "the device key must be 64 hex characters".into(),
-        };
-    };
-    match spectator_cert(&context.spectator, device, tilo_clock::unix_now_ns()) {
-        Ok(certificate) => RoomEvent::SpectatorCertified {
-            device_public_key,
-            certificate,
-        },
-        Err(error) => RoomEvent::SpectateRefused {
-            device_public_key,
-            reason: format!("{error:#}"),
-        },
-    }
-}
-
-/// Make the spectator person a Viewer member, through the same
-/// pre-admission and join steps a guest's browser takes, so it is an
-/// ordinary member of the room's list.
-async fn ensure_spectator_member(
-    rooms: &Rooms,
-    host_cert: &DeviceCert,
-    root: &SigningKey,
-    room: &str,
-    spectator: &SigningKey,
-) -> anyhow::Result<()> {
-    let person = spectator.verifying_key().to_bytes();
-    let summary = rooms
-        .summary(room)
-        .await
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    if summary
-        .members
-        .iter()
-        .any(|member| member.user_public_key == person && !member.removed)
-    {
-        return Ok(());
-    }
-    let token: [u8; 32] = rand::random();
-    let issued = issue_pre_admission(
-        rooms,
-        host_cert,
-        root,
-        room,
-        person,
-        token_digest(&token),
-        SPECTATOR_NAME,
-        RoomRole::Viewer,
-    )
-    .await
-    .context("pre-admit the spectator person")?;
-    let device = SigningKey::from_bytes(&rand::random());
-    let cert = spectator_cert(
-        spectator,
-        device.verifying_key().to_bytes(),
-        tilo_clock::unix_now_ns(),
-    )?;
-    let challenge = match rooms
-        .page_join(JoinStep::Ask {
-            invitation: issued.signed_invitation,
-            device_cert: cert,
-            request_id: rand::random(),
-        })
-        .await
-    {
-        JoinReply::Challenge { challenge } => challenge,
-        other => bail!("the spectator person's join was answered {other:?}"),
-    };
-    let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
-    match rooms
-        .page_join(JoinStep::ProvePreAdmitted {
-            challenge,
-            signature,
-            name: SPECTATOR_NAME.into(),
-            token: token.to_vec(),
-        })
-        .await
-    {
-        JoinReply::Admitted { .. } => Ok(()),
-        other => bail!("the spectator person was not admitted: {other:?}"),
     }
 }
 
@@ -1179,9 +878,9 @@ async fn apply_role_changes(
             RoleChange::Administrator(key) => (
                 key,
                 context
-                    .rooms
+                    .workspaces
                     .set_member_administrator(
-                        &context.room,
+                        &context.workspace,
                         &context.host_cert,
                         request_id(b"owner", &key, now),
                         key,
@@ -1192,9 +891,9 @@ async fn apply_role_changes(
             RoleChange::Moderator(key) => (
                 key,
                 context
-                    .rooms
+                    .workspaces
                     .set_member_role(
-                        &context.room,
+                        &context.workspace,
                         &context.host_cert,
                         SetMemberRoleRequest {
                             request_id: request_id(b"moderator", &key, now),
@@ -1208,9 +907,9 @@ async fn apply_role_changes(
             RoleChange::Editor(key) => (
                 key,
                 context
-                    .rooms
+                    .workspaces
                     .set_member_role(
-                        &context.room,
+                        &context.workspace,
                         &context.host_cert,
                         SetMemberRoleRequest {
                             request_id: request_id(b"editor", &key, now),
@@ -1228,7 +927,7 @@ async fn apply_role_changes(
 }
 
 /// A fresh administration request id per decision: the same person can be
-/// promoted, demoted and promoted again over the room's life.
+/// promoted, demoted and promoted again over the workspace's life.
 fn request_id(kind: &[u8], key: &[u8; 32], now_ns: u64) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(kind);
@@ -1238,8 +937,8 @@ fn request_id(kind: &[u8], key: &[u8; 32], now_ns: u64) -> [u8; 32] {
 }
 
 pub(crate) async fn seed_apps(
-    rooms: &Rooms,
-    room: &str,
+    workspaces: &Workspaces,
+    workspace: &str,
     cert: &DeviceCert,
     apps: &[String],
     seeded_file: &Path,
@@ -1249,8 +948,8 @@ pub(crate) async fn seed_apps(
     let pending: Vec<&String> = apps.iter().filter(|app| !seeded.contains(*app)).collect();
     for app in pending {
         let record = tilo_relay::room_bots::workspace_record(&catalogue, app);
-        rooms
-            .prepare_application(room, cert, &catalogue, app, &record)
+        workspaces
+            .prepare_application(workspace, cert, &catalogue, app, &record)
             .await
             .map_err(|error| anyhow::anyhow!("seed {app}: {error}"))?;
         seeded.insert(app.clone());
@@ -1259,7 +958,7 @@ pub(crate) async fn seed_apps(
     Ok(())
 }
 
-/// What the room keeps of the files members post in its Chat; `None`
+/// What the workspace keeps of the files members post in its Chat; `None`
 /// when it keeps none.
 fn attachment_limits(
     persistent: &PersistentArgs,
@@ -1269,12 +968,12 @@ fn attachment_limits(
         tilo_relay::room_bots::attachments::AttachmentLimits {
             file_bytes: persistent.attachment_max_mib.saturating_mul(MIB),
             member_bytes: persistent.attachment_member_mib.saturating_mul(MIB),
-            room_bytes: persistent.attachment_room_mib.saturating_mul(MIB),
+            workspace_bytes: persistent.attachment_room_mib.saturating_mul(MIB),
         }
     })
 }
 
-/// [`attachment_limits`] as the room's Chat reads them.
+/// [`attachment_limits`] as the workspace's Chat reads them.
 fn room_files(persistent: &PersistentArgs) -> chat::record::WorkspaceFiles {
     attachment_limits(persistent).map_or_else(Default::default, |limits| {
         chat::record::WorkspaceFiles {
@@ -1284,13 +983,13 @@ fn room_files(persistent: &PersistentArgs) -> chat::record::WorkspaceFiles {
     })
 }
 
-/// Give the room's chat, when it is seeded and while it has only the
-/// channels every room opens with, the operator's starting `channels`, and
-/// tell it what the room keeps of members' `files`. What people wrote is
+/// Give the workspace's chat, when it is seeded and while it has only the
+/// channels every workspace opens with, the operator's starting `channels`, and
+/// tell it what the workspace keeps of members' `files`. What people wrote is
 /// never touched, and a chat with channels keeps exactly those.
 pub(crate) async fn settle_chat(
-    rooms: &Rooms,
-    room: &str,
+    workspaces: &Workspaces,
+    workspace: &str,
     cert: &DeviceCert,
     apps: &[String],
     channels: &[String],
@@ -1303,9 +1002,9 @@ pub(crate) async fn settle_chat(
     }
     let catalogue = tilo_agent_participant::AppCatalogue::native();
     let record = tilo_relay::room_bots::workspace_record(&catalogue, crate::room_chat::CHAT_APP);
-    rooms
+    workspaces
         .author_application(
-            room,
+            workspace,
             cert,
             &catalogue,
             crate::room_chat::CHAT_APP,
@@ -1323,10 +1022,10 @@ pub(crate) async fn settle_chat(
         .map_err(|error| anyhow::anyhow!("open the chat's channels: {error}"))
 }
 
-/// Give the room's shared desktop the operator's `strips` where missing.
+/// Give the workspace's shared desktop the operator's `strips` where missing.
 pub(crate) async fn settle_strips(
-    rooms: &Rooms,
-    room: &str,
+    workspaces: &Workspaces,
+    workspace: &str,
     cert: &DeviceCert,
     shown: &str,
     strips: &[String],
@@ -1334,21 +1033,50 @@ pub(crate) async fn settle_strips(
     if strips.is_empty() {
         return Ok(());
     }
-    rooms
-        .author_room_record(room, cert, crate::room_strips::DESKTOP, |doc| {
-            crate::room_strips::settle_strips(doc, room, shown, strips)
+    workspaces
+        .author_room_record(workspace, cert, crate::room_strips::DESKTOP, |doc| {
+            crate::room_strips::settle_strips(doc, workspace, shown, strips)
         })
         .await
         .map(drop)
         .map_err(|error| anyhow::anyhow!("give the shared desktop its strips: {error}"))
 }
 
-/// Make exactly the operator's `apps` authors of the room, so its members
+/// The apps the workspace's members write through: the ones `--author-app`
+/// names, or, naming none, every first-party app, every seeded one, and the
+/// workspace's own shared desktop.
+fn authored_apps(args: &PersistentArgs) -> Vec<String> {
+    if args.author_apps.is_empty() {
+        let mut apps: Vec<String> = tilo_desktop_model::first_party::FIRST_PARTY_APPS
+            .iter()
+            .map(|app| (*app).to_owned())
+            .collect();
+        // The shared desktop is the workspace's own record rather than some
+        // package's: every member writes the desk its windows are on, so the
+        // workspace's host lets it author, as it lets the first-party apps
+        // author the records their windows show.
+        apps.push(tilo_desktop_model::ownership::DESKTOP_APP.to_owned());
+        for app in &args.seed_apps {
+            if !apps.contains(app) {
+                apps.push(app.clone());
+            }
+        }
+        return apps;
+    }
+    // No app's id is `none`: the flag says the workspace is read-only.
+    args.author_apps
+        .iter()
+        .filter(|app| app.as_str() != NO_AUTHORED_APPS)
+        .cloned()
+        .collect()
+}
+
+/// Make exactly the operator's `apps` authors of the workspace, so its members
 /// write through them, and take authorship back from an app this host made
 /// an author at an earlier start and no longer names (kept in `authored`).
 pub(crate) async fn settle_app_authorship(
-    rooms: &Rooms,
-    room: &str,
+    workspaces: &Workspaces,
+    workspace: &str,
     cert: &DeviceCert,
     apps: &[String],
     authored: &Path,
@@ -1356,8 +1084,8 @@ pub(crate) async fn settle_app_authorship(
     let earlier: BTreeSet<String> = read_json(authored)?;
     let apps: BTreeSet<String> = apps.iter().cloned().collect();
     let withdrawn: BTreeSet<String> = earlier.difference(&apps).cloned().collect();
-    rooms
-        .settle_app_authorship(room, cert, &apps, &withdrawn)
+    workspaces
+        .settle_app_authorship(workspace, cert, &apps, &withdrawn)
         .await
         .map_err(|error| anyhow::anyhow!("let members write through {apps:?}: {error}"))?;
     write_json(authored, &apps)?;
@@ -1365,48 +1093,48 @@ pub(crate) async fn settle_app_authorship(
 }
 
 pub(crate) async fn ensure_guest_policy(
-    rooms: &Rooms,
-    room: &str,
+    workspaces: &Workspaces,
+    workspace: &str,
     cert: &DeviceCert,
 ) -> anyhow::Result<()> {
     use tilo_action_policy::{Answer, Grant, KindSet, Role, Subject, TreePath};
-    // Guests are Editors; in a public room they must not trigger outside
+    // Guests are Editors; in a public workspace they must not trigger outside
     // effects from any app (sending mail, calling services).
     let deny = Grant::new(
-        "public-room-guests-no-outside",
+        "public-workspace-guests-no-outside",
         Subject::Role(Role::Editor),
-        TreePath::workspace(room),
+        TreePath::workspace(workspace),
         KindSet::OUTSIDE,
         Answer::Deny,
         Subject::Person(hex::encode(cert.user_public_key)),
     );
-    let digest = *blake3::hash(b"public-room-guests-no-outside/v1").as_bytes();
-    rooms
-        .put_room_grants(room, cert, digest, vec![deny])
+    let digest = *blake3::hash(b"public-workspace-guests-no-outside/v1").as_bytes();
+    workspaces
+        .put_room_grants(workspace, cert, digest, vec![deny])
         .await
         .map_err(|error| anyhow::anyhow!("deny outside effects to guests: {error}"))?;
     Ok(())
 }
 
-/// The grant letting the room's members (guests are Editors) invite
-/// someone, which a room taking people by invitation holds and an open one
-/// does not: anyone joins an open room through its door.
+/// The grant letting the workspace's members (guests are Editors) invite
+/// someone, which a workspace taking people by invitation holds and an open one
+/// does not: anyone joins an open workspace through its door.
 const MEMBERS_INVITE: &str = "members-invite";
 
-/// Let the room's members invite people, and let in whom they invited,
-/// while the room takes people by invitation (`members_only`); take that
+/// Let the workspace's members invite people, and let in whom they invited,
+/// while the workspace takes people by invitation (`members_only`); take that
 /// back once it lets anyone in again. Settled at every start.
 pub(crate) async fn settle_member_invites(
-    rooms: &Rooms,
-    room: &str,
+    workspaces: &Workspaces,
+    workspace: &str,
     cert: &DeviceCert,
     members_only: bool,
 ) -> anyhow::Result<()> {
     use tilo_action_policy::{Answer, Grant, GrantId, KindSet, Role, Subject, roles};
     // One request per start and setting: the same setting settled again
-    // after the room changed writes it again, which changes nothing.
-    let generation = rooms
-        .summary(room)
+    // after the workspace changed writes it again, which changes nothing.
+    let generation = workspaces
+        .summary(workspace)
         .await
         .map_err(|error| anyhow::anyhow!("{error}"))?
         .generation;
@@ -1417,20 +1145,59 @@ pub(crate) async fn settle_member_invites(
         let invite = Grant::new(
             MEMBERS_INVITE,
             Subject::Role(Role::Editor),
-            roles::governance_action(room, roles::governance::INVITE),
+            roles::governance_action(workspace, roles::governance::INVITE),
             KindSet::OUTSIDE,
             Answer::Allow,
             Subject::Person(hex::encode(cert.user_public_key)),
         );
-        rooms
-            .put_room_grants(room, cert, request_id, vec![invite])
+        workspaces
+            .put_room_grants(workspace, cert, request_id, vec![invite])
             .await
             .map_err(|error| anyhow::anyhow!("let members invite: {error}"))?;
     } else {
-        rooms
-            .remove_room_grants(room, cert, request_id, vec![GrantId(MEMBERS_INVITE.into())])
+        workspaces
+            .remove_room_grants(
+                workspace,
+                cert,
+                request_id,
+                vec![GrantId(MEMBERS_INVITE.into())],
+            )
             .await
             .map_err(|error| anyhow::anyhow!("take back members inviting: {error}"))?;
+    }
+    Ok(())
+}
+
+/// List the workspace in the public directory as the host configured it, or
+/// take it out when the host asks for no listing. Settled at every start: the
+/// listing is the host's word, and a person who joined yesterday stays a
+/// member either way.
+async fn settle_listing(
+    workspaces: &Workspaces,
+    workspace: &str,
+    host_cert: &DeviceCert,
+    persistent: &PersistentArgs,
+) -> anyhow::Result<()> {
+    match &persistent.listing_description {
+        Some(description) => {
+            workspaces
+                .publish(
+                    workspace,
+                    host_cert,
+                    Listing {
+                        description: description.clone(),
+                        default_role: persistent.default_role.unwrap_or(WorkspaceRole::Viewer),
+                    },
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!("list the workspace in the directory: {error}"))?;
+        }
+        None => {
+            workspaces
+                .unpublish(workspace, host_cert)
+                .await
+                .map_err(|error| anyhow::anyhow!("unlist the workspace: {error}"))?;
+        }
     }
     Ok(())
 }
@@ -1441,14 +1208,14 @@ pub(crate) async fn settle_member_invites(
     reason = "one startup sequence; the hosted relay lives until shutdown"
 )]
 pub(crate) async fn run(
-    args: RoomArgs,
+    args: WorkspaceArgs,
     shutdown: impl std::future::Future<Output = anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
     let persistent = args.persistent.clone();
     let name = persistent
         .persistent
         .clone()
-        .context("--persistent names the room")?;
+        .context("--persistent names the workspace")?;
     let root = read_root_file(persistent.root_file.as_deref().context("--root-file")?)?;
     let id_file = persistent.room_id_file.clone().context("--room-id-file")?;
     let owners = parse_keys("owner", &persistent.owners)?;
@@ -1470,9 +1237,10 @@ pub(crate) async fn run(
         .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
     let state = args.state.clone();
     std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
-    let listen = args.web.web.context("a room needs --web")?;
+    let listen = args.web.web.context("a workspace needs --web")?;
     let mut operator = operator_lines()?;
     let store = tilo_secrets::SecretStore::for_app(SECRET_APP);
+    let sign_in = discord_sign_in::SignIn::from_args(&persistent)?;
     let moderation = persistent
         .moderation_key_file
         .as_deref()
@@ -1487,12 +1255,12 @@ pub(crate) async fn run(
     if let Some(agent) = &moderation {
         tracing::info!(model = agent.model(), "moderation agent loaded");
     }
-    // The same model looks over the reports the room's members write
-    // before they send them, asked through the room on their behalf.
+    // The same model looks over the reports the workspace's members write
+    // before they send them, asked through the workspace on their behalf.
     let feedback_reviewer = moderation
         .is_some()
         .then(|| {
-            crate::persistent_moderation::RoomReviewer::from_store(
+            crate::persistent_moderation::WorkspaceReviewer::from_store(
                 &store,
                 persistent.moderation_model.as_deref(),
             )
@@ -1506,7 +1274,7 @@ pub(crate) async fn run(
     let host_cert = enrol(
         &root,
         &host,
-        &format!("{name} room host"),
+        &format!("{name} workspace host"),
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     )?;
     let config = tilo_relay::RelayConfig {
@@ -1528,55 +1296,52 @@ pub(crate) async fn run(
         crate::web_cli::Lent { feedback_reviewer },
     )
     .await?;
-    let rooms = hosted
+    let workspaces = hosted
         .relay
-        .rooms()
-        .context("the relay governs no rooms in this mode")?
+        .workspaces()
+        .context("the relay governs no workspaces in this mode")?
         .clone();
     let shown = persistent
         .workspace_name
         .clone()
         .unwrap_or_else(|| workspace_name(&name));
-    let room = governed_room(&rooms, &shown, &id_file, &store, &root).await?;
-    // Every visitor comes in through the site's door: unless the host says
-    // otherwise, the room shares its apps' records, never what anyone has
-    // open. Settled at every start, as the host configured it.
-    rooms
-        .set_layout(&room, persistent.layout)
+    let workspace = governed_room(&workspaces, &shown, &id_file, &store, &root).await?;
+    // The certificate this host serves the workspace with: a build renamed
+    // the host's own after a workspace was made with it, and the host took
+    // the record's back (`Workspaces::serving_certificate`). Every governed
+    // operation below names it, so a renamed certificate is no refusal.
+    let host_cert = workspaces.serving_certificate().clone();
+    // The removals moderation made before the door had them, taken over once
+    // and kept out for the rest of their day.
+    let adopted = workspaces
+        .adopt_legacy_removals(&workspace, &state.join("removals.json"))
         .await
-        .map_err(|error| anyhow::anyhow!("settle the room's layout scope: {error}"))?;
-    let spectator = spectator_root(&store, &room)?;
-    ensure_spectator_member(&rooms, &host_cert, &root, &room, &spectator).await?;
-    let workspace_id = rooms
-        .summary(&room)
+        .context("take over the removals the room kept before the door")?;
+    if adopted > 0 {
+        tracing::info!(%workspace, adopted, "removals taken over from the room's removals file");
+    }
+    settle_listing(&workspaces, &workspace, &host_cert, &persistent).await?;
+    workspaces
+        .list_invitation_only(&workspace, &host_cert, persistent.invitation_only)
         .await
-        .map_err(|error| anyhow::anyhow!("{error}"))?
-        .workspace_id;
-    hosted
-        .relay
-        .admit_spectators(
-            workspace_id,
-            tilo_relay::Spectators {
-                root: spectator.verifying_key().to_bytes(),
-                seats: persistent.max_spectators,
-                // Every visitor may join this room as a guest, and so read
-                // its channels: one who only watches may read them too.
-                public: true,
-            },
-        )
+        .map_err(|error| anyhow::anyhow!("settle the workspace's door: {error}"))?;
+    // Whether the workspace shares its members' windows and strips, as the
+    // host configured it. Settled at every start.
+    workspaces
+        .set_layout(&workspace, persistent.layout)
         .await
-        .context("let visitors watch the room")?;
+        .map_err(|error| anyhow::anyhow!("settle the workspace's layout scope: {error}"))?;
     seed_apps(
-        &rooms,
-        &room,
+        &workspaces,
+        &workspace,
         &host_cert,
         &persistent.seed_apps,
         &state.join("seeded.json"),
     )
     .await?;
     settle_chat(
-        &rooms,
-        &room,
+        &workspaces,
+        &workspace,
         &host_cert,
         &persistent.seed_apps,
         &persistent.chat_channels,
@@ -1585,14 +1350,21 @@ pub(crate) async fn run(
         &persistent.discussions,
     )
     .await?;
-    settle_strips(&rooms, &room, &host_cert, &shown, &persistent.strips).await?;
-    ensure_guest_policy(&rooms, &room, &host_cert).await?;
-    settle_member_invites(&rooms, &room, &host_cert, persistent.members_only).await?;
-    settle_app_authorship(
-        &rooms,
-        &room,
+    settle_strips(
+        &workspaces,
+        &workspace,
         &host_cert,
-        &persistent.author_apps,
+        &shown,
+        &persistent.strips,
+    )
+    .await?;
+    ensure_guest_policy(&workspaces, &workspace, &host_cert).await?;
+    settle_member_invites(&workspaces, &workspace, &host_cert, persistent.members_only).await?;
+    settle_app_authorship(
+        &workspaces,
+        &workspace,
+        &host_cert,
+        &authored_apps(&persistent),
         &state.join("authored-apps.json"),
     )
     .await?;
@@ -1603,24 +1375,24 @@ pub(crate) async fn run(
         .context("start the browser listener")?;
     println!(
         "{}",
-        RoomEvent::Started {
-            version: room_operator::VERSION,
+        OperatorEvent::Started {
+            version: operator::VERSION,
             origin: web.origin.clone(),
             plain_origin: web.plain_origin.clone(),
             user_public_key: hex::encode(root.verifying_key().to_bytes()),
             certificate_sha256: web.certificate_sha256.clone(),
             allowed_origins: args.web.allowed_origins.clone(),
-            room: Some(room.clone()),
+            workspace: Some(workspace.clone()),
         }
         .to_line()
     );
-    // The moderation agent runs as the room's bot for as long as the room
-    // does; it answers reports left open while the room was down first.
+    // The moderation agent runs as the workspace's bot for as long as the workspace
+    // does; it answers reports left open while the workspace was down first.
     let moderator = moderation.map(|agent| {
         tokio::spawn(
             tilo_relay::room_bots::ModerationBot::new(
-                rooms.clone(),
-                room.clone(),
+                workspaces.clone(),
+                workspace.clone(),
                 host_cert.clone(),
                 agent,
             )
@@ -1647,8 +1419,8 @@ pub(crate) async fn run(
         },
     );
     let (runners, discord) = start_bots(
-        &rooms,
-        &room,
+        &workspaces,
+        &workspace,
         &host_cert,
         &root,
         &bots,
@@ -1660,26 +1432,26 @@ pub(crate) async fn run(
     if let Some(discord) = &discord {
         offer_sign_in(discord, &persistent).await;
     }
-    // The files members post in the room's Chat, kept in the same store
+    // The files members post in the workspace's Chat, kept in the same store
     // as what the bots fetch, so they stay once their poster left.
     let attachments = attachment_limits(&persistent).map(|limits| {
         tokio::spawn(
-            tilo_relay::room_bots::attachments::RoomAttachments::new(
-                rooms.clone(),
-                room.clone(),
+            tilo_relay::room_bots::attachments::WorkspaceAttachments::new(
+                workspaces.clone(),
+                workspace.clone(),
                 host_cert.device_public_key,
-                connector_host.store(&rooms),
+                connector_host.store(&workspaces),
                 state.join("attachments.json"),
                 limits,
             )
             .run(),
         )
     });
-    // Bots the room's members ask for, beside the operator's.
+    // Bots the workspace's members ask for, beside the operator's.
     let requested =
         tilo_relay::room_bots::requested::spawn(tilo_relay::room_bots::requested::Follower {
-            rooms: rooms.clone(),
-            room: room.clone(),
+            workspaces: workspaces.clone(),
+            workspace: workspace.clone(),
             host: host_cert.clone(),
             root: root.clone(),
             state: state.clone(),
@@ -1687,13 +1459,26 @@ pub(crate) async fn run(
             connectors: Some(connector_host),
         });
     let context = PersistentRoom {
-        rooms,
-        room,
-        root,
-        spectator,
+        workspaces,
+        workspace,
         host_cert,
         web,
-        discord,
+    };
+    // The deployment's own routes: its health check and the addresses other
+    // services are configured with. Started once the room serves, so a health
+    // check that answers means people can get in.
+    let _management = match persistent.http {
+        Some(listen) => Some(
+            http::serve(http::Config {
+                listen,
+                avatars: persistent.public_avatars.clone(),
+                sign_in,
+                web_entry: args.web.web_entry.clone(),
+                discord: discord.clone(),
+            })
+            .await?,
+        ),
+        None => None,
     };
     let governance = Governance {
         owners,
@@ -1722,7 +1507,7 @@ pub(crate) async fn run(
     result
 }
 
-/// The operator's declarations the room is kept in line with.
+/// The operator's declarations the workspace is kept in line with.
 struct Governance {
     owners: BTreeSet<[u8; 32]>,
     moderators: BTreeSet<[u8; 32]>,
@@ -1730,7 +1515,7 @@ struct Governance {
     roles_file: Option<PathBuf>,
     inactive_after_mins: u64,
     state: PathBuf,
-    /// The room takes people by invitation (`--members-only`).
+    /// The workspace takes people by invitation (`--members-only`).
     members_only: bool,
     /// Requests left at the door it keeps (`--wait-list-max`).
     wait_list_max: usize,
@@ -1747,10 +1532,6 @@ struct DeclaredRoles {
 impl Governance {
     fn declared_file(&self) -> PathBuf {
         self.state.join("declared-roles.json")
-    }
-
-    fn removals_file(&self) -> PathBuf {
-        self.state.join("removals.json")
     }
 
     fn last_seen_file(&self) -> PathBuf {
@@ -1778,7 +1559,7 @@ impl Governance {
                     owners.extend(file.owners.iter().filter_map(|key| hex32(key)));
                     moderators.extend(file.moderators.iter().filter_map(|key| hex32(key)));
                 }
-                Err(error) => eprintln!("persistent room: roles file unreadable: {error}"),
+                Err(error) => eprintln!("persistent workspace: roles file unreadable: {error}"),
             }
         }
         (owners, moderators)
@@ -1824,10 +1605,10 @@ impl Governance {
 
 async fn summary(
     context: &PersistentRoom,
-) -> anyhow::Result<tilo_relay_session::rooms::RoomSummary> {
+) -> anyhow::Result<tilo_relay_session::workspaces::WorkspaceSummary> {
     context
-        .rooms
-        .summary(&context.room)
+        .workspaces
+        .summary(&context.workspace)
         .await
         .map_err(|error| anyhow::anyhow!("{error}"))
 }
@@ -1839,19 +1620,24 @@ async fn reconcile_roles(
 ) -> anyhow::Result<()> {
     let members = summary(context).await?.members;
     let current = governance.current();
-    let changes = role_changes(&members, &current.0, &current.1, previously_declared);
+    let changes = role_changes(
+        &members,
+        &current.0,
+        &current.1,
+        previously_declared,
+        context.host_cert.user_public_key,
+    );
     apply_role_changes(context, changes).await?;
     governance.remember_declared(&current)?;
     *previously_declared = current.0.union(&current.1).copied().collect();
     Ok(())
 }
 
-/// Removes guests idle past the horizon, in batches. A batch the room
+/// Removes guests idle past the horizon, in batches. A batch the workspace
 /// refuses stays seated until the next call.
 async fn prune_idle(
     context: &PersistentRoom,
     governance: &Governance,
-    spectator: [u8; 32],
     removals: &Removals,
     last_seen: &mut BTreeMap<[u8; 32], u64>,
 ) -> anyhow::Result<()> {
@@ -1861,8 +1647,7 @@ async fn prune_idle(
         last_seen.entry(member.user_public_key).or_insert(now);
     }
     let (owners, moderators) = governance.current();
-    let mut keep: BTreeSet<[u8; 32]> = owners.union(&moderators).copied().collect();
-    keep.insert(spectator);
+    let keep: BTreeSet<[u8; 32]> = owners.union(&moderators).copied().collect();
     let idle = idle_guests(
         &members,
         last_seen,
@@ -1877,9 +1662,9 @@ async fn prune_idle(
         removals.pruning(&batch);
         let first = batch.first().copied().unwrap_or_default();
         if let Err(error) = context
-            .rooms
+            .workspaces
             .prune_members(
-                &context.room,
+                &context.workspace,
                 &context.host_cert,
                 request_id(b"prune", &first, tilo_clock::unix_now_ns()),
                 &batch,
@@ -1887,9 +1672,9 @@ async fn prune_idle(
             .await
         {
             // They keep their seats until the next tick tries again, and
-            // the room goes on serving: ending here dropped every visitor's
-            // session and turned each new one away while the room service
-            // restarted it.
+            // the workspace goes on serving: ending here dropped every session
+            // and turned each new one away while the workspace service restarted
+            // it.
             removals.not_pruned(&batch);
             tracing::warn!("pruning {} idle guests failed: {error}", batch.len());
             break;
@@ -1901,7 +1686,10 @@ async fn prune_idle(
     // Addresses left at the door and not confirmed in time go too, also
     // while nobody touches the wait list.
     if governance.wait_list_max > 0
-        && let Err(error) = context.rooms.expire_wait_list(&context.room).await
+        && let Err(error) = context
+            .workspaces
+            .expire_wait_list(&context.workspace)
+            .await
     {
         tracing::warn!("the wait list kept unconfirmed addresses: {error}");
     }
@@ -1911,10 +1699,10 @@ async fn prune_idle(
 /// How often the operator's roles file is looked at for a change.
 const ROLES_FILE_EVERY_SECS: u64 = 2;
 
-/// What the room last said about who is online, and when it last wrote
+/// What the workspace last said about who is online, and when it last wrote
 /// down when each member was last seen.
 struct OnlineWatch {
-    last_online: Option<RoomEvent>,
+    last_online: Option<OperatorEvent>,
     last_seen_written: tokio::time::Instant,
 }
 
@@ -1925,35 +1713,21 @@ impl OnlineWatch {
         &mut self,
         context: &PersistentRoom,
         governance: &Governance,
-        spectator: [u8; 32],
         last_seen: &mut BTreeMap<[u8; 32], u64>,
     ) -> anyhow::Result<()> {
         let sessions = context.web.online_users();
-        let people = sessions.keys().filter(|user| **user != spectator).count();
-        // Seated ones only: a page refused for want of a seat keeps
-        // its web session open while it waits, but watches nothing.
-        let spectators = context
-            .rooms
-            .seated_spectators(&context.room)
-            .await
-            .unwrap_or(0);
+        let people = sessions.len();
         // Who of the members is here, for the site's directory.
-        let here: std::collections::BTreeSet<[u8; 32]> = sessions
-            .keys()
-            .filter(|user| **user != spectator)
-            .copied()
-            .collect();
+        let here: std::collections::BTreeSet<[u8; 32]> = sessions.keys().copied().collect();
         let (faces, _, members) = context
-            .rooms
-            .presence(&context.room, &here)
+            .workspaces
+            .presence(&context.workspace, &here)
             .await
             .unwrap_or_default();
-        let online = RoomEvent::Online {
+        let online = OperatorEvent::Online {
             people: u32::try_from(people).unwrap_or(u32::MAX),
-            spectators: u32::try_from(spectators).unwrap_or(u32::MAX),
             here: faces,
-            // The spectator person is a member nobody counts.
-            members: members.saturating_sub(1),
+            members,
             online: here.iter().map(hex::encode).collect(),
         };
         if self.last_online.as_ref() != Some(&online) {
@@ -1996,13 +1770,8 @@ async fn serve_operator(
     governance: &Governance,
     operator: &mut tokio::sync::mpsc::Receiver<Result<OperatorCommand, String>>,
 ) -> anyhow::Result<()> {
-    let mut changes = context.rooms.governance_changes();
-    let spectator = context.spectator.verifying_key().to_bytes();
-    let removals = Removals::load(
-        governance.removals_file(),
-        &summary(context).await?.members,
-        tilo_clock::unix_now_ms(),
-    )?;
+    let mut changes = context.workspaces.governance_changes();
+    let removals = Removals::load(&summary(context).await?.members);
     let mut previously_declared = governance.previously_declared()?;
     reconcile_roles(context, governance, &mut previously_declared).await?;
     let mut last_seen = governance.read_last_seen()?;
@@ -2010,20 +1779,20 @@ async fn serve_operator(
         last_online: None,
         last_seen_written: tokio::time::Instant::now(),
     };
-    let mut online_tick =
-        tokio::time::interval(Duration::from_secs(room_operator::ONLINE_EVERY_SECS));
+    let mut online_tick = tokio::time::interval(Duration::from_secs(operator::ONLINE_EVERY_SECS));
     let mut prune_tick = prune_interval(governance);
     // The operator's roles file, looked at every few seconds: a role it
-    // grants or takes back reaches the room without a restart.
+    // grants or takes back reaches the workspace without a restart.
     let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
     let mut roles_seen = governance.roles_changed_at();
-    let admitter = Admitter::of(context, removals.clone(), governance.members_only);
-    let mut admitting = tokio::task::JoinSet::<RoomEvent>::new();
     let mut mail_acks = MailAcks::new();
     let mut mail = governance
         .wait_list_mail
         .as_ref()
-        .and_then(|door| context.rooms.mail_wait_list(door));
+        .and_then(|door| context.workspaces.mail_wait_list(door));
+    // A deployment that runs the room without an operator leaves its input at
+    // its end: the room then keeps serving, and only a command ends it.
+    let mut operator_open = true;
     loop {
         tokio::select! {
             Some(asked) = async {
@@ -2032,11 +1801,6 @@ async fn serve_operator(
                     None => std::future::pending().await,
                 }
             } => publish_invite_mail(asked, &mut mail_acks),
-            Some(answered) = admitting.join_next(), if !admitting.is_empty() => match answered {
-                Ok(event) => println!("{}", event.to_line()),
-                // Its waiter hears nothing and gives up, as on any lost answer.
-                Err(error) => eprintln!("tilo-relay: a pre-admission did not finish: {error}"),
-            },
             _ = roles_tick.tick(), if governance.roles_file.is_some() => {
                 let changed_at = governance.roles_changed_at();
                 if changed_at != roles_seen {
@@ -2045,29 +1809,29 @@ async fn serve_operator(
                 }
             }
             _ = online_tick.tick() => {
-                presence.observe(context, governance, spectator, &mut last_seen).await?;
+                presence.observe(context, governance, &mut last_seen).await?;
             }
-            _ = prune_tick.tick() => prune_idle(context, governance, spectator, &removals, &mut last_seen).await?,
+            _ = prune_tick.tick() => prune_idle(context, governance, &removals, &mut last_seen).await?,
             changed = changes.recv() => {
                 match changed {
-                    Ok(room) if room != context.room => continue,
+                    Ok(workspace) if workspace != context.workspace => continue,
                     Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => bail!("the relay stopped governing"),
                 }
                 let members = summary(context).await?.members;
-                for user in removals.taken_in(&members, tilo_clock::unix_now_ms())? {
-                    // Bans exist once room moderation lands; until then every
+                for user in removals.taken_in(&members) {
+                    // Bans exist once workspace moderation lands; until then every
                     // removal is a plain removal. The service treats both alike.
-                    println!("{}", RoomEvent::MemberRemoved { user_public_key: hex::encode(user), banned: false }.to_line());
+                    println!("{}", OperatorEvent::MemberRemoved { user_public_key: hex::encode(user), banned: false }.to_line());
                 }
                 reconcile_roles(context, governance, &mut previously_declared).await?;
             }
-            line = operator.recv(), if admitting.len() < PRE_ADMITTING_AT_ONCE => match line {
-                Some(Ok(OperatorCommand::PreAdmit { user_public_key, token_sha256, label, role })) => {
-                    admitting.spawn(answer_pre_admit(admitter.clone(), user_public_key, token_sha256, label, role));
-                }
-                Some(Ok(OperatorCommand::Spectate { device_public_key })) => {
-                    println!("{}", answer_spectate(context, device_public_key).to_line());
+            line = operator.recv(), if operator_open => match line {
+                None => {
+                    operator_open = false;
+                    tracing::info!(
+                        "the operator closed its input; the workspace keeps serving"
+                    );
                 }
                 Some(Ok(command @ (OperatorCommand::WaitList { .. }
                 | OperatorCommand::Unlist { .. }
@@ -2080,20 +1844,9 @@ async fn serve_operator(
                         let _ = sender.send(queued);
                     }
                 }
-                Some(Ok(OperatorCommand::DiscordAuthorized { user_id, user_name, display_name, avatar, state_sha256, link_check })) => {
-                    hand_to_discord(context, user_id, user_name, display_name, avatar, state_sha256, link_check).await;
-                }
-                Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent room admits guests by pre-admission only"),
-                Some(Ok(OperatorCommand::Shutdown {})) | None => {
-                    // Whoever is being let in hears the answer before the room stops.
-                    while let Some(answered) = admitting.join_next().await {
-                        if let Ok(event) = answered {
-                            println!("{}", event.to_line());
-                        }
-                    }
-                    return Ok(());
-                }
-                Some(Err(error)) => bail!("unreadable room operator line: {error}"),
+                Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent workspace admits guests through its door"),
+                Some(Ok(OperatorCommand::Shutdown {})) => return Ok(()),
+                Some(Err(error)) => bail!("unreadable workspace operator line: {error}"),
             },
         }
     }
@@ -2107,13 +1860,40 @@ async fn serve_operator(
 )]
 mod tests {
     use super::*;
-    use tilo_relay_protocol::rooms::{RoomsReply, RoomsRequest};
+    use ed25519_dalek::Signer as _;
+    use tilo_relay_protocol::workspaces::{
+        JoinReply, JoinStep, WorkspacesReply, WorkspacesRequest, join_proof_digest,
+    };
+    use tilo_user_identity::DeviceCapabilities;
     const DAY_MS: u64 = 24 * 3600 * 1000;
+    const NS_PER_SEC: u64 = 1_000_000_000;
 
     #[test]
     fn the_workspace_is_named_after_the_room_capitalized() {
         assert_eq!(workspace_name("plaza"), "Plaza");
         assert_eq!(workspace_name(""), "");
+    }
+
+    #[test]
+    fn the_workspace_authors_every_first_party_app_unless_it_names_apps() {
+        let mut args = PersistentArgs {
+            seed_apps: vec!["so.tilo.chat".into()],
+            ..PersistentArgs::default()
+        };
+        let every = authored_apps(&args);
+        for app in tilo_desktop_model::first_party::FIRST_PARTY_APPS {
+            assert!(every.iter().any(|named| named.as_str() == *app), "{app}");
+        }
+        assert!(every.iter().any(|app| app == "so.tilo.chat"));
+        assert_eq!(
+            every.len(),
+            every.iter().collect::<BTreeSet<_>>().len(),
+            "an app is named once"
+        );
+        args.author_apps = vec!["so.tilo.chat".into()];
+        assert_eq!(authored_apps(&args), ["so.tilo.chat"]);
+        args.author_apps = vec![NO_AUTHORED_APPS.into()];
+        assert!(authored_apps(&args).is_empty(), "a read-only workspace");
     }
 
     fn store() -> tilo_secrets::SecretStore {
@@ -2152,66 +1932,14 @@ mod tests {
         let store = store();
         let root = SigningKey::from_bytes(&[0x11; 32]);
         let other = SigningKey::from_bytes(&[0x22; 32]);
-        check_stored_root(&store, "room-a", &root).expect_err("no stored root is refused");
-        keep_root(&store, "room-a", &root).unwrap();
-        check_stored_root(&store, "room-a", &root).unwrap();
-        let refused = check_stored_root(&store, "room-a", &other).unwrap_err();
+        check_stored_root(&store, "workspace-a", &root).expect_err("no stored root is refused");
+        keep_root(&store, "workspace-a", &root).unwrap();
+        check_stored_root(&store, "workspace-a", &root).unwrap();
+        let refused = check_stored_root(&store, "workspace-a", &other).unwrap_err();
         assert!(
-            refused.to_string().contains("not this room's owner"),
+            refused.to_string().contains("not this workspace's owner"),
             "{refused:#}"
         );
-    }
-
-    #[test]
-    fn the_spectator_root_is_made_once_and_kept() {
-        let store = store();
-        let first = spectator_root(&store, "room-a").unwrap();
-        assert_eq!(
-            spectator_root(&store, "room-a").unwrap().to_bytes(),
-            first.to_bytes()
-        );
-        assert_ne!(
-            spectator_root(&store, "room-b").unwrap().to_bytes(),
-            first.to_bytes()
-        );
-    }
-
-    #[test]
-    fn a_spectator_certificate_lasts_an_hour_and_carries_no_capabilities() {
-        let spectator = SigningKey::from_bytes(&[0x33; 32]);
-        let cert = spectator_cert(&spectator, [4; 32], 1_000).unwrap();
-        tilo_user_identity::verify_device_cert_at(&cert, 1_000).unwrap();
-        assert_eq!(cert.user_public_key, spectator.verifying_key().to_bytes());
-        assert_eq!(cert.device_public_key, [4; 32]);
-        assert_eq!(
-            cert.expires_at_ns,
-            Some(1_000 + SPECTATOR_CERT_SECS * NS_PER_SEC)
-        );
-        let caps = &cert.capabilities;
-        assert!(
-            !(caps.can_own_workspaces
-                || caps.can_admit_devices
-                || caps.can_act_as_host
-                || caps.can_read_all_workspaces
-                || caps.can_administer_devices)
-        );
-        assert!(
-            tilo_user_identity::verify_device_cert_at(
-                &cert,
-                1_000 + SPECTATOR_CERT_SECS * NS_PER_SEC + 1
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn a_pre_admission_is_signed_by_the_room_root_for_ten_minutes() {
-        let root = SigningKey::from_bytes(&[0x11; 32]);
-        let grant =
-            pre_admission(&root, "room-a", [5; 32], "Ada", RoomRole::Editor, 1_000).unwrap();
-        grant.verify().unwrap();
-        assert_eq!(grant.owner_user_public_key, root.verifying_key().to_bytes());
-        assert_eq!(grant.expires_at_ns, 1_000 + PRE_ADMISSION_SECS * NS_PER_SEC);
     }
 
     #[test]
@@ -2241,40 +1969,9 @@ mod tests {
         assert_eq!(newly_removed(&mut seen, &[listed(true)]), vec![[4; 32]]);
     }
 
-    /// A guest pruned after an absence comes back through the door as
-    /// anyone does; only moderation's removals keep a person out.
-    #[test]
-    fn a_pruned_guest_is_not_kept_out_and_a_removal_lapses_after_the_day() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("removals.json");
-        let gone = |key: u8| tilo_peer_state::GovernedMember {
-            removed: true,
-            ..member(key, false)
-        };
-        let removals = Removals::load(file.clone(), &[], 1_000).unwrap();
-        removals.pruning(&BTreeSet::from([[5; 32]]));
-        assert!(!removals.refuses([5; 32], &[gone(5)], 1_000));
-        assert!(removals.taken_in(&[gone(5)], 1_000).unwrap().is_empty());
-        assert!(
-            removals.refuses([6; 32], &[gone(6)], 1_000),
-            "removed, not yet taken in"
-        );
-        assert_eq!(removals.taken_in(&[gone(6)], 1_000).unwrap(), vec![[6; 32]]);
-        let members = [gone(5), gone(6)];
-        // Kept across a restart, for the day and no longer.
-        let reloaded = Removals::load(file, &members, 2_000).unwrap();
-        assert!(reloaded.refuses([6; 32], &members, 2_000));
-        assert!(!reloaded.refuses([6; 32], &members, 1_000 + REMOVED_FOR_MS));
-        assert!(!reloaded.refuses([5; 32], &members, 2_000));
-    }
-
-    /// A relay governing one room `Plaza`, and what answers its
-    /// pre-admissions, removals kept in `dir`.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the rooms handle moves into what answers pre-admissions"
-    )]
-    async fn plaza(dir: &Path) -> (tilo_relay::daemon::Relay, Admitter) {
+    /// A relay governing one workspace `Plaza`, its workspaces and the host's
+    /// device certificate.
+    async fn plaza(dir: &Path) -> (tilo_relay::daemon::Relay, Workspaces, DeviceCert, String) {
         let root = SigningKey::from_bytes(&[1; 32]);
         let host = SigningKey::from_bytes(&[2; 32]);
         let host_cert = enrol(&root, &host, "host", DeviceCapabilities::host()).unwrap();
@@ -2293,135 +1990,24 @@ mod tests {
         )
         .await
         .unwrap();
-        let rooms = relay.rooms().unwrap().clone();
-        let room = rooms.create("Plaza").await.unwrap().room;
-        let removals =
-            Removals::load(dir.join("removals.json"), &[], tilo_clock::unix_now_ms()).unwrap();
-        let admitter = Admitter {
-            rooms,
-            host_cert,
-            root,
-            room,
-            spectator: [9; 32],
-            removals,
-            members_only: false,
-        };
-        (relay, admitter)
+        let workspaces = relay.workspaces().unwrap().clone();
+        let workspace = workspaces.create("Plaza").await.unwrap().workspace;
+        (relay, workspaces, host_cert, workspace)
     }
 
-    /// Whether the guest `device` joins with the pre-admission `answer`
-    /// and its `token`, as their page does.
-    async fn joins(
-        rooms: &Rooms,
-        (device, device_cert): &(SigningKey, DeviceCert),
-        answer: RoomEvent,
-        token: &[u8],
-    ) -> bool {
-        let RoomEvent::PreAdmitted { invitation, .. } = answer else {
-            panic!("not pre-admitted: {answer:?}");
-        };
-        let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(invitation)
-            .unwrap();
-        let JoinReply::Challenge { challenge } = rooms
-            .page_join(JoinStep::Ask {
-                invitation,
-                device_cert: device_cert.clone(),
-                request_id: rand::random(),
-            })
-            .await
-        else {
-            return false;
-        };
-        let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
-        let proved = rooms
-            .page_join(JoinStep::ProvePreAdmitted {
-                challenge,
-                signature,
-                name: "Guest".into(),
-                token: token.to_vec(),
-            })
-            .await;
-        matches!(proved, JoinReply::Admitted { .. })
-    }
-
-    fn listed_removed(members: &[tilo_peer_state::GovernedMember], person: [u8; 32]) -> bool {
-        members
-            .iter()
-            .any(|member| member.user_public_key == person && member.removed)
-    }
-
-    /// A guest moderation removed asks the door again at once, as their
-    /// page does the moment the room drops it: the room refuses that
-    /// person, whether or not its operator loop has taken the removal in
-    /// yet, and an invitation it issued them before the removal is no way
-    /// back in either.
-    #[tokio::test]
-    async fn a_removed_guest_is_refused_pre_admission_and_kept_out() {
-        let dir = tempfile::tempdir().unwrap();
-        let (relay, admitter) = plaza(dir.path()).await;
-        let (rooms, room) = (admitter.rooms.clone(), admitter.room.clone());
-        let device = SigningKey::from_bytes(&[4; 32]);
-        let guest_root = SigningKey::from_bytes(&[3; 32]);
-        let guest = (
-            device.clone(),
-            enrol(&guest_root, &device, "guest", DeviceCapabilities::member()).unwrap(),
-        );
-        let person = guest.1.user_public_key;
-        let pre_admit = |token: &'static [u8]| {
-            answer_pre_admit(
-                admitter.clone(),
-                hex::encode(person),
-                hex::encode(token_digest(token)),
-                "Guest".into(),
-                RoomRole::Editor,
-            )
-        };
-        let removed =
-            |event: &RoomEvent| matches!(event, RoomEvent::PreAdmitRefused { removed: true, .. });
-
-        assert!(joins(&rooms, &guest, pre_admit(b"first").await, b"first").await);
-        let earlier = pre_admit(b"earlier").await;
-        let removal = tilo_relay_session::rooms::RemoveMemberRequest {
-            request_id: [8; 32],
-            user_public_key: person,
-        };
-        rooms
-            .remove_member(&room, &admitter.host_cert, removal)
-            .await
-            .unwrap();
-        let members = rooms.summary(&room).await.unwrap().members;
-        assert!(
-            listed_removed(&members, person),
-            "the removal takes their membership"
-        );
-        // Before the operator loop has heard of the removal.
-        let asked = pre_admit(b"second").await;
-        assert!(removed(&asked), "{asked:?}");
-        // Taken in: reported once, and still refused.
-        let now = tilo_clock::unix_now_ms();
-        let taken = admitter.removals.taken_in(&members, now).unwrap();
-        assert_eq!(taken, vec![person]);
-        let asked = pre_admit(b"third").await;
-        assert!(removed(&asked), "{asked:?}");
-        assert!(
-            !joins(&rooms, &guest, earlier, b"earlier").await,
-            "an earlier invitation lets them back in"
-        );
-        let members = rooms.summary(&room).await.unwrap().members;
-        assert!(listed_removed(&members, person), "still removed");
-        relay.shutdown().await;
-    }
-
-    /// Ask for an invitation to `room` as `device`, as a member's page does.
-    async fn invite(rooms: &Rooms, room: &str, device: &DeviceCert) -> RoomsReply {
-        rooms
+    /// Ask for an invitation to `workspace` as `device`, as a member's page does.
+    async fn invite(
+        workspaces: &Workspaces,
+        workspace: &str,
+        device: &DeviceCert,
+    ) -> WorkspacesReply {
+        workspaces
             .page_rooms(
                 device,
-                RoomsRequest::Invite {
-                    room: room.to_owned(),
+                WorkspacesRequest::Invite {
+                    workspace: workspace.to_owned(),
                     request_id: rand::random(),
-                    role: RoomRole::Editor,
+                    role: WorkspaceRole::Editor,
                     expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3600 * NS_PER_SEC),
                     inviter_name: Some("Member".into()),
                     wait_list_entry: None,
@@ -2430,113 +2016,115 @@ mod tests {
             .await
     }
 
-    /// A room taking people by invitation lets nobody new in through its
-    /// door, and still lets a member in again: another tab of theirs is
-    /// another device of the same person. A member invites someone with an
-    /// invitation of their own and lets them in; once the room lets anyone
-    /// in again, members no longer invite.
+    /// A fresh person with one device: their signing key and its certificate.
+    fn guest(seed: u8) -> (SigningKey, DeviceCert) {
+        let device = SigningKey::from_bytes(&[seed; 32]);
+        let root = SigningKey::from_bytes(&[seed.wrapping_add(100); 32]);
+        let cert = enrol(&root, &device, "guest", DeviceCapabilities::member()).unwrap();
+        (device, cert)
+    }
+
+    /// Whether `person`'s device redeems the door's `invitation` and `token`,
+    /// as their page does.
+    async fn walk_in(
+        workspaces: &Workspaces,
+        (key, cert): &(SigningKey, DeviceCert),
+        invitation: Vec<u8>,
+        token: &str,
+    ) -> bool {
+        let JoinReply::Challenge { challenge } = workspaces
+            .page_join(JoinStep::Ask {
+                invitation,
+                device_cert: cert.clone(),
+                request_id: rand::random(),
+            })
+            .await
+        else {
+            return false;
+        };
+        let signature = key.sign(&join_proof_digest(&challenge)).to_bytes();
+        matches!(
+            workspaces
+                .page_join(JoinStep::ProvePreAdmitted {
+                    challenge,
+                    signature,
+                    name: "Guest".into(),
+                    token: token.as_bytes().to_vec(),
+                })
+                .await,
+            JoinReply::Admitted { .. }
+        )
+    }
+
+    /// Someone the listed workspace's door lets in is a member; once the
+    /// workspace takes people by invitation, a member invites someone with an
+    /// invitation of their own and lets them in, while the workspace's link is
+    /// no invitation at all. Once it lets anyone in again, members no longer
+    /// invite.
     #[tokio::test]
     #[expect(
         clippy::too_many_lines,
-        reason = "one story: the door, a member's other tab, an invitation and taking it back"
+        reason = "one story: the door, an invitation, admitting it and taking it back"
     )]
-    #[cfg_attr(
-        feature = "agents",
-        expect(
-            clippy::significant_drop_tightening,
-            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions"
-        )
-    )]
-    async fn taking_people_by_invitation_members_invite_whom_the_door_turns_away() {
+    async fn taking_people_by_invitation_members_invite_whose_join_they_admit() {
         let dir = tempfile::tempdir().unwrap();
-        let (relay, open) = plaza(dir.path()).await;
-        let rooms = open.rooms.clone();
-        let room = open.room.clone();
-        ensure_guest_policy(&rooms, &room, &open.host_cert)
+        let (relay, workspaces, host_cert, workspace) = plaza(dir.path()).await;
+        ensure_guest_policy(&workspaces, &workspace, &host_cert)
             .await
             .unwrap();
-        // An open room settles as one at every start, holding no such grant.
-        settle_member_invites(&rooms, &room, &open.host_cert, false)
+        // An open workspace settles as one at every start, holding no such grant.
+        settle_member_invites(&workspaces, &workspace, &host_cert, false)
             .await
             .unwrap();
-        let by_invitation = Admitter {
-            members_only: true,
-            ..open.clone()
-        };
-        let guest = |seed: u8| {
-            let device = SigningKey::from_bytes(&[seed; 32]);
-            let root = SigningKey::from_bytes(&[seed.wrapping_add(100); 32]);
-            let cert = enrol(&root, &device, "guest", DeviceCapabilities::member()).unwrap();
-            (device, cert)
-        };
-        let pre_admit = |admitter: &Admitter, person: [u8; 32], token: &'static [u8]| {
-            answer_pre_admit(
-                admitter.clone(),
-                hex::encode(person),
-                hex::encode(token_digest(token)),
-                "Guest".into(),
-                RoomRole::Editor,
-            )
-        };
 
-        // Someone who joined while the door was open is a member. An open
-        // room's link is its invitation: members invite nobody themselves.
+        // Someone who joined through the door while the workspace was listed
+        // is a member. A listed workspace's link is its invitation: members
+        // invite nobody themselves.
+        workspaces
+            .publish(
+                &workspace,
+                &host_cert,
+                Listing {
+                    description: "A plaza".into(),
+                    default_role: WorkspaceRole::Editor,
+                },
+            )
+            .await
+            .unwrap();
         let member = guest(12);
-        let person = member.1.user_public_key;
-        assert!(
-            joins(
-                &rooms,
-                &member,
-                pre_admit(&open, person, b"open").await,
-                b"open"
+        let (issued, token) = workspaces
+            .admit_listed(
+                &workspace,
+                &tilo_relay_protocol::directory::DoorJoin {
+                    user_public_key: hex::encode(member.1.user_public_key),
+                    display_name: "Ada".into(),
+                },
             )
-            .await
-        );
-        let asked = invite(&rooms, &room, &member.1).await;
-        assert!(matches!(asked, RoomsReply::Refused(_)), "{asked:?}");
-
-        settle_member_invites(&rooms, &room, &open.host_cert, true)
             .await
             .unwrap();
-        let stranger = guest(11);
-        let asked = pre_admit(&by_invitation, stranger.1.user_public_key, b"stranger").await;
         assert!(
-            matches!(
-                asked,
-                RoomEvent::PreAdmitRefused {
-                    invite_only: true,
-                    ..
-                }
-            ),
-            "{asked:?}"
+            walk_in(&workspaces, &member, issued.signed_invitation, &token).await,
+            "the door lets the first person in"
         );
-        let another_tab = (
-            SigningKey::from_bytes(&[13; 32]),
-            enrol(
-                &SigningKey::from_bytes(&[112; 32]),
-                &SigningKey::from_bytes(&[13; 32]),
-                "guest",
-                DeviceCapabilities::member(),
-            )
-            .unwrap(),
-        );
-        assert_eq!(another_tab.1.user_public_key, person, "the same person");
-        let asked = pre_admit(&by_invitation, person, b"again").await;
-        assert!(
-            joins(&rooms, &another_tab, asked, b"again").await,
-            "a member gets in again"
-        );
+        let asked = invite(&workspaces, &workspace, &member.1).await;
+        assert!(matches!(asked, WorkspacesReply::Refused(_)), "{asked:?}");
+
+        workspaces.unpublish(&workspace, &host_cert).await.unwrap();
+        settle_member_invites(&workspaces, &workspace, &host_cert, true)
+            .await
+            .unwrap();
 
         // The member invites the stranger, who asks to join with it and
         // waits until the member lets them in.
-        let issued = invite(&rooms, &room, &member.1).await;
-        let RoomsReply::Invitation {
+        let stranger = guest(11);
+        let issued = invite(&workspaces, &workspace, &member.1).await;
+        let WorkspacesReply::Invitation {
             signed_invitation, ..
         } = issued
         else {
             panic!("a member invites: {issued:?}");
         };
-        let JoinReply::Challenge { challenge } = rooms
+        let JoinReply::Challenge { challenge } = workspaces
             .page_join(JoinStep::Ask {
                 invitation: signed_invitation,
                 device_cert: stranger.1.clone(),
@@ -2547,7 +2135,7 @@ mod tests {
             panic!("no challenge");
         };
         let signature = stranger.0.sign(&join_proof_digest(&challenge)).to_bytes();
-        let waiting = rooms
+        let waiting = workspaces
             .page_join(JoinStep::Prove {
                 challenge,
                 signature,
@@ -2555,27 +2143,35 @@ mod tests {
             })
             .await;
         assert!(matches!(waiting, JoinReply::Waiting), "{waiting:?}");
-        let listed = rooms
-            .page_rooms(&member.1, RoomsRequest::Requests { room: room.clone() })
+        let listed = workspaces
+            .page_rooms(
+                &member.1,
+                WorkspacesRequest::Requests {
+                    workspace: workspace.clone(),
+                },
+            )
             .await;
-        let RoomsReply::Requests(requests) = listed else {
+        let WorkspacesReply::Requests(requests) = listed else {
             panic!("the member sees who waits: {listed:?}");
         };
         let [request] = requests.as_slice() else {
             panic!("{requests:?}");
         };
         assert_eq!(request.user_public_key, stranger.1.user_public_key);
-        let admitted = rooms
+        let admitted = workspaces
             .page_rooms(
                 &member.1,
-                RoomsRequest::Admit {
-                    room: room.clone(),
+                WorkspacesRequest::Admit {
+                    workspace: workspace.clone(),
                     request_id: request.request_id,
                 },
             )
             .await;
-        assert!(matches!(admitted, RoomsReply::Room(_)), "{admitted:?}");
-        let members = rooms.summary(&room).await.unwrap().members;
+        assert!(
+            matches!(admitted, WorkspacesReply::Workspace(_)),
+            "{admitted:?}"
+        );
+        let members = workspaces.summary(&workspace).await.unwrap().members;
         assert!(
             members.iter().any(
                 |member| member.user_public_key == stranger.1.user_public_key && !member.removed
@@ -2583,11 +2179,11 @@ mod tests {
             "the invited stranger is a member"
         );
 
-        settle_member_invites(&rooms, &room, &open.host_cert, false)
+        settle_member_invites(&workspaces, &workspace, &host_cert, false)
             .await
             .unwrap();
-        let asked = invite(&rooms, &room, &member.1).await;
-        assert!(matches!(asked, RoomsReply::Refused(_)), "{asked:?}");
+        let asked = invite(&workspaces, &workspace, &member.1).await;
+        assert!(matches!(asked, WorkspacesReply::Refused(_)), "{asked:?}");
         relay.shutdown().await;
     }
 
@@ -2600,6 +2196,7 @@ mod tests {
             &owners,
             &BTreeSet::new(),
             &BTreeSet::from([[2; 32]]),
+            [0x77; 32],
         );
         assert_eq!(
             changes,
@@ -2613,9 +2210,29 @@ mod tests {
                 &[member(1, true)],
                 &owners,
                 &BTreeSet::new(),
-                &BTreeSet::new()
+                &BTreeSet::new(),
+                [0x77; 32]
             )
             .is_empty()
+        );
+    }
+
+    /// The workspace's owner holds its seat by being its owner, not by a list:
+    /// no declared list takes it away.
+    #[test]
+    fn the_owner_root_keeps_its_seat_whatever_the_declared_lists_say() {
+        let mut dropped = member(1, false);
+        dropped.administrator = true;
+        assert!(
+            role_changes(
+                std::slice::from_ref(&dropped),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &BTreeSet::from([[1; 32]]),
+                [1; 32]
+            )
+            .is_empty(),
+            "dropping the owner from a list does not demote it"
         );
     }
 
@@ -2627,7 +2244,8 @@ mod tests {
                 &[member(1, false)],
                 &BTreeSet::new(),
                 &moderators,
-                &BTreeSet::new()
+                &BTreeSet::new(),
+                [0x77; 32]
             ),
             vec![RoleChange::Moderator([1; 32])]
         );
@@ -2640,7 +2258,8 @@ mod tests {
                 std::slice::from_ref(&moderator),
                 &BTreeSet::new(),
                 &moderators,
-                &BTreeSet::new()
+                &BTreeSet::new(),
+                [0x77; 32]
             )
             .is_empty()
         );
@@ -2649,7 +2268,8 @@ mod tests {
                 &[moderator],
                 &BTreeSet::new(),
                 &BTreeSet::new(),
-                &moderators
+                &moderators,
+                [0x77; 32]
             ),
             vec![RoleChange::Editor([1; 32])]
         );
@@ -2710,7 +2330,7 @@ mod tests {
         assert!(Args::try_parse_from(["relay", "--inactive-after-days", "0"]).is_err());
     }
 
-    /// A site's room lets everyone in through its door: unless its host says
+    /// A site's workspace lets everyone in through its door: unless its host says
     /// otherwise, each member's windows stay on their device.
     #[test]
     fn a_site_rooms_layout_is_personal_unless_its_host_says_otherwise() {

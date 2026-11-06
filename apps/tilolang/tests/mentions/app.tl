@@ -49,7 +49,20 @@ scenario "mentions" -> Post {
     let grace = person("Grace")
     let fix = board.tasks.insert(Task(title: "Fix the release build"))
     let gone = board.tasks.insert(Task(title: "Acquisition plan"))
-    let p = board.posts.insert(Post(body: RichText(grace, " will look at ", fix, " before the standup at ", 2026-10-29T09:30Z, ". The notes are in ", gone, ".")))
+    let p = board.posts.insert(
+        Post(
+            body: RichText(
+                grace,
+                " will look at ",
+                fix,
+                " before the standup at ",
+                2026-10-29T09:30Z,
+                ". The notes are in ",
+                gone,
+                ".",
+            ),
+        ),
+    )
     board.tasks.remove(gone)
     p
 }

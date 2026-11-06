@@ -2,7 +2,7 @@ app so.tilo.test.block_chat "Block chat" (icon: .message_circle, category: .netw
 
 /// A chat whose messages hold blocks of tilolang that render inline and may apply actions:
 /// the fixture these tests run agents' and strangers' blocks through.
-
+///
 /// One piece of a message: plain text, or the source of a block that renders inline.
 type Part {
     /// `text` or `block`.

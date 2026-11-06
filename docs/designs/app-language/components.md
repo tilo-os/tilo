@@ -31,11 +31,11 @@ view contact_row(c: Contact) {
 
 - Props, slots and events are checked against the real widget, with its doc text in errors.
 - Props are the language's values: `List<T>` and `Set<T>` take a list or a set of what they
-  hold; `Map<Text, V>` takes a map field read whole (`ui.Reactions(reactions: m.reactions)`);
-  `List<Action>` takes `actions(r)`, each action shown by the component and run by an event of
-  its node (`actions.0`, ...). The wire can splice a list prop in place (`SpliceProp`). A
-  collection is not a component's prop yet: it goes to a view's `Collection<T>` parameter, live,
-  until the host follows a collection prop item by item.
+  hold; `Map<Text, V>` takes a map field read whole (`ui.Reactions(reactions: m.reactions)`).
+  An action list is the host's, filled from the type's declarations, and a view never reads one
+  back (`actions(r)` is an error there, E047). The wire can splice a list prop in place
+  (`SpliceProp`). A collection is not a component's prop yet: it goes to a view's
+  `Collection<T>` parameter, live, until the host follows a collection prop item by item.
 - A new ui-core widget is usable from tilolang as soon as it lands.
 - One generic adapter turns descriptions into widgets and patches. There's no per-widget
   mapping, and Rust apps can use the same descriptions.
@@ -43,8 +43,16 @@ view contact_row(c: Contact) {
   (`ui.TextInput(bind: t.title)`, `ui.Checkbox(bind: t.done)`, `ui.DatePicker(bind: t.due)`,
   `ui.RichInput(bind: t.notes)`), with the type and the merge it declares; no widget has binding
   code of its own. A component may declare several bindings, and `bind:` takes the one whose
-  type the bound place has. A primitive that is a component (`text`, `input`, `checkbox`, ...)
+  type the bound place has. A binding a description declares to take a case (`ui.EnumField`'s
+  `value`) takes a field of any enum the app declares, whose cases are what the field offers;
+  the app names the cases it offers in the description's slot, and a pick is the case's name.
+  A primitive that is a component (`text`, `input`, `checkbox`, ...)
   is its shorter name and nothing else.
+- A box bound to a value writes that field when it is pressed, unless the view names what a
+  press means: `ui.Checkbox(bind: t.done) { on check: check(t) }` and
+  `row(t.title, checkbox: t.done, check: check(t))` show the field and run the app's action,
+  so completing a task completes what is under it in the same step, one undo, and `check` is
+  what history says it did.
 - A document's running text is placed like any other component:
   `ui.BlockEditor(bind: doc.body, placeholder: "Write")`. It declares a binding to the field as
   a `RichText` (`rich`, its paragraphs) and to a Markdown `Text` field (`markdown`, the same
@@ -83,24 +91,34 @@ view stat_tile(title: Text, value: Number, trend: List<Number>, on_open: Action)
 actions, context menus and swipes, undo after destructive actions, empty states, documents,
 pages, forms. It relies on general language features any author can use:
 
-- `actions(r)`: the actions on `r` this viewer may use, with label, icon and role;
+- the host's surfaces on what the type declares: the window's bar and its one menu, and an
+  item's context menu and swipe, each action with its label, icon and role;
 - the viewer's and others' lenses, for presence;
 - `open`, `close` and strips;
 - resource metadata: title field, type name, icon.
 
 An app that needs something `std` doesn't do composes `ui.*` directly and loses nothing native.
 
-A list groups without a second widget: `std.rows` takes `group:`, naming each item's heading,
-and the list draws a section band for each run and holds it at the top while its items scroll
-past (dates arrive formatted: Today, Tomorrow, a weekday, a day). Only the rows in view are
-built and asked for their group, so a heading costs nothing on a long list. `closed:` names the
-items done with: they stand last under `closed_title`, folded away until the person presses the
-band. The heading is a date the platform writes, never a string an app formats:
+A list groups without a second widget: `std.rows` takes `group:`, naming each item's key, and the
+list draws a section band for each run of items that names the same key and holds it at the top
+while its items scroll past. The heading is the key itself, presented as a value of its kind is
+(a day as Today, Tomorrow, a weekday; a word as it is written), never a string an app formats.
+Items that name no key stand under `ungrouped:`, in the order the caller gave them; a place that
+groups nothing says so per item (`group: x -> if by_day { x.due } else { .none }`), from what the
+place says and never a walk over the list. Only the rows in view are built and asked for their
+group, so a heading costs nothing on a long list. `tail:` names the items done with: they stand
+last under `tail_title`, folded away until the person presses the band, and a list that folds
+nothing away answers `tail: x -> false`, giving no heading and no clause. The block names the
+item and the item it stands under, so a row leaves out what its parent already says:
 
 ```
 std.rows(shown, "No tasks here", .none, .some("list-checks"),
-         group: .due, closed: .done) { t -> task_row(t) }
+         group: .due, tail: .folded) { (t, under) -> task_row(t, under) }
 ```
+
+A key the platform has no words for — a case of an enum, a record reference — is grouped by the
+text the caller reads off it (`group: x -> .some(x.status.label())`): the heading is the text the
+platform draws, so the runs are the runs of that text.
 
 The same bands serve mail and chat grouped by day. `ui.VirtualList` and `ui.ListItem` carry it
 (`group:` and `tail:` on a row, `tail_title:` on the list), so a view composed from `ui.*`

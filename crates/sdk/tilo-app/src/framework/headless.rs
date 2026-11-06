@@ -355,6 +355,17 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
+    /// The record `id` that `owner` keeps, as the app's views open it.
+    pub fn shared_record<P: Resource>(
+        &mut self,
+        owner: &'static str,
+        id: &str,
+    ) -> Option<super::WorkspaceRecord<P>> {
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| root.storage.shared_record::<P>(owner, id))
+            .flatten()
+    }
+
     /// The person's shared record `P`, as the app's views open it.
     pub fn shared_person<P: tilo_resource::SharedRecord>(
         &mut self,
@@ -2151,9 +2162,10 @@ fn split_command_line(
 
 /// What `A` publishes and how its view binds to it, as `tilo-app surface`
 /// commits it and `tilo-app check` compares it: the resource's
-/// [`Surface`](tilo_resource::Surface) and those of the records it opens beside
-/// its own (the parts of its chains, the person's records its views
-/// open), every control its view, built headless on an empty record,
+/// [`Surface`](tilo_resource::Surface), those of the person's records it
+/// declares ([`ResourceApp::PERSON_RECORDS`]) and those of the records its
+/// views open beside its own (the parts of its chains, the settings
+/// sections), every control its view, built headless on an empty record,
 /// binds to something the resource does not publish, the ids of its effects
 /// and named views, and the ids the framework keeps for its own actions
 /// ([`reserved_action_ids`](super::reserved_action_ids)).
@@ -2162,6 +2174,7 @@ pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
     report_surface(
         &Opening::of::<A>(),
         <A::Resource as Resource>::surface(),
+        A::PERSON_RECORDS,
         &published_ids::<A>,
     )
 }
@@ -2195,11 +2208,12 @@ fn ids_of(
 }
 
 /// [`surface_report`] of the app `opening` describes, whose resource's
-/// surface is `surface`; `published` reads the ids of the effects and the
-/// named views a built view publishes.
+/// surface is `surface` and whose person records are `person`; `published`
+/// reads the ids of the effects and the named views a built view publishes.
 fn report_surface(
     opening: &Opening,
     surface: tilo_resource::Surface,
+    person: &[super::PersonKind],
     published: &dyn Fn(&mut FrameHarness) -> PublishedIds,
 ) -> serde_json::Value {
     let collecting = collect_unbound();
@@ -2235,6 +2249,18 @@ fn report_surface(
     let (unbound, opened) = collecting.finish();
     let mut resources = vec![surface];
     resources.extend(opened);
+    // The person's records the app declares are part of its surface whether
+    // or not a view of it was showing: the host admits the app's changes to
+    // them, and its reads of them, against this.
+    for declared in person {
+        match resources
+            .iter_mut()
+            .find(|resource| resource.kind == declared.kind())
+        {
+            Some(resource) => resource.person = true,
+            None => resources.push(declared.surface()),
+        }
+    }
     serde_json::json!({
         "resources": resources,
         "unbound": unbound,

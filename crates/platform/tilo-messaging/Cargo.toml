@@ -7,9 +7,6 @@ license.workspace = true
 description = "Portable host-owned messaging account metadata boundary"
 
 [features]
-# The person's Tilo messages through the private conversations of their
-# room (`room`), for a host without a native messaging host: a web page.
-room = ["dep:tilo-relay-protocol", "dep:uuid"]
 # Serde forms of the account, enrollment, history and group types, for the
 # messaging service's socket to the apps it serves (tilo-messaging-service).
 wire = ["dep:serde", "zeroize/serde"]
@@ -18,8 +15,6 @@ wire = ["dep:serde", "zeroize/serde"]
 service-client = ["wire", "dep:serde_json", "dep:wire-frame", "dep:tokio", "dep:tracing"]
 
 [dependencies]
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol", optional = true }
-uuid = { workspace = true, optional = true }
 tilo-contact-directory = { path = "../tilo-contact-directory" }
 zeroize.workspace = true
 serde = { workspace = true, optional = true }

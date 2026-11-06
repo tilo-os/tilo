@@ -888,6 +888,8 @@ pub struct ConversationList {
     lines: Vec<ConversationLine>,
     rect: Rect,
     name: String,
+    /// Its paint changed since the last frame drew it.
+    dirty: bool,
     theme: Option<Theme>,
     /// What the last frame measured and placed, kept so the next frame — a
     /// caret blink, a presence change, one arriving message — measures and
@@ -903,6 +905,7 @@ impl ConversationList {
             lines,
             rect: Rect::ZERO,
             name: String::new(),
+            dirty: true,
             theme: None,
             cache: ListCache::default(),
         }
@@ -927,6 +930,7 @@ impl ConversationList {
             return;
         }
         self.lines = lines;
+        self.dirty = true;
     }
 
     /// The lines, in order.
@@ -966,6 +970,15 @@ impl ConversationList {
 }
 
 impl Widget for ConversationList {
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -19,7 +19,6 @@ use ui::headless::Framed;
 use ui::widget::Edits;
 
 use crate::framework_support::{notes, with_note};
-use notes::sidebar::OutEvent;
 use notes::{NotesApp, NotesShell};
 use ui::framework::testing::TestApp;
 use ui::theme::Theme;
@@ -185,7 +184,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         let mut app = starter();
         let welcome = n(&mut app).workspace_pages_for_test()[0].id;
         // A second root page so a stray delete would visibly "switch" pages.
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         app.harness().relayout();
 
@@ -348,7 +347,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         // so the space (typed into a non-empty "#") never promoted.
         let mut app = starter();
         // A fresh, empty page so the first block is an empty paragraph.
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         app.harness().relayout();
 
@@ -383,7 +382,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
 
         // `## ` and `### ` promote to H2 / H3 on their own fresh pages.
         for (hashes, level) in [("##", 2u8), ("###", 3u8)] {
-            n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+            n(&mut app).new_note_for_test(None);
             app.harness().relayout();
             app.harness().relayout();
             app.harness().relayout_at((1200, 800)).unwrap();
@@ -403,7 +402,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
     eprintln!("phase greater_than_space_promotes_paragraph_to_quote_through_the_event_path");
     {
         let mut app = starter();
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         app.harness().relayout();
 
@@ -465,7 +464,9 @@ fn dispatch(app: &mut TestApp<NotesShell>, modifiers: Modifiers, event: &WindowE
 }
 
 /// Click the centre of sidebar row `idx` to select it AND give the
-/// sidebar keyboard focus (the gate the tree's key commands require).
+/// sidebar keyboard focus (the gate the tree's key commands require). A
+/// click is a press and its release: a row is pressed once the pointer is
+/// let go over it, so a press alone can still turn into a drag.
 fn click_row(app: &mut TestApp<NotesShell>, idx: usize) -> Result<(), String> {
     let no_mods = Modifiers::default();
     let c = n(app)
@@ -473,6 +474,7 @@ fn click_row(app: &mut TestApp<NotesShell>, idx: usize) -> Result<(), String> {
         .ok_or_else(|| "row laid out".to_string())?;
     dispatch(app, no_mods, &cursor_moved(c.x, c.y));
     dispatch(app, no_mods, &mouse_press());
+    dispatch(app, no_mods, &mouse_release());
     Ok(())
 }
 
@@ -733,7 +735,7 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
     {
         let mut app = starter();
         let welcome = n(&mut app).workspace_pages_for_test()[0].id;
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         let victim = n(&mut app).selected_for_test().unwrap();
         app.harness().relayout();
@@ -768,7 +770,7 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         // must NOT delete a page — it belongs to the editor. This proves the
         // focus gate is real, not bypassed.
         let mut app = starter();
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         app.harness().relayout();
         let before = n(&mut app).workspace_pages_for_test().len();
@@ -805,7 +807,7 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
     {
         let mut app = starter();
         let welcome = n(&mut app).workspace_pages_for_test()[0].id;
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         let second = n(&mut app).selected_for_test().unwrap();
         app.harness().relayout();
@@ -834,10 +836,10 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
     {
         let mut app = starter();
         let welcome = n(&mut app).workspace_pages_for_test()[0].id;
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         let p1 = n(&mut app).selected_for_test().unwrap();
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         let p2 = n(&mut app).selected_for_test().unwrap();
         app.harness().relayout();
@@ -881,9 +883,7 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
         let mut app = starter();
         let welcome = n(&mut app).workspace_pages_for_test()[0].id;
         // Give `welcome` a child so it becomes a collapsible branch.
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild {
-            parent: Some(welcome),
-        });
+        n(&mut app).new_note_for_test(Some(welcome));
         app.harness().relayout();
         app.harness().relayout();
 
@@ -902,6 +902,7 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
         let no_mods = Modifiers::default();
         dispatch(&mut app, no_mods, &cursor_moved(glyph_x, row0.y));
         dispatch(&mut app, no_mods, &mouse_press());
+        dispatch(&mut app, no_mods, &mouse_release());
         // Re-settle so the re-flattened rows lay out.
         app.harness().relayout_at((1200, 800)).unwrap();
         assert!(
@@ -914,6 +915,7 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
         let glyph_x = n(&mut app).sidebar_disclosure_x_for_test(0).unwrap();
         dispatch(&mut app, no_mods, &cursor_moved(glyph_x, row0.y));
         dispatch(&mut app, no_mods, &mouse_press());
+        dispatch(&mut app, no_mods, &mouse_release());
         app.harness().relayout_at((1200, 800)).unwrap();
         assert!(
             n(&mut app).sidebar_row_center_for_test(1).is_some(),
@@ -930,15 +932,17 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
             .sidebar_row_center_for_test(0)
             .expect("row 0 laid out");
         let no_mods = Modifiers::default();
-        // Two presses at the same spot in quick succession → double-click.
+        // Two clicks at the same spot in quick succession → double-click.
         dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
         dispatch(&mut app, no_mods, &mouse_press());
+        dispatch(&mut app, no_mods, &mouse_release());
         assert!(
             !n(&mut app).sidebar_is_renaming_for_test(),
             "single click must not rename"
         );
         dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
         dispatch(&mut app, no_mods, &mouse_press());
+        dispatch(&mut app, no_mods, &mouse_release());
         assert!(
             n(&mut app).sidebar_is_renaming_for_test(),
             "double-click on a row must open the inline rename editor"
@@ -952,7 +956,7 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
         let mut app = starter();
         let welcome = n(&mut app).workspace_pages_for_test()[0].id;
         // Second root page so we can click a DIFFERENT row to blur + commit.
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         app.harness().relayout();
 
@@ -965,8 +969,10 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
         let no_mods = Modifiers::default();
         dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
         dispatch(&mut app, no_mods, &mouse_press());
+        dispatch(&mut app, no_mods, &mouse_release());
         dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
         dispatch(&mut app, no_mods, &mouse_press());
+        dispatch(&mut app, no_mods, &mouse_release());
         assert!(
             n(&mut app).sidebar_is_renaming_for_test(),
             "double-click opens the rename field"
@@ -1066,9 +1072,7 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
         let welcome = n(&mut app).workspace_pages_for_test()[0].id;
         // Creating a child auto-selects it, so revealing it proves the tree
         // expands its ancestors (not a collapsed flat list).
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild {
-            parent: Some(welcome),
-        });
+        n(&mut app).new_note_for_test(Some(welcome));
         app.harness().relayout();
         app.harness().relayout();
 
@@ -1095,7 +1099,7 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
     {
         let mut app = starter();
         let first = n(&mut app).workspace_pages_for_test()[0].id;
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         let second = n(&mut app)
             .selected_for_test()
@@ -1150,7 +1154,7 @@ fn slash_commands_apply_block_kinds_and_continue_lists() {
         // ordinals increment and the saved markdown numbers sequentially.
         let mut app = starter();
         // A fresh, empty page so the slash command has a clean paragraph.
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         app.harness().relayout();
 
@@ -1229,7 +1233,7 @@ fn slash_commands_apply_block_kinds_and_continue_lists() {
         // and apply the block kind — the old menu had no mouse handler, so a click
         // just dismissed it and left the literal `/` behind.
         let mut app = starter();
-        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        n(&mut app).new_note_for_test(None);
         app.harness().relayout();
         app.harness().relayout();
 

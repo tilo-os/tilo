@@ -352,22 +352,24 @@ fn application(
         return Err(invalid("the native app entrypoint is not executable"));
     }
     native(&entry, arch)?;
-    let dynamic = launcher::loader_preflight::read_dynamic_section(&entry)
+    if launcher::loader_preflight::read_dynamic_section(&entry)
         .map_err(invalid)?
-        .ok_or_else(|| invalid("the app ELF cannot be inspected"))?;
-    if !dynamic
-        .needed
-        .iter()
-        .any(|name| name == "libruntime_dylib.so")
+        .is_none()
     {
-        return Err(invalid(
-            "a purported thin app does not link the shipped toolkit",
-        ));
+        return Err(invalid("the app ELF cannot be inspected"));
     }
     Ok((entry, Installed { package, record }))
 }
 
-fn closure(runtime: &Path, entries: Vec<PathBuf>, arch: &str) -> Result<(), DaemonError> {
+/// Every native file `entries` reach through their `DT_NEEDED` inside
+/// `runtime`, the entries included: the graph an app process maps before
+/// `main`, and so the evidence that it uses the shipped toolkit instead of a
+/// copy of its own.
+fn closure(
+    runtime: &Path,
+    entries: Vec<PathBuf>,
+    arch: &str,
+) -> Result<BTreeSet<PathBuf>, DaemonError> {
     let mut seen = entries.into_iter().collect::<BTreeSet<_>>();
     let mut pending = seen.iter().cloned().collect::<VecDeque<_>>();
     while let Some(path) = pending.pop_front() {
@@ -396,7 +398,7 @@ fn closure(runtime: &Path, entries: Vec<PathBuf>, arch: &str) -> Result<(), Daem
             }
         }
     }
-    Ok(())
+    Ok(seen)
 }
 
 /// The engines a cohort ships beside its toolkit (the runtimes its apps pin):
@@ -554,7 +556,8 @@ pub(crate) fn verify(
         .iter()
         .map(|(entry, _)| entry.clone())
         .collect::<Vec<_>>();
-    for entry in &entries {
+    let toolkit = within(&bundle, &bundle.join("lib").join("libruntime_dylib.so"))?;
+    for (entry, row) in entries.iter().zip(rows.entries()) {
         let interpreter = launcher::loader_preflight::read_interpreter(entry)
             .map_err(invalid)?
             .ok_or_else(|| invalid("a thin app has no ELF interpreter"))?;
@@ -567,8 +570,18 @@ pub(crate) fn verify(
         )?;
         native(&loader, arch)?;
         closure(&bundle, vec![loader], arch)?;
+        // An app reaches the toolkit as the graph it maps, not necessarily
+        // through its own entry: Settings' entry is a host over the engine
+        // dylib that links the toolkit. What must hold is that the app's
+        // closure reaches the toolkit this cohort ships, rather than a copy
+        // packed into the app.
+        if !closure(&bundle, vec![entry.clone()], arch)?.contains(&toolkit) {
+            return Err(invalid(format!(
+                "the app {} does not link the shipped toolkit",
+                row.id
+            )));
+        }
     }
-    closure(&bundle, entries, arch)?;
     let archives = Staging::create(staging)?;
     let packages = rows
         .entries()

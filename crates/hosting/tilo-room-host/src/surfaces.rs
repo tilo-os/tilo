@@ -112,10 +112,45 @@ fn arrival_count() -> &'static tokio::sync::watch::Sender<u64> {
 }
 
 /// Changes each time an app surface arrives here: a change held for it can
-/// be decided now. A room's governor replays what its relay retains then
-/// ([`crate::rooms::Rooms`]), so a held change is never let go for good.
+/// be decided now. A workspace's governor replays what its relay retains then
+/// ([`crate::workspaces::Workspaces`]), so a held change is never let go for good.
 pub(crate) fn arrivals() -> tokio::sync::watch::Receiver<u64> {
     arrival_count().subscribe()
+}
+
+/// Why the relay refuses the change the delta `delta` carries by its author's
+/// role: a Viewer's role grants nothing to write, so no document change it
+/// sends is one the workspace takes, and the relay says so of a change of an
+/// encrypted record too, which it cannot read. `None` for any other role, for
+/// a workspace whose governor projected no standings (`standings`), and for a
+/// delta that carries no document change at all.
+pub(crate) fn role_refusal(
+    delta: &[u8],
+    standings: Option<&crate::workspace::Standings>,
+    author_device: [u8; 32],
+) -> Option<String> {
+    // What a role says about a document change it sends: an app's record or the
+    // workspace's own. A plane's key material and presence frames are no
+    // document change and pass.
+    let (_, _, body) = crate::coedit::retention_view(delta)?;
+    if !matches!(
+        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body),
+        Ok(neighbour_wire::NeighbourMsg::AppDocument { .. }
+            | neighbour_wire::NeighbourMsg::SyncResp { .. })
+    ) {
+        return None;
+    }
+    let standing = standings?.get(&author_device)?;
+    if standing.policy.active_role(&standing.person) != Some(tilo_action_policy::Role::Viewer) {
+        return None;
+    }
+    Some(
+        collab_types::ReceiptRefusal::NotGranted {
+            node: tilo_action_policy::TreePath::workspace(&standing.policy.workspace).readable(),
+            kind: tilo_action_policy::ActionKind::Undoable,
+        }
+        .to_string(),
+    )
 }
 
 /// Tell whoever follows [`arrivals`] that an app surface arrived.
@@ -130,10 +165,10 @@ fn tilo_app_registry_blobs(registry: &str) -> app_registry::http_blobs::HttpBlob
 /// Why the relay refuses the change the delta `delta` carries, if it does:
 /// a change that names no action, a cleartext op that brings claims of its
 /// own, a claim to an action or field the app's surface does not publish,
-/// one writing a unit outside its action's footprint, or, where the room's
+/// one writing a unit outside its action's footprint, or, where the workspace's
 /// governor projected its members' standings (`standings`), an action the
 /// author is not granted. Ops whose surface has not arrived here yet are
-/// left to the room's devices, which hold them. `payloads` reads the
+/// left to the workspace's devices, which hold them. `payloads` reads the
 /// document frame.
 pub(crate) fn refusal(
     payloads: &dyn crate::payloads::ShellPayloads,

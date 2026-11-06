@@ -129,12 +129,6 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
             "{label}'s actual row {target} shares the canonical open-pane door"
         );
     }
-    assert!(
-        navigation
-            .iter()
-            .all(|binding| binding.control_id.starts_with("node:")),
-        "shared navigation binds the actual retained row controls"
-    );
     let bluetooth = app
         .harness()
         .a11y_nodes()

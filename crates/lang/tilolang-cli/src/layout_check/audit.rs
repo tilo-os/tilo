@@ -19,18 +19,66 @@ pub enum Kind {
     SmallHitTarget,
     /// Content is wider than the window or its scroll view, so the page scrolls sideways.
     ScrollsSideways,
+    /// A scroll view with no room on the way it scrolls: what it holds cannot be scrolled into
+    /// view, so it is lost (a board lane whose height came from its content).
+    LostContent,
     /// An edge between two device pixels at the display's scale, drawn blurred across both.
     OffPixel,
+    /// A page whose content is one row stretched over the column: a row is a line, and the page
+    /// around it holds it.
+    BareRow,
+    /// The rows of one box stand on different columns: their titles start at different x, or
+    /// their content ends at different edges, or a nesting step does not indent by one gutter.
+    RaggedColumns,
+    /// Two selection shapes at once: a selected box inside another selected box, the same choice
+    /// filled twice.
+    DoubleSelection,
+    /// A screen made for a narrow window holds its content nearer than a gutter to the edge.
+    CrampedGutter,
+    /// One screen offers the same way to add something several times: two add affordances in one
+    /// list, or the same add label on two controls.
+    SeveralAdds,
+    /// A name a screen reader announces reads as a code identifier rather than as words.
+    CodedName,
+    /// A destructive control says so with a verb of its own, where every screen must use one.
+    UnsharedVerb,
+    /// A surface drawn inside another surface of the same kind: a card in a card.
+    NestedCard,
+    /// A page's "…" standing in a column rather than at the trailing edge of its title's line:
+    /// the door takes a line of its own and shows a lone glyph under the title.
+    LoneDoor,
+    /// A heading with nothing in it: a band's height taken over the content, where a heading is
+    /// the words its section goes by.
+    EmptyHeading,
+    /// A count shown as zero. A count means something wants attention, so zero is no badge at
+    /// all, and no room kept for one.
+    ZeroCount,
+    /// A column's header drawing a count the sidebar beside it already draws for the place
+    /// shown: the same number twice on one screen.
+    RepeatedCount,
 }
 
 impl Kind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 19] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
         Self::SmallHitTarget,
         Self::ScrollsSideways,
+        Self::LostContent,
         Self::OffPixel,
+        Self::BareRow,
+        Self::RaggedColumns,
+        Self::DoubleSelection,
+        Self::CrampedGutter,
+        Self::SeveralAdds,
+        Self::CodedName,
+        Self::UnsharedVerb,
+        Self::NestedCard,
+        Self::LoneDoor,
+        Self::EmptyHeading,
+        Self::ZeroCount,
+        Self::RepeatedCount,
     ];
 
     pub fn name(self) -> &'static str {
@@ -40,7 +88,20 @@ impl Kind {
             Self::Overlap => "overlap",
             Self::SmallHitTarget => "small-hit-target",
             Self::ScrollsSideways => "scrolls-sideways",
+            Self::LostContent => "lost-content",
             Self::OffPixel => "off-pixel",
+            Self::BareRow => "bare-row",
+            Self::RaggedColumns => "ragged-columns",
+            Self::DoubleSelection => "double-selection",
+            Self::CrampedGutter => "cramped-gutter",
+            Self::SeveralAdds => "several-adds",
+            Self::CodedName => "coded-name",
+            Self::UnsharedVerb => "unshared-verb",
+            Self::NestedCard => "nested-card",
+            Self::LoneDoor => "lone-door",
+            Self::EmptyHeading => "empty-heading",
+            Self::ZeroCount => "zero-count",
+            Self::RepeatedCount => "repeated-count",
         }
     }
 }
@@ -66,12 +127,31 @@ const EPSILON: f64 = 1.0;
 /// precision coordinates carry, far under anything a person could see.
 const PIXEL_SLACK: f64 = 0.01;
 
+/// The tail of a page's "…" test id: the door the host gives a page's title the actions for its
+/// item behind.
+const DOOR: &str = "~more";
+
+/// A line's widget: its children side by side, where a door belongs at the trailing edge.
+const LINE: &str = "Row";
+
+/// A heading's widget: the band a section goes by, over what the section holds.
+const HEADING: &str = "SectionHeader";
+
 fn rect(r: [f64; 4]) -> Rect {
     Rect::new(r[0], r[1], r[0] + r[2], r[1] + r[3])
 }
 
 fn has_area(r: Rect) -> bool {
     r.width() > EPSILON && r.height() > EPSILON
+}
+
+/// Whether a box, or anything it holds, gives a screen reader words to announce.
+fn has_words(node: &InspectionNode) -> bool {
+    node.semantics
+        .as_ref()
+        .and_then(|access| access.name.as_deref())
+        .is_some_and(|name| !name.trim().is_empty())
+        || node.children.iter().any(has_words)
 }
 
 fn size(r: Rect) -> String {
@@ -117,6 +197,18 @@ fn scrolls(node: &InspectionNode) -> Scrolls {
     }
 }
 
+/// Whether a node is one row of a list: what a list draws per item, which a surface of its own
+/// (a result, a notice) draws too.
+fn is_row(node: &InspectionNode) -> bool {
+    matches!(
+        node.widget.as_str(),
+        "ListRow" | "TreeViewRow" | "SwipeRow" | "ListItem"
+    ) || node
+        .semantics
+        .as_ref()
+        .is_some_and(|access| access.role == ui::a11y::Role::ListItem)
+}
+
 /// Whether a widget hangs part of itself outside the column it is in by design: a document's
 /// block editor hangs its handle gutter in the margin, so its text lines up with the title
 /// above it.
@@ -128,6 +220,23 @@ fn hangs(widget: &str) -> bool {
 /// row's hover toolbar over its trailing top corner): neither overflow nor overlap.
 fn floats(widget: &str) -> bool {
     matches!(widget, "HoverToolbarFace")
+}
+
+/// Whether a widget the window's top layer paints: it stands against the window it floats in,
+/// not the box that opened it, so it neither widens what its owner holds nor reaches past it.
+fn floats_in_window(widget: &str) -> bool {
+    matches!(widget, "ContextMenu" | "Tooltip")
+}
+
+/// The boxes a widget holds: what it shows inside itself. What the window's top layer paints
+/// over it (a menu its rows opened) is not one of them.
+fn held(node: &InspectionNode) -> Option<Rect> {
+    node.children
+        .iter()
+        .filter(|child| !floats(&child.widget) && !floats_in_window(&child.widget))
+        .map(|child| rect(child.rect))
+        .filter(|r| has_area(*r))
+        .reduce(|a, b| a.union(b))
 }
 
 /// Whether a node is text itself.
@@ -251,7 +360,21 @@ struct Walk<'a> {
     display_scale: f64,
     /// Inside a box already found off the device pixels: what it holds moves with it.
     off_pixel: bool,
+    /// The counts the window's column headers draw.
+    header_counts: Vec<Count>,
+    /// The counts a window's places draw beside the place chosen in them.
+    place_counts: Vec<Count>,
     out: &'a mut Vec<Problem>,
+}
+
+/// One number a window draws: a column header's count, or a place's.
+struct Count {
+    number: u32,
+    at: Rect,
+    /// The keys of the widgets at and above it, innermost first.
+    keys: Vec<String>,
+    widget: String,
+    id: Option<String>,
 }
 
 /// Every problem of the frame `root`, laid out in `viewport`, where a target needs `min_target`
@@ -274,6 +397,8 @@ pub fn inspect(
         min_target,
         display_scale,
         off_pixel: false,
+        header_counts: Vec::new(),
+        place_counts: Vec::new(),
         out: &mut out,
     };
     walk.node(
@@ -282,13 +407,18 @@ pub fn inspect(
         viewport,
         viewport,
         Scrolls::default(),
+        false,
+        "",
     );
+    walk.repeated_counts();
     out
 }
 
 impl Walk<'_> {
     /// `parent`: the nearest box above with geometry. `clip`: what of the window the node can show in. `scroller`:
-    /// which ways the box above lets content go on past it.
+    /// which ways the box above lets content go on past it. `content`: the box is a scroll view's, holding
+    /// what the view scrolls through rather than being a container of its own. `above`: the widget the node
+    /// stands in, which decides whether it stands on a line.
     fn node(
         &mut self,
         node: &InspectionNode,
@@ -296,9 +426,11 @@ impl Walk<'_> {
         parent: Rect,
         clip: Rect,
         scroller: Scrolls,
+        content: bool,
+        above: &str,
     ) {
         let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
-        self.visit(node, keys, parent, clip, scroller);
+        self.visit(node, keys, parent, clip, scroller, content, above);
         if pushed {
             keys.pop();
         }
@@ -311,9 +443,17 @@ impl Walk<'_> {
         parent: Rect,
         clip: Rect,
         scroller: Scrolls,
+        content: bool,
+        above: &str,
     ) {
         let own = rect(node.rect);
         let geometric = has_area(own);
+        let scrolls = scrolls(node);
+        let scrolling = scrolls.down || scrolls.across;
+        // The box a scroll view holds its content in is that view, not a container of its own:
+        // what it holds goes on past the view as the view allows, and what that content holds in
+        // turn is checked against the content, not the view.
+        let content = content && geometric && !scrolling;
         // What of the window is not shown at all needs no checking: a column pushed aside, a
         // row scrolled out of view.
         if geometric && !has_area(own.intersect(clip)) {
@@ -324,6 +464,9 @@ impl Walk<'_> {
         let was_off_pixel = self.off_pixel;
         if geometric {
             self.pixels(node, keys, own);
+            self.bare_row(node, keys, own);
+            self.lone_door(node, keys, above);
+            self.empty_heading(node, keys, own);
         }
         if geometric && !hangs(&node.widget) {
             self.reach(node, keys, own, parent, scroller);
@@ -331,8 +474,6 @@ impl Walk<'_> {
                 self.target(node, keys, own, min);
             }
         }
-        let scrolls = scrolls(node);
-        let scrolling = scrolls.down || scrolls.across;
         // The box children are measured against, and which ways it scrolls them.
         // A manual region in a view that pans both ways is the canvas's content placed by code
         // (its places, put where its camera puts them): what it places pans as the canvas does.
@@ -343,6 +484,8 @@ impl Walk<'_> {
             && scroller.across;
         let (inner_parent, inner_scroller) = if geometric && placed_content {
             (own, scroller)
+        } else if content {
+            (parent, scroller)
         } else if geometric {
             (own, scrolls)
         } else {
@@ -363,14 +506,46 @@ impl Walk<'_> {
         if scrolling && !scrolls.across && geometric {
             self.sideways(node, keys, node.child_clip.map_or(own, rect));
         }
+        if scrolling {
+            self.lost(node, keys, own);
+        }
         if geometric {
             self.overlaps(node, keys, inner_clip);
+            self.counts(node, keys, own, inner_clip);
         }
         for child in &node.children {
             if floats(&child.widget) {
                 continue;
             }
-            self.node(child, keys, inner_parent, inner_clip, inner_scroller);
+            // A menu the window's top layer paints stands against the window, not the box that
+            // opened it: it is measured from the window's edges, and its own edges and targets
+            // are still checked.
+            if floats_in_window(&child.widget) {
+                let (beyond, across, off_pixel) = (self.beyond, self.across, self.off_pixel);
+                (self.beyond, self.across, self.off_pixel) = (false, false, false);
+                self.node(
+                    child,
+                    keys,
+                    self.viewport,
+                    self.viewport,
+                    Scrolls::default(),
+                    false,
+                    &node.widget,
+                );
+                (self.beyond, self.across, self.off_pixel) = (beyond, across, off_pixel);
+                continue;
+            }
+            // A scroll view holds its content in a box of its own, which is the view's own
+            // content rather than a frame around it.
+            self.node(
+                child,
+                keys,
+                inner_parent,
+                inner_clip,
+                inner_scroller,
+                scrolling,
+                &node.widget,
+            );
         }
         self.beyond = was_beyond;
         self.across = was_across;
@@ -403,6 +578,72 @@ impl Walk<'_> {
                 "its {side} edge at {edge:.3} falls at device pixel {:.3} at {scale}x",
                 edge * scale
             ),
+        );
+    }
+
+    /// A row stretched over the column it stands in: the page drawn as one row, its line
+    /// floating at the column's middle where a page around it would hold it. A row is as tall
+    /// as its line wherever it stands — a list's row, a result in a page, a notice's — so a row
+    /// taking half the window's height with its line floating in it is the page itself. A row
+    /// its content fills to the same height holds what it draws (a message in a conversation,
+    /// whose body is long): that is the content's height, not the column's.
+    fn bare_row(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
+        let window = self.viewport.height();
+        if !is_row(node) || window <= 0.0 || own.height() < window * 0.5 {
+            return;
+        }
+        let held = node
+            .children
+            .iter()
+            .filter(|child| !floats(&child.widget))
+            .map(|child| rect(child.rect).height())
+            .fold(0.0_f64, f64::max);
+        if held >= own.height() * 0.5 {
+            return;
+        }
+        self.push(
+            Kind::BareRow,
+            node,
+            keys,
+            format!(
+                "a {} {} fills {:.0}% of the window's height: a row is a line, and the page it stands in holds it",
+                node.widget,
+                size(own),
+                own.height() / window * 100.0
+            ),
+        );
+    }
+
+    /// A page's "…" in a column: the door is the item's actions at the trailing edge of the
+    /// title's line, so one standing in a column takes a line of the document for its glyph
+    /// alone, under the title and out of reach of the page's own composition.
+    fn lone_door(&mut self, node: &InspectionNode, keys: &[String], above: &str) {
+        let Some(id) = node.test_id.as_deref() else {
+            return;
+        };
+        if node.widget != "MenuButton" || !id.ends_with(DOOR) || above == LINE {
+            return;
+        }
+        self.push(
+            Kind::LoneDoor,
+            node,
+            keys,
+            format!("it stands in a {above} of its own rather than at the trailing edge of the title's line"),
+        );
+    }
+
+    /// A heading with nothing in it: it takes the band a section goes by, and the content it
+    /// stands over starts below an empty strip. A heading is the words its section goes by;
+    /// where nothing heads the content, the content starts at the page's own distance.
+    fn empty_heading(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
+        if node.widget != HEADING || has_words(node) {
+            return;
+        }
+        self.push(
+            Kind::EmptyHeading,
+            node,
+            keys,
+            format!("it takes {} and says nothing", size(own)),
         );
     }
 
@@ -459,12 +700,7 @@ impl Walk<'_> {
 
     /// A scroll view whose content is wider than it.
     fn sideways(&mut self, node: &InspectionNode, keys: &[String], clip: Rect) {
-        let content = node
-            .children
-            .iter()
-            .map(|child| rect(child.rect))
-            .filter(|r| has_area(*r))
-            .reduce(|a, b| a.union(b));
+        let content = held(node);
         if let Some(content) = content
             && content.width() > clip.width() + EPSILON
         {
@@ -479,6 +715,34 @@ impl Walk<'_> {
                 ),
             );
         }
+    }
+
+    /// A scroll view with no room on the way it scrolls, holding more than that: nothing under
+    /// it can be scrolled into view, so a card or a line the person was promised is gone.
+    fn lost(&mut self, node: &InspectionNode, keys: &[String], shown: Rect) {
+        let content = held(node);
+        let Some(content) = content else {
+            return;
+        };
+        let scrolls = scrolls(node);
+        let lost = [
+            (scrolls.down, shown.height(), content.height(), "tall"),
+            (scrolls.across, shown.width(), content.width(), "wide"),
+        ]
+        .into_iter()
+        .find(|(scrolls, shown, content, _)| *scrolls && *shown <= EPSILON && *content > EPSILON);
+        let Some((_, shown, content, axis)) = lost else {
+            return;
+        };
+        self.push(
+            Kind::LostContent,
+            node,
+            keys,
+            format!(
+                "content {content:.0} {axis} in a scroll view {shown:.0} {axis}, which cannot \
+                 scroll it into view"
+            ),
+        );
     }
 
     /// Something to press smaller than the minimum.
@@ -508,6 +772,102 @@ impl Walk<'_> {
                     &format!("its {:?}", part.role),
                 );
             }
+        }
+    }
+
+    /// The numbers `node` draws: a column header's count, or the counts of the places a list
+    /// shows. Zero wants no attention, so it is no count at all and may not be drawn; the count
+    /// of the place chosen in a list, drawn beside a column's header, is the same number twice.
+    fn counts(&mut self, node: &InspectionNode, keys: &[String], own: Rect, clip: Rect) {
+        let Some(access) = node.semantics.as_ref() else {
+            return;
+        };
+        let number = |value: Option<&str>| value.and_then(|value| value.trim().parse::<u32>().ok());
+        match node.widget.as_str() {
+            "NavShellTitle" => {
+                let Some(count) = number(access.value.as_deref()) else {
+                    return;
+                };
+                if count == 0 {
+                    self.push(
+                        Kind::ZeroCount,
+                        node,
+                        keys,
+                        "the column's count reads 0, which shows nothing".into(),
+                    );
+                    return;
+                }
+                self.header_counts.push(Count {
+                    number: count,
+                    at: own,
+                    keys: keys.iter().rev().cloned().collect(),
+                    widget: node.widget.clone(),
+                    id: node.test_id.clone(),
+                });
+            }
+            "NavList" => {
+                for place in &access.children {
+                    let Some(bounds) = place.bounds.map(ui::a11y::AccessBounds::to_rect) else {
+                        continue;
+                    };
+                    if !has_area(bounds.intersect(clip)) {
+                        continue;
+                    }
+                    let Some(count) = number(place.value.as_deref()) else {
+                        continue;
+                    };
+                    let mut keys = keys.to_vec();
+                    keys.extend(place.semantic_key.clone());
+                    if count == 0 {
+                        self.push(
+                            Kind::ZeroCount,
+                            node,
+                            &keys,
+                            format!(
+                                "the count beside {:?} reads 0, which shows nothing",
+                                place.name
+                            ),
+                        );
+                    } else if place.state.selected {
+                        self.place_counts.push(Count {
+                            number: count,
+                            at: bounds,
+                            keys: keys.iter().rev().cloned().collect(),
+                            widget: node.widget.clone(),
+                            id: node.test_id.clone(),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A column's header count that a place beside it, to its left, draws too: the same number
+    /// twice on one screen.
+    fn repeated_counts(&mut self) {
+        let (headers, places) = (
+            std::mem::take(&mut self.header_counts),
+            std::mem::take(&mut self.place_counts),
+        );
+        for header in headers {
+            let Some(place) = places.iter().find(|place| {
+                place.number == header.number && place.at.x1 <= header.at.x0 + EPSILON
+            }) else {
+                continue;
+            };
+            self.out.push(Problem {
+                kind: Kind::RepeatedCount,
+                keys: header.keys.clone(),
+                widget: header.widget.clone(),
+                id: header.id.clone(),
+                detail: format!(
+                    "the count {} is drawn again at the place {} wide, {} from it",
+                    header.number,
+                    size(place.at),
+                    (header.at.x0 - place.at.x1).round()
+                ),
+            });
         }
     }
 
@@ -748,11 +1108,432 @@ mod tests {
         assert_eq!(found[0].keys.first().map(String::as_str), Some("new"));
     }
 
+    /// A column of a board as a height it did not get leaves it: the view scrolling its cards
+    /// has no room, so the cards under its heading cannot be brought into view. Given the room
+    /// of a pane, the same view holds them and nothing is lost.
+    #[test]
+    fn a_scroll_view_with_no_room_loses_the_cards_it_holds() {
+        let lane = |height: f64| {
+            let mut scrolling = stack_node(
+                "lane",
+                [0.0, 40.0, 240.0, height],
+                (0..7)
+                    .map(|index| {
+                        stack_node(
+                            "card",
+                            [0.0, 40.0 + 76.0 * f64::from(index), 240.0, 68.0],
+                            vec![],
+                        )
+                    })
+                    .collect(),
+            );
+            scrolling.layout = Some(ui::widget::LayoutInfo::Scroll(ui::widget::ScrollLayout {
+                direction: ui::widget::ScrollDirection::Vertical,
+            }));
+            stack_node("window", [0.0, 0.0, 400.0, 300.0], vec![scrolling])
+        };
+        let lost = |root: &InspectionNode| {
+            inspect(root, (400, 300), None, 1.0)
+                .into_iter()
+                .filter(|problem| problem.kind == Kind::LostContent)
+                .map(|problem| problem.keys)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            lost(&lane(0.0)),
+            vec![vec!["lane".to_owned(), "window".to_owned()]],
+            "a scroll view with no height holds seven cards in none of it"
+        );
+        assert!(
+            lost(&lane(600.0)).is_empty(),
+            "given the room of a pane, the same cards are there to scroll through"
+        );
+    }
+
+    /// A row taking half the window is the page itself, and caught — unless its content is as
+    /// tall as it is: a conversation's message fills its row whatever the row's height, and a
+    /// row that tall is no page stretched around one line.
+    #[test]
+    fn a_tall_row_is_caught_only_when_its_line_floats_in_it() {
+        let bare_rows = |content: InspectionNode| {
+            let mut row = node("SwipeRow", "row", [0.0, 0.0, 400.0, 200.0], None);
+            row.children.push(content);
+            let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
+            shell.children.push(row);
+            inspect(&shell, (400, 300), None, 1.0)
+                .into_iter()
+                .filter(|problem| problem.kind == Kind::BareRow)
+                .count()
+        };
+        assert_eq!(
+            bare_rows(node("Row", "line", [0.0, 88.0, 400.0, 24.0], None)),
+            1,
+            "a line floating in the row's middle is the page drawn as one row"
+        );
+        assert_eq!(
+            bare_rows(node("Row", "body", [0.0, 0.0, 400.0, 200.0], None)),
+            0,
+            "a row as tall as what it holds is as tall as its content"
+        );
+    }
+
+    /// A scroll view's content stands in a box the view holds it in, which is the view's own
+    /// content and no container of its own: what the view scrolls through may go on past the
+    /// view. A box inside that content still holds what it holds, and is caught.
+    #[test]
+    fn a_scroll_views_content_box_passes_its_scrolling_on() {
+        let scrolled = |content: InspectionNode| {
+            let mut page = stack_node("page", [0.0, 0.0, 400.0, 300.0], vec![content]);
+            page.layout = Some(ui::widget::LayoutInfo::Scroll(ui::widget::ScrollLayout {
+                direction: ui::widget::ScrollDirection::Vertical,
+            }));
+            stack_node("window", [0.0, 0.0, 400.0, 300.0], vec![page])
+        };
+        let overflowing = |root: &InspectionNode| {
+            inspect(root, (400, 300), None, 1.0)
+                .into_iter()
+                .filter(|problem| problem.kind == Kind::Overflow)
+                .map(|problem| problem.keys)
+                .collect::<Vec<_>>()
+        };
+        let page = scrolled(stack_node(
+            "content",
+            [0.0, 0.0, 380.0, 300.0],
+            vec![stack_node(
+                "long",
+                [0.0, 0.0, 380.0, 900.0],
+                vec![stack_node(
+                    "card",
+                    [0.0, 0.0, 380.0, 100.0],
+                    vec![stack_node("over", [0.0, 0.0, 380.0, 240.0], vec![])],
+                )],
+            )],
+        ));
+        assert_eq!(
+            overflowing(&page),
+            vec![vec![
+                "over".to_owned(),
+                "card".to_owned(),
+                "long".to_owned(),
+                "content".to_owned(),
+                "page".to_owned(),
+                "window".to_owned()
+            ]],
+            "the content the view scrolls through may be taller than the view; the card in it may not"
+        );
+    }
+
+    /// A column header that reads 0, and a place whose quiet count reads 0: a count says
+    /// something wants attention, so zero is no badge and no room kept for one.
+    #[test]
+    fn a_count_of_zero_is_caught_where_it_is_drawn() {
+        let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
+        let mut list = node(
+            "NavList",
+            "places",
+            [0.0, 40.0, 280.0, 240.0],
+            Some(Role::Tree),
+        );
+        list.semantics
+            .as_mut()
+            .expect("the list's semantics")
+            .children = vec![
+            place("Assigned to me", [0.0, 40.0, 280.0, 72.0], 0, false),
+            place("Inbox", [0.0, 72.0, 280.0, 104.0], 3, false),
+        ];
+        shell.children = vec![
+            list,
+            counted(
+                "NavShellTitle",
+                "title",
+                [300.0, 8.0, 380.0, 32.0],
+                Role::Heading { level: 2 },
+                "Done",
+                "0",
+            ),
+        ];
+        let zeros: Vec<Problem> = inspect(&shell, (400, 300), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::ZeroCount)
+            .collect();
+        assert_eq!(zeros.len(), 2, "{zeros:?}");
+    }
+
+    /// A column header and the place beside it in the sidebar drawing the same number: the
+    /// same count twice on one screen. A different number, or a place past the header, is not
+    /// the same count again.
+    #[test]
+    fn a_header_count_the_place_beside_it_shows_is_caught_once() {
+        let repeated = |header: u32, shown: u32, list_x0: f64| {
+            let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
+            let mut list = node(
+                "NavList",
+                "places",
+                [list_x0, 40.0, list_x0 + 280.0, 240.0],
+                Some(Role::Tree),
+            );
+            list.semantics
+                .as_mut()
+                .expect("the list's semantics")
+                .children = vec![place(
+                "Inbox",
+                [list_x0, 40.0, list_x0 + 280.0, 72.0],
+                shown,
+                true,
+            )];
+            shell.children = vec![
+                list,
+                counted(
+                    "NavShellTitle",
+                    "title",
+                    [600.0, 8.0, 680.0, 32.0],
+                    Role::Heading { level: 2 },
+                    "Inbox",
+                    &header.to_string(),
+                ),
+            ];
+            let root = stack_node("window", [0.0, 0.0, 900.0, 300.0], vec![shell]);
+            inspect(&root, (900, 300), None, 1.0)
+                .into_iter()
+                .filter(|problem| problem.kind == Kind::RepeatedCount)
+                .count()
+        };
+        assert_eq!(repeated(6, 6, 0.0), 1, "the sidebar beside it says 6");
+        assert_eq!(repeated(6, 5, 0.0), 0, "the place says another number");
+        assert_eq!(
+            repeated(6, 6, 600.0),
+            0,
+            "a place past the header is no sidebar"
+        );
+    }
+
+    fn counted(
+        widget: &str,
+        id: &str,
+        rect: [f64; 4],
+        role: Role,
+        name: &str,
+        value: &str,
+    ) -> InspectionNode {
+        let mut header = node(widget, id, rect, Some(role));
+        let access = header.semantics.as_mut().expect("the header's semantics");
+        access.name = Some(name.to_owned());
+        access.value = Some(value.to_owned());
+        header
+    }
+
+    fn place(name: &str, rect: [f64; 4], count: u32, selected: bool) -> AccessNode {
+        let mut place = AccessNode::new(Role::TreeItem);
+        place.name = Some(name.to_owned());
+        place.value = Some(count.to_string());
+        place.state.selected = selected;
+        place.bounds =
+            Some(Rect::new(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]).into());
+        place
+    }
+
     fn inspected(root: &InspectionNode) -> Vec<Problem> {
         inspect(root, (800, 600), None, 1.0)
             .into_iter()
             .filter(|p| p.kind == Kind::Overlap)
             .collect()
+    }
+
+    fn lone_doors(root: &InspectionNode) -> Vec<Problem> {
+        inspect(root, (1280, 800), None, 1.0)
+            .into_iter()
+            .filter(|p| p.kind == Kind::LoneDoor)
+            .collect()
+    }
+
+    /// A page's "…" is the item's actions at the trailing edge of the title's line. One
+    /// standing in a column takes a line of the document for its glyph alone, under the title:
+    /// caught. Beside the title, and in the window bar, a menu is where it belongs.
+    #[test]
+    fn a_pages_dots_are_caught_only_off_the_titles_line() {
+        let page = |content: InspectionNode| {
+            stack_node(
+                "window",
+                [0.0, 0.0, 1280.0, 800.0],
+                vec![stack_node(
+                    "page",
+                    [0.0, 56.0, 1280.0, 200.0],
+                    vec![content],
+                )],
+            )
+        };
+        let door = || {
+            node(
+                "MenuButton",
+                "detail~more",
+                [888.0, 104.0, 32.0, 32.0],
+                Some(Role::Button),
+            )
+        };
+        let alone = page(stack_node(
+            "content",
+            [360.0, 104.0, 560.0, 85.0],
+            vec![door()],
+        ));
+        let found = lone_doors(&alone);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].keys.first().map(String::as_str),
+            Some("detail~more"),
+            "at the page's door"
+        );
+        let line = page(holding(
+            node("Row", "title-line", [360.0, 104.0, 560.0, 49.0], None),
+            vec![
+                node("TextInput", "detail", [360.0, 104.0, 520.0, 49.0], None),
+                door(),
+            ],
+        ));
+        assert!(
+            lone_doors(&line).is_empty(),
+            "beside its title, the door is where it belongs"
+        );
+        let bar = page(node(
+            "MenuButton",
+            "nav-shell-more-3",
+            [1220.0, 12.0, 32.0, 32.0],
+            Some(Role::Button),
+        ));
+        assert!(
+            lone_doors(&bar).is_empty(),
+            "the window bar's own menu is no page's door"
+        );
+    }
+
+    fn empty_headings(root: &InspectionNode) -> Vec<Problem> {
+        inspect(root, (1280, 800), None, 1.0)
+            .into_iter()
+            .filter(|p| p.kind == Kind::EmptyHeading)
+            .collect()
+    }
+
+    /// A heading nobody named takes its band's height over a lane's cards all the same: the
+    /// strip says nothing, and the cards start below it. Named, it is the lane's words; a lane
+    /// no heading heads starts its cards where a list starts its first row.
+    #[test]
+    fn a_heading_with_nothing_in_it_is_caught() {
+        let heading = |name: &str| {
+            let words = !name.is_empty();
+            let mut header = node(
+                HEADING,
+                "heading",
+                [304.0, 80.0, 320.0, 29.0],
+                Some(Role::Heading { level: 2 }),
+            );
+            header.semantics = Some(AccessNode {
+                name: words.then(|| name.to_owned()),
+                ..AccessNode::new(Role::Heading { level: 2 })
+            });
+            let text = if words {
+                [304.0, 84.0, 69.0, 21.0]
+            } else {
+                [304.0, 94.0, 0.0, 0.0]
+            };
+            header.children = vec![node(
+                "Text",
+                "title",
+                text,
+                Some(Role::Heading { level: 2 }),
+            )];
+            header
+        };
+        let lane = |header: Option<InspectionNode>| {
+            let top = if header.is_some() { 117.0 } else { 80.0 };
+            let cards = stack_node(
+                "cards",
+                [304.0, top, 320.0, 200.0],
+                vec![node("ListRow", "card", [304.0, top, 320.0, 49.0], None)],
+            );
+            let column = holding(
+                node("Column", "column", [304.0, 80.0, 320.0, 300.0], None),
+                header.into_iter().chain([cards]).collect(),
+            );
+            holding(
+                node("Container", "lane", [304.0, 80.0, 320.0, 300.0], None),
+                vec![column],
+            )
+        };
+        let board = |lane: InspectionNode| {
+            holding(
+                node("Row", "board", [280.0, 80.0, 1000.0, 600.0], None),
+                vec![lane],
+            )
+        };
+        let found = empty_headings(&board(lane(Some(heading("")))));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].keys.first().map(String::as_str), Some("heading"));
+        assert!(
+            empty_headings(&board(lane(Some(heading("Doing"))))).is_empty(),
+            "a named heading is the lane's words"
+        );
+        assert!(
+            empty_headings(&board(lane(None))).is_empty(),
+            "a lane no heading heads starts its cards at its top"
+        );
+    }
+
+    fn bare_rows(root: &InspectionNode) -> Vec<Problem> {
+        inspect(root, (800, 600), None, 1.0)
+            .into_iter()
+            .filter(|p| p.kind == Kind::BareRow)
+            .collect()
+    }
+
+    /// A page whose content is one row: the row is stretched over the column and its line
+    /// floats at the column's middle, where a page around it would hold it at the top. A list's
+    /// rows are their line's height, and a page that holds a row is no finding.
+    #[test]
+    fn a_page_drawn_as_one_row_is_caught() {
+        let shell = |content: Vec<InspectionNode>| {
+            let mut shell = node("NavShell", "shell", [0.0, 0.0, 800.0, 600.0], None);
+            shell.children = content;
+            shell
+        };
+        let bare = shell(vec![node(
+            "ListRow",
+            "detail-row",
+            [416.0, 56.0, 384.0, 544.0],
+            Some(Role::ListItem),
+        )]);
+        let found = bare_rows(&bare);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].keys.first().map(String::as_str),
+            Some("detail-row"),
+            "at the row a view drew"
+        );
+        let listed = shell(vec![holding(
+            node("DescribedList", "rows", [76.0, 56.0, 340.0, 540.0], None),
+            vec![
+                node("ListRow", "a", [76.0, 56.0, 340.0, 36.0], None),
+                node("ListRow", "b", [76.0, 92.0, 340.0, 36.0], None),
+            ],
+        )]);
+        assert!(bare_rows(&listed).is_empty(), "a list's rows are lines");
+        let page = shell(vec![holding(
+            node("Scroll", "scroll", [416.0, 56.0, 384.0, 544.0], None),
+            vec![holding(
+                node("page", "page", [416.0, 56.0, 384.0, 544.0], None),
+                vec![holding(
+                    node("stack", "stack", [440.0, 80.0, 336.0, 120.0], None),
+                    vec![node(
+                        "ListRow",
+                        "summary",
+                        [440.0, 80.0, 336.0, 60.0],
+                        Some(Role::ListItem),
+                    )],
+                )],
+            )],
+        )]);
+        assert!(
+            bare_rows(&page).is_empty(),
+            "a page holding a row is no finding"
+        );
     }
 
     fn holding(mut outer: InspectionNode, children: Vec<InspectionNode>) -> InspectionNode {

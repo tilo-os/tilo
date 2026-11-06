@@ -4074,13 +4074,24 @@ impl Widget for WindowGroup {
         self.grip_dirty
             || reveal_due
             || edge_due
-            || self.children().into_iter().any(Widget::needs_redraw)
+            || (self.navigation_bar_visible()
+                && ((self.bar.needs_redraw() || self.bar.needs_animation_frame())
+                    || (self.search.needs_redraw() || self.search.needs_animation_frame())))
+            || self.active_host().is_some_and(Widget::needs_redraw)
     }
     fn mark_drawn(&mut self) {
         self.grip_dirty = false;
         self.next_frame();
-        for child in self.children_mut() {
-            child.mark_drawn();
+        // The bar, its search and the active host: what the group draws.
+        let shows_bar = self.navigation_bar_visible();
+        if shows_bar {
+            self.bar.mark_drawn();
+            self.search.mark_drawn();
+        }
+        let active = self.bar.active_id();
+        if let Some((id, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
+            host.set_panic_scope(*id);
+            host.mark_drawn();
         }
     }
     /// Layout follows the built tree: the tab bar (whenever it was built) and
@@ -4186,7 +4197,8 @@ impl Widget for WindowGroup {
             || group_close_in_flight
             || rect_in_flight
             || width_in_flight
-            || (self.navigation_bar_visible() && self.bar.needs_animation_frame())
+            || (self.navigation_bar_visible()
+                && (self.bar.needs_animation_frame() || self.search.needs_animation_frame()))
             || host
     }
 }
@@ -4414,7 +4426,8 @@ mod tests {
             );
         }
         assert!(
-            at(later, || group.needs_redraw()),
+            at(later, || group.needs_redraw()
+                || group.needs_animation_frame()),
             "the dwell's end is a frame of its own"
         );
         assert_eq!(group.next_wake_deadline(), Some(later));

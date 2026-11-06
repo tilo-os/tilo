@@ -7,12 +7,15 @@
 //! stream and the portal's screenshots take, so what is captured is what the
 //! desktop shows, private windows blanked — written to the person's
 //! Screenshots folder and, when asked, put on the clipboard. A recording
-//! feeds the same read-back into the recorder ([`Recorder`]) at the replay
-//! buffer's rate, which writes the file and keeps the last half minute
-//! encoded.
+//! feeds the same read-back into the recorder at the replay buffer's rate,
+//! which writes the file and keeps the last half minute encoded.
 //!
 //! What came of each capture goes back to the studio as its scene
 //! ([`tilo_capture_studio::Scene`]).
+//!
+//! Only the read-back is the session's: the encoder, the muxer and every
+//! file a capture makes run on [`CaptureIo`]'s worker, which the loop hands
+//! frames to without waiting for it ([`crate::capture_io`]).
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -22,18 +25,20 @@
 )]
 
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use tilo_capture_studio::audio::{Availability, Track as AudioTrack};
 use tilo_capture_studio::{
-    Ask, Frame, Kept, REPLAY_FPS, Recorder, Recording, Refusal, Scene, Selection, Sent, Settings,
-    Studio, Take,
+    Ask, Finished, Frame, Kept, REPLAY_FPS, Recording, Refusal, Scene, Selection, Sent, Studio,
+    Take,
 };
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, Screenshot};
-use tilo_device_fabric::link::SharedLink;
 use tilo_portal::CaptureError;
 use tilo_surface_host::Doors;
 use ui::vello::kurbo::Rect;
@@ -43,13 +48,19 @@ use ui::widget::{
 };
 
 use crate::Options;
-use crate::capture_send::{self, Sends};
+use crate::capture_io::{CaptureIo, NO_WORKER, Note, Sound, Written};
+use crate::capture_send::Sends;
+use crate::nearby_transfer::NearbyTransfer;
 use crate::panels::Held;
 use crate::sheets::Sheet;
 
 /// One frame every this long: the replay buffer's rate, so a recording and
 /// a clip of what just happened share one encode.
 const FRAME_INTERVAL: Duration = Duration::from_millis(1_000 / 30);
+
+/// Frames dropped in a row before the person is told again that the encoder
+/// cannot keep up.
+const FALLING_BEHIND: u64 = 30;
 
 /// The columns and rows of a receipt's thumbnail.
 const PREVIEW: (u8, u8) = (12, 8);
@@ -59,11 +70,22 @@ pub(crate) struct CaptureStudio {
     seat: Studio,
     /// The folder screenshots and recordings are written to.
     directory: PathBuf,
+    /// The one worker that encodes a recording and writes every capture's
+    /// file.
+    io: Rc<CaptureIo>,
+    /// What became of the recorder's work, as the loop takes it up.
+    notes: Receiver<Note>,
+    /// The screenshots being written, in the order they were asked for.
+    shots: VecDeque<Shot>,
+    /// The screenshots being read back for the clipboard.
+    copies: VecDeque<Receiver<Result<Vec<u8>, String>>>,
+    /// The clips being cut from the replay buffer.
+    clips: VecDeque<Receiver<Result<usize, String>>>,
     /// The last screenshot, for its receipt and for opening it again.
     last: Option<Kept>,
-    /// The person's devices, when this session runs on one: who a screenshot
-    /// may be sent to.
-    fabric: Option<SharedLink>,
+    /// The session's transfer engine, when this session runs on a device
+    /// fabric: who a screenshot may be sent to.
+    nearby: Option<Arc<NearbyTransfer>>,
     /// The screenshots on their way to those devices.
     sends: Sends,
     /// What became of sending the last screenshot, while its receipt shows
@@ -74,15 +96,41 @@ pub(crate) struct CaptureStudio {
     asking: Option<Asked>,
     /// What feeds the recorder now: a recording, or the replay buffer.
     feeding: Option<Feeding>,
+    /// The number of the recorder that runs, a recording or the replay
+    /// buffer: what the worker's notes about one are about.
+    run: u64,
     /// What the machine can record, probed once the bar first comes up: a
     /// session that never records opens no probe.
     audio: Cell<Option<Availability>>,
     /// The recording that runs, as the studio shows it.
     recording: Option<Recording>,
+    /// The recording that ended, while its receipt says what it made of it.
+    finished: Option<Finished>,
     /// Seconds of the last half minute ready to clip.
     replay: Option<u8>,
     /// How many clips the replay buffer gave.
     replay_saves: u64,
+}
+
+/// A screenshot being written off the loop.
+struct Shot {
+    /// What its receipt shows, when the person took it.
+    receipt: Option<Receipt>,
+    /// The app waiting for the file, when it asked for a picture of what
+    /// only the person can name.
+    reply: Option<tokio::sync::oneshot::Sender<Result<PathBuf, CaptureError>>>,
+    /// What the worker wrote, taken up on a later pass.
+    answer: Receiver<Result<Written, String>>,
+}
+
+/// What the receipt of a screenshot shows once its file is written.
+struct Receipt {
+    width: u32,
+    height: u32,
+    /// The thumbnail it shows.
+    preview: CapturePreview,
+    /// Whether the file goes on the clipboard too.
+    copy: bool,
 }
 
 /// A screenshot an app asked the person for.
@@ -101,7 +149,6 @@ struct Asked {
 /// Frames going into a recorder.
 struct Feeding {
     take: Take,
-    recorder: Recorder,
     /// The sound going into it, in the recorder's track order.
     audio: Vec<AudioTrack>,
     /// The file written: the recording's, or `None` while only the replay
@@ -117,7 +164,9 @@ pub(crate) fn mount(
     compositor: &mut Compositor,
     doors: &mut Doors,
     options: &Options,
-    fabric: Option<&SharedLink>,
+    nearby: Option<&Arc<NearbyTransfer>>,
+    io: Rc<CaptureIo>,
+    notes: Receiver<Note>,
 ) -> Option<CaptureStudio> {
     let who = (options.device.as_str(), options.person.as_str());
     let seat = Studio::new();
@@ -134,23 +183,28 @@ pub(crate) fn mount(
             let sheet = Rc::new(RefCell::new(sheet));
             compositor.add_host(Box::new(Held(Rc::clone(&sheet))));
             doors.add(sheet);
-            let fabric = fabric.cloned();
             Some(CaptureStudio {
                 seat,
                 directory: options.pictures.clone().unwrap_or_else(screenshots),
+                io,
+                notes,
+                shots: VecDeque::new(),
+                copies: VecDeque::new(),
+                clips: VecDeque::new(),
                 last: None,
                 sends: Sends::new(
-                    fabric.clone(),
-                    capture_send::spool_root(),
+                    nearby.cloned(),
                     tilo_paths::workspace_root(),
                     options.wake.handle(),
                 ),
-                fabric,
+                nearby: nearby.cloned(),
                 sent: None,
                 asking: None,
                 feeding: None,
+                run: 0,
                 audio: Cell::new(None),
                 recording: None,
+                finished: None,
                 replay: None,
                 replay_saves: 0,
             })
@@ -194,6 +248,12 @@ impl CaptureStudio {
         if let Some(sent) = self.sends.take() {
             self.sent = Some(sent);
         }
+        // What the worker made of the last pass is said before this one asks
+        // for more.
+        self.take_notes();
+        self.take_shots(compositor);
+        self.take_copies(compositor);
+        self.take_clips();
         for ask in self.seat.link().take_asks() {
             self.answer(ask, compositor);
         }
@@ -202,6 +262,165 @@ impl CaptureStudio {
         self.cancel_asking();
         self.feed(compositor);
         self.publish(compositor);
+    }
+
+    /// Take up what became of the recorder's work since the last pass.
+    fn take_notes(&mut self) {
+        while let Ok(note) = self.notes.try_recv() {
+            match note {
+                // What became of a recorder that has since been replaced says
+                // nothing about the one that runs now.
+                Note::Opened { run, .. }
+                | Note::Frame { run, .. }
+                | Note::SoundLost { run, .. }
+                | Note::Stopped { run, .. }
+                    if run != self.run => {}
+                Note::Opened { result: Ok(()), .. } => {}
+                Note::Opened {
+                    result: Err(error), ..
+                } => {
+                    tracing::warn!(%error, "a capture was not started");
+                    self.end_feeding();
+                }
+                Note::Frame { error, .. } => {
+                    tracing::warn!(%error, "a frame of the recording was not encoded");
+                    // Whatever was written stays in a file that is finished
+                    // rather than left behind.
+                    self.end_feeding();
+                    self.io.stop();
+                }
+                Note::SoundLost { track, .. } => {
+                    if let Some(feeding) = &mut self.feeding {
+                        feeding.audio.retain(|audio| audio.mux() != track);
+                    }
+                }
+                Note::Stopped { ended, dropped, .. } => match ended {
+                    Ok(Some(path)) => {
+                        tracing::info!(path = %path.display(), dropped, "a recording was finished");
+                        // The receipt says what the file is missing.
+                        self.finished = Some(Finished {
+                            path: Some(path),
+                            skipped: dropped,
+                            failure: None,
+                        });
+                    }
+                    Ok(None) => {}
+                    Err(unfinished) => {
+                        // What was written is kept rather than left behind,
+                        // and the receipt says why it is not whole.
+                        tracing::warn!(
+                            %unfinished.error,
+                            path = ?unfinished.path,
+                            dropped,
+                            "a recording was not finished"
+                        );
+                        self.finished = Some(Finished {
+                            path: unfinished.path,
+                            skipped: dropped,
+                            failure: Some(unfinished.error),
+                        });
+                    }
+                },
+            }
+        }
+    }
+
+    /// Take up the screenshots the worker wrote since the last pass: the
+    /// person's receipt, and the app that asked for what only they could
+    /// name.
+    fn take_shots(&mut self, compositor: &mut Compositor) {
+        loop {
+            let Some(shot) = self.shots.front() else {
+                return;
+            };
+            let answer = match shot.answer.try_recv() {
+                Ok(answer) => answer,
+                // Not written yet: it and every shot after it wait for
+                // their turn on the one worker.
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => Err(NO_WORKER.to_owned()),
+            };
+            let Some(shot) = self.shots.pop_front() else {
+                return;
+            };
+            match answer {
+                Ok(written) => {
+                    if let Some(reply) = shot.reply {
+                        let _ = reply.send(Ok(written.path));
+                        continue;
+                    }
+                    let Some(receipt) = shot.receipt else {
+                        continue;
+                    };
+                    if receipt.copy {
+                        match written.png {
+                            Some(png) => {
+                                if let Err(error) = clipboard(png, compositor) {
+                                    tracing::warn!(%error, "a screenshot was not copied");
+                                }
+                            }
+                            None => {
+                                tracing::warn!("a screenshot was written without its picture");
+                            }
+                        }
+                    }
+                    self.last = Some(Kept {
+                        kept: if receipt.copy {
+                            ScreenshotKept::SAVED_AND_COPIED
+                        } else {
+                            ScreenshotKept::SAVED
+                        },
+                        path: written.path,
+                        width: receipt.width,
+                        height: receipt.height,
+                        preview: receipt.preview,
+                    });
+                    self.sent = None;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "a screenshot was not written");
+                    if let Some(reply) = shot.reply {
+                        let _ = reply.send(Err(CaptureError::Failed(error)));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Put the screenshots read back for the clipboard on it.
+    fn take_copies(&mut self, compositor: &mut Compositor) {
+        while let Some(answer) = next_answer(&mut self.copies) {
+            match answer {
+                Ok(png) => {
+                    if let Err(error) = clipboard(png, compositor) {
+                        tracing::warn!(%error, "a screenshot was not copied again");
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "a screenshot was not read again"),
+            }
+        }
+    }
+
+    /// Say what became of the clips the replay buffer gave.
+    fn take_clips(&mut self) {
+        while let Some(answer) = next_answer(&mut self.clips) {
+            match answer {
+                Ok(frames) => {
+                    tracing::info!(frames, "a clip of what just happened was saved");
+                    self.replay_saves = self.replay_saves.wrapping_add(1);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "a clip of what just happened was not saved");
+                }
+            }
+        }
+    }
+
+    /// The recording or the replay buffer ended without a file of its own.
+    fn end_feeding(&mut self) {
+        self.feeding = None;
+        self.recording = None;
+        self.replay = None;
     }
 
     /// Ask the person for what an app's screenshot of `target` needs: the
@@ -261,27 +480,11 @@ impl CaptureStudio {
     fn answer(&mut self, ask: Ask, compositor: &mut Compositor) {
         match ask {
             Ask::Screenshot(take) => self.screenshot_asked(&take, compositor),
-            Ask::StartRecording(take) => self.start(take, compositor),
-            Ask::PauseRecording => {
-                if let Some(feeding) = &mut self.feeding {
-                    feeding.paused = true;
-                    feeding.recorder.pause();
-                }
-                if let Some(recording) = &mut self.recording {
-                    recording.paused = true;
-                }
-            }
-            Ask::ResumeRecording => {
-                if let Some(feeding) = &mut self.feeding {
-                    feeding.paused = false;
-                    feeding.recorder.resume();
-                }
-                if let Some(recording) = &mut self.recording {
-                    recording.paused = false;
-                }
-            }
+            Ask::StartRecording(take) => self.start(take),
+            Ask::PauseRecording => self.paused(true),
+            Ask::ResumeRecording => self.paused(false),
             Ask::StopRecording => self.stop(),
-            Ask::StartReplay(take) => self.start_replay(take, compositor),
+            Ask::StartReplay(take) => self.start_replay(take),
             Ask::SaveReplay => self.save_replay(),
             Ask::StopReplay => {
                 if self
@@ -290,20 +493,35 @@ impl CaptureStudio {
                     .is_some_and(|feeding| feeding.path.is_none())
                 {
                     self.feeding = None;
+                    self.io.close();
                 }
                 self.replay = None;
             }
-            Ask::OpenLast => self.open(false),
-            Ask::RevealLast => self.open(true),
+            Ask::Open(path) => Self::open(&path, false),
+            Ask::Reveal(path) => Self::open(&path, true),
             Ask::CopyLast => {
-                if let Some(kept) = &self.last
-                    && let Err(error) = copy(kept, compositor)
-                {
-                    tracing::warn!(%error, "a screenshot was not copied again");
+                if let Some(kept) = &self.last {
+                    let read = self.io.read(kept.path.clone());
+                    self.copies.push_back(read);
                 }
             }
             Ask::SendLastTo(id) => self.send_last_to(&id),
             Ask::SendLastToWorkspace => self.send_last_to_workspace(),
+        }
+    }
+
+    /// Hold the recorder where it is, or let it write frames again: no frame
+    /// is read back while it is held, and the sound of that time is dropped
+    /// rather than written as a gap.
+    fn paused(&mut self, paused: bool) {
+        if self.feeding.is_some() {
+            self.io.paused(paused);
+        }
+        if let Some(feeding) = &mut self.feeding {
+            feeding.paused = paused;
+        }
+        if let Some(recording) = &mut self.recording {
+            recording.paused = paused;
         }
     }
 
@@ -333,7 +551,7 @@ impl CaptureStudio {
         self.sent = self.sends.send_to_workspace(kept.path.clone());
     }
 
-    fn start(&mut self, take: Take, compositor: &mut Compositor) {
+    fn start(&mut self, take: Take) {
         let audio = match AudioTrack::start(take.audio) {
             Ok(audio) => audio,
             Err(error) => {
@@ -341,45 +559,33 @@ impl CaptureStudio {
                 return;
             }
         };
-        let frame = match grab(compositor, &take, self.presentation().place()) {
-            Ok(frame) => frame,
-            Err(error) => {
-                tracing::warn!(%error, "a recording was not started");
-                return;
-            }
-        };
-        let mut recorder = match Recorder::with_audio(
-            Settings::for_size(frame.width, frame.height),
-            audio.iter().map(|track| track.name().to_owned()).collect(),
-        ) {
-            Ok(recorder) => recorder,
-            Err(error) => {
-                tracing::warn!(%error, "no encoder takes this screen's size");
-                return;
-            }
-        };
-        let path = crate::capture::unique(&self.directory, "recording", recorder.extension());
-        if let Err(error) = recorder.start(path.clone()) {
-            tracing::warn!(%error, "a recording file was not opened");
-            return;
-        }
-        if let Err(error) = recorder.frame(&frame) {
-            tracing::warn!(%error, "the first frame of a recording was not written");
-            let _ = recorder.stop();
-            return;
-        }
+        // The first frame and the encoder are the worker's: building an
+        // encoder stalls one pass of the loop, and this one has a desk to
+        // keep drawing.
+        let path = crate::capture::unique(
+            &self.directory,
+            "recording",
+            tilo_capture_studio::extension(!audio.is_empty()),
+        );
+        // The file is opened by the frame the worker encodes: a folder that
+        // cannot be written is said rather than shown as a recording.
+        self.run = self.run.wrapping_add(1);
+        let run = self.run;
+        let names = audio.iter().map(|track| track.name().to_owned()).collect();
+        self.io.open(run, Some(path.clone()), names);
         self.feeding = Some(Feeding {
             take,
-            recorder,
             audio,
             path: Some(path.clone()),
-            last: Some(Instant::now()),
+            last: None,
             paused: false,
         });
         self.recording = Some(Recording {
             path,
             paused: false,
+            skipped: 0,
         });
+        self.finished = None;
     }
 
     fn stop(&mut self) {
@@ -391,31 +597,20 @@ impl CaptureStudio {
             self.feeding = Some(feeding);
             return;
         }
-        // What was heard up to the stop is in the file too.
-        feeding.drain_audio(true);
-        // The recorders end with the file: Drop kills each process group.
+        // What was heard up to the stop is in the file too, and the
+        // recorders end with the file: Drop kills each process group.
+        let sound = feeding.drain_audio(true);
+        self.io.sound(sound);
         feeding.audio.clear();
-        let mut recorder = feeding.recorder;
-        match recorder.stop() {
-            Ok(Some(path)) => tracing::info!(path = %path.display(), "a recording was finished"),
-            Ok(None) => {}
-            Err(error) => tracing::warn!(%error, "a recording was not finished"),
-        }
+        self.io.stop();
         self.recording = None;
     }
 
-    fn start_replay(&mut self, take: Take, compositor: &mut Compositor) {
+    fn start_replay(&mut self, take: Take) {
         if self.feeding.is_some() {
             // One encode feeds a recording and the replay buffer together.
             return;
         }
-        let frame = match grab(compositor, &take, self.presentation().place()) {
-            Ok(frame) => frame,
-            Err(error) => {
-                tracing::warn!(%error, "the replay buffer was not armed");
-                return;
-            }
-        };
         let audio = match AudioTrack::start(take.audio) {
             Ok(audio) => audio,
             Err(error) => {
@@ -423,43 +618,28 @@ impl CaptureStudio {
                 return;
             }
         };
-        let mut recorder = match Recorder::with_audio(
-            Settings::for_size(frame.width, frame.height),
-            audio.iter().map(|track| track.name().to_owned()).collect(),
-        ) {
-            Ok(recorder) => recorder,
-            Err(error) => {
-                tracing::warn!(%error, "no encoder takes this screen's size");
-                return;
-            }
-        };
-        if let Err(error) = recorder.frame(&frame) {
-            tracing::warn!(%error, "the replay buffer took no frame");
-            return;
-        }
+        self.run = self.run.wrapping_add(1);
+        let run = self.run;
+        let names = audio.iter().map(|track| track.name().to_owned()).collect();
+        self.io.open(run, None, names);
         self.feeding = Some(Feeding {
             take,
-            recorder,
             audio,
             path: None,
-            last: Some(Instant::now()),
+            last: None,
             paused: false,
         });
+        self.finished = None;
         self.replay = Some(0);
     }
 
     fn save_replay(&mut self) {
-        let Some(feeding) = self.feeding.as_mut() else {
+        if self.feeding.is_none() {
             return;
-        };
-        let path = crate::capture::unique(&self.directory, "replay", "mp4");
-        match feeding.recorder.save_replay(path) {
-            Ok(frames) => {
-                tracing::info!(frames, "a clip of what just happened was saved");
-                self.replay_saves = self.replay_saves.wrapping_add(1);
-            }
-            Err(error) => tracing::warn!(%error, "a clip of what just happened was not saved"),
         }
+        let path = crate::capture::unique(&self.directory, "replay", "mp4");
+        let clip = self.io.save_replay(path);
+        self.clips.push_back(clip);
     }
 
     /// When the recorder next takes a frame: only a buffer that runs and is
@@ -475,9 +655,12 @@ impl CaptureStudio {
         )
     }
 
-    /// Take one frame into the recorder when it is due.
+    /// Take one frame into the recorder when it is due: read back here, and
+    /// handed to the worker, which drops it rather than waiting when the
+    /// encoder is behind.
     fn feed(&mut self, compositor: &mut Compositor) {
         let place = self.presentation().place();
+        let io = Rc::clone(&self.io);
         let Some(feeding) = self.feeding.as_mut() else {
             return;
         };
@@ -491,10 +674,8 @@ impl CaptureStudio {
             .last
             .is_some_and(|last| now.saturating_duration_since(last) < FRAME_INTERVAL)
         {
-            feeding.drain_audio(true);
             return;
         }
-        feeding.last = Some(now);
         let frame = match grab(compositor, &feeding.take, place) {
             Ok(frame) => frame,
             Err(error) => {
@@ -502,19 +683,21 @@ impl CaptureStudio {
                 return;
             }
         };
-        if let Err(error) = feeding.recorder.frame(&frame) {
-            tracing::warn!(%error, "a frame of the recording was not encoded");
-            if feeding.path.take().is_some() {
-                let _ = feeding.recorder.stop();
-                self.recording = None;
+        feeding.last = Some(now);
+        let sound = feeding.drain_audio(true);
+        if !io.feed(frame, sound) {
+            // The desk keeps drawing; the recording says what it lost.
+            let dropped = io.dropped();
+            if dropped == 1 || dropped.is_multiple_of(FALLING_BEHIND) {
+                tracing::warn!(
+                    dropped,
+                    "the encoder fell behind: a frame of the recording was dropped"
+                );
             }
-            self.feeding = None;
-            self.replay = None;
             return;
         }
-        feeding.drain_audio(true);
         if feeding.path.is_none() {
-            let seconds = feeding.recorder.buffered() / usize::try_from(REPLAY_FPS).unwrap_or(30);
+            let seconds = io.buffered() / usize::try_from(REPLAY_FPS).unwrap_or(30);
             self.replay = Some(u8::try_from(seconds.min(30)).unwrap_or(30));
         }
     }
@@ -530,61 +713,65 @@ impl CaptureStudio {
             let Some(asked) = self.asking.take() else {
                 return;
             };
-            let kept = keep(
-                &asked.directory,
-                compositor,
-                take,
-                self.presentation().place(),
-            );
-            let _ = asked.reply.send(kept);
+            let picture = match picture(compositor, take, self.presentation().place()) {
+                Ok(picture) => picture,
+                Err(error) => {
+                    let _ = asked.reply.send(Err(CaptureError::Failed(error)));
+                    return;
+                }
+            };
+            let answer = self.io.write(picture, asked.directory, false);
+            self.shots.push_back(Shot {
+                receipt: None,
+                reply: Some(asked.reply),
+                answer,
+            });
             return;
         }
-        match self.screenshot(take, compositor) {
-            Ok(kept) => {
-                self.last = Some(kept);
-                self.sent = None;
-            }
-            Err(error) => tracing::warn!(%error, "a screenshot was not taken"),
-        }
+        self.screenshot(take, compositor);
     }
 
     /// Take a screenshot of `take` and keep it: a file, and the clipboard
-    /// when asked.
-    fn screenshot(&self, take: &Take, compositor: &mut Compositor) -> Result<Kept, String> {
-        let frame = grab(compositor, take, self.presentation().place())?;
-        let picture = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone())
-            .ok_or("a frame of the wrong size")?;
-        let path = crate::capture::keep(&self.directory, &picture)?;
-        let kept = Kept {
-            kept: ScreenshotKept::SAVED,
-            path,
+    /// when asked, both written off the loop, so the receipt shows once its
+    /// file is there.
+    fn screenshot(&mut self, take: &Take, compositor: &mut Compositor) {
+        let frame = match grab(compositor, take, self.presentation().place()) {
+            Ok(frame) => frame,
+            Err(error) => {
+                tracing::warn!(%error, "a screenshot was not taken");
+                return;
+            }
+        };
+        let Some(picture) =
+            image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone())
+        else {
+            tracing::warn!("a screenshot was not taken: a frame of the wrong size");
+            return;
+        };
+        let receipt = Receipt {
             width: frame.width,
             height: frame.height,
             preview: preview(&frame),
+            copy: take.destination != CaptureDestination::File,
         };
-        if take.destination != CaptureDestination::File {
-            copy(&kept, compositor)?;
-            return Ok(Kept {
-                kept: ScreenshotKept::SAVED_AND_COPIED,
-                ..kept
-            });
-        }
-        Ok(kept)
+        let answer = self.io.write(picture, self.directory.clone(), receipt.copy);
+        self.shots.push_back(Shot {
+            receipt: Some(receipt),
+            reply: None,
+            answer,
+        });
     }
 
-    /// Open the last screenshot in the person's image app, or show it in
+    /// Open the capture at `path` in the person's app for it, or show it in
     /// Files.
-    fn open(&self, reveal: bool) {
-        let Some(kept) = &self.last else {
-            return;
-        };
+    fn open(path: &Path, reveal: bool) {
         let path = if reveal {
-            kept.path.parent().unwrap_or_else(|| Path::new("."))
+            path.parent().unwrap_or_else(|| Path::new("."))
         } else {
-            kept.path.as_path()
+            path
         };
         if let Err(error) = std::process::Command::new("xdg-open").arg(path).spawn() {
-            tracing::warn!(%error, path = %path.display(), "a screenshot was not opened");
+            tracing::warn!(%error, path = %path.display(), "a capture was not opened");
         }
     }
 
@@ -613,9 +800,9 @@ impl CaptureStudio {
     /// Hand the studio what it shows now.
     fn publish(&self, compositor: &Compositor) {
         let devices: Vec<ScreenshotSendDevice> = self
-            .fabric
+            .nearby
             .as_ref()
-            .map_or_else(Vec::new, capture_send::devices);
+            .map_or_else(Vec::new, |nearby| nearby.devices());
         let audio = self.audio_availability();
         let scene = Scene {
             windows: windows(compositor, self.presentation().place()),
@@ -625,7 +812,13 @@ impl CaptureStudio {
             kept: self.last.clone(),
             devices,
             sent: self.sent.clone(),
-            recording: self.recording.clone(),
+            // Frames the encoder was too far behind to take so far: the
+            // studio says them while the recording runs and on its receipt.
+            recording: self.recording.as_ref().map(|recording| Recording {
+                skipped: self.io.dropped(),
+                ..recording.clone()
+            }),
+            finished: self.finished.clone(),
             replay: self.replay,
             replay_audio: self.replay_audio(),
             replay_saves: self.replay_saves,
@@ -636,25 +829,17 @@ impl CaptureStudio {
 }
 
 impl Feeding {
-    /// Take the sound captured since the last pass into the file, in the
-    /// recorder's track order: with `keep` false — a pause — it is discarded,
-    /// so the recording resumes at the current sound. A source that ended is
-    /// dropped with a warning rather than written as a silent gap, and its
-    /// track keeps its place.
-    fn drain_audio(&mut self, keep: bool) {
+    /// Take the sound captured since the last pass into what goes to the
+    /// recorder, in the recorder's track order: with `keep` false — a pause —
+    /// it is discarded, so the recording resumes at the current sound. A
+    /// source that ended is dropped with a warning rather than written as a
+    /// silent gap.
+    fn drain_audio(&mut self, keep: bool) -> Sound {
+        let mut sound = Vec::new();
         let mut ended = Vec::new();
         for (index, track) in self.audio.iter_mut().enumerate() {
             match track.drain(keep) {
-                Ok(pcm) if keep && !pcm.is_empty() => {
-                    if let Err(error) = self.recorder.audio(track.mux(), &pcm) {
-                        tracing::warn!(
-                            %error,
-                            source = track.name(),
-                            "a recording's sound was not written"
-                        );
-                        ended.push(index);
-                    }
-                }
+                Ok(pcm) if keep && !pcm.is_empty() => sound.push((track.mux(), pcm)),
                 Ok(_) => {}
                 Err(error) => {
                     tracing::warn!(
@@ -669,12 +854,26 @@ impl Feeding {
         for index in ended.into_iter().rev() {
             self.audio.remove(index);
         }
+        sound
     }
 }
 
-/// Put `kept`'s file on the clipboard as an image.
-fn copy(kept: &Kept, compositor: &mut Compositor) -> Result<(), String> {
-    let png = std::fs::read(&kept.path).map_err(|error| error.to_string())?;
+/// The answer of the oldest job `queue` holds, taken off it; `None` while
+/// none has landed, so a job whose answer is not there holds up the ones
+/// behind it.
+fn next_answer<T>(queue: &mut VecDeque<Receiver<Result<T, String>>>) -> Option<Result<T, String>> {
+    let front = queue.front()?;
+    let answer = match front.try_recv() {
+        Ok(answer) => answer,
+        Err(TryRecvError::Empty) => return None,
+        Err(TryRecvError::Disconnected) => Err(NO_WORKER.to_owned()),
+    };
+    queue.pop_front();
+    Some(answer)
+}
+
+/// Put `png` on the clipboard as an image.
+fn clipboard(png: Vec<u8>, compositor: &mut Compositor) -> Result<(), String> {
     compositor
         .set_selection(
             tilo_compositor::Selection::Clipboard,
@@ -719,18 +918,16 @@ fn windows(compositor: &Compositor, place: Option<Place>) -> Vec<CaptureTarget> 
 /// the layout.
 type Place = (i32, i32, u32, u32);
 
-/// `take`'s picture, written as a PNG under `directory`; its path. This is
-/// what an app is handed: the file stays out of the person's own folders.
-fn keep(
-    directory: &Path,
+/// `take`'s picture, for the worker that writes it: what an app is handed,
+/// in a file that stays out of the person's own folders.
+fn picture(
     compositor: &mut Compositor,
     take: &Take,
     place: Option<Place>,
-) -> Result<PathBuf, CaptureError> {
-    let frame = grab(compositor, take, place).map_err(CaptureError::Failed)?;
-    let picture = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba)
-        .ok_or_else(|| CaptureError::Failed("a frame of the wrong size".to_owned()))?;
-    crate::capture::keep(directory, &picture).map_err(CaptureError::Failed)
+) -> Result<image::RgbaImage, String> {
+    let frame = grab(compositor, take, place)?;
+    image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba)
+        .ok_or_else(|| "a frame of the wrong size".to_owned())
 }
 
 /// What the studio selects for the portal's `target`.
@@ -885,5 +1082,107 @@ fn preview(frame: &Frame) -> CapturePreview {
         columns,
         rows,
         pixels,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc::{Sender, channel};
+
+    use tilo_capture_studio::Unfinished;
+    use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
+
+    use super::*;
+
+    /// The studio over a headless compositor, keeping its captures in
+    /// `pictures`, and where what became of the recorder is said: the
+    /// worker's own notes go nowhere, so a test says what a failing encoder
+    /// says.
+    fn studio(pictures: &Path) -> (CaptureStudio, Compositor, Sender<Note>) {
+        let options = Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            pictures: Some(pictures.to_path_buf()),
+            ..Options::default()
+        };
+        let mut compositor =
+            Compositor::headless(Box::new(StackPolicy)).expect("an in-process compositor");
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-1", 1280, 800))
+            .expect("a display");
+        let mut doors = Doors::default();
+        let (io, worker_notes) = CaptureIo::new(options.wake.handle());
+        let (said, notes) = channel();
+        let studio = mount(&mut compositor, &mut doors, &options, None, io, notes)
+            .expect("the studio mounts");
+        drop(worker_notes);
+        (studio, compositor, said)
+    }
+
+    /// A recording the person started and stopped, and the file it asked for.
+    fn stopped_recording(studio: &mut CaptureStudio) -> (u64, PathBuf) {
+        studio.start(Take::default());
+        let recording = studio.recording.clone().expect("the recording runs");
+        let run = studio.run;
+        studio.stop();
+        (run, recording.path)
+    }
+
+    /// A recording whose file the encoder could not finish is said on the
+    /// studio it was started from, with the file it kept or that it kept
+    /// none: the person sees what became of it rather than nothing.
+    #[test]
+    fn a_recording_the_encoder_could_not_finish_says_so_and_what_it_kept() {
+        let pictures = tempfile::tempdir().expect("a folder");
+        let (mut studio, mut compositor, said) = studio(pictures.path());
+
+        // What the encoder left: half a file, and why it stopped there.
+        let (run, path) = stopped_recording(&mut studio);
+        std::fs::write(&path, b"half a recording").expect("what was written");
+        said.send(Note::Stopped {
+            run,
+            ended: Err(Unfinished {
+                path: Some(path.clone()),
+                error: "the muxer failed: Internal data stream error".to_owned(),
+            }),
+            dropped: 4,
+        })
+        .expect("the worker says what became of the recording");
+        studio.serve(&mut compositor);
+        assert_eq!(
+            studio.seat.link().scene().finished,
+            Some(Finished {
+                path: Some(path),
+                skipped: 4,
+                failure: Some("the muxer failed: Internal data stream error".to_owned()),
+            }),
+            "the studio is handed the file it kept and what went wrong"
+        );
+        assert!(
+            studio.seat.link().scene().recording.is_none(),
+            "nothing is recording any more"
+        );
+
+        // A recording that wrote nothing: the same receipt, without a file.
+        let (run, path) = stopped_recording(&mut studio);
+        said.send(Note::Stopped {
+            run,
+            ended: Err(Unfinished {
+                path: None,
+                error: "no frame was written to the file".to_owned(),
+            }),
+            dropped: 0,
+        })
+        .expect("the worker says what became of the recording");
+        studio.serve(&mut compositor);
+        assert_eq!(
+            studio.seat.link().scene().finished,
+            Some(Finished {
+                path: None,
+                skipped: 0,
+                failure: Some("no frame was written to the file".to_owned()),
+            }),
+            "a failure that kept no file says so"
+        );
+        assert!(!path.exists(), "nothing was written there");
     }
 }

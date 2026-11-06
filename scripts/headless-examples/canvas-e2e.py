@@ -43,214 +43,69 @@ dbus-daemon, the build's timings); without it the build runs here.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
-import shlex
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-SESSION_SH = REPO / "dist/dev/nested-session.sh"
 
 # The tilolang apps, by their directory under apps/tl, and the native apps installed beside them.
 TL_APPS = ["board", "todo", "chat"]
 NATIVE_APPS = "tasks agent"
 
 
-def _load_e2e():
-    """scripts/headless-examples/tilolang-e2e.py, whose session helpers this reuses."""
-    spec = importlib.util.spec_from_file_location("tilolang_e2e", Path(__file__).with_name("tilolang-e2e.py"))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-e2e = _load_e2e()
-Failed = e2e.Failed
-run = e2e.run
-until = e2e.until
-app_id = e2e.app_id
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The session this drives and the tools that act in it: the one harness every
+# check of a desktop with the tree's apps starts (scripts/headless-examples/real_apps.py).
+import real_apps  # noqa: E402
+from real_apps import Failed, app_id, run, until  # noqa: E402
 
 
 # --- the session -----------------------------------------------------------------------------
 
-class CanvasSession:
+class CanvasSession(real_apps.Session):
     """One headless nested session on a state directory, started and stopped as often as a
-    test needs: `start(fresh)`, `stop()`, `restart()`; driven with `control(...)`."""
+    test needs, with the frame trace of each start recorded (see real_apps.Session)."""
 
     def __init__(self, state: Path, out: Path, tapps: list[Path], native: str = NATIVE_APPS):
-        self.state = state.resolve()
-        self.out = out.resolve()
+        super().__init__(state)
+        self.out = Path(out).resolve()
         self.tapps = tapps
         self.native = native
-        self.proc: subprocess.Popen | None = None
-        self.ready: dict | None = None
         self.starts = 0
-        self.tag = ""
         self.frames: dict[str, dict] = {}
-
-    # -- lifecycle --
 
     def start(self, fresh: bool = True) -> "CanvasSession":
         """Start the session on its state; `fresh` forgets the saved desktop (workspaces and
         windows, so their workspaces too), else it comes back as it was left."""
-        if self.proc is not None:
-            raise Failed("the session is running already")
         self.starts += 1
-        self.tag = f"{self.starts}-{'fresh' if fresh else 'again'}"
-        ready = self.out / f"ready-{self.tag}.json"
-        ready.unlink(missing_ok=True)
-        argv = [SESSION_SH, "--no-build", "--headless", "--software", "--apps", self.native,
-                "--state", self.state, "--ready", ready]
-        if fresh:
-            argv.append("--fresh-desktop")
-        for tapp in self.tapps:
-            argv += ["--install-tapp", tapp]
-        trace = self.out / f"frames-{self.tag}.csv"
-        summary = self.out / f"frames-{self.tag}.json"
-        self.frames[self.tag] = {"trace": str(trace), "summary": str(summary)}
-        env = {
-            **os.environ,
-            "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo::launch_latency=info"),
-            "TILO_FRAME_TRACE": str(trace),
-            "TILO_FRAME_SUMMARY": str(summary),
-        }
-        print(f"==> starting the headless session ({self.tag}, lavapipe only)", file=sys.stderr)
-        log = open(self.out / f"session-{self.tag}.log", "w")
-        self.proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
-                                     start_new_session=True, env=env)
-        until("the session", lambda: ready.is_file() or self.proc.poll() is not None, 300, 0.25)
-        if self.proc.poll() is not None:
-            code = self.proc.returncode
-            self.proc = None
-            raise Failed(f"the session ended ({code}); see {self.out / f'session-{self.tag}.log'}")
-        self.ready = json.loads(ready.read_text())
-        # A viewer is looking: headless frames are rasterized, so the frame trace measures
-        # painting and not layout alone.
-        self.control({"op": "watch", "watching": True})
-        # Apps open once the session answers with a frame of its own desktop.
-        until("the session to answer", lambda: (self.state / "session-ready").is_file(), 120, 0.2)
+        tag = f"{self.starts}-{'fresh' if fresh else 'again'}"
+        trace, summary = self.out / f"frames-{tag}.csv", self.out / f"frames-{tag}.json"
+        self.frames[tag] = {"trace": str(trace), "summary": str(summary)}
+        super().start(apps=self.native, fresh=fresh, out=self.out, tag=tag, tapps=self.tapps,
+                      env={"TILO_FRAME_TRACE": str(trace), "TILO_FRAME_SUMMARY": str(summary)})
         return self
 
     def stop(self) -> None:
         """Stop the session: SIGTERM to the script's process group, whose cleanup stops the
         shell's, the bus's and the services' groups. The shell exits cleanly, so the frame
         summary is written."""
-        proc, self.proc = self.proc, None
-        if proc is None:
-            return
-        if proc.poll() is None:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                proc.wait(60)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait(10)
+        tag = self.tag
+        super().stop()
         log = self.state / "logs/session.log"
-        if log.is_file():
-            shutil.copy(log, self.out / f"shell-{self.tag}.log")
-        self.ready = None
+        if tag and log.is_file():
+            shutil.copy(log, self.out / f"shell-{tag}.log")
 
     def restart(self) -> "CanvasSession":
         """Stop and start again on the same state, without --fresh-desktop: the workspaces, their
         windows and their layout survive."""
         self.stop()
         return self.start(fresh=False)
-
-    def running(self) -> bool:
-        return self.proc is not None and self.proc.poll() is None
-
-    # -- control --
-
-    def control(self, payload: dict | str, timeout: float = 30.0) -> dict:
-        """Send one request to the test control socket and answer its reply, whose one key names
-        its shape (`ok`, `state`, `answer`, `foreign_frames`, ...); an `err` reply raises. `payload` is a dict or its JSON text. See
-        crates/session/session/src/test_control.rs for the ops."""
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        if self.ready is None:
-            raise Failed("the session is not running")
-        wait = payload.get("wait_ms", 0) / 1000.0
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout + wait)
-            s.connect(self.ready["control"])
-            s.sendall(json.dumps(payload).encode() + b"\n")
-            buf = b""
-            while b"\n" not in buf:
-                chunk = s.recv(1 << 20)
-                if not chunk:
-                    raise Failed(f"the control socket closed mid-reply to {payload.get('op')}")
-                buf += chunk
-        reply = json.loads(buf.partition(b"\n")[0])
-        if "err" in reply:
-            raise Failed(f"{payload.get('op')} refused: {json.dumps(reply['err'])[:2000]}")
-        return reply
-
-    def snapshot(self, path: Path) -> Path:
-        path = Path(path).resolve()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.control({"op": "snapshot", "path": str(path)})
-        until(f"the snapshot {path.name}", lambda: path.is_file() and path.stat().st_size > 0, 30, 0.1)
-        return path
-
-    def windows(self) -> list[dict]:
-        return self.control({"op": "windows"})["answer"]["windows"]
-
-    def state_dump(self) -> dict:
-        return self.control({"op": "state_dump"})["state"]
-
-    def foreign_frames(self) -> list[dict]:
-        return self.control({"op": "foreign_frames"})["foreign_frames"]["frames"]
-
-    def presented(self, app: str) -> bool:
-        return any(f["app_id"] == app and f["presented"] and f["pixels_ready"] for f in self.foreign_frames())
-
-    def click_at(self, x: float, y: float) -> dict:
-        return self.control({"op": "click_at", "x": x, "y": y})
-
-    def right_click_at(self, x: float, y: float) -> None:
-        self.control({"op": "pointer_move", "x": x, "y": y})
-        self.control({"op": "pointer_button", "pressed": True, "button": "right"})
-        self.control({"op": "pointer_button", "pressed": False, "button": "right"})
-
-    def type(self, text: str) -> dict:
-        return self.control({"op": "type", "text": text})
-
-    def key(self, key: str) -> dict:
-        return self.control({"op": "key", "key": key})
-
-    # -- actions --
-
-    def actions(self, query: str = "") -> list[dict]:
-        """The actions listed for `query`, with those listed for agents alone, once the listing
-        has settled."""
-        found, cursor = [], None
-        while True:
-            request = {"op": "actions_enumerate", "query": query, "include_programmatic": True,
-                       "wait_ms": 5000, "limit": 1000}
-            if cursor:
-                request["cursor"] = cursor
-            answer = self.control(request)["answer"]
-            found += answer["actions"]
-            cursor = answer.get("next_cursor")
-            if not cursor:
-                return found
-
-    def invoke(self, provider: str, ident: str, args: dict | None = None) -> dict:
-        """Invoke an action by its address and answer its settled receipt."""
-        payload = {"op": "actions_invoke", "provider": provider, "id": ident, "wait_ms": 20000}
-        if args:
-            payload["args"] = args
-        return self.control(payload)["answer"]
 
 
 def start(state: Path, fresh: bool, out: Path | None = None, tapps: list[Path] | None = None,
@@ -265,15 +120,8 @@ def start(state: Path, fresh: bool, out: Path | None = None, tapps: list[Path] |
 
 def prepare(state: Path, build: bool) -> None:
     """Install the session's build into `state`; with `build`, build it first."""
-    if build:
-        print("==> building the nested session", file=sys.stderr)
-        remote = shlex.split(os.environ.get("TILO_NESTED_SESSION_BUILD_EXEC", ""))
-        if remote:
-            run([*remote, "dist/dev/nested-session-build.sh"], cwd=REPO)
-        else:
-            run([REPO / "dist/dev/nested-session-build.sh"], cwd=REPO)
-    print("==> preparing the session", file=sys.stderr)
-    run([SESSION_SH, "--no-build", "--prepare-only", "--apps", NATIVE_APPS, "--state", state])
+    real_apps.prepare(state, apps=NATIVE_APPS, built=build,
+                      remote=os.environ.get("TILO_NESTED_SESSION_BUILD_EXEC"))
 
 
 def build_tl_apps(state: Path, out: Path, build: bool) -> list[Path]:
@@ -311,7 +159,8 @@ def open_apps(session: CanvasSession, apps: list[str]) -> dict:
             session.invoke("applications", app)
     windows = until("a window of every app", lambda: (lambda ws: ws if all(a in ws for a in apps) else None)(
         {w.get("app_id"): w for w in session.windows()}), 60)
-    until("a presented frame of every app", lambda: all(session.presented(a) for a in apps), 60)
+    until("every app answering with its own actions",
+          lambda: all(session.answering(a) for a in apps), 60)
     return {a: windows[a] for a in apps}
 
 
@@ -784,9 +633,10 @@ def check_windows_back(session: CanvasSession, before: dict) -> dict:
                             for a in before},
                 "workspaces": len(tree.get("workspaces", []))}
     try:
-        until("a presented frame of every restored app", lambda: all(session.presented(a) for a in before), 60)
+        until("every restored app answering with its own actions",
+              lambda: all(session.answering(a) for a in before), 60)
     except Failed:
-        missing = [a for a in before if not session.presented(a)]
+        missing = [a for a in before if not session.answering(a)]
         log = (session.state / "logs/session.log").read_text(errors="replace").splitlines()
         said = [line[-300:] for line in log
                 if any(f"[app {a} stderr] error" in line or f"[app {a} stderr] Error" in line for a in missing)]

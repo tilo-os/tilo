@@ -249,7 +249,8 @@ impl Decorator for ToolbarFace {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.shown.changed.get() || (self.visible() && self.bar.needs_redraw())
+        self.shown.changed.get()
+            || (self.visible() && (self.bar.needs_redraw() || self.bar.needs_animation_frame()))
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {

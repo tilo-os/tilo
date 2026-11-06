@@ -3,14 +3,103 @@
 //! that says when, reads it against the time it is typed at in the zone of who typed it, and
 //! gives the rest of the text, the day and the moment.
 //!
-//! The phrases (English, any case; "on", "at", "by" and "due" before one are part of it):
+//! The phrases (any case; "on", "at", "by" and "due" before one are part of it, and in German
+//! "am" and "um" with "uhr" after a time):
 //! `today`, `tonight`, `tomorrow`; a weekday (`mon`, `friday`), optionally `next`; `next week`
 //! (its Monday), `this weekend` or `weekend` (its Saturday); `in 3 days`, `in a week`,
 //! `in 2 weeks`; a day of a month (`nov 2`, `2 november`, `the 1st`), the next one that has
 //! not passed; an ISO day (`2026-11-02`); a time (`9am`, `9:30`, `5:15pm`, `17:00`, `at 9`,
 //! `noon`, `midnight`). A time alone is today's when it is still to come, else tomorrow's.
+//!
+//! [`scan`] gives the phrases of a text and where they are, which is what an entry reads it
+//! for: the words it takes as when leave the title and show as a part of what will be added
+//! ([`crate::entry`]).
 
 use crate::calendar::{DAY, civil_from_days, day_text, days_from_civil, time_text};
+
+/// The language a text is typed in, as the person reads the workspace: the words a day, a month
+/// and a time are said in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Language {
+    /// `tomorrow`, `fri`, `next week`.
+    #[default]
+    English,
+    /// `morgen`, `am Fr`, `nächste woche`.
+    German,
+}
+
+impl Language {
+    /// The language of `locale` (`de`, `de-DE`, `de_DE.UTF-8`): German for a German locale,
+    /// English otherwise.
+    #[must_use]
+    pub fn of(locale: &str) -> Self {
+        if locale.to_lowercase().starts_with("de") {
+            Self::German
+        } else {
+            Self::English
+        }
+    }
+
+    fn weekdays(self) -> &'static [&'static [&'static str]; 7] {
+        match self {
+            Self::English => &EN_WEEKDAYS,
+            Self::German => &DE_WEEKDAYS,
+        }
+    }
+
+    fn months(self) -> &'static [&'static [&'static str]; 12] {
+        match self {
+            Self::English => &EN_MONTHS,
+            Self::German => &DE_MONTHS,
+        }
+    }
+
+    /// Words that may stand before a phrase and belong to it: "on friday", "due mon", "am Fr".
+    fn leads(self) -> &'static [&'static str] {
+        match self {
+            Self::English => &["on", "at", "by", "due"],
+            Self::German => &["am", "um", "bis"],
+        }
+    }
+
+    /// Words that say the phrase after them is a time: "at 9", "um 9 uhr".
+    fn time_leads(self) -> &'static [&'static str] {
+        match self {
+            Self::English => &["at"],
+            Self::German => &["um"],
+        }
+    }
+
+    /// Weekday names that are also words ("sat down", "sun cream"), so a day only after a lead
+    /// word or `next`. The short German names are all words too ("fr", "so").
+    fn wordlike(self) -> &'static [&'static str] {
+        match self {
+            Self::English => &["sat", "sun", "wed"],
+            Self::German => &["mo", "di", "mi", "do", "fr", "sa", "so"],
+        }
+    }
+
+    /// The short weekday names a day is labelled with, Monday first.
+    fn weekdays_short(self) -> &'static [&'static str; 7] {
+        match self {
+            Self::English => &["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+            Self::German => &["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"],
+        }
+    }
+
+    /// The short month names a day is labelled with.
+    fn months_short(self) -> &'static [&'static str; 12] {
+        match self {
+            Self::English => &[
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            ],
+            Self::German => &[
+                "Jan.", "Feb.", "März", "Apr.", "Mai", "Juni", "Juli", "Aug.", "Sept.", "Okt.",
+                "Nov.", "Dez.",
+            ],
+        }
+    }
+}
 
 /// What [`dated`] read from a text.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -23,7 +112,66 @@ pub struct Dated {
     pub at: Option<String>,
 }
 
-const WEEKDAYS: [&[&str]; 7] = [
+/// One word of a typed text: what it says, lowered and without the punctuation that ends it,
+/// and where it stands in the text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Word {
+    /// The word as it was typed.
+    pub raw: String,
+    /// The word as it is read: lowered, without a trailing `,`, `.` or `;`.
+    pub text: String,
+    /// Where it starts and ends in the text.
+    pub start: usize,
+    pub end: usize,
+}
+
+/// The words of `text`, in order.
+#[must_use]
+pub fn words(text: &str) -> Vec<Word> {
+    let mut out = Vec::new();
+    let mut start: Option<usize> = None;
+    for (at, c) in text.char_indices() {
+        if c.is_whitespace() {
+            if let Some(from) = start.take() {
+                push_word(&mut out, text, from, at);
+            }
+        } else if start.is_none() {
+            start = Some(at);
+        }
+    }
+    if let Some(from) = start {
+        push_word(&mut out, text, from, text.len());
+    }
+    out
+}
+
+/// The word `text` holds from `start` to `end`.
+fn push_word(out: &mut Vec<Word>, text: &str, start: usize, end: usize) {
+    let Some(raw) = text.get(start..end) else {
+        return;
+    };
+    out.push(Word {
+        raw: raw.to_owned(),
+        text: raw.trim_end_matches([',', '.', ';']).to_lowercase(),
+        start,
+        end,
+    });
+}
+
+/// A phrase that says when: the day it names, the time it names, and the words it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Phrase {
+    /// The day, in days since 1970-01-01.
+    pub day: Option<i64>,
+    /// The time of day, in minutes after midnight.
+    pub minutes: Option<i64>,
+    /// The word it starts at.
+    pub from: usize,
+    /// How many words it is, a lead word included.
+    pub words: usize,
+}
+
+const EN_WEEKDAYS: [&[&str]; 7] = [
     &["monday", "mon"],
     &["tuesday", "tue", "tues"],
     &["wednesday", "wed"],
@@ -33,7 +181,7 @@ const WEEKDAYS: [&[&str]; 7] = [
     &["sunday", "sun"],
 ];
 
-const MONTHS: [&[&str]; 12] = [
+const EN_MONTHS: [&[&str]; 12] = [
     &["january", "jan"],
     &["february", "feb"],
     &["march", "mar"],
@@ -48,27 +196,45 @@ const MONTHS: [&[&str]; 12] = [
     &["december", "dec"],
 ];
 
-/// Weekday names that are also words ("sat down", "sun cream"): a day only after a lead word
-/// or `next` ("on sat", "next sun").
-const WORDLIKE: &[&str] = &["sat", "sun", "wed"];
+const DE_WEEKDAYS: [&[&str]; 7] = [
+    &["montag", "mo"],
+    &["dienstag", "di"],
+    &["mittwoch", "mi"],
+    &["donnerstag", "do"],
+    &["freitag", "fr"],
+    &["samstag", "sa"],
+    &["sonntag", "so"],
+];
 
-/// Words that may stand before a phrase and belong to it: "on friday", "at 9", "due mon".
-const LEADS: &[&str] = &["on", "at", "by", "due"];
+const DE_MONTHS: [&[&str]; 12] = [
+    &["januar", "jan"],
+    &["februar", "feb"],
+    &["märz", "maerz", "mrz", "mar"],
+    &["april", "apr"],
+    &["mai"],
+    &["juni", "jun"],
+    &["juli", "jul"],
+    &["august", "aug"],
+    &["september", "sep", "sept"],
+    &["oktober", "okt"],
+    &["november", "nov"],
+    &["dezember", "dez"],
+];
 
 /// The weekday (0 Monday) of a day since 1970-01-01, a Thursday.
 fn weekday(days: i64) -> i64 {
     (days + 3).rem_euclid(7)
 }
 
-fn weekday_of(word: &str) -> Option<i64> {
-    WEEKDAYS
+fn weekday_of(word: &str, lang: Language) -> Option<i64> {
+    lang.weekdays()
         .iter()
         .position(|names| names.contains(&word))
         .and_then(|i| i64::try_from(i).ok())
 }
 
-fn month_of(word: &str) -> Option<i64> {
-    MONTHS
+fn month_of(word: &str, lang: Language) -> Option<i64> {
+    lang.months()
         .iter()
         .position(|names| names.contains(&word))
         .and_then(|i| i64::try_from(i + 1).ok())
@@ -87,11 +253,11 @@ fn day_of_month(word: &str) -> Option<i64> {
 }
 
 /// `9am`, `9:30`, `5:15pm`, `17:00`, `noon`, `midnight`: minutes after midnight. A bare number
-/// is a time only after `at` (`at 9`), which `bare` says.
+/// is a time only after a lead (`at 9`, `um 9`), which `bare` says.
 fn time_of(word: &str, next: Option<&str>, bare: bool) -> Option<(i64, usize)> {
     match word {
-        "noon" | "midday" => return Some((12 * 60, 1)),
-        "midnight" => return Some((0, 1)),
+        "noon" | "midday" | "mittag" => return Some((12 * 60, 1)),
+        "midnight" | "mitternacht" => return Some((0, 1)),
         _ => {}
     }
     let (body, suffix, used) = if let Some(b) = word.strip_suffix("am") {
@@ -132,10 +298,10 @@ struct Found {
     words: usize,
 }
 
-/// The phrase starting at `words[i]`, read on the day `today` (days since 1970); `led` when a
+/// The phrase starting at `texts[i]`, read on the day `today` (days since 1970); `led` when a
 /// lead word stands before it.
-fn phrase_at(words: &[String], i: usize, today: i64, led: bool) -> Option<Found> {
-    let w = |k: usize| words.get(i + k).map(String::as_str);
+fn phrase_at(texts: &[&str], i: usize, today: i64, led: bool, lang: Language) -> Option<Found> {
+    let w = |k: usize| texts.get(i + k).copied();
     let first = w(0)?;
     let day = |d: i64, n: usize| {
         Some(Found {
@@ -144,8 +310,16 @@ fn phrase_at(words: &[String], i: usize, today: i64, led: bool) -> Option<Found>
             words: n,
         })
     };
+    // "heute abend" before "heute": the evening is the time, not a second phrase.
+    if first == "heute" && w(1) == Some("abend") {
+        return Some(Found {
+            day: Some(today),
+            minutes: Some(20 * 60),
+            words: 2,
+        });
+    }
     match first {
-        "today" => return day(today, 1),
+        "today" | "heute" => return day(today, 1),
         "tonight" => {
             return Some(Found {
                 day: Some(today),
@@ -153,37 +327,42 @@ fn phrase_at(words: &[String], i: usize, today: i64, led: bool) -> Option<Found>
                 words: 1,
             });
         }
-        "tomorrow" | "tmrw" | "tmr" => return day(today + 1, 1),
-        "weekend" => return day(today + (5 - weekday(today)).rem_euclid(7), 1),
+        "tomorrow" | "tmrw" | "tmr" | "morgen" => return day(today + 1, 1),
+        "übermorgen" | "uebermorgen" => return day(today + 2, 1),
+        "weekend" | "wochenende" => return day(today + (5 - weekday(today)).rem_euclid(7), 1),
         _ => {}
     }
     if first == "this" && w(1) == Some("weekend") {
         return day(today + (5 - weekday(today)).rem_euclid(7), 2);
     }
-    if first == "next" {
-        if w(1) == Some("week") {
+    if first == "next" || matches!(first, "nächste" | "nächsten" | "naechste" | "naechsten") {
+        let week = match first {
+            "next" => "week",
+            _ => "woche",
+        };
+        if w(1) == Some(week) {
             return day(today + 7 - weekday(today), 2);
         }
-        if let Some(wd) = w(1).and_then(weekday_of) {
+        if let Some(wd) = w(1).and_then(|x| weekday_of(x, lang)) {
             let ahead = (wd - weekday(today)).rem_euclid(7);
             return day(today + if ahead == 0 { 7 } else { ahead }, 2);
         }
     }
-    if let Some(wd) = weekday_of(first).filter(|_| led || !WORDLIKE.contains(&first)) {
+    if let Some(wd) = weekday_of(first, lang).filter(|_| led || !lang.wordlike().contains(&first)) {
         let ahead = (wd - weekday(today)).rem_euclid(7);
         return day(today + if ahead == 0 { 7 } else { ahead }, 1);
     }
     if first == "in" {
         let n = match w(1)? {
-            "a" | "an" | "one" => 1,
+            "a" | "an" | "one" | "einer" | "eine" | "einem" => 1,
             other => other
                 .parse::<i64>()
                 .ok()
                 .filter(|n| (1..=999).contains(n))?,
         };
         let per = match w(2)? {
-            "day" | "days" => 1,
-            "week" | "weeks" => 7,
+            "day" | "days" | "tag" | "tagen" => 1,
+            "week" | "weeks" | "woche" | "wochen" => 7,
             _ => return None,
         };
         return day(today + n * per, 3);
@@ -221,13 +400,13 @@ fn phrase_at(words: &[String], i: usize, today: i64, led: bool) -> Option<Found>
             }
         }
     };
-    if let Some(m) = month_of(first)
+    if let Some(m) = month_of(first, lang)
         && let Some(d) = w(1).and_then(day_of_month)
     {
         return day(upcoming(Some(m), d), 2);
     }
     if let Some(d) = day_of_month(first)
-        && let Some(m) = w(1).and_then(month_of)
+        && let Some(m) = w(1).and_then(|x| month_of(x, lang))
     {
         return day(upcoming(Some(m), d), 2);
     }
@@ -240,93 +419,173 @@ fn phrase_at(words: &[String], i: usize, today: i64, led: bool) -> Option<Found>
     None
 }
 
-/// The time phrase starting at `words[i]`: `9am`, `9 am`, `at 9`, `noon`.
-fn time_at(words: &[String], i: usize) -> Option<(i64, usize)> {
-    let first = words.get(i)?;
-    let next = words.get(i + 1).map(String::as_str);
-    if first == "at"
-        && let Some(word) = next
-    {
-        let after = words.get(i + 2).map(String::as_str);
-        return time_of(word, after, true).map(|(m, n)| (m, n + 1));
+/// The time phrase starting at `texts[i]`: `9am`, `9 am`, `at 9`, `noon`, `um 9 uhr`.
+fn time_at(texts: &[&str], i: usize, lang: Language) -> Option<(i64, usize)> {
+    let first = texts.get(i)?;
+    let next = texts.get(i + 1).copied();
+    // "at 9", "um 9 uhr": the lead word stands before a bare hour, which it makes a time.
+    if lang.time_leads().contains(first) {
+        let word = next?;
+        let after = texts.get(i + 2).copied();
+        let (m, n) = time_of(word, after, true)?;
+        let n = n + usize::from(lang == Language::German && texts.get(i + 1 + n) == Some(&"uhr"));
+        return Some((m, n + 1));
     }
-    time_of(first, next, false)
+    let (m, n) = match time_of(first, next, false) {
+        Some(found) => found,
+        // "10 uhr": the hour is a bare number, which "uhr" makes a time.
+        None if lang == Language::German && next == Some("uhr") => time_of(first, None, true)?,
+        None => return None,
+    };
+    let n = n + usize::from(lang == Language::German && texts.get(i + n) == Some(&"uhr"));
+    Some((m, n))
 }
 
-/// Reads when `text` says something is due, typed at `now` (seconds since 1970, UTC) by
-/// someone whose clock is `offset` seconds ahead of UTC.
+/// The phrases of `words` that say when, read on the day `today`.
 #[must_use]
-pub fn dated(text: &str, now: i64, offset: i64) -> Dated {
-    let local = now.saturating_add(offset);
-    let today = local.div_euclid(DAY);
-    let original: Vec<&str> = text.split_whitespace().collect();
-    let words: Vec<String> = original
-        .iter()
-        .map(|w| w.trim_end_matches([',', '.', ';']).to_lowercase())
-        .collect();
-    let mut used = vec![false; words.len()];
-    let mut day = None;
-    let mut minutes = None;
+pub fn scan(words: &[Word], today: i64, lang: Language) -> Vec<Phrase> {
+    let texts: Vec<&str> = words.iter().map(|w| w.text.as_str()).collect();
+    let mut out = Vec::new();
     let mut i = 0;
-    while i < words.len() {
-        // A lead word belongs to the phrase after it: "on friday", "due tomorrow".
-        let lead = usize::from(LEADS.contains(&words[i].as_str()) && words[i] != "at");
-        if day.is_none()
-            && let Some(found) = phrase_at(&words, i + lead, today, lead == 1)
-        {
-            day = found.day;
-            minutes = minutes.or(found.minutes);
-            let n = lead + found.words;
-            used[i..i + n].iter_mut().for_each(|u| *u = true);
-            i += n;
+    while i < texts.len() {
+        // A lead word belongs to the phrase after it ("on friday"), except the one a time takes
+        // itself ("at 9"), which the time reader reads with the word after it.
+        let lead =
+            usize::from(lang.leads().contains(&texts[i]) && !lang.time_leads().contains(&texts[i]));
+        if let Some(found) = phrase_at(&texts, i + lead, today, lead == 1, lang) {
+            out.push(Phrase {
+                day: found.day,
+                minutes: found.minutes,
+                from: i,
+                words: lead + found.words,
+            });
+            i += lead + found.words;
             continue;
         }
-        if minutes.is_none()
-            && let Some((m, n)) = time_at(&words, i + lead)
-        {
-            minutes = Some(m);
-            let n = lead + n;
-            used[i..i + n].iter_mut().for_each(|u| *u = true);
-            i += n;
+        if let Some((minutes, n)) = time_at(&texts, i + lead, lang) {
+            out.push(Phrase {
+                day: None,
+                minutes: Some(minutes),
+                from: i,
+                words: lead + n,
+            });
+            i += lead + n;
             continue;
         }
         i += 1;
     }
+    out
+}
+
+/// What a text says about when, before it is a value: the words no phrase took, the day it
+/// named and the time of day it named — a day as days since 1970-01-01, and a time of day as
+/// minutes after midnight, in the zone it was read in.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct When {
+    /// The text without the phrase that said when, its spaces tidied.
+    pub text: String,
+    /// The day it named, when it named one.
+    pub day: Option<i64>,
+    /// The time of day it named, when it named one.
+    pub minutes: Option<i64>,
+}
+
+/// Reads when `text` says something is due, said on the day `today` (days since 1970-01-01) at
+/// `second_of_day` seconds into that day, in `lang`.
+#[must_use]
+pub fn when(text: &str, today: i64, second_of_day: i64, lang: Language) -> When {
+    let words = words(text);
+    let phrases = scan(&words, today, lang);
+    let mut used = vec![false; words.len()];
+    let mut day = None;
+    let mut minutes = None;
+    for phrase in &phrases {
+        if (day.is_none() && phrase.day.is_some())
+            || (minutes.is_none() && phrase.minutes.is_some())
+        {
+            day = day.or(phrase.day);
+            minutes = minutes.or(phrase.minutes);
+            used[phrase.from..phrase.from + phrase.words]
+                .iter_mut()
+                .for_each(|u| *u = true);
+        }
+    }
     // A time alone is today's while it is still to come, else tomorrow's.
     let day = day.or_else(|| {
         minutes.map(|m| {
-            if m * 60 > local.rem_euclid(DAY) {
+            if m * 60 > second_of_day {
                 today
             } else {
                 today + 1
             }
         })
     });
-    let at = match (day, minutes) {
-        (Some(d), Some(m)) => Some(time_text(d * DAY + m * 60 - offset)),
-        _ => None,
-    };
-    let rest: Vec<&str> = original
+    let rest: Vec<&str> = words
         .iter()
         .zip(&used)
         .filter(|(_, used)| !**used)
-        .map(|(w, _)| *w)
+        .map(|(w, _)| w.raw.as_str())
         .collect();
     let text = if rest.is_empty() {
         text.trim().to_owned()
     } else {
         rest.join(" ")
     };
+    When { text, day, minutes }
+}
+
+/// Reads when `text` says something is due, typed at `now` (seconds since 1970, UTC) by
+/// someone whose clock is `offset` seconds ahead of UTC, typing in `lang`.
+#[must_use]
+pub fn dated_lang(text: &str, now: i64, offset: i64, lang: Language) -> Dated {
+    let local = now.saturating_add(offset);
+    let read = when(text, local.div_euclid(DAY), local.rem_euclid(DAY), lang);
+    let at = match (read.day, read.minutes) {
+        (Some(d), Some(m)) => Some(time_text(d * DAY + m * 60 - offset)),
+        _ => None,
+    };
     Dated {
-        text,
-        day: day.map(day_text),
+        text: read.text,
+        day: read.day.map(day_text),
         at,
+    }
+}
+
+/// [`dated_lang`] in English.
+#[must_use]
+pub fn dated(text: &str, now: i64, offset: i64) -> Dated {
+    dated_lang(text, now, offset, Language::English)
+}
+
+/// The day `days` as a person reads it in `lang`, standing at `today`: "Today", "Tomorrow",
+/// else the weekday and the day ("Fri 30 Oct", "Fr 30. Okt").
+#[must_use]
+pub fn day_label(days: i64, today: i64, lang: Language) -> String {
+    match days - today {
+        0 => match lang {
+            Language::English => "Today".to_owned(),
+            Language::German => "Heute".to_owned(),
+        },
+        1 => match lang {
+            Language::English => "Tomorrow".to_owned(),
+            Language::German => "Morgen".to_owned(),
+        },
+        _ => {
+            let (_, month, day) = civil_from_days(days);
+            let weekday = usize::try_from(weekday(days)).unwrap_or(0);
+            let name = lang.weekdays_short()[weekday];
+            let month = lang.months_short()[usize::try_from(month - 1).unwrap_or(0)];
+            match lang {
+                Language::English => format!("{name} {day} {month}"),
+                Language::German => format!("{name} {day}. {month}"),
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Dated, dated};
+    use super::{Dated, Language, dated, dated_lang};
 
     /// Thursday 2026-10-29, 08:00 in Berlin (UTC+1).
     const NOW: i64 = 1_793_257_200;
@@ -422,5 +681,57 @@ mod tests {
             "tomorrow",
             "an entry that is only a date keeps it"
         );
+    }
+
+    /// A German workspace reads the days and times it wrote.
+    #[test]
+    fn german_says_the_same_days_in_its_own_words() {
+        let de = |text: &str| {
+            let Dated { text, day, at } = dated_lang(text, NOW, BERLIN, Language::German);
+            (text, day, at)
+        };
+        assert_eq!(
+            de("Vermieter anrufen morgen 10 uhr"),
+            (
+                "Vermieter anrufen".into(),
+                Some("2026-10-30".into()),
+                Some("2026-10-30T09:00:00Z".into())
+            )
+        );
+        assert_eq!(
+            de("Umzug am Fr um 9"),
+            (
+                "Umzug".into(),
+                Some("2026-10-30".into()),
+                Some("2026-10-30T08:00:00Z".into())
+            )
+        );
+        assert_eq!(
+            de("Miete übermorgen"),
+            ("Miete".into(), Some("2026-10-31".into()), None)
+        );
+        assert_eq!(
+            de("Wohnung nächste woche"),
+            ("Wohnung".into(), Some("2026-11-02".into()), None)
+        );
+        assert_eq!(
+            de("Termin 3. dezember"),
+            ("Termin".into(), Some("2026-12-03".into()), None)
+        );
+        assert_eq!(
+            de("Kaffee"),
+            ("Kaffee".into(), None, None),
+            "nothing said when"
+        );
+    }
+
+    #[test]
+    fn a_day_reads_as_the_person_says_it() {
+        use super::day_label;
+        assert_eq!(day_label(20_755, 20_755, Language::English), "Today");
+        assert_eq!(day_label(20_756, 20_755, Language::English), "Tomorrow");
+        assert_eq!(day_label(20_757, 20_755, Language::English), "Sat 31 Oct");
+        assert_eq!(day_label(20_755, 20_755, Language::German), "Heute");
+        assert_eq!(day_label(20_757, 20_755, Language::German), "Sa 31. Okt.");
     }
 }

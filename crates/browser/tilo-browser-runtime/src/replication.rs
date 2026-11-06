@@ -397,7 +397,7 @@ pub(crate) enum Kept {
     /// In the person's profile, with everything else of theirs.
     InProfile,
     /// Only in the page, for as long as it is open: a peer kept in no
-    /// profile (a watching page's). Its mounts keep their records there too.
+    /// profile (a page's). Its mounts keep their records there too.
     InPage,
 }
 
@@ -435,7 +435,7 @@ pub(crate) fn committed_record(
 /// The peer replicates no workspace, or its session is gone.
 pub(crate) fn host_then(
     id: u32,
-    request: impl FnOnce(&str) -> tilo_relay_protocol::rooms::RoomsRequest,
+    request: impl FnOnce(&str) -> tilo_relay_protocol::workspaces::WorkspacesRequest,
     done: tilo_browser_peer::RoomsCompletion,
 ) -> Result<(), String> {
     let joined = replica_of(id).ok_or("this page joined no workspace")?;
@@ -475,7 +475,6 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
             shared
                 .own_layout
                 .set(joined.desktop_sending == DesktopSending::KeptOwn);
-            shared.watching.set(joined.peer.watching());
             shared.members.replace(joined.members.clone());
             joined.moderates = Arc::clone(&shared.moderates);
             joined.standing.share(&shared.standing);
@@ -598,15 +597,15 @@ impl Joined {
             let standing = self.standing.clone();
             let due = Arc::clone(&self.moderation_due_ms);
             let wake = wake.clone();
-            let request = tilo_relay_protocol::rooms::RoomsRequest::Permits {
-                room: self.uuid.clone(),
+            let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Permits {
+                workspace: self.uuid.clone(),
                 node: node.to_string(),
             };
             if let Err(error) = self.peer.rooms_then(
                 request,
                 Box::new(move |answer| {
                     let may = match &answer {
-                        Ok(tilo_relay_protocol::rooms::RoomsReply::Permits(may)) => *may,
+                        Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
                         Ok(other) => {
                             warn(&format!(
                                 "the workspace did not say what this page may do: {other:?}"
@@ -678,14 +677,16 @@ impl Joined {
                 .values()
                 .map(|mounted| Arc::clone(&mounted.attachment.notify))
                 .collect();
-            let request = tilo_relay_protocol::rooms::RoomsRequest::Permits {
-                room: self.uuid.clone(),
+            let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Permits {
+                workspace: self.uuid.clone(),
                 node: node.clone(),
             };
             if let Err(error) = self.peer.rooms_then(
                 request,
                 Box::new(move |answer| {
-                    if let Ok(tilo_relay_protocol::rooms::RoomsReply::Permits(may)) = answer {
+                    if let Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) =
+                        answer
+                    {
                         answers
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
@@ -843,7 +844,7 @@ impl Joined {
                     self.moderation_due_ms.store(0, Ordering::Relaxed);
                     self.follow_layout(&mut woken);
                 }
-                PeerEvent::RoomLayout { .. } => self.follow_layout(&mut woken),
+                PeerEvent::WorkspaceLayout { .. } => self.follow_layout(&mut woken),
                 PeerEvent::CompactionRequested { route, request }
                     if route.cluster_id == self.uuid =>
                 {

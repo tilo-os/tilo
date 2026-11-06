@@ -151,6 +151,13 @@ pub struct Text {
     renderer_epoch: Option<std::sync::Arc<()>>,
     observed_renderer_text_scale: f32,
     heading_level: Option<u8>,
+    /// The most lines it takes: what does not fit is elided at the last of
+    /// them, so a clamp holds however long the words are.
+    max_lines: Option<u32>,
+    /// It elides at the room it is given instead of wrapping wider: it never
+    /// holds its longest word's width, so a title in a narrow card ends in an
+    /// ellipsis rather than standing the card up.
+    truncate: bool,
     /// Announce changes to this text without moving keyboard focus. Static
     /// copy leaves this unset; status and error text opt in explicitly.
     live: Option<crate::a11y::Politeness>,
@@ -221,6 +228,8 @@ impl Text {
             renderer_epoch: None,
             observed_renderer_text_scale: 1.0,
             heading_level: None,
+            max_lines: None,
+            truncate: false,
             live: None,
             layout_engine: None,
             engine_revision: 0,
@@ -760,6 +769,63 @@ impl Text {
         self.modify(|m| m.layered = m.layered.clone().with_fragmentation(orphans, widows))
     }
 
+    /// Let it take at most `lines` lines, eliding at the last of them what does not fit: a
+    /// card's title is one line, the caption under it two. `None` wraps to as many as the
+    /// width needs. A clamp may elide inside a word, so the text holds no longer than the room
+    /// the last line has.
+    #[must_use]
+    pub fn with_lines(mut self, lines: Option<u32>) -> Self {
+        self.set_lines(lines);
+        self
+    }
+
+    /// Elide it at the room it is given rather than wrap wider: it never holds its longest
+    /// word's width, so its box may shrink to nothing and what does not fit ends in a
+    /// [`ELLIPSIS`](crate::text_render::ELLIPSIS). One line, unless [`Self::with_lines`] says
+    /// how many.
+    #[must_use]
+    pub fn with_truncate(mut self, truncate: bool) -> Self {
+        if self.truncate != truncate {
+            self.truncate = truncate;
+            self.dirty = true;
+            self.layout_dirty = true;
+            self.prepared_input = None;
+        }
+        self
+    }
+
+    /// Take at most `lines` lines, `None` or `0` for as many as the width needs.
+    pub fn set_lines(&mut self, lines: Option<u32>) {
+        let lines = lines.filter(|lines| *lines > 0);
+        if self.max_lines != lines {
+            self.max_lines = lines;
+            self.dirty = true;
+            self.layout_dirty = true;
+            self.prepared_input = None;
+        }
+    }
+
+    /// The most lines it takes, `None` for as many as its width needs.
+    #[must_use]
+    pub fn max_lines(&self) -> Option<u32> {
+        self.max_lines
+    }
+
+    /// Whether it elides at the room it is given instead of wrapping wider.
+    #[must_use]
+    pub fn truncates(&self) -> bool {
+        self.truncate
+    }
+
+    /// The most lines it takes: `lines`, one for a text that only truncates, and `None` for
+    /// one that wraps as far as its words need.
+    fn elided_lines(&self) -> Option<usize> {
+        self.max_lines
+            .or(self.truncate.then_some(1))
+            .filter(|_| self.layout_engine.is_none())
+            .and_then(|lines| usize::try_from(lines).ok())
+    }
+
     /// Mutate the font-family override after construction. `None` restores
     /// the role's family.
     pub fn set_font_family(&mut self, family: Option<FontChoice>) {
@@ -991,6 +1057,30 @@ impl Widget for Text {
             }
         };
 
+        if let Some(lines) = self.elided_lines() {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "a text elides at a handful of lines, exact in f32"
+            )]
+            let clamp = lines as f32 * self.style.line_height_px_at(text_renderer.text_scale());
+            // A truncating text gives up its longest word: it takes the room it is given and
+            // no more, so a parent may shrink it to nothing and it ends in an ellipsis.
+            let width = if self.truncate
+                && known_dimensions.width.is_none()
+                && matches!(available_space.width, taffy::AvailableSpace::MinContent)
+            {
+                0.0
+            } else {
+                // Tiny epsilon on width so rounding in Row/Column doesn't read the
+                // text as "just a bit too big" and wrap it unnecessarily.
+                w + 0.1
+            };
+            return taffy::Size {
+                width,
+                height: h.min(clamp),
+            };
+        }
+
         // Tiny epsilon on width so rounding in Row/Column doesn't read the
         // text as "just a bit too big" and wrap it unnecessarily.
         taffy::Size {
@@ -1043,6 +1133,9 @@ impl Widget for Text {
         }
         if self.dirty || self.face.is_empty() {
             let input = self.renderer_input();
+            let elided = self
+                .elided_lines()
+                .map(|lines| (lines, self.resolved_label(), self.style.clone()));
             let cached = self.face.repaint(self.rect);
             #[allow(
                 clippy::cast_possible_truncation,
@@ -1058,34 +1151,61 @@ impl Widget for Text {
                 )]
                 max_height: Some(self.rect.height() as f32),
             };
-            match input {
-                RendererInput::Prepared(input) => text_renderer.draw_prepared(
-                    cached,
-                    &input,
-                    color,
-                    origin,
-                    constraints.max_width,
-                ),
-                RendererInput::Owned(label, style) => {
-                    if let Some(engine) = self.layout_engine.as_deref_mut() {
-                        engine.draw(
-                            text_renderer,
-                            cached,
-                            &label,
-                            constraints,
-                            &style,
-                            color,
-                            origin,
-                        );
-                    } else {
-                        text_renderer.draw_style(
-                            cached,
-                            &label,
-                            color,
-                            origin,
-                            constraints.max_width,
-                            &style,
-                        );
+            if let Some((lines, label, style)) = elided {
+                // What it says, wrapped into the lines it takes and elided at the last one:
+                // each kept line stands whole, one line box below the one before.
+                let line = f64::from(style.line_height_px_at(text_renderer.text_scale()));
+                let shown = text_renderer.clamp_to_lines_style(
+                    &label,
+                    constraints.max_width.unwrap_or(0.0),
+                    lines,
+                    &style,
+                );
+                for (index, said) in shown.iter().enumerate() {
+                    #[allow(
+                        clippy::cast_precision_loss,
+                        reason = "a text elides at a handful of lines, exact in f64"
+                    )]
+                    let top = self.rect.y0 + index as f64 * line;
+                    text_renderer.draw_style(
+                        cached,
+                        said,
+                        color,
+                        Affine::translate((self.rect.x0, top)),
+                        constraints.max_width,
+                        &style,
+                    );
+                }
+            } else {
+                match input {
+                    RendererInput::Prepared(input) => text_renderer.draw_prepared(
+                        cached,
+                        &input,
+                        color,
+                        origin,
+                        constraints.max_width,
+                    ),
+                    RendererInput::Owned(label, style) => {
+                        if let Some(engine) = self.layout_engine.as_deref_mut() {
+                            engine.draw(
+                                text_renderer,
+                                cached,
+                                &label,
+                                constraints,
+                                &style,
+                                color,
+                                origin,
+                            );
+                        } else {
+                            text_renderer.draw_style(
+                                cached,
+                                &label,
+                                color,
+                                origin,
+                                constraints.max_width,
+                                &style,
+                            );
+                        }
                     }
                 }
             }
@@ -1178,6 +1298,154 @@ impl crate::permissions::capability::PermissionGated for Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lay `w` out on its own in `width`, as a card gives a title the width of its column.
+    fn lay_out_at(w: &mut dyn Widget, width: f32) -> TextRenderer {
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+            std::collections::HashMap::new();
+        let mut renderer = TextRenderer::new();
+        let node = w.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                |known, available, id, _, _| {
+                    node_map.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
+                        (*p).measure(known, available, &mut renderer)
+                    })
+                },
+            )
+            .unwrap();
+        w.apply_layout(&taffy, node, Point::ZERO);
+        renderer
+    }
+
+    /// What `w` paints, as the id of the last glyph of each glyph run: its last line.
+    fn drawn_glyph_runs(w: &mut dyn Widget, renderer: &mut TextRenderer) -> Vec<u32> {
+        let mut scene = Scene::new();
+        w.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            renderer,
+            &Theme::dark(),
+            &crate::presence::PresenceCtx::default(),
+        );
+        let encoding = scene.encoding();
+        encoding
+            .resources
+            .glyph_runs
+            .iter()
+            .filter_map(|run| {
+                run.glyphs
+                    .end
+                    .checked_sub(1)
+                    .and_then(|last| encoding.resources.glyphs.get(last))
+                    .map(|glyph| glyph.id)
+            })
+            .collect()
+    }
+
+    /// The id of the glyph [`crate::text_render::ELLIPSIS`] is set as, in `style`.
+    fn ellipsis_glyph(renderer: &mut TextRenderer, style: &TextStyle) -> u32 {
+        let mut scene = Scene::new();
+        renderer.draw_style(
+            &mut scene,
+            &crate::text_render::ELLIPSIS.to_string(),
+            vello::peniko::Color::WHITE,
+            Affine::IDENTITY,
+            None,
+            style,
+        );
+        scene.encoding().resources.glyphs[0].id
+    }
+
+    /// A truncating text takes the room it is given and no more, however long its longest
+    /// word: it ends in an ellipsis on one line, and a parent may shrink it to nothing.
+    #[test]
+    fn a_truncating_text_measures_to_its_box_and_ends_in_an_ellipsis() {
+        let said = "Quarterly planning review with the whole team";
+        let box_width = 90.0;
+        let mut text = Text::new(said).with_truncate(true);
+        assert!(
+            TextRenderer::new()
+                .measure_style(said, None, text.text_style())
+                .0
+                > box_width * 2.0,
+            "the text is longer than its box"
+        );
+        let mut renderer = lay_out_at(&mut text, box_width);
+        let rect = text.get_rect();
+        assert!(
+            rect.width() <= f64::from(box_width) + 0.1,
+            "it takes its box ({}) and no more: {rect:?}",
+            box_width
+        );
+        let line = f64::from(text.text_style().line_height_px_at(renderer.text_scale()));
+        assert!(
+            rect.height() <= line + 0.5,
+            "it stands one line tall ({line}), not {}: {rect:?}",
+            rect.height()
+        );
+        let style = text.text_style().clone();
+        let last = drawn_glyph_runs(&mut text, &mut renderer);
+        assert_eq!(last.len(), 1, "one line is painted: {last:?}");
+        assert_eq!(
+            last[0],
+            ellipsis_glyph(&mut renderer, &style),
+            "the line ends in an ellipsis"
+        );
+        let free = Widget::measure(
+            &mut Text::new(said).with_truncate(true),
+            taffy::Size {
+                width: None,
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::MinContent,
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut renderer,
+        );
+        assert!(
+            free.width < 1.0,
+            "a truncating text's width holds no word: {free:?}"
+        );
+    }
+
+    /// `lines` holds the text to that many, eliding what its words would have run on to.
+    #[test]
+    fn lines_clamps_a_text_at_that_many_lines() {
+        let said = "Review the launch announcement, compact navigation, translated labels, and \
+                    the final release checklist";
+        let box_width = 140.0;
+        let mut text = Text::new(said).with_lines(Some(2));
+        let mut renderer = lay_out_at(&mut text, box_width);
+        let style = text.text_style().clone();
+        let line = f64::from(style.line_height_px_at(renderer.text_scale()));
+        let rect = text.get_rect();
+        assert!(
+            rect.height() <= 2.0 * line + 0.5,
+            "two lines hold it ({line} each), not {}: {rect:?}",
+            rect.height()
+        );
+        assert!(
+            rect.width() <= f64::from(box_width) + 0.1,
+            "it takes its box ({}) and no more: {rect:?}",
+            box_width
+        );
+        let painted = drawn_glyph_runs(&mut text, &mut renderer);
+        assert_eq!(painted.len(), 2, "two lines are painted: {painted:?}");
+        assert_eq!(
+            painted[1],
+            ellipsis_glyph(&mut renderer, &style),
+            "the second line ends in an ellipsis"
+        );
+    }
 
     #[test]
     fn centered_text_top_splits_measured_slack() {

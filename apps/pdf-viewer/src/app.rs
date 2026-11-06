@@ -1431,7 +1431,6 @@ impl PdfApp {
             self.read_only = read_only;
             // Allowed to write now, the record gets what opening it adds.
             self.seed_pending |= !read_only;
-            self.dirty = true;
         }
     }
 
@@ -5532,7 +5531,6 @@ impl Widget for PdfApp {
     ) {
         if self.interaction != environment {
             self.interaction = environment;
-            self.dirty = true;
         }
     }
 
@@ -5552,7 +5550,6 @@ impl Widget for PdfApp {
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.reduce_motion = reduced;
-        self.dirty = true;
     }
 
     fn mark_drawn(&mut self) {

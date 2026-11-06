@@ -89,7 +89,7 @@ impl PeerGovernance<'_> {
         })
     }
 
-    /// The member devices that may read `channel`, one of the workspace's record
+    /// The devices that may read `channel`, one of the workspace's record
     /// channels, at `now`: the projection of the workspace's membership a
     /// channel's MLS group follows. `route` is the channel's record when the
     /// caller knows it ([`Self::withheld_record_readers`]). `None` when
@@ -105,7 +105,6 @@ impl PeerGovernance<'_> {
         channel: collab_types::ChannelId,
         route: Option<&collab_types::ChannelRoute>,
     ) -> Result<Option<BTreeSet<[u8; 32]>>, String> {
-        let access = self.peer.governance().governed_access(now)?;
         let routes: Vec<collab_types::ChannelRoute> = route.cloned().into_iter().collect();
         let readers = self
             .peer
@@ -115,8 +114,8 @@ impl PeerGovernance<'_> {
             return Ok(None);
         };
         Ok(Some(
-            access
-                .member_devices
+            readers
+                .readers
                 .into_iter()
                 .filter(|device| !withheld.contains(device))
                 .collect(),
@@ -142,6 +141,7 @@ impl PeerGovernance<'_> {
     /// ([`collab_types::member_record`]); its id does not say whose. So
     /// [`RecordReaders::unrouted`] lists every member device: such a channel
     /// admits no one until a device names its record.
+    ///
     pub fn withheld_record_readers(
         self,
         now: SystemTime,
@@ -178,8 +178,8 @@ impl PeerGovernance<'_> {
         );
         let mut withheld = std::collections::HashMap::new();
         for (app, record) in records {
-            // Only a grant below the workspace, or a member's own record (read by
-            // that person alone), can decide a record otherwise than the
+            // Only a grant below the workspace or a member's own record (read
+            // by that person alone) can decide a record otherwise than the
             // workspace: a record neither covers is read by every member.
             let node = collab_types::document_node(workspace, app, record);
             let covered = collab_types::member_record(record).is_some()
@@ -197,8 +197,16 @@ impl PeerGovernance<'_> {
                 devices,
             );
         }
-        let unrouted = access.member_devices.iter().copied().collect();
-        Ok(RecordReaders { withheld, unrouted })
+        // Every channel whose record the node cannot name may be any record, a
+        // member's own included: no device is admitted to it until a device
+        // names its record.
+        let readers: BTreeSet<[u8; 32]> = access.member_devices.iter().copied().collect();
+        let unrouted = readers.clone();
+        Ok(RecordReaders {
+            readers,
+            withheld,
+            unrouted,
+        })
     }
 
     /// The workspace's people and grants as its governance records them: its
@@ -331,15 +339,19 @@ impl PeerGovernance<'_> {
             now_ns(now),
         )
     }
-    /// Check a verified membership refresh against current governance.
-    pub fn verify_member_refresh(
+    /// The role a member's device that proved `membership` holds now, as the
+    /// answer to it names it: the person's role in the workspace, which is
+    /// what the device takes part as. A device of the workspace's owner holds
+    /// the workspace as its owner, and an answer names the strongest
+    /// collaborator role for it: a member's answer carries a role, never the
+    /// owner's authority, which governance alone decides.
+    pub fn member_role(
         self,
         membership: &crate::join::VerifiedMembership,
         now: SystemTime,
     ) -> Result<crate::join::MemberRole, String> {
         let role = self.peer.current_membership_role(membership, now)?;
-        member_role_from_role(role)
-            .ok_or_else(|| "structural owner does not use collaborator refresh".into())
+        Ok(member_role_from_role(role).unwrap_or(crate::join::MemberRole::Moderator))
     }
 }
 impl PeerGovernanceMut<'_> {
@@ -461,6 +473,7 @@ impl PeerGovernanceMut<'_> {
         }
         if let Some(old) = self.peer.core.certificates.get(&cert.device_public_key)
             && old.as_ref() != cert
+            && !super::supersedes(old.as_ref(), cert)
         {
             return Err("certificate conflict".into());
         }
@@ -546,6 +559,7 @@ impl PeerGovernanceMut<'_> {
             admission: None,
             admissions: Vec::new(),
             delegate: None,
+            workspace_delegations: Vec::new(),
         };
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
@@ -572,6 +586,96 @@ impl PeerGovernanceMut<'_> {
         )?;
         Ok(outcome.changed || outcome.metadata_changed)
     }
+    /// Take out of the workspace's governance every device row whose
+    /// certificate has expired: a device whose certificate no longer verifies
+    /// is no member device any more ([`Self::governed_access`] leaves it out),
+    /// so the row it left keeps nobody reading. A page's device certificate
+    /// lasts an hour and a page opens a fresh one on every load, so this is
+    /// what keeps a workspace that many people visit from keeping a row per
+    /// visit. Rows that record an admission, a delegation or a revocation
+    /// stay: a person's member devices are the workspace's for as long as the
+    /// person is. Whether the workspace changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, a row does not
+    /// read back, or governance cannot be updated.
+    pub fn forget_expired_devices(self, key: &SigningKey, now: SystemTime) -> Result<bool, String> {
+        self.peer.require_governance_writer(key, now)?;
+        let Some(doc) = self
+            .peer
+            .core
+            .workspace_doc
+            .as_ref()
+            .map(crate::cached_document::CachedDocument::policy)
+        else {
+            return Ok(false);
+        };
+        let expired: Vec<[u8; 32]> = doc
+            .identities
+            .values()
+            .map(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes).map_err(err))
+            .collect::<Result<Vec<_>, String>>()?
+            .into_iter()
+            .filter(|row| row.revocations.is_empty())
+            .filter(|row| row.admission.is_none() && row.admissions.is_empty())
+            .filter(|row| row.delegate.is_none())
+            .filter(|row| {
+                row.device_cert
+                    .expires_at_ns
+                    .is_some_and(|expiry| expiry <= now_ns(now))
+            })
+            .map(|row| row.device_cert.device_public_key)
+            .collect();
+        if expired.is_empty() {
+            return Ok(false);
+        }
+        self.forget_identity_rows(&expired, key, now)
+    }
+
+    /// Take `devices`' rows out of the workspace's governance as the governing
+    /// `key`, in one change, and take it in as every member will. Whether the
+    /// workspace changed.
+    fn forget_identity_rows(
+        self,
+        devices: &[[u8; 32]],
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let mut doc = self
+            .peer
+            .core
+            .workspace_doc
+            .clone()
+            .ok_or("workspace governance missing")?;
+        let identities = doc
+            .get(ROOT, "peer_identities_v1")
+            .map_err(err)?
+            .ok_or("governed identities missing")?
+            .1;
+        let before = doc.get_heads();
+        doc.set_actor(self.peer.workspace_actor_of(key));
+        for device in devices {
+            doc.delete(&identities, hex::encode(device)).map_err(err)?;
+        }
+        doc.commit();
+        let changes = doc
+            .get_changes(&before)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        let workspace = self.peer.core.workspace.clone();
+        let outcome = self.peer.receive_from(
+            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+            NeighbourMsg::SyncResp {
+                changes,
+                room: workspace,
+            },
+            now,
+        )?;
+        Ok(outcome.changed || outcome.metadata_changed)
+    }
+
     /// Change a governed collaborator's workspace role.
     ///
     /// # Errors

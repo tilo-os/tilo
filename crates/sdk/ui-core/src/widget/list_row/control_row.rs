@@ -307,7 +307,7 @@ impl crate::widget::Decorator for ControlRow {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.content.needs_redraw()
+        self.dirty || (self.content.needs_redraw() || self.content.needs_animation_frame())
     }
 
     fn mark_drawn(&mut self) {

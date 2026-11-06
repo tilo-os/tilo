@@ -69,6 +69,9 @@ pub trait NameHost {
     fn name(&self, who: &crate::ids::Principal) -> String;
 }
 
+/// The host's answer for the person's zone name, asked each time a rule is read.
+type NamedZone = Box<dyn Fn() -> Option<String>>;
+
 pub struct Core {
     me: Weak<Core>,
     pub engine: Engine,
@@ -99,6 +102,12 @@ pub struct Core {
     /// How many seconds the person's clock is ahead of UTC, which `dated` reads a day and a
     /// time typed against; UTC until the host says.
     pub zone: RefCell<Option<Box<dyn Fn() -> i64>>>,
+    /// The person's zone as its IANA name (`Europe/Berlin`), which keeps a repeating item's
+    /// wall time of day across a change of clocks; no zone until the host names one.
+    pub zone_name: RefCell<Option<NamedZone>>,
+    /// The day the person's region starts its week on, as days from Monday (`0`): Monday until
+    /// the host says.
+    pub week_start: RefCell<Option<Box<dyn Fn() -> i64>>>,
     /// References to collection items built so far: what a view materialized of the
     /// collections it read.
     pub items_built: std::cell::Cell<u64>,
@@ -118,9 +127,16 @@ pub struct Core {
     /// The resources of apps this runtime does not run: how they print, and their readings, as
     /// the host gives them.
     pub foreign: RefCell<crate::foreign::Foreign>,
+    /// The apps a view read a resource of before their package was loaded here: what the host
+    /// loads ([`crate::Runtime::take_wanted_packages`]).
+    pub wanted_packages: RefCell<crate::foreign::WantedPackages>,
     /// The seen marks the person set here, for the host to keep in their own record
     /// ([`crate::seen`]).
     pub seen_writes: RefCell<Vec<crate::seen::SeenWrite>>,
+    /// The row being rendered, while a view renders one: the rows of the list it is a row
+    /// of, and where in them it stands. A row reads the rows around it by that place, without
+    /// walking the list.
+    pub row_place: RefCell<Option<(Rc<crate::value::CollRef>, usize)>>,
 }
 
 /// What `now` reads while the host has set no clock.
@@ -220,6 +236,8 @@ impl Core {
             view_states: RefCell::new(crate::view_state::ViewStates::default()),
             clock: RefCell::new(None),
             zone: RefCell::new(None),
+            week_start: RefCell::new(None),
+            zone_name: RefCell::new(None),
             items_built: std::cell::Cell::new(0),
             program: RefCell::new(None),
             text_search: RefCell::new(None),
@@ -227,7 +245,9 @@ impl Core {
             reader: RefCell::new(None),
             trying: std::cell::Cell::new(false),
             foreign: RefCell::new(crate::foreign::Foreign::default()),
+            wanted_packages: RefCell::new(crate::foreign::WantedPackages::default()),
             seen_writes: RefCell::new(Vec::new()),
+            row_place: RefCell::new(None),
         });
         // The types the host provides to every module, such as `Invocation`.
         let host = crate::registry::Package::new(
@@ -300,34 +320,48 @@ impl Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, ArgAt, CallFn, ChangeView,
-            CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRemove, CollWhere,
-            CollWhereWith, Dated, Delivery, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew,
-            EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, Filters, FirstUnseen, FloatToStr,
-            IdentPart, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, Lenses,
-            ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPushF,
-            ListPushH, ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove,
-            MapSetAdd, MapSetRemove, Members, Mentions, MetaOf, ModelCall, NoneV, Now, Outside,
-            OutsideAt, Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed,
-            PrincipalRole, Query, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
-            RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
-            ResTextSet, ResourceRef, RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd,
-            SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps,
-            StrCmp, StrConcat, StrEq, StrFind, StrLen, StrLit, StrReplace, StrSlice, StrToInt,
-            TimeShift, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
-            TupleSetI, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
+            Abort, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, AgentNamed, ArgAt, CallFn,
+            ChangeView, CollCount, CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered,
+            CollRemove, CollWhere, CollWhereWith, CountBy, DayParse, DayPart, DayShift,
+            DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef, DurationText, EditField,
+            EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH,
+            EnumSetI, EventPart, EventValue, FilterLit, Filters, Find, FirstUnseen, FloatAbs,
+            FloatCeil, FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo, FloatMax, FloatMin,
+            FloatRound, FloatRoundTo, FloatToStr, ForeignRef, FromPop, FromPush, Grep, GroupBy,
+            IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, Invoke, Invoker, InvokerPop,
+            InvokerPush, IsError, IsSome, Keep, Lenses, Links, ListAvg, ListEnd, ListGetF,
+            ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH,
+            ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MapGetH, MapKeys, MapPut,
+            MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf,
+            ModelCall, NoneV, Now, OfType, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind,
+            PrincipalName, PrincipalNamed, PrincipalRole, Print, PrintRows, ProposalNote, Query,
+            QueueBlock, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs,
+            RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt, ResAddF,
+            ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef,
+            RichEmpty, RichNew, RichPart, RichTime, RunChanges, SeedState, SetAdd, SetRemove,
+            Single, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps,
+            StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit,
+            StrLower, StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim,
+            StrUpper, Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today,
+            TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
+            UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
             UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
-            Versions, Viewer, Withdraw, Word, WorkspaceMembers,
+            Versions, Viewer, WallClock, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
-            | StrFind | StrSlice | StrReplace => self.text_import(imp, mem, a),
-            ListNew | ListPushI | ListPushF | ListPushH | ListLen | ListGetI | ListGetF
-            | ListSortByKey | ListReverse | ListGetH | ListEnd | ListIndexOf | TupleNew
-            | TupleSetI | TupleSetF | TupleSetH | TupleGetI | TupleGetF | TupleGetH | SomeH
-            | SomeI | SomeF | NoneV | IsSome | UnwrapI | UnwrapF | UnwrapH => {
-                self.aggregate_import(imp, a)
+            | StrFind | StrSlice | StrReplace | StrTrim | StrLower | StrUpper | StrStartsWith
+            | StrEndsWith | StrContains | StrSplit | StrJoin | StrMatches | DurationText => {
+                self.text_import(imp, mem, a)
             }
+            IntMin | IntMax | IntClamp | IntAbs | FloatMin | FloatMax | FloatClamp | FloatAbs
+            | FloatRound | FloatRoundTo | FloatFloor | FloatFloorTo | FloatCeil | FloatCeilTo
+            | ListSumI | ListSumF | ListAvg => self.num_import(imp, a),
+            ListNew | ListPushI | ListPushF | ListPushH | ListLen | CollCount | ListGetI
+            | ListGetF | ListSortByKey | ListReverse | ListGetH | ListEnd | ListIndexOf
+            | ListPrevious | TupleNew | TupleSetI | TupleSetF | TupleSetH | TupleGetI
+            | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV | IsSome | UnwrapI
+            | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
             CollWhere => {
                 let found = self.coll_where(a.h(0)?, a.h(1)?)?;
                 self.ret_h(found)
@@ -344,14 +378,16 @@ impl Core {
                 let found = self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?;
                 self.ret_h(found)
             }
-            Filters => {
-                let filters = self.filters_import(a.h(0)?)?;
-                self.ret_h(filters)
-            }
+            Filters | FilterLit => self.catalogue_import(imp, a),
             IdentPart => {
                 let part = self.ident_part(a.h(0)?, a.h(1)?)?;
                 self.ret_h(part)
             }
+            RepeatNext | RepeatNextAt | RepeatLabel | ReminderAt | ReminderLabel | WallClock => {
+                self.recurrence_import(imp, a)
+            }
+            Today | TimeDay | TimeOfDay | TimeSpan | DayShift | DayPart | DayWeekday
+            | DayStartOfWeek | DayParse | TimeParse => self.time_import(imp, a),
             RichNew | RichPart | RichEmpty | RichTime => self.rich_import(imp, a),
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
@@ -360,40 +396,25 @@ impl Core {
             | SetAdd | SetRemove | MapPut | MapRemove | MapSetAdd | MapSetRemove | MapGetH
             | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId
             | ResourceRef => self.resource_import(imp, a),
-            ActRef | Invoke | TryInvoke | CallFn | IsError | Outside | OutsideAt | Withdraw
-            | ModelCall | Invoker | PrincipalEq | PrincipalName | QueueBlock | Now | TimeShift
-            | PrincipalNamed | InvokerPush | InvokerPop => self.effect_import(imp, a),
+            ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
+            | OutsideAt | Withdraw | ModelCall | Invoker | PrincipalEq | PrincipalName
+            | QueueBlock | Now | TimeShift | PrincipalNamed | AgentNamed | InvokerPush
+            | InvokerPop | FromPush | FromPop | SeedState => self.effect_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet
-            | ActThen | ActOpen | ActUndo | ChangeView | UiActions => self.ui_import(imp, a),
-            EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions
+            | ActThen | ActOpen | ActUndo | ChangeView | UiActions | UiAction => {
+                self.ui_import(imp, a)
+            }
+            EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
             | RunChanges | Unseen | FirstUnseen | Mentions | Steps | VersionEnd | Phrase | Word
-            | Dated | Viewer => self.platform_import(imp, a),
+            | EntryParts | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }
-            Imp::EditField => self.flow_edit(a),
-            Imp::Print
-            | Imp::Find
-            | Imp::ReadText
-            | Imp::OfType
-            | Imp::Keep
-            | Imp::Grep
-            | Imp::Describe
-            | Imp::DescribeRef
-            | Imp::ReadWith
-            | Imp::PrintRows
-            | Imp::CountBy
-            | Imp::GroupBy
-            | Imp::Take
-            | Imp::Single
-            | Imp::Me
-            | Imp::ForeignRef
-            | Imp::MatchGroup => self.program_import(imp, a),
-            Abort => {
-                let msg = self.text(a.h(0)?)?;
-                trap(format!("abort: {msg}"))
-            }
+            EditField => self.flow_edit(a),
+            Print | Find | ReadText | OfType | Keep | Grep | Describe | DescribeRef | ReadWith
+            | PrintRows | CountBy | GroupBy | Take | Single | Me | ForeignRef | MatchGroup
+            | Abort => self.program_import(imp, a),
         }
     }
 }

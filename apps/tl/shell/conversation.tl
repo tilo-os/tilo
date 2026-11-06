@@ -54,7 +54,7 @@ view conversation_entry(r: Run) {
 fn placed_run(record: Text) -> Option<Run> {
     let d = root Desk
     let prefix = "agent-run:"
-    if record.find(prefix) == 0 {
+    if record.starts_with(prefix) {
         let key = record.slice(prefix.len(), record.len())
         d.runs.find(r -> r.key == key)
     } else { .none }
@@ -108,8 +108,16 @@ view program_step(d: Desk, r: Run, e: RunEntry) {
 /// that id names, of whichever app.
 view reference(r: Run, x: EntryRef) {
     let a = arrangement
-    ui.ListRow(if x.label == "" { x.resource } else { x.label }, secondary: .some(type_label(x.type_kind)), icon: .file) {
-        on activate: session.place(resource: resource(x.resource, of: host.Resource), x: beside_x(a, r), y: beside_y(a, r))
+    ui.ListRow(
+        if x.label == "" { x.resource } else { x.label },
+        secondary: .some(type_label(x.type_kind)),
+        icon: .file,
+    ) {
+        on activate: session.place(
+            resource: resource(x.resource, of: host.Resource),
+            x: beside_x(a, r),
+            y: beside_y(a, r),
+        )
     }
 }
 
@@ -150,10 +158,10 @@ fn beside_y(a: Arrangement, r: Run) -> Int {
 
 /// A type as a person reads it: its name without the app's prefix, `notes.Note` as `Note`.
 fn type_label(kind: Text) -> Text {
-    let dot = kind.find(".")
-    if dot >= 0 {
-        type_label(kind.slice(dot + 1, kind.len()))
-    } else { kind }
+    match kind.find(".") {
+        .some(dot) => type_label(kind.slice(dot + 1, kind.len())),
+        .none => kind,
+    }
 }
 
 /// Where a run is, as a status badge.

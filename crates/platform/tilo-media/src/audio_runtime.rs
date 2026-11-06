@@ -6,7 +6,7 @@
 //! samples into a level meter; it never creates a playback/monitor link.
 
 #[cfg(unix)]
-use std::io::{Read, Write};
+use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 #[cfg(unix)]
@@ -384,7 +384,7 @@ impl AudioRuntimeControl for RealAudioRuntime {
             balance: pulse,
             mono_output: pulse,
             channel_test: command_works("pw-play", &["--version"]),
-            microphone_meter: command_works("pw-record", &["--version"]),
+            microphone_meter: crate::audio::record::available(),
             echo_cancellation: echo_cancel_config_installed()
                 && command_works("pipewire", &["--version"]),
         }
@@ -498,7 +498,21 @@ impl AudioRuntimeControl for RealAudioRuntime {
         let deadline = Instant::now()
             .checked_add(duration)
             .unwrap_or_else(Instant::now);
-        start_meter(&["--target", source_name], Some(deadline))
+        let (level, levels) = mpsc::channel();
+        let (capture, reader) = start_meter(
+            source_name,
+            None,
+            Box::new(move |peak| {
+                let _ = level.send(peak);
+            }),
+        )?;
+        Ok(Box::new(MicSession {
+            capture: Some(capture),
+            reader: Some(reader),
+            levels,
+            latest: 0.0,
+            deadline: Some(deadline),
+        }))
     }
 
     fn start_output_meter(
@@ -508,17 +522,13 @@ impl AudioRuntimeControl for RealAudioRuntime {
     ) -> Result<Box<dyn BoundedSession>, String> {
         // Capturing a sink records its monitor: what it plays, nothing more.
         // A passive stream never wakes a suspended sink.
-        let (child, reader) = spawn_meter(
-            &[
-                "--target",
-                sink_name,
-                "-P",
-                "{ stream.capture.sink = true node.passive = true }",
-            ],
+        let (capture, reader) = start_meter(
+            sink_name,
+            Some("{ stream.capture.sink = true node.passive = true }"),
             on_level,
         )?;
         Ok(Box::new(MicSession {
-            child: Some(child),
+            capture: Some(capture),
             reader: Some(reader),
             levels: mpsc::channel().1,
             latest: 0.0,
@@ -527,70 +537,47 @@ impl AudioRuntimeControl for RealAudioRuntime {
     }
 }
 
-/// Record `target` as 16 kHz mono and publish each chunk's peak, until
-/// `deadline` or until the session is dropped.
+/// Record `source` as 16 kHz mono and hand `on_level` the peak of each 32 ms
+/// of sound, on the capture's own thread, until that thread ends.
 #[cfg(unix)]
 fn start_meter(
-    target: &[&str],
-    deadline: Option<Instant>,
-) -> Result<Box<dyn MicrophoneMeterSession>, String> {
-    let (tx, rx) = mpsc::channel();
-    let (child, reader) = spawn_meter(
-        target,
-        Box::new(move |peak| {
-            let _ = tx.send(peak);
-        }),
-    )?;
-    Ok(Box::new(MicSession {
-        child: Some(child),
-        reader: Some(reader),
-        levels: rx,
-        latest: 0.0,
-        deadline,
-    }))
+    source: &str,
+    properties: Option<&str>,
+    on_level: Box<dyn Fn(f32) + Send>,
+) -> Result<(crate::audio::record::Capture, JoinHandle<()>), String> {
+    let spec = crate::audio::record::Spec {
+        target: source,
+        properties,
+        format: crate::audio::record::Format::MONO_16K,
+        overflow: crate::audio::record::Overflow::Drop,
+        label: "meter",
+    };
+    let (capture, mut stream) = crate::audio::record::Capture::start(&spec)?;
+    let reader = std::thread::Builder::new()
+        .name("tilo-audio-meter".to_owned())
+        .spawn(move || {
+            // A read may carry several windows; each is metered on its own so
+            // the peak window stays 32 ms whatever the pipe hands over.
+            let mut carry = Vec::new();
+            while let Some(chunk) = stream.next_chunk() {
+                carry.extend_from_slice(&chunk);
+                let windows = carry.len().checked_div(LEVEL_WINDOW_BYTES).unwrap_or(0);
+                let whole = windows.saturating_mul(LEVEL_WINDOW_BYTES);
+                if let Some(windows) = carry.get(..whole) {
+                    for window in windows.chunks(LEVEL_WINDOW_BYTES) {
+                        on_level(pcm_peak(window));
+                    }
+                }
+                carry.drain(..whole);
+            }
+        })
+        .map_err(|error| format!("start the audio meter's reader: {error}"))?;
+    Ok((capture, reader))
 }
 
-/// `pw-record` capturing `target` as 16 kHz mono, and the thread that hands
-/// `on_level` the peak of each 512 samples (32 ms) it reads.
+/// Bytes of 16 kHz mono sound in a meter's peak window: 32 ms.
 #[cfg(unix)]
-fn spawn_meter(
-    target: &[&str],
-    on_level: Box<dyn Fn(f32) + Send>,
-) -> Result<(Child, JoinHandle<()>), String> {
-    let mut child = Command::new("pw-record")
-        .args(target)
-        .args([
-            "--rate",
-            "16000",
-            "--channels",
-            "1",
-            "--channel-map",
-            "mono",
-            "--format",
-            "s16",
-            "-",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .map_err(|e| format!("pw-record is unavailable: {e}"))?;
-    let Some(mut output) = child.stdout.take() else {
-        bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
-        return Err("pw-record did not expose captured samples".into());
-    };
-    let reader = std::thread::spawn(move || {
-        let mut bytes = [0_u8; 1024];
-        while let Ok(n) = output.read(&mut bytes) {
-            if n == 0 {
-                break;
-            }
-            on_level(pcm_peak(bytes.get(..n).unwrap_or(&[])));
-        }
-    });
-    Ok((child, reader))
-}
+const LEVEL_WINDOW_BYTES: usize = 1024;
 
 // PipeWire process control and session teardown require Unix process groups.
 // Keep this public runtime available for portable callers without advertising
@@ -784,7 +771,7 @@ impl Drop for MonoSession {
 
 #[cfg(unix)]
 struct MicSession {
-    child: Option<Child>,
+    capture: Option<crate::audio::record::Capture>,
     reader: Option<JoinHandle<()>>,
     levels: Receiver<f32>,
     latest: f32,
@@ -801,14 +788,14 @@ impl BoundedSession for MicSession {
             self.stop();
             return false;
         }
-        self.child
+        self.capture
             .as_mut()
-            .is_some_and(|c| c.try_wait().ok().flatten().is_none())
+            .is_some_and(crate::audio::record::Capture::alive)
     }
     fn stop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
-        }
+        // Dropping the capture kills the recorder and joins its reader; the
+        // level reader then reaches the end of the stream and ends.
+        self.capture = None;
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }

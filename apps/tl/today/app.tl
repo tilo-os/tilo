@@ -17,8 +17,8 @@ default view today for Today
 /// changes belong to the todo and notes apps, so each one asks until Today is trusted.
 flow morning_cleanup(list: todo.Tasks, nb: notes.Notes) -> Int {
     let n = 0
-    // Whether anything is finished is the tasks app's rule, read where it is written.
-    if list.items.any(x -> todo.finished(list.items, x)) {
+    // The clear is refused while nothing is finished, so it is asked only then.
+    if list.items.any(x -> x.finished) {
         n = todo.clear_done(list)
     }
     let note = notes.new_note(nb)
@@ -39,7 +39,11 @@ view today(t: Today) {
             button(morning_cleanup(todos, notes.notes)) as morning
         }
         grid(min: 22rem) {
-            ui.Card(item: todos, title: meta(todos).title, count: todos.items.count(item -> not item.done)) {
+            ui.Card(
+                item: todos,
+                title: meta(todos).title,
+                count: todos.items.count(item -> not item.done),
+            ) {
                 list(todos.items.filter(item -> not item.done)) { item ->
                     row(item)
                 }

@@ -329,7 +329,7 @@ impl Wake {
 /// Send a wake answer to the device that asked.
 fn answer(fabric: &SharedLink, target: &DeviceId, action: PersonalFabricAction) {
     if let Err(error) = fabric.try_send_personal_fabric_action(target, action) {
-        tracing::debug!(%error, device = target.as_str(), "a wake answer did not leave");
+        tracing::warn!(%error, device = target.as_str(), "a wake answer did not leave");
     }
 }
 
@@ -380,8 +380,21 @@ fn scan_interfaces() -> Vec<WakeRoute> {
             Ok(radio) => os_actions::network_wake::wifi_magic_packet_enabled(
                 &radio.file_name().unwrap_or_default().to_string_lossy(),
             )
+            .inspect_err(|reason| {
+                tracing::warn!(%reason, device = %name, "a radio's wake setting could not be read");
+            })
             .unwrap_or(false),
-            Err(_) => magic_packet_enabled(&name),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                magic_packet_enabled(&name)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    device = %name,
+                    "a device's radio could not be examined; its wake setting is read from the interface"
+                );
+                magic_packet_enabled(&name)
+            }
         };
         let route = WakeRoute {
             mac,

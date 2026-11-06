@@ -52,6 +52,9 @@ fn draw_frame_content_with(
 ) -> DrawnFrame {
     // The motions and the wishes for frames this pass makes are this app's:
     // whichever surface it shares the thread with, its frame is its own.
+    // What a widget places again as it paints (a floating panel measured
+    // against its labels) lands on this display's pixels as layout does.
+    let _grid = crate::widget::layout::enter_device_scale(f64::from(scale_factor));
     let owner = app.motion_owner();
     crate::motion::own(owner, || {
         draw_frame_content_owning(app, scene, size, scale_factor, t_draw_start, culled)
@@ -71,6 +74,13 @@ fn draw_frame_content_owning(
     t_draw_start: Option<crate::time::Instant>,
     mut culled: Option<&mut crate::draw_cull::Scenes>,
 ) -> DrawnFrame {
+    // What the tree holds was drawn from the permissions of that frame. A
+    // change since moves what gated widgets paint with nothing in the tree
+    // marking it: the retained drawings go, and this frame draws them again.
+    if app.permissions_moved() {
+        app.root_widget.release_scene_cache();
+        app.painted_permissions = crate::permissions::shared_revision();
+    }
     // Every motion this frame reads is read at this instant or later.
     let motions_at = crate::motion::frame_now();
     app.restore_physical_configuration();

@@ -25,7 +25,7 @@ clap.workspace = true
 fluent.workspace = true
 fluent-syntax.workspace = true
 hex.workspace = true
-# The shared web workspace's owner root and one-time admission tokens.
+# The shared web workspace's owner root.
 getrandom.workspace = true
 libc.workspace = true
 image = { workspace = true, features = ["png"] }
@@ -63,6 +63,10 @@ workspace-hack = { version = "0.1" }
 # `tilo-app push`: a device of the developer's dials the workspace's host
 # and invokes the workspace's governance.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+# The shared workspace's door: a person is admitted through the directory's
+# door, as any public workspace admits them.
+tilo-workspace-directory = { path = "../../session/workspace-directory" }
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-automation = { path = "../../collab/automation" }
 tokio = { workspace = true, features = ["rt"] }

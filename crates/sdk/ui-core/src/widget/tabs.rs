@@ -521,7 +521,7 @@ pub struct TabBar {
     /// and fades out over the fast duration
     /// ([`crate::motion::Feedback`]), so a pointer sweeping across the pill
     /// never leaves a trail.
-    control_lifts: [crate::motion::Feedback; 2],
+    control_lifts: [crate::motion::Feedback; 3],
     /// The window is maximized: its maximize control shows restore.
     maximized: bool,
     /// Whether the window showed several tabs at the last layout, and since
@@ -702,6 +702,7 @@ impl TabBar {
             history_action_hover: false,
             history_action_pressed: false,
             control_lifts: [
+                crate::motion::Feedback::default(),
                 crate::motion::Feedback::default(),
                 crate::motion::Feedback::default(),
             ],
@@ -3066,6 +3067,9 @@ impl TabBar {
                     super::window_controls::WindowControl::Maximize => {
                         self.pending_max = Some(active);
                     }
+                    // The group's bar lays out no minimize: the strip closes
+                    // and restores, the desktop's window menu minimizes.
+                    super::window_controls::WindowControl::Minimize => {}
                 }
             }
             *handled = true;
@@ -4196,6 +4200,15 @@ impl Widget for TabBar {
         };
         self.lay_out_toolbar_row();
     }
+    /// An undrawn bar repaints, and so does one whose own state moved since
+    /// it drew (every route that changes it says so through `TabBar::touch`)
+    /// or whose people are not the people it drew. Presence comes from the
+    /// frame the host lends, so the answer is right before an event or a
+    /// peek reaches the bar, not only after a draw.
+    fn needs_redraw(&self) -> bool {
+        self.painted_bar_needs_redraw()
+    }
+
     /// A bar at rest whose own state, theme, placement and the people on
     /// its tabs are as when it was last drawn shows that drawing again
     /// (`TabBar::replays`); anything else draws it afresh.
@@ -4355,6 +4368,9 @@ impl Widget for TabBar {
             ),
             super::window_controls::WindowControl::Close => {
                 (self.controls.close, "host-window-close")
+            }
+            super::window_controls::WindowControl::Minimize => {
+                (self.controls.minimize, "host-window-minimize")
             }
         };
         Some((rect, crate::i18n::I18nManager::lookup_plain(key)))

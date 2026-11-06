@@ -224,7 +224,12 @@ impl Engine {
         let sealed = self.owner.with_current(workspace, |view| {
             Ok(view.peer().publication().is_sealed_record(app, record))
         })?;
-        if sealed && !self.join_channel(workspace, app, record)? {
+        let joined = if sealed {
+            self.join_channel(workspace, app, record)?
+        } else {
+            true
+        };
+        if sealed && !joined {
             return Ok(None);
         }
         let reader = self.identity.device_cert.device_public_key;
@@ -253,7 +258,7 @@ impl Engine {
     /// for access the first time, and its governance answers with the group.
     /// Says whether the keys are here; while they are not, the record reads as
     /// nothing, and the answer arrives as the workspace's other messages do.
-    fn join_channel(
+    pub(crate) fn join_channel(
         &self,
         workspace: WorkspaceId,
         app: &str,
@@ -268,6 +273,40 @@ impl Engine {
         match keys.access_record(workspace, &route).0 {
             ChannelAccess::Ready(_) => Ok(true),
             ChannelAccess::Waiting | ChannelAccess::Removed => Ok(false),
+            ChannelAccess::NoSecretStore => {
+                Err("this device has no secret store, so it holds no channel keys".to_owned())
+            }
+            ChannelAccess::Unavailable => {
+                Err("this device takes part in no channel of the record".to_owned())
+            }
+        }
+    }
+
+    /// The keys this device seals writes of `record` of `app` with in
+    /// `workspace`, a workspace whose records are its members' sealed
+    /// channels: `Ok(None)` while the record's channel keys are not here yet,
+    /// and the answer arrives as the workspace's other messages do.
+    ///
+    /// # Errors
+    /// This session has no channel service, this device has no secret store,
+    /// or it takes part in no channel of the record: it holds no keys, and
+    /// none are coming.
+    pub(crate) fn seal_keys(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        record: &str,
+    ) -> Result<Option<channel_crypto::ChannelContentKeys>, String> {
+        let Some(keys) = self.keys.get() else {
+            return Err("this session's channel service is not running".to_owned());
+        };
+        let route = collab_types::ChannelRoute::new(app, record);
+        match keys.access_record(workspace, &route).0 {
+            ChannelAccess::Ready(keys) => Ok(Some(keys)),
+            ChannelAccess::Waiting => Ok(None),
+            ChannelAccess::Removed => Err(format!(
+                "the workspace removed this device from {record}'s channel"
+            )),
             ChannelAccess::NoSecretStore => {
                 Err("this device has no secret store, so it holds no channel keys".to_owned())
             }
@@ -366,6 +405,28 @@ impl Engine {
             .with_current(workspace, |view| view.peer().governance().governed_policy())
     }
 
+    /// Whether this device's person may administer `workspace` here: the
+    /// workspace's governance gives their person the grant action, which is
+    /// what a change to its people — letting an app author there — is decided
+    /// by. A workspace decided by another device's governance says no here,
+    /// whatever this device holds of it.
+    #[must_use]
+    pub fn administers(&self, workspace: &str) -> bool {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return false;
+        };
+        let device = self.identity.device_cert.device_public_key;
+        self.owner
+            .with_current(workspace, |view| {
+                Ok(view
+                    .peer()
+                    .workspace()
+                    .check_workspace_administration(device, SystemTime::now())
+                    .is_ok())
+            })
+            .unwrap_or(false)
+    }
+
     /// The invitations into `workspace` this device's person issued that are
     /// still redeemable: the links they made, listed where they made them,
     /// since a link is answered by the device that signed it.
@@ -455,9 +516,86 @@ impl Engine {
         })
     }
 
+    /// The verdicts `workspace` holds on writes: this device's own, and the
+    /// ones other devices recorded on its writes. Each names the changes the
+    /// refused write would have brought, so a history row reads where it is
+    /// not.
+    #[must_use]
+    pub fn write_refusals(&self, workspace: &str) -> Vec<neighbour_wire::WriteRefusal> {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return Vec::new();
+        };
+        self.owner.write_refusals(workspace)
+    }
+
+    /// The verdicts other devices recorded on this device's writes, with the
+    /// workspace each was filed in, where waiting changes nothing: what the
+    /// person hears once per verdict, because their writes stop arriving.
+    #[must_use]
+    pub fn lasting_refusals(&self) -> Vec<(String, neighbour_wire::WriteRefusal)> {
+        let mine = self.identity.device_cert.device_public_key;
+        self.workspaces()
+            .into_iter()
+            .flat_map(|workspace| {
+                let name = workspace.to_string();
+                self.owner
+                    .write_refusals(workspace)
+                    .into_iter()
+                    .filter(|refusal| refusal.author == mine && refusal.reason.permanent())
+                    .map(move |refusal| (name.clone(), refusal))
+            })
+            .collect()
+    }
+
+    /// What each device of `workspace` calls itself, by its key.
+    #[must_use]
+    pub fn device_labels(&self, workspace: &str) -> std::collections::BTreeMap<[u8; 32], String> {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return std::collections::BTreeMap::new();
+        };
+        self.owner.device_labels(workspace)
+    }
+
     /// The engine's owner, for what holds the workspace's session.
     pub(crate) fn owner(&self) -> &NativeWorkspaceOwner {
         &self.owner
+    }
+
+    /// Where `workspace`'s host is reached and the device its enrollment pins:
+    /// the address its live plane is dialled at.
+    pub(crate) fn workspace_host(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Option<([u8; 32], iroh::EndpointAddr)> {
+        self.owner.host_addr(workspace)
+    }
+
+    /// The device hosting `workspace`: the one whose host orders its commits,
+    /// which is where the person's other devices enter it.
+    pub(crate) fn host_of(&self, workspace: WorkspaceId) -> Option<[u8; 32]> {
+        self.owner
+            .with_current(workspace, |view| {
+                Ok(view.workspace_host().device_public_key)
+            })
+            .ok()
+    }
+
+    /// Where the hosts of the workspaces this device holds are reached, by
+    /// workspace id, postcard encoded: what the person's other devices need to
+    /// enter a workspace listed here at the device that hosts it.
+    pub(crate) fn host_hints(&self) -> Vec<(String, Vec<u8>)> {
+        self.owner
+            .workspaces()
+            .into_iter()
+            .filter_map(|workspace| {
+                let hint = self
+                    .owner
+                    .with_current(workspace, |view| Ok(view.transport_hint().cloned()))
+                    .ok()?;
+                let bytes = postcard::to_stdvec(&hint).ok()?;
+                Some((workspace.to_string(), bytes))
+            })
+            .collect()
     }
 
     /// Where a read asks the workspaces' hosts for a record they send only
@@ -556,6 +694,32 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
         if let Some(link) = self.link() {
             link.publish_custody(workspace_id);
         }
+    }
+
+    /// Start the record empty as this device, from the kind the app's join
+    /// named and the declarations its installed package carries: what lets a
+    /// device that does not hold a record yet write the first change of it,
+    /// as the workspace's host starts it for an app there.
+    fn prepare_record(
+        &self,
+        owner: &NativeWorkspaceOwner,
+        workspace_id: WorkspaceId,
+        app: &str,
+        record: &str,
+        kind: &str,
+    ) -> Result<(), String> {
+        self.check_custody(owner, workspace_id)?;
+        let declared = crate::mount::apps::declared_resource_kinds(app)
+            .ok_or_else(|| format!("{app} is not installed on this device"))?;
+        let route =
+            tilo_peer_state::owner::ApplicationRecord::declared(app, record, kind, &declared)?;
+        let (_, cert, _, _) =
+            tilo_network_actor::native_ingress::Connect::new(owner.clone(), workspace_id)?
+                .material(&self.identity)?;
+        let key = self.identity.device_signing_key.clone();
+        owner
+            .prepare_application_record(workspace_id, &cert, &key, &route, SystemTime::now())
+            .map(drop)
     }
 }
 

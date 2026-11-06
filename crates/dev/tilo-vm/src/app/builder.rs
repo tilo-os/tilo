@@ -81,6 +81,7 @@ fn deliver_layer(
     stream: &mut impl std::io::Read,
     packed: &builderlayer::Packed,
     component: &str,
+    claim: &tilo_vm_protocol::Provenance,
 ) -> Result<Delivery, CliError> {
     if !packed.reused {
         return remote.upload(stream).map(Delivery::Uploaded);
@@ -96,15 +97,29 @@ fn deliver_layer(
         ));
     }
     let hash = packed.layer_hash.as_deref().unwrap_or_default();
-    if verified_layer(remote, hash, component) {
+    if verified_layer(remote, hash, component, Some(claim)) {
         Ok(Delivery::Reused(hash.to_owned()))
     } else {
-        // Cache damage or GC after the offer causes one plain-stream retry.
+        // Cache damage, GC after the offer, or an older build claim than this
+        // tree's causes one plain-stream retry.
         Ok(Delivery::Invalidated)
     }
 }
 
-fn verified_layer(remote: &mut Remote, hash: &str, component: &str) -> bool {
+/// The daemon has the layer, and — with `claim` — records it as built for the
+/// same system interfaces as the tree delivering it.
+///
+/// A layer is offered to the builder for its compile cache by content alone
+/// (`None`); delivery is skipped only when the recorded claim matches too. An
+/// identical rebuild from a tree that moved the interface declaration on must
+/// reach the daemon, which records the newer claim, or the cohort it joins is
+/// refused for the older one (`crate::interfaces` on the daemon side).
+fn verified_layer(
+    remote: &mut Remote,
+    hash: &str,
+    component: &str,
+    claim: Option<&tilo_vm_protocol::Provenance>,
+) -> bool {
     remote
         .call(LayerVerify {
             hash: hash.to_owned(),
@@ -114,6 +129,7 @@ fn verified_layer(remote: &mut Remote, hash: &str, component: &str) -> bool {
                 && layer.provenance.component == component
                 && layer.provenance.target.as_deref()
                     == Some(format!("{}-unknown-linux-gnu", remote.hello.arch).as_str())
+                && claim.is_none_or(|claim| layer.provenance.interfaces == claim.interfaces)
         })
 }
 
@@ -124,7 +140,7 @@ fn verified_layers(remote: &mut Remote, component: &str) -> Result<Vec<String>, 
         .filter(|layer| layer.provenance.component == component)
         .rev()
         .take(8)
-        .filter(|layer| verified_layer(remote, &layer.hash, component))
+        .filter(|layer| verified_layer(remote, &layer.hash, component, None))
         .map(|layer| layer.hash)
         .collect())
 }
@@ -314,7 +330,7 @@ impl App {
         // The build can outlast an idle connection: a fresh one for delivery.
         *remote = self.connect_with_wake(vm, false)?;
         let delivered = self.receipt.phase("transfer", || {
-            deliver_layer(remote, &mut stream, &packed, &component.name)
+            deliver_layer(remote, &mut stream, &packed, &component.name, &provenance)
         });
         drop(stream);
         let delivered = delivered?;
@@ -470,7 +486,7 @@ for line in sys.stdin:
  elif m=='layer.list': result=[{"hash":hash,"provenance":{"component":"shell"}}]
  elif m=='layer.verify':
   if mode in ('missing','corrupt','old'): error={"code":-32602,"message":mode}
-  else: result={"hash":hash,"provenance":{"component":"other" if mode=='wrong-component' else 'shell',"target":"aarch64-unknown-linux-gnu" if mode=='wrong-arch' else 'x86_64-unknown-linux-gnu'}}
+  else: result={"hash":hash,"provenance":{"component":"other" if mode=='wrong-component' else 'shell',"target":"aarch64-unknown-linux-gnu" if mode=='wrong-arch' else 'x86_64-unknown-linux-gnu',"interfaces":{"runtime":17} if mode=='stale-declaration' else {}}}
  elif m=='layer.upload.binary': error={"code":-32602,"message":"unknown optional method","hint":"legacy upload"}
  elif m=='layer.upload.begin': result={"upload":"fixture"}
  elif m=='layer.upload.chunk':
@@ -478,6 +494,10 @@ for line in sys.stdin:
  else: raise RuntimeError(m)
  print(json.dumps({"jsonrpc":"2.0","id":r['id'],"error":error} if error else {"jsonrpc":"2.0","id":r['id'],"result":result}),flush=True)
 "#;
+
+    fn claim() -> tilo_vm_protocol::Provenance {
+        tilo_vm_protocol::Provenance::local("shell")
+    }
 
     fn cache_peer(hash: &str, mode: &str, log: &std::path::Path) -> Result<Remote, CliError> {
         let line = hypervisor::CommandLine::new("python3", &["-c", CACHE_PEER])
@@ -533,7 +553,7 @@ for line in sys.stdin:
         let mut stream = Stream::new(framed.as_slice());
         stream.header(&mut Vec::new()).unwrap();
         assert_eq!(
-            deliver_layer(&mut remote, &mut stream, &packed, "shell").unwrap(),
+            deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim()).unwrap(),
             Delivery::Reused(hash)
         );
         assert_eq!(
@@ -558,13 +578,33 @@ for line in sys.stdin:
         let mut stream = Stream::new(framed.as_slice());
         stream.header(&mut Vec::new()).unwrap();
         assert_eq!(
-            deliver_layer(&mut remote, &mut stream, &packed, "shell").unwrap(),
+            deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim()).unwrap(),
             Delivery::Uploaded("fixture".into())
         );
         assert!(
             std::fs::read_to_string(log)
                 .unwrap()
                 .contains("layer.upload.chunk")
+        );
+    }
+
+    #[test]
+    fn an_identical_layer_with_an_older_build_claim_is_sent_again() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+        std::fs::write(dir.path().join("usr/bin/shell"), b"fixture payload").unwrap();
+        let hash = tilo_vm_protocol::layer_hash::tree_hash(dir.path()).unwrap();
+        let (packed, framed) = framed_fixture(dir.path(), std::slice::from_ref(&hash)).unwrap();
+        let log = dir.path().join("calls");
+        let mut remote = cache_peer(&hash, "stale-declaration", &log).unwrap();
+        let mut stream = Stream::new(framed.as_slice());
+        stream.header(&mut Vec::new()).unwrap();
+        let mut claim = claim();
+        claim.interfaces.insert("runtime".into(), 18);
+        assert_eq!(
+            deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim).unwrap(),
+            Delivery::Invalidated,
+            "the daemon records another declaration for these bytes, so they travel again with this tree's claim"
         );
     }
 
@@ -582,7 +622,7 @@ for line in sys.stdin:
             let mut stream = Stream::new(framed.as_slice());
             stream.header(&mut Vec::new()).unwrap();
             assert_eq!(
-                deliver_layer(&mut remote, &mut stream, &packed, "shell").unwrap(),
+                deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim()).unwrap(),
                 Delivery::Invalidated
             );
             assert!(
@@ -630,7 +670,7 @@ for line in sys.stdin:
             ..builderlayer::Packed::default()
         };
         let mut cut = Stream::new(&b""[..]);
-        assert!(deliver_layer(&mut remote, &mut cut, &packed, "shell").is_err());
+        assert!(deliver_layer(&mut remote, &mut cut, &packed, "shell", &claim()).is_err());
         let mut framed = Vec::new();
         let mut lines = builderlayer::Lines::new(&mut framed);
         std::io::Write::write_all(&mut lines, b"unexpected archive").unwrap();
@@ -641,7 +681,7 @@ for line in sys.stdin:
         )
         .unwrap();
         let mut stream = Stream::new(framed.as_slice());
-        assert!(deliver_layer(&mut remote, &mut stream, &packed, "shell").is_err());
+        assert!(deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim()).is_err());
         assert_eq!(std::fs::read_to_string(log).unwrap(), "hello\n");
     }
 

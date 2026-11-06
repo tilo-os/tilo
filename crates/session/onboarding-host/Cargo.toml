@@ -50,6 +50,9 @@ tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-onboarding = { path = "../onboarding" }
 tilo-paths.workspace = true
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# The `tracing` target the session log keeps whatever `RUST_LOG` says: every
+# certificate renewal a join depends on is reported under it.
+tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tracing.workspace = true
 uuid.workspace = true

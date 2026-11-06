@@ -71,6 +71,27 @@ impl SessionLink {
         self.wanted.borrow_mut().extend(wanted);
     }
 
+    /// The apps whose package the shell's views read a resource of before it was loaded, by
+    /// app id, each with the type as the view named it (`<app>#<Type>`): what the session
+    /// publishes next, as it publishes the packages of the apps whose places show. Each app is
+    /// handed out once.
+    #[must_use]
+    pub fn take_wanted_packages(&self) -> BTreeMap<String, String> {
+        std::mem::take(&mut *self.wanted_packages.borrow_mut())
+    }
+
+    /// Whether the shell's views wait on packages the session has not been asked for yet.
+    #[must_use]
+    pub fn wants_packages(&self) -> bool {
+        !self.wanted_packages.borrow().is_empty()
+    }
+
+    /// The shell's views read a resource of `wanted` (each an app and the type it read) before
+    /// that app's package was loaded.
+    pub(super) fn want_packages(&self, wanted: BTreeMap<String, String>) {
+        self.wanted_packages.borrow_mut().extend(wanted);
+    }
+
     /// Publish the reading of every resource a place of `arrangement` names, from what the
     /// session publishes: `resources`, its catalogue, says each one's kind and `read` its
     /// reading. A place naming nothing the catalogue holds as a tilolang record keeps its
@@ -227,6 +248,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                 action,
                 args,
                 subject: Some(subject),
+                from,
                 ..
             } => {
                 let subject_id = subject.id_string();
@@ -243,6 +265,12 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                     resource: subject_id,
                     action: action.clone(),
                     arguments,
+                    from: from
+                        .as_ref()
+                        .map(|from| ui::tilo_actions::params::MadeFrom {
+                            resource: from.id_string(),
+                            kind: from.ty.clone(),
+                        }),
                 }
             }
             Invocation::Action {
@@ -254,6 +282,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                 resource: self.session.get(action).cloned().unwrap_or_default(),
                 action: action.clone(),
                 arguments: session_arguments(self.verbs.get(action), args),
+                from: None,
             },
             Invocation::Action { name, .. } => {
                 return Invoked::Failed(format!(
@@ -277,6 +306,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                         ("field".to_owned(), field_id.clone()),
                         ("value".to_owned(), argument_text(value)),
                     ]),
+                    from: None,
                 }
             }
         };

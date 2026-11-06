@@ -114,6 +114,16 @@ impl LiveActivities {
         self.lock().get(app_id)?.activity.clone()
     }
 
+    /// Every activity shown now: the app that shows it and what it shows,
+    /// in app id order.
+    #[must_use]
+    pub fn activities(&self) -> Vec<(String, Value)> {
+        self.lock()
+            .iter()
+            .filter_map(|(app, shown)| Some((app.clone(), shown.activity.clone()?)))
+            .collect()
+    }
+
     /// Grows whenever an activity is shown, changed or ended.
     #[must_use]
     pub fn revision(&self) -> u64 {

@@ -139,6 +139,7 @@ fn plan(
             resource: Some(root),
             args: &args,
             caller: None,
+            from: None,
         })
         .unwrap();
     replica.apply(&planned);
@@ -271,6 +272,7 @@ fn planning_an_action_leaves_the_mirror_as_it_was() {
                 resource: Some(&root),
                 args: &args,
                 caller: None,
+                from: None,
             })
             .unwrap();
     }
@@ -280,16 +282,18 @@ fn planning_an_action_leaves_the_mirror_as_it_was() {
     );
 }
 
+/// The key of the button labelled `label` anywhere in `node`.
+fn button_named(node: &tilolang_runtime::UiNode, label: &str) -> Option<String> {
+    if node.kind == "ui.Button"
+        && node.props.get("label") == Some(&tilolang_runtime::Value::text(label))
+    {
+        return Some(node.key.clone());
+    }
+    node.children.iter().find_map(|c| button_named(c, label))
+}
+
 #[test]
 fn a_new_version_of_a_package_keeps_the_workspace_and_its_views_run_the_new_code() {
-    fn buttons(node: &tilolang_runtime::UiNode, out: &mut Vec<tilolang_runtime::UiNode>) {
-        if node.kind == "ui.Button" {
-            out.push(node.clone());
-        }
-        for child in &node.children {
-            buttons(child, out);
-        }
-    }
     let (mut ada, _grace, meta) = counter_workspace();
     let view = ada.view(APP);
     view.press(&button_key(&view)).unwrap();
@@ -312,14 +316,11 @@ fn a_new_version_of_a_package_keeps_the_workspace_and_its_views_run_the_new_code
         "the workspace kept its state"
     );
     let view = ada.view(APP);
-    let label = |node: &tilolang_runtime::UiNode| node.props.get("label").cloned();
-    let mut found = Vec::new();
-    buttons(view.tree(), &mut found);
-    assert_eq!(
-        label(&found[0]),
-        Some(tilolang_runtime::Value::text("Take one"))
-    );
-    view.press(&found[0].key).unwrap();
+    // The window's header keeps its main action (Increment) in the row and the rest behind
+    // its one menu, so the relabelled decrement is a header action of the views the new code
+    // built, and pressing it runs that code.
+    let take_one = button_named(view.tree(), "Take one").expect("the decrement is in the header");
+    view.press(&take_one).unwrap();
     ada.commit();
     assert_eq!(count(&ada.root(APP), &meta), 0);
 }

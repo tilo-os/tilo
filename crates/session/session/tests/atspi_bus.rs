@@ -30,10 +30,12 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
@@ -42,8 +44,6 @@ use tilo_test_env::{PrivateBus, SpawnUnderEnvLock as _};
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
 const REFRESH: Duration = Duration::from_millis(16);
-/// How long a screen reader would wait for a desktop to answer.
-const DEADLINE: Duration = Duration::from_secs(30);
 /// The session's AT-SPI application root: every window it publishes hangs
 /// under it.
 const ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
@@ -201,17 +201,7 @@ fn atspi_address() -> Option<String> {
 
 /// Step the session until `done` holds.
 fn until(session: &mut Session, what: &str, mut done: impl FnMut(&mut Session) -> bool) {
-    let deadline = Instant::now()
-        .checked_add(DEADLINE)
-        .expect("a deadline within the clock");
-    loop {
-        session.step(REFRESH).expect("a turn of the session");
-        if done(session) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "{what} did not happen");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    common::wait_for(session, what, |session| done(session).then_some(()));
 }
 
 #[test]
@@ -237,17 +227,7 @@ fn a_screen_reader_reads_and_drives_the_session_over_atspi() {
             .spawn_locked()
             .expect("the accessibility bus needs at-spi2-core's launcher"),
     );
-    let deadline = Instant::now() + DEADLINE;
-    let address = loop {
-        if let Some(address) = atspi_address() {
-            break address;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the accessibility registry never answered"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let address = tilo_test_env::wait_for("the accessibility registry's address", atspi_address);
 
     let mut session = Session::headless(
         Options {

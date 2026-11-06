@@ -4,15 +4,18 @@
 //! the address the host's action door resolves against the live resource
 //! tree.
 
+use std::sync::Arc;
+
 use tilo_actions::{FlatAction, ResourceSpec};
 use ui::{ActionPalette, CommandEntry};
 
-use crate::model::{Hit, Source, SourceCosts, Target, frame_deadline};
+use crate::model::{Hit, SearchStream, Source, Target};
 use crate::providers::{
     Actions, Answers, AppEntry, Applications, CommandSpec, Commands, Content, Published,
     PublishedActions, Recents, Switches, WebSearch, WindowEntry, Windows,
 };
 use crate::window::WindowSearch;
+use crate::workers::SearchWorkers;
 use ui::search::Scope;
 use ui::search::system::{KindGroup, ResourceKind};
 
@@ -56,8 +59,9 @@ pub struct SearchData {
     pub placeholder: Option<String>,
     /// What the host searches beyond these (Settings' pages, the store's
     /// catalogue, files, what apps hold), each over what is published or a
-    /// service answers. The search over everything asks them.
-    pub sources: Vec<Box<dyn Source>>,
+    /// service answers. The search over everything asks them, off the frame
+    /// when their query can move ([`Source::shared`]).
+    pub sources: Vec<Arc<dyn Source>>,
     /// The sources the person switched off, left out whatever they find.
     pub preferences: crate::preferences::SearchPreferences,
 }
@@ -71,17 +75,20 @@ enum ChosenRow {
     ShowAll(ResourceKind),
 }
 
+/// The sources a search asks. Those over plain data stand in an [`Arc`], so
+/// a frame hands the same source to a worker ([`Source::shared`]) rather
+/// than asking it on the frame.
 struct Sources {
-    applications: Applications,
-    windows: Windows,
-    commands: Commands,
-    actions: Actions,
-    published: Published,
+    applications: Arc<Applications>,
+    windows: Arc<Windows>,
+    commands: Arc<Commands>,
+    actions: Arc<Actions>,
+    published: Arc<Published>,
     content: Content,
-    answers: Option<(Answers, WebSearch)>,
+    answers: Option<(Arc<Answers>, Arc<WebSearch>)>,
     /// The one window searched, when the search is a window's.
     window: Option<WindowSearch>,
-    host: Vec<Box<dyn Source>>,
+    host: Vec<Arc<dyn Source>>,
     preferences: crate::preferences::SearchPreferences,
     /// Now, in Unix seconds, as the host said when search opened.
     now: u64,
@@ -97,12 +104,12 @@ impl Sources {
         };
         if matches!(data.scope, Scope::InApp(_)) {
             return Self {
-                applications: Applications::new(data.applications),
-                windows: Windows(data.windows),
-                commands: Commands(data.commands),
+                applications: Arc::new(Applications::new(data.applications)),
+                windows: Arc::new(Windows(data.windows)),
+                commands: Arc::new(Commands(data.commands)),
                 content: Content::new(Vec::new(), Vec::new()),
-                actions: Actions(Vec::new()),
-                published: Published(Vec::new()),
+                actions: Arc::new(Actions(Vec::new())),
+                published: Arc::new(Published(Vec::new())),
                 answers: None,
                 window: Some(WindowSearch::new(data.resources, data.providers).within(anchor)),
                 host: Vec::new(),
@@ -111,22 +118,24 @@ impl Sources {
             };
         }
         Self {
-            applications: Applications::new(data.applications),
-            windows: Windows(data.windows),
-            commands: Commands(data.commands),
+            applications: Arc::new(Applications::new(data.applications)),
+            windows: Arc::new(Windows(data.windows)),
+            commands: Arc::new(Commands(data.commands)),
             content: Content::new(data.providers, data.resources.clone()).within(anchor),
-            actions: Actions(data.resources),
-            published: Published(data.published),
+            actions: Arc::new(Actions(data.resources)),
+            published: Arc::new(Published(data.published)),
             answers: matches!(data.scope, Scope::Workspace | Scope::Everywhere).then(|| {
                 (
-                    Answers {
+                    Arc::new(Answers {
                         rates: data.rates,
                         now: data.now,
-                    },
-                    data.app_for_scheme
-                        .map_or_else(WebSearch::default, |app_for_scheme| WebSearch {
-                            app_for_scheme,
-                        }),
+                    }),
+                    Arc::new(
+                        data.app_for_scheme
+                            .map_or_else(WebSearch::default, |app_for_scheme| WebSearch {
+                                app_for_scheme,
+                            }),
+                    ),
                 )
             }),
             window: None,
@@ -208,9 +217,9 @@ pub struct DesktopSearch {
     /// The search filling in, a source at a time: the rows shown are what
     /// came in so far.
     stream: Option<crate::model::SearchStream>,
-    /// How long each source took last time: what decides which is asked in
-    /// this frame and which waits for a later one.
-    costs: SourceCosts,
+    /// The threads the sources answer on: a frame hands them to the pool and
+    /// collects what came back, and never waits on one.
+    workers: SearchWorkers,
     /// The sources this search asks, in the order it asks them, and where
     /// each stands in the empty palette.
     order: Vec<(String, (u8, usize))>,
@@ -260,7 +269,7 @@ impl DesktopSearch {
             catalogue: false,
             choice: None,
             stream: None,
-            costs: SourceCosts::default(),
+            workers: SearchWorkers::new(),
             order: Vec::new(),
             rows_room: RowRoom::Guess(0),
             shown_two_lines: false,
@@ -272,15 +281,18 @@ impl DesktopSearch {
         self.sources.is_some()
     }
 
-    /// Whether a source has still to answer the query, or an application's
-    /// answer is still coming: the host keeps calling [`Self::refresh`]
-    /// until it arrives.
+    /// Whether an application's answer to the query is still coming: it
+    /// arrives on the host's clock, so the host keeps calling
+    /// [`Self::refresh`] until it does. A source of the search's own is not
+    /// this: it answers on a worker, which wakes the desk's next pass.
     pub fn waiting(&self) -> bool {
         self.sources.as_ref().is_some_and(Sources::waiting)
-            || self
-                .stream
-                .as_ref()
-                .is_some_and(crate::model::SearchStream::pending)
+    }
+
+    /// Whether a source of the open search still owes an answer: it works it
+    /// out off the frame, and wakes the desk when it is in.
+    pub fn answering(&self) -> bool {
+        self.stream.as_ref().is_some_and(SearchStream::pending)
     }
 
     /// Open over `data` with an empty query.
@@ -371,15 +383,6 @@ impl DesktopSearch {
         self.rows_room = self.rows_room.given();
     }
 
-    /// Whether a source has still to be asked for the query: the search
-    /// asks its sources a frame at a time, and the rows are complete only
-    /// once none is left.
-    fn awaiting_sources(&self) -> bool {
-        self.stream
-            .as_ref()
-            .is_some_and(crate::model::SearchStream::pending)
-    }
-
     /// Whether the rows shown are cut to the room the card gave them: before
     /// it has given one, and in the frame it gives a new one, they are not.
     fn rows_placed(&self) -> bool {
@@ -391,13 +394,20 @@ impl DesktopSearch {
         }
     }
 
-    /// Whether the search has a frame's work of its own left: a source
-    /// still to ask, or rows to cut to the card's room. A host draws the
-    /// frames this asks for; an application's answer still coming is not
-    /// this, and is looked for on the host's clock ([`Self::waiting`]).
+    /// Whether the search has a frame's work of its own left: a source that
+    /// holds the frame's state still to ask, or rows to cut to the card's
+    /// room. A host draws the frames this asks for; a source on a worker is
+    /// not this (its answer wakes the desk), and neither is an
+    /// application's answer still coming, which is looked for on the host's
+    /// clock ([`Self::waiting`]).
     #[must_use]
     pub fn filling_in(&self) -> bool {
-        self.sources.is_some() && (self.awaiting_sources() || !self.rows_placed())
+        self.sources.is_some()
+            && (self
+                .stream
+                .as_ref()
+                .is_some_and(SearchStream::awaiting_here)
+                || !self.rows_placed())
     }
 
     /// Whether the search is over: every source has answered for the query,
@@ -408,14 +418,14 @@ impl DesktopSearch {
     #[must_use]
     pub fn settled(&self) -> bool {
         // With nothing open there is nothing to wait for.
-        self.sources.is_none() || (self.rows_placed() && !self.waiting())
+        self.sources.is_none() || (self.rows_placed() && !self.waiting() && !self.answering())
     }
 
     /// Run the query again when the palette's text changed since the rows
     /// were built, the index's code arrived since, or an application's
-    /// answer that was still coming arrived; and ask the sources that are
-    /// still answering, a frame at a time. Returns whether the rows
-    /// changed.
+    /// answer that was still coming arrived; and take the answers the
+    /// sources sent and ask the source that holds the frame's state next.
+    /// Returns whether the rows changed.
     pub fn refresh(&mut self) -> bool {
         let Some(sources) = &self.sources else {
             return false;
@@ -479,11 +489,10 @@ impl DesktopSearch {
                 .map(|(at, source)| (source.id().to_owned(), (source.browse_rank(), at)))
                 .collect()
         };
-        let deadline = frame_deadline(crate::model::FRAME_BUDGET);
         let now = sources.now;
         let usage = &self.usage;
-        let costs = &mut self.costs;
-        let stream = crate::model::search_stream(query, &all, 0, costs, deadline, &|hit: &Hit| {
+        let workers = &self.workers;
+        let stream = crate::model::search_stream(query, &all, 0, workers, &|hit: &Hit| {
             usage.strength(query, hit, now)
         });
         drop(all);
@@ -510,12 +519,9 @@ impl DesktopSearch {
         }
         let query = self.palette.query().to_owned();
         let now = sources.now;
-        let deadline = frame_deadline(crate::model::FRAME_BUDGET);
         let usage = &self.usage;
-        let costs = &mut self.costs;
-        let asked = stream.resume(&all, costs, deadline, &|hit: &Hit| {
-            usage.strength(&query, hit, now)
-        });
+        let workers = &self.workers;
+        let asked = stream.resume(&all, workers, &|hit: &Hit| usage.strength(&query, hit, now));
         drop(all);
         drop(switches);
         self.stream = Some(stream);
@@ -993,12 +999,14 @@ fn all_results_entry(rest: usize) -> CommandEntry {
     .icon(ui::icons::Icon::ChevronDown)
 }
 
-/// Kinds a crowded card never leaves out: the answer to the question and
-/// the way to the web.
+/// Kinds a crowded card never leaves out: the answer to the question, the
+/// way to the web, and where the person was just at — Continue is what an
+/// empty card is for, so no budget may take it away.
 fn always_shown(kind: &ResourceKind) -> bool {
     [
         crate::providers::answers_kind(),
         crate::providers::web_kind(),
+        crate::providers::places::continue_kind(),
     ]
     .contains(kind)
         || *kind == crate::providers::ask_kind()
@@ -1061,7 +1069,8 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
         ),
         _ => (
             CommandEntry::new(id, hit.title.clone()),
-            ui::search::system::icon_for_kind(&hit.kind),
+            hit.icon
+                .unwrap_or_else(|| ui::search::system::icon_for_kind(&hit.kind)),
         ),
     };
     // What the row says under its title, never the title again: a source
@@ -1096,8 +1105,10 @@ fn everywhere<'a>(
     sources: &'a Sources,
     recents: &'a Recents,
 ) -> (Vec<&'a dyn Source>, Option<Switches>) {
+    // Each source is asked through the handle it is held by: `Arc<S>` is a
+    // `Source` that can move to a worker, where the bare `S` is not.
     let mut all: Vec<&dyn Source> = vec![
-        recents,
+        recents as &dyn Source,
         &sources.applications,
         &sources.windows,
         &sources.content,
@@ -1108,7 +1119,7 @@ fn everywhere<'a>(
     if let Some((answers, web)) = &sources.answers {
         all.extend([answers as &dyn Source, web]);
     }
-    all.extend(sources.host.iter().map(|source| &**source));
+    all.extend(sources.host.iter().map(|source| &**source as &dyn Source));
     let switches = switches(sources, &all);
     all.retain(|source| sources.preferences.enabled(source.id()));
     (all, switches)
@@ -1153,6 +1164,7 @@ fn under_title(hit: &Hit) -> (Option<String>, Vec<String>) {
 mod tests {
     use super::*;
     use ui::search::AppScope;
+    use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
 
     fn data() -> SearchData {
         SearchData {
@@ -1240,7 +1252,7 @@ mod tests {
         };
         let mut data = data();
         data.sources
-            .push(Box::new(Happening::new(false, vec![here])));
+            .push(Arc::new(Happening::new(false, vec![here])));
         let mut search = DesktopSearch::new();
         search.open(data);
         settled(&mut search);
@@ -1299,12 +1311,14 @@ mod tests {
         let mut data = data();
         data.commands.push(CommandSpec {
             id: "session-host-leave-workspace".into(),
-            title: "Leave this workspace on this computer".into(),
+            title: "Leave workspace".into(),
             subtitle: None,
+            icon: Some(ui::icons::Icon::ArrowUpRight),
+            unasked: false,
         });
         data.sources
-            .push(Box::new(Happening::new(false, vec![here])));
-        data.sources.push(Box::new(People::new(
+            .push(Arc::new(Happening::new(false, vec![here])));
+        data.sources.push(Arc::new(People::new(
             "workspace",
             vec![PersonEntry {
                 id: "mara".into(),
@@ -1324,6 +1338,7 @@ mod tests {
             .expect("the app is listed");
         search.recents.record(&sheets);
         search.restart("", ui::search::engine_generation());
+        settled(&mut search);
 
         let entries = search.palette().visible_entries();
         let mut groups: Vec<&str> = Vec::new();
@@ -1339,10 +1354,64 @@ mod tests {
             ["Happening now", "People", "Recent", "Apps", "Windows"]
         );
         assert!(
+            entries.iter().all(|entry| entry.label != "Leave workspace"),
+            "no workspace housekeeping is a default: {entries:?}"
+        );
+    }
+
+    /// A place the person was in lately: what the empty card continues.
+    fn continue_source(
+        recent: &crate::providers::places::RecentPlaces,
+    ) -> crate::providers::places::Continue {
+        crate::providers::places::Continue::new(recent, "workspace", vec![9], 100, |_| {
+            "Files".into()
+        })
+    }
+
+    /// Nothing typed starts where the person was: the place their window is
+    /// in leads the card, above the apps and the windows, and no budget cuts
+    /// it away however crowded the card gets.
+    #[test]
+    fn the_empty_palette_continues_where_the_person_was() {
+        use crate::providers::places::{Place, RecentPlaces};
+        let mut recent = RecentPlaces::default();
+        recent.record(Place {
+            app: "so.tilo.file-explorer".into(),
+            workspace: "workspace".into(),
+            tab: 9,
+            label: "Home".into(),
+            value: String::new(),
+            anchor: None,
+            at: 3,
+            device: None,
+        });
+        let mut data = data();
+        data.sources.push(Arc::new(continue_source(&recent)));
+        let mut search = DesktopSearch::new();
+        search.open(data);
+        settled(&mut search);
+        let entries = search.palette().visible_entries();
+        assert_eq!(
+            entries.first().map(|entry| entry.label.as_str()),
+            Some("Home"),
+            "the place leads the empty card: {entries:?}"
+        );
+        assert_eq!(entries[0].group.as_deref(), Some("Continue"));
+        // A card too small for everything it has makes way with what is
+        // least likely wanted then, never with where the person was.
+        search.set_room(400.0, 200.0);
+        search.restart("", ui::search::engine_generation());
+        settled(&mut search);
+        let entries = search.palette().visible_entries();
+        assert!(
+            entries.iter().any(|entry| entry.id == ALL_RESULTS_ID),
+            "the small card leaves a group to the all-results row: {entries:?}"
+        );
+        assert!(
             entries
                 .iter()
-                .all(|entry| !entry.label.starts_with("Leave this workspace")),
-            "no workspace housekeeping is a default: {entries:?}"
+                .any(|entry| entry.label == "Home" && entry.group.as_deref() == Some("Continue")),
+            "the place stays on a crowded card: {entries:?}"
         );
     }
 
@@ -1495,6 +1564,7 @@ mod tests {
         assert!(search.escape(), "the desk's search clears its query");
         assert!(search.is_open(), "the first Escape keeps search open");
         assert_eq!(search.query(), "", "…and clears the query");
+        settled(&mut search);
         assert!(
             search.results().iter().any(|hit| hit.title == "Sheets"),
             "the empty field lists everything again"
@@ -1526,8 +1596,22 @@ mod tests {
         assert!(!search.is_open());
     }
 
-    /// The shell's published actions: a switch showing its state and keys,
-    /// and an action with nothing to act on now.
+    /// The desktop keymap's binding of `action`: the chord a publisher
+    /// declares, and the way the palette paints that chord. A switch's keys
+    /// come from the shortcut table, never from a chord written here.
+    fn bound_keys(action: ShortcutAction) -> (String, String) {
+        let chord = ShortcutConfig::default()
+            .bindings
+            .get(&action)
+            .unwrap_or_else(|| panic!("{action:?} is bound"))
+            .clone();
+        let painted =
+            ui::keycaps::active().chord(chord.modifiers.iter().map(String::as_str), &chord.key);
+        (chord.display(), painted)
+    }
+
+    /// The shell's published actions: a switch showing its state and the keys
+    /// the keymap binds it to, and an action with nothing to act on now.
     fn published() -> Vec<PublishedActions> {
         let action = |id: &str, label: &str| {
             tilo_actions::ActionSpec::immediate_encoded(
@@ -1540,21 +1624,63 @@ mod tests {
                 },
             )
         };
-        let mut resource = ResourceSpec::new("actions", "actions", "Actions");
-        resource.actions.push(
-            action("notifications.dnd.toggle", "Do Not Disturb").with_state(
-                tilo_actions::ActionState {
+        let (declared, _) = bound_keys(ShortcutAction::ToggleFullscreen);
+        let (resource_id, action_id) = ShortcutAction::ToggleFullscreen
+            .action()
+            .expect("the full screen toggle is a published action");
+        let mut resource = ResourceSpec::new(resource_id, resource_id, "Actions");
+        resource
+            .actions
+            .push(
+                action(action_id, "Full screen").with_state(tilo_actions::ActionState {
                     badge: Some("Off".into()),
                     toggles: true,
-                    shortcut: Some("Super+D".into()),
-                },
-            ),
-        );
+                    shortcut: Some(declared),
+                }),
+            );
         resource.actions.push(
             action("projection.close", "Stop projecting")
                 .unavailable("nothing_to_act_on", "Nothing is projected"),
         );
         vec![PublishedActions::of("shell", "workspace", &[resource])]
+    }
+
+    #[test]
+    fn an_apps_name_opens_the_app_before_any_action_named_the_same() {
+        // An action can carry an app's name (the empty desk's cards did):
+        // a person typing a name wants the app, and Enter on the top row
+        // must start it.
+        let mut desk = ResourceSpec::new("desktop:desk", "desktop", "Desk");
+        desk.actions
+            .push(tilo_actions::ActionSpec::immediate_encoded(
+                "notes",
+                "Notes",
+                tilo_actions::ExecutionLocus::ClientLocal,
+                tilo_actions::EncodedAction {
+                    type_id: "desk.action".into(),
+                    payload: Vec::new(),
+                },
+            ));
+        let mut search = DesktopSearch::new();
+        search.open(SearchData {
+            published: vec![PublishedActions::of("shell", "workspace", &[desk])],
+            ..data()
+        });
+        settled(&mut search);
+        search.set_query("notes");
+        settled(&mut search);
+        let first = search.results()[0].clone();
+        assert_eq!(
+            (first.provider.as_str(), first.title.as_str()),
+            ("applications", "Notes"),
+            "the app leads the action of the same name"
+        );
+        assert_eq!(
+            first.target,
+            Target::Launch {
+                app: "so.tilo.notes".into()
+            }
+        );
     }
 
     #[test]
@@ -1565,13 +1691,22 @@ mod tests {
             ..data()
         });
         settled(&mut search);
-        search.set_query("disturb");
+        search.set_query("full scr");
         settled(&mut search);
         let hit = &search.results()[0];
-        assert_eq!(hit.title, "Do Not Disturb");
+        assert_eq!(hit.title, "Full screen");
+        let (_, painted) = bound_keys(ShortcutAction::ToggleFullscreen);
         let entries = search.palette().visible_entries();
         assert_eq!(entries[0].badge.as_deref(), Some("Off"));
-        assert_eq!(entries[0].keybinding.as_deref(), Some("Super+D"));
+        assert_eq!(
+            entries[0].keybinding_label(ui::PlatformConventions::new(ui::Platform::Linux)),
+            Some(painted),
+            "the keymap's chord, painted as the platform's keycaps"
+        );
+        assert!(
+            entries[0].keybinding.is_none(),
+            "a chord is no free-text keybinding"
+        );
         drop(entries);
         search.palette_mut().activate_selected();
         assert!(
@@ -1585,9 +1720,12 @@ mod tests {
             (invoke.app.as_str(), invoke.workspace.as_str()),
             ("shell", "workspace")
         );
+        let (resource_id, action_id) = ShortcutAction::ToggleFullscreen
+            .action()
+            .expect("the full screen toggle is a published action");
         assert_eq!(
             invoke.address,
-            tilo_actions::ActionAddress::new("actions", "notifications.dnd.toggle")
+            tilo_actions::ActionAddress::new(resource_id, action_id)
         );
         assert!(search.is_open());
     }
@@ -1658,7 +1796,7 @@ mod tests {
     /// A search over the desktop and what one host adds.
     fn with_notes(scope: Scope) -> SearchData {
         SearchData {
-            sources: vec![Box::new(Notes)],
+            sources: vec![Arc::new(Notes)],
             scope,
             ..data()
         }
@@ -1846,9 +1984,9 @@ mod tests {
         );
     }
 
-    /// Typing runs the query once: the frame that takes the new text holds
-    /// what the sources answered in it, the frames after it only fill in
-    /// the rest, and a settled search asks nothing again.
+    /// Typing runs the query once: the frame that takes the new text asks
+    /// the sources, the frames after it fill in what came back, and a
+    /// settled search asks nothing again.
     #[test]
     fn typing_refreshes_the_rows_once_per_query() {
         let mut search = DesktopSearch::new();
@@ -1857,8 +1995,13 @@ mod tests {
         assert!(!search.refresh(), "the empty query is already shown");
         search.palette_mut().set_query("not");
         assert!(search.refresh(), "the new text runs the query");
-        assert!(search.results().iter().any(|hit| hit.title == "Notes"));
+        // A source answers on a worker: its row is in the frame that
+        // collects it, which never waits on any other source.
         settled(&mut search);
+        assert!(
+            search.results().iter().any(|hit| hit.title == "Notes"),
+            "the app named by the text is found"
+        );
         assert!(
             !search.refresh(),
             "nothing is asked once every source answered"
@@ -2011,15 +2154,25 @@ mod tests {
         );
     }
 
-    /// Show what a host shows: keep asking for the rows of the sources that
-    /// have not answered yet, as a running palette does every frame.
+    /// Draw the frames a host draws for a search until every source has
+    /// answered: a source answers on a worker and wakes the desk, so a test
+    /// drives the frames those wakes ask for.
     fn settled(search: &mut DesktopSearch) {
-        for _ in 0..128 {
-            if !search.refresh() {
+        let now = ui::time::now();
+        let deadline = now.checked_add(crate::tests::SETTLE).unwrap_or(now);
+        loop {
+            // The search is settled when no source owes an answer and a
+            // frame found nothing to change.
+            if !search.refresh() && !search.answering() {
                 return;
             }
+            assert!(
+                ui::time::now() < deadline,
+                "the search never settled for {:?}",
+                search.query()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        panic!("the search never settled");
     }
 
     fn selected(search: &DesktopSearch) -> Option<(String, String)> {
@@ -2076,6 +2229,8 @@ mod tests {
                     id: format!("host:{i}"),
                     title: format!("Meeting workspace {i}"),
                     subtitle: None,
+                    icon: None,
+                    unasked: true,
                 })
                 .collect(),
             ..data()
@@ -2131,6 +2286,7 @@ mod tests {
         settled(&mut search);
         arrived.set(true);
         assert!(search.refresh());
+        settled(&mut search);
         let best = search.results().first().expect("rows");
         assert_eq!(
             selected(&search),
@@ -2198,6 +2354,8 @@ mod tests {
                     id: format!("host:{i}"),
                     title: format!("Command {i}"),
                     subtitle: None,
+                    icon: None,
+                    unasked: true,
                 })
                 .collect(),
             ..SearchData::default()
@@ -2224,7 +2382,8 @@ mod tests {
     #[test]
     fn a_crowded_card_lists_the_rest_of_its_results_in_one_row() {
         let mut search = DesktopSearch::new();
-        search.set_room(500.0, 160.0);
+        // Room for what stays once a group makes way, not for every group.
+        search.set_room(500.0, 320.0);
         search.open(crowded());
         settled(&mut search);
         let shown = search.palette().visible_entries();
@@ -2378,7 +2537,9 @@ mod tests {
     #[test]
     fn a_group_asked_for_whole_scrolls_rather_than_making_way() {
         let mut search = DesktopSearch::new();
-        search.set_room(400.0, 120.0);
+        // Room for the three groups the empty card holds, not for all their
+        // rows.
+        search.set_room(400.0, 340.0);
         search.open(SearchData {
             applications: vec![AppEntry {
                 id: "so.tilo.notes".into(),
@@ -2398,6 +2559,8 @@ mod tests {
                     id: format!("host:{i}"),
                     title: format!("Command {i}"),
                     subtitle: None,
+                    icon: None,
+                    unasked: true,
                 })
                 .collect(),
             ..SearchData::default()

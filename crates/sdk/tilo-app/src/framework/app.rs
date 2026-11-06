@@ -343,6 +343,18 @@ pub trait ResourceApp: 'static {
     fn records(records: &mut super::Records<'_>) {
         let _ = records;
     }
+
+    /// The person's own records the app keeps
+    /// ([`PersonKind`](super::PersonKind)), declared with the app rather than
+    /// with the window showing it: each is opened with the window, kept in
+    /// the person's own scope instead of a workspace's, and part of the
+    /// app's committed surface whether or not a view has shown it.
+    ///
+    /// ```ignore
+    /// const PERSON_RECORDS: &'static [PersonKind] =
+    ///     &[PersonKind::shared::<accounts::person::PersonAccounts>()];
+    /// ```
+    const PERSON_RECORDS: &'static [super::PersonKind] = &[];
 }
 
 /// What [`ResourceApp::opening`] builds with: who the window is for, the workspace, and the record
@@ -790,6 +802,9 @@ pub(crate) fn build_root<A: ResourceApp>(
     // so they are published before any view shows them.
     if permissions.is_some() {
         A::records(&mut super::Records::new(&storage).with_base(live.clone(), dispatch.clone()));
+        for record in A::PERSON_RECORDS {
+            record.open(&storage);
+        }
     }
     let effects = if runs_effects {
         Some(Effects::live(dispatch.clone(), live.clone()))

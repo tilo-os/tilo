@@ -86,7 +86,7 @@ d-aia654wv = Places
 d-t7ydaknu = Chrome
 
 d-lhci3noh = Controls
-    .doc = The controls a form is made of: boxes and switches, a number, a choice from a short list, a strip of choices, tabs, a day and a time, a colour, a shortcut, a completion, a picture choice, a row of controls, and a link.
+    .doc = The controls a form is made of: boxes and switches, a number, a choice from a short list, a person, a strip of choices, tabs, a day and a time, a colour, a shortcut, a completion, a picture choice, a row of controls, and a link.
     .noun = { $count ->
         [one] controls
        *[other] controlses
@@ -108,6 +108,15 @@ d-lvaal6xy = Share
 
 d-rzo2wdf2 = Room
     .doc = The room it is in.
+
+d-tfraxdz4 = Urgency
+    .doc = How soon the report is due.
+
+d-cb2aj7ey = Owner
+    .doc = Who looks after the report.
+
+d-rkns6vsj = Reviewer
+    .doc = Who reviews it, nobody picked yet.
 
 d-us66ciy2 = Showing
     .doc = Which view shows.
@@ -297,6 +306,17 @@ d-uuewf2cr = Pinned
 
 d-ciwf3kva = Title
 
+d-shklew6c = Urgency
+    .doc = How soon a report is due, as a case the report holds.
+
+d-52af4spl = No hurry
+
+d-xv6amesr = Low
+
+d-jrcgjyzr = Medium
+
+d-fglwr2mx = High
+
 d-eqcr4df3 = Picture from
     .doc = A page shown in a picture, from the first to the last.
 
@@ -344,7 +364,7 @@ d-7chkyi44 = Basics
     .w-stage = Stage
     .w-review = Review
     .w-no-archived-items = No archived items
-    .w-archived-items-show-here = Archived items show here.
+    .w-archive-an-item-to-put-it = Archive an item to put it aside.
     .w-a-page-of-a-stack = A page of a stack
     .w-a-section-opened-in-its-own = A section opened in its own page of the panel, one level deep.
 
@@ -362,6 +382,8 @@ d-7ptc3r7a = Item row
 
 d-qczmqkvq = Release board
     .w-release = Release
+
+d-glo4d4xp = Board item row
 
 d-z5ai6zk5 = Controls
     .w-boxes-and-switches = Boxes and switches
@@ -385,6 +407,15 @@ d-z5ai6zk5 = Controls
     .w-summary = Summary
     .w-details = Details
     .w-history = History
+    .w-cases = Cases
+    .w-urgency = Urgency
+    .w-no-hurry = No hurry
+    .w-low = Low
+    .w-medium = Medium
+    .w-high = High
+    .w-people = People
+    .w-who-looks-after-it = Who looks after it
+    .w-who-reviews-it-still-to-be = Who reviews it, still to be picked
     .w-draft = Draft
     .w-review = Review
     .w-send = Send
@@ -473,7 +504,6 @@ d-irl4ws35 = Places
     .w-tasks = Tasks
     .w-another-beside-it = Another, beside it.
     .w-window = Window
-    .w-a-window = A window
     .w-close = Close
     .w-a-window-on-the-desk-its = A window on the desk: its bar, its controls, what it shows.
 
@@ -529,103 +559,13 @@ d-rygoropv = Shell parts
     .w-open = Open
     .w-a-dock = A dock
     .w-a-dock-s-body-inset-and = A dock's body, inset and rounded
+    .w-a-bar-s-controls = A bar's controls
+    .w-the-chips-a-bar-holds-people = The chips a bar holds: people, an invite, and a state it stands for.
+    .w-who-is-here = Who is here
+    .w-invite = Invite
+    .w-bo-is-viewing = Bo is viewing
     .w-a-run-of-items = A run of items
     .w-pinned = Pinned
     .w-pinned-standing = Pinned, standing
     .w-unread = Unread
     .w-the-line-above-marks-where-a = The line above marks where a reader's unread messages start.
-
-d-wjo4okew-row0 = Gallery for x
-
-d-wjo4okew-row1 = Gallery for x
-
-d-wjo4okew-row2 = Gallery for x
-
-d-wjo4okew-row3 = Gallery for x
-
-d-wjo4okew-row4 = Gallery for x
-
-d-wjo4okew-row5 = Gallery for x
-
-d-wjo4okew-row6 = Gallery for x
-
-d-wjo4okew-row7 = Gallery for x
-
-d-wjo4okew-row8 = Gallery for x
-
-d-wjo4okew-row9 = Gallery for x
-
-d-wjo4okew-row10 = Gallery for x
-
-d-wjo4okew-row11 = Gallery for x
-
-d-wjo4okew-row12 = Gallery for x
-
-d-wjo4okew-row13 = Gallery for x
-
-d-wjo4okew-row14 = Gallery for x
-
-d-wjo4okew-row15 = Gallery for x
-
-d-wjo4okew-row16 = Gallery for x
-
-d-wjo4okew-row17 = Gallery for x
-
-d-vvxmf5ve-row0 = Backlog list for x
-    .w-open = Open
-    .w-delete = Delete
-    .w-archive = Archive
-
-d-qczmqkvq-row0 = Release board for x
-    .w-ada-lovelace = Ada Lovelace
-
-d-qczmqkvq-row1-row0 = Release board for x
-
-d-qczmqkvq-row1 = Release board for stage
-    .w-new-item = New item
-
-d-qczmqkvq-row2 = Release board for x
-    .w-ada-lovelace = Ada Lovelace
-
-d-qczmqkvq-row3-row0 = Release board for x
-
-d-qczmqkvq-row3 = Release board for stage
-    .w-new-item = New item
-
-d-wxq3apea-row0 = Data for x
-    .w-name = Name
-    .w-state = State
-    .w-size = Size
-
-d-wxq3apea-row1 = Data for f
-    .w-b = { $size } B
-
-d-wxq3apea-row2 = Data for m
-
-d-wxq3apea-row3 = Data for c
-    .w-open-it-to-see-what-it = Open it to see what it holds.
-
-d-wxq3apea-row4 = Data for c
-
-d-wxq3apea-row5 = Data for x
-    .w-name = Name
-    .w-state = State
-    .w-size = Size
-
-d-wxq3apea-row6 = Data for f
-    .w-b = { $size } B
-
-d-wxq3apea-row7 = Data for m
-
-d-wxq3apea-row8 = Data for c
-    .w-open-it-to-see-what-it = Open it to see what it holds.
-
-d-wxq3apea-row9 = Data for c
-
-d-rygoropv-row0 = Shell parts for pinned
-
-d-rygoropv-row1 = Shell parts for pinned
-
-d-rygoropv-row2 = Shell parts for pinned
-
-d-rygoropv-row3 = Shell parts for pinned

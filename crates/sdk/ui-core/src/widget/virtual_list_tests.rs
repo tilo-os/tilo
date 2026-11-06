@@ -5,6 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::testing::Dispatch;
+use crate::widget::context_menu::MenuItem;
 use taffy::AvailableSpace;
 
 pub(super) struct HugeList {
@@ -136,6 +137,9 @@ pub(super) struct ProbeRow {
     consumes_press: bool,
     presses: Rc<Cell<usize>>,
     rect: Rect,
+    /// Whether the row says its actions stand at its trailing edge, as a row whose controls
+    /// only it places them does.
+    trailing_actions: bool,
 }
 
 impl ProbeRow {
@@ -151,11 +155,36 @@ impl ProbeRow {
             consumes_press,
             presses,
             rect: Rect::ZERO,
+            trailing_actions: false,
         }
+    }
+
+    /// The row says where its two controls stand, at its trailing edge, in its own box.
+    pub(super) fn with_trailing_actions(mut self) -> Self {
+        self.trailing_actions = true;
+        self
+    }
+}
+
+impl crate::widget::RowActionRects for ProbeRow {
+    fn row_action_rects(&self) -> Vec<Rect> {
+        if !self.trailing_actions {
+            return Vec::new();
+        }
+        let side = self.rect.height().min(20.0) - 4.0;
+        let cy = self.rect.center().y;
+        (0..2_u32)
+            .map(|nth| {
+                let right = self.rect.x1 - 2.0 - f64::from(1 - nth) * (side + 2.0);
+                Rect::new(right - side, cy - side / 2.0, right, cy + side / 2.0)
+            })
+            .collect()
     }
 }
 
 impl Widget for ProbeRow {
+    crate::provides!(dyn crate::widget::RowActionRects);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -365,6 +394,42 @@ fn semantic_rows_share_scrolled_variable_geometry_and_stable_key_actions() {
     }
 
     {
+        // A list whose rows open when chosen reports the opening alone: the
+        // activation selects the row on its way there, which is no choice of
+        // its own to report.
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let chosen = Rc::new(RefCell::new(Vec::new()));
+        let (opens, chooses) = (Rc::clone(&opened), Rc::clone(&chosen));
+        let model = VecListModel::new(vec![10_u64, 20], |key| *key).unwrap();
+        let mut list = VirtualList::new(model, 24.0, |_, _, key| {
+            Box::new(ProbeRow::new(
+                key.to_string(),
+                24.0,
+                false,
+                Rc::new(Cell::new(0)),
+            ))
+        })
+        .with_viewport_height(100.0)
+        .with_semantic_key(u64::to_string)
+        .on_select(move |key, _| chooses.borrow_mut().push(key))
+        .on_activate(move |key| opens.borrow_mut().push(key));
+        let _ = lay_out(&mut list, 300.0);
+        assert!(Widget::perform_semantic_action(
+            &mut list,
+            "key:20",
+            &crate::a11y::Action::Activate,
+            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+            &automerge::ROOT,
+        ));
+        assert!(list.selection().is_selected(&20));
+        assert_eq!(&*opened.borrow(), &[20], "the row opens once");
+        assert!(
+            chosen.borrow().is_empty(),
+            "and choosing it is not reported again"
+        );
+    }
+
+    {
         let model = VecListModel::new(vec![1_u64, 2, 3], |key| *key).unwrap();
         let mut list = VirtualList::new(model, 24.0, |_, _, key| {
             Box::new(ProbeRow::new(
@@ -385,12 +450,17 @@ fn semantic_rows_share_scrolled_variable_geometry_and_stable_key_actions() {
         let gutter = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
         assert_eq!(
             first.bounds.expect("row bounds").to_rect(),
-            Rect::new(8.0, -10.0, 300.0 - gutter - 8.0, 14.0)
+            Rect::new(0.0, -10.0, 300.0 - gutter, 14.0),
+            "the list's own row box, clear of the bar's gutter",
         );
+        let delegate = first
+            .children
+            .first()
+            .expect("the row's own widget under it");
         assert_eq!(
-            list.mounted[0].widget.get_rect(),
-            first.bounds.expect("row bounds").to_rect(),
-            "semantic and retained delegate geometry agree",
+            delegate.name.as_deref(),
+            Some("1"),
+            "the row's own control reads under the list's row",
         );
     }
 
@@ -694,6 +764,88 @@ fn pointer_input_separates_delegate_presses_drag_scroll_and_selection() {
 }
 
 #[test]
+fn a_placement_that_placed_no_row_leaves_the_pointer_the_rows_that_mount() {
+    // A scroll that outruns the rows a list mounted asks for a placement of
+    // its neighbours: that placement finds no row near the box and places
+    // none, so it must not narrow the pointer to nothing. The rows the frame
+    // mounts stand under the pointer before they are placed, and a press
+    // there is theirs.
+    let keys = Rc::new(RefCell::new((0_u64..80).collect::<Vec<_>>()));
+    let presses = Rc::new(Cell::new(0));
+    let captured = Rc::clone(&presses);
+    let mut list = VirtualList::new(
+        SharedOrder {
+            keys: Rc::clone(&keys),
+        },
+        20.0,
+        move |_, index, _| {
+            Box::new(ProbeRow::new(
+                format!("row {index}"),
+                20.0,
+                true,
+                Rc::clone(&captured),
+            ))
+        },
+    )
+    .with_viewport_height(60.0);
+    let (taffy, node) = lay_out(&mut list, 200.0);
+    assert!(!list.mounted.is_empty(), "the rows at the top show");
+    assert!(list.mounted.len() < 80, "a list mounts only what it shows");
+
+    // The view runs past every mounted row, and the frame places the list
+    // again from the layout it has: no row is near the box yet.
+    list.set_scroll_offset(1200.0);
+    let tree = crate::widget::layout::TreeId::of(&taffy);
+    crate::widget::layout::placing_again_in(tree, || {
+        list.apply_layout(&taffy, node, Point::ZERO);
+    });
+
+    // What that frame mounts is what the pointer now stands on, placed by
+    // the next frame: the press is the row's before that placement.
+    let mut mounted = TaffyTree::new();
+    let mut node_map = HashMap::new();
+    let grown = list.build_layout(&mut mounted, &Theme::dark(), &mut node_map);
+    assert!(!list.mounted.is_empty(), "the rows at the view show");
+    dispatch(&mut list, &cursor(10.0), &mounted, grown);
+    dispatch(&mut list, &left(ElementState::Pressed), &mounted, grown);
+    assert_eq!(
+        presses.get(),
+        1,
+        "the row the pointer stands on takes its press"
+    );
+}
+
+#[test]
+fn a_press_opens_the_row_of_a_list_that_opens_on_press() {
+    let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let door = Rc::clone(&opened);
+    let model = VecListModel::new((0_u64..3).collect(), |key| *key).unwrap();
+    let mut list = VirtualList::new(model, 20.0, |_, _, key| {
+        Box::new(ProbeRow::new(
+            key.to_string(),
+            20.0,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    })
+    .with_viewport_height(60.0)
+    .with_semantic_key(ToString::to_string)
+    .open_on_press()
+    .on_activate_view("probe-list", move |key| door.borrow_mut().push(key));
+    let (taffy, node) = lay_out(&mut list, 200.0);
+
+    dispatch(&mut list, &cursor(10.0), &taffy, node);
+    dispatch(&mut list, &left(ElementState::Pressed), &taffy, node);
+    dispatch(&mut list, &left(ElementState::Released), &taffy, node);
+
+    assert_eq!(*opened.borrow(), vec![0], "one press opens the row");
+    assert!(
+        list.selection().is_selected(&0),
+        "the row it opened is the choice"
+    );
+}
+
+#[test]
 fn list_reorder_previews_and_commits_valid_drops_only() {
     {
         let mut list = VirtualList::from_items(
@@ -802,6 +954,33 @@ fn ctrl_arrows_move_the_focused_row_through_the_reorder_commit() {
     assert!(send(&mut fixed, NamedKey::ArrowDown, ctrl, (&taffy, node)));
     assert_eq!(fixed.focused_key(), Some(&1));
     assert_eq!(fixed.model().items(), &[0, 1, 2]);
+}
+
+/// Enter on a list whose rows open nothing chooses the row, as a click does, and says so
+/// once: the app's published view action reaches the keyboard too.
+#[test]
+fn enter_chooses_a_row_that_opens_nothing() {
+    let chosen = Rc::new(RefCell::new(Vec::new()));
+    let choosing = Rc::clone(&chosen);
+    let mut list = plain_rows(3).on_select(move |key, selected| {
+        if selected {
+            choosing.borrow_mut().push(key);
+        }
+    });
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    list.set_focus(true);
+    assert!(list.reveal(&1));
+    assert!(
+        Dispatch::new()
+            .layout(&taffy, node)
+            .send(
+                &mut list,
+                &crate::synthetic_input::named_key(NamedKey::Enter)
+            )
+            .handled
+    );
+    assert!(list.selection().is_selected(&1));
+    assert_eq!(&*chosen.borrow(), &[1], "chosen once");
 }
 
 fn plain_rows(count: u32) -> VirtualList<VecListModel<u32, u32>> {
@@ -1154,7 +1333,13 @@ fn a_second_click_activates_and_a_right_click_opens_the_rows_menu() {
     let (a, m) = (Rc::clone(&activated), Rc::clone(&menus));
     let mut list = plain_rows(10)
         .on_activate(move |key| a.borrow_mut().push(key))
-        .on_context(move |key, _, rect| m.borrow_mut().push((key, rect)));
+        .with_context_menu(
+            move |_: &VecListModel<u32, u32>, key| {
+                m.borrow_mut().push(key.copied());
+                vec![MenuItem::action("Open", || {})]
+            },
+            |_, _| {},
+        );
     let (taffy, node) = lay_out(&mut list, 300.0);
     let middle = |list: &VirtualList<VecListModel<u32, u32>>, index: usize| {
         list.rect.y0
@@ -1181,13 +1366,197 @@ fn a_second_click_activates_and_a_right_click_opens_the_rows_menu() {
         node,
     ));
     let menus = menus.borrow();
-    assert_eq!(menus.len(), 1);
-    assert_eq!(menus[0].0, 3);
+    assert_eq!(menus.as_slice(), [Some(3)]);
     assert!(
         list.selection().is_selected(&3),
         "the row is selected first"
     );
-    assert!(menus[0].1.contains(Point::new(20.0, row_three)));
+    assert!(list.context_menu_is_open());
+    assert!(
+        list.modal_capture()
+            .is_some_and(|menu| menu.contains(Point::new(20.0, row_three))),
+        "the menu stands where the press was"
+    );
+}
+
+#[test]
+fn the_menu_key_and_shift_f10_open_the_focused_rows_menu() {
+    let menus = Rc::new(RefCell::new(Vec::new()));
+    let m = Rc::clone(&menus);
+    let mut list = plain_rows(10).with_context_menu(
+        move |_: &VecListModel<u32, u32>, key| {
+            m.borrow_mut().push(key.copied());
+            vec![MenuItem::action("Open", || {})]
+        },
+        |_, _| {},
+    );
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    list.set_focus(true);
+    assert!(list.reveal(&2));
+    let send = |list: &mut VirtualList<VecListModel<u32, u32>>,
+                event: &WindowEvent,
+                modifiers: winit::keyboard::ModifiersState| {
+        Dispatch::new()
+            .modifiers(modifiers)
+            .layout(&taffy, node)
+            .send(list, event)
+            .handled
+    };
+    let menu = crate::synthetic_input::named_key(NamedKey::ContextMenu);
+    assert!(send(
+        &mut list,
+        &menu,
+        winit::keyboard::ModifiersState::empty()
+    ));
+    assert_eq!(menus.borrow().len(), 1);
+    assert_eq!(menus.borrow()[0], Some(2), "the row the keyboard is on");
+    list.close_context_menu();
+    let f10 = crate::synthetic_input::named_key(NamedKey::F10);
+    assert!(send(
+        &mut list,
+        &f10,
+        winit::keyboard::ModifiersState::SHIFT
+    ));
+    assert_eq!(menus.borrow().len(), 2, "Shift+F10, as a tree's rows");
+    assert_eq!(menus.borrow()[1], Some(2));
+    list.close_context_menu();
+    assert!(
+        !send(&mut list, &f10, winit::keyboard::ModifiersState::empty()),
+        "F10 alone is no menu"
+    );
+    assert_eq!(menus.borrow().len(), 2);
+
+    // A row with no menu attached offers none, and the key stays the window's.
+    let mut plain = plain_rows(3);
+    let (taffy, node) = lay_out(&mut plain, 300.0);
+    plain.set_focus(true);
+    assert!(plain.reveal(&0));
+    assert!(
+        !Dispatch::new()
+            .layout(&taffy, node)
+            .send(&mut plain, &menu)
+            .handled
+    );
+}
+
+/// A list set up to report its row menus hands its host the row's key, its box and the point
+/// the menu opens at, and leaves the selection to the host's menu.
+#[test]
+fn a_reported_row_menu_hands_the_host_the_row_and_where_it_opens() {
+    let reports: Rc<RefCell<Vec<(u32, Rect, Point)>>> = Rc::new(RefCell::new(Vec::new()));
+    let r = Rc::clone(&reports);
+    let mut list = plain_rows(10).with_row_menu_reporter(move |key, row, at| {
+        r.borrow_mut().push((key, row, at));
+    });
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    let middle = |list: &VirtualList<VecListModel<u32, u32>>, index: usize| {
+        list.rect.y0
+            + list.viewport.item_view_top(index).unwrap()
+            + list.viewport.item_height(index).unwrap() / 2.0
+    };
+    let row_three = middle(&list, 3);
+    dispatch(&mut list, &cursor(row_three), &taffy, node);
+    assert!(dispatch(
+        &mut list,
+        &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
+        &taffy,
+        node,
+    ));
+    {
+        let reports = reports.borrow();
+        assert_eq!(reports.len(), 1, "one report for the press");
+        let (key, row, at) = reports[0];
+        assert_eq!(key, 3, "the row under the pointer");
+        assert_eq!(Some(row), list.row_rect(&3), "its box, to anchor the menu");
+        assert_eq!(at, Point::new(20.0, row_three), "where the press was");
+        assert!(
+            !list.selection().is_selected(&3),
+            "the host's menu decides what it acts on"
+        );
+        assert!(!list.context_menu_is_open(), "no menu of the list's own");
+    }
+
+    // The Menu key on the focused row reports it too, at the middle of its row.
+    list.set_focus(true);
+    assert!(list.reveal(&5));
+    let menu = crate::synthetic_input::named_key(NamedKey::ContextMenu);
+    assert!(
+        Dispatch::new()
+            .layout(&taffy, node)
+            .send(&mut list, &menu)
+            .handled
+    );
+    let reports = reports.borrow();
+    assert_eq!(reports.len(), 2);
+    let (key, row, at) = reports[1];
+    assert_eq!(key, 5, "the row the keyboard is on");
+    assert_eq!(Some(row), list.row_rect(&5));
+    assert_eq!(at, row.center(), "at the middle of the row");
+}
+
+/// A list offers its rows one menu: setting the menu the list builds replaces the host's
+/// report, and the other way round.
+#[test]
+fn a_list_has_one_row_menu() {
+    let reports = Rc::new(Cell::new(0));
+    let reported = Rc::clone(&reports);
+    let handled = Rc::new(RefCell::new(Vec::new()));
+    let chosen = Rc::clone(&handled);
+    let mut list = plain_rows(4)
+        .with_row_menu_reporter(move |_, _, _| reported.set(reported.get() + 1))
+        .with_context_menu(
+            move |_, key| {
+                chosen.borrow_mut().push(key.copied());
+                vec![MenuItem::action("Open", || {})]
+            },
+            |_, _| {},
+        );
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    let row_one = list.row_rect(&1).expect("row one").center().y;
+    dispatch(&mut list, &cursor(row_one), &taffy, node);
+    assert!(dispatch(
+        &mut list,
+        &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
+        &taffy,
+        node,
+    ));
+    assert_eq!(reports.get(), 0, "the host no longer hears of it");
+    assert_eq!(*handled.borrow(), [Some(1)], "the list builds the menu");
+    assert!(list.context_menu_is_open());
+}
+
+/// The list asks the mounted row where its actions stand, so a row the crate does not build
+/// still says where a script presses one.
+#[test]
+fn row_action_rect_asks_the_mounted_row() {
+    let mut list = VirtualList::new(
+        VecListModel::new((0..3_u32).collect(), |i| *i).unwrap(),
+        40.0,
+        |_, _, key| {
+            let row = ProbeRow::new(key.to_string(), 40.0, false, Rc::new(Cell::new(0)));
+            Box::new(if *key == 1 {
+                row.with_trailing_actions()
+            } else {
+                row
+            }) as Element
+        },
+    )
+    .with_viewport_height(200.0);
+    let _ = lay_out(&mut list, 300.0);
+    let row = list.row_rect(&1).expect("row one is placed");
+    let second = list.row_action_rect(&1, 1).expect("its second action");
+    assert!(
+        row.contains(second.center()),
+        "in the row's own box: {row:?} vs {second:?}"
+    );
+    let first = list.row_action_rect(&1, 0).expect("its first action");
+    assert!(first.x1 <= second.x0, "in the order the row shows them");
+    assert_eq!(list.row_action_rect(&1, 2), None, "a third is no action");
+    assert_eq!(
+        list.row_action_rect(&0, 0),
+        None,
+        "a row without actions says none"
+    );
 }
 
 #[test]
@@ -1221,6 +1590,37 @@ fn a_selection_delegate_receives_its_neighbours_and_list_rows_join() {
     assert_eq!(joins[2], crate::chrome::RowJoin::new(true, false));
     assert!(list.row_selection(0).below);
     assert!(list.row_selection(3).above);
+}
+
+/// A delegate whose row a view wraps, as `std.rows` gives every row the swipe its item offers:
+/// the list still hands the row its selection, in place.
+#[test]
+fn a_selection_delegate_wrapped_in_its_swipe_takes_its_selection() {
+    let model = VecListModel::new((0..3_u32).collect(), |i| *i).unwrap();
+    let mut list = VirtualList::with_selection_delegate(model, 40.0, |_, _, key, _| {
+        let row = crate::widget::ListRow::new(format!("r{key}"), format!("Row {key}"));
+        Box::new(crate::widget::SwipeRow::new(Box::new(row), None, None)) as Element
+    })
+    .with_viewport_height(400.0);
+    let _ = lay_out(&mut list, 300.0);
+    list.selection_mut().select_only(1);
+    list.push_row_selection();
+    let selected: Vec<bool> = list
+        .mounted
+        .iter_mut()
+        .map(|row| {
+            row.widget
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<crate::widget::SwipeRow>())
+                .expect("the row's swipe")
+                .content()
+                .as_any()
+                .and_then(|any| any.downcast_ref::<crate::widget::ListRow>())
+                .expect("the row under its swipe")
+                .is_selected()
+        })
+        .collect();
+    assert_eq!(selected, [false, true, false], "only the chosen row is");
 }
 
 /// A change the person just made moves the rows it displaced from where

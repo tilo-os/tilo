@@ -102,7 +102,7 @@ fn pump(compositor: &mut Compositor, client: &mut Client, mut done: impl FnMut(&
 }
 
 fn shown(compositor: &mut Compositor) -> [u8; 4] {
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").expect("screenshot");
     frame.pixel(10, 10).expect("pixel")
 }

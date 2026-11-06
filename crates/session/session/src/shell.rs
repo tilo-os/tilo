@@ -16,6 +16,7 @@ use tilo_surface_host::shell_part::{ArrangementReading, Ask};
 use tilo_surface_host::{Doors, SessionLink, ShellPart, ShellWork};
 
 use crate::desk_resource::Desk;
+use crate::displays;
 use crate::panels::Held;
 
 /// The shell package and the packages it uses, compiled, the shell last: what the shell's
@@ -72,6 +73,10 @@ pub(crate) struct Shell {
     reading: std::collections::BTreeMap<String, String>,
     /// How often each was read for the shell.
     reads: std::collections::BTreeMap<String, u64>,
+    /// The apps whose packages a view composed in a place read a type of before it was
+    /// loaded, by app id: published with the packages the places show, and kept for the rest
+    /// of the session (a view keeps drawing what it read once the card is there).
+    needed: std::collections::BTreeSet<String>,
     /// How many of the session's turns read some of them: what the views composed in places
     /// waited on comes in one turn for everything one run of them read, not one per resource.
     rounds: u64,
@@ -85,7 +90,6 @@ pub(crate) struct Shell {
     packages: Vec<tilolang_tilo::tilolang::Compiled>,
     app: String,
     person: String,
-    scale: f64,
     /// The height of the bar's band, logical pixels: a window reaching into the top band
     /// covers a bar there.
     band: u32,
@@ -107,7 +111,6 @@ impl Shell {
         compositor: &mut Compositor,
         doors: &mut Doors,
         desk: Desk,
-        scale: f64,
         wells: Option<ui::widget::Wells>,
         theme: ui::Theme,
     ) -> Result<Self, String> {
@@ -125,13 +128,13 @@ impl Shell {
             followed: None,
             reading: std::collections::BTreeMap::new(),
             reads: std::collections::BTreeMap::new(),
+            needed: std::collections::BTreeSet::new(),
             rounds: 0,
             record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
             parts: Vec::new(),
             packages,
             app,
             person: String::new(),
-            scale,
             band: band(),
             wells,
             services_seen: None,
@@ -158,20 +161,34 @@ impl Shell {
     /// stands again when that display comes back, so unplugging and replugging makes no new
     /// part. Cheap when nothing changed, which is what every frame runs.
     fn follow_outputs(&mut self, compositor: &mut Compositor, doors: &mut Doors) {
-        let outputs = outputs_of(compositor);
+        let outputs = displays::placed(&compositor.outputs());
         for (name, part) in &self.parts {
-            if !outputs.iter().any(|(shown, _)| shown == name) {
-                part.borrow_mut().set_display(None);
+            if !outputs.iter().any(|shown| &shown.connector == name) {
+                part.borrow_mut().set_display(None, 1.0);
             }
         }
         let fullscreen = compositor.fullscreen_outputs();
-        for (name, rect) in &outputs {
-            if let Some((_, part)) = self.parts.iter().find(|(shown, _)| shown == name) {
-                part.borrow_mut().set_display(Some((name.clone(), *rect)));
+        for output in &outputs {
+            if let Some((_, part)) = self
+                .parts
+                .iter()
+                .find(|(shown, _)| *shown == output.connector)
+            {
+                part.borrow_mut().set_display(
+                    Some((output.connector.clone(), output.part_rect())),
+                    output.scale,
+                );
                 part.borrow_mut().set_fullscreen(fullscreen.clone());
                 continue;
             }
-            self.mount_part(compositor, doors, name, *rect, &fullscreen);
+            self.mount_part(
+                compositor,
+                doors,
+                &output.connector,
+                output.part_rect(),
+                output.scale,
+                &fullscreen,
+            );
         }
     }
 
@@ -183,6 +200,7 @@ impl Shell {
         doors: &mut Doors,
         output: &str,
         rect: (i32, i32, u32, u32),
+        scale: f64,
         fullscreen: &[String],
     ) {
         let wake = compositor.waker();
@@ -197,12 +215,12 @@ impl Shell {
                 // other display's part draws the one the shell already has.
                 seed: self.parts.is_empty(),
             },
-            self.scale,
+            scale,
             std::sync::Arc::new(move || wake.wake_by_ref()),
             self.wells.clone(),
         );
         part.set_theme(self.theme.clone());
-        part.set_display(Some((output.to_owned(), rect)));
+        part.set_display(Some((output.to_owned(), rect)), scale);
         part.set_fullscreen(fullscreen.to_vec());
         // The windows the views picture, each display's own: the reading's window keys stand
         // for the tabs of the workspace in front, and a window whose app holds secrets is left
@@ -324,31 +342,40 @@ impl Shell {
         services: &mut Services,
     ) {
         let wanted = self.link.take_wanted();
+        // A view composed in a place read a resource of a type no loaded package declared: its
+        // app's package is published like those a place shows, so the place draws it through
+        // that app's own views.
+        let mut asked = false;
+        for app in self.link.take_wanted_packages().into_keys() {
+            asked |= self.needed.insert(app);
+        }
         let key = (services.revision(), arrangement.clone());
-        let moved_on = self.followed.as_ref() != Some(&key);
+        let moved_on = asked || self.followed.as_ref() != Some(&key);
         if !moved_on && wanted.is_empty() {
             return;
         }
         let mut fresh: Vec<(String, String)> = Vec::new();
-        if self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
-            let placed = tilo_surface_host::shell_part::readings::placed_records(
-                arrangement,
-                &services.resources(),
-            );
+        if asked || self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
+            let mut placed = std::collections::BTreeMap::new();
+            if self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
+                placed = tilo_surface_host::shell_part::readings::placed_records(
+                    arrangement,
+                    &services.resources(),
+                );
+            }
             let mut packages = std::collections::BTreeMap::new();
-            for ty in placed.values() {
-                let Some(app) = tilo_surface_host::shell_part::readings::app_of(ty) else {
-                    continue;
-                };
+            let app_of = tilo_surface_host::shell_part::readings::app_of;
+            let mut apps: std::collections::BTreeSet<&str> =
+                self.needed.iter().map(String::as_str).collect();
+            apps.extend(placed.values().filter_map(|ty| app_of(ty)));
+            for app in apps {
                 if let Some(module) = services.module(app) {
                     packages.insert(app.to_owned(), module);
                 }
             }
-            // A resource of an app no place shows any more is followed no more.
-            self.reading.retain(|_, ty| {
-                tilo_surface_host::shell_part::readings::app_of(ty)
-                    .is_some_and(|app| packages.contains_key(app))
-            });
+            // A resource of an app no package is published of any more is followed no more.
+            self.reading
+                .retain(|_, ty| app_of(ty).is_some_and(|app| packages.contains_key(app)));
             self.link.publish_packages(packages);
             for (id, ty) in placed {
                 if !self.reading.contains_key(&id) {
@@ -426,6 +453,21 @@ impl Shell {
         self.link.surface()
     }
 
+    /// The windows the shell's views picture, each with the rect its picture rests at, logical
+    /// `(x, y, width, height)`: what the compositor draws of them, its own buffers scaled into
+    /// the place a view gives them. Empty while no view pictures a window.
+    pub(crate) fn pictures(&self) -> Vec<(u64, (f64, f64, f64, f64))> {
+        self.parts
+            .iter()
+            .flat_map(|(_, part)| {
+                part.borrow()
+                    .window_pictures()
+                    .into_iter()
+                    .map(|picture| (picture.window, picture.rect))
+            })
+            .collect()
+    }
+
     /// Whether the shell asked something of the door the session has not run yet.
     pub(crate) fn has_asks(&self) -> bool {
         self.link.has_asks()
@@ -480,7 +522,7 @@ impl Shell {
     ) {
         let mut invoke = invoke;
         self.link.serve(|ask: &Ask| {
-            let arguments: Map<String, Value> = ask
+            let mut arguments: Map<String, Value> = ask
                 .arguments
                 .iter()
                 .map(|(name, value)| {
@@ -488,6 +530,14 @@ impl Shell {
                     (name.clone(), typed(value, ty))
                 })
                 .collect();
+            // What the invocation is made from goes with its arguments: the app that takes it
+            // records what it makes as made from it.
+            if let Some(from) = &ask.from {
+                arguments.insert(
+                    tilo_actions::params::FROM_ARGUMENT.to_owned(),
+                    from.to_json(),
+                );
+            }
             invoke(&ask.resource, &ask.action, &arguments)
         });
     }
@@ -593,6 +643,7 @@ impl Shell {
                 Some(PartPlace {
                     output: name.clone(),
                     rect,
+                    scale: part.part_scale(),
                     aside: part.aside(),
                 })
             })
@@ -601,30 +652,18 @@ impl Shell {
 }
 
 /// A display's part of the shell, as it stands now: the output it is on, where it stands in the
-/// logical layout, and whether it stepped aside for a fullscreen window there.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// logical layout, the scale it draws at, and whether it stepped aside for a fullscreen window
+/// there.
+#[derive(Clone, Debug, PartialEq)]
 pub struct PartPlace {
     /// The output's connector name (`HEADLESS-1`).
     pub output: String,
     /// Where the part stands, logical `(x, y, w, h)`.
     pub rect: (i32, i32, u32, u32),
+    /// The scale the part draws at: its display's, so what it paints is as crisp as the panel.
+    pub scale: f64,
     /// A fullscreen window owns the output, so the part draws nothing there.
     pub aside: bool,
-}
-
-/// Every output `compositor` shows, by connector name and logical rectangle `(x, y, w, h)`:
-/// one part stands on each, its whole screen, and none spans them all.
-fn outputs_of(compositor: &Compositor) -> Vec<(String, (i32, i32, u32, u32))> {
-    compositor
-        .outputs()
-        .into_iter()
-        .filter_map(|output| {
-            output.rect.map(|(x, y, w, h)| {
-                let side = |side: i32| u32::try_from(side.max(1)).unwrap_or(1);
-                (output.name.clone(), (x, y, side(w), side(h)))
-            })
-        })
-        .collect()
 }
 
 /// The compositor's window for the reading's window `key` (its tab's id), when it may be
@@ -660,6 +699,8 @@ fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
             .trim()
             .parse::<i64>()
             .map_or_else(|_| Value::String(value.to_owned()), Value::from),
+        // ignored-failure: a number that does not parse is sent as the text
+        // the person typed, and the door refuses it by name
         Some(ParamType::Number) => value
             .trim()
             .parse::<f64>()
@@ -780,6 +821,7 @@ impl ShellChrome {
             }
             "shortcut"
                 if arguments.get("action").cloned().and_then(|action| {
+                    // ignored-failure: an action that does not read back is not this one
                     serde_json::from_value::<ui::shortcut_table::ShortcutAction>(action).ok()
                 }) == Some(ui::shortcut_table::ShortcutAction::WorkspaceOverview) =>
             {
@@ -823,11 +865,12 @@ impl tilo_surface_host::Published for ShellChrome {
         &mut self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
+        look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         if let Some(started) = self.show_surface(address, arguments)? {
             return Ok(started);
         }
-        self.chrome.borrow_mut().invoke(address, arguments)
+        self.chrome.borrow_mut().invoke(address, arguments, look)
     }
 
     fn invoke_as(
@@ -835,13 +878,14 @@ impl tilo_surface_host::Published for ShellChrome {
         actor: &str,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
+        look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         if let Some(started) = self.show_surface(address, arguments)? {
             return Ok(started);
         }
         self.chrome
             .borrow_mut()
-            .invoke_as(actor, address, arguments)
+            .invoke_as(actor, address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
@@ -884,6 +928,7 @@ impl tilo_surface_host::Published for ShellDesk {
         &mut self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
+        look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         if address.resource == tilo_desktop::desk_verbs::DESK_RESOURCE && address.action == "search"
         {
@@ -893,7 +938,7 @@ impl tilo_surface_host::Published for ShellDesk {
                 // The desk runs its search as it always does, so its rows are published on its
                 // search resource for the palette and the agents; the shell's launcher is what
                 // draws, and it opens on what was asked for.
-                let started = self.desk.borrow_mut().invoke(address, arguments)?;
+                let started = self.desk.borrow_mut().invoke(address, arguments, look)?;
                 self.surfaces.overlays.search(query);
                 return Ok(started);
             }
@@ -903,7 +948,38 @@ impl tilo_surface_host::Published for ShellDesk {
                 tilo_actions::ActionOutput::default(),
             ));
         }
-        self.desk.borrow_mut().invoke(address, arguments)
+        // The platform search door (a window's search control, its toolbar's
+        // magnifier, Ctrl+K) asks for the desk's search under the shell too:
+        // the shell draws that search, so the request opens the launcher, and
+        // its query runs the desk's search as the desk's own `search` verb
+        // does, its rows published for whoever reads them.
+        if ui::search::is_search_address(address) {
+            let query = ui::search::SearchRequest::from_arguments(arguments)
+                .query
+                .filter(|query| !query.is_empty());
+            let started = match &query {
+                Some(query) => {
+                    let asked =
+                        Map::from_iter([("query".to_owned(), Value::String(query.clone()))]);
+                    self.desk.borrow_mut().invoke(
+                        &ActionAddress::new(tilo_desktop::desk_verbs::DESK_RESOURCE, "search"),
+                        &asked,
+                        look,
+                    )?
+                }
+                None => ui::host_operation::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ),
+            };
+            match &query {
+                Some(query) => self.surfaces.overlays.search(query),
+                None => self
+                    .surfaces
+                    .toggle(crate::overlays::Overlay::Launcher.name()),
+            }
+            return Ok(started);
+        }
+        self.desk.borrow_mut().invoke(address, arguments, look)
     }
 
     fn invoke_as(
@@ -911,12 +987,17 @@ impl tilo_surface_host::Published for ShellDesk {
         actor: &str,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
+        look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
-        if address.resource == tilo_desktop::desk_verbs::DESK_RESOURCE && address.action == "search"
+        if ui::search::is_search_address(address)
+            || (address.resource == tilo_desktop::desk_verbs::DESK_RESOURCE
+                && address.action == "search")
         {
-            return self.invoke(address, arguments);
+            return self.invoke(address, arguments, look);
         }
-        self.desk.borrow_mut().invoke_as(actor, address, arguments)
+        self.desk
+            .borrow_mut()
+            .invoke_as(actor, address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
@@ -972,7 +1053,7 @@ impl<T: SurfaceHost> SurfaceHost for Aside<T> {
 
     fn key(&mut self, _key: &HostKey) {}
 
-    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
         self.0.outputs_changed(outputs);
     }
 
@@ -1053,12 +1134,24 @@ impl crate::Session {
                             tilo_desktop_search::Target::Launch {
                                 app: app.to_owned(),
                             },
-                            &mut |own| doors.invoke(&own.address, &own.arguments).map(drop),
+                            &mut |own| {
+                                doors
+                                    .invoke(
+                                        &own.address,
+                                        &own.arguments,
+                                        &mut tilo_surface_host::Look::none(),
+                                    )
+                                    .map(drop)
+                            },
                         )
                         .map_err(|error| error.to_string());
                 }
                 doors
-                    .invoke(&ActionAddress::new(resource, action), arguments)
+                    .invoke(
+                        &ActionAddress::new(resource, action),
+                        arguments,
+                        &mut tilo_surface_host::Look::none(),
+                    )
                     .map(drop)
                     .map_err(|error| error.to_string())
             },
@@ -1225,10 +1318,7 @@ mod tests {
         // Every scenario the package declares keeps the id the lock gives it, in the lock's
         // live entries and never among the retired: a scenario's id is as real as a type's.
         let parsed = IdsLock::parse(&on_disk).expect("the lock parses");
-        let retired: std::collections::BTreeMap<(&str, &str), ()> = parsed
-            .retired()
-            .map(|(name, id)| ((name, id), ()))
-            .collect();
+        let retired: std::collections::BTreeSet<(&str, &str)> = parsed.retired().collect();
         let scenarios = &compiled.compiled.meta.scenarios;
         assert!(
             scenarios.len() > 20,
@@ -1241,7 +1331,7 @@ mod tests {
                 .get(&name)
                 .unwrap_or_else(|| panic!("scenario {name:?} has no id in app.ids"));
             assert!(
-                !retired.contains_key(&(name.as_str(), held)),
+                !retired.contains(&(name.as_str(), held)),
                 "{name} is retired"
             );
         }
@@ -1282,7 +1372,7 @@ mod tests {
             self.keys = self.keys.saturating_add(1);
         }
 
-        fn outputs_changed(&mut self, _outputs: &[(i32, i32, i32, i32)]) {
+        fn outputs_changed(&mut self, _outputs: &[tilo_compositor::HostedOutput]) {
             self.outputs = self.outputs.saturating_add(1);
         }
 
@@ -1319,7 +1409,10 @@ mod tests {
         assert_eq!(aside.0.keys, 0, "no key reached the desk behind it");
         assert!(aside.layers().is_empty(), "it draws nothing");
         assert!(!aside.accepts_pointer(1.0, 1.0), "it takes no pointer");
-        aside.outputs_changed(&[(0, 0, 1280, 800)]);
+        aside.outputs_changed(&[tilo_compositor::HostedOutput {
+            rect: (0, 0, 1280, 800),
+            scale: 1.0,
+        }]);
         assert_eq!(aside.0.outputs, 1, "it follows the displays");
     }
 

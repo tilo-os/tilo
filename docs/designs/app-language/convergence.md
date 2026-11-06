@@ -75,7 +75,12 @@ type Workshop {
 
   A requirement is pure. One that reads only the subject decides where the action is offered:
   wherever it would be offered on the subject (a window's header, a menu, an agent's choices)
-  the system leaves it out while one fails. One that also reads an argument the caller gives
+  the action's published availability says whether it can run now, and why not. A list of things
+  a person can take (a palette, a search, a menu, a swipe) leaves it out while one fails; a
+  button that names it stays, disabled, with the requirement's reason as its description.
+  Reading a
+  requirement is a read like any other, and what it reads moves only where it is offered. One
+  that also reads an argument the caller gives
   (`require to.key != t.box "It is there already"` in `move_to(t: Thread, to: Mailbox)`) cannot
   be decided before that is given, so it never hides the action; it is checked when the action
   runs, and a form shows its reason as the refusal. Either way an invocation that fails one is

@@ -3,7 +3,9 @@
 use crate::component::{Component, Described, Event};
 use crate::icons::Icon;
 
+use super::ChipStyle;
 use super::{Chip, ChipLead};
+use crate::widget::Tone;
 
 /// A compact pill for a tag, a filter or a token: what a note is tagged with, a recipient, an
 /// applied filter. Pressing it opens or applies what it names; a chip that can be taken away
@@ -16,6 +18,9 @@ pub struct ChipProps {
     pub label: String,
     /// A glyph before the label, for a chip that names an action rather than a value.
     pub icon: Option<Icon>,
+    /// The tone the chip reads in: what it names is a status (a priority, a state of an item),
+    /// and its pill is washed in that tone. `Neutral` for a chip that only names something.
+    pub tone: Tone,
     /// Whether the filter it stands for is on; without it the chip is no filter.
     pub selected: Option<bool>,
     /// It was pressed: open or apply what it names.
@@ -33,6 +38,7 @@ impl Described for Chip {
         let ChipProps {
             label,
             icon,
+            tone,
             selected,
             press,
             remove,
@@ -40,6 +46,9 @@ impl Described for Chip {
         let mut chip = Self::new(label).with_id(key.to_owned());
         if let Some(icon) = icon {
             chip = chip.with_lead(ChipLead::Glyph(icon));
+        }
+        if tone != Tone::Neutral {
+            chip = chip.style(ChipStyle::Tinted(tone));
         }
         if let Some(on) = selected {
             chip = chip.selectable().selected(on);

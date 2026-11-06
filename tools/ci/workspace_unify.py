@@ -165,6 +165,24 @@ def lines(packages: dict, members: set[str], root: Path, features_of) -> dict[st
     return result
 
 
+# A dependency line's source expression: the path of a workspace member or patched crate, or the
+# version of one from the registry.
+SOURCE = re.compile(r'(?:path = "[^"]*"|version = "[^"]*")')
+
+
+def source_of(line: str) -> str:
+    """The source expression of a dependency line."""
+    found = SOURCE.search(line)
+    if found is None:
+        raise SystemExit(f"no source in {line!r}")
+    return found.group(0)
+
+
+def with_source(line: str, source: str) -> str:
+    """`line`, naming `source` instead of the source it names."""
+    return SOURCE.sub(lambda _: source, line, count=1)
+
+
 def header(arch: str, kind: str) -> str:
     return f"[target.'cfg(all(target_os = \"linux\", target_arch = \"{arch}\"))'.{kind}]"
 
@@ -217,9 +235,10 @@ def manifest(root: Path, current: str) -> str:
     architecture's tables resolved again in the workspace at `root`, workspace-unify depending
     there only on what tools/ci/package_features.py names (`seeded`), so that what it enabled
     before never counts as resolved. The other
-    architecture's tables stay as they are: each is resolved on a machine of its own, as cargo
-    resolves a build with no `--target`, as the cargo families run it. Leaves `root` as it found
-    it."""
+    architecture's tables keep theirs, but for the source of each package, which is the
+    workspace's whichever target builds it: each architecture is resolved on a machine of its own,
+    as cargo resolves a build with no `--target`, as the cargo families run it. Leaves `root` as
+    it found it."""
     anchor = root / DIR.relative_to(ROOT) / "Cargo.toml"
     before = anchor.read_text() if anchor.exists() else None
     lock = (root / "Cargo.lock").read_text()
@@ -236,13 +255,20 @@ def manifest(root: Path, current: str) -> str:
     # Only the tables it writes: any other is from an older layout of this file.
     known = {header(arch, kind) for arch in TARGETS for kind in ("dependencies", "build-dependencies")}
     tables = {h: body for h, body in sections(current).items() if h in known}
+    # A package has one source in the workspace, whichever target builds it: cargo refuses a
+    # manifest that names it by path for one and from the registry for another. This
+    # architecture's resolution has the current one (a crate the workspace patches by path is that
+    # path there too), so the other architecture's lines take it, keeping the features that
+    # architecture resolved.
+    sources = {key: source_of(line) for key, line in {**built, **host}.items()}
     # The other architecture's, as resolved there, less what the workspace no longer has.
     for arch, keys in kept.items():
         for kind in ("dependencies", "build-dependencies"):
             if header(arch, kind) in tables:
                 tables[header(arch, kind)] = "".join(
-                    line for line in tables[header(arch, kind)].splitlines(keepends=True)
-                    if json.loads(line.split(" = ", 1)[0]) in keys)
+                    with_source(line, sources[key]) if key in sources else line
+                    for line in tables[header(arch, kind)].splitlines(keepends=True)
+                    if (key := json.loads(line.split(" = ", 1)[0])) in keys)
     tables[header(ARCH, "dependencies")] = "".join(built[k] for k in sorted(built))
     tables[header(ARCH, "build-dependencies")] = "".join(host[k] for k in sorted(host))
     text = HEADER + EMPTY.replace("[features]", 'build = "build.rs"\n\n[features]', 1)

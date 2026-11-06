@@ -5,7 +5,7 @@
 //! and record ids, the Automerge actor, the signed op's artifact, author and
 //! attestation. Only the timestamps, the change's own bytes and the
 //! signature differ. Each session remembers the last delta frame it received
-//! from each author on each route in each room (a *slot*), and the relay
+//! from each author on each route in each workspace (a *slot*), and the relay
 //! writes the next one as [`DeltaSegment`]s: ranges copied from that frame and the bytes in
 //! between. The frame the session rebuilds is the
 //! [`super::EnvelopeV2::UnsignedDelta`] payload it would have received
@@ -61,7 +61,7 @@ pub enum DeltaSegment {
 pub const DELTA_ROUTE_BYTES: usize = 33;
 
 /// Whose deltas a slot holds on the relay: one author's on one route in one
-/// room. Only the encoder sees it; the wire carries the session's slot index.
+/// workspace. Only the encoder sees it; the wire carries the session's slot index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DeltaSlotKey {
     pub workspace_id: u64,
@@ -290,7 +290,7 @@ pub fn encode_coded_delta(
         slot: u16,
         segments: &'a [DeltaSegment],
     }
-    // Room for the length prefix, written once the length is known.
+    // Workspace for the length prefix, written once the length is known.
     let mut out = vec![0, 0, 0, 0, CODED_DELTA_KIND];
     out = postcard::to_extend(&Fields { slot, segments }, out)?;
     let payload = out.len().saturating_sub(4);

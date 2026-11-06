@@ -103,15 +103,20 @@ pub(super) struct SharedChip {
 
 impl SharedChip {
     /// The people every share mark shows, by tab in tab order: what its
-    /// faces are drawn from.
-    pub(super) fn people_by_tab(&self) -> Vec<(u64, &crate::permissions::UserId)> {
-        let mut people: Vec<(u64, &crate::permissions::UserId)> = self
-            .marks
-            .iter()
-            .flat_map(|(&tab, mark)| mark.people().iter().map(move |(user, _)| (tab, user)))
-            .collect();
-        people.sort_by_key(|&(tab, _)| tab);
-        people
+    /// faces are drawn from. Visits the bar's tabs, so it sorts nothing.
+    pub(super) fn for_each_person(
+        &self,
+        tabs: &[super::TabDescriptor],
+        mut visit: impl FnMut(u64, &crate::permissions::UserId),
+    ) {
+        for tab in tabs {
+            let Some(mark) = self.marks.get(&tab.id) else {
+                continue;
+            };
+            for (user, _) in mark.people() {
+                visit(tab.id, user);
+            }
+        }
     }
 }
 

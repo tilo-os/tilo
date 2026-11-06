@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use tilo_actions::{ActionAddress, ActionBinding, ControlInvocation};
 
-use super::{NavAction, NavDrop, NavList, NavModel, NavShared, NodeId, TreeModel};
+use super::{NavAction, NavDrop, NavList, NavModel, NavShared};
 use crate::widget::{ActionEmitter, ControlBindingMetadata};
 
 /// The emitters a list's bound gestures queue into. They live as long as the
@@ -124,8 +124,8 @@ impl NavBindings {
     }
 
     fn button_emitter(&self, target: &str, shared: &NavShared) -> Option<&ActionEmitter<String>> {
-        if let Some(id) = target.strip_prefix("section-action:") {
-            let action = shared.section_actions.get(&id.parse::<NodeId>().ok()?)?;
+        if let Some(key) = target.strip_prefix("section-action:") {
+            let action = shared.section_actions.get(key)?;
             return self.sections.get(action);
         }
         let (index, _) = target.strip_prefix("row-action:")?.split_once(':')?;
@@ -133,15 +133,15 @@ impl NavBindings {
         self.items.get(action)
     }
 
-    /// The bound buttons row `node` shows: its section header's action, or
-    /// the item's row actions.
+    /// The bound buttons the row of `node` shows: its section header's
+    /// action, or the item's row actions.
     pub(super) fn row_controls(
         &self,
-        node: NodeId,
+        node: &str,
         shared: &NavShared,
         model: &NavModel,
     ) -> Vec<ControlBindingMetadata> {
-        if let Some(action) = shared.section_actions.get(&node) {
+        if let Some(action) = shared.section_actions.get(node) {
             return self
                 .sections
                 .get(action)
@@ -165,10 +165,10 @@ impl NavBindings {
     }
 
     /// A checkable row's control, when its check is bound.
-    pub(super) fn check_control(&self, node: NodeId) -> Option<ControlBindingMetadata> {
+    pub(super) fn check_control(&self, node: &str) -> Option<ControlBindingMetadata> {
         self.check
             .as_ref()
-            .map(|emitter| emitter.metadata(format!("node:{node}")))
+            .map(|emitter| emitter.metadata(format!("key:{node}")))
     }
 }
 
@@ -249,7 +249,7 @@ impl NavList {
     #[must_use]
     pub fn on_rename_action(mut self, binding: ActionBinding<(String, String)>) -> Self {
         self.shared.borrow_mut().bound.rename = Some(ActionEmitter::new(binding));
-        self.tree = Box::new(self.tree.rename_on_double_click());
+        self.list = Box::new(self.list.rename_on_double_click());
         self
     }
 
@@ -259,7 +259,7 @@ impl NavList {
     #[must_use]
     pub fn on_delete_action(self, binding: ActionBinding<String>) -> Self {
         self.shared.borrow_mut().bound.delete = Some(ActionEmitter::new(binding));
-        self.with_delete_key()
+        self
     }
 
     /// Let the person drag items, as [`Self::on_move`] does, running

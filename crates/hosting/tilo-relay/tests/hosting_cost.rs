@@ -510,7 +510,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     );
     let room_live = |snapshot: &tilo_relay::metrics::MetricsSnapshot| {
         snapshot
-            .rooms
+            .workspaces
             .get(&WORKSPACE)
             .map_or(0, |room| room.bytes_sent_live)
     };

@@ -1,11 +1,12 @@
 //! A context menu's query field: what typing into the menu does.
 //!
 //! A menu the context-menu gesture opened (a secondary click, a long press,
-//! the Menu key: [`super::note_input`]) takes typing: a query field at its
-//! top narrows its entries with the ranking every filtered list shares
-//! (`crate::search::ranked_rows`), Enter runs the best match, and a sentence none of
-//! them answers is asked of an agent about what the menu is on
-//! ([`ContextMenu::set_about`]): through the desktop
+//! the Menu key: [`super::note_input`]) takes typing when it has many rows or
+//! when a sentence can be asked of something: a query field at its top
+//! narrows its entries with the ranking every filtered list shares
+//! (`crate::search::ranked_rows`), and Enter runs the best match. A sentence
+//! none of its rows answers is asked of an agent about what the menu is on
+//! ([`ContextMenu::set_about`]), through the desktop
 //! ([`crate::shared_selection::ask_agent_at`]), or through the menu's owner
 //! when it answers itself ([`ContextMenu::set_owner_asks`]).
 
@@ -15,7 +16,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::WindowEvent;
 
-use super::{CONTEXT_GESTURE, ContextMenu, MenuItem, PADDING, QUERY_GAP, label_inset};
+use super::{
+    CONTEXT_GESTURE, ContextMenu, MenuItem, PADDING, QUERY_GAP, QUERY_MIN_ROWS, label_inset,
+};
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
@@ -83,7 +86,9 @@ impl ContextMenu {
     /// Give a menu the context-menu gesture opened (or one whose owner
     /// answers typing) its query field, empty, and the row that asks what is
     /// typed when something can answer it; replaces what an earlier opening
-    /// added.
+    /// added. A menu of no more than [`QUERY_MIN_ROWS`] rows that nothing can
+    /// answer a sentence for takes none: a short menu of commands is read at a
+    /// glance, and the field would only push them down.
     pub(super) fn prepare_query(&mut self, at: Point) {
         if let Some(own) = self.own_rows.take() {
             self.items.truncate(own);
@@ -91,8 +96,10 @@ impl ContextMenu {
         self.pinned_top = None;
         self.asked = None;
         self.ask_at = at;
-        self.query =
-            (self.owner_asks || CONTEXT_GESTURE.with(Cell::get)).then(Box::<MenuQuery>::default);
+        let long = self.items.len() > QUERY_MIN_ROWS;
+        let takes_typing =
+            self.owner_asks || (CONTEXT_GESTURE.with(Cell::get) && (long || self.can_ask()));
+        self.query = takes_typing.then(Box::<MenuQuery>::default);
         if self.query.is_some() && self.can_ask() {
             self.own_rows = Some(self.items.len());
             self.items

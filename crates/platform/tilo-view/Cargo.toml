@@ -1,0 +1,33 @@
+[package]
+name = "tilo-view"
+description = "A Rust app's views: named functions of a resource that return described components (one-app-model.md §2). The tree a `#[view]` builds is the tree a tilolang view builds, keys and all, so the UI host draws both the same way."
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+# The component catalogue a view is checked against, and the stream a view's tree travels on:
+# the same `Node`, values and diff a tilolang view's tree uses.
+tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
+tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
+inventory = { version = "0.3.25", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-view-macros = { version = "0.1.0", path = "../../sdk/view-macros" }
+serde = { workspace = true, features = ["derive"] }
+
+[build-dependencies]
+serde_json = "1.0"
+
+[lints]
+workspace = true

@@ -5,7 +5,9 @@
 //! a bound control edits a field, a window shows its resource. As each node of a view is built,
 //! the host reads [`crate::seen::unseen`] there and marks it:
 //!
-//! - a row gets a `ui.ChangeMark` in its `change` slot: who, in which task run;
+//! - a row gets a `ui.ChangeMark` in its `change` slot: who, in which task run; a row a list
+//!   folds away as done with stands with the rows above while the change is unseen, so the mark
+//!   is read where it happened;
 //! - a bound text field takes the changer's colour (`changed_by`), and says what it held before
 //!   the change (`previous`);
 //! - a window's header holds a mark with how many changes of what it shows are unseen, and by
@@ -74,11 +76,21 @@ impl Core {
                 let Some(Value::Ref(r)) = node.props.get("item").cloned() else {
                     return Ok(());
                 };
-                if places_mark(node, &r.target.id_string()) {
-                    return Ok(());
-                }
                 let unseen = self.unseen_noted(viewer, &r.target, acc)?;
                 if unseen.is_empty() {
+                    return Ok(());
+                }
+                // The row does not hide in a list's folded tail while a change of it is
+                // unseen: it stands with the rows above, where its mark is read, and goes
+                // back under the tail once the person has seen it. A flag travels as the
+                // integer it was boxed as, or as the flag itself.
+                if matches!(
+                    node.props.get("tail"),
+                    Some(Value::Bool(true) | Value::Int(1))
+                ) {
+                    node.props.insert("tail".to_owned(), Value::Bool(false));
+                }
+                if places_mark(node, &r.target.id_string()) {
                     return Ok(());
                 }
                 let mut mark = UiNode::empty(CHANGE_MARK, &format!("{}~change", node.key));
@@ -119,10 +131,11 @@ impl Core {
             let registry = self.registry.borrow();
             registry.type_info(&coll.item).and_then(|(pkg, info)| {
                 let ty = pkg.meta.types.iter().find(|t| t.id == info.id)?;
-                let field = ty
-                    .fields
-                    .iter()
-                    .find(|f| f.role.as_deref() == Some("title"))?;
+                let field = ty.fields.iter().find(|f| {
+                    f.role
+                        .as_ref()
+                        .is_some_and(crate::meta::FieldRole::is_title)
+                })?;
                 info.fields
                     .iter()
                     .find(|f| f.id == field.id)

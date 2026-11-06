@@ -47,7 +47,7 @@ pub(crate) struct Authority {
     reserved: Option<std::time::Instant>,
     released: OnceLock<std::time::Instant>,
     /// The replay includes on-demand records: the subscriber is a peer
-    /// relay, which keeps all of the room.
+    /// relay, which keeps all of the workspace.
     every_record: bool,
     // The owner keeps admission during abandoned-spool reclamation.
     _permit: OwnedSemaphorePermit,
@@ -140,7 +140,7 @@ impl ReplayTicket {
             .map_err(|_| error("replay ticket backpressure"))?;
         Ok(Self::with_permit(device, connection, permit))
     }
-    /// Replay on-demand records too: the subscriber keeps all of the room.
+    /// Replay on-demand records too: the subscriber keeps all of the workspace.
     pub(crate) fn with_every_record(mut self) -> Self {
         if let Some(authority) = Arc::get_mut(&mut self.authority) {
             authority.every_record = true;

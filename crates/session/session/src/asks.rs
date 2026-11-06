@@ -8,22 +8,34 @@ use tilo_actions::ActionAddress;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE};
 use tilo_desktop::desktop_host::{
-    DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, WORKSPACE_SETTINGS,
+    DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, SESSION_LOCK, SESSION_LOG_OUT,
+    SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
 };
+use tilo_desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
 use tilo_desktop::overlays::Slot;
+use tilo_sheets::power::PowerEffect;
 use ui::shortcut_table::ShortcutAction;
 
 use crate::keys::Invocation;
 use crate::{
-    AppLists, Magnify, SessionCommand, Shared, identity, mount, workspace_settings, workspaces,
+    AppLists, Magnify, SessionAction, SessionCommand, Shared, identity, mount, people,
+    workspace_settings, workspaces,
 };
 
 impl Shared {
     /// Carry out what the desktop asked since the last frame.
-    pub(crate) fn follow_asks(&self) {
+    pub(crate) fn follow_asks(&self, look: &mut tilo_surface_host::Look<'_>) {
         // A press on one of the person's devices is one of the session's own
         // verbs: the queue it lands in is carried out here, with the asks.
         self.carry_out_presses();
+        // What a person's card asked of the session: Chat's conversation
+        // with them.
+        let asked = self.people.borrow().take_asks();
+        for ask in asked {
+            match ask {
+                people::PeopleAsk::Message { key } => self.message_person(&key),
+            }
+        }
         let asks = std::mem::take(&mut *self.asks.borrow_mut());
         for ask in asks {
             match ask {
@@ -48,23 +60,35 @@ impl Shared {
                 DesktopAsk::Intent(ChromeIntent::ShowPerson(person)) => {
                     self.people.borrow().show_person(&person);
                 }
-                // The floating clock: what the person pressed there is
-                // Clocks' own to carry out, or the bar's to put away.
-                DesktopAsk::Intent(ChromeIntent::ClockCommand {
-                    command,
-                    activity_id,
-                }) => self.clock.press(&command, activity_id.as_deref()),
-                DesktopAsk::Intent(ChromeIntent::HideClock) => self.clock.hide(),
+                // Pulling an activity out of the bar's pill: its card is
+                // the floating layer's to draw.
+                DesktopAsk::Intent(ChromeIntent::ExpandActivity { activity }) => {
+                    self.activities.expand(&activity);
+                }
                 // A click on an application's tray icon is the
                 // application's own to answer.
                 DesktopAsk::Intent(ChromeIntent::AppTray { key, request }) => {
                     self.tray_request(&key, request);
                 }
-                DesktopAsk::Launchpad(action) => self.launchpad(action),
                 DesktopAsk::Shortcut(action) => self.shortcut(action),
                 DesktopAsk::HostAction(action) => self.host_action(&action),
                 DesktopAsk::Music(action) => self.music(action),
+                // A card of Alt+Tab's panel under the pointer, a press on
+                // one, or a press away from the panel: the desk's own verbs,
+                // as the keys ask for them.
+                DesktopAsk::Switcher(action) => self.switcher_ask(action),
                 DesktopAsk::LeftWorkspace(name) => workspaces::left_workspace(&self.notices, &name),
+                // A window that stopped answering offers to keep waiting for
+                // its app or to quit it: the same two choices the desk's own
+                // cards make, carried out where the compositor is.
+                DesktopAsk::WaitWindow(tab) => {
+                    self.handle
+                        .liveness_choice(tab, tilo_desktop_surface::LivenessChoice::Wait);
+                }
+                DesktopAsk::ForceQuitApp(tab) => {
+                    self.handle
+                        .liveness_choice(tab, tilo_desktop_surface::LivenessChoice::ForceQuit);
+                }
                 other => tracing::debug!(?other, "desktop ask the session has no part in yet"),
             }
         }
@@ -74,7 +98,7 @@ impl Shared {
         for choice in self.handle.take_host_choices() {
             self.host_action(&choice);
         }
-        self.follow_sheets();
+        self.follow_sheets(look);
         let choices = self.handle.take_search_choices();
         if choices.is_empty() {
             return;
@@ -86,11 +110,77 @@ impl Shared {
         });
         for choice in choices {
             self.search.perform(&workspace, choice, &mut |own| {
-                self.doors.invoke(&own.address, &own.arguments).map(drop)
+                self.doors
+                    .invoke(&own.address, &own.arguments, look)
+                    .map(drop)
             });
         }
         // What the session's own actions asked of it.
-        self.follow_asks();
+        self.follow_asks(look);
+    }
+
+    /// Open this person's conversation with the person `key` names, in Chat:
+    /// the app's own `open-direct-conversation` on its row for the
+    /// conversation with them, so Chat starts when it is closed and the
+    /// conversation comes up with its composer ready, as the desk's Message
+    /// did in the browser.
+    fn message_person(&self, key: &str) {
+        self.invoke_app_action(LaunchpadAppAction::message_person(key));
+    }
+
+    /// Do what an app action names, in the workspace in front (where the
+    /// person sees what the action works on): the app starts when it is
+    /// closed and its action arrives ready to act. A launchpad card and a
+    /// person's card ask for their app actions this way.
+    pub(crate) fn invoke_app_action(&self, action: LaunchpadAppAction) {
+        let Some(workspace) = self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        }) else {
+            tracing::warn!(app = %action.display_name, "an app action reached no workspace");
+            return;
+        };
+        let target = tilo_desktop_search::Target::Invoke(Box::new(
+            tilo_desktop_search::InvokeTarget::action(
+                action.app_id,
+                workspace.clone(),
+                action.resource,
+                action.action,
+            ),
+        ));
+        self.search.perform(&workspace, target, &mut |own| {
+            self.doors
+                .invoke(
+                    &own.address,
+                    &own.arguments,
+                    &mut tilo_surface_host::Look::none(),
+                )
+                .map(drop)
+        });
+    }
+
+    /// What the pointer asked of Alt+Tab's panel: hovering a card reaches it,
+    /// a press on one goes there and closes the walk, and a press away from
+    /// the panel leaves the person where they were.
+    fn switcher_ask(&self, ask: tilo_desktop::window_switcher::SwitcherAsk) {
+        use tilo_desktop::window_switcher::SwitcherAsk;
+        // The walk is the session desk's, as the keys reach it: the panel's
+        // presses ask for the same verbs.
+        use tilo_surface_host::shell_part::DESK_RESOURCE as SESSION_DESK;
+        let select = |at: usize| {
+            let at = i64::try_from(at).unwrap_or(i64::MAX);
+            Invocation::new(SESSION_DESK, "select-switcher").with("at", at)
+        };
+        let mut invocations = self.invocations.borrow_mut();
+        match ask {
+            SwitcherAsk::Hover(at) => invocations.push(select(at)),
+            SwitcherAsk::Choose(at) => {
+                invocations.push(select(at));
+                invocations.push(Invocation::new(SESSION_DESK, "commit-switcher"));
+            }
+            SwitcherAsk::Dismiss => invocations
+                .push(Invocation::new(SESSION_DESK, "close-surface").with("surface", "switcher")),
+        }
     }
 
     /// Hand a click on the tray icon at `key` to the application that owns
@@ -127,6 +217,13 @@ impl Shared {
     /// about workspaces, what answering a question about the person
     /// themselves does ([`identity::answered`]).
     fn host_action(&self, id: &str) {
+        // The empty desk's own verbs: each card publishes a host action, and
+        // choosing it anywhere — the card, the palette, an agent — does what
+        // the card does.
+        if let Some(card) = LaunchpadAction::from_host_id(id) {
+            self.launchpad(card);
+            return;
+        }
         match id {
             NEW_WORKSPACE => self.new_workspace(),
             WORKSPACE_SETTINGS => self.open_workspace_settings(),
@@ -136,6 +233,12 @@ impl Shared {
                 &self.directory_store,
             ),
             LEAVE_WORKSPACE => self.leave_workspace(),
+            // The Tilo menu's own rows, and the same effects the power
+            // menu's choices are.
+            SESSION_LOCK => self.power_effect(PowerEffect::Lock),
+            SESSION_LOG_OUT => self.power_effect(PowerEffect::LogOut),
+            SESSION_RESTART => self.power_effect(PowerEffect::Restart),
+            SESSION_SHUT_DOWN => self.power_effect(PowerEffect::ShutDown),
             choice => {
                 // A device another of the person's devices found asks here
                 // to act as them: the banner's own buttons are its answer.
@@ -208,8 +311,42 @@ impl Shared {
         }
     }
 
+    /// Carry out a power effect the person chose: the power menu's rows,
+    /// the Tilo menu's and a published action all name the same effects.
+    pub(crate) fn power_effect(&self, effect: PowerEffect) {
+        match effect {
+            PowerEffect::Lock => self.commands.borrow_mut().push(SessionCommand::Lock),
+            PowerEffect::LogOut => self.commands.borrow_mut().push(SessionCommand::LogOut),
+            PowerEffect::ShutDown if self.hosted => {
+                self.commands.borrow_mut().push(SessionCommand::End);
+            }
+            // The desktop it runs in owns the machine's power and its
+            // session switching; the menu does not offer these here, and a
+            // published action that asks anyway stops at this session.
+            PowerEffect::SwitchUser | PowerEffect::Suspend | PowerEffect::Restart
+                if self.hosted =>
+            {
+                tracing::info!(
+                    ?effect,
+                    "a session in a window owns no power: nothing was done"
+                );
+            }
+            PowerEffect::SwitchUser => self.session_action(SessionAction::SwitchUser),
+            PowerEffect::Suspend => self.session_action(SessionAction::Suspend),
+            PowerEffect::Restart => self.session_action(SessionAction::Restart),
+            PowerEffect::ShutDown => self.session_action(SessionAction::ShutDown),
+        }
+    }
+
+    /// Ask the system to suspend, restart or shut the machine down.
+    pub(crate) fn session_action(&self, action: SessionAction) {
+        if let Err(error) = (self.session_actions)(action) {
+            tracing::warn!(%error, ?action, "session action");
+        }
+    }
+
     /// Show workspace settings for the workspace in front.
-    fn open_workspace_settings(&self) {
+    pub(crate) fn open_workspace_settings(&self) {
         workspace_settings::open(
             self.workspace_settings.as_ref(),
             &self.workspace_settings_feed(),
@@ -236,19 +373,16 @@ impl Shared {
                     workspace,
                     *route,
                 ),
-                mount::tools::Ask::Uninstall { app, .. } => self.ask_uninstall(app),
+                mount::tools::Ask::Uninstall { app, .. } => {
+                    if self.ask_uninstall(app) {
+                        Ok(())
+                    } else {
+                        Err("this session shows no uninstall question".to_owned())
+                    }
+                }
             };
             ask.answer(answered);
         }
-    }
-
-    /// Leave `app` for the uninstall sheet, when this session shows one.
-    fn ask_uninstall(&self, app: &str) -> Result<(), String> {
-        if self.app_sheets.uninstall().is_none() {
-            return Err("this session shows no uninstall question".to_owned());
-        }
-        self.app_sheets.ask_uninstall(app);
-        Ok(())
     }
 
     /// What workspace settings feeds its panes from.
@@ -256,7 +390,7 @@ impl Shared {
         workspace_settings::Feeding::new(
             &self.handle,
             &self.person,
-            self.app_lists(),
+            &self.search,
             &self.ws_settings_fed,
             &self.workspace_emoji,
             self.file_picker.as_ref(),
@@ -291,7 +425,7 @@ impl Shared {
     ) -> Result<(), String> {
         let address = ActionAddress::new(CHROME_RESOURCE, action);
         self.doors
-            .invoke(&address, args)
+            .invoke(&address, args, &mut tilo_surface_host::Look::none())
             .map(|_| ())
             .map_err(|error| error.to_string())
     }
@@ -339,6 +473,10 @@ impl Shared {
                 invocations.push(Invocation::new(mount::shell::WINDOW_MENU, "open"));
             }
             ShortcutAction::Lock => self.commands.borrow_mut().push(SessionCommand::Lock),
+            ShortcutAction::PowerMenu => self
+                .commands
+                .borrow_mut()
+                .push(SessionCommand::OpenPowerMenu),
             ShortcutAction::ToggleMagnifier => self
                 .commands
                 .borrow_mut()

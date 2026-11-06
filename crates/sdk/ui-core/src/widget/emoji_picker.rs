@@ -1470,7 +1470,9 @@ impl Widget for EmojiPicker {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.search.needs_redraw() || Self::sources() != self.built_from
+        self.dirty
+            || (self.search.needs_redraw() || self.search.needs_animation_frame())
+            || Self::sources() != self.built_from
     }
 
     fn mark_drawn(&mut self) {

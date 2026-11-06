@@ -332,7 +332,7 @@ impl View<'_> {
                     .and_then(crate::reads::text_value)
                 && !crate::reads::is_empty(&text)
             {
-                return Ok(Some((named_text(field.role, &text), path.to_owned())));
+                return Ok(Some((named_text(&field.role, &text), path.to_owned())));
             }
         }
         for field in fields {
@@ -576,8 +576,8 @@ pub fn resources(snapshot: &Snapshot) -> Result<BTreeMap<String, String>, IndexE
 
 /// The text that names a resource of the field's role: a `body` field's first non-blank line
 /// and nothing more (a message is called by what it opens with), any other field's whole text.
-fn named_text(role: crate::schema::FieldRole, text: &FieldValue) -> FieldValue {
-    if role != crate::schema::FieldRole::Body {
+fn named_text(role: &crate::schema::FieldRole, text: &FieldValue) -> FieldValue {
+    if *role != crate::schema::FieldRole::Body {
         return text.clone();
     }
     let first = |whole: &str| {

@@ -35,6 +35,26 @@ impl std::fmt::Debug for Connect {
             .finish()
     }
 }
+
+impl NativeWorkspaceOwner {
+    /// Where `workspace`'s host is reached, with the device its enrollment
+    /// pins: the address a plane of the workspace dials that host's relay at,
+    /// decoded from the hint the host signed. `None` while the workspace is
+    /// not held here or its enrollment names no iroh address.
+    #[must_use]
+    pub fn host_addr(&self, workspace: WorkspaceId) -> Option<([u8; 32], iroh::EndpointAddr)> {
+        let hint = self
+            .with_current(workspace, |view| Ok(view.transport_hint()?.clone()))
+            .ok()?;
+        let (payload, _) =
+            tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+                &hint,
+            )
+            .ok()?;
+        Some((hint.host.device_public_key, payload.endpoint_addr))
+    }
+}
+
 impl Connect {
     /// # Errors
     /// `workspace` has no committed enrollment.
@@ -386,14 +406,11 @@ impl Scope {
         if !self.pinned_to(&hint, &device, continuity) {
             return Err("native publication session changed".into());
         }
-        // Reconciliation may persist a genuine authorized successor. Its
-        // failure must not erase or prevent other fresh retained frames.
-        if let Err(error) = self.connect.owner.reconcile_outgoing(
-            self.connect.workspace,
-            &identity.device_signing_key,
-            std::time::SystemTime::now(),
-        ) {
-            tracing::debug!(%error,"native publication reconciliation blocked");
+        // Retiring what the workspace refused or receipted persists a new
+        // record generation. Its failure must not prevent sending what is
+        // still in custody.
+        if let Err(error) = self.connect.owner.retire_outgoing(self.connect.workspace) {
+            tracing::warn!(workspace = %self.connect.workspace, %error, "native publication retirement not committed");
         }
         if let Some(reseal) = reseal
             && let Err(error) = self.connect.owner.renew_outgoing(
@@ -403,7 +420,7 @@ impl Scope {
                 std::time::SystemTime::now(),
             )
         {
-            tracing::debug!(%error, "native sealed write renewal blocked");
+            tracing::warn!(workspace = %self.connect.workspace, %error, "native sealed write renewal blocked");
         }
         self.connect.owner.with_outgoing(
             self.connect.workspace,
@@ -587,6 +604,7 @@ impl Input {
         first.scope.connect.owner.receive_batch(
             first.workspace(),
             batch,
+            Some(&identity.device_signing_key),
             std::time::SystemTime::now(),
         )
     }
@@ -621,7 +639,10 @@ impl Input {
             app_id: app_id.clone(),
             cluster_id: cluster_id.clone(),
             record_id: record_id.clone(),
-            author: self.standing().ok()?,
+            author: match self.standing() {
+                Ok(standing) => standing,
+                Err(_) => return None,
+            },
             replayed: self.retained,
             envelope: (**envelope).clone(),
         })

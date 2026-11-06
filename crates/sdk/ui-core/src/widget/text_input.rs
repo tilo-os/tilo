@@ -385,6 +385,14 @@ pub struct TextInput {
     drag_select: DragSelect,
     /// Cleared on `take_dirty()`/`set_text()` — a programmatic write isn't a user edit.
     dirty: bool,
+    /// What this field shows may have moved since the last frame drew it
+    /// (a keystroke, the caret, hover, a model write, a new setting), so a
+    /// frame is due. Cleared by [`Widget::mark_drawn`]: a field that has not
+    /// changed shows what the screen already holds.
+    repaint: bool,
+    /// The field was made for the person to type in right away (an entry a command just
+    /// opened): it asks for the keyboard once ([`Self::wants_focus`]).
+    focus_wanted: bool,
     /// App-local notification hook. The comparison value prevents cursor,
     /// selection, and IME-preedit events from repeating the last edit.
     on_change: Option<TextChangeCallback>,
@@ -553,6 +561,9 @@ pub struct TextInput {
     /// `Shift+Enter` for a real newline (chat-composer pattern).
     enter_submits: bool,
     submit_requested: bool,
+    /// A list's inline add: what is typed makes an item when Enter or leaving the field commits
+    /// it, and the field clears; nothing typed leaves nothing (Escape, or leaving it empty).
+    entry: bool,
     /// Trailing show/hide control of a single-line secret field; it owns
     /// the reveal state. The plaintext still never reaches the a11y tree or
     /// `text_review`.
@@ -847,6 +858,8 @@ impl TextInput {
             scroll_x: 0.0,
             compact_multiline: false,
             dirty: false,
+            repaint: true,
+            focus_wanted: false,
             on_change: None,
             action: None,
             last_notified_text: String::new(),
@@ -907,6 +920,7 @@ impl TextInput {
             reduce_motion: false,
             enter_submits: false,
             submit_requested: false,
+            entry: false,
             reveal: RevealToggle::new(),
             reveal_node: None,
             lines: Vec::new(),
@@ -947,6 +961,7 @@ impl TextInput {
     /// `None` disables authorship stamping.
     /// Align the text within the input's width (a centred title).
     pub fn set_align(&mut self, align: TextAlign) {
+        self.repaint = true;
         if self.align != align {
             self.align = align;
             self.drop_shaped_layouts();
@@ -961,6 +976,7 @@ impl TextInput {
     }
 
     pub fn set_local_author(&mut self, author: Option<String>) {
+        self.repaint = true;
         self.local_author = author;
     }
 
@@ -968,6 +984,7 @@ impl TextInput {
     /// stays local until the owner takes it ([`Self::take_dirty`]) and
     /// submits it as an action.
     pub fn bind_text(&mut self, obj: ObjId) {
+        self.repaint = true;
         self.local_state = None;
         self.bound_text = Some(obj);
     }
@@ -977,6 +994,7 @@ impl TextInput {
     /// A binding replaces any earlier local mode, so the input stays unbound
     /// until an owner calls [`Self::bind_text`] again.
     pub fn clear_text_binding(&mut self) {
+        self.repaint = true;
         self.bound_text = None;
     }
 
@@ -1040,6 +1058,7 @@ impl TextInput {
 
     /// Change the field's text role; see [`Self::with_text_role`].
     pub fn set_text_role(&mut self, role: TextRole) {
+        self.repaint = true;
         if self.text_role != role || self.font_size_override.is_some() {
             self.layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.text_role = role;
@@ -1064,6 +1083,7 @@ impl TextInput {
     }
 
     pub fn set_plain_chrome(&mut self, plain: bool) {
+        self.repaint = true;
         self.plain = plain;
     }
 
@@ -1075,6 +1095,7 @@ impl TextInput {
     }
 
     pub fn set_mono(&mut self, mono: bool) {
+        self.repaint = true;
         if self.mono != mono {
             self.layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
@@ -1097,6 +1118,7 @@ impl TextInput {
     }
 
     pub fn set_kind(&mut self, kind: TextInputKind) {
+        self.repaint = true;
         self.kind = kind;
         self.spell_cache_key = None;
         self.spell_spans.clear();
@@ -1131,6 +1153,7 @@ impl TextInput {
     /// [`Self::with_autocorrect`] on a live field; `None` follows the
     /// user-wide setting again.
     pub fn set_autocorrect(&mut self, on: Option<bool>) {
+        self.repaint = true;
         self.autocorrect = on;
     }
 
@@ -1139,6 +1162,7 @@ impl TextInput {
     /// [`Self::apply_pending_autocorrection`] once the boundary is written,
     /// so the boundary and the correction are two undo steps.
     pub fn set_deferred_autocorrection(&mut self, on: bool) {
+        self.repaint = true;
         self.defer_autocorrection = on;
         if !on {
             self.pending_autocorrection = None;
@@ -1156,6 +1180,7 @@ impl TextInput {
     /// reverts an immediate correction. `false` when there was nothing to
     /// make.
     pub fn apply_pending_autocorrection(&mut self) -> bool {
+        self.repaint = true;
         let Some(pending) = self.pending_autocorrection.take() else {
             return false;
         };
@@ -1224,6 +1249,7 @@ impl TextInput {
     /// Write back what a text action made of the text it was handed
     /// ([`Self::take_text_action_request`]), as [`Self::replace_range`] does.
     pub fn apply_text_action_result(&mut self, result: &TextActionResult) -> bool {
+        self.repaint = true;
         let (start, end) = result.range;
         self.replace_range(start..end, &result.original, &result.replacement)
     }
@@ -1277,6 +1303,7 @@ impl TextInput {
     }
 
     pub fn set_spell_language(&mut self, language: &str) {
+        self.repaint = true;
         self.spell_language = language.to_string();
         self.spell_cache_key = None;
         self.autocorrection_preview_key = None;
@@ -1300,6 +1327,7 @@ impl TextInput {
     }
 
     pub fn add_text_action(&mut self, id: &str, label: &str) {
+        self.repaint = true;
         if id.is_empty() || label.is_empty() {
             return;
         }
@@ -1321,6 +1349,7 @@ impl TextInput {
     }
 
     pub fn set_font_family(&mut self, family: Option<FontChoice>) {
+        self.repaint = true;
         if self.family != family {
             self.layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.family = family;
@@ -1652,6 +1681,7 @@ impl TextInput {
     }
 
     pub fn set_text(&mut self, s: &str) {
+        self.repaint = true;
         if self.text == s {
             return;
         }
@@ -1736,6 +1766,7 @@ impl TextInput {
 
     /// Insert `s` at the caret as the user's edit.
     pub fn insert_at_cursor(&mut self, s: &str) {
+        self.repaint = true;
         self.insert_str(s);
         self.last_notified_text.clone_from(&self.text);
         self.publish_local_state();
@@ -1759,6 +1790,7 @@ impl TextInput {
 
     /// Does not count as a user edit (dirty stays false).
     pub fn set_cursor_pos(&mut self, pos: usize) {
+        self.repaint = true;
         self.pending_paste = None;
         self.core
             .set_caret(grapheme_boundary_at_or_before(&self.text, pos));
@@ -1767,6 +1799,7 @@ impl TextInput {
 
     /// Seat the caret at an exact shaped position without counting as an edit.
     pub fn set_caret_position(&mut self, position: TextPosition) {
+        self.repaint = true;
         self.pending_paste = None;
         self.core.set_caret_position(TextPosition::with_affinity(
             grapheme_boundary_at_or_before(&self.text, position.byte),
@@ -1796,25 +1829,6 @@ impl TextInput {
         (self.core.anchor(), self.core.caret())
     }
 
-    /// Capture only private editor state for an authenticated ephemeral handoff.
-    /// The caller must never publish this value as an action argument.
-    pub fn private_draft_editor(&self) -> crate::private_draft::Editor {
-        crate::private_draft::Editor {
-            text: self.text.clone(),
-            anchor: self.core.anchor(),
-            caret: self.core.caret(),
-            preedit: self.core.preedit().to_owned(),
-            preedit_cursor: self.core.preedit_cursor(),
-        }
-    }
-
-    /// Restore display-only composition after moving a private retained editor.
-    /// This does not insert text or write a document/history entry.
-    pub fn restore_private_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
-        self.core.set_preedit(text, cursor);
-        self.layout_dirty = true;
-    }
-
     /// `len()` is `text.len() + 1`; empty until the first draw lands.
     pub fn char_x_positions(&self) -> &[f64] {
         &self.char_x_positions
@@ -1827,6 +1841,7 @@ impl TextInput {
     /// Retain bounded multiline scroll when used as an inert, unfocused source view.
     /// Does not enable focus, caret painting, input handling or document binding.
     pub fn set_preserve_unfocused_scroll(&mut self, preserve: bool) {
+        self.repaint = true;
         self.preserve_unfocused_scroll = preserve;
     }
 
@@ -3436,6 +3451,7 @@ impl TextInput {
     /// Places the input without a layout tree — only safe on local-mode
     /// `TextInputs` with no presence path or permission scope.
     pub fn apply_layout_external(&mut self, rect: Rect) {
+        self.repaint = true;
         self.single_origin.x += rect.x0 - self.rect.x0;
         self.single_origin.y += rect.y0 - self.rect.y0;
         self.rect = rect;
@@ -3503,6 +3519,7 @@ impl TextInput {
     }
 
     pub fn set_secret(&mut self, on: bool) {
+        self.repaint = true;
         self.secret = on;
         if on {
             self.shaped_preparation = None;
@@ -3560,11 +3577,13 @@ impl TextInput {
     }
 
     pub fn set_reveal(&mut self, on: bool) {
+        self.repaint = true;
         self.reveal.set_revealed(on);
     }
 
     /// No-op on a non-secret field.
     pub fn toggle_reveal(&mut self) {
+        self.repaint = true;
         if self.secret {
             self.reveal.set_revealed(!self.reveal.revealed());
         }
@@ -3610,6 +3629,7 @@ impl TextInput {
     }
 
     pub fn set_multiline(&mut self, on: bool) {
+        self.repaint = true;
         self.multiline = on;
     }
 
@@ -3640,6 +3660,7 @@ impl TextInput {
     }
 
     pub fn set_gutter(&mut self, on: bool) {
+        self.repaint = true;
         self.gutter = on;
     }
 
@@ -3650,6 +3671,7 @@ impl TextInput {
     }
 
     pub fn set_current_line_highlight(&mut self, on: bool) {
+        self.repaint = true;
         self.highlight_current_line = on;
     }
 
@@ -3662,6 +3684,7 @@ impl TextInput {
     }
 
     pub fn set_highlighter(&mut self, h: Option<Box<dyn Highlighter>>) {
+        self.repaint = true;
         self.highlighter = h;
         self.hl_text = None;
         self.shaped_preparation = None;
@@ -3675,6 +3698,7 @@ impl TextInput {
     }
 
     pub fn set_tab_width(&mut self, n: usize) {
+        self.repaint = true;
         self.tab_spaces = Some(n);
     }
 
@@ -3781,6 +3805,16 @@ impl TextInput {
         self
     }
 
+    /// The entry at the end of a list: Enter or leaving the field with text commits what was
+    /// typed (its submit) and clears it; Escape, or leaving it with nothing typed, leaves
+    /// nothing. The field is its own draft: nothing it holds exists until it is committed.
+    #[must_use]
+    pub fn with_entry(mut self, on: bool) -> Self {
+        self.entry = on;
+        self.enter_submits = self.enter_submits || on;
+        self
+    }
+
     /// `true` once per submitting `Enter`; clears on read.
     pub fn take_submit(&mut self) -> bool {
         std::mem::take(&mut self.submit_requested)
@@ -3794,6 +3828,7 @@ impl TextInput {
 
     /// Drops any in-progress drag so the widget doesn't hold pointer capture while inert.
     pub fn set_disabled(&mut self, on: bool) {
+        self.repaint = true;
         self.disabled = on;
         if on {
             self.is_dragging = false;
@@ -3812,6 +3847,15 @@ impl TextInput {
         self
     }
 
+    /// Ask for the keyboard as soon as this field is in the tree: the entry a command just
+    /// opened is where the person types next, and they should not have to point at it. Asked
+    /// once, when the window next lays out.
+    #[must_use]
+    pub fn wants_focus(mut self) -> Self {
+        self.focus_wanted = true;
+        self
+    }
+
     /// Set the stable label announced for this field by assistive technology.
     /// Placeholder text is intentionally not used as the label because it
     /// disappears after entry and often describes format rather than purpose.
@@ -3823,10 +3867,12 @@ impl TextInput {
 
     /// See [`Self::with_accessible_name`].
     pub fn set_accessible_name(&mut self, name: impl Into<String>) {
+        self.repaint = true;
         self.accessible_name = name.into();
     }
 
     pub fn set_placeholder(&mut self, hint: &str) {
+        self.repaint = true;
         self.placeholder = hint.to_string();
     }
 
@@ -3848,6 +3894,7 @@ impl TextInput {
 
     /// Change the field's [`ControlSize`]; see [`Self::control_size`].
     pub fn set_control_size(&mut self, size: ControlSize) {
+        self.repaint = true;
         if self.control_size != size {
             self.control_size = size;
             self.layout_dirty = true;
@@ -3876,6 +3923,7 @@ impl TextInput {
     /// Run `callback` on a submitting Enter (Shift+Enter still breaks a wrapping field's
     /// line), or, given none, let Enter break the line again.
     pub fn set_on_submit(&mut self, callback: Option<Box<dyn FnMut(&str)>>) {
+        self.repaint = true;
         self.enter_submits = callback.is_some();
         self.on_submit = callback;
     }
@@ -3983,6 +4031,7 @@ impl TextInput {
     /// Turn a toggle accessory on or off (the host syncing from its model).
     /// No-op for any other accessory.
     pub fn set_accessory_pressed(&mut self, on: bool) {
+        self.repaint = true;
         if let Some(Accessory {
             action: AccessoryAction::Toggle { pressed, .. },
             ..
@@ -4004,6 +4053,7 @@ impl TextInput {
 
     /// Change or clear the document-space size of [`Self::with_content_size`].
     pub fn set_content_size(&mut self, px: Option<f32>) {
+        self.repaint = true;
         let sized = px.is_some();
         if self.font_size_override != px || self.content_sized != sized {
             self.font_size_override = px;
@@ -4051,6 +4101,7 @@ impl TextInput {
     }
 
     pub fn set_read_only(&mut self, read_only: bool) {
+        self.repaint = true;
         if self.read_only != read_only {
             self.read_only = read_only;
             self.pending_paste = None;
@@ -4074,6 +4125,7 @@ impl TextInput {
     }
 
     pub fn set_runs(&mut self, runs: Vec<RichSpan>) {
+        self.repaint = true;
         let text: String = runs.iter().map(|run| run.text.as_str()).collect();
         let changed = self.text != text;
         self.set_text(&text);
@@ -4088,6 +4140,7 @@ impl TextInput {
     /// without a layout tree, for a host that paints it itself; the rect it
     /// takes is as tall as its text, and that height is returned.
     pub fn place_wrapped(&mut self, rect: Rect, tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        self.repaint = true;
         #[allow(clippy::cast_possible_truncation, reason = "bounded widget width")]
         let height = self.measure_wrapped_content(rect.width() as f32, tr, theme);
         let height = f64::from(height);
@@ -4106,6 +4159,7 @@ impl TextInput {
     }
 
     pub fn set_links(&mut self, links: Vec<(std::ops::Range<usize>, String)>) {
+        self.repaint = true;
         if self.links != links {
             self.links = links;
             self.drop_shaped_layouts();
@@ -4344,18 +4398,26 @@ impl TextInput {
     /// A submitting Enter: tell whoever listens.
     fn fire_submit(&mut self) {
         self.submit_requested = true;
+        // A list's entry commits what it holds and lets go of it: what is typed next is a new
+        // item, and an entry left empty is no item at all.
+        let text = if self.entry {
+            self.text.trim().to_owned()
+        } else {
+            self.text.clone()
+        };
         if let Some(action) = &mut self.submit_action {
-            let _ = action.emit(self.text.clone());
+            let _ = action.emit(text.clone());
         }
         let control = self.test_id().unwrap_or("text_input").to_owned();
         if let Some((action, _)) = &mut self.submit_view {
             if let Err(error) = action.emit(()) {
                 tracing::warn!(%error, %control, "a field refused its submit");
             }
-            return;
+        } else if let Some(callback) = self.on_submit.as_mut() {
+            callback(&text);
         }
-        if let Some(callback) = self.on_submit.as_mut() {
-            callback(&self.text);
+        if self.entry {
+            self.set_text("");
         }
     }
 
@@ -4731,6 +4793,7 @@ impl TextInput {
     /// band on a block being dragged through without it being the click
     /// target. `anchor == cursor` clears.
     pub fn set_selection(&mut self, anchor: usize, cursor: usize) {
+        self.repaint = true;
         self.set_selection_at(anchor, TextPosition::new(cursor));
     }
 
@@ -4816,6 +4879,7 @@ impl TextInput {
 
     /// For wrappers with "focus selects the value" semantics, e.g. `NumberInput`.
     pub fn select_all(&mut self) {
+        self.repaint = true;
         self.do_select_all();
     }
 
@@ -5384,6 +5448,7 @@ impl TextInput {
     /// for keyboard menu keys, accessibility actions, and deterministic UI
     /// previews; pointer right-clicks route here automatically.
     pub fn open_text_menu_at(&mut self, pos: [f32; 2]) {
+        self.repaint = true;
         self.open_context_menu(pos);
     }
 
@@ -5882,6 +5947,13 @@ impl Widget for TextInput {
         Some(self)
     }
 
+    /// A field made for the person to type in right away takes the keyboard in the tree it
+    /// stands in, once. It names itself as the runner finds it ([`Self::test_id`]).
+    fn take_focus_request(&mut self) -> Option<String> {
+        std::mem::take(&mut self.focus_wanted)
+            .then(|| self.test_id().unwrap_or_default().to_owned())
+    }
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::presence::capability::PublishesPresence,
@@ -5903,6 +5975,7 @@ impl Widget for TextInput {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        self.repaint = true;
         if self.poll_pending_paste() {
             self.notify_user_change(false);
         }
@@ -6327,6 +6400,9 @@ impl Widget for TextInput {
         if self.effectively_disabled() {
             return;
         }
+        // Hover, the caret, the selection, the scroll and every edit are
+        // things this field shows.
+        self.repaint = true;
         if matches!(event,
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed
         ) || matches!(
@@ -6583,10 +6659,15 @@ impl Widget for TextInput {
         }
     }
 
-    /// Repaints like a leaf; the show/hide control does not make the field a
-    /// container that only redraws for a dirty child.
+    /// Repaints like a leaf when something it shows moved; the show/hide
+    /// control's own paint is a child's. Asking unconditionally kept every
+    /// window that holds a field painting forever, which is what an idle
+    /// window costs: nothing changed, so nothing is drawn.
     fn needs_redraw(&self) -> bool {
-        true
+        self.repaint
+            || self.dirty
+            || self.layout_dirty
+            || crate::widget::redraw_or_children(false, self)
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
@@ -6594,6 +6675,7 @@ impl Widget for TextInput {
     }
 
     fn mark_drawn(&mut self) {
+        self.repaint = false;
         self.mark_shown();
         super::defaults::mark_drawn(self.children_mut());
     }
@@ -6605,6 +6687,7 @@ impl Widget for TextInput {
         self.invalid = invalid;
     }
     fn set_focus(&mut self, focused: bool) {
+        let left = !focused && self.is_focused;
         if focused != self.is_focused {
             self.hand_scrolled = false;
         }
@@ -6616,6 +6699,11 @@ impl Widget for TextInput {
             self.pending_paste = None;
             self.core.clear_preedit();
             self.completion.close();
+            // A list's entry commits what it holds when the person leaves it: what they typed
+            // is an item, and an entry left empty leaves none.
+            if left && self.entry && !self.text.trim().is_empty() {
+                self.fire_submit();
+            }
         }
     }
     fn is_focused(&self) -> bool {
@@ -6843,6 +6931,7 @@ impl Widget for TextInput {
     /// A glide after the fingers lifted moves the text on in the frames it
     /// asks for.
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.repaint = true;
         self.advance_wheel_glide();
         super::defaults::update(self.children_mut(), state, path)
     }

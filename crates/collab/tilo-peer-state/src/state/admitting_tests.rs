@@ -296,3 +296,90 @@ fn any_participant_admits_a_members_further_device() {
     );
     assert_ne!(user, stranger.user_public_key);
 }
+
+/// A page's device certificate lasts an hour and a page certifies a fresh one
+/// on every load: the workspace forgets an expired row nothing keeps, and keeps
+/// every row that records an admission.
+#[test]
+fn a_workspace_forgets_an_expired_page_devices_row_and_keeps_admitted_ones() {
+    let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
+    let owner = peer.owner_certificates()[0].clone();
+    crate::admission_tests::add_editor(&mut peer, &owner_key, now);
+    let hour = 3_600_000_000_000;
+    let expires = |cert: &mut DeviceCert, root: u8| {
+        cert.expires_at_ns = Some(now_ns(now).checked_add(hour).unwrap());
+        sign_device_cert(cert, &SigningKey::from_bytes(&[root; 32])).unwrap();
+    };
+
+    // A visitor's person joins as a member with the Viewer role the host gives
+    // visitors; its member device and the page device it certifies for a visit.
+    let member = device(80, 81);
+    let invited = redemption(
+        &peer,
+        &owner,
+        &owner_key,
+        &member,
+        MemberRole::Viewer,
+        82,
+        now,
+    );
+    peer.governance_mut()
+        .admit_invited_member(&invited, &owner_key, now)
+        .unwrap();
+    let (_, mut page) = device(80, 83);
+    expires(&mut page, 80);
+    peer.governance_mut()
+        .admit_member_device(&page, &owner_key, now)
+        .unwrap();
+    // A person the invitation admitted with a certificate that also expires:
+    // their row records the admission, so it stays.
+    let (invited_key, mut expiring_invitee) = device(84, 85);
+    expires(&mut expiring_invitee, 84);
+    let admitted = redemption(
+        &peer,
+        &owner,
+        &owner_key,
+        &(invited_key, expiring_invitee.clone()),
+        MemberRole::Viewer,
+        86,
+        now,
+    );
+    peer.governance_mut()
+        .admit_invited_member(&admitted, &owner_key, now)
+        .unwrap();
+
+    let rows = |peer: &StatePeer| received(peer).identities;
+    let before = rows(&peer);
+    assert!(
+        !peer
+            .governance_mut()
+            .forget_expired_devices(&owner_key, now)
+            .unwrap()
+    );
+    assert_eq!(rows(&peer).len(), before.len(), "live rows stay");
+
+    let later = now + std::time::Duration::from_secs(2 * 60 * 60);
+    assert!(
+        peer.governance_mut()
+            .forget_expired_devices(&owner_key, later)
+            .unwrap()
+    );
+    let after = rows(&peer);
+    assert!(
+        !after.contains_key(&hex::encode(page.device_public_key)),
+        "an expired page device's row is gone"
+    );
+    for kept in [
+        owner.device_public_key,
+        member.1.device_public_key,
+        expiring_invitee.device_public_key,
+    ] {
+        assert!(after.contains_key(&hex::encode(kept)));
+    }
+    assert_eq!(
+        peer.permissions(member.1.device_public_key, later)
+            .unwrap()
+            .role,
+        Role::Viewer
+    );
+}

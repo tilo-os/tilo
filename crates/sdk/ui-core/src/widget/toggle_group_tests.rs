@@ -1293,3 +1293,43 @@ fn a_multi_select_toggle_runs_its_action_with_the_chosen_indices() {
         "an unavailable action disables the strip"
     );
 }
+
+/// A strip laid out for a mouse, told afterwards that a finger chooses from it (the host says
+/// what it is used with after the widget is built), stands as tall as the finger's target, and
+/// so does every choice in it.
+#[test]
+fn a_strip_told_of_a_finger_stands_as_tall_as_its_target() {
+    use crate::interaction::InteractionEnvironment;
+    let mut harness = crate::headless::FrameHarness::new(
+        crate::State::new(),
+        Box::new(
+            crate::widget::Column::new()
+                .with_no_padding()
+                .push(Box::new(ToggleGroup::new(
+                    vec![Segment::new("List"), Segment::new("Board")],
+                    0,
+                ))),
+        ),
+        (400, 200),
+    );
+    let height =
+        |harness: &mut crate::headless::FrameHarness| harness.inspection().root.children[0].rect[3];
+    assert!((height(&mut harness) - 32.0).abs() < 0.5, "a mouse's 32");
+    harness.set_interaction_environment(InteractionEnvironment::TOUCH);
+    let touch = f64::from(InteractionEnvironment::TOUCH.minimum_target());
+    let node = &harness.inspection().root.children[0];
+    assert!(
+        (node.rect[3] - touch).abs() < 0.5,
+        "a finger's {touch}, not {}",
+        node.rect[3]
+    );
+    let choices = &node.semantics.as_ref().expect("the strip speaks").children;
+    assert_eq!(choices.len(), 2, "each choice is spoken");
+    for choice in choices {
+        let bounds = choice.bounds.expect("a choice has bounds").to_rect();
+        assert!(
+            bounds.height() >= touch - 0.5,
+            "a choice is a finger's target: {bounds:?}"
+        );
+    }
+}

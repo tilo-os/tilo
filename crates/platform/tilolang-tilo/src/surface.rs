@@ -14,6 +14,7 @@ use tilo_actions::surface::{
     VerbSurface,
 };
 use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
+use tilo_resource::Resource as _;
 use tilolang_runtime::meta::Ty;
 
 use crate::action::{CREATE_ACTION, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
@@ -32,7 +33,7 @@ pub const VERSION: u32 = 1;
 /// `meta`'s: a type of a package it uses, written qualified (`so.tilo.lang.notes.Notebook`).
 #[must_use]
 pub fn other_apps_record(meta: &Meta, ty: &str) -> Option<(String, String)> {
-    // optional-decode: a probe: a type that does not parse names no other app's record.
+    // ignored-failure: a probe: a type that does not parse names no other app's record.
     match tilolang_runtime::meta::parse_ty(ty.trim(), &meta.app).ok()? {
         tilolang_runtime::meta::Ty::Record(key) if key.app != meta.app => {
             Some((format!("tl.{}.{}", key.app, key.name), key.name))
@@ -83,7 +84,7 @@ fn plain_cases(
 pub fn field_type_of_type(meta: &Meta, ty: &str, types: &mut TypeSet) -> FieldType {
     // A loaded package's types all parse (`meta::unreadable_types`, checked where it is
     // loaded); one that does not is published as any value.
-    // optional-decode: checked where the package is loaded
+    // ignored-failure: checked where the package is loaded
     match tilolang_runtime::meta::parse_ty(ty.trim(), &meta.app) {
         Ok(parsed) => field_type_of(meta, &parsed, types),
         Err(_) => FieldType::Any,
@@ -96,7 +97,8 @@ fn field_type_of(meta: &Meta, ty: &Ty, types: &mut TypeSet) -> FieldType {
         Ty::Int => FieldType::Int,
         Ty::Float => FieldType::Float,
         Ty::Bool => FieldType::Bool,
-        Ty::Text => FieldType::Text,
+        // A repeat and a reminder are text as they are held, so a picker writes them.
+        Ty::Text | Ty::Repeat | Ty::Reminder => FieldType::Text,
         Ty::RichText => FieldType::RichText,
         Ty::Date => FieldType::Date,
         Ty::Time => FieldType::Time,
@@ -158,7 +160,7 @@ fn field_type_of(meta: &Meta, ty: &Ty, types: &mut TypeSet) -> FieldType {
 pub fn schema_of_type(meta: &Meta, ty: &str) -> Json {
     // A loaded package's types all parse (`meta::unreadable_types`, checked where it is
     // loaded); one that does not takes any value.
-    // optional-decode: checked where the package is loaded
+    // ignored-failure: checked where the package is loaded
     match tilolang_runtime::meta::parse_ty(ty.trim(), &meta.app) {
         Ok(parsed) => schema_of(meta, &parsed),
         Err(_) => json!({}),
@@ -170,7 +172,8 @@ fn schema_of(meta: &Meta, ty: &Ty) -> Json {
         Ty::Int => json!({"type": "integer"}),
         Ty::Float => json!({"type": "number"}),
         Ty::Bool => json!({"type": "boolean"}),
-        Ty::Text | Ty::RichText => json!({"type": "string"}),
+        // A rule and a trigger as RFC 5545 writes them, `FREQ=WEEKLY` and `-PT15M`.
+        Ty::Text | Ty::RichText | Ty::Repeat | Ty::Reminder => json!({"type": "string"}),
         Ty::Date => json!({"type": "string", "format": "date"}),
         Ty::Time => json!({"type": "string", "format": "date-time"}),
         // An account of some service, as its URI (`mailto:jane@x.com`).
@@ -227,7 +230,7 @@ fn subject_schema() -> Json {
 /// binds, a palette offers and the generated surface describes, one declaration for all three.
 #[must_use]
 pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
-    // optional-decode: a loaded package's parameter types all parse (`meta::unreadable_types`).
+    // ignored-failure: a loaded package's parameter types all parse (`meta::unreadable_types`).
     let parsed = tilolang_runtime::meta::parse_ty(param.ty.trim(), &meta.app).ok();
     // What the parameter takes when it is given: an `Option` is its value, left out.
     let present = match &parsed {
@@ -239,7 +242,9 @@ pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
         Some(Ty::Float) => ParamType::Number,
         Some(Ty::Bool) => ParamType::Boolean,
         Some(Ty::Time) => ParamType::DateTime,
-        Some(Ty::Text | Ty::RichText | Ty::Date | Ty::Identifier) => ParamType::Text,
+        Some(Ty::Text | Ty::RichText | Ty::Date | Ty::Identifier | Ty::Repeat | Ty::Reminder) => {
+            ParamType::Text
+        }
         Some(Ty::Enum(key)) if plain_cases(meta, key).is_some() => ParamType::Text,
         Some(Ty::List(_) | Ty::Set(_) | Ty::Collection(_) | Ty::Tuple(_)) => ParamType::Array,
         _ => ParamType::Object,
@@ -294,6 +299,13 @@ pub fn arguments<'a>(meta: &Meta, params: &'a [ParamMeta]) -> &'a [ParamMeta] {
 #[must_use]
 pub fn is_destructive(action: &ActionMeta) -> bool {
     action.role.as_deref() == Some("destructive")
+}
+
+/// Whether `action` is declared `primary`: the main thing to do with a resource, whose result
+/// opens beside the list when a person runs it.
+#[must_use]
+pub fn is_primary(action: &ActionMeta) -> bool {
+    action.role.as_deref() == Some("primary")
 }
 
 fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
@@ -546,7 +558,7 @@ pub fn surface_toml_reading(
     packages: &[&Meta],
     reads: &[Meta],
 ) -> Result<Vec<u8>, toml::ser::Error> {
-    let mut resources = vec![host_surface()];
+    let mut resources = vec![host_surface(), crate::personal::Personal::surface()];
     for meta in packages {
         resources.extend(package_surfaces(meta));
     }

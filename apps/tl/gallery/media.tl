@@ -43,7 +43,19 @@ view media(m: Media) {
             }
         }
         ui.Section("Playing") {
-            ui.MediaTransport(title: "A quiet song", subtitle: "Someone", art: m.photo, playing: true, position: m.at, duration: 180.0, volume: 0.6, shuffle: false, repeat: .all, liked: true, queue: false) {
+            ui.MediaTransport(
+                title: "A quiet song",
+                subtitle: "Someone",
+                art: m.photo,
+                playing: true,
+                position: m.at,
+                duration: 180.0,
+                volume: 0.6,
+                shuffle: false,
+                repeat: .all,
+                liked: true,
+                queue: false,
+            ) {
                 on act_play_pause: set(last, "Play")
                 on act_previous: set(last, "Previous")
                 on act_next: set(last, "Next")
@@ -78,7 +90,12 @@ view media(m: Media) {
             }
         }
         ui.Section("Text") {
-            ui.CodeEditor(value: m.source, language: .tilolang, min_lines: 4, placeholder: "Write a view")
+            ui.CodeEditor(
+                value: m.source,
+                language: .tilolang,
+                min_lines: 4,
+                placeholder: "Write a view",
+            )
             ui.RichTextLine(value: m.source, placeholder: "A line of text", role: .body) {
                 on enter(at: Int): mark_page(last, at)
             }
@@ -104,7 +121,13 @@ view media(m: Media) {
                 ui.ListRow("Second choice")
             }
             if ask {
-                ui.ModalDialog(title: "Delete 3 notes?", secondary: "Cancel", primary: "Delete", destructive: true, open: true) {
+                ui.ModalDialog(
+                    title: "Delete 3 notes?",
+                    secondary: "Cancel",
+                    primary: "Delete",
+                    destructive: true,
+                    open: true,
+                ) {
                     on act_primary: set(ask, false)
                     on act_secondary: set(ask, false)
                     on dismiss: set(ask, false)
@@ -141,5 +164,13 @@ action seek_to(m: Media, place: Float) {
 /// The media group: its picture the gallery carries itself, in the address.
 scenario "media" {
     let g = root Gallery
-    g.media.insert(Media(title: "Media", photo: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGOI6jnxHx9mGBkKAA3Qq0EzFRlyAAAAAElFTkSuQmCC", at: 12.0, code: "tilo://invite/gallery", source: "text(\"The blue tile\")"))
+    g.media.insert(
+        Media(
+            title: "Media",
+            photo: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR4nGOI6jnxHx9mGBkKAA3Qq0EzFRlyAAAAAElFTkSuQmCC",
+            at: 12.0,
+            code: "tilo://invite/gallery",
+            source: "text(\"The blue tile\")",
+        ),
+    )
 }

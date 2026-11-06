@@ -150,10 +150,11 @@ pub enum EffectDecodeError {
     #[error("there is no effect `{0}`")]
     Unknown(String),
     /// The payload the invocation travels in does not decode.
-    #[error("the effect's payload does not decode")]
+    #[error("the effect's payload does not decode: {0}")]
     Payload(#[source] serde_json::Error),
-    /// One argument does not have its field's type.
-    #[error("the effect's `{name}` argument does not decode")]
+    /// One argument does not have its field's type, as the field's own type
+    /// says (`AbsolutePath`'s refusal of a relative path, say).
+    #[error("the effect's `{name}` argument does not decode: {source}")]
     Argument {
         name: String,
         #[source]

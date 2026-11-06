@@ -18,6 +18,8 @@
               failed step is the assertion"
 )]
 
+mod common;
+
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -147,22 +149,12 @@ impl FakeMenu {
     }
 }
 
-/// Step `session` until `asked` answers, for a minute of the machine's time:
-/// what it waits for is a bus conversation on another runtime, which a busy
-/// builder can take many steps to land.
+/// Step `session` until `asked` answers: what it waits for is a bus
+/// conversation on another runtime, which a busy builder can take many steps
+/// to land, so it waits for the condition itself rather than for a while.
 #[track_caller]
 fn until<T>(session: &mut Session, what: &str, mut asked: impl FnMut(&Session) -> Option<T>) -> T {
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    loop {
-        session.step(SETTLE).expect("a frame");
-        if let Some(answer) = asked(session) {
-            return answer;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the session never showed {what}"
-        );
-    }
+    common::wait_for(session, what, |session| asked(session))
 }
 
 /// The resource published for the tray menu entry labelled `label`.

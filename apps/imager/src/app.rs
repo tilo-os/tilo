@@ -225,6 +225,7 @@ impl ImagerApp {
 
     pub fn new() -> Self {
         Self {
+            dirty: true,
             source: None,
             recent: Vec::default(),
             targets: Vec::new(),
@@ -270,7 +271,6 @@ impl ImagerApp {
             control_actions: None,
             live: false,
             reaches_machine: true,
-            dirty: true,
             published: Rc::default(),
         }
     }
@@ -1681,6 +1681,7 @@ impl ImagerApp {
         }
     }
     fn download_release(&mut self, index: usize, release: TiloRelease) {
+        self.dirty = true;
         if self.release_download.is_some() {
             self.set_status("A Tilo installer download is already in progress.");
             return;
@@ -1722,7 +1723,6 @@ impl ImagerApp {
             ))
         });
         self.release_download = Some(ReleaseDownload { index, control });
-        self.dirty = true;
     }
     fn cancel_release_download(&mut self) -> Result<(), String> {
         let Some(download) = &self.release_download else {
@@ -2370,6 +2370,7 @@ impl ImagerApp {
         self.dirty = true;
     }
     fn finish_write(&mut self, last: Option<Progress>) {
+        self.dirty = true;
         // A terminal progress packet can precede helper wait and native exit.
         // Keep the cancellation channel and authority until that owned witness.
         if self
@@ -2378,7 +2379,6 @@ impl ImagerApp {
             .is_some_and(|control| !control.observed_stopped())
         {
             self.pending_writer_result = Some(PendingWriterResult { progress: last });
-            self.dirty = true;
             return;
         }
         self.pending_writer_result = None;
@@ -3341,6 +3341,7 @@ impl Widget for ImagerApp {
     ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.dirty = true;
         crate::window_view::PublishingWindow::follow_document(self);
         let staged = self.published.borrow_mut().take_staged();
         if let Some(crate::window_view::Staged(scenario)) = staged {
@@ -3478,6 +3479,7 @@ impl Widget for ImagerApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         if self.export_dialog.handle_detached(
             event,
             ctx.scale_factor,
@@ -3552,6 +3554,14 @@ impl Widget for ImagerApp {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

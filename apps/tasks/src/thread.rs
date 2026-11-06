@@ -87,7 +87,7 @@ pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
         Column::new()
             .with_rhythm(ui::tokens::Rhythm::Group)
             .with_fill_remaining_height()
-            .push(crate::new_issue(cx, None, "tasks-thread-new"))
+            .push(crate::new_issue(cx, None, None, "tasks-thread-new"))
             .push(list),
     )
 }

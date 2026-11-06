@@ -9,8 +9,7 @@ use crate::{NeighbourMsg, document, workspace};
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::caps::Principal;
 use collab_types::{
-    ArtifactKind, ChannelState, ContentRetention, DocumentMutation, Ed25519PublicKey, OpKind, Role,
-    SignedOp,
+    ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpKind, Role, SignedOp,
 };
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -32,6 +31,13 @@ pub(crate) mod json_resource_tests;
 use crate::shared::Shared;
 use backend::{PeerCore, PeerDocument};
 mod bans;
+mod covered_records;
+mod durable_before_owner;
+#[cfg(test)]
+use durable_before_owner::Durable;
+pub(crate) use durable_before_owner::{
+    DURABLE_BASE_VERSION, DurableV4, DurableV5, DurableV6, durable_base_is_before_owner,
+};
 mod member_records;
 use member_records::empty_genesis;
 mod facades;
@@ -51,12 +57,15 @@ pub use delegates::{DelegateInactive, GovernedAgent, GovernedDelegateRow};
 mod agent_runs;
 mod local_admission;
 mod local_outbox;
+mod membership_error;
+pub use membership_error::MembershipError;
 mod owner_membership;
 mod workspace_delta;
 mod workspace_effects;
 mod workspace_membership;
+mod workspace_refusals;
 mod workspace_shortcuts;
-pub use local_outbox::{LocalRecoveryReservation, Reseal};
+pub use local_outbox::Reseal;
 mod held;
 mod joined;
 mod media_governance;
@@ -94,57 +103,6 @@ fn now_ns(now: SystemTime) -> u64 {
         .as_nanos()
         .try_into()
         .unwrap_or(u64::MAX)
-}
-/// Why a device holds no current authority in the workspace.
-///
-/// Each kind is a different thing to do about it: a stranger's device is
-/// unknown ([`Self::UnknownDevice`]), a removed member's is known and
-/// admitted but no longer a member ([`Self::NoMembership`]), and a device the
-/// workspace revoked must stop, not retry ([`Self::Revoked`]).
-#[derive(Clone, Debug, thiserror::Error)]
-pub enum MembershipError {
-    /// The workspace holds no certificate for the device.
-    #[error("certified identity missing")]
-    UnknownDevice,
-    /// The device's certificate does not verify, or has run out.
-    #[error(transparent)]
-    Certificate(tilo_user_identity::DeviceCertError),
-    /// The workspace's root has revoked the device.
-    #[error("device revoked by workspace")]
-    Revoked,
-    /// The workspace's governance is not here to decide against.
-    #[error("workspace governance missing")]
-    GovernanceMissing,
-    /// The governance document carries no row for the device.
-    #[error("device is absent from governed roster")]
-    Absent,
-    /// The row the workspace holds is another certificate than the device's.
-    #[error("governed certificate mismatch")]
-    CertificateMismatch,
-    /// The revocations in the governance document are not this workspace's root's.
-    #[error("revocation root mismatch")]
-    RevocationRoot,
-    /// A revocation entry does not verify.
-    #[error(transparent)]
-    Revocation(tilo_user_identity::RevocationError),
-    /// The device's delegation is withdrawn, expired or names another.
-    #[error(transparent)]
-    Delegate(delegates::DelegateInactive),
-    /// The device's person is a stranger here, or the workspace blocks them.
-    #[error("person has no workspace membership")]
-    NoMembership,
-    /// The governance document's row for the device does not decode.
-    #[error("the governed identity row does not decode")]
-    MalformedIdentity(#[source] std::sync::Arc<serde_json::Error>),
-}
-impl From<backend::CertificateLookupError> for MembershipError {
-    fn from(error: backend::CertificateLookupError) -> Self {
-        match error {
-            backend::CertificateLookupError::Missing => Self::UnknownDevice,
-            backend::CertificateLookupError::Validity(error) => Self::Certificate(error),
-            backend::CertificateLookupError::Revoked => Self::Revoked,
-        }
-    }
 }
 
 /// A current member's authority in the workspace: who they are, their role, the
@@ -264,13 +222,16 @@ pub struct GovernedAccess {
 /// [`PeerGovernance::withheld_record_readers`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecordReaders {
-    /// Each channel whose record the caller can name, and the member
-    /// devices that may not read that record (possibly none).
+    /// Every device a record's channel admits where nothing withholds it from
+    /// the record: the workspace's member devices.
+    pub readers: BTreeSet<[u8; 32]>,
+    /// Each channel whose record the caller can name, and the devices that
+    /// may not read that record (possibly none).
     pub withheld: std::collections::HashMap<collab_types::ChannelId, BTreeSet<[u8; 32]>>,
-    /// The member devices kept out of every channel whose record the caller
-    /// cannot name: all of them. Such a channel may be any record, a
-    /// member's own (`member:<root>:<kind>`, read by that person alone)
-    /// included, so no one is admitted to it until a device names its
+    /// The devices kept out of every channel whose record the caller cannot
+    /// name: every device [`Self::readers`] lists. Such a channel may be any
+    /// record, a member's own (`member:<root>:<kind>`, read by that person
+    /// alone) included, so no one is admitted to it until a device names its
     /// record.
     pub unrouted: BTreeSet<[u8; 32]>,
 }
@@ -375,48 +336,6 @@ struct DurableDocumentRef<'a> {
     encryption_required: bool,
     covered: &'a BTreeMap<String, u64>,
     covered_snapshot: Option<&'a [u8]>,
-}
-/// The durable base layout. Version 4 names the workspace's owner by their root
-/// key; earlier versions pinned a governing device and are refused.
-const DURABLE_BASE_VERSION: u32 = 4;
-
-#[derive(Serialize, Deserialize)]
-struct Durable {
-    version: u32,
-    workspace: String,
-    owner: [u8; 32],
-    workspace_bytes: Option<Vec<u8>>,
-    documents: Vec<DurableDocument>,
-    receipts: BTreeMap<String, Vec<u8>>,
-    certificates: Vec<DeviceCert>,
-    revocations: Vec<tilo_user_identity::RevocationEntry>,
-}
-#[derive(Serialize, Deserialize)]
-struct DurableV4 {
-    version: u32,
-    base: Durable,
-    pending: VecDeque<([u8; 32], NeighbourMsg, bool)>,
-    pending_bytes: usize,
-}
-
-// The v4 shape stays frozen. Exact evidence is an explicitly selected addition.
-#[derive(Serialize, Deserialize)]
-struct DurableV5<'a> {
-    version: u32,
-    base: DurableV4,
-    #[serde(borrow)]
-    exact: &'a [u8],
-}
-
-/// V5 and the sealed history of each encrypted record. Written only while a
-/// record holds sealed writes, so every other state keeps its v5 bytes.
-#[derive(Serialize, Deserialize)]
-struct DurableV6<'a> {
-    version: u32,
-    base: DurableV4,
-    #[serde(borrow)]
-    exact: &'a [u8],
-    sealed: SealedHistory,
 }
 /// Each encrypted record's sealed writes, in admission order.
 type SealedHistory = Vec<(Route, Vec<SignedOp>)>;
@@ -538,7 +457,7 @@ fn held_units(doc: &crate::cached_document::CachedDocument, envelope: &SignedOp)
     let brings_index = || {
         envelope.encryption.is_none()
             && collab_types::DocumentMutation::decode(&envelope.payload)
-                .ok()
+                .ok() // ignored-failure: change bytes that do not parse bring no index
                 .and_then(|mutation| collab_types::parse_changes(mutation.data()).ok())
                 .is_some_and(|changes| collab_types::units::brings_index(&changes))
     };
@@ -666,7 +585,6 @@ impl StatePeer {
                 documents: Shared::default(),
                 pending: VecDeque::new(),
                 pending_bytes: 0,
-                checkpoint_times: Shared::default(),
                 exact_admissions: ExactAdmissions::default(),
                 admission_v5: false,
                 native_cut_publisher: None,
@@ -700,6 +618,7 @@ impl StatePeer {
         }
         if let Some(old) = self.core.certificates.get(&cert.device_public_key)
             && old.as_ref() != &cert
+            && !supersedes(old.as_ref(), &cert)
         {
             return Err("certificate conflict".into());
         }
@@ -712,6 +631,7 @@ impl StatePeer {
         if workspace::governance_of(Some(&doc))
             .identities
             .get(&id)
+            // ignored-failure: an identity row that does not decode is not that certificate
             .and_then(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes).ok())
             .is_some_and(|old| old.device_cert == cert)
         {
@@ -723,6 +643,7 @@ impl StatePeer {
             admission: None,
             admissions: vec![],
             delegate: None,
+            workspace_delegations: Vec::new(),
         };
         self.put_identity(doc, &identity, key, now)
     }
@@ -867,10 +788,19 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<(), String> {
-        let device = key.verifying_key().to_bytes();
-        self.certificate(&device, now)
+        self.require_member_device(&key.verifying_key().to_bytes(), now)
+    }
+
+    /// [`Self::require_member_writer`] of a device whose signature was made
+    /// elsewhere: a page signs with the key its custody holds.
+    pub(crate) fn require_member_device(
+        &self,
+        device: &[u8; 32],
+        now: SystemTime,
+    ) -> Result<(), String> {
+        self.certificate(device, now)
             .map_err(|error| error.to_string())?;
-        self.role(&device, now).map(drop)
+        self.role(device, now).map(drop)
     }
 
     /// `device`'s certificate when it is one of the owner's devices, current
@@ -887,15 +817,23 @@ impl StatePeer {
         Ok(cert)
     }
 
+    /// Whether `device` is a known, unrevoked device, at no particular time:
+    /// for evidence a device signed earlier, of any person taking part.
+    #[must_use]
+    fn known_device(&self, device: &[u8; 32]) -> bool {
+        self.core.certificates.get(device).is_some() && !self.core.revocations.is_revoked(device)
+    }
+
     /// Whether `device` is a known, unrevoked device of the owner's, at no
     /// particular time: for evidence a device of theirs signed earlier.
     #[must_use]
     pub fn signed_by_owner(&self, device: &[u8; 32]) -> bool {
-        self.core
-            .certificates
-            .get(device)
-            .is_some_and(|cert| cert.user_public_key == self.core.owner)
-            && !self.core.revocations.is_revoked(device)
+        self.known_device(device)
+            && self
+                .core
+                .certificates
+                .get(device)
+                .is_some_and(|cert| cert.user_public_key == self.core.owner)
     }
 
     fn apply_governance_doc(
@@ -981,18 +919,6 @@ impl StatePeer {
             .collect::<Vec<_>>();
         rows.sort();
         rows
-    }
-    pub(crate) fn fresh_checkpoint_for(&self, app: &str, record: &str, now: SystemTime) -> bool {
-        self.core
-            .checkpoint_times
-            .get(&Route {
-                app: app.into(),
-                record: record.into(),
-            })
-            .is_some_and(|at| {
-                now.duration_since(*at)
-                    .is_ok_and(|age| age <= Duration::from_secs(300))
-            })
     }
     /// The person who owns the workspace: their root key.
     #[must_use]
@@ -1155,14 +1081,14 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<(), String> {
         let member = self.membership(device, now)?;
-        let bound = tilo_action_policy::roles::foreign_device_bound();
-        if !backend::access::document_read(
-            &member.authority(&bound),
+        let allowed = backend::access::document_read(
+            &member.authority(&tilo_action_policy::roles::foreign_device_bound()),
             &self.core.workspace,
             app,
             record,
             now,
-        ) {
+        );
+        if !allowed {
             return Err(format!("record read forbidden: {app}/{record}"));
         }
         Ok(())
@@ -1241,35 +1167,6 @@ impl StatePeer {
 
     pub fn pending_count(&self) -> usize {
         self.core.pending.len()
-    }
-    /// This only authorizes recovery of an overtaken sequence. It is not
-    /// acknowledgement: `covers()` additionally requires causal change inclusion.
-    pub(crate) fn checkpoint_sequence_covers(&self, message: &NeighbourMsg) -> bool {
-        let NeighbourMsg::AppDocument {
-            app_id,
-            cluster_id,
-            record_id,
-            envelope,
-            ..
-        } = message
-        else {
-            return false;
-        };
-        if cluster_id != &self.core.workspace {
-            return false;
-        }
-        self.core
-            .documents
-            .get(&Route {
-                app: app_id.clone(),
-                record: record_id.clone(),
-            })
-            .and_then(|document| {
-                document
-                    .covered
-                    .get(&hex::encode(envelope.author.as_bytes()))
-            })
-            .is_some_and(|floor| *floor >= envelope.seq)
     }
     pub fn covers(&self, message: &NeighbourMsg) -> bool {
         let NeighbourMsg::AppDocument {
@@ -1572,6 +1469,8 @@ impl StatePeer {
             Some(document) => Some(held_units(&document.doc, envelope)),
             None => enforced.then(AutoCommit::new),
         };
+        let allows =
+            |node: &TreePath, kind: ActionKind| member.allows(node, kind, authorization_time);
         let decided = collab_types::decide_op_pinned(
             envelope,
             &collab_types::Record {
@@ -1583,7 +1482,7 @@ impl StatePeer {
             held,
             pinned,
             &self.surfaces,
-            &|node, kind| member.allows(node, kind, authorization_time),
+            &|node, kind| allows(node, kind),
         );
         match decided {
             Ok(collab_types::Receipt::Admit) => Ok(Some(member)),
@@ -1992,6 +1891,10 @@ impl StatePeer {
         let mut metadata_changed = self.import_governed_certificates(&candidate, now)?;
         self.core.receipts = receipts;
         self.core.workspace_doc = Some(candidate.into());
+        // The governance may name a record this replica holds nothing of and
+        // that no one can send it: an empty one. Held before the writes
+        // waiting on it are tried, so the first one builds on the record.
+        covered_records::hold_covered_empty_records(self)?;
         let pending = std::mem::take(&mut self.core.pending);
         self.core.pending_bytes = 0;
         let mut applied = changed;
@@ -2101,7 +2004,10 @@ impl StatePeer {
     /// Host-local SDK publication after its certified connection was admitted.
     /// No wire message can select this door. Unlike a retained checkpoint, an
     /// SDK snapshot is an authored mutation of an already-owned exact record.
-    /// Certificate, current policy, signature, replay and route checks are shared.
+    /// A write that is the whole record, sealed, is the one exception: it
+    /// names the record on its own, so a device that keeps a record's channel
+    /// founds it with it, as a replica that holds none of the route founds it
+    /// from one it is sent.
     pub fn admit_local_app_document(
         &mut self,
         app: &str,
@@ -2122,7 +2028,25 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<AdmissionReport, String> {
         if self.document(app, record).is_none() {
-            return Err("local app publication cannot create a record owner".into());
+            // A local publication is an authored change to a record the
+            // workspace owns already; only a write that is the whole record
+            // founds one, and the workspace says first whether this device
+            // may create it, as it does for a cleartext genesis.
+            if !envelope.is_whole_record() {
+                return Err("local app publication cannot create a record owner".into());
+            }
+            if !self.signed_by_owner(envelope.author.as_bytes())
+                && !self.may_create_record(
+                    &self.membership(*envelope.author.as_bytes(), now)?,
+                    &Route {
+                        app: app.into(),
+                        record: record.into(),
+                    },
+                    now,
+                )
+            {
+                return Err("the workspace does not let this device create the record".into());
+            }
         }
         let source = *envelope.author.as_bytes();
         self.admit_document(
@@ -2219,7 +2143,10 @@ impl StatePeer {
                 },
             ));
         }
-        let historical_validation = retained_replay && !strict_report;
+        // A retained frame is history by nature: its author signed it when it
+        // was fresh, and a store or relay hands it over later. It is decided as
+        // of its own timestamp, never re-signed.
+        let historical_validation = retained_replay;
         let authorization_time = if historical_validation {
             envelope.timestamp
         } else {
@@ -2365,20 +2292,13 @@ impl StatePeer {
                 ));
             }
             collab_types::WholeDocumentPayload::Encrypted { .. } => {
-                // A sealed change needs the record it changes; a sealed
-                // compaction is the whole record as its key holder folded it,
-                // so it founds the route for a replica that has none, as a
+                // A sealed change needs the record it changes; a write that
+                // is the whole record — a compaction, or a checkpoint such as
+                // the one a host keeps at the head of a sealed channel —
+                // founds the route for a replica that holds none of it, as a
                 // device catching up from a store that holds only ciphertext
-                // does. So does a sealed checkpoint, the whole record as its
-                // writer saved it: the one a host keeps at the head of a
-                // sealed channel replays to a device joining the workspace, and
-                // the route it names is what the writes after it change.
-                let whole_record = envelope.kind == OpKind::Compaction
-                    || envelope
-                        .encryption
-                        .and_then(|metadata| metadata.retention())
-                        == Some(ContentRetention::Checkpoint);
-                if !route_existed && !whole_record {
+                // does.
+                if !route_existed && !envelope.is_whole_record() {
                     return self.defer(
                         source,
                         NeighbourMsg::AppDocument {
@@ -2407,20 +2327,49 @@ impl StatePeer {
             collab_types::check_appearances(&changes, shows.as_deref())
                 .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
         }
-        // A member's empty record, made where the workspace lets its app author
-        // and its writer change it: nothing in it needs a checkpoint. Made
-        // once: a record the workspace holds is never started over, nor its
-        // retained checkpoint replaced by an empty one.
-        let member_genesis = matches!(&mutation, DocumentMutation::Snapshot(bytes) if empty_genesis(bytes))
+        // A record's genesis is not a checkpoint: it is started empty, so
+        // there is no retained history for the workspace to acknowledge.
+        // Whoever the workspace lets start the record may start it, and a
+        // device that already holds the record takes a second start of it as
+        // the nothing it is: two devices that start the same record each
+        // publish their own genesis, and they merge into the one empty
+        // record.
+        let empty = matches!(&mutation, DocumentMutation::Snapshot(bytes) if empty_genesis(bytes));
+        let genesis = empty && !route_existed;
+        if genesis
             && !self.signed_by_owner(&source)
-            && self.may_create_record(&member, &route, authorization_time);
-        if member_genesis && route_existed {
-            return Err("the record exists already".into());
-        }
-        if let DocumentMutation::Snapshot(bytes) = &mutation
-            && !local_app
-            && !member_genesis
+            && !self.may_create_record(&member, &route, authorization_time)
         {
+            return self.defer(
+                source,
+                NeighbourMsg::AppDocument {
+                    peer,
+                    app_id: route.app,
+                    cluster_id,
+                    record_id: route.record,
+                    envelope,
+                },
+                Held {
+                    retained_replay,
+                    prerequisite: MissingPrerequisite::RecordCheckpoint,
+                    now,
+                },
+            );
+        }
+        // A snapshot one of the workspace owner's devices publishes is the
+        // checkpoint the workspace governs, with its coverage row fixing the
+        // history it retains. Any other writer publishes the record as it
+        // holds it, which is its own change and merges like one: a document
+        // is merged into what a device holds, never put in its place, so
+        // nothing of the record is lost by taking it.
+        let governed_checkpoint = matches!(&mutation, DocumentMutation::Snapshot(_))
+            && !local_app
+            && !genesis
+            && self.signed_by_owner(&source);
+        if governed_checkpoint {
+            let DocumentMutation::Snapshot(bytes) = &mutation else {
+                return Err("only a whole document is a checkpoint".into());
+            };
             let entries = crate::coverage::entries(
                 self.core
                     .workspace_doc
@@ -2515,7 +2464,7 @@ impl StatePeer {
                     .or_default();
                 *floor = (*floor).max(*sequence);
             }
-        } else if !route_existed && !member_genesis {
+        } else if !route_existed && !genesis {
             return self.defer(
                 source,
                 NeighbourMsg::AppDocument {
@@ -2594,12 +2543,7 @@ impl StatePeer {
         } else {
             InputDisposition::MetadataOnly
         };
-        self.core.documents.insert(route.clone(), candidate);
-        // Pending drains catch rejection and keep the outer candidate. Install
-        // checkpoint freshness only after every fallible admission step succeeds.
-        if !local_app && !member_genesis && matches!(mutation, DocumentMutation::Snapshot(_)) {
-            self.core.checkpoint_times.insert(route, now);
-        }
+        self.core.documents.insert(route, candidate);
         Ok(AdmissionReport::new(
             primary,
             ReceiveOutcome {
@@ -2815,6 +2759,21 @@ impl StatePeer {
             app: app.into(),
             record: record.into(),
         };
+        // A device that starts a record is told now when the workspace does
+        // not let it create one, or when the record is there already: a
+        // peer's copy of the same start is held or merged as the nothing it
+        // is, but its own write would be answered as published while no peer
+        // ever sees it.
+        if matches!(&mutation, DocumentMutation::Snapshot(bytes) if empty_genesis(bytes))
+            && !self.signed_by_owner(author.as_bytes())
+        {
+            if self.core.documents.contains_key(&route) {
+                return Err("the record exists already".into());
+            }
+            if !self.may_create_record(&self.membership(*author.as_bytes(), now)?, &route, now) {
+                return Err("the workspace does not let this device create the record".into());
+            }
+        }
         let seq = self
             .core
             .documents
@@ -2843,8 +2802,19 @@ impl StatePeer {
             envelope: Box::new(op),
         };
         let coverage = if let DocumentMutation::Snapshot(bytes) = &mutation {
+            // A record's genesis is not a checkpoint: it is started empty, so
+            // there is no retained history for the workspace to acknowledge.
+            // Two devices that start the same record each publish their own
+            // genesis, and they merge into the one empty record; two coverage
+            // rows for one route would not, since a route's checkpoint row
+            // keeps the writer it was first acknowledged with.
+            if !self.core.documents.contains_key(&route) && empty_genesis(bytes) {
+                return Ok((message, None));
+            }
+            // The workspace governs the checkpoints its owner's devices
+            // publish, and only theirs: a record any other writer publishes
+            // is that writer's own change, merged into what a device holds.
             if !self.signed_by_owner(author.as_bytes()) {
-                self.check_member_genesis(&route, bytes, *author.as_bytes(), now)?;
                 return Ok((message, None));
             }
             let snapshot = AutoCommit::load(bytes).map_err(err)?;
@@ -3153,7 +3123,8 @@ impl StatePeer {
         }
         Ok(Some((receipt, accepted)))
     }
-    /// The owner's durable receipt for a route, as governance holds it.
+    /// The workspace's durable receipt for a route, as governance holds it:
+    /// written by any participant or store whose device this replica knows.
     fn durable_receipt(
         &self,
         app: &str,
@@ -3171,7 +3142,7 @@ impl StatePeer {
         if coverage.workspace != self.core.workspace
             || coverage.app != app
             || coverage.record != record
-            || !self.signed_by_owner(&coverage.author)
+            || !self.known_device(&coverage.author)
         {
             return Err("durable receipt authority/route mismatch".into());
         }
@@ -3440,46 +3411,65 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<Self, String> {
         let (version, _) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
-        let mut exact_admissions = ExactAdmissions::default();
-        let mut sealed = Vec::new();
-        let (durable, pending, pending_bytes) = match version {
-            4 => {
-                let value: DurableV4 = postcard::from_bytes(bytes).map_err(err)?;
-                (value.base, value.pending, value.pending_bytes)
+        let exact_admissions;
+        // Which base layout: the three integers both begin with, read before
+        // anything that differs. Never decode one and retry another.
+        let base_before_owner = durable_base_is_before_owner(bytes)?;
+        let (durable, pending, pending_bytes, exact, sealed) = if base_before_owner {
+            match version {
+                4 => durable_before_owner::v4(bytes)?,
+                5 => durable_before_owner::v5(bytes)?,
+                6 => durable_before_owner::v6(bytes)?,
+                _ => return Err("unsupported durable admission version".into()),
             }
-            5 => {
-                let (value, tail): (DurableV5<'_>, _) =
-                    postcard::take_from_bytes(bytes).map_err(err)?;
-                if !tail.is_empty() || value.version != 5 || value.base.version != 4 {
-                    return Err("invalid native v5 durable envelope".into());
+        } else {
+            match version {
+                4 => {
+                    let value: DurableV4 = postcard::from_bytes(bytes).map_err(err)?;
+                    (
+                        value.base,
+                        value.pending,
+                        value.pending_bytes,
+                        ExactAdmissions::default(),
+                        Vec::new(),
+                    )
                 }
-                exact_admissions = ExactAdmissions::decode(value.exact).map_err(err)?;
-                (
-                    value.base.base,
-                    value.base.pending,
-                    value.base.pending_bytes,
-                )
-            }
-            6 => {
-                let (value, tail): (DurableV6<'_>, _) =
-                    postcard::take_from_bytes(bytes).map_err(err)?;
-                if !tail.is_empty()
-                    || value.version != 6
-                    || value.base.version != 4
-                    || value.sealed.is_empty()
-                {
-                    return Err("invalid native v6 durable envelope".into());
+                5 => {
+                    let (value, tail): (DurableV5<'_>, _) =
+                        postcard::take_from_bytes(bytes).map_err(err)?;
+                    if !tail.is_empty() || value.version != 5 || value.base.version != 4 {
+                        return Err("invalid native v5 durable envelope".into());
+                    }
+                    (
+                        value.base.base,
+                        value.base.pending,
+                        value.base.pending_bytes,
+                        ExactAdmissions::decode(value.exact).map_err(err)?,
+                        Vec::new(),
+                    )
                 }
-                exact_admissions = ExactAdmissions::decode(value.exact).map_err(err)?;
-                sealed = value.sealed;
-                (
-                    value.base.base,
-                    value.base.pending,
-                    value.base.pending_bytes,
-                )
+                6 => {
+                    let (value, tail): (DurableV6<'_>, _) =
+                        postcard::take_from_bytes(bytes).map_err(err)?;
+                    if !tail.is_empty()
+                        || value.version != 6
+                        || value.base.version != 4
+                        || value.sealed.is_empty()
+                    {
+                        return Err("invalid native v6 durable envelope".into());
+                    }
+                    (
+                        value.base.base,
+                        value.base.pending,
+                        value.base.pending_bytes,
+                        ExactAdmissions::decode(value.exact).map_err(err)?,
+                        value.sealed,
+                    )
+                }
+                _ => return Err("unsupported durable admission version".into()),
             }
-            _ => return Err("unsupported durable admission version".into()),
         };
+        exact_admissions = exact;
         if durable.version != DURABLE_BASE_VERSION
             || durable.workspace != workspace
             || durable.owner != owner_device.user_public_key
@@ -3506,7 +3496,6 @@ impl StatePeer {
                 documents: Shared::default(),
                 pending,
                 pending_bytes,
-                checkpoint_times: Shared::default(),
                 exact_admissions,
                 admission_v5: version >= 5,
                 native_cut_publisher: None,
@@ -3854,7 +3843,23 @@ impl PeerPublicationMut<'_> {
         Ok(messages)
     }
 }
+/// Whether `held` and `incoming` are one device's certificate, the later one
+/// replacing the earlier: the same device key under the same person, granting
+/// no more, and issued no earlier. A workspace keeps the certificate it holds
+/// for a device, and a device certified again — its person's root re-signing
+/// it, at the same instant or later — is the same member, not a conflict.
+pub(crate) fn supersedes(held: &DeviceCert, incoming: &DeviceCert) -> bool {
+    held.device_public_key == incoming.device_public_key
+        && held.user_public_key == incoming.user_public_key
+        && incoming
+            .capabilities
+            .grants_no_more_than(&held.capabilities)
+        && incoming.issued_at_ns >= held.issued_at_ns
+}
+
 pub(crate) use governed_rows::{GovernedIdentity, RedemptionReceipt};
+#[cfg(test)]
+pub(crate) use governed_rows::{WorkspaceDelegation, WorkspaceDelegationPermissions};
 
 fn member_role_from_role(role: Role) -> Option<crate::join::MemberRole> {
     match role {

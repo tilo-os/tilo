@@ -278,6 +278,7 @@ impl PeerGovernanceMut<'_> {
                 admission: None,
                 admissions: vec![],
                 delegate: Some(row),
+                workspace_delegations: Vec::new(),
             },
             Some(prior) if prior.device_cert != cert => {
                 return Err("certificate conflict".into());

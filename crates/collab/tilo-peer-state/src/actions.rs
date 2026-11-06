@@ -768,7 +768,7 @@ impl ActionPlane {
             let plane = self.clone();
             self.0.runtime.spawn(async move {
                 if let Err(error) = plane.answer_stream(remote, send, recv).await {
-                    tracing::debug!(%error, "a remote action stream ended in error");
+                    tracing::warn!(%error, "a remote action stream ended in error");
                 }
             });
         }
@@ -877,6 +877,9 @@ fn refusal_of(error: &crate::MembershipError) -> tilo_actions::remote::ActionHos
         },
         MembershipError::NoMembership => ActionHostError::Refused {
             reason: "the person is not a member of this workspace".into(),
+        },
+        MembershipError::UnreadableAccess => ActionHostError::Refused {
+            reason: "your access to this workspace could not be read".into(),
         },
         MembershipError::Delegate(_) => ActionHostError::Refused {
             reason: "the device's delegation is expired or withdrawn".into(),
@@ -1120,6 +1123,7 @@ impl Device {
         let heard = async {
             let bytes = postcard::to_allocvec(&PlaneFrame::Offer(Box::new(query))).ok()?;
             let answer = self.exchange(&bytes).await.ok()?;
+            // ignored-failure: an answer that does not decode is no answer; the caller answers `away`
             postcard::from_bytes::<Answer>(&answer).ok()
         };
         let Some(mut heard) = heard.await else {
@@ -1462,4 +1466,23 @@ async fn read_frame(recv: &mut RecvStream) -> Result<Option<Vec<u8>>, String> {
         .await
         .map_err(|error| error.to_string())?;
     Ok(Some(bytes))
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::refusal_of;
+    use crate::MembershipError;
+    use tilo_actions::remote::ActionHostError;
+
+    /// A person whose access rows do not read back reads that on the action
+    /// they took, instead of being told they are no member.
+    #[test]
+    fn an_unreadable_access_row_is_refused_with_that_reason() {
+        assert_eq!(
+            refusal_of(&MembershipError::UnreadableAccess),
+            ActionHostError::Refused {
+                reason: "your access to this workspace could not be read".into(),
+            }
+        );
+    }
 }

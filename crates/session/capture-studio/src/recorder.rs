@@ -52,6 +52,13 @@ impl Frame {
     }
 }
 
+/// The file extension a recording is written with, from whether it carries
+/// sound: MOV when it does, which MP4 cannot hold losslessly.
+#[must_use]
+pub fn extension(sound: bool) -> &'static str {
+    Mp4Recording::extension(sound)
+}
+
 /// What a recording is encoded as, and how much of the past is kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
@@ -121,13 +128,14 @@ pub struct Replay {
 
 /// Bytes one track of the replay keeps: its own half minute, bounded so a
 /// recorder left running never grows.
-const AUDIO_KEPT_BYTES: usize =
-    REPLAY_SECONDS as usize * crate::audio::SAMPLE_RATE * crate::audio::SAMPLE_FRAME_BYTES;
+const AUDIO_KEPT_BYTES: usize = REPLAY_SECONDS as usize
+    * crate::audio::FORMAT.rate as usize
+    * crate::audio::FORMAT.frame_bytes();
 
 /// What one video frame of a clip carries of each track: the muxer
 /// interleaves its sound at the replay's own rate.
 const AUDIO_BYTES_PER_VIDEO_FRAME: usize =
-    (crate::audio::SAMPLE_RATE / REPLAY_FPS as usize) * crate::audio::SAMPLE_FRAME_BYTES;
+    (crate::audio::FORMAT.rate as usize / REPLAY_FPS as usize) * crate::audio::FORMAT.frame_bytes();
 
 impl Replay {
     fn new(max_frames: usize, max_bytes: usize, audio_tracks: usize) -> Self {
@@ -210,6 +218,16 @@ impl Replay {
         }
         out
     }
+}
+
+/// What a recording left behind when its file could not be finished.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unfinished {
+    /// The file it was writing, while what was written is still there to
+    /// keep: a file without its trailer may still hold the frames it took.
+    pub path: Option<PathBuf>,
+    /// What went wrong, in the media stack's words.
+    pub error: String,
 }
 
 /// Records the desktop: one encoder, the file being written if any, and the
@@ -309,7 +327,7 @@ impl Recorder {
     /// sound, which MP4 cannot hold losslessly.
     #[must_use]
     pub fn extension(&self) -> &'static str {
-        Mp4Recording::extension(!self.audio_tracks.is_empty())
+        extension(!self.audio_tracks.is_empty())
     }
 
     /// Encode one frame: into the file while recording, into the replay
@@ -411,8 +429,9 @@ impl Recorder {
     ///
     /// # Errors
     ///
-    /// When the file cannot be finished.
-    pub fn stop(&mut self) -> Result<Option<PathBuf>, String> {
+    /// When the file cannot be finished: what went wrong, and the file it
+    /// left when it is still there.
+    pub fn stop(&mut self) -> Result<Option<PathBuf>, Unfinished> {
         let (State::Recording | State::Paused) = self.state else {
             return Ok(None);
         };
@@ -420,8 +439,13 @@ impl Recorder {
         let Some((path, recording)) = self.recording.take() else {
             return Ok(None);
         };
-        recording.finish()?;
-        Ok(Some(path))
+        match recording.finish() {
+            Ok(()) => Ok(Some(path)),
+            Err(error) => Err(Unfinished {
+                path: path.exists().then_some(path),
+                error,
+            }),
+        }
     }
 
     /// Write what the replay buffer holds to `path` as its own clip, and

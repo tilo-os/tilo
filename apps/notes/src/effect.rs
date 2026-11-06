@@ -2,9 +2,25 @@
 //! out, links and the clipboard. A control, the palette, an agent and a
 //! script all reach [`NotesApp`](crate::NotesApp)'s handler with one of these.
 
+use ui::framework::Dispatcher;
 use ui::prelude::Effect;
 use ui::tilo_resource;
 use uuid::Uuid;
+
+use crate::resource::Notebook;
+
+/// Invoke `effect` through `dispatcher`, as the control that offers it does.
+/// What acts on one note is offered on that note, the rest on the notebook.
+pub(crate) fn request(dispatcher: &Dispatcher<Notebook>, effect: &NotesEffect) {
+    match effect {
+        NotesEffect::CopyLink { page }
+        | NotesEffect::ExportMarkdown { page }
+        | NotesEffect::InsertImage { page } => {
+            dispatcher.effect_on(&crate::actions::page_resource_id(*page), effect);
+        }
+        _ => dispatcher.effect(effect),
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "notes.effect")]

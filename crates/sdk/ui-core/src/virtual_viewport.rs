@@ -33,7 +33,7 @@ const KINETIC_WINDOW: Duration = Duration::from_millis(100);
 /// a test driver) must not read as an unbounded velocity.
 const KINETIC_MIN_SAMPLE_INTERVAL: Duration = Duration::from_millis(8);
 /// Below this release speed a lift is a deliberate stop, not a throw.
-const KINETIC_MIN_VELOCITY: f64 = 60.0;
+pub(crate) const KINETIC_MIN_VELOCITY: f64 = 60.0;
 
 /// Where an item should land when explicitly scrolled into view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1367,6 +1367,25 @@ where
         let anchor = self.capture_numeric_anchor();
         self.measurements.insert(key.clone(), 0.0);
         self.positions.insert(key, index);
+        self.rebuild_prefix();
+        self.restore_numeric_anchor(anchor);
+        true
+    }
+
+    /// Forget a row's folded-away measurement: it takes the room it measures again, as a row
+    /// that was never folded does. [`Self::collapse`]'s other half.
+    pub fn expand(&mut self, index: usize, key: &K) -> bool {
+        if index >= self.count
+            || self
+                .measurements
+                .get(key)
+                .is_none_or(|height| *height != 0.0)
+        {
+            return false;
+        }
+        let anchor = self.capture_numeric_anchor();
+        self.measurements.remove(key);
+        self.positions.remove(key);
         self.rebuild_prefix();
         self.restore_numeric_anchor(anchor);
         true

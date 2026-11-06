@@ -188,7 +188,7 @@ pub fn desk_layer() -> RootView {
     }
 }
 
-/// The shell's whole screen: the `screen` view over the person's arrangement (the package's
+/// The shell's whole screen: the `desk_view` view over the person's arrangement (the package's
 /// `arrangement` root), which stands the desk's bar, dock and surfaces around the places as the
 /// preset the person picked lays them out. Each place an app's window shows in is a well, and
 /// the window stands where that well does.
@@ -196,7 +196,7 @@ pub fn desk_layer() -> RootView {
 pub fn screen_layer() -> RootView {
     RootView {
         root: Some("arrangement".to_owned()),
-        view: Some("screen".to_owned()),
+        view: Some("desk_view".to_owned()),
     }
 }
 
@@ -263,9 +263,9 @@ pub struct PersonReading {
     pub name: String,
 }
 
-/// A window of the desk: a tab of a strip in the workspace in front, as the desk's reading
+/// A window of the desk: a tab of a strip of one of its workspaces, as the desk's reading
 /// names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WindowReading {
     pub key: String,
     pub title: String,
@@ -278,12 +278,39 @@ pub struct WindowReading {
     /// Its strip's id, as moving a window there names the strip.
     pub strip_key: String,
     pub workspace: String,
+    /// Its workspace's id, as switching to it names the workspace.
+    pub workspace_key: String,
+    /// The window it is a tab of: a group's tabs are one window on the desk, and its other
+    /// tabs stand behind it.
+    pub group_key: String,
+    /// Its place among its group's tabs: `0` for the tab in front, then the tabs behind it in
+    /// their order.
+    pub tab_index: i64,
+    /// Its share of its strip's width, 0..1: the width the window keeps on the desk, so a
+    /// picture of the strip keeps the desk's proportions.
+    pub share: f64,
+    /// Whether it runs on this device: false for a window on another of the person's devices,
+    /// or on a peer's.
+    pub local: bool,
+    /// The device that runs it, when it is not this one: its hex device key, empty when the
+    /// device is not known.
+    pub device: String,
+    /// That device's name, as its certificate labels it.
+    pub device_name: String,
+    /// Where it stands in the picture of its workspace: 1 for the first tab of the first group
+    /// of the first strip, on along them, strips top to bottom and groups leading to trailing.
+    pub place: i64,
     /// Where it stands in the walk Alt+Tab takes: 1 is the window in front, then the ones it
-    /// was in front of, then the rest along their strips.
+    /// was in front of, then the rest along their strips; windows of the other workspaces
+    /// come after them, as the walk crosses the workspace in front alone.
     pub recency: i64,
     pub focused: bool,
     /// Whether it may be pictured: `live`, `withheld` (it holds secrets) or `none`.
     pub preview: String,
+    /// Whether its app stopped answering the compositor's pings: its window says so, and
+    /// offers to wait for the app or quit it.
+    #[serde(default)]
+    pub not_responding: bool,
 }
 
 /// An agent here for the person, or that acted for them, as the desk's reading names it.
@@ -363,7 +390,7 @@ pub struct TimerReading {
     clippy::struct_excessive_bools,
     reason = "the desk's reading is its fields, each read as the shell needs it"
 )]
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeskReading {
     pub person: String,
     pub clock: String,
@@ -575,6 +602,8 @@ pub struct Ask {
     pub resource: String,
     pub action: String,
     pub arguments: BTreeMap<String, String>,
+    /// The resource the invocation is made from, when it is made from one.
+    pub from: Option<ui::tilo_actions::params::MadeFrom>,
 }
 
 /// How far from an output's edge the pointer resting there counts as at it: a bar or dock
@@ -682,6 +711,10 @@ pub struct SessionLink {
     /// The resources a view composed in a place read before their readings came in, by id,
     /// each with its type: what the session publishes next ([`SessionLink::take_wanted`]).
     wanted: RefCell<BTreeMap<String, String>>,
+    /// The apps whose package a view composed in a place read a resource of before it was
+    /// loaded, by app id, each with the type it read: what the session publishes next
+    /// ([`SessionLink::take_wanted_packages`]).
+    wanted_packages: RefCell<BTreeMap<String, String>>,
     asked: RefCell<VecDeque<Ask>>,
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
@@ -1079,9 +1112,18 @@ impl SessionOrigin {
                         ("strip", text(&w.strip)),
                         ("strip_key", text(&w.strip_key)),
                         ("workspace", text(&w.workspace)),
+                        ("workspace_key", text(&w.workspace_key)),
+                        ("group_key", text(&w.group_key)),
+                        ("tab_index", Value::Int(w.tab_index)),
+                        ("share", Value::Float(w.share)),
+                        ("local", Value::Bool(w.local)),
+                        ("device", text(&w.device)),
+                        ("device_name", text(&w.device_name)),
+                        ("place", Value::Int(w.place)),
                         ("recency", Value::Int(w.recency)),
                         ("focused", Value::Bool(w.focused)),
                         ("preview", text(&w.preview)),
+                        ("not_responding", Value::Bool(w.not_responding)),
                     ]
                 },
             ));
@@ -1819,6 +1861,10 @@ impl Platform for ShellPlatform {
         i64::from(ui::clock::local_now().offset().local_minus_utc())
     }
 
+    fn zone_name(&self) -> Option<String> {
+        ui::time::local_zone_name()
+    }
+
     fn waker(&self) -> Waker {
         std::sync::Arc::clone(&self.waker)
     }
@@ -1906,6 +1952,9 @@ pub struct ShellPart {
     /// The output this part stands on: its connector name, and its logical rectangle
     /// `(x, y, w, h)`. `None` before the outputs are told, when it spans their bounding box.
     output: Option<(String, (i32, i32, u32, u32))>,
+    /// The scale the output it stands on draws at: what the part paints at so it is as crisp
+    /// as the display allows, rather than drawn at one scale and stretched over another.
+    output_scale: f64,
     /// The display the part stood on, which went (unplugged, turned off): while it is gone the
     /// part stands nowhere, draws nothing, takes no pointer and offers nothing on the door,
     /// until it is told a display again.
@@ -2025,6 +2074,7 @@ impl ShellPart {
             work: ShellWork::default(),
             refusals: Vec::new(),
             output: None,
+            output_scale: scale,
             gone: None,
             fullscreen: Vec::new(),
             cover: false,
@@ -2098,7 +2148,7 @@ impl ShellPart {
         let Some((name, (x, y, width, output_height))) = self.output.clone() else {
             return;
         };
-        let scale = self.widgets.placement().scale;
+        let scale = self.output_scale;
         if self.fullscreen.contains(&name) && !self.cover {
             // Nothing of the part stands there: the smallest placement keeps its layout cheap,
             // and `hidden` hands the compositor no layer and takes no pointer, so not a row of
@@ -2267,8 +2317,8 @@ impl ShellPart {
     /// the part is one display's, and follows that display as it is added, moved or turned
     /// off. Every part of one shell is told its own display; none spans them all. `None`: the
     /// display went, and the part stands nowhere until it is told one again.
-    pub fn set_display(&mut self, output: Option<(String, (i32, i32, u32, u32))>) {
-        if self.output == output {
+    pub fn set_display(&mut self, output: Option<(String, (i32, i32, u32, u32))>, scale: f64) {
+        if self.output == output && self.output_scale.to_bits() == scale.to_bits() {
             return;
         }
         if output.is_some() {
@@ -2279,6 +2329,7 @@ impl ShellPart {
             self.cover = false;
         }
         self.output = output;
+        self.output_scale = scale;
         self.place();
     }
 
@@ -2309,6 +2360,12 @@ impl ShellPart {
     #[must_use]
     pub fn placement(&self) -> Option<(String, (i32, i32, u32, u32))> {
         self.output.clone()
+    }
+
+    /// The scale the part draws at: its display's.
+    #[must_use]
+    pub const fn part_scale(&self) -> f64 {
+        self.output_scale
     }
 
     /// Whether the part draws nothing now: it stands on a display a fullscreen window owns.
@@ -2492,11 +2549,17 @@ impl ShellPart {
             }
         }
         // What the views composed in places read of other apps' resources before their
-        // readings came: the session is asked to publish those.
+        // readings came: the session is asked to publish those. What they read of a type no
+        // loaded package declared: the session is asked for that app's package.
         if let Some(host) = self.instance.host() {
             let wanted = host.runtime().take_wanted();
             if !wanted.is_empty() {
                 self.origin.borrow().link.want(wanted);
+            }
+            let packages: BTreeMap<String, String> =
+                host.runtime().take_wanted_packages().into_iter().collect();
+            if !packages.is_empty() {
+                self.origin.borrow().link.want_packages(packages);
             }
         }
         // The exchanges ran until neither side had more to say, unless they ran out first:
@@ -2583,9 +2646,10 @@ impl crate::Published for ShellPart {
         &mut self,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut crate::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
         self.input = true;
-        crate::Published::invoke(&mut self.widgets, address, arguments)
+        crate::Published::invoke(&mut self.widgets, address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
@@ -2678,6 +2742,7 @@ impl ShellPart {
             resource: DESK_RESOURCE.to_owned(),
             action: action.to_owned(),
             arguments,
+            from: None,
         });
     }
 

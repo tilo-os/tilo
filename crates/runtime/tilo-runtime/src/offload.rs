@@ -18,7 +18,7 @@
 //! in process ([`crate::profile::MediaHost::store`]); the desktop session's
 //! apps keep theirs in the filesystem daemon, which the route reaches over
 //! the daemon's document-media socket as the session
-//! ([`RoomMedia`](tilo_relay::offload::RoomMedia)).
+//! ([`WorkspaceMedia`](tilo_relay::offload::WorkspaceMedia)).
 
 use std::{
     collections::HashMap,
@@ -42,7 +42,7 @@ use tilo_peer_state::placement::Choice;
 // route binds its inputs from in the same scope the apps' own content is
 // addressed in, and hands it to [`offer_offload`] beside the peers it asks.
 pub use runtime_fs::blobs::BlobScope;
-pub use tilo_relay::offload::{BindError, MediaFuture, RoomMedia};
+pub use tilo_relay::offload::{BindError, MediaFuture, WorkspaceMedia};
 
 /// Set to `off` (or `0`, `false`, `no`) to keep every offloadable action on
 /// this device even when a home relay could place it elsewhere.
@@ -61,7 +61,7 @@ pub const OFFLOAD_ENV: &str = "TILO_ACTION_OFFLOAD";
 /// runs here, exactly as without offload — when offload is turned off.
 #[must_use]
 pub fn offer_offload(
-    media: Arc<dyn RoomMedia>,
+    media: Arc<dyn WorkspaceMedia>,
     peers: Arc<dyn OffloadPeers>,
 ) -> Option<Arc<dyn ActionOffload>> {
     if disabled(std::env::var(OFFLOAD_ENV).ok().as_deref()) {
@@ -178,7 +178,7 @@ impl OutputContent for RouteOutputs {
 pub struct RouteMedia(Arc<RouteContent>);
 
 impl RouteMedia {
-    /// [`RoomMedia`] over `content`, the route this host's records' content
+    /// [`WorkspaceMedia`] over `content`, the route this host's records' content
     /// travels on.
     #[must_use]
     pub fn new(content: Arc<RouteContent>) -> Self {
@@ -191,7 +191,7 @@ fn scope_route(scope: &BlobScope) -> CrdtRoute {
     CrdtRoute::app(scope.app(), scope.workspace())
 }
 
-impl RoomMedia for RouteMedia {
+impl WorkspaceMedia for RouteMedia {
     fn len<'a>(
         &'a self,
         scope: &'a BlobScope,
@@ -538,7 +538,7 @@ impl Run {
 /// Offloadable invocations of this device's workspaces, run where the offer
 /// round picks.
 struct OfferOffload {
-    media: Arc<dyn RoomMedia>,
+    media: Arc<dyn WorkspaceMedia>,
     peers: Arc<dyn OffloadPeers>,
     /// How long each transform last took where it was asked, by
     /// `package:entrypoint`.

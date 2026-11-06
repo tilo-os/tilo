@@ -48,11 +48,11 @@ esac
 # headless session runs one, unlocked, so its apps' channels open as a
 # person's do. python3-gobject gives tilo-secret-service's suite libsecret's
 # own client (gi Secret-1) to drive the service with, as apps would.
-# Xwayland and xwayland-satellite are the X11 bridge the shell's X11 clipboard
-# and focus tests drive through the compositor. Satellite itself is built from
-# pinned source with Tilo's patch by tools/ci/install-xwayland-satellite.sh once
-# Rust is installed; this installs its build headers and the font and cursor
-# library it needs at runtime.
+# Xwayland is the X server the compositor's X11 tests start. The developer
+# distrobox builds xwayland-satellite from pinned source with Tilo's patch
+# (tools/ci/install-xwayland-satellite.sh) once Rust is installed; this
+# installs its build headers and the font and cursor library it needs at
+# runtime.
 # pipewire, wireplumber and pipewire-gstreamer: a private PipeWire with a
 # session manager, which the screen-capture tests start to serve a headless
 # screen node to the production pipewiresrc capture path; pipewire-utils'

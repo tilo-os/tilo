@@ -185,8 +185,8 @@ view sorted(b: Board, q: Text) {
             ..Query::default()
         };
         let enums = &t.app.meta().enums;
-        let a = resolve(&typed, message, enums, &clock).unwrap();
-        let b = resolve(&coded, message, enums, &clock).unwrap();
+        let a = resolve(&typed, message, enums, &clock, None).unwrap();
+        let b = resolve(&coded, message, enums, &clock, None).unwrap();
         assert_eq!(a, b);
         let field = |name: &str| Operand::Field(t.field("Message", name));
         assert_eq!(
@@ -308,7 +308,7 @@ view sorted(b: Board, q: Text) {
         let clock = Clock::at(NOW).unwrap();
         let enums = &t.app.meta().enums;
         let why = |q: &str| {
-            resolve(&find(q).unwrap(), task, enums, &clock)
+            resolve(&find(q).unwrap(), task, enums, &clock, None)
                 .err()
                 .unwrap_or_else(|| panic!("`{q}` resolves"))
         };
@@ -322,7 +322,7 @@ view sorted(b: Board, q: Text) {
         // A word alone is free text, and free text is searched, not refused: every text field
         // of the type is searched, so a word finds what it appears in.
         let text = |q: &str| {
-            resolve(&find(q).unwrap(), task, enums, &clock)
+            resolve(&find(q).unwrap(), task, enums, &clock, None)
                 .unwrap_or_else(|why| panic!("`{q}` resolves as text: {why}"))
                 .pred
         };
@@ -345,18 +345,18 @@ view sorted(b: Board, q: Text) {
         // alone in such a type matches nothing, nor does a word in a type with no text.
         let board = t.ty("Board");
         assert!(
-            resolve(&find("nope:1").unwrap(), board, enums, &clock)
+            resolve(&find("nope:1").unwrap(), board, enums, &clock, None)
                 .err()
                 .is_some_and(|why| why.contains("`nope` is no filter; Board has no filters")),
         );
         assert_eq!(
-            resolve(&find("*@yc.com").unwrap(), board, enums, &clock)
+            resolve(&find("*@yc.com").unwrap(), board, enums, &clock, None)
                 .unwrap()
                 .pred,
             Pred::Const(false)
         );
         assert_eq!(
-            resolve(&find("milk").unwrap(), board, enums, &clock)
+            resolve(&find("milk").unwrap(), board, enums, &clock, None)
                 .unwrap()
                 .pred,
             Pred::Const(false),

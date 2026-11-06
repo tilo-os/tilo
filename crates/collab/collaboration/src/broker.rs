@@ -113,7 +113,7 @@ async fn publish_presence(
     publish: impl std::future::Future<Output = Result<(), runtime_portal::NotAvailable>>,
 ) {
     if let Err(error) = publish.await {
-        tracing::debug!(%error, presence = what, "collab: presence publish refused");
+        tracing::warn!(%error, presence = what, "collab: presence publish refused");
     }
 }
 fn signing_refused(error: &runtime_portal::NotAvailable) -> bool {
@@ -246,62 +246,6 @@ pub fn speaker_command(
 }
 
 static DISPLAY_COMMAND_BUDGET: std::sync::OnceLock<BridgeState> = std::sync::OnceLock::new();
-
-pub fn subscribe_person_chat(
-    peer: String,
-    original: Vec<u8>,
-    token: uuid::Uuid,
-    cancel: tokio::sync::watch::Receiver<()>,
-) -> Result<(), String> {
-    let sender = PUBLISHED_COMMAND_BRIDGE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .map_err(|_| "private person bridge unavailable")?
-        .as_ref()
-        .and_then(tokio_mpsc::WeakSender::upgrade)
-        .ok_or("private conversations need the certified native host")?;
-    if !enqueue_sdk_command(
-        &sender,
-        SdkCommand::SubscribePersonChat {
-            peer,
-            original,
-            token,
-            cancel,
-        },
-        DISPLAY_COMMAND_BUDGET.get_or_init(BridgeState::new),
-    ) {
-        return Err("private subscription queue unavailable".into());
-    }
-    Ok(())
-}
-
-pub fn person_chat_command(command: Vec<u8>, original: Vec<u8>) -> Result<Vec<u8>, String> {
-    if command.len() > 24 * 1024 || !matches!(original.len(), 0 | 16) {
-        return Err("invalid private conversation request".into());
-    }
-    let sender = PUBLISHED_COMMAND_BRIDGE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .map_err(|_| "private person bridge unavailable")?
-        .as_ref()
-        .and_then(tokio_mpsc::WeakSender::upgrade)
-        .ok_or("private conversations need the certified native host")?;
-    let (reply, receiver) = mpsc::sync_channel(1);
-    if !enqueue_sdk_command(
-        &sender,
-        SdkCommand::PersonChat {
-            command,
-            original,
-            reply,
-        },
-        DISPLAY_COMMAND_BUDGET.get_or_init(BridgeState::new),
-    ) {
-        return Err("private conversation queue unavailable".into());
-    }
-    receiver
-        .recv_timeout(Duration::from_secs(4))
-        .map_err(|_| "private conversation reply unavailable".to_string())?
-}
 
 /// Ask the native host to inspect or change its display transaction. Call off
 /// the frame thread; the existing bridge and response wait remain bounded.
@@ -702,7 +646,6 @@ impl BrokerTransport {
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
         {
-            crate::person_chat::invalidate();
             *bridge = Some(self.outbound_tx.downgrade());
             self.command_bridge_registered = true;
         }
@@ -1083,17 +1026,6 @@ enum SdkCommand {
         app_id: String,
         command: runtime_collab::SpeakerCommand,
         reply: mpsc::SyncSender<Result<runtime_collab::SpeakerReply, String>>,
-    },
-    SubscribePersonChat {
-        peer: String,
-        original: Vec<u8>,
-        token: uuid::Uuid,
-        cancel: tokio::sync::watch::Receiver<()>,
-    },
-    PersonChat {
-        command: Vec<u8>,
-        original: Vec<u8>,
-        reply: mpsc::SyncSender<Result<Vec<u8>, String>>,
     },
     DisplayControl {
         origin: runtime_collab::settings::DisplayOrigin,
@@ -3731,7 +3663,7 @@ fn follow_channel_keys(
                     return;
                 }
                 Err(error) => {
-                    tracing::debug!(%error, "collab: the broker does not say when channel keys change; asking on a timer");
+                    tracing::info!(%error, "collab: the broker does not say when channel keys change; asking on a timer");
                     let _ = signals.send(KeySignal::Unpushed);
                     return;
                 }
@@ -3758,9 +3690,7 @@ async fn drive_shovel(
 ) {
     struct PrivatePersonSnapshotLifetime;
     impl Drop for PrivatePersonSnapshotLifetime {
-        fn drop(&mut self) {
-            crate::person_chat::invalidate();
-        }
+        fn drop(&mut self) {}
     }
     let _private_person_snapshot_lifetime = PrivatePersonSnapshotLifetime;
     let LocalSdkJoinIdentity {
@@ -3916,7 +3846,6 @@ async fn drive_shovel(
                 };
                 inbound_tx.state.set_join_hold(None);
                 primary_result = joined.map(|()| spec);
-                crate::person_chat::invalidate();
                 primary = primary_result.is_ok().then_some(key);
                 // The startup file splits the owner's wait for `PrimaryReady`.
                 tilo_startup_metrics::startup_mark("collab-route-joined");
@@ -4164,70 +4093,6 @@ async fn drive_shovel(
                         .map_err(|error| error.to_string())
                 } else {
                     Err("primary collaboration route is unavailable".into())
-                };
-                let _ = reply.send(result);
-            }
-            SdkCommand::SubscribePersonChat {
-                peer,
-                original,
-                token,
-                mut cancel,
-            } => {
-                if let Some(key) = primary.as_ref()
-                    && let Some(route) = routes.get(key)
-                {
-                    let channel = route.channel.clone();
-                    tokio::task::spawn_local(async move {
-                        let follow = async {
-                            let stream = channel
-                                .subscribe_person_chat(&peer, &original)
-                                .await
-                                .map_err(|error| error.to_string())?;
-                            loop {
-                                let (_, bytes) =
-                                    stream.read().await.map_err(|error| error.to_string())?;
-                                if !crate::person_chat::subscription_current(token, &peer) {
-                                    return Ok::<(), String>(());
-                                }
-                                crate::person_chat::subscription_snapshot(token, &peer, &bytes)?;
-                            }
-                        };
-                        tokio::select! {
-                            _ = cancel.changed() => {}
-                            result = follow => {
-                                if result.is_err() {
-                                    crate::person_chat::subscription_failed(token, &peer);
-                                }
-                            }
-                        }
-                    });
-                } else {
-                    crate::person_chat::subscription_failed(token, &peer);
-                }
-            }
-            SdkCommand::PersonChat {
-                command,
-                original,
-                reply,
-            } => {
-                let result = if let Some(key) = primary.as_ref()
-                    && let Some(route) = routes.get_mut(key)
-                {
-                    tokio::time::timeout(Duration::from_secs(3), async {
-                        if let Ok(request) = serde_json::from_slice::<
-                            runtime_collab::private_draft::Request,
-                        >(&command)
-                        {
-                            route.channel.private_draft(&request, &original).await
-                        } else {
-                            route.channel.person_chat(&command, &original).await
-                        }
-                    })
-                    .await
-                    .map_err(|_| "private conversation host timed out".to_string())
-                    .and_then(|result| result.map_err(|error| error.to_string()))
-                } else {
-                    Err("private conversation primary channel unavailable".into())
                 };
                 let _ = reply.send(result);
             }
@@ -4629,6 +4494,8 @@ async fn ensure_sdk_route(
         tracing::warn!(%error, "collab: late-join snapshot request failed");
     }
 
+    // Each of these lanes is optional: without it the channel runs, and the
+    // warn the `map_err` closure writes says which feature it lost and why.
     let checks = super::approved_checks::register(channel_id.clone(), channel.clone())
         .map_err(|error| {
             tracing::warn!(%error, "collab: approved project check lane unavailable");
@@ -4826,9 +4693,7 @@ async fn spawn_context_stream(
         tokio::task::spawn_local(async move {
             struct PrivateContextLifetime;
             impl Drop for PrivateContextLifetime {
-                fn drop(&mut self) {
-                    crate::person_chat::invalidate();
-                }
+                fn drop(&mut self) {}
             }
             let _private_context_lifetime = PrivateContextLifetime;
             let mut private_person_basis = None;
@@ -4913,7 +4778,6 @@ async fn spawn_context_stream(
                 permissions.compact_sort();
                 let basis = (people, permissions);
                 if private_person_basis.as_ref() != Some(&basis) {
-                    crate::person_chat::invalidate();
                     private_person_basis = Some(basis);
                 }
                 if !tx
@@ -6272,12 +6136,12 @@ async fn dispatch_sdk_request(
         }
         CollabRequest::OfferContent { hash, bytes } => {
             if let Err(error) = route.channel.offer_blob(&hash, &bytes).await {
-                tracing::debug!(%error, %hash, "collab: offering record content failed");
+                tracing::warn!(%error, %hash, "collab: offering record content failed");
             }
         }
         CollabRequest::WantContent { hash } => {
             if let Err(error) = route.channel.want_blob(&hash).await {
-                tracing::debug!(%error, %hash, "collab: asking for record content failed");
+                tracing::warn!(%error, %hash, "collab: asking for record content failed");
             }
         }
         CollabRequest::RequestDocumentSnapshot => {
@@ -6410,7 +6274,12 @@ async fn dispatch_sdk_request(
                         .collect();
                     (ops, payloads, oldest_seq, batch.done)
                 }
-                Err(_) => (Vec::new(), Vec::new(), None, true),
+                Err(error) => {
+                    // The app is told the history ends here, so the reason it
+                    // saw nothing must be in the journal.
+                    tracing::warn!(%error, "collab: scrollback could not be read; the app is told history ends here");
+                    (Vec::new(), Vec::new(), None, true)
+                }
             };
             let _ = inbound_tx
                 .send_document(CollabEvent::ScrollbackBatch {
@@ -7157,8 +7026,6 @@ mod tests {
         pub caret_publishes: Vec<(Vec<u8>, u64)>,
         pub selection_publishes: Vec<(Vec<u8>, u64, u64)>,
         pub typing_publishes: Vec<(Vec<u8>, u64, u64)>,
-        /// `(key, composing)`: whether each publish said the person was composing.
-        pub composing_publishes: Vec<(Vec<u8>, bool)>,
         pub arrived: Vec<Vec<u8>>,
         pub left: Vec<Vec<u8>>,
         pub scrollback_requests: Vec<(Vec<u8>, u64, u32)>,

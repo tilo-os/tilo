@@ -4,35 +4,28 @@
 //! try, in order: `lang_COUNTRY@MODIFIER`, `lang_COUNTRY`,
 //! `lang@MODIFIER`, `lang`. The encoding is never part of a key in the
 //! file, so it is stripped before matching.
+//!
+//! The list is always the caller's, never this crate's: every caller asks
+//! [`language_candidates`] for the interface language the desktop resolves
+//! (the settings' language, else the device's locale, which that one answer
+//! reads for itself), so an English session on a German machine lists English
+//! names and a German one lists German names. Nothing here reads the process
+//! environment.
 
-/// The current locale's key candidates, most specific first.
-///
-/// `LC_ALL` first because POSIX lets it override every category; reading
-/// `LC_MESSAGES` ahead of it inverts that, so a session pinning `LC_ALL`
-/// still resolves `Name[xx]=` in whatever `LC_MESSAGES` the machine carries.
-/// `C` and `POSIX` mean no translation and yield an empty list.
-pub fn locale_candidates() -> Vec<String> {
-    candidates_from(|var| std::env::var_os(var).map(|v| v.to_string_lossy().into_owned()))
+/// The `Name[xx]` key candidates for the interface language `preferred`: a
+/// BCP 47 tag (`en-US`) or the POSIX locale it came from (`en_US.UTF-8`), both
+/// accepted. `None` means no language is named (`C`), so the unlocalised keys
+/// are the ones read.
+#[must_use]
+pub fn language_candidates(preferred: Option<&str>) -> Vec<String> {
+    preferred.map_or_else(Vec::new, candidates_for)
 }
 
-/// Split from [`locale_candidates`] so the precedence is assertable without
-/// mutating the environment of a parallel test binary — which is how the order
-/// stayed inverted unnoticed.
-fn candidates_from(lookup: impl Fn(&str) -> Option<String>) -> Vec<String> {
-    for var in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-        if let Some(raw) = lookup(var) {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            return candidates_for(trimmed);
-        }
-    }
-    Vec::new()
-}
-
-/// The candidate list for one locale string. Public so it is testable
-/// without touching the process environment.
+/// The candidate list for one locale string. Public so it is testable without
+/// the process environment, and so both spellings of the same language — the
+/// POSIX `de_DE.UTF-8@euro` and the BCP 47 `de-DE` the settings store keeps —
+/// expand the same way.
+#[must_use]
 pub fn candidates_for(locale: &str) -> Vec<String> {
     let locale = locale.trim();
     if locale.is_empty() || locale == "C" || locale == "POSIX" {
@@ -44,10 +37,19 @@ pub fn candidates_for(locale: &str) -> Vec<String> {
         None => (locale, None),
     };
     let head = head.split_once('.').map_or(head, |(h, _)| h);
-    let (lang, country) = match head.split_once('_') {
-        Some((lang, country)) => (lang, Some(country)),
-        None => (head, None),
-    };
+    // A BCP 47 tag spells the same parts with `-`; the file's keys never do.
+    let head = head.replace('-', "_");
+    if matches!(head.as_str(), "C" | "POSIX") {
+        return Vec::new();
+    }
+    let mut parts = head.split('_');
+    let lang = parts.next().unwrap_or_default();
+    // The region is the two-letter or three-digit subtag after the language: a
+    // script subtag (`Hant`) names no key the format has.
+    let country = parts.find(|part| {
+        (part.len() == 2 && part.bytes().all(|b| b.is_ascii_alphabetic()))
+            || (part.len() == 3 && part.bytes().all(|b| b.is_ascii_digit()))
+    });
 
     let mut out = Vec::new();
     let mut push = |s: String| {
@@ -88,6 +90,7 @@ mod tests {
             ),
             ("the_spec_fallback_order_is_followed", "de.UTF-8", &["de"]),
             ("the_spec_fallback_order_is_followed", "de", &["de"]),
+            // The C locale means take the unlocalised value.
             ("the_c_locale_means_take_the_unlocalised_value", "C", &[]),
             (
                 "the_c_locale_means_take_the_unlocalised_value",
@@ -95,49 +98,48 @@ mod tests {
                 &[],
             ),
             ("the_c_locale_means_take_the_unlocalised_value", "", &[]),
+            (
+                "the_c_locale_means_take_the_unlocalised_value",
+                "C.UTF-8",
+                &[],
+            ),
+            // The settings store keeps BCP 47; the same language must expand to
+            // the keys the file has.
+            (
+                "a_bcp_47_tag_expands_to_the_same_keys_as_its_posix_locale",
+                "de-DE",
+                &["de_DE", "de"],
+            ),
+            (
+                "a_bcp_47_tag_expands_to_the_same_keys_as_its_posix_locale",
+                "de",
+                &["de"],
+            ),
+            (
+                "a_bcp_47_tag_expands_to_the_same_keys_as_its_posix_locale",
+                "es-419",
+                &["es_419", "es"],
+            ),
+            // A script subtag names no key the format has, so the region after
+            // it is the one tried.
+            (
+                "a_bcp_47_tag_expands_to_the_same_keys_as_its_posix_locale",
+                "zh-Hant-TW",
+                &["zh_TW", "zh"],
+            ),
         ] {
             assert_eq!(candidates_for(locale), want, "case {case}: {locale:?}");
         }
     }
 
-    fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
-        let owned: Vec<(String, String)> = pairs
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-            .collect();
-        move |var| owned.iter().find(|(k, _)| k == var).map(|(_, v)| v.clone())
-    }
-
+    /// The person's choice is the interface language; the machine's locale is
+    /// never consulted when there is one, and a choice that names no language
+    /// leaves the unlocalised keys.
     #[test]
-    fn the_environment_selects_lc_all_then_lc_messages_then_lang() {
-        for (case, vars, want) in [
-            (
-                "lc_all_overrides_the_messages_category",
-                &[("LC_ALL", "de_DE.UTF-8"), ("LC_MESSAGES", "en_US.UTF-8")][..],
-                &["de_DE", "de"][..],
-            ),
-            (
-                "lc_messages_is_taken_when_lc_all_is_unset_or_empty",
-                &[("LC_MESSAGES", "fr_FR.UTF-8"), ("LANG", "en_US.UTF-8")],
-                &["fr_FR", "fr"],
-            ),
-            (
-                "lc_messages_is_taken_when_lc_all_is_unset_or_empty",
-                &[("LC_ALL", "   "), ("LC_MESSAGES", "fr_FR")],
-                &["fr_FR", "fr"],
-            ),
-            (
-                "lang_is_the_last_resort_and_nothing_set_means_unlocalised",
-                &[("LANG", "es_ES")],
-                &["es_ES", "es"],
-            ),
-            (
-                "lang_is_the_last_resort_and_nothing_set_means_unlocalised",
-                &[],
-                &[],
-            ),
-        ] {
-            assert_eq!(candidates_from(env(vars)), want, "case {case}: {vars:?}");
-        }
+    fn the_interface_language_decides_the_candidates() {
+        assert_eq!(language_candidates(Some("en-US")), ["en_US", "en"]);
+        assert_eq!(language_candidates(Some("de-DE")), ["de_DE", "de"]);
+        assert_eq!(language_candidates(Some("C")), Vec::<String>::new());
+        assert_eq!(language_candidates(None), Vec::<String>::new());
     }
 }

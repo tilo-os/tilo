@@ -234,12 +234,17 @@ pub struct CanvasSurface {
     /// A remote participant's own view of this artwork, and where it says it
     /// is (see [`peers`]).
     participants: peers::PeerViews,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl CanvasSurface {
     pub fn new(tools: Tools) -> Self {
         let tool = tools.tool.with(|tool| *tool);
         Self {
+            dirty: true,
             rect: Rect::ZERO,
             art: Rc::new(Artwork::default()),
             dispatcher: None,
@@ -3111,6 +3116,7 @@ impl Widget for CanvasSurface {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        self.dirty = true;
         match event {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
@@ -3326,6 +3332,7 @@ impl Widget for CanvasSurface {
     }
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.dirty = true;
         self.follow_keys();
         self.follow_view();
         // How large a brush can be follows the artwork's size.
@@ -3342,6 +3349,14 @@ impl Widget for CanvasSurface {
         if self.tools.selection.with(|shown| *shown != self.selection) {
             self.tools.selection.set(self.selection.clone());
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

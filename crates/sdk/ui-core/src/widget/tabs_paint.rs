@@ -29,6 +29,20 @@ pub(super) struct PersonSeen {
     name: Option<String>,
 }
 
+impl PersonSeen {
+    /// Whether this is still how `user` on `tab` looks: one person as the
+    /// bar drew them against the same person now, without building the
+    /// list of everyone again.
+    fn matches(&self, tab: u64, user: &crate::permissions::UserId, presence: &PresenceCtx) -> bool {
+        self.tab == tab
+            && &self.user == user
+            && self.colour == presence.color_for(user)
+            && self.dims == presence.availability_of(user).dims()
+            && self.agent == presence.is_agent(user)
+            && self.name.as_deref() == presence.names.get(user).map(String::as_str)
+    }
+}
+
 impl TabBar {
     /// [`Widget::draw`] of everything the bar shows, at `transform`.
     pub(super) fn draw_fresh(
@@ -104,6 +118,7 @@ impl TabBar {
                     lifts: [
                         self.control_lifts[0].level(now),
                         self.control_lifts[1].level(now),
+                        self.control_lifts[2].level(now),
                     ],
                 },
             );
@@ -185,20 +200,16 @@ impl TabBar {
             && !self.toolbar_row.popup_open()
     }
 
-    /// The drawing to show again: the bar is at rest, and nothing it draws
-    /// from changed since it was made.
-    pub(super) fn replays(
-        &self,
-        transform: Affine,
-        theme: &Theme,
-        seen: &[PersonSeen],
-    ) -> Option<&PaintedBar> {
-        self.painted.as_ref().filter(|painted| {
+    /// Whether the bar's held drawing is the drawing it would make now: the
+    /// bar is at rest, and nothing it draws from changed since it was made.
+    /// Answers without building the list of people again.
+    pub(super) fn replays(&self, transform: Affine, theme: &Theme, presence: &PresenceCtx) -> bool {
+        self.painted.as_ref().is_some_and(|painted| {
             painted.epoch == self.paint_epoch
                 && painted.transform == transform
-                && painted.seen.as_slice() == seen
                 && painted.theme == *theme
                 && self.at_rest()
+                && self.same_people(&painted.seen, presence)
         })
     }
 
@@ -218,7 +229,7 @@ impl TabBar {
             }
         }
         // The faces the share mark shows draw as their people look now.
-        for (tab, user) in self.shared.people_by_tab() {
+        self.shared.for_each_person(&self.tabs, |tab, user| {
             seen.push(PersonSeen {
                 tab,
                 colour: presence.color_for(user),
@@ -227,8 +238,49 @@ impl TabBar {
                 name: presence.names.get(user).cloned(),
                 user: user.clone(),
             });
-        }
+        });
         seen
+    }
+
+    /// [`Widget::needs_redraw`]: the bar is clean only while the drawing it
+    /// holds is the drawing it would make now — its own state unmoved
+    /// ([`TabBar::touch`]), still at rest, and the same people on its tabs.
+    pub(super) fn painted_bar_needs_redraw(&self) -> bool {
+        self.painted.as_ref().is_none_or(|painted| {
+            painted.epoch != self.paint_epoch
+                || !self.at_rest()
+                || crate::presence::frame::frame(|presence| {
+                    !self.same_people(&painted.seen, presence)
+                })
+                .unwrap_or(false)
+        })
+    }
+
+    /// Whether `seen` — the people a drawing was made of — are the people on
+    /// the bar's tabs now. Walks the same order [`TabBar::people_seen`]
+    /// builds, so it answers without building that list.
+    fn same_people(&self, seen: &[PersonSeen], presence: &PresenceCtx) -> bool {
+        let mut at = 0;
+        for tab in &self.tabs {
+            for user in presence.peers_on(&tab_presence_key(tab.id)) {
+                if !seen
+                    .get(at)
+                    .is_some_and(|drawn| drawn.matches(tab.id, user, presence))
+                {
+                    return false;
+                }
+                at += 1;
+            }
+        }
+        let mut same = true;
+        let mut shared = 0;
+        self.shared.for_each_person(&self.tabs, |tab, user| {
+            same &= seen
+                .get(at + shared)
+                .is_some_and(|drawn| drawn.matches(tab, user, presence));
+            shared += 1;
+        });
+        same && at + shared == seen.len()
     }
 
     /// [`Widget::draw`]: a bar at rest whose own state, theme, placement
@@ -242,9 +294,10 @@ impl TabBar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let seen = self.people_seen(presence);
-        if let Some(painted) = self.replays(transform, theme, &seen) {
-            crate::scene_parts::append(scene, &painted.scene, painted.parts.as_ref(), None);
+        if self.replays(transform, theme, presence) {
+            if let Some(painted) = self.painted.as_ref() {
+                crate::scene_parts::append(scene, &painted.scene, painted.parts.as_ref(), None);
+            }
             return;
         }
         let _drawn = tilo_resource::profiling::Phase::start("ui.tab_bar.draw");
@@ -259,6 +312,7 @@ impl TabBar {
         }
         // Read after the draw: drawing settles what it measures, and the
         // pose of a busy arc it shows.
+        let seen = self.people_seen(presence);
         self.painted = self.at_rest().then(|| PaintedBar {
             epoch: self.paint_epoch,
             transform,

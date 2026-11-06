@@ -508,6 +508,13 @@ impl Widget for DatePicker {
         self.set_rect(crate::widget::layout_rect(taffy, node, origin));
     }
 
+    /// The grid draws its days at a fixed cell size: its height follows the width it is given,
+    /// which the solver re-measures whenever that changes. No frame marks it for another
+    /// measure, so a window showing a calendar stays still.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,

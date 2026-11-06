@@ -6,12 +6,12 @@ use super::*;
 /// `host` issues and `member`'s device redeems.
 pub(super) async fn admit(relay: &Relay, host: &TestDevice, member: &TestDevice, room: &str) {
     let issued = relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .issue(
             room,
             &host.cert,
-            tilo_relay::rooms::IssueInvitationRequest {
+            tilo_relay::workspaces::IssueInvitationRequest {
                 // One per member, so a room admits several this way.
                 request_id: *blake3::hash(&member.device_pubkey()).as_bytes(),
                 role: MemberRole::Editor,

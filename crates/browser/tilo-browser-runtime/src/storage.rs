@@ -34,7 +34,7 @@ enum DiskKey {
     },
     /// One workspace's index. A profile outlives any one build, and its rows
     /// were written under this name, so the name it is stored under stays.
-    RoomIndex {
+    WorkspaceIndex {
         package: String,
         workspace: String,
     },
@@ -142,7 +142,7 @@ impl From<&StorageKey> for DiskKey {
             },
             StorageKey::Package { package } => Self::Package { package },
             StorageKey::WorkspaceIndex { package, workspace } => {
-                Self::RoomIndex { package, workspace }
+                Self::WorkspaceIndex { package, workspace }
             }
             StorageKey::View {
                 device,
@@ -171,7 +171,7 @@ impl DiskKey {
                 record,
             },
             Self::Package { package } => StorageKey::Package { package },
-            Self::RoomIndex { package, workspace } => {
+            Self::WorkspaceIndex { package, workspace } => {
                 StorageKey::WorkspaceIndex { package, workspace }
             }
             Self::PackageRecord { .. } => return None,

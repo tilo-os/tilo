@@ -247,6 +247,11 @@ struct Config {
     /// (`#?link=`); the profile card asks the person to confirm it.
     #[serde(default)]
     link_offer: Option<String>,
+    /// The workspace directory this page browses (`mountDesktop({directory})`):
+    /// the site whose directory it lists, the person a join is made as, and
+    /// the workspaces the page holds.
+    #[serde(default)]
+    directory: Option<crate::directory::PageDirectoryConfig>,
 }
 
 impl Config {
@@ -560,7 +565,7 @@ impl Desktop {
                 invocation: tilo_actions::InvocationId::new(),
                 target: tilo_actions::remote::application_action_target(
                     &self.workspace,
-                    asked.app_id,
+                    &asked.app_id,
                     asked.resource,
                     asked.action,
                 ),
@@ -653,8 +658,8 @@ impl Desktop {
         } else {
             HashMap::new()
         };
-        // Someone the workspace lets only look (its spectator) opens nothing in
-        // it, so no window offers them a new tab.
+        // Someone the workspace lets only look (a viewer) opens nothing in it,
+        // so no window offers them a new tab.
         let opens = !in_workspace
             || self
                 .shared
@@ -1174,6 +1179,7 @@ fn present_desktop(
             about: config.about.clone(),
             build: config.build.clone(),
             link_offer: config.link_offer.clone(),
+            directory: config.directory.clone(),
         },
         Rc::clone(&requests),
         crate::shell::ChromeSources {
@@ -1301,7 +1307,6 @@ fn present_component(
     ));
     crate::person_records::provide(&mut context, dyn_store).map_err(error)?;
     config.lend_provider_admin(&mut context)?;
-    crate::app_loans::lend(&mut context);
     let loaders = Rc::new(RefCell::new(Vec::new()));
     let image_owners = crate::page_content::ImageOwners::default();
     crate::page_content::serve_window(&context.wake_handle(), &loaders, &image_owners);
@@ -1361,8 +1366,8 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let text_renderer = ui::TextRenderer::with_browser_font_system(system);
     let definition = definition(config.app.as_deref())?;
     let profile = crate::storage::load(&config.profile, &config.device, &hydrated)?;
-    // Through a peer kept in no profile (a watching page's), the mount keeps
-    // its records where the peer keeps what the workspace delivers: in the page.
+    // Through a peer kept in no profile (a page's), the mount keeps its
+    // records where the peer keeps what the workspace delivers: in the page.
     let store = config
         .peer
         .and_then(crate::replication::page_store)

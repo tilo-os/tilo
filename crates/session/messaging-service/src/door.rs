@@ -34,25 +34,6 @@ pub enum PublicationKind {
     Sms {
         scope: String,
     },
-    Tilo {
-        scope: String,
-    },
-}
-
-/// A device's certificate and the revocations it presents, as private
-/// Tilo messages carry them.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Material {
-    pub cert: tilo_user_identity::DeviceCert,
-    pub revocations: Vec<tilo_user_identity::RevocationEntry>,
-}
-
-/// One private Tilo text.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Text {
-    pub id: String,
-    pub timestamp_ms: u64,
-    pub body: zeroize::Zeroizing<String>,
 }
 
 /// A call either side makes.
@@ -66,20 +47,6 @@ pub enum Call {
     Consent { key: String, hosts: Vec<String> },
     /// Service: the consent request `key` is no longer wanted.
     ConsentWithdrawn { key: String },
-    /// Service: the Tilo account now receives private texts on this device.
-    PrivateBind,
-    /// Service: send a private text to `peer`, a device of `root`.
-    PrivateSend {
-        peer: [u8; 32],
-        root: [u8; 32],
-        text: Text,
-    },
-    /// Compositor: the bound account's certificate.
-    PrivateCertificate,
-    /// Compositor: may this peer reach the account?
-    PrivateCheckPeer(Material),
-    /// Compositor: a private text arrived from this peer.
-    PrivateReceive(Material, Text),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -89,7 +56,6 @@ pub enum Reply {
         /// The contacts record, in its own JSON form.
         directory: serde_json::Value,
     },
-    Material(Material),
     /// The call was carried out, or allowed.
     Done,
     /// It was refused: revoked, denied or impossible now.

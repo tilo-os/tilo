@@ -525,6 +525,8 @@ mod tests {
                 label: title.into(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         };
         let mut workspace = Workspace::in_workspace(
             WorkspaceSlot(1),

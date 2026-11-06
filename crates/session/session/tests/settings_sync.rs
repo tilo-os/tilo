@@ -246,7 +246,7 @@ fn step(session: &mut Session) {
 /// Step the loop until `done` holds, for a couple of seconds: the fabric is
 /// read a few times a second, not on every turn.
 fn when(session: &mut Session, done: impl Fn() -> bool) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     while std::time::Instant::now() < deadline {
         step(session);
         if done() {

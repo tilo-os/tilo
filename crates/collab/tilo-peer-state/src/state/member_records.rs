@@ -4,26 +4,6 @@ use super::{AutoCommit, MemberAuthority, Route, StatePeer, SystemTime};
 use tilo_action_policy::ActionKind;
 
 impl StatePeer {
-    /// Check that `author`, not one of the owner's devices, may sign
-    /// `bytes` as `route`'s first snapshot: a member creates a record empty,
-    /// and nothing more, so there is nothing in it for a checkpoint to cover.
-    pub(super) fn check_member_genesis(
-        &self,
-        route: &Route,
-        bytes: &[u8],
-        author: [u8; 32],
-        now: SystemTime,
-    ) -> Result<(), String> {
-        if self.core.documents.contains_key(route) || !empty_genesis(bytes) {
-            return Err("only the owner's device may publish a retained checkpoint".into());
-        }
-        let member = self.membership(author, now)?;
-        if !self.may_create_record(&member, route, now) {
-            return Err("the workspace does not let this member create the record".into());
-        }
-        Ok(())
-    }
-
     /// Whether `member` may create `route`'s record empty: the workspace lets
     /// its app author records and lets them change that record.
     pub(super) fn may_create_record(

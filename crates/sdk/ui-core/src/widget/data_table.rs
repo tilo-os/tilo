@@ -3980,7 +3980,7 @@ impl Widget for DataTableCore {
             || self
                 .mounted_cells
                 .iter()
-                .any(|cell| cell.widget.needs_redraw())
+                .any(|cell| cell.widget.needs_redraw() || cell.widget.needs_animation_frame())
     }
 
     /// What the draw changed: the rows that changed, and a scroll offered as
@@ -4822,6 +4822,9 @@ impl Widget for DataTableCore {
                         selected,
                         busy: matches!(row_state, Some(Arrival::Pending { .. })),
                         invalid: matches!(row_state, Some(Arrival::Failed(_))),
+                        // The row's own menu is the table's, which opens on
+                        // the row's centre exactly as a right-press does.
+                        context_menu: self.on_row_context.is_some(),
                         ..Default::default()
                     })
                     // Only a viewport slice is exported, so its ordinal is not
@@ -5032,6 +5035,14 @@ impl Widget for DataTableCore {
                 self.viewport
                     .scroll_to_index(index, ScrollAlignment::Nearest);
                 true
+            }
+            // The menu a row announces opens on that row, as the row's own
+            // menu verb on its key path does.
+            Action::ShowContextMenu => {
+                let point = self
+                    .row_rect(index)
+                    .map_or(self.rect.center(), |r| r.center());
+                self.open_row_context(index, point)
             }
             _ => false,
         };
@@ -5473,6 +5484,15 @@ pub struct FaceColumn<'a> {
     pub width: ColumnWidth,
     /// [`TextKind::Numeric`] aligns the column to the trailing edge.
     pub kind: TextKind,
+}
+
+impl<Row: 'static> DataTable<Row> {
+    /// The row the semantic target `target` names, as the table's rows are
+    /// indexed, or `None` when it names something else or a row it no longer
+    /// holds.
+    pub(crate) fn semantic_row(&self, target: &str) -> Option<usize> {
+        self.core.semantic_row_index(target)
+    }
 }
 
 impl<'a> FaceColumn<'a> {

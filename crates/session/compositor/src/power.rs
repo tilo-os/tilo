@@ -147,6 +147,7 @@ impl State {
                     .space
                     .output_geometry(output)
                     .map(|rect| (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h)),
+                scale: output.current_scale().fractional_scale(),
                 description: Some(output.description()),
                 colour: colour(output),
             })
@@ -159,6 +160,7 @@ impl State {
                         label: crate::output::monitor_of(output).1,
                         enabled: false,
                         rect: None,
+                        scale: output.current_scale().fractional_scale(),
                         description: Some(output.description()),
                         colour: colour(output),
                     }),

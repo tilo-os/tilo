@@ -1535,7 +1535,7 @@ impl Widget for DeskWidgets {
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        if !self.needs_redraw() {
+        if !(self.needs_redraw() || self.needs_animation_frame()) {
             return;
         }
         if self.slots.is_empty() {
@@ -1771,6 +1771,8 @@ mod tests {
                         label: "Notes".into(),
                     },
                     app_title: None,
+                    view: String::new(),
+                    pinned: false,
                 }],
                 width: WindowWidth::Fraction(1000),
                 maximized: false,
@@ -2580,6 +2582,7 @@ mod tests {
             Box::new(StubSurface),
             handle,
             crate::launchpad::CollaborationLaunchpad::new(),
+            Rc::new(RefCell::new(Vec::new())),
             vec![Box::new(widgets)],
         );
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -2622,7 +2625,7 @@ mod tests {
         let wake = rig.widgets.next_wake_deadline().expect("a deadline");
         assert!(wake > Instant::now(), "a deadline in the future");
         assert!(
-            rig.widgets.needs_redraw(),
+            rig.widgets.needs_redraw() || rig.widgets.needs_animation_frame(),
             "a desk just laid out paints once"
         );
     }

@@ -224,10 +224,11 @@ impl Conversation {
     pub fn say(&self, person: &str, run: &str, line: &str) -> Result<(), String> {
         let id = run_id(run);
         if !self.programs.start(id, person, line) {
-            return Err(format!(
+            return Err(
                 "the run's program host does not run yet: ask the agent first, and its first \
                  program starts it"
-            ));
+                    .to_owned(),
+            );
         }
         Ok(())
     }
@@ -250,7 +251,7 @@ impl Conversation {
                 .runs
                 .record_step_typed(&finished.run, step, &finished.person)
             {
-                tracing::debug!(%error, run = finished.run, "a conversation's step was not kept");
+                tracing::warn!(%error, run = finished.run, "a conversation's step was not kept");
             }
         }
     }

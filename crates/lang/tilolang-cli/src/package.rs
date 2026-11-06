@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use tilo_app_package::manifest::Manifest;
 use tilo_app_package::pack::SigningIdentity;
-use tilolang::source::write_ids;
+use tilolang::source::{write_catalogue, write_ids};
 use tilolang::{OsEntropy, PackageMeta};
 use tilolang_tilo::bundle::{Bundle, ICON_FILE};
 
@@ -145,7 +145,7 @@ aarch64 = "aarch64"
 {capabilities}
 
 [resources]
-kinds = [{record_kind}]
+kinds = [{record_kinds}]
 
 [publisher]
 identity = "ed25519:{publisher}"
@@ -186,7 +186,13 @@ ext = []
         version = toml_string(&options.version),
         runtime = toml_string(&options.tilo_runtime),
         tilolang = toml_string(&options.tilolang_runtime),
-        record_kind = toml_string(RECORD_KIND),
+        // The app's workspace record, and the workspace's record of each person's own state
+        // of it, which every app of the language opens.
+        record_kinds = [
+            toml_string(RECORD_KIND),
+            toml_string(tilolang::PERSONAL_RECORD_KIND),
+        ]
+        .join(", "),
         bin = toml_string(RUNTIME_BIN),
         shell_ui = ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION,
         services = runtime_portal::RUNTIME_INTERFACE_VERSION,
@@ -259,18 +265,22 @@ fn deliver(
     })
 }
 
-/// Compile the packages of `options` in dependency order, writing each one's ids lock when it
-/// changed: what every delivery starts from.
+/// Compile the packages of `options` in dependency order, writing each one's ids lock and source
+/// catalogue when it changed: what every delivery starts from, so a build leaves the package's
+/// words where its sources say they are.
 ///
 /// # Errors
-/// A package does not compile (the message lists the errors by file), or an ids lock cannot be
-/// written.
+/// A package does not compile (the message lists the errors by file), or an ids lock or a
+/// catalogue cannot be written.
 fn compiled(options: &BuildOptions) -> Result<Vec<tilolang::source::BuiltPackage>, String> {
     let (built, _) = crate::compile(&options.dir, &options.search, &mut OsEntropy::default())
         .map_err(|e| e.to_string())?;
     for package in &built {
         if write_ids(package)? {
             eprintln!("{}: ids lock updated", package.dir.display());
+        }
+        if write_catalogue(package)? {
+            eprintln!("{}: the source catalogue updated", package.dir.display());
         }
     }
     Ok(built)

@@ -107,16 +107,16 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
         let (workspace_id, first, second, channel) = match kind {
             Kind::Governed | Kind::Invited => {
                 let workspace = relay
-                    .rooms()
+                    .workspaces()
                     .unwrap()
                     .create(&format!("{kind:?}"))
                     .await
                     .unwrap();
-                enter(&relay, &laptop.cert, &workspace.room).await;
+                enter(&relay, &laptop.cert, &workspace.workspace).await;
                 let (owner, channel) = create_voice_channel(
                     address.clone(),
                     workspace.workspace_id,
-                    &workspace.room,
+                    &workspace.workspace,
                     &host.cert,
                     &laptop,
                 )
@@ -125,10 +125,17 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
                 let other = if matches!(kind, Kind::Invited) {
                     let bob = SigningKey::generate(&mut UnwrapErr(SysRng));
                     let bob_laptop = enrol(&bob, "bob-laptop", DeviceCapabilities::member());
-                    invite(&relay, &laptop.cert, &workspace.room, &bob, &bob_laptop).await;
+                    invite(
+                        &relay,
+                        &laptop.cert,
+                        &workspace.workspace,
+                        &bob,
+                        &bob_laptop,
+                    )
+                    .await;
                     session(address.clone(), workspace.workspace_id, &bob_laptop).await
                 } else {
-                    enter(&relay, &phone.cert, &workspace.room).await;
+                    enter(&relay, &phone.cert, &workspace.workspace).await;
                     session(address.clone(), workspace.workspace_id, &phone).await
                 };
                 (workspace.workspace_id, owner, other, channel)

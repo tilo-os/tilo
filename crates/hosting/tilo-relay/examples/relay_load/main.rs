@@ -11,11 +11,11 @@
 //! - **typing**: 30 one-character edits, one every 200 ms, through the
 //!   production publish path (`PeerPublicationMut::publish_incremental`, retention,
 //!   `RelayCoeditSession::publish_retained_delta`), each followed by the
-//!   toolkit's `Typing` and `Caret` presence (`NeighbourMsg::AppPresenceV2`);
+//!   toolkit's `Typing` and `Caret` presence (`NeighbourMsg::RetiredAppPresenceV2`);
 //! - **pointing**: 4 seconds of pointer motion at the shell's 30 Hz publish
-//!   rate (`NeighbourMsg::PresenceMoved`, `peer_presence::MIN_PUBLISH_GAP`),
-//!   which the session writer paces to 20 Hz on the wire
-//!   (`tilo_relay_session::coedit::POINTER_GAP`), as it does for the shell;
+//!   rate (`NeighbourMsg::RetiredPresenceMoved`, `peer_presence::MIN_PUBLISH_GAP`),
+//!   which the relay forwards in the order it was posted, one frame per
+//!   move;
 //! - **idle** for the rest of the minute.
 //!
 //! That is 1,800 edits and 7,200 pointer moves per active hour, the cost

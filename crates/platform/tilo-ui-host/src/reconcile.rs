@@ -153,6 +153,9 @@ pub fn display(value: &Value) -> String {
         }
         Value::Float(number) => formats.decimal(*number, 2),
         Value::Bool(flag) => flag.to_string(),
+        // A case by the name the runtime holds it by: a control that offers the cases finds
+        // its own among them by the same name.
+        Value::Enum(case) => case.clone(),
         Value::Principal(who) => who.id.clone(),
         Value::Opt(Some(inner)) => display(inner),
         // As the person reading reads it: each reference as its chip reads for them.
@@ -161,9 +164,11 @@ pub fn display(value: &Value) -> String {
     }
 }
 
-fn flag(node: &UiNode, name: &str) -> bool {
+/// The flag `name` of `node`: a bool as the runtime lowers one (`Int`), or a `Bool`.
+pub(crate) fn flag(node: &UiNode, name: &str) -> bool {
     match prop(node, name) {
         Some(Value::Int(number)) => *number != 0,
+        Some(Value::Float(weight)) => *weight != 0.0,
         Some(Value::Bool(flag)) => *flag,
         _ => false,
     }
@@ -225,6 +230,7 @@ fn length(node: &UiNode, name: &str) -> Option<Length> {
 
 fn rhythm(node: &UiNode, name: &str, default: Rhythm) -> Rhythm {
     match token(node, name) {
+        Some("none") => Rhythm::None,
         Some("tight") => Rhythm::Tight,
         Some("related") => Rhythm::Related,
         Some("sibling") => Rhythm::Sibling,
@@ -257,6 +263,15 @@ fn position(node: &UiNode) -> Option<At> {
         "bottom_trailing" => At::BottomTrailing,
         _ => return None,
     })
+}
+
+/// How many leads a node reserves before its own content (`lead: 1`): a document's body stands
+/// one lead in, under the text its heading's control leads to.
+fn lead(node: &UiNode) -> i16 {
+    match prop(node, "lead") {
+        Some(Value::Int(count)) => i16::try_from(*count).unwrap_or(0),
+        _ => 0,
+    }
 }
 
 /// The tree as it is drawn: a `page` inside another page, or inside a block's view, is a plain
@@ -408,6 +423,8 @@ trait SlotHost {
     fn remove(&mut self, index: usize);
     fn move_slot(&mut self, from: usize, to: usize);
     fn set_placement(&mut self, index: usize, placement: Placement);
+    /// Reserve `lead` leads before what the container holds.
+    fn set_lead(&mut self, lead: i16);
 }
 
 impl<L: ui::widget::arrange::Layout + 'static> SlotHost for ui::widget::arrange::Arranged<L> {
@@ -434,6 +451,10 @@ impl<L: ui::widget::arrange::Layout + 'static> SlotHost for ui::widget::arrange:
     fn set_placement(&mut self, index: usize, placement: Placement) {
         let Placement { fit, span, at } = placement;
         ui::widget::arrange::Arranged::set_placement(self, index, fit, span, at);
+    }
+
+    fn set_lead(&mut self, lead: i16) {
+        ui::widget::arrange::Arranged::set_lead(self, lead);
     }
 }
 
@@ -656,6 +677,19 @@ impl Reconciler {
 
     /// The widgets of the tree under `node`.
     pub fn build(&mut self, node: &UiNode) -> Element {
+        let mut element = self.build_kind(node);
+        // A container's lead is room of its own, over the padding it keeps: what it holds
+        // stands that far in from its leading edge, under the text a heading's control leads
+        // to.
+        let lead = lead(node);
+        if lead > 0 {
+            with_host(&mut element, |host| host.set_lead(lead));
+        }
+        element
+    }
+
+    /// The widget of `node` itself, before the lead its arguments reserve.
+    fn build_kind(&mut self, node: &UiNode) -> Element {
         if crate::adapter::component_name(&node.kind).is_some() {
             return self.component(node);
         }
@@ -812,15 +846,49 @@ impl Reconciler {
     fn slots(&mut self, node: &UiNode) -> Vec<Slot> {
         placed(node)
             .into_iter()
-            .map(|child| self.slot(node, child))
+            .map(|child| self.slot(node, &child))
             .collect()
     }
 
     /// How `child` is sized in its container `parent` ([`placement_in`]), and, for a fragment
     /// that fills because `parent` passes its fill on, the weight it passes on in turn: placed
     /// before it is built, so what it holds is placed knowing it.
-    fn place(&mut self, parent: &UiNode, child: &UiNode) -> Placement {
+    fn place(&mut self, parent: &UiNode, placed: &Placed<'_>) -> Placement {
+        let child = placed.node;
+        let through = &placed.through;
         let inherited = self.filling.get(&parent.key).copied();
+        let mut placement = placement_in(parent, inherited, child);
+        // A fragment draws nothing of its own, so what it asks for is the child standing under
+        // it: a `for`'s fill reaches each row it places in a row or a grid, and the narrowest
+        // width it names floors each of them.
+        let mut passed = None;
+        let mut aspect = None;
+        for fragment in through {
+            passed = number(fragment, "fill").or(passed);
+            if prop(child, "min").is_none()
+                && let Some(min) = length(fragment, "min")
+            {
+                placement.fit.width.min = Some(min);
+            }
+            if prop(child, "max").is_none()
+                && let Some(max) = length(fragment, "max")
+            {
+                placement.fit.width.max = Some(max);
+            }
+            if prop(child, "aspect").is_none() && aspect.is_none() {
+                aspect = number(fragment, "aspect");
+            }
+        }
+        // The child's own arguments win; else it takes the weight the fragments pass on.
+        if let Some(weight) = passed.filter(|_| number(child, "fill").is_none()) {
+            let (min, max) = (placement.fit.width.min, placement.fit.width.max);
+            placement.fit = Fit::fill(weight);
+            placement.fit.width.min = min;
+            placement.fit.width.max = max;
+        }
+        if let Some(ratio) = aspect {
+            placement.fit = placement.fit.aspect(ratio);
+        }
         match fragment_fill(parent, inherited, child) {
             Some(weight) if child.kind == "fragment" => {
                 self.filling.insert(child.key.clone(), weight);
@@ -829,12 +897,13 @@ impl Reconciler {
                 self.filling.remove(&child.key);
             }
         }
-        placement_in(parent, inherited, child)
+        placement
     }
 
     /// `child`, built, as a slot of its container `parent`.
-    fn slot(&mut self, parent: &UiNode, child: &UiNode) -> Slot {
-        let Placement { fit, span, at } = self.place(parent, child);
+    fn slot(&mut self, parent: &UiNode, placed: &Placed<'_>) -> Slot {
+        let child = placed.node;
+        let Placement { fit, span, at } = self.place(parent, placed);
         let mut slot = Slot::new(self.build(child));
         slot.fit = fit;
         slot.span = span;
@@ -846,6 +915,7 @@ impl Reconciler {
         let mut stack = Stack::stack()
             .fill_width()
             .gap(rhythm(node, "gap", default))
+            .padding(rhythm(node, "padding", Rhythm::None))
             .align(align(node, Align::Stretch))
             .with_id(node.key.clone());
         for slot in self.slots(node) {
@@ -858,6 +928,7 @@ impl Reconciler {
         let mut row = Row::row()
             .fill_width()
             .gap(rhythm(node, "gap", Rhythm::Related))
+            .padding(rhythm(node, "padding", Rhythm::None))
             .align(align(node, Align::Center))
             .distribute(match token(node, "distribute") {
                 Some("center") => Distribute::Center,
@@ -930,8 +1001,13 @@ impl Reconciler {
             Page::full()
         } else {
             Page::new()
+        };
+        // A page that fills takes the height its pane gives it: a canvas's content (a board's
+        // lanes) stands on the pane's floor, and what it holds scrolls inside it.
+        if flag(node, "fill") {
+            page = page.filling();
         }
-        .with_id(node.key.clone());
+        let mut page = page.with_id(node.key.clone());
         for slot in self.slots(node) {
             page = page.push_slot(slot);
         }
@@ -947,20 +1023,40 @@ impl Reconciler {
     }
 
     fn scroll(&mut self, node: &UiNode) -> Element {
-        let inner = Stack::stack()
+        let mut inner = Stack::stack()
             .fill_width()
             .gap(Rhythm::Sibling)
             .with_id(format!("{}~content", node.key));
-        let mut inner = inner;
         for slot in self.slots(node) {
             inner = inner.push_slot(slot);
         }
-        let scroll = match token(node, "axis") {
-            Some("horizontal") => Scrollable::new_horizontal(),
-            // A two-way surface fills its column and scrolls what it cannot show, rather than
-            // growing past it: the desk a person pans, not a page that runs on.
-            Some("both") => Scrollable::new(ui::widget::ScrollAxis::Both).fill_parent_height(),
-            _ => Scrollable::new_vertical().fit_content_height(),
+        // A surface that fills its pane gives what it holds the pane's height, so its content
+        // stands at the pane's size and pans inside it rather than growing to its own: the desk
+        // a person pans, and a row of windows kept to their own widths whose bars and apps fill
+        // the room between the desk's edges.
+        let filling = flag(node, "fill") || token(node, "axis") == Some("both");
+        if filling {
+            inner = inner.fill_height();
+        }
+        let across = token(node, "axis");
+        let scroll = if filling {
+            let axis = match across {
+                Some("horizontal") => ui::widget::ScrollAxis::Horizontal,
+                Some("both") => ui::widget::ScrollAxis::Both,
+                _ => ui::widget::ScrollAxis::Vertical,
+            };
+            Scrollable::new(axis).fill_parent_height()
+        } else if across == Some("horizontal") {
+            Scrollable::new_horizontal()
+        } else {
+            Scrollable::new_vertical().fit_content_height()
+        };
+        // A row that shares the desk's width by weight fills it when its
+        // children fit, and scrolls once their least widths need more.
+        let scroll = if filling && across == Some("horizontal") {
+            scroll.with_content_min_viewport_width()
+        } else {
+            scroll
         };
         Box::new(scroll.with_child(Box::new(inner)))
     }
@@ -1037,7 +1133,12 @@ impl Reconciler {
         let mut card = Stack::stack()
             .gap(Rhythm::Related)
             .with_id(node.key.clone());
-        let status = crate::i18n::t(&format!("tilolang-invocation-{state}"));
+        // A proposal a person decides reads as suggested, by the person who suggested it.
+        let status = if flag(node, "proposed") {
+            crate::i18n::t("tilolang-invocation-proposed")
+        } else {
+            crate::i18n::t(&format!("tilolang-invocation-{state}"))
+        };
         let header = Row::row()
             .fill_width()
             .gap(Rhythm::Related)
@@ -1079,20 +1180,16 @@ impl Reconciler {
                         }),
                 ))
             };
+            // A proposal answers as a suggestion; an ask the authority raised, as a confirmation.
+            let (accept, decline) = if flag(node, "proposed") {
+                ("tilolang-suggestion-accept", "tilolang-suggestion-dismiss")
+            } else {
+                ("tilolang-ask-confirm", "tilolang-ask-decline")
+            };
             let choices = Row::row()
                 .gap(Rhythm::Related)
-                .push_slot(answer(
-                    self,
-                    "allow",
-                    crate::i18n::t("tilolang-ask-confirm"),
-                    true,
-                ))
-                .push_slot(answer(
-                    self,
-                    "decline",
-                    crate::i18n::t("tilolang-ask-decline"),
-                    false,
-                ));
+                .push_slot(answer(self, "allow", crate::i18n::t(accept), true))
+                .push_slot(answer(self, "decline", crate::i18n::t(decline), false));
             card = card.push_slot(Slot::new(Box::new(choices)));
         }
         Box::new(card)
@@ -1138,29 +1235,42 @@ impl Reconciler {
     /// A form or a field: the native widget, with each part of its content in a [`Pane`] the
     /// reconciler reaches again, so content that runs again keeps its widgets.
     fn holder(&mut self, node: &UiNode) -> Element {
-        let mut panes: Vec<Element> = holder_parts(node)
-            .into_iter()
-            .map(|part| Box::new(Pane::new(self.build(part))) as Element)
-            .collect();
         let mut section = FormSection::untitled();
-        let fields: Vec<&UiNode> = if node.kind == "field" {
-            vec![node]
-        } else {
-            node.children.iter().collect()
-        };
-        panes.reverse();
-        for child in fields {
-            let Some(pane) = panes.pop() else {
-                break;
-            };
+        if node.kind == "field" {
+            return Box::new(section.field(self.field_of(node)));
+        }
+        for child in &node.children {
             if child.kind == "field" {
-                let label = crate::date::shown(child, "label").unwrap_or_default();
-                section = section.field(Field::custom(label, pane));
+                section = section.field(self.field_of(child));
             } else {
-                section = section.content(pane);
+                section = section.content(self.pane(child));
             }
         }
         Box::new(section)
+    }
+
+    /// The field `node`: its label and every control its block holds, one under the next. A
+    /// day and the time of that day stand as one field's two controls.
+    fn field_of(&mut self, node: &UiNode) -> Field {
+        let mut panes: Vec<Element> = node.children.iter().map(|child| self.pane(child)).collect();
+        let content = match panes.len() {
+            0 => Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element,
+            1 => panes.remove(0),
+            _ => {
+                let mut stack = Stack::stack();
+                for pane in panes {
+                    stack = stack.push(pane);
+                }
+                Box::new(stack)
+            }
+        };
+        let label = crate::date::shown(node, "label").unwrap_or_default();
+        Field::custom(label, content)
+    }
+
+    /// `node` built, in the pane the holder reaches it again by.
+    fn pane(&mut self, node: &UiNode) -> Element {
+        Box::new(Pane::new(self.build(node)))
     }
 
     /// A holder whose shape is the same keeps its widget; each part is reconciled in its pane.
@@ -1259,20 +1369,12 @@ impl Reconciler {
     /// section of the page.
     fn rows(&mut self, node: &UiNode) -> Element {
         let row_kind = crate::adapter::kind("ListRow");
-        let avatars = node
-            .children
-            .iter()
-            .any(|item| find(item, &row_kind).is_some_and(shows_avatar));
         let rows: Vec<Element> = node
             .children
             .iter()
             .map(|item| {
                 let row = find(item, &row_kind).unwrap_or(item);
-                if row.kind == row_kind {
-                    self.build(&in_avatar_column(row, avatars))
-                } else {
-                    self.build(row)
-                }
+                self.build(row)
             })
             .collect();
         if rows.is_empty() {
@@ -1329,13 +1431,19 @@ impl Reconciler {
                 let kept = scroll
                     .child_mut()
                     .is_some_and(|content| self.reconcile_children(content, old_node, new_node));
-                // A surface the person pans (a desk of strips) shows a card that just arrived
-                // on it, as a window placed on a desk comes into view.
-                if kept
-                    && token(new_node, "axis") == Some("both")
-                    && let Some(arrived) = arrived_card(old_node, new_node)
-                {
-                    scroll.reveal_on_layout(arrived);
+                // A surface the person pans (a desk of strips) shows what just arrived on it: a
+                // card put on a canvas, or the window of a place just placed, comes into view.
+                if kept {
+                    let canvas = token(new_node, "axis") == Some("both");
+                    let arrived = if canvas {
+                        arrived_card(old_node, new_node)
+                    } else {
+                        None
+                    }
+                    .or_else(|| arrived_window(old_node, new_node));
+                    if let Some(arrived) = arrived {
+                        scroll.reveal_on_layout(arrived);
+                    }
                 }
                 (!kept).then(|| self.build(new_node))
             }
@@ -1397,7 +1505,7 @@ impl Reconciler {
                         break;
                     };
                     let mut slot = Slot::new(widget);
-                    let Placement { fit, span, at } = self.place(old_node, child);
+                    let Placement { fit, span, at } = self.place(old_node, &child);
                     slot.fit = fit;
                     slot.span = span;
                     slot.at = at;
@@ -1429,15 +1537,16 @@ impl Reconciler {
         for index in (0..held.len()).rev() {
             let gone = held
                 .get(index)
-                .is_some_and(|old| !placing.iter().any(|child| child.key == old.key));
+                .is_some_and(|old| !placing.iter().any(|child| child.node.key == old.node.key));
             if gone {
                 host.remove(index);
                 held.remove(index);
             }
         }
         for (index, child) in placing.into_iter().enumerate() {
-            let Some(at) = held.iter().position(|old| old.key == child.key) else {
-                let slot = self.slot(new_node, child);
+            let node = child.node;
+            let Some(at) = held.iter().position(|old| old.node.key == node.key) else {
+                let slot = self.slot(new_node, &child);
                 host.insert(index, slot);
                 held.insert(index, child);
                 continue;
@@ -1447,13 +1556,13 @@ impl Reconciler {
                 let moved = held.remove(at);
                 held.insert(index, moved);
             }
-            let Some(&old_child) = held.get(index) else {
+            let Some(old_child) = held.get(index).map(|old| old.node) else {
                 continue;
             };
-            let placement = self.place(new_node, child);
+            let placement = self.place(new_node, &child);
             let replaced = host
                 .child_mut(index)
-                .and_then(|widget| self.update_in(widget, old_child, child));
+                .and_then(|widget| self.update_in(widget, old_child, node));
             if let Some(replaced) = replaced {
                 host.replace(index, replaced);
             }
@@ -1463,18 +1572,17 @@ impl Reconciler {
 }
 
 /// The nodes a holder shows each in a pane: a section's or card's children, a form's fields'
-/// controls (or its other content), a field's control.
+/// controls (or its other content), a field's controls.
 fn holder_parts(node: &UiNode) -> Vec<&UiNode> {
     match node.kind.as_str() {
-        "field" => node.children.first().into_iter().collect(),
         "form" => node
             .children
             .iter()
-            .filter_map(|child| {
+            .flat_map(|child| {
                 if child.kind == "field" {
-                    child.children.first()
+                    child.children.iter().collect::<Vec<_>>()
                 } else {
-                    Some(child)
+                    vec![child]
                 }
             })
             .collect(),
@@ -1503,23 +1611,6 @@ pub(crate) fn presence_path(node: &UiNode) -> Vec<PathSegment> {
         .unwrap_or_default()
 }
 
-/// Whether a list's row node shows an avatar: a participant's, or the item's own glyph.
-fn shows_avatar(row: &UiNode) -> bool {
-    crate::adapter::description_of(row).is_some_and(|description| {
-        !crate::adapter::slot_parts(row, description, "avatar").is_empty()
-    })
-}
-
-/// The row node as its list shows it: the room an avatar takes is kept while the list shows
-/// avatars, and given up while no row of it does.
-fn in_avatar_column(row: &UiNode, avatars: bool) -> UiNode {
-    let mut row = row.clone();
-    if !avatars {
-        row.props.remove("avatar_space");
-    }
-    row
-}
-
 /// The card that arrived under `new_node` since `old_node`, by its key: the last of `new_node`'s
 /// outermost cards (a place on a desk, not what its content holds) `old_node` did not hold. A
 /// card's body is laid out under its key, which is what the scroll holding it finds it by
@@ -1543,6 +1634,28 @@ fn arrived_card(old_node: &UiNode, new_node: &UiNode) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The window that arrived under `new_node` since `old_node`, by its key: the frames a row of a
+/// desk holds, the last of them new. A row pans to the window just placed in it, as the desk's
+/// own row does, so the place that just came onto the desk stands where the person can see it.
+fn arrived_window(old_node: &UiNode, new_node: &UiNode) -> Option<String> {
+    fn frames<'a>(node: &'a UiNode, out: &mut Vec<&'a str>) {
+        if node.kind == crate::adapter::kind("WindowFrame") {
+            out.push(&node.key);
+            return;
+        }
+        for child in &node.children {
+            frames(child, out);
+        }
+    }
+    let (mut before, mut now) = (Vec::new(), Vec::new());
+    frames(old_node, &mut before);
+    frames(new_node, &mut now);
+    now.into_iter()
+        .rev()
+        .find(|key| !before.contains(key))
+        .map(str::to_owned)
+}
+
 /// Whether the embedded view `node` is framed as one object: unless it is made of objects
 /// itself, its cards standing at its top or in its top layout.
 fn frames(node: &UiNode) -> bool {
@@ -1557,22 +1670,42 @@ fn frames(node: &UiNode) -> bool {
 /// arrives as a fragment; there each of its children is a cell or an item of its own, where a
 /// fragment built as a stack would pile them into one. Elsewhere a fragment is a slot of its
 /// own, its children stacked tight.
-fn placed(node: &UiNode) -> Vec<&UiNode> {
-    fn flatten<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) {
+fn placed(node: &UiNode) -> Vec<Placed<'_>> {
+    // A row and a grid place every child a loop's fragment holds, as slots of their own, so a
+    // row's items share the row's spans one by one. Every other container keeps a fragment as
+    // a slot of its own: a view call is a box standing where the view put it, and what the
+    // view asks for is asked of that box.
+    fn flatten<'a>(node: &'a UiNode, through: &mut Vec<&'a UiNode>, out: &mut Vec<Placed<'a>>) {
         for child in &node.children {
             if child.kind == "fragment" {
-                flatten(child, out);
+                through.push(child);
+                flatten(child, through, out);
+                through.pop();
             } else {
-                out.push(child);
+                out.push(Placed {
+                    node: child,
+                    through: through.clone(),
+                });
             }
         }
     }
-    if !matches!(node.kind.as_str(), "grid" | "row") {
-        return node.children.iter().collect();
-    }
     let mut out = Vec::new();
-    flatten(node, &mut out);
+    if matches!(node.kind.as_str(), "grid" | "row") {
+        flatten(node, &mut Vec::new(), &mut out);
+    } else {
+        out.extend(node.children.iter().map(|child| Placed {
+            node: child,
+            through: Vec::new(),
+        }));
+    }
     out
+}
+
+/// A child a container places, and the fragments it stands through, outermost first: a fragment
+/// draws nothing of its own, so the sizing and placement it asks for are the child's.
+struct Placed<'a> {
+    node: &'a UiNode,
+    through: Vec<&'a UiNode>,
 }
 
 fn holds_cards(node: &UiNode) -> bool {
@@ -1594,17 +1727,20 @@ fn holder_shape(node: &UiNode) -> Vec<PartShape> {
                 .collect::<Vec<_>>(),
         )
     };
+    // A part in its pane changes in place: its key and kind are all the shape needs of it.
+    let shallow = |node: &UiNode| (node.key.clone(), node.kind.clone(), Vec::new());
     let mut shape = vec![entry(node)];
-    for child in &node.children {
-        shape.push(entry(child));
-        if node.kind == "form" && child.kind == "field" {
-            shape.extend(
-                child
-                    .children
-                    .iter()
-                    .map(|control| (control.key.clone(), control.kind.clone(), Vec::new())),
-            );
+    match node.kind.as_str() {
+        "field" => shape.extend(node.children.iter().map(shallow)),
+        "form" => {
+            for child in &node.children {
+                shape.push(entry(child));
+                if child.kind == "field" {
+                    shape.extend(child.children.iter().map(shallow));
+                }
+            }
         }
+        _ => shape.extend(node.children.iter().map(entry)),
     }
     shape
 }
@@ -1756,6 +1892,78 @@ mod tests {
         new.props.insert("gap".to_owned(), Value::text("section"));
         let updated = reconciler.update(built, &old, &new);
         assert_eq!(identities(&updated), before);
+    }
+
+    #[test]
+    fn a_field_shows_every_control_it_holds() {
+        let mut day = node("ui.DateField", "day");
+        day.props
+            .insert("value".to_owned(), Value::text("2026-06-30"));
+        let mut time = node("ui.TimePicker", "time");
+        time.props.insert("value".to_owned(), Value::text("09:00"));
+        let field = UiNode {
+            children: vec![day, time],
+            props: [("label".to_owned(), Value::text("Due"))]
+                .into_iter()
+                .collect(),
+            ..node("field", "due")
+        };
+        assert_eq!(
+            holder_parts(&field).len(),
+            2,
+            "the day and the time of that day are both the field's"
+        );
+        let mut reconciler = reconciler();
+        let mut built = reconciler.build(&field);
+        let mut panes = Vec::new();
+        collect_panes(built.as_mut(), &mut panes);
+        let before: Vec<usize> = panes
+            .iter()
+            .map(|pane| std::ptr::from_ref::<dyn ui::widget::Widget>(*pane).cast::<()>() as usize)
+            .collect();
+        assert_eq!(before.len(), 2, "both controls sit in a pane");
+        // The time moves: both panes stay, and each reconciles in place.
+        let mut new = field.clone();
+        new.children[1]
+            .props
+            .insert("value".to_owned(), Value::text("10:30"));
+        let mut updated = reconciler.update(built, &field, &new);
+        let mut panes = Vec::new();
+        collect_panes(updated.as_mut(), &mut panes);
+        let after: Vec<usize> = panes
+            .iter()
+            .map(|pane| std::ptr::from_ref::<dyn ui::widget::Widget>(*pane).cast::<()>() as usize)
+            .collect();
+        assert_eq!(after, before, "both keep their pane");
+    }
+
+    /// The stack `element` is, as the arrangement that leads what it holds.
+    fn arrangement(
+        element: &mut Element,
+    ) -> &mut ui::widget::arrange::Arranged<ui::widget::arrange::FlexLayout> {
+        element
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut())
+            .expect("a stack is an arrangement")
+    }
+
+    #[test]
+    fn a_container_that_leads_stands_its_content_one_lead_in() {
+        let mut reconciler = reconciler();
+        let mut led = stack("s", vec![text("a", "a")]);
+        led.props.insert("lead".to_owned(), Value::Int(1));
+        let mut built = reconciler.build(&led);
+        assert_eq!(
+            arrangement(&mut built).lead(),
+            1,
+            "the node's lead is the container's"
+        );
+        let mut plain = reconciler.build(&stack("p", vec![text("b", "b")]));
+        assert_eq!(
+            arrangement(&mut plain).lead(),
+            0,
+            "a container without one keeps its edge"
+        );
     }
 
     #[test]

@@ -248,9 +248,12 @@ fn accept(listener: &UnixListener, handle: &Handle) {
         match stream {
             Ok(stream) => {
                 let handle = handle.clone();
-                let _ = std::thread::Builder::new()
+                if let Err(error) = std::thread::Builder::new()
                     .name("tilo-tools-app".into())
-                    .spawn(move || serve(&handle, stream));
+                    .spawn(move || serve(&handle, stream))
+                {
+                    tracing::warn!(%error, "a tool connection could not be served");
+                }
             }
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
             Err(error) => {
@@ -280,6 +283,7 @@ fn serve(handle: &Handle, stream: UnixStream) {
         match read_request(&mut reader) {
             Line::Done => return,
             Line::TooLarge => {
+                // ignored-failure: the connection ends whether or not it read the refusal
                 let _ = say(&mut writing, &refused("the tool request is too large"));
                 return;
             }
@@ -342,7 +346,10 @@ fn read_request(reading: &mut BufReader<UnixStream>) -> Line {
     }
     match serde_json::from_slice::<ToolRequest>(&line) {
         Ok(request) => Line::Request(request),
-        Err(_) => Line::Refused("the tool request does not decode"),
+        Err(error) => {
+            tracing::warn!(%error, "a tool request does not decode");
+            Line::Refused("the tool request does not decode")
+        }
     }
 }
 
@@ -426,9 +433,10 @@ fn answer(inner: &Inner, caller: Option<&Caller>, request: &ToolRequest) -> Tool
         ToolIntent::OpenApplication { app } => open_application(inner, caller, app),
         ToolIntent::UninstallApplication { app } => uninstall(inner, caller, app),
         ToolIntent::WorkspaceSettings { route } => workspace_settings(inner, caller, *route),
-        ToolIntent::IdentityBackup => {
-            refused("this session offers no portable identity backup yet")
-        }
+        ToolIntent::IdentityBackup => refused(
+            "a portable identity backup is written by setup, on the screens that ask for \
+             one; a desk that is already open offers none",
+        ),
         // Every other intent opens a package at the typed context it carries.
         _ => open_tool(inner, caller, request),
     }

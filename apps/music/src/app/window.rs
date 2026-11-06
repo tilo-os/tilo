@@ -338,7 +338,7 @@ impl Widget for MusicApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.music.borrow().needs_redraw()
+        self.music.borrow().needs_redraw() || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn mark_drawn(&mut self) {

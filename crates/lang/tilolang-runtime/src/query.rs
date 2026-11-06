@@ -311,6 +311,7 @@ pub fn resolve(
     ty: &TypeMeta,
     enums: &[EnumMeta],
     clock: &Clock,
+    viewer: Option<&str>,
 ) -> Result<Resolved, String> {
     let mut all = Vec::new();
     // Free text finds the type's own `Text` fields: each word must appear inside one of them.
@@ -318,7 +319,7 @@ pub fn resolve(
         all.push(text_pred(&query.text, ty));
     }
     for term in &query.terms {
-        all.push(term_pred(term, ty, enums, clock)?);
+        all.push(term_pred(term, ty, enums, clock, viewer)?);
     }
     let order = match &query.sort {
         Some(sort) => Some(order_of(sort, ty)?),
@@ -377,6 +378,7 @@ fn term_pred(
     ty: &TypeMeta,
     enums: &[EnumMeta],
     clock: &Clock,
+    viewer: Option<&str>,
 ) -> Result<Pred<String>, String> {
     let Some(key) = &term.key else {
         // A word alone is an identifier where the type holds one (`jane@x.com`), text where it
@@ -393,7 +395,7 @@ fn term_pred(
         return Ok(text_pred(std::slice::from_ref(&term.value), ty));
     };
     if let Some(filter) = ty.search.filter(key) {
-        return filter_pred(filter, &term.value, enums, clock)
+        return filter_pred(filter, &term.value, enums, clock, viewer)
             .map_err(|why| format!("`{key}:{}`: {why}", term.value));
     }
     // `discord:janedoe`, `mailto:jane@x.com`: an identifier, not a filter, where the type
@@ -471,30 +473,61 @@ fn one_of(mut each: Vec<Pred<String>>) -> Pred<String> {
     }
 }
 
+/// A person filter's value: `me` is whoever is looking, so a filter that names it reads
+/// differently for each of the people a workspace is shared with; anything else is a member by
+/// their id.
+fn person_lit(value: &str, viewer: Option<&str>) -> Result<Lit, String> {
+    let who = if value == "me" {
+        viewer
+            .ok_or("`me` is only known where someone is looking")?
+            .to_owned()
+    } else {
+        value.to_owned()
+    };
+    Ok(Lit::Principal(who))
+}
+
+/// A filter on the time it is asked at ("Today": `due <= today`) reads it now, and reads
+/// differently once the day (or the instant) it read moves on. One naming the person looking
+/// (`assignee == workspace.me`) is asked for here, so each person who asks reads their own.
+fn predicate_value(
+    declared: &Pred<String>,
+    value: &str,
+    clock: &Clock,
+    viewer: Option<&str>,
+) -> Result<Pred<String>, String> {
+    let reads = declared.clock_reads();
+    if reads.day {
+        // A day operand counts whole days from the person's day: it moves at midnight.
+        clock.read_day(0);
+    }
+    if reads.instant {
+        clock.read_instant();
+    }
+    let pred = declared.at(clock.now, clock.zone);
+    let pred = if pred.reads_viewer() {
+        let who = viewer.ok_or("`workspace.me` is only known where someone is looking")?;
+        pred.viewer(who)
+    } else {
+        pred
+    };
+    match value {
+        "true" => Ok(pred),
+        "false" => Ok(Pred::Not(Box::new(pred))),
+        _ => Err("a toggle is `true` or `false`".into()),
+    }
+}
+
 fn filter_pred(
     f: &FilterMeta,
     value: &str,
     enums: &[EnumMeta],
     clock: &Clock,
+    viewer: Option<&str>,
 ) -> Result<Pred<String>, String> {
     if f.kind == FilterKind::Predicate {
-        // A filter on the time it is asked at ("Today": `due <= today`) reads it now, and
-        // reads differently once the day (or the instant) it read moves on.
         let declared = f.pred.as_ref().ok_or("the filter has no predicate")?;
-        let reads = declared.clock_reads();
-        if reads.day {
-            // A day operand counts whole days from the person's day: it moves at midnight.
-            clock.read_day(0);
-        }
-        if reads.instant {
-            clock.read_instant();
-        }
-        let pred = declared.at(clock.now, clock.zone);
-        return match value {
-            "true" => Ok(pred),
-            "false" => Ok(Pred::Not(Box::new(pred))),
-            _ => Err("a toggle is `true` or `false`".into()),
-        };
+        return predicate_value(declared, value, clock, viewer);
     }
     let field = f.field.as_deref().ok_or("the filter is on no field")?;
     if f.optional {
@@ -549,6 +582,7 @@ fn filter_pred(
             Ok(one_of(each))
         }
         FilterKind::Reference => Ok(member(Lit::Ref(value.to_owned()))),
+        FilterKind::Person => Ok(member(person_lit(value, viewer)?)),
         FilterKind::Text => Ok(member(Lit::Text(value.to_owned()))),
         FilterKind::Identifier => {
             let pattern = identifier::normalize_pattern(value)?;

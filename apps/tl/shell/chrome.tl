@@ -187,7 +187,12 @@ migration action drop_the_power_part(s: Shell) {
 
 /// Uses the preset `to`: every setting it names at once. The result is exactly that preset,
 /// so the picker shows it chosen and "custom" is off.
-primary action apply(s: Shell, to: Layout) (icon: .layout_grid, label: "Use this layout", group: "Layout", frequent: true) {
+primary action apply(s: Shell, to: Layout) (
+    icon: .layout_grid,
+    label: "Use this layout",
+    group: "Layout",
+    frequent: true,
+) {
     s.preset = to
     s.based_on = to
     s.tuned = false
@@ -276,9 +281,13 @@ primary action apply(s: Shell, to: Layout) (icon: .layout_grid, label: "Use this
         s.dock_running = true
         s.dock_launcher = true
     }
-    if (to == .macos or to == .windows_desktop) and not s.bar_parts.any(p -> p.slot == Slot.app_menu) {
+    if (to == .macos or to == .windows_desktop)
+        and not s.bar_parts.any(p -> p.slot == Slot.app_menu) {
         s.bar_parts.insert(BarPart(slot: .app_menu, title: "App menus"))
-        if let brand = s.bar_parts.find(p -> p.slot == Slot.app_menu), after = s.bar_parts.find(p -> p.slot == Slot.menu) { s.bar_parts.move(brand, after: after) }
+        if let brand = s.bar_parts.find(p -> p.slot == Slot.app_menu),
+            after = s.bar_parts.find(p -> p.slot == Slot.menu) {
+            s.bar_parts.move(brand, after: after)
+        }
     }
 }
 
@@ -287,7 +296,10 @@ primary action apply(s: Shell, to: Layout) (icon: .layout_grid, label: "Use this
 action show_app_menus(s: Shell) (icon: .menu, label: "Show the app's menus", group: "Top bar") {
     require not s.bar_parts.any(p -> p.slot == Slot.app_menu) "The app's menus are on the bar already"
     s.bar_parts.insert(BarPart(slot: .app_menu, title: "App menus"))
-    if let menus = s.bar_parts.find(p -> p.slot == Slot.app_menu), brand = s.bar_parts.find(p -> p.slot == Slot.menu) { s.bar_parts.move(menus, after: brand) }
+    if let menus = s.bar_parts.find(p -> p.slot == Slot.app_menu),
+        brand = s.bar_parts.find(p -> p.slot == Slot.menu) {
+        s.bar_parts.move(menus, after: brand)
+    }
     s.tuned = true
 }
 
@@ -304,7 +316,11 @@ action reset(s: Shell) (icon: .rotate_ccw, label: "Back to the preset", group: "
 }
 
 /// Puts the bar on `edge`.
-action bar_on(s: Shell, edge: Edge) (icon: .panel_right, label: "Move the bar to the {edge}", group: "Top bar") {
+action bar_on(s: Shell, edge: Edge) (
+    icon: .panel_right,
+    label: "Move the bar to the {edge}",
+    group: "Top bar",
+) {
     s.bar_edge = edge
     s.tuned = true
 }
@@ -330,13 +346,22 @@ action set_bar_size(s: Shell, to: Size) (label: "Bar size: {to}", group: "Top ba
 }
 
 /// Shows or hides the top bar.
-action show_bar(s: Shell, on: Bool) (icon: .eye, label: "Show the top bar", group: "Top bar", frequent: true) {
+action show_bar(s: Shell, on: Bool) (
+    icon: .eye,
+    label: "Show the top bar",
+    group: "Top bar",
+    frequent: true,
+) {
     s.bar_shown = on
     s.tuned = true
 }
 
 /// Moves the dock to `edge`, keeping how it is built.
-action dock_on(s: Shell, edge: Edge) (icon: .panel_right, label: "Move the dock to the {edge}", group: "Dock") {
+action dock_on(s: Shell, edge: Edge) (
+    icon: .panel_right,
+    label: "Move the dock to the {edge}",
+    group: "Dock",
+) {
     s.dock_edge = edge
     s.tuned = true
 }
@@ -362,7 +387,12 @@ action set_dock_size(s: Shell, to: Size) (label: "Dock size: {to}", group: "Dock
 }
 
 /// Shows or hides the dock.
-action show_dock(s: Shell, on: Bool) (icon: .eye, label: "Show the dock", group: "Dock", frequent: true) {
+action show_dock(s: Shell, on: Bool) (
+    icon: .eye,
+    label: "Show the dock",
+    group: "Dock",
+    frequent: true,
+) {
     s.dock_shown = on
     s.tuned = true
 }
@@ -427,11 +457,16 @@ action place_item(s: Shell, item: DockItem, at: Int) (icon: .arrow_up_down, labe
 
 /// Pins a resource or an app to the dock, before `next` (or at the end when no neighbour is
 /// named): what dragging one onto the dock does, and what the person does from a menu.
-action pin(s: Shell, key: Text, title: Text, icon: Text, next: Text = "") (icon: .pin, label: "Pin to the dock") {
+action pin(s: Shell, key: Text, title: Text, icon: Text, next: Text = "") (
+    icon: .pin,
+    label: "Pin to the dock",
+) {
     require not s.dock_items.any(i -> i.key == key) "{title} is on the dock already"
     let item = DockItem(key: key, title: title, icon: icon, pinned: true)
     s.dock_items.insert(item)
-    if let before = s.dock_items.find(i -> i.key == next) { s.dock_items.move(item, before: before) }
+    if let before = s.dock_items.find(i -> i.key == next) {
+        s.dock_items.move(item, before: before)
+    }
     s.tuned = true
 }
 
@@ -464,12 +499,11 @@ fn bar_shows(s: Shell, d: Desk) -> Bool {
 /// bar always does (its window menu, at every width), and another bar does while it shows the
 /// app's menus part with the room to keep it (`roomy`: the output is expanded or wide, where
 /// the part does not give way). Each window's frame is told this fact
-/// (`ui.WindowFrame(lists_actions:)`), so its header's actions give way to that menu, not to
-/// a door of their own; a window behind has them there once it is in front, as on every
-/// desktop.
+/// (`ui.WindowFrame(lists_actions:)`), so the window's own bar keeps its title and the shell's
+/// controls alone: each action stands once, in the menu the bar lists it in, never twice.
 ///
 /// A desk shown as the traditional desktop (`Viewing.showing == .desktop`) counts as one: its
-/// bar is that bar (`top_bar`), so the frames let their header's actions give way to it.
+/// bar is that bar (`top_bar`), so its frames let their bar's actions give way to it.
 fn bar_lists_actions(s: Shell, d: Desk, roomy: Bool) -> Bool {
     if not bar_shows(s, d) {
         return false

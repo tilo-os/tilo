@@ -202,65 +202,7 @@ pub fn foreign_acts(
     };
     for workspace in &before.tree.workspaces {
         for strip in &workspace.strips {
-            if foreign(strip.id.0) {
-                match now.strips.get(&strip.id) {
-                    None => note(strip.id.0, Act::Close),
-                    Some(name) if *name != strip.name => note(strip.id.0, Act::Rename),
-                    Some(_) => {}
-                }
-            }
-            for group in &strip.window_groups {
-                for tab in &group.tabs {
-                    if !foreign(tab.id) {
-                        continue;
-                    }
-                    match now.tabs.get(&tab.id) {
-                        None => note(tab.id, Act::Close),
-                        Some(place) if was.tabs.get(&tab.id) != Some(place) => {
-                            note(tab.id, Act::Move);
-                        }
-                        Some(_) => {}
-                    }
-                }
-            }
-            // Other people's windows keep their order among themselves.
-            let Some(later) = after
-                .tree
-                .workspaces
-                .iter()
-                .flat_map(|w| &w.strips)
-                .find(|s| s.id == strip.id)
-            else {
-                continue;
-            };
-            // Groups holding someone else's window, as `before` holds them,
-            // that are still in the strip.
-            let others: Vec<GroupId> = strip
-                .window_groups
-                .iter()
-                .filter(|g| g.tabs.iter().any(|t| foreign(t.id)))
-                .filter(|g| later.window_groups.iter().any(|l| l.id == g.id))
-                .map(|g| g.id)
-                .collect();
-            let order = |groups: &[crate::layout::WindowGroup]| -> Vec<GroupId> {
-                groups
-                    .iter()
-                    .map(|g| g.id)
-                    .filter(|id| others.contains(id))
-                    .collect()
-            };
-            let earlier_order = order(&strip.window_groups);
-            let later_order = order(&later.window_groups);
-            for (index, group) in earlier_order.iter().enumerate() {
-                if later_order.get(index) == Some(group) {
-                    continue;
-                }
-                if let Some(group) = strip.window_groups.iter().find(|g| g.id == *group) {
-                    for tab in group.tabs.iter().filter(|t| foreign(t.id)) {
-                        note(tab.id, Act::Reorder);
-                    }
-                }
-            }
+            strip_acts(strip, &was, &now, after, &foreign, &mut note);
         }
         let later = after
             .tree
@@ -288,6 +230,78 @@ pub fn foreign_acts(
         }
     }
     touched
+}
+
+/// What `after` did to `strip` and the windows in it that `foreign` names:
+/// the strip closed or renamed, its windows closed or moved, and other
+/// people's windows reordered among themselves.
+fn strip_acts(
+    strip: &crate::layout::Strip,
+    was: &Index,
+    now: &Index,
+    after: &SharedDesktop,
+    foreign: &dyn Fn(u64) -> bool,
+    note: &mut dyn FnMut(u64, Act),
+) {
+    if foreign(strip.id.0) {
+        match now.strips.get(&strip.id) {
+            None => note(strip.id.0, Act::Close),
+            Some(name) if *name != strip.name => note(strip.id.0, Act::Rename),
+            Some(_) => {}
+        }
+    }
+    for group in &strip.window_groups {
+        for tab in &group.tabs {
+            if !foreign(tab.id) {
+                continue;
+            }
+            match now.tabs.get(&tab.id) {
+                None => note(tab.id, Act::Close),
+                Some(place) if was.tabs.get(&tab.id) != Some(place) => {
+                    note(tab.id, Act::Move);
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    // Other people's windows keep their order among themselves.
+    let Some(later) = after
+        .tree
+        .workspaces
+        .iter()
+        .flat_map(|w| &w.strips)
+        .find(|s| s.id == strip.id)
+    else {
+        return;
+    };
+    // Groups holding someone else's window, as `before` holds them,
+    // that are still in the strip.
+    let others: Vec<GroupId> = strip
+        .window_groups
+        .iter()
+        .filter(|g| g.tabs.iter().any(|t| foreign(t.id)))
+        .filter(|g| later.window_groups.iter().any(|l| l.id == g.id))
+        .map(|g| g.id)
+        .collect();
+    let order = |groups: &[crate::layout::WindowGroup]| -> Vec<GroupId> {
+        groups
+            .iter()
+            .map(|g| g.id)
+            .filter(|id| others.contains(id))
+            .collect()
+    };
+    let earlier_order = order(&strip.window_groups);
+    let later_order = order(&later.window_groups);
+    for (index, group) in earlier_order.iter().enumerate() {
+        if later_order.get(index) == Some(group) {
+            continue;
+        }
+        if let Some(group) = strip.window_groups.iter().find(|g| g.id == *group) {
+            for tab in group.tabs.iter().filter(|t| foreign(t.id)) {
+                note(tab.id, Act::Reorder);
+            }
+        }
+    }
 }
 
 /// The windows of `before` that `foreign` names whose group stands elsewhere
@@ -374,6 +388,8 @@ mod tests {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         }
     }
 

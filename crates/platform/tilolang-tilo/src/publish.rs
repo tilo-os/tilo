@@ -19,6 +19,7 @@ use tilo_actions::{
 use crate::action::DynAction;
 use crate::background::{Pending, Poll, Waker};
 use tilolang_runtime::meta::{ActionMeta, Meta};
+use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::words::Words;
 
 use crate::meta::{MetaExt as _, action_kind};
@@ -76,6 +77,10 @@ pub struct PlanRequest<'a> {
     pub args: &'a serde_json::Map<String, Json>,
     /// Who invokes, when it is not the person at the window.
     pub caller: Option<&'a Caller>,
+    /// The resource the invocation is made from, when it is made from one: what the resources
+    /// it creates were made from (`created(r)?.from`, `linked(r)`). A "make from this" menu,
+    /// send-to, or an agent working from what it read sets it.
+    pub from: Option<&'a ResourceRef>,
 }
 
 /// Runs a tilolang action as a planner and records what it wrote.
@@ -159,6 +164,10 @@ pub fn action_type(
     let build = move |subject: &Target, args: &ActionArgs| {
         let json = args.to_json();
         let caller = planner.caller();
+        // What the invocation is made from, as the caller named it with the arguments.
+        let from = args
+            .from()
+            .and_then(|from| ResourceRef::parse_id(&from.resource, from.kind.clone()));
         let request = PlanRequest {
             app: &app,
             kind: &kind,
@@ -166,6 +175,7 @@ pub fn action_type(
             resource: subject.get::<String>().map(String::as_str),
             args: &json,
             caller: caller.as_ref(),
+            from: from.as_ref(),
         };
         planner
             .plan(&request)
@@ -188,6 +198,19 @@ pub fn action_type(
     } else {
         said_of(words, &action.id, "doc", None, &action.doc)
     };
+    // A command the person choosing it still has to answer for opens its form: its label says
+    // so with "…", as the runtime's own surfaces say it. What the spec is given is what it does
+    // not ask for — the subject, the resource it runs against — and the parameters after it are
+    // the form's. The form's own placeholder names the command without the dots, which ask.
+    let mut label = label;
+    if action
+        .unbound(action.params.len().saturating_sub(params.len()))
+        .next()
+        .is_some()
+        && !label.ends_with('…')
+    {
+        label.push('…');
+    }
     // An action without parameters is planned when it runs, not when it is published: planning
     // is a trial run of the action, and publishing every item's actions must not run them all.
     let no_params = params.is_empty();
@@ -364,8 +387,9 @@ impl ActionTypes {
     }
 }
 
-/// The views a resource of `type_name` is shown through: the package's offered views that take
-/// such a resource and nothing else, so opening one needs only the resource (`open(r, with: v)`).
+/// The views a resource of `type_name` is shown through: the views a declaration attaches to its
+/// type ([`Meta::views_showing`]), each taking the resource and nothing else, so opening one needs
+/// only the resource (`open(r, with: v)`).
 ///
 /// A view and the action that opens it name each other one to one: the door projects a view
 /// onto its open action's descriptor, and a caller opens the view by invoking that action. The
@@ -382,15 +406,8 @@ fn views_of(
         return Vec::new();
     };
     let primary = meta.default_view(&declared.id);
-    let of_type = |ty: &str| {
-        matches!(
-            tilolang_runtime::meta::parse_ty(ty, &meta.app),
-            Ok(tilolang_runtime::meta::Ty::Record(key))
-                if key.app == meta.app && key.name == type_name
-        )
-    };
-    meta.offered_views()
-        .filter(|view| matches!(&view.params[..], [only] if of_type(&only.ty)))
+    meta.views_showing(type_name)
+        .into_iter()
         .map(|view| {
             let label = if view.name.is_empty() {
                 view.id.clone()
@@ -533,6 +550,18 @@ fn item_resource(types: &ActionTypes, item: &crate::record::DynRecord, path: &st
 /// Only a record that appeared, or one that changed as a whole, is read and built in full, and
 /// that happens on a thread of its own, from a snapshot of the store, as search's first index
 /// does ([`crate::search::SearchIndex`]): until it ends, updates change nothing.
+/// A field of a published resource: the resource's id, and the field the change named.
+type Field = (String, String);
+
+/// What the updates since a revision changed, as a reader of an action's availability needs it.
+pub enum Moved {
+    /// These fields changed, by published resource id and field: a record's own, and every
+    /// item's under it.
+    These(Vec<Field>),
+    /// Every resource: an update since read them all again, and what it changed is every one.
+    Everything,
+}
+
 pub struct Publications {
     watch: crate::store::Watch,
     /// Each the very tree it was while the record publishes the same: a reader holding it
@@ -566,6 +595,14 @@ pub struct Publications {
     /// How many times the updates read every record in full: only the first update, and a turn
     /// that changed what every record is published as.
     sweeps: u64,
+    /// How many updates saw a change in the workspace, whether or not it changed what a record
+    /// is published as: an action's availability follows what its app's requirements read, which
+    /// a change may move without moving a label.
+    moved: u64,
+    /// The fields each recent update saw change, by [`Self::moved`], oldest first, and `None`
+    /// for an update that read everything again: what a reader holding an earlier count reads
+    /// the requirements of again.
+    motions: std::collections::VecDeque<(u64, Option<Vec<Field>>)>,
 }
 
 /// A record built whole off the frame: its tree and the resource whose text names it.
@@ -695,6 +732,8 @@ impl Publications {
             fresh: true,
             visited: 0,
             sweeps: 0,
+            moved: 0,
+            motions: std::collections::VecDeque::new(),
         }
     }
 
@@ -852,6 +891,48 @@ impl Publications {
         self.visited
     }
 
+    /// How many updates have seen a change in the workspace, whether or not it changed what a
+    /// record is published as: what an action's availability, and only it, reads besides.
+    #[must_use]
+    pub fn moved(&self) -> u64 {
+        self.moved
+    }
+
+    /// The fields that changed since the update counted `since`, each once; everything when an
+    /// update since read it all again, and `None` when what changed that long ago is no longer
+    /// kept, which reads everything too.
+    ///
+    /// A field is a record's own or one of its items': what a requirement of an item reads is
+    /// named as the item's fields, so a change to one item reads that item's requirements again
+    /// and leaves every other item's as they were.
+    #[must_use]
+    pub fn changed_since(&self, since: u64) -> Option<Moved> {
+        if since == self.moved {
+            return Some(Moved::These(Vec::new()));
+        }
+        if since > self.moved {
+            return None;
+        }
+        let first = self.motions.iter().position(|(at, _)| *at > since)?;
+        // Every update after `since` is one the journal holds.
+        if self.motions.get(first)?.0 != since.wrapping_add(1) {
+            return None;
+        }
+        if self
+            .motions
+            .iter()
+            .skip(first)
+            .any(|(_, moved)| moved.is_none())
+        {
+            return Some(Moved::Everything);
+        }
+        let mut out: std::collections::BTreeSet<Field> = std::collections::BTreeSet::new();
+        for (_, moved) in self.motions.iter().skip(first) {
+            out.extend(moved.iter().flatten().cloned());
+        }
+        Some(Moved::These(out.into_iter().collect()))
+    }
+
     /// How many times the updates so far have read every record in full: what publishing a
     /// change must never cost, whatever the workspace holds.
     #[must_use]
@@ -963,6 +1044,39 @@ impl Publications {
             // Nothing changed: no record is looked at, whether the workspace holds one or ten
             // thousand.
             self.publish_changed(host, planner, &changes, relabels, &mut touched);
+        }
+        // A change may move what a requirement of an action reads without moving any tree of
+        // its own (a task checked, and `Clear done` can run now): a surface holding the actions
+        // reads the requirements of the records that changed again, whether or not the record
+        // is published as something else.
+        if all || !changes.is_empty() {
+            self.moved = self.moved.saturating_add(1);
+            // Every field a change named, not its record alone: what an item's requirement
+            // reads is the item's fields, and a record of ten thousand items reads one item's
+            // again.
+            let moved = if all || changes.everything {
+                None
+            } else {
+                let mut fields: std::collections::BTreeSet<Field> = changes
+                    .docs
+                    .values()
+                    .flatten()
+                    .map(|key| (key.resource.clone(), key.field.clone()))
+                    .collect();
+                // A document that may have changed anywhere is its record's own resource, and
+                // everything under it.
+                fields.extend(
+                    changes
+                        .whole
+                        .iter()
+                        .map(|doc| (doc.clone(), tilolang_runtime::store::ANY_FIELD.to_owned())),
+                );
+                Some(fields.into_iter().collect())
+            };
+            if self.motions.len() >= MOTIONS_KEPT {
+                self.motions.pop_front();
+            }
+            self.motions.push_back((self.moved, moved));
         }
         touched
     }
@@ -1105,6 +1219,9 @@ impl Publications {
 
 /// How many label-only revisions [`Publications::labels_since`] reaches back over.
 const RELABELS_KEPT: usize = 256;
+
+/// How many updates [`Publications::changed_since`] reaches back over.
+const MOTIONS_KEPT: usize = 256;
 
 /// What republishing a record did to its tree.
 enum Republished {
@@ -1743,6 +1860,22 @@ fn item_label(item: &crate::record::DynRecord) -> Option<String> {
     None
 }
 
+/// Set each action's availability on `resource` and the items under it, as its app says it now:
+/// whether the requirements its subject alone decides hold for the person at the window, or the
+/// first that does not and why. What a palette reads to leave an action out, and a toolbar to
+/// disable its control with the reason.
+pub fn publish_availability(host: &crate::host::Host, resource: &mut ResourceSpec) {
+    let id = resource.id.as_str().to_owned();
+    for action in &mut resource.actions {
+        if let Some(availability) = host.availability(&id, &action.id) {
+            action.type_mut().contract.availability = availability;
+        }
+    }
+    for child in &mut resource.children {
+        publish_availability(host, child);
+    }
+}
+
 /// The package's own resource, carrying the actions that take no record.
 #[must_use]
 pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>, words: &dyn Words) -> ResourceSpec {
@@ -1916,7 +2049,10 @@ fn edit_types(meta: &Meta, type_name: &str) -> [Arc<ActionType>; 2] {
                         payload: message.into_bytes(),
                     })
             },
-        );
+        )
+        // The platform runs it for a bound field, and an agent may ask for it; a person
+        // changes the field in the control they see, whose own action they press.
+        .for_audience(tilo_actions::Audience::Agents);
         Arc::clone(spec.action_type())
     };
     [

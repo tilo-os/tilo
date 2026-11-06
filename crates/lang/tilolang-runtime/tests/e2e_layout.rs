@@ -181,31 +181,42 @@ view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) 
         );
     }
 
-    /// `resource(id)` names the record a place shows by its id alone, as its own type, so a
-    /// shell reads the actions that record publishes — and `actions(r)` on it carries the run
-    /// each action's declaration names (`group:`) and whether the person reaches for it on most
-    /// things of its type (`frequent: true`). This is the seam the traditional desktop's action
-    /// bar stands on.
+    /// The host puts a record's actions on the record, grouped as their declarations say: a
+    /// row's menu carries the group of each action on it (`group:`), and whether the person
+    /// reaches for it on most things of its type (`frequent: true`). This is the seam the
+    /// traditional desktop's action bar stands on.
     #[test]
     fn a_resource_read_by_id_offers_the_actions_its_declaration_grouped() {
         const ACTIONS: &str = "app so.tilo.library \"Library\"\n\
 type Album {\n    title: Text\n    pinned: Bool = false\n}\n\
+type Shelf {\n    albums: Collection<Album>\n}\n\
+root Shelf\n\ndefault view shelf for Shelf\n\
+action add(s: Shelf) -> Album (icon: .plus) {\n    s.albums.insert(Album(title: \"Blue\"))\n}\n\
 action pin(a: Album, pinned: Bool = not a.pinned) (icon: .pin, group: \"Pin\", frequent: true) {\n    a.pinned = pinned\n}\n\
 action rename(a: Album, title: Text) (icon: .pen_tool, group: \"Edit\") {\n    a.title = title\n}\n\
-view bar(a: Album) {\n    let shown = resource(a.id())\n\
-    if let r = shown {\n        for act in actions(r) {\n            text(act.group ?? \"none\")\n        }\n    }\n\
-}\n\
+view shelf(s: Shelf) {\n    ui.NavShell(content_kind: .list, title: meta(s).title) {\n        content: {\n            stack {\n                for a in s.albums {\n                    ui.ListItem(item: a) {\n                        ui.ListRow(title: a.title)\n                    }\n                }\n            }\n        }\n    }\n}\n\
 view album(a: Album) {\n    text(a.title)\n}";
         let app = App::compile(ACTIONS, &[]);
         let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
         app.load(&rt);
-        let album = rt.create("Album").unwrap();
+        let shelf = rt.create_root("Shelf").unwrap();
+        rt.invoke_action(
+            &me(),
+            (app.action("add").as_str(), vec![Value::resource(&shelf)]),
+        )
+        .unwrap();
         let view = rt
-            .open_view(&me(), &app.view("bar"), vec![Value::resource(&album)])
+            .open_view(&me(), &app.view("shelf"), vec![Value::resource(&shelf)])
             .unwrap();
-        let groups: Vec<String> = of_kind(view.tree(), "ui.Text")
+        let row = *of_kind(view.tree(), "ui.ListItem")
+            .first()
+            .unwrap_or_else(|| panic!("a row per album: {}", dump(view.tree())));
+        let groups: Vec<String> = of_kind(row, "ui.MenuItem")
             .into_iter()
-            .map(|t| text_prop(t, "value"))
+            .filter_map(|item| match item.props.get("group") {
+                Some(Value::Text(group)) => Some(group.clone()),
+                _ => None,
+            })
             .collect();
         assert_eq!(groups, ["Pin", "Edit"], "{}", dump(view.tree()));
     }

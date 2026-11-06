@@ -39,7 +39,6 @@ mod workspace_record_custody {
         .unwrap();
         JoinedChannel {
             as_app: None,
-            person_chat_views: RefCell::default(),
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
             state: workspace.state.clone(),
             directories: workspace.directories.clone(),

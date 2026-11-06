@@ -12,6 +12,9 @@ d-oidkt4g5 = Title
 
 d-fgvmlm5n = Done
 
+d-kvqrynzm = Done at
+    .doc = When it was last checked off: Done stands it under the day it was finished on.
+
 d-g6kykjp2 = Due
     .doc = The day it is due by, if any.
 
@@ -34,6 +37,17 @@ d-4sriymst = Priority
 
 d-3pf74ifm = Parent
     .doc = The task it is a subtask of; none for a task of its own.
+
+d-z3mub5ke = Finished
+    .doc = Whether it is finished: done itself, and so is every task under it.
+
+d-oddfuemr = Folded
+    .doc = Whether it stands in a list's Done tail: finished, and so is every task it is under, so a step done with under a task still open stays where it stands, checked and muted.
+
+d-rc3gzwpo = Subtasks
+    .doc = How many tasks are under it, and how many of those are done ("1/3"): the two counts a row and the page's outline show.
+
+d-olnvvb3s = Subtasks done
 
 d-2ozuzhiq = Step
     .doc = One step of a task's checklist, from before a task's steps were tasks of their own.
@@ -60,9 +74,6 @@ d-sgnau7vd = Name
 
 d-c5pgzhqt = Notes
     .doc = What it is for, and anything worth remembering about it.
-
-d-kfahmlf3 = Board
-    .doc = Whether its window shows its tasks as a board, a lane per section, or as a list.
 
 d-5wdrqcpl = Section
     .doc = A section of a project: one lane of its board, such as "Doing".
@@ -107,71 +118,96 @@ d-clxahlh2 = High
 
 d-d6avlyc5 = Urgent
 
+d-3776c5yx = Row place
+    .doc = What the place a task's row stands in already says, and the row therefore leaves out.
+
+d-63qticzp = Nothing: a plain list, a card, a surface of the system's own
+    .doc = Nothing: a plain list, a card, a surface of the system's own.
+
+d-u4wzi4k4 = The day it is grouped under, as a list of a day is
+    .doc = The day it is grouped under, as a list of a day is.
+
+d-ifftrju4 = Its project, as a project's list is of one
+    .doc = Its project, as a project's list is of one.
+
 d-ymvliuk3 = Adopt steps
     .doc = Gives each step of a task from before steps were tasks a task of its own, under the task it was a step of, in the order it was in.
 
-d-dypqwvdm = Add
-    .doc = Adds a task with this title to the inbox.
-
 d-u7a3fue4 = Quick add
-    .doc = Adds what was typed in a quick add entry as a task, to the inbox or to `p`.
+    .doc = Adds what was typed in the entry at the end of a list as a task, to the inbox or to `p`, in the lane `s` of its board.
 
 d-rs3ubifz = New task
-    .doc = Starts a task in the inbox.
+    .doc = Adds a task under the title a program or an agent gives it: no task stands without one.
 
 d-zjuy7y7f = New project
     .doc = Starts a project.
 
 d-vwgro4iv = Complete
-    .doc = Checks a task off, or opens it again.
-
-d-baqmaej2 = Assign to me
-    .doc = Takes a task on: it is the invoker's to do.
-
-d-lwodiwbl = Assign to…
-    .doc = Gives a task to someone in the workspace to do.
-
-d-dfu53sij = Snooze until…
-    .doc = Puts a task off until a day: it is due then.
-
-d-77umq62t = Unassign
-    .doc = Leaves a task for anyone to take.
-
-d-laxsa3x6 = File
-    .doc = Files a task under a project.
-
-d-dshqxolf = Move to inbox
-    .doc = Takes a task out of its project, back to the inbox.
-
-d-jqhwyztw = Set due date
-    .doc = Sets the day a task is due by, or clears it.
-
-d-b5m5wz7r = Prioritize
-    .doc = Sets how much a task matters.
+    .doc = Checks a task off with every task under it, or opens it again with the tasks it is under.
 
 d-fykojijd = Add subtask
-    .doc = Adds a subtask under a task: a task of its own, in its project and section.
+    .doc = Adds a subtask under a task: a task of its own, in its project and section, under the title given.
+    .did = added a subtask
+
+d-tmwdrpev = Today
+    .doc = Sets the day a task is due by, or clears it: the presets take the day, and one entry asks for any day.
+
+d-wclcgiyt = Tomorrow
+    .doc = Makes a task due tomorrow.
+
+d-tg5yjcju = Next week
+    .doc = Makes a task due at the start of next week.
+
+d-jqhwyztw = Pick date
+    .doc = Makes a task due on a day the person picks.
+
+d-x5xnqddo = No date
+    .doc = Clears the day a task is due by: it waits in the inbox, undated.
+
+d-w43ij7uu = No priority
+    .doc = Sets how much a task matters.
+
+d-pdc7ukxu = Low
+    .doc = Marks a task as low priority.
+
+d-cpcxkauo = Medium
+    .doc = Marks a task as medium priority.
+
+d-kglmmfa7 = High
+    .doc = Marks a task as high priority.
+
+d-lrdm4l3c = Urgent
+    .doc = Marks a task as urgent.
+
+d-laxsa3x6 = Project
+    .doc = Files a task under a project the person picks.
+
+d-dshqxolf = Inbox
+    .doc = Takes a task out of its project, back to the inbox.
+
+d-c6y4cxdd = Assign
+    .doc = Gives a task to someone, or to nobody.
 
 d-berwb3de = Move to
     .doc = Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level for none), where `before` stands when it is given, or at the end of the top level.
 
 d-he6qkhh4 = Indent
-    .doc = Moves a task under the task just over it, as Tab does in an outline.
+    .doc = Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does: the row over it names the task of its own level it ends up under.
 
 d-khy6tj7s = Outdent
-    .doc = Moves a task out from under its parent, just after it, as Shift-Tab does in an outline.
+    .doc = Moves a task out from under its parent, just after it, as `Ctrl+[` does in an outline.
 
-d-ojzyzzxu = Remove
+d-23y3zdgu = Duplicate
+    .doc = Copies a task, with every task under it, just after the one it copies.
+
+d-ojzyzzxu = Delete
     .doc = Deletes a task and its subtasks.
 
-d-rjpcv6es = Clear done
-    .doc = Deletes every finished task, and answers how many went: a task whose subtasks are still undone stays, so clearing never takes unfinished work with it.
+d-rjpcv6es = Delete finished tasks
+    .doc = Deletes every finished task, and answers how many went: a task is finished when everything under it is done too, so deleting takes whole finished branches and never unfinished work with it, and a task done with a step still open under it stays.
 
 d-2xixz4sk = Delete project
     .doc = Deletes a project and its sections; its tasks go back to the inbox.
-
-d-anbqzqxx = Board
-    .doc = Shows a project's tasks as a board, a lane per section, or as a list again.
 
 d-2pra5lmb = New section
     .doc = Adds a section at the end of a project's board.
@@ -183,24 +219,36 @@ d-vi6srojh = Delete section
     .doc = Deletes a section; its tasks go to the project's first lane.
 
 d-pcn3xgni = New task
-    .doc = Adds a task at the end of a lane of a project's board.
+    .doc = Adds a task to a project, at the end of the lane `s` of its board (none for the first), under a title a program or an agent gives it.
 
 d-scjlkb6d = Place
     .doc = Puts a task into a lane of its project's board, `s` (none for the first lane), at the place `at` among the tasks already there.
 
-d-ekvchj3n = Move
-    .doc = Moves a task to just after another.
-
 d-kjbukd2o = Rename
     .doc = Renames a project.
 
+d-m2xarbfd = Copy below
+    .doc = Copies the tasks under `t` under `copy`, each in its place, so a copy reads as the task it copies did; answers the last task the copies end with.
+
 d-qwizihx4 = Check~present
 
-d-7ldzywu7 = Take~present
+d-mdzqe3gc = Due today~present
 
-d-gqnya75y = Snooze~present
+d-rnagsir2 = Due tomorrow~present
 
-d-7g55zawk = Release~present
+d-fym3mxqc = Due next week~present
+
+d-ohw2ks6t = Due clear~present
+
+d-dpworviv = Set priority none~present
+
+d-vh3rraia = Set priority low~present
+
+d-ir7grgoz = Set priority medium~present
+
+d-g4wmwcnr = Set priority high~present
+
+d-lvbdxuzj = Set priority urgent~present
 
 d-day53wfn = Unfile~present
 
@@ -208,59 +256,27 @@ d-mg3c777a = Move to~present
 
 d-tpvjqy5m = Clear done~present
 
-d-swaiyhcf = Show board~present
-
 d-i2mhsb3h = Home
     .w-tasks = Tasks
-    .w-new-task-for-today = New task for today
-    .w-new-task = New task
+    .w-projects = Projects
     .w-no-task-selected = No task selected
 
-d-asnonvwl = Project page
-    .w-new-task-in = New task in { $name }
+d-7froalwb = Project list
     .w-no-task-selected = No task selected
 
 d-gu3twlv2 = Project board
-    .w-no-section = No section
-    .w-new-task = New task
 
 d-hc5ndp4x = Task card
-    .w-move-to-no-section = Move to No section
+    .w-remove-from-section = Remove from section
     .w-move-to = Move to { $name }
 
 d-w63ba6ad = Task row
 
+d-rj4l44km = Task summary
+
 d-ypbiaiq3 = Task outline row
 
 d-mtmufg3w = Task page
-    .w-title = Title
-    .w-inbox = Inbox
     .w-subtasks = Subtasks
     .w-add-a-subtask = Add a subtask
-    .w-add-notes = Add notes
-
-d-i2mhsb3h-row0 = Home for p
-
-d-i2mhsb3h-row1 = Home for p
-
-d-i2mhsb3h-row2 = Home for x
-
-d-asnonvwl-row0 = Project page for x
-
-d-gu3twlv2-row0 = Project board for s
-    .w-new-task = New task
-
-d-gu3twlv2-row1 = Project board for s
-    .w-new-task = New task
-
-d-mtmufg3w-row0 = Task page for p
-
-d-mtmufg3w-row1 = Task page for x
-
-d-mtmufg3w-row2-row0 = Task page for c
-
-d-mtmufg3w-row2-row1-row0 = Task page for c
-
-d-mtmufg3w-row2-row1 = Task page for v
-
-d-mtmufg3w-row2 = Task page for s
+    .w-inbox = Inbox

@@ -104,7 +104,7 @@ pub use certification::{
 pub use clock::wait_for_wall_clock;
 pub use clock::{CertificateClockError, WallClockWait};
 pub use directory::{
-    DirectoryError, DirectoryUpdate, WorkspaceDirectory, WorkspaceId, WorkspaceMeta,
+    CommunityState, DirectoryError, DirectoryUpdate, WorkspaceDirectory, WorkspaceId, WorkspaceMeta,
 };
 pub use enrollment::{
     ENROLLMENT_PREIMAGE_TAG, EnrollmentError, EnrollmentToken, MAX_ENROLLMENT_TOKEN_LIFETIME_NS,
@@ -123,7 +123,8 @@ pub use image::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use persist::{
     DeviceKeyOutcome, IdentityPaths, PersistError, adopt_device_key, install_device_cert,
-    joined_device_is_ready, load_or_create_device_key, provision_joined_device,
+    joined_device_is_enrolled, joined_device_is_ready, load_or_create_device_key,
+    provision_joined_device,
 };
 pub use projection::{
     DisplayNameError, GovernedAgentIdentityV2, GovernedDeviceIdentityV2, GovernedHumanIdentityV1,

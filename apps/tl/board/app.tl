@@ -42,9 +42,11 @@ primary action new_column(b: Board) -> Column (icon: .plus, label: "New column")
     b.columns.insert(Column(title: "Untitled"))
 }
 
-/// Adds a card at the foot of a column.
-action new_card(col: Column) -> Card (icon: .plus, label: "New card") {
-    col.cards.insert(Card(title: "Untitled"))
+/// Adds a card at the foot of a column, under the title typed in the entry that adds there: a
+/// card is named where it is made, not left "Untitled". An entry with nothing but space in it
+/// makes no card: it never runs this.
+action new_card(col: Column, title: Text (entry) = "") -> Card (icon: .plus, label: "New card") {
+    col.cards.insert(Card(title: title))
 }
 
 /// Moves a card to the foot of a column.
@@ -71,13 +73,17 @@ action rename_column(col: Column, title: Text) {
 /// its notes. A card is dragged to another place or column, or moved from its menu, which also
 /// holds its actions, and opens in a page of its own.
 view board(b: Board) {
-    std.page(b, canvas: true, empty: b.columns.is_empty()) {
+    std.page(b, canvas: true, fill: true, empty: b.columns.is_empty()) {
         ui.Scroll(across: true) {
             ui.Board {
                 for col in b.columns {
-                    ui.BoardLane(col, title: col.title, count: col.cards.len(), action: "New card") {
-                        on act: new_card(col)
+                    // A column adds at its foot, in its own place: typing there puts the card
+                    // in that column.
+                    ui.BoardLane(col, title: col.title, count: col.cards.len()) {
                         on drop(moved: Card): move_to(moved, col)
+                        foot: {
+                            std.add_entry("New card", new_card(col))
+                        }
                         for card in col.cards {
                             card_tile(b, col, card)
                         }
@@ -88,10 +94,11 @@ view board(b: Board) {
     }
 }
 
-/// A card on the board: its title and the start of its notes. It opens in a page, takes a card
-/// dropped on it to just above it, and its menu moves it to another column or runs its actions.
+/// A card on the board: its title and the start of its notes, as a row. It opens in a page,
+/// takes a card dropped on it to just above it, and its menu moves it to another column or runs
+/// its actions.
 view card_tile(b: Board, col: Column, card: Card) {
-    ui.BoardCard(card, title: card.title) {
+    ui.BoardCard(card) {
         on activate: open(card)
         on drop(moved: Card): move_before(col, moved, card)
         menu: {
@@ -102,16 +109,15 @@ view card_tile(b: Board, col: Column, card: Card) {
                     }
                 }
             }
-            for a in actions(card) {
-                ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
-                    on choose: a.run
-                }
-            }
         }
-        if card.notes != "" {
-            text(card.notes, role: .caption)
-        }
+        card_row(card)
     }
+}
+
+/// A card as its row, which the card shows as a card: its title, and the start of its notes.
+view card_row(card: Card) {
+    let notes: Option<Text> = if card.notes == "" { .none } else { .some(card.notes) }
+    row(card.title, secondary: notes)
 }
 
 /// A card's page: its title and its notes.
@@ -128,11 +134,18 @@ scenario "a release board" {
     let todo = b.columns.insert(Column(title: "To do"))
     let doing = b.columns.insert(Column(title: "Doing"))
     let done = b.columns.insert(Column(title: "Done"))
-    todo.cards.insert(Card(title: "Write the release notes", notes: "Lead with the sync fix, then the new board."))
+    todo.cards.insert(
+        Card(
+            title: "Write the release notes",
+            notes: "Lead with the sync fix, then the new board.",
+        ),
+    )
     todo.cards.insert(Card(title: "Screenshots for the docs"))
     todo.cards.insert(Card(title: "Translate the onboarding", notes: "German and French first."))
     todo.cards.insert(Card(title: "Check the importer on large tables"))
-    doing.cards.insert(Card(title: "Fix the sidebar at large text", notes: "It collapses too early above 150%."))
+    doing.cards.insert(
+        Card(title: "Fix the sidebar at large text", notes: "It collapses too early above 150%."),
+    )
     doing.cards.insert(Card(title: "Review the sharing dialog"))
     done.cards.insert(Card(title: "Bump the version"))
     done.cards.insert(Card(title: "Merge the offline queue", notes: "Landed on Tuesday."))

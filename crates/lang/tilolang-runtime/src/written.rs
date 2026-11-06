@@ -30,6 +30,7 @@ impl WrittenView {
         ViewTarget {
             module: self.pkg.hash.clone(),
             export: format!("v_{}", self.view.view),
+            view: self.view.view.clone(),
             params: self.view.params.clone(),
         }
     }

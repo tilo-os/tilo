@@ -48,8 +48,8 @@
 //! - [`package_binary!`] finds a binary of the package under test where the
 //!   test run put it, which an archived run moves away from Cargo's path.
 //! - [`sibling_binary`] is the same for a binary of another package — an app or
-//!   a tool a test starts as a process of its own — and builds it when the run
-//!   did not.
+//!   a tool a test starts as a process of its own — which the run's harness
+//!   builds before the tests start.
 //! - [`in_own_process`] runs a test that changes what the whole process
 //!   sees, such as a held wall clock, in a process no other test shares.
 //! - [`held_wall_clock`] holds this thread's wall clock at the instant a
@@ -276,8 +276,8 @@ macro_rules! __scenario_name {
 /// Cargo built it (`CARGO_BIN_EXE_<name>`). A test that starts the build path
 /// directly finds nothing once the run moves its binaries.
 ///
-/// A binary of *another* package has no such variable:
-/// [`sibling_binary`] builds it for the run.
+/// A binary of *another* package has no such variable: the run's harness
+/// builds it, and [`sibling_binary`] finds it.
 #[macro_export]
 macro_rules! package_binary {
     ($name:literal) => {

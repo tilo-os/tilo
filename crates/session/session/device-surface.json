@@ -1851,6 +1851,19 @@
           ]
         },
         {
+          "id": "select-switcher",
+          "label": "Choose the window the walk reached, without crossing the ones between: `at` is its place",
+          "description": "Choose the window the walk reached, without crossing the ones between: `at` is its place among the windows the walk crosses, `0` the first of them and `-1` the last. Home, End and a card under the pointer choose by place.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "at",
+              "required": true,
+              "type": "int"
+            }
+          ]
+        },
+        {
           "id": "commit-switcher",
           "label": "Go to the window the switcher's walk reached, and close the switcher",
           "description": "Go to the window the switcher's walk reached, and close the switcher.",

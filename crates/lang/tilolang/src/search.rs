@@ -7,8 +7,10 @@
 //! checked here to be one the index can keep: it reads only the resource's own fields and
 //! literals and calls nothing, so a change to one field changes it and nothing else does. One
 //! may compare a field with the time it is asked at (`due <= today`, `due <= today + 7d`): that
-//! is read when the filter is asked, and the index answers it from the field's column. Lambdas
-//! of `filter` and `count` over a collection lower the same way, without the time.
+//! is read when the filter is asked, and the index answers it from the field's column. One may
+//! compare a field with the person it is asked for (`assignee == workspace.me`): that is read
+//! when the filter is asked too, for each of them. Lambdas of `filter` and `count` over a
+//! collection lower the same way, without the time.
 
 use crate::ast::{self, BinOp, Expr, ExprKind, SearchBlock, SearchEntryKind, StrPart, UnOp};
 use crate::diag::{Diagnostic, Span};
@@ -44,6 +46,8 @@ fn scalar_kind(ty: &Ty) -> Option<FilterKind> {
             FilterKind::Reference
         }
         Ty::Identifier => FilterKind::Identifier,
+        // Whose a resource is: a person or an agent of the workspace.
+        Ty::Principal => FilterKind::Person,
         _ => return None,
     })
 }
@@ -103,9 +107,11 @@ impl Ctx<'_> {
         self.diags.push(Diagnostic::new(code, span, msg));
     }
 
-    /// A filter's `(icon: .x)`, as an enum case's is written.
-    fn icon(&mut self, opts: &[ast::ActionOpt]) -> Option<String> {
+    /// A filter's options: `(icon: .x)` as an enum case's icon is written, and `(count: true)`
+    /// for the place it makes showing how many items it holds.
+    fn options(&mut self, opts: &[ast::ActionOpt]) -> (Option<String>, bool) {
         let mut icon = None;
+        let mut count = false;
         for opt in opts {
             match (opt.name.name.as_str(), &opt.value.kind) {
                 ("icon", _) if icon.is_some() => {
@@ -126,14 +132,20 @@ impl Ctx<'_> {
                     opt.value.span,
                     "`icon:` takes an icon written with a dot, such as `icon: .circle`",
                 ),
+                ("count", ExprKind::Bool(shown)) => count = *shown,
+                ("count", _) => {
+                    self.err("E090", opt.value.span, "`count:` takes `true` or `false`");
+                }
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("a filter takes the option `icon:`; `{other}:` is not one"),
+                    format!(
+                        "a filter takes the options `icon:` and `count:`; `{other}:` is not one"
+                    ),
                 ),
             }
         }
-        icon
+        (icon, count)
     }
 
     fn field(&mut self, name: &ast::Ident, what: &str) -> Option<&FieldInfo> {
@@ -157,7 +169,7 @@ impl Ctx<'_> {
             let why = if matches!(field.ty, Ty::Text) {
                 "text is found by searching for it, not filtered"
             } else {
-                "a filter compares a Bool, an enum, a Date or Time, a number, a reference, an identifier, an option of one, or a Set"
+                "a filter compares a Bool, an enum, a Date or Time, a number, a reference, an identifier, a person, an option of one, or a Set"
             };
             let msg = format!(
                 "`{}` of {} is {t}, which no filter compares: {why}. {}",
@@ -185,6 +197,7 @@ impl Ctx<'_> {
             optional,
             many,
             icon: None,
+            count: false,
         })
     }
 
@@ -217,10 +230,11 @@ impl Ctx<'_> {
                 optional: false,
                 many: false,
                 icon: None,
+                count: false,
             }),
             Err((at, why)) => {
                 let msg = format!(
-                    "the filter \"{label}\" is not a predicate the index can keep: {why}. A named filter of {} reads only its own fields and literals (`not done`, `due != .none`, `priority > 2`, `not attachments.is_empty()`)",
+                    "the filter \"{label}\" is not a predicate the index can keep: {why}. A named filter of {} reads only its own fields, literals, the time it is asked at and the person it is asked for (`not done`, `due != .none`, `due <= today`, `assignee == workspace.me`)",
                     about(self.info)
                 );
                 self.err("E102", at, msg);
@@ -307,9 +321,10 @@ pub fn resolve(
     for entry in &block.entries {
         match &entry.kind {
             SearchEntryKind::Field { field, label, opts } => {
-                let icon = ctx.icon(opts);
+                let (icon, count) = ctx.options(opts);
                 if let Some(mut filter) = ctx.field_filter(field, label.as_deref()) {
                     filter.icon = icon;
+                    filter.count = count;
                     push_filter(&mut ctx, &mut out, filter, entry.span);
                 }
             }
@@ -319,9 +334,10 @@ pub fn resolve(
                 expr,
                 opts,
             } => {
-                let icon = ctx.icon(opts);
+                let (icon, count) = ctx.options(opts);
                 if let Some(mut filter) = ctx.named_filter(label, *label_span, expr) {
                     filter.icon = icon;
+                    filter.count = count;
                     push_filter(&mut ctx, &mut out, filter, entry.span);
                 }
             }
@@ -379,6 +395,45 @@ pub fn resolve(
             );
         }
     }
+    // A field naming who a resource belongs to is a filter whether the block lists it or not:
+    // `assignee:me` reads the same in every app that has one. `hide` keeps it out, as it keeps
+    // any field.
+    let person: Vec<FilterMeta> = info
+        .fields
+        .iter()
+        .filter(|f| !out.hidden.contains(&f.id))
+        .filter(|f| {
+            !out.filters
+                .iter()
+                .any(|x| x.field.as_deref() == Some(f.id.as_str()))
+        })
+        .filter(|f| !out.filters.iter().any(|x| x.key == f.name))
+        .filter_map(|f| {
+            let (kind, optional, many) = filter_kind(&f.ty)?;
+            if kind != FilterKind::Person {
+                return None;
+            }
+            // A member field is read as a filter by its name, which cannot be search's own word
+            // (`defaults` leaves such a field out too).
+            if RESERVED_KEYS.contains(&f.name.as_str()) {
+                return None;
+            }
+            Some(FilterMeta {
+                key: f.name.clone(),
+                label: sentence_case(&f.name),
+                doc: f.doc.lines().next().unwrap_or_default().trim().to_owned(),
+                kind,
+                field: Some(f.id.clone()),
+                ty: f.ty.meta_text(&env.app),
+                pred: None,
+                optional,
+                many,
+                icon: None,
+                count: false,
+            })
+        })
+        .collect();
+    out.filters.extend(person);
     out
 }
 
@@ -431,6 +486,7 @@ pub fn defaults(info: &TypeInfo, env: &Env) -> SearchMeta {
             optional,
             many,
             icon: None,
+            count: false,
         });
     }
     out.sort = info
@@ -721,11 +777,32 @@ impl Lower<'_> {
             };
             return Ok((Operand::Arg(u32::try_from(at).unwrap_or(u32::MAX)), ty));
         }
+        if let Some(viewer) = self.viewer(e) {
+            return Ok(viewer);
+        }
         if let Some(clock) = self.clock(e) {
             return clock;
         }
         let (lit, ty) = self.literal(e, want)?;
         Ok((Operand::Lit(lit), ty))
+    }
+
+    /// `workspace.me`, in a named filter: the person the filter is asked for
+    /// ([`Operand::Viewer`]), so what they hold reads differently for each of them. A lambda's
+    /// predicate is answered where it is written, so there it stays the view's own value.
+    fn viewer(&self, e: &Expr) -> Option<(Operand<String>, Ty)> {
+        if !matches!(self.fields, Fields::Own) {
+            return None;
+        }
+        match &e.kind {
+            ExprKind::Field { base, name }
+                if name.name == "me"
+                    && matches!(&base.kind, ExprKind::Ident(space) if space == "workspace") =>
+            {
+                Some((Operand::Viewer, Ty::Principal))
+            }
+            _ => None,
+        }
     }
 
     /// `today`, `now`, either plus or minus a duration (`today + 1d`, `now - 7d`), in a named
@@ -828,9 +905,11 @@ impl Lower<'_> {
                     };
                     return Ok((lit, ty));
                 }
-                if let Some(args) = crate::resolve::identifier_call(e) {
+                if let Some((held, args)) = crate::resolve::std_text_call(e)
+                    && held.same(&Ty::Identifier)
+                {
                     let text =
-                        crate::resolve::identifier_value(args).map_err(|why| (e.span, why))?;
+                        crate::resolve::std_text_value(&held, args).map_err(|why| (e.span, why))?;
                     return Ok((Lit::Ident(text), Ty::Identifier));
                 }
                 if let ExprKind::Ident(name) = &callee.kind

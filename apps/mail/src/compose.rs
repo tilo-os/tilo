@@ -669,7 +669,6 @@ impl ComposeWindow {
     /// window.
     pub fn set_format(&mut self, format: ComposeFormat) {
         self.format = format;
-        self.dirty = true;
     }
 
     pub fn dock(&self) -> DockState {
@@ -1252,7 +1251,6 @@ impl ComposeWindow {
     pub fn set_has_account(&mut self, has_account: bool) {
         if self.has_account != has_account {
             self.has_account = has_account;
-            self.dirty = true;
         }
     }
 
@@ -1613,7 +1611,6 @@ impl ComposeWindow {
         );
         self.plain_body
             .set_focus(matches!(field, Field::Body) && matches!(self.format, ComposeFormat::Text));
-        self.dirty = true;
     }
 
     fn focused_input(&mut self) -> Option<&mut TextInput> {
@@ -1633,7 +1630,6 @@ impl ComposeWindow {
     pub fn set_pane(&mut self, pane: Option<Rect>) {
         if self.pane != pane {
             self.pane = pane;
-            self.dirty = true;
         }
     }
 

@@ -1,7 +1,19 @@
+/// How soon a report is due, as a case the report holds.
+enum Urgency {
+    /// No hurry
+    none
+    /// Low
+    low
+    /// Medium
+    medium
+    /// High
+    high (icon: .flag, tone: .warning)
+}
+
 /// The controls a form is made of: boxes and switches, a number, a choice from a short list, a
-/// strip of choices, tabs, a day and a time, a colour, a shortcut, a completion, a picture
-/// choice, a row of controls, and a link. Each is bound to a real field of the document, so a
-/// change made in the window is the document's.
+/// person, a strip of choices, tabs, a day and a time, a colour, a shortcut, a completion, a
+/// picture choice, a row of controls, and a link. Each is bound to a real field of the document,
+/// so a change made in the window is the document's.
 type Controls {
     title: Text (title)
     /// Whether the report goes by email.
@@ -14,6 +26,12 @@ type Controls {
     share: Float = 0.6
     /// The room it is in.
     room: Text = "Studio"
+    /// How soon the report is due.
+    urgency: Urgency = .none
+    /// Who looks after the report.
+    owner: Option<Principal> = .none
+    /// Who reviews it, nobody picked yet.
+    reviewer: Option<Principal> = .none
     /// Which view shows.
     showing: Int = 1
     /// Which step the run is on.
@@ -50,11 +68,28 @@ view controls(c: Controls) {
             }
         }
         ui.Section("Numbers") {
-            ui.NumberInput(value: c.share, label: .some("Share"), min: .some(0.0), max: .some(1.0), step: .some(0.05), precision: .some(2))
-            ui.Slider(value: c.share, label: .some("Time"), max: .some(1.0), step: .some(0.05), shows_value: true)
+            ui.NumberInput(
+                value: c.share,
+                label: .some("Share"),
+                min: .some(0.0),
+                max: .some(1.0),
+                step: .some(0.05),
+                precision: .some(2),
+            )
+            ui.Slider(
+                value: c.share,
+                label: .some("Time"),
+                max: .some(1.0),
+                step: .some(0.05),
+                shows_value: true,
+            )
         }
         ui.Section("Choices") {
-            ui.Dropdown(value: c.room, options: ["Studio", "Gallery", "Annex"], placeholder: .some("Choose a room"))
+            ui.Dropdown(
+                value: c.room,
+                options: ["Studio", "Gallery", "Annex"],
+                placeholder: .some("Choose a room"),
+            )
             ui.ToggleGroup(selected: .some(c.step), caption: .some("Steps")) {
                 ui.Segment("Grid")
                 ui.Segment("List")
@@ -66,6 +101,28 @@ view controls(c: Controls) {
                 ui.Segment("History")
             }
         }
+        ui.Section("Cases") {
+            ui.EnumField(value: c.urgency, label: .some("Urgency")) {
+                ui.EnumOption("No hurry", name: "none")
+                ui.EnumOption("Low", name: "low")
+                ui.EnumOption("Medium", name: "medium")
+                ui.EnumOption("High", name: "high", icon: .flag, tone: .warning)
+            }
+        }
+        ui.Section("People") {
+            ui.Text("Who looks after it", role: .caption, secondary: true)
+            ui.PersonField(
+                value: c.owner,
+                people: .some(workspace.members),
+                me: .some(workspace.me),
+            )
+            ui.Text("Who reviews it, still to be picked", role: .caption, secondary: true)
+            ui.PersonField(
+                value: c.reviewer,
+                people: .some(workspace.members),
+                me: .some(workspace.me),
+            )
+        }
         ui.Section("Steps") {
             ui.Stepper(steps: ["Draft", "Review", "Send"], current: .some(c.step)) {
                 on station: set(last, "Step")
@@ -75,15 +132,28 @@ view controls(c: Controls) {
             ui.DateField(value: c.starts, label: .some("Starts"), optional: false)
             ui.DateField(value: c.ends, label: .some("Ends"), optional: true)
             ui.DatePicker(value: c.starts)
+            ui.TimeField(value: c.clock)
             ui.TimePicker(value: c.clock, label: .some("At"))
         }
         ui.Section("Colours") {
-            ui.ColorPicker(value: c.accent, swatches: ["#3a7bd5", "#d55a3a", "#3ad57b"], columns: .some(3))
-            ui.ColorSwatchPicker(swatches: ["#3a7bd5", "#d55a3a", "#3ad57b", "#d5c23a"], columns: 4, selected: .some(0))
+            ui.ColorPicker(
+                value: c.accent,
+                swatches: ["#3a7bd5", "#d55a3a", "#3ad57b"],
+                columns: .some(3),
+            )
+            ui.ColorSwatchPicker(
+                swatches: ["#3a7bd5", "#d55a3a", "#3ad57b", "#d5c23a"],
+                columns: 4,
+                selected: .some(0),
+            )
         }
         ui.Section("Text") {
             ui.EditableLabel(value: c.title)
-            ui.ShortcutRecorder(value: c.shortcut, default: .some("Ctrl+K"), label: .some("Open with"))
+            ui.ShortcutRecorder(
+                value: c.shortcut,
+                default: .some("Ctrl+K"),
+                label: .some("Open with"),
+            )
             ui.Autocomplete(value: c.recipient, placeholder: .some("Who it goes to")) {
                 ui.Suggestion("ada@example.com")
                 ui.Suggestion("bo@example.com", label: .some("Bo"))
@@ -102,6 +172,14 @@ view controls(c: Controls) {
 
 /// The controls group, with a report a week from starting.
 scenario "controls" {
+    let mia = person("Mia")
     let g = root Gallery
-    g.controls.insert(Controls(title: "Controls", starts: 2026-11-03, clock: 2026-11-03T09:30Z))
+    g.controls.insert(
+        Controls(
+            title: "Controls",
+            starts: 2026-11-03,
+            clock: 2026-11-03T09:30Z,
+            owner: .some(mia),
+        ),
+    )
 }

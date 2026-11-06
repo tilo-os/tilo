@@ -34,6 +34,24 @@ view shell_parts(x: ShellParts) {
                 }
             }
         }
+        ui.Section("A bar's controls") {
+            ui.Text(
+                "The chips a bar holds: people, an invite, and a state it stands for.",
+                role: .caption,
+                secondary: true,
+            )
+            row(gap: .related, align: .center) {
+                ui.BarChip("Who is here", trailing: .chevron_down) {
+                    on press: set(last, "Who is here")
+                }
+                ui.BarChip("Invite", icon: .user_plus) {
+                    on press: set(last, "Invite")
+                }
+                ui.BarChip("Bo is viewing", label: .some("Bo is viewing")) {
+                    on press: set(last, "Shared")
+                }
+            }
+        }
         ui.Section("A run of items") {
             ui.DragRun(axis: .horizontal, distribute: .center, name: "Pinned") {
                 on drop(moved: Pinned, at: Int): mark_moved(last, moved, at)
@@ -58,7 +76,11 @@ view shell_parts(x: ShellParts) {
         }
         ui.Section("Unread") {
             ui.UnreadDivider()
-            ui.Text("The line above marks where a reader's unread messages start.", role: .caption, secondary: true)
+            ui.Text(
+                "The line above marks where a reader's unread messages start.",
+                role: .caption,
+                secondary: true,
+            )
         }
     }
 }

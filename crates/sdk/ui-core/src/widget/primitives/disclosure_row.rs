@@ -640,12 +640,6 @@ impl DisclosureRow {
     }
 
     /// Set by the list the row sits in: whether a rule runs under it.
-    pub(crate) fn set_separator(&mut self, below: bool) {
-        if self.separator != below {
-            self.separator = below;
-            self.dirty = true;
-        }
-    }
 
     /// Play the row's reveal at `feel` rather than the theme's pace.
     #[must_use]
@@ -1029,11 +1023,11 @@ impl Widget for DisclosureRow {
     fn needs_redraw(&self) -> bool {
         self.dirty
             || self.state.is_moving()
-            || self.body.needs_redraw()
+            || (self.body.needs_redraw() || self.body.needs_animation_frame())
             || self
                 .trailing
                 .as_ref()
-                .is_some_and(|control| control.needs_redraw())
+                .is_some_and(|control| control.needs_redraw() || control.needs_animation_frame())
     }
 
     fn mark_drawn(&mut self) {
@@ -1069,7 +1063,7 @@ impl Widget for DisclosureRow {
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        if self.needs_redraw() {
+        if self.needs_redraw() || self.needs_animation_frame() {
             regions.push(self.rect);
         } else {
             self.body.collect_damage(regions);

@@ -44,6 +44,8 @@ greeter-auth-cancel = Anmeldung abbrechen
 greeter-auth-cancelling = Anmeldung wird abgebrochen…
 greeter-auth-cancelled = Anmeldung abgebrochen
 
+greeter-session-diagnostics = Zeitmessung für diese Anmeldung einschalten
+
 # Der Anmeldebildschirm vor dem Öffnen des Systemlaufwerks, im initramfs.
 greeter-pin = PIN
 greeter-cant-sign-in = Anmeldung nicht möglich

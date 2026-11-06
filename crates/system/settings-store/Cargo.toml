@@ -33,6 +33,8 @@ unicode-normalization = "0.1.25"
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# The system locale that stands in when the person has chosen no language.
+tilo-process = { version = "0.1.0", path = "../../platform/tilo-process", features = ["native"] }
 # Where the documents live: their files, the holder's lock, the follower's
 # watch and the holder's door.
 tilo-settings-records = { version = "0.1.0", path = "../../platform/tilo-settings-records" }

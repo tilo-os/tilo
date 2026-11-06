@@ -53,6 +53,8 @@ fn notes_windows_with(
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         })
         .collect();
     let ids: Vec<TabId> = tabs.iter().map(|tab| tab.id).collect();
@@ -119,7 +121,8 @@ fn keystrokes_rebuild_nothing(open: Option<fn(&NotebookFixture) -> notes::PageId
         let f = NotebookFixture::rich();
         let checkout = component_support::notebook(&f);
         // A window opening a note is wide enough to show its notebook.
-        let mut harness = notes_windows(&f, &checkout, if open.is_some() { 1 } else { 2 });
+        let windows = if open.is_some() { 1 } else { 2 };
+        let mut harness = notes_windows(&f, &checkout, windows);
         if let Some(open) = open {
             let row = component_support::page_rect(&harness, open(&f));
             harness.click_at(row.x0 + 12.0, f64::midpoint(row.y0, row.y1));
@@ -139,25 +142,29 @@ fn keystrokes_rebuild_nothing(open: Option<fn(&NotebookFixture) -> notes::PageId
         for key in "typing".chars() {
             // The key's own frame, if it drew one, then those it asks for.
             let frames = harness.relayout_frames();
+            let rebuilt_before = harness.rebuilt_frames();
             harness.key(&key.to_string());
             let mut measured = usize::from(
                 harness.relayout_frames() != frames && harness.last_relayout().measured,
             );
-            let stats = harness.last_relayout();
             measured = measured.saturating_add(settle(&mut harness, 10));
+            // A host that coalesces input draws a key's frame after the key,
+            // so the stats to judge are those of the last frame it drew.
+            let stats = harness.last_relayout();
             assert!(
                 measured <= 1,
                 "a keystroke solved the layout in {measured} frames, asked by {:?}",
                 harness.layout_measure_requesters()
             );
-            assert!(
-                !stats.rebuilt,
-                "a keystroke rebuilt the layout tree: {stats:?}"
+            assert_eq!(
+                harness.rebuilt_frames(),
+                rebuilt_before,
+                "a keystroke ({key}) rebuilt the layout tree: {stats:?}"
             );
-            // The editor's own leaf and its ancestors to the root: one
-            // window's path, not every window's widgets.
+            // Each window showing the note re-measures its own editor's leaf
+            // and that window's ancestors: those paths, not every widget.
             assert!(
-                stats.marked_leaves <= 1 && stats.marked_dirty <= 16,
+                stats.marked_leaves <= windows && stats.marked_dirty <= windows.saturating_mul(10),
                 "a keystroke re-measured more than the editor it edits: {stats:?}, asked by {:?}",
                 harness.layout_measure_requesters()
             );

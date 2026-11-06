@@ -87,19 +87,18 @@ fi
 
 # --- host apps ------------------------------------------------------------
 # The session starts its XDG autostart entries through tilo-launcher run-host
-# as soon as the desktop has a workspace; each must get its own cgroup in the
-# compositor's delegated app tree.
+# as soon as the desktop has a workspace; each must get a scope of its own.
 slice="/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/app.slice"
 app_cgroups=
 for _ in $(seq 1 30); do
-  app_cgroups=$(ls -d "$slice"/tilo-apps-*.scope/app-* 2>/dev/null || true)
+  app_cgroups=$(ls -d "$slice"/app-tilo-*.scope 2>/dev/null || true)
   [ -n "$app_cgroups" ] && break
   sleep 2
 done
 if [ -n "$app_cgroups" ]; then
-  ok "the launcher started host apps in their own cgroups: $(for c in $app_cgroups; do printf '%s ' "${c##*/}"; done)"
+  ok "the launcher started host apps in their own scopes: $(for c in $app_cgroups; do printf '%s ' "${c##*/}"; done)"
 else
-  bad 'no app cgroup in a tilo-apps-*.scope: launched apps got no cgroup of their own'
+  bad 'no app-tilo-*.scope: launched apps got no cgroup of their own'
 fi
 for cgroup in $app_cgroups; do
   [ -r "$cgroup/cgroup.procs" ] || continue

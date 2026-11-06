@@ -62,7 +62,27 @@ impl RetainedEditor {
     }
 
     fn with_blocks(width: f32, scale: f32, blocks: Vec<Block>) -> Self {
-        let mut editor = Box::new(BlockEditor::new().with_wrap_lines(true));
+        Self::with_editor(
+            BlockEditor::new().with_wrap_lines(true),
+            width,
+            scale,
+            blocks,
+        )
+    }
+
+    fn with_compact_blocks(width: f32, scale: f32, blocks: Vec<Block>) -> Self {
+        Self::with_editor(
+            BlockEditor::new()
+                .with_wrap_lines(true)
+                .with_compact_paragraph_spacing(true),
+            width,
+            scale,
+            blocks,
+        )
+    }
+
+    fn with_editor(editor: BlockEditor, width: f32, scale: f32, blocks: Vec<Block>) -> Self {
+        let mut editor = Box::new(editor);
         editor.set_blocks(blocks);
         editor.focus_block(0, CursorPlacement::Start);
         let theme = Theme::dark().with_text_scale(scale);
@@ -307,6 +327,86 @@ fn retained_heading_list_and_quote_typing_damages_its_row_and_matches_gpu_pixels
             fixture.damage
         );
         assert_damage_pixels(&before, &fixture, true);
+    }
+}
+
+/// A fence is one code field: its rows take the mono text's line height, one
+/// under the next, and the fence's painted ground pads the run once at each
+/// end, so N lines measure N rows plus the language header.
+#[test]
+fn fence_rows_of_one_code_group_take_the_mono_line_height() {
+    for scale in [1.0_f32, 1.5] {
+        let group = "fence".to_string();
+        let blocks: Vec<Block> = (0..4)
+            .map(|row| {
+                let mut block = Block::code_block(
+                    Some("rust".into()),
+                    &format!("let row_{row} = compute({row});"),
+                );
+                block.code_group = Some(group.clone());
+                block
+            })
+            .collect();
+        let fixture = RetainedEditor::with_blocks(640.0, scale, blocks);
+        let editor = &fixture.editor;
+        let rects: Vec<Rect> = editor
+            .blocks
+            .iter()
+            .map(|block| block.line.get_rect())
+            .collect();
+        let header = code_header_height(&editor.blocks, 0, f64::from(scale));
+        let row = f64::from(editor.blocks[1].line.row_height(scale));
+        assert!(
+            (rects[1].height() - row).abs() < 0.05,
+            "a row is the mono text's line height: {rects:?}"
+        );
+        for index in 1..rects.len() {
+            assert!(
+                (rects[index].y0 - rects[index - 1].y1).abs() < 0.05,
+                "rows of one fence touch: {rects:?}"
+            );
+            assert!(
+                (rects[index].height() - row).abs() < 0.05,
+                "every row of a fence is one line tall: {rects:?}"
+            );
+        }
+        let first = editor.block_paint_rect(0).expect("the fence's first line");
+        assert!(
+            (first.height() - row - header).abs() < 0.05,
+            "the first row carries the fence's header above its line: {first:?}"
+        );
+        let last = rects[rects.len() - 1];
+        assert!(
+            (last.y1 - first.y0 - (header + 4.0 * row)).abs() < 0.05,
+            "four fence rows measure four rows plus the header: {rects:?}"
+        );
+    }
+}
+
+/// Every line of a compact document run — prose, a list item, a quote — sits
+/// on the text's line height; only the block stack's gaps separate them.
+#[test]
+fn compact_prose_runs_set_every_line_at_the_line_height() {
+    let fixture = RetainedEditor::with_compact_blocks(
+        640.0,
+        1.0,
+        vec![
+            Block::paragraph("First paragraph line"),
+            Block::paragraph("Second paragraph line"),
+            Block::bullet(0, "First bullet"),
+            Block::bullet(0, "Second bullet"),
+            Block::quote("First quote line"),
+            Block::quote("Second quote line"),
+        ],
+    );
+    let row = f64::from(fixture.editor.blocks[0].line.row_height(1.0));
+    for (index, block) in fixture.editor.blocks.iter().enumerate() {
+        let rect = block.line.get_rect();
+        assert!(
+            (rect.height() - row).abs() < 1.0,
+            "block {index} ({:?}) is one line tall, not a padded field: {rect:?}",
+            block.kind
+        );
     }
 }
 
@@ -1081,15 +1181,24 @@ fn culled_frames_keep_on_screen_chrome_and_links_live() {
         fixture.editor.link_at_point(link.center()),
         Some(LinkTarget::Page(Uuid::nil()))
     );
-    let reach = viewport.inflate(0.0, viewport.height());
-    assert!(
-        fixture
-            .editor
-            .code_copy_hits
-            .iter()
-            .all(|(rect, _, _)| rect.y1 >= reach.y0 - CODE_HEADER_HEIGHT && rect.y0 <= reach.y1),
-        "no chrome is derived for a run a screen or more away"
-    );
+    // A run's chrome rides inside its paint rect, and the culling window keeps only the
+    // runs whose paint rect (the run's first line and the header above it) is on screen or
+    // within a screen of it. A run whose first line only just crosses the window's top edge
+    // still paints, and its chrome therefore starts up to that line above the window; a run
+    // a screen or more away derives none.
+    let paint_window = viewport.inflate(0.0, viewport.height());
+    for (rect, start, _) in &fixture.editor.code_copy_hits {
+        let first = fixture.editor.blocks[*start].line.get_rect();
+        let paint = Rect::new(first.x0, first.y0 - CODE_HEADER_HEIGHT, first.x1, first.y1);
+        assert!(
+            paint.y1 >= paint_window.y0 && paint.y0 <= paint_window.y1,
+            "no chrome is derived for a run a screen or more away"
+        );
+        assert!(
+            rect.y0 >= paint.y0 && rect.y1 <= paint.y1,
+            "a run's chrome rides inside its paint rect"
+        );
+    }
 }
 
 /// The window of a note scrolled to its middle, rendered.
@@ -1195,7 +1304,9 @@ fn a_keystroke_builds_the_accessibility_row_of_its_block_alone() {
         );
         let typed = tree
             .iter()
-            .find(|node| node.name.as_deref() == Some("Paragraph block 1"))
+            .find(|node| {
+                node.role == crate::a11y::Role::ListItem && node.place.pos_in_set == Some(1)
+            })
             .map(|node| node.id.clone())
             .expect("the typed block's row");
         assert_eq!(

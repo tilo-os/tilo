@@ -42,6 +42,27 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
+    /// A press on a row opens it ([`Self::on_activate_view`]), rather than moving the selection
+    /// onto it and waiting for a second click. The rows of a list that stands for things to
+    /// open — a task, a folder — open on the press itself, as a tree's rows do with a single
+    /// click; the row a keyboard or a reader moves to still only takes the keyboard.
+    #[must_use]
+    pub fn open_on_press(mut self) -> Self {
+        self.open_on_press = true;
+        self
+    }
+
+    /// The row the keyboard is on: the mounted row holding the focus — a control inside it
+    /// counts, as `Tab` leaves it there — else the row this list's own keys last took. The
+    /// row a key that acts on one row acts on.
+    pub(super) fn focused_row_key(&self) -> Option<M::Key> {
+        self.mounted
+            .iter()
+            .find(|row| crate::widget::context_menu_area::focus_within(row.widget.as_ref()))
+            .map(|row| row.key.clone())
+            .or_else(|| self.focused_key.clone())
+    }
+
     /// The rows an agent may choose, by semantic key alone (a renamed row
     /// leaves what the list publishes as it was); as many as an enumeration
     /// carries.

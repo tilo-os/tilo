@@ -322,6 +322,9 @@ pub struct Filtered {
     most: usize,
     /// The entries checked so far, from the run's first in order, each kept or not.
     scanned: RefCell<Vec<Scanned>>,
+    /// How many it keeps, when the index's counts answer it before the run is read: a run
+    /// narrowed to the items open, whose count the column's counts keep.
+    known: Option<usize>,
     /// How many of the run's entries are checked.
     at: Cell<usize>,
     /// How many of `scanned` are kept.
@@ -350,11 +353,21 @@ impl Filtered {
             most: base.len(),
             base,
             keep,
+            known: None,
             scanned: RefCell::new(Vec::new()),
             at: Cell::new(0),
             kept: Cell::new(0),
             locate: None,
         }
+    }
+
+    /// The listing whose kept count is `count`, answered from the index's counts rather than
+    /// from the run: how many of a place's items are open. Once the run is read to its end its
+    /// own count stands.
+    #[must_use]
+    pub fn known(mut self, count: usize) -> Self {
+        self.known = Some(count.min(self.most));
+        self
     }
 
     /// The listing, finding where an item is by its entries as `locate` reads them.
@@ -364,8 +377,8 @@ impl Filtered {
         self
     }
 
-    /// The listing at most `most` items: the count of another run of the index, one that names
-    /// no more than this run does, for the items it answers for.
+    /// The listing at most `most` items: the count of another column's run as the open writes
+    /// leave it, one that names no more than this run does, for the items it answers for.
     #[must_use]
     pub fn bounded(mut self, most: Option<usize>) -> Self {
         if let Some(most) = most {
@@ -461,16 +474,17 @@ const PAGE: usize = 64;
 
 impl PagedItems for Filtered {
     fn len(&self) -> usize {
-        // The most it can have while the run is unread, so a list sized before a page is read
-        // costs the run's count; the kept entries once the whole run is checked.
+        // The kept entries once the whole run is checked, or as the index's counts answer them
+        // when it knows; the most it can have before then, so a list sized before a page is
+        // read costs the run's count and not the workspace.
         if self.at.get() >= self.base.len() {
             return self.kept.get();
         }
-        self.most
+        self.known.unwrap_or(self.most)
     }
 
     fn len_is_exact(&self) -> bool {
-        self.at.get() >= self.base.len()
+        self.known.is_some() || self.at.get() >= self.base.len()
     }
 
     fn get(&self, index: usize) -> Option<Rc<str>> {

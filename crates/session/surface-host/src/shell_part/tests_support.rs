@@ -94,8 +94,11 @@ fn part_at(
         i32::try_from(width).unwrap(),
         i32::try_from(height).unwrap(),
     );
-    part.outputs_changed(&[(0, 0, w, h)]);
-    part.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, width, height))));
+    part.outputs_changed(&[tilo_compositor::HostedOutput {
+        rect: (0, 0, w, h),
+        scale: 1.0,
+    }]);
+    part.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, width, height))), 1.0);
     for _ in 0..4 {
         part.prepare_frame();
     }

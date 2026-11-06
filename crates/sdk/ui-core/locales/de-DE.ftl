@@ -5,6 +5,7 @@ tab-held-by = Fenster von { $name }
 tab-controls-desktop = Steuert deinen Desktop
 tab-dev-build = Entwicklungsversion von { $installer }
 tab-shared-with = Geteilt mit { $place }
+standalone-search-title = Suchen
 
 history-mode-title = Verlauf
 history-mode-close = Verlauf schließen
@@ -308,6 +309,8 @@ close-keep-editing = Weiter bearbeiten
 close-broker-disconnected = Die Verbindung zum Speicherdienst wurde getrennt. Das Dokument ist weiterhin geöffnet.
 
 block-image-untitled = Bild
+# The title a row shows for an item nobody has named yet.
+list-row-untitled = Ohne Titel
 block-image-missing = Noch nicht auf diesem Gerät
 notes-image-edit = Beschreibung bearbeiten
 notes-image-done = Fertig
@@ -616,6 +619,9 @@ palette-searching = Suche läuft…
 day-yesterday = Gestern
 day-today = Heute
 day-tomorrow = Morgen
+day-overdue = Überfällig
+day-past = { $overdue } seit { $when }
+day-at-time = { $day } { $time }
 history-day-this-week = Diese Woche
 history-day-earlier = Früher
 
@@ -805,6 +811,12 @@ widget-capture-stop = Aufnahme beenden
 widget-capture-create-pip = Bild im Bild erstellen
 widget-capture-remove-selection = Diese Auswahl entfernen
 widget-recording-saved = Aufnahme gespeichert
+widget-recording-skipped = { $count ->
+    [one] 1 Bild wurde übersprungen: die Festplatte war zu langsam
+   *[other] { $count } Bilder wurden übersprungen: die Festplatte war zu langsam
+}
+widget-recording-incomplete = Aufnahme unvollständig: { $reason }
+widget-recording-not-saved = Aufnahme nicht gespeichert: { $reason }
 widget-recording-play = Abspielen
 widget-replay-save = Letzte 30 s speichern
 widget-replay-stop = Letzte 30 s nicht mehr behalten
@@ -891,10 +903,18 @@ history-preview-after = Frühere Version, schreibgeschützt
 history-preview-before = Vor dieser Änderung, schreibgeschützt
 history-preview-now = Zurück zu jetzt
 
-# A form's date field: what it reads as with no date, its calendar, and the button that empties it.
-date-field-none = Kein Datum
+# A form's date field: what it reads as with no date, its calendar, the button that empties it,
+# and the row that picks the time of day the date is due at.
+date-field-add = Datum hinzufügen
 date-field-calendar = Kalender
 date-field-clear = Datum entfernen
+date-field-named = { $label }: { $day }
+time-field-name = Tageszeit
+time-field-add = Zeit hinzufügen
+time-field-remove = Zeit entfernen
+
+person-field-none = Niemand
+person-field-me = Ich
 
 # Das Menü, das ein Rechtsklick oder langes Drücken auf bearbeitbarem Text öffnet.
 text-menu-cut = Ausschneiden
@@ -1059,6 +1079,23 @@ attention-deferred = { $count } beiseitegelegt
 attention-pill-one = { $count } wartet
 attention-pill = { $count } warten
 action-document-replaced = Diese Aktion wurde nicht ausgeführt, weil ihr Dokument erneut geöffnet oder ersetzt wurde. Versuche es im aktuellen Dokument erneut.
+
+# One-shot action proposals: one model call's answer, before it is written.
+proposal-model-on-device = { $model }, läuft auf diesem Gerät
+proposal-model-hosted = { $model }, läuft auf einem anderen Rechner
+proposal-context-selection = Die Auswahl
+proposal-context-document = Das Dokument
+proposal-context-too-many = Das ist zu viel Kontext für einen Schritt. Wähle weniger.
+# $name is the part, $limit how many kilobytes one part may carry.
+proposal-context-too-long = { $name } ist länger als { $limit } KB. Wähle weniger.
+proposal-diff-more =
+    { $count ->
+        [one] Eine weitere Zeile wird nicht gezeigt
+       *[other] { $count } weitere Zeilen werden nicht gezeigt
+    }
+proposal-accept = Übernehmen
+proposal-reject = Verwerfen
+proposal-decisions = Diese Änderung übernehmen oder verwerfen
 
 # Spoken when Ctrl+Super+Enter (or both volume keys held) turns the screen reader on or off.
 screen-reader-turned-on = Bildschirmleser an

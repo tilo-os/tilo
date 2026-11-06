@@ -3,12 +3,11 @@
 //! The host runs `tilo_relay::agents::start`: an [`AgentHost`] whose
 //! supervisor is the host's app-serving plane, one thread per agent, state
 //! under a directory. A simulated browser (the page's session code built
-//! natively: HTTPS for documents, remote actions and presence) asks for a
-//! grant; a root-holding laptop approves the agent and
-//! signs its delegation in the same step; the browser spawns the agent with
-//! a plain-words task planned by the scripted model. The agent edits Notes
-//! and Sheets, the browser receives the edits and sees the agent's presence
-//! move between the records it works in. The host then restarts: the agent
+//! natively: HTTPS for documents and remote actions) asks for a grant; a
+//! root-holding laptop approves the agent and signs its delegation in the
+//! same step; the browser spawns the agent with a plain-words task planned by
+//! the scripted model. The agent edits Notes and Sheets, and the browser
+//! receives the edits in the record each one lands in. The host then restarts: the agent
 //! resumes and takes new work; a stopped agent stays stopped; a revoked
 //! grant ends its agent. An action that asks first is put to the person's
 //! approving device for that one invocation, and runs only on its answer.
@@ -60,7 +59,7 @@ use tilo_browser_peer::{Host, PeerEvent, PeerEvents, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
 use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
+use tilo_relay::web::{LiveConfig, TlsSource, WebConfig, WebHandle};
 use tilo_relay_client::Approver;
 use tilo_relay_protocol::agents::{
     AGENTS_PROVIDER, AgentStatus, AgentsStatus, GrantState, MESSAGE_ACTION, REQUEST_GRANT_ACTION,
@@ -126,6 +125,7 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
+            live: LiveConfig::default(),
         })
         .await
         .unwrap();
@@ -142,7 +142,7 @@ impl Hosted {
     async fn stop(self) {
         let retained = self
             .relay
-            .room_records()
+            .workspace_records()
             .retained(workspace())
             .await
             .unwrap();
@@ -445,75 +445,6 @@ impl Browser {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
-
-    /// An agent's presence, as the browser's session delivers it.
-    fn watch(&self) -> Presence {
-        let (frames, rx) = tokio::sync::mpsc::unbounded_channel();
-        let events = self.peer.events();
-        let task = tokio::spawn(async move {
-            loop {
-                for event in events.drain() {
-                    let PeerEvent::Presence { body, .. } = event else {
-                        continue;
-                    };
-                    if let Some(collab_types::PeerPresencePayload::Shell(shell)) =
-                        support::presence(&body)
-                        && shell.agent
-                        && frames.send(*shell).is_err()
-                    {
-                        return;
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        });
-        Presence { rx, task }
-    }
-}
-
-/// The agent's presence, as the browser's session receives it.
-struct Presence {
-    rx: tokio::sync::mpsc::UnboundedReceiver<collab_types::presence::ShellPresence>,
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl Drop for Presence {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-impl Presence {
-    /// The next presence for which `wanted` holds.
-    async fn until(
-        &mut self,
-        what: &str,
-        wanted: impl Fn(&collab_types::presence::ShellPresence) -> bool,
-    ) -> collab_types::presence::ShellPresence {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            assert!(!left.is_zero(), "the agent's cursor never showed {what}");
-            if let Ok(Some(presence)) = tokio::time::timeout(left, self.rx.recv()).await
-                && wanted(&presence)
-            {
-                return presence;
-            }
-        }
-    }
-}
-
-/// The app of the window `presence` says it works in.
-fn focused(presence: &collab_types::presence::ShellPresence) -> Option<&str> {
-    presence
-        .windows
-        .iter()
-        .find(|window| window.focused)
-        .map(|window| window.app.as_str())
-}
-
-fn activity(presence: &collab_types::presence::ShellPresence) -> String {
-    presence.activity.clone().unwrap_or_default()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -565,10 +496,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     assert!(offered.pairing_code.is_none());
 
     // 2. The page spawns the agent with plain words; the scripted model
-    // plans them against what Notes publishes once it is open. The watch runs
-    // from here on: presence is a frame each time an agent says where it is,
-    // not state a late reader is given.
-    let mut presence = browser.watch();
+    // plans them against what Notes publishes once it is open.
     let spawned = browser
         .call(
             SUPERVISOR_RESOURCE,
@@ -609,7 +537,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         "{:?}",
         info.tasks[0]
     );
-    assert_eq!(info.room.as_deref(), Some(WORKSPACE));
+    assert_eq!(info.workspace.as_deref(), Some(WORKSPACE));
     let steps: Vec<_> = info.tasks[0]
         .steps
         .iter()
@@ -621,16 +549,8 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     let agent_key: [u8; 32] = hex::decode(&info.device).unwrap().try_into().unwrap();
     browser.until_edited(NOTES, agent_key, "Groceries").await;
 
-    // 3. The browser sees the agent on the record it works in, with what
-    // it is doing, then moving to the next app's record.
-    let on_notes = presence
-        .until("its Notes activity", |presence| {
-            activity(presence).contains("New note")
-        })
-        .await;
-    assert!(on_notes.agent, "the workspace sees an agent");
-    assert_eq!(on_notes.label, "Writer");
-    assert_eq!(focused(&on_notes), Some(NOTES));
+    // 3. The browser sees the agent's edit in the record it works in, then
+    // in the next app's.
     browser
         .call(
             &agent_resource(&grant),
@@ -639,14 +559,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         )
         .await
         .unwrap();
-    let on_sheets = presence
-        .until("its Sheets activity", |presence| {
-            activity(presence).contains("Add a sheet")
-        })
-        .await;
-    assert_eq!(focused(&on_sheets), Some(SHEETS));
     browser.until_edited(SHEETS, agent_key, "Budget").await;
-    drop(presence);
 
     // 4. The host restarts. The agent resumes from the state directory and
     // edits the workspace's existing sheet, not a new one.
@@ -1441,7 +1354,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     let question = asked(&mut device).await;
     assert_eq!(question.agent_id, grant);
     assert_eq!(question.agent_label, "Careful");
-    assert_eq!(question.room, WORKSPACE);
+    assert_eq!(question.workspace, WORKSPACE);
     // The action as the reader offers it, not the agent's own words.
     assert_eq!(question.action_label, "Remove from library");
     assert_eq!(question.resource_label, "Books");

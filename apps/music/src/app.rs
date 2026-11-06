@@ -4227,7 +4227,6 @@ impl Music {
     /// Scroll the body to `y`; the next frame clamps it to its content.
     fn set_scroll_y(&mut self, y: f64) {
         self.scroll_target = Some(y.max(0.0));
-        self.dirty = true;
     }
 
     fn push_hit(&mut self, rect: Rect, action: Action) -> bool {

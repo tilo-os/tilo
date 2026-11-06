@@ -28,8 +28,8 @@ fn a_notes_history_shows_who_changed_it_and_when_and_reads_anew_as_time_passes()
     app.invoke(None, None, &notebook, &new_note, &Map::new(), false)
         .unwrap();
     settle(&mut app);
-    let note = published_with(&mut app, &notebook, "Retitle");
-    let retitle = action_id(&mut app, &note, "Retitle");
+    let note = published_with(&mut app, &notebook, "Retitle…");
+    let retitle = action_id(&mut app, &note, "Retitle…");
     let titled = |title: &str| {
         let mut args = Map::new();
         args.insert("title".to_owned(), title.into());

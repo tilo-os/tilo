@@ -28,10 +28,6 @@ const KEYBOARD: &str = "keyboard";
 const FIRST: &str = "HEADLESS-1";
 const SECOND: &str = "HEADLESS-2";
 
-/// How long the keyboard's app may take to come up and draw: a whole app
-/// starts here.
-const OPENING: Duration = Duration::from_secs(90);
-
 /// One display's refresh, while waiting for the keyboard to draw.
 const REFRESH: Duration = Duration::from_millis(16);
 
@@ -100,7 +96,7 @@ fn finger(session: &mut Session, (x, y): (f64, f64)) {
 /// what they show then: the desk as it stands, or the keyboard as it stands.
 #[track_caller]
 fn still(session: &mut Session, displays: &[&str]) -> Vec<Vec<f64>> {
-    let deadline = Instant::now() + OPENING;
+    let deadline = tilo_test_env::hang_deadline();
     let mut settled: Option<Vec<Vec<f64>>> = None;
     loop {
         let now = pictures(session, displays);
@@ -120,7 +116,7 @@ fn still(session: &mut Session, displays: &[&str]) -> Vec<Vec<f64>> {
 /// the keyboard, drawn there.
 #[track_caller]
 fn until_keyboard(session: &mut Session, display: &str, was: &[f64]) -> Vec<f64> {
-    let deadline = Instant::now() + OPENING;
+    let deadline = tilo_test_env::hang_deadline();
     let mut settled: Option<Vec<f64>> = None;
     loop {
         let now = pictures(session, &[display]).remove(0);
@@ -144,7 +140,7 @@ fn until_keyboard(session: &mut Session, display: &str, was: &[f64]) -> Vec<f64>
 /// keyboard was up again, and is not changing any more.
 #[track_caller]
 fn until_desk(session: &mut Session, display: &str, was: &[f64]) -> Vec<f64> {
-    let deadline = Instant::now() + OPENING;
+    let deadline = tilo_test_env::hang_deadline();
     let mut settled: Option<Vec<f64>> = None;
     loop {
         let now = pictures(session, &[display]).remove(0);
@@ -179,7 +175,7 @@ fn display_rect(session: &mut Session, display: &str) -> (i32, i32, i32, i32) {
 /// `app`'s window, once it stops moving: where the person sees it.
 #[track_caller]
 fn resting_window(session: &mut Session, app: &str) -> (u64, (i32, i32, i32, i32)) {
-    let deadline = Instant::now() + OPENING;
+    let deadline = tilo_test_env::hang_deadline();
     let mut settled = None;
     loop {
         let now = window(session.compositor(), app).expect("the window");
@@ -228,7 +224,7 @@ fn move_beside(session: &mut Session, app: &str) -> String {
 /// seconds after its window.
 #[track_caller]
 fn type_until_the_keyboard_is_up(session: &mut Session, client: &mut TestClient) {
-    let deadline = Instant::now() + OPENING;
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if !session.compositor().text_entry().wants_typing {
             client.type_into_a_field();

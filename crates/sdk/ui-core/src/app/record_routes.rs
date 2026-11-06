@@ -506,7 +506,11 @@ impl RouteDocument {
             return;
         }
         let (mutation, heads) = if self.whole_sent {
-            let (delta, heads) = self.sent.pending_delta(doc);
+            // A held record's document is written as the host's own actor
+            // alone: it has no action frames and so no per-author writers.
+            let (delta, heads) = self
+                .sent
+                .pending_delta(doc, &crate::state::WritingActors::default());
             if delta.is_empty() {
                 return;
             }

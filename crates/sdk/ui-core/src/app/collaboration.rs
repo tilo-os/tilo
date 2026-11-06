@@ -124,15 +124,6 @@ impl App {
         }
         Ok(app)
     }
-    /// Called once per event-loop wakeup, so it must be cheap and
-    /// non-blocking.
-    pub fn set_frame_tick<F>(&mut self, tick: F)
-    where
-        F: FnMut(&mut PresenceCtx) -> bool + Send + Sync + 'static,
-    {
-        self.presence.frame_tick = Some(Box::new(tick));
-    }
-
     pub fn set_presence_broadcast_sink<F>(&mut self, sink: F)
     where
         F: Fn(&PresenceKey, &PresencePayload) + Send + Sync + 'static,

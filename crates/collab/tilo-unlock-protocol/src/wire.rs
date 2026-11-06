@@ -243,7 +243,10 @@ pub enum SiblingFrame {
     Refused(RefusalReason),
 }
 
-/// Why a sibling refused. Every refusal is in the owner's activity history.
+/// Why a sibling refused: the boot is told, and nothing else. A refusal is
+/// this sibling's own answer about a boot it will not serve, made before the
+/// owner is asked, so it is neither signed nor carried to the person's other
+/// devices — only the owner's own answers are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Error, Serialize, Deserialize)]
 pub enum RefusalReason {
     /// Another protocol version.

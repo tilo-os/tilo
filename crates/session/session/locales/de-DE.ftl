@@ -45,6 +45,27 @@ system-update-restart-title = Neu starten, um die Updates abzuschließen
 system-update-restart-body = Deine Fenster sind nach dem Neustart wieder da.
 power-restart = Neu starten
 
+## Was dieser Computer vom eigenen Update nicht lesen konnte und deshalb nicht
+## ausgeführt hat. Der nächste Blick liest es erneut.
+update-state-unreadable-title = Der Update-Stand ließ sich nicht lesen
+update-state-unreadable-body = Dieser Computer konnte nicht lesen, wie weit das letzte Update gekommen ist, und hat daher nichts unternommen. Er schaut von selbst wieder nach; unter Einstellungen, Updates steht, was er weiß.
+
+## Eine Version, die dieser Computer versucht hat, startete innerhalb ihrer
+## Versuche nicht, und der Bootloader ging auf die Version zurück, die zuvor
+## lief: einmal gesagt, mit dem Ort, an dem die fehlgeschlagenen Versuche
+## hinterlassen haben, was sie fanden.
+system-update-went-back-title = Zurück auf die vorherige Version
+system-update-went-back-body = { $what } startete nach { $tries } Versuchen nicht, deshalb ist dieser Computer auf { $running } zurückgegangen. Was die fehlgeschlagenen Versuche hinterlassen haben: { $summary }, und tilo status.
+system-update-went-back-unnamed = Die neue Version
+system-update-went-back-several-tries = mehreren
+system-update-went-back-runs-before = die vorherige Version
+
+## Die Liste der eigenen Arbeitsbereiche, die dieser Computer aufbewahrt hat,
+## ließ sich nicht lesen: er beginnt die Liste neu, statt nichts zu zeigen.
+workspaces-app-name = Arbeitsbereiche
+workspaces-unreadable-title = Deine Arbeitsbereiche ließen sich nicht lesen
+workspaces-unreadable-body = Die Liste deiner eigenen Arbeitsbereiche, die dieser Computer aufbewahrt hat, ließ sich nicht lesen, deshalb beginnt er die Liste neu. Nichts wurde entfernt: deine Arbeitsbereiche sind weiterhin auf diesem Computer und auf deinen anderen Geräten.
+
 ## Der gespeicherte Schreibtisch dieses Geräts ließ sich nicht öffnen: der
 ## eigene Schreibtisch liegt weiterhin auf der Platte, und diese Sitzung startet
 ## leer, damit nichts darüber geschrieben wird.
@@ -66,6 +87,29 @@ desk-not-opened-old-unreadable-detail = { $path } ist der Schreibtisch, den Tilo
 desk-window-not-installed = { $app } ist auf diesem Rechner nicht installiert
 desk-window-would-not-start = { $app } konnte nicht gestartet werden: { $why }
 desk-window-did-not-open = { $app } wurde gestartet, hat aber kein Fenster geöffnet
+
+## Ein Fenster, das die Aufzeichnung der Person aufbewahrt hat und dessen
+## gespeicherter Zustand sich in dieser Version nicht lesen lässt: sein Tab
+## sagt, warum das Fenster nicht hier ist, statt dass der Platz verschwindet.
+desk-place-not-read = Sein gespeichertes Fenster ließ sich nicht lesen, deshalb ist es nicht hier. Schließe diesen Tab, wenn du damit fertig bist; bei der nächsten Anmeldung öffnet sich die App wieder.
+
+## Die „Immer erlauben“-Antworten, die dieser Rechner für die Agenten an seiner
+## Tür aufbewahrt hat und nicht lesen konnte: jeder Agent, dessen Antwort es
+## war, wird erneut gefragt.
+agent-bindings-app-name = Agenten
+agent-bindings-lost-title = { $agent } wird erneut gefragt
+agent-bindings-lost-body = Dieser Rechner konnte nicht lesen, dass du { $agent } hier arbeiten lässt, deshalb fragt er dich erneut, wenn sich { $agent } das nächste Mal verbindet. Sonst wurde nichts entfernt.
+agent-bindings-unreadable-title = Deine Antworten zu Agenten ließen sich nicht lesen
+agent-bindings-unreadable-body = Dieser Rechner konnte nicht lesen, welchen Agenten du hier das Arbeiten erlaubt hast, deshalb fragt er dich erneut, wenn sich der nächste Agent verbindet. Sonst wurde nichts entfernt.
+
+## Die Registratur der Programme, die die Person heruntergeladen hat, lässt sich
+## nicht lesen: keine ihrer Apps wird aufgelistet, und keine ist fort.
+refused-write-app = Änderungen
+refused-write-title = { $device } nimmt deine Änderung nicht an
+refused-write-body = Deine Änderung bleibt auf den Geräten, die sie angenommen haben: { $reason }.
+downloaded-apps-app-name = Heruntergeladene Apps
+downloaded-apps-unreadable-title = Deine heruntergeladenen Apps ließen sich nicht lesen
+downloaded-apps-unreadable-body = Dieser Rechner konnte die Liste der Programme, die du zu deinen Apps hinzugefügt hast, nicht lesen, deshalb werden sie jetzt nicht aufgelistet. Nichts wurde entfernt: sie sind weiterhin auf diesem Computer.
 
 ## Ein Anzeigewerkzeug wollte eine Anzeigeanordnung erneut anwenden, die die
 ## Person gerade zurückgesetzt hatte.
@@ -213,3 +257,53 @@ paste-failed-body = { $failed } von { $total } sind nicht angekommen. { $name }:
 paste-undone-title = Das letzte Einfügen wurde nicht fertig
 paste-undone-body = { $landed } von { $total } waren schon angekommen. Die bleiben; der Rest liegt wieder, wo er war.
 paste-undone-trouble = { $landed } von { $total } waren schon angekommen. Die bleiben; der Rest konnte noch nicht zurückgelegt werden: { $reason }
+
+## Was die eigenen Zeilen des Schreibtischs sagen: die Frage auf dem Avatar der
+## Person, der Tray-Eintrag einer laufenden Anwendung und wie die Personenliste heißt.
+session-desk-answer-ask = Antworten
+session-desk-ask-later = Später fragen
+session-desk-open = Öffnen
+session-desk-stop-agent = Stoppen
+session-people = Personen
+
+## Wie die privaten Unterhaltungen einer Person heißen und was sie anbieten.
+session-messages = Private Nachrichten
+session-messages-send = Private Nachricht senden
+
+## Wie der Sperrbildschirm heißt, solange er oben ist.
+session-lock-screen = Sperrbildschirm
+
+## Was die Programme eines Agenten sind, wie sie die Aktionspforte anbietet:
+## ein Aufgaben-Agent schreibt jeweils ein Programm als Schritt seines Laufs.
+task-programs-resource = Aufgabenprogramme
+task-programs-run = Ein Programm ausführen
+task-programs-run-detail = Führt ein tilolang-Programm als Schritt des Laufs der Aufgabe aus, als der Agent, der an der Aufgabe arbeitet, und antwortet, was es gelesen oder geändert hat.
+
+## Was die eigenen Geräte der Person antworteten, als eines von ihnen nach
+## einem Neustart entsperrt werden wollte, wie es ihre Aktivität auflistet.
+unlock-history-app = Datenträgerentsperrung
+unlock-approved = Entsperrung für { $item } freigegeben
+unlock-denied = Entsperrung für { $item } abgelehnt
+unlock-history-unknown-device = ein Gerät, das dieser Rechner nicht benennen kann
+
+## Was ein in einen anderen Arbeitsbereich verschobenes Fenster fragt, was es
+## sagt, wenn die App dort nicht gestartet ist, und was es sagt, wenn der Eintrag,
+## den das Fenster zeigt, nicht mitkommen konnte.
+window-move-app-name = Arbeitsbereiche
+window-move-ask-title = { $app } nach { $workspace } verschieben?
+window-move-ask-what = Die App startet dort neu, mit dem Zugriff, den dieser Arbeitsbereich ihr gibt, und öffnet den Eintrag, den dieser Arbeitsbereich führt.
+window-move-ask-carries = Die App startet dort neu, mit dem Zugriff, den dieser Arbeitsbereich ihr gibt, und nimmt mit, was das Fenster zeigt, samt Änderungen. Was zurückbleibt, sagt, wohin es ging.
+window-move-ask-they-see = Alle in { $workspace } sehen das Fenster und was es öffnet.
+window-move-ask-you-leave = In { $workspace } läuft sie dann nicht mehr, und was dieser Arbeitsbereich führt, bleibt dort.
+window-move-ask-carry = Verschieben
+window-move-ask-stay = Lassen
+window-move-failed-title = { $app } ist in { $workspace } nicht gestartet
+window-move-failed-body = Das Fenster blieb in { $workspace }.
+window-move-record-failed-title = { $app } konnte nicht nach { $workspace } mitnehmen, was es zeigt
+window-move-record-failed-body = Das Fenster blieb in { $workspace }: { $reason }.
+window-move-reason-busy = die App des Fensters hat es noch geöffnet
+window-move-reason-record = sein Eintrag lässt sich nicht in diesen Arbeitsbereich verschieben
+window-move-reason-storage = dieser Rechner konnte ihn dort nicht ablegen
+window-move-reason-no-window = die App hat dort kein Fenster geöffnet
+window-move-reason-no-start = die App ist dort nicht gestartet
+window-move-bringing-edits = Das Fenster kommt mit dem zurück, was nach dem Verschieben geschrieben wurde.

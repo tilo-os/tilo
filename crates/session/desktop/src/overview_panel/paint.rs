@@ -22,7 +22,7 @@ use crate::i18n::{t, t_args};
 use crate::overview::{WorkspaceCard, WorkspacePerson, WorkspaceShare};
 use crate::overview_picture::{Tile, draw_empty_strip, draw_strip_name, draw_tile_title};
 use crate::window_flight::WindowPicture;
-use crate::window_switcher::{NoThumbnails, PreviewWell, WindowApp, draw_preview_well};
+use crate::window_switcher::{PreviewWell, WindowApp, draw_preview_well};
 
 /// A pictured window carried to another workspace is left this faint in
 /// its place.
@@ -689,7 +689,7 @@ impl OverviewPanel {
                     lifted.radius,
                     &theme.tokens.elevation.floating,
                 );
-                let _ = draw_preview_well(
+                draw_preview_well(
                     scene,
                     transform,
                     theme,
@@ -698,8 +698,7 @@ impl OverviewPanel {
                         radius: lifted.radius,
                         icon: self.metrics.icon_lg,
                     },
-                    window,
-                    &mut NoThumbnails,
+                    Some(&window.app),
                 );
             }
             pictures.push(lifted);
@@ -812,7 +811,7 @@ impl OverviewPanel {
             } else {
                 ui::motion::Zoom::radius_at(g.window_radius, g.radius, progress)
             };
-            let _ = draw_preview_well(
+            draw_preview_well(
                 scene,
                 transform,
                 theme,
@@ -821,8 +820,7 @@ impl OverviewPanel {
                     radius,
                     icon: self.metrics.icon_lg.min(rect.height() * 0.6),
                 },
-                tile.window,
-                &mut NoThumbnails,
+                Some(&tile.window.app),
             );
         }
         if chrome > 0.0 {

@@ -1859,11 +1859,30 @@ impl Widget for WindowSearch {
             .paint(scene, transform, text, theme, presence, shown);
     }
 
+    /// A resting search is clean: its field draws only while the search is
+    /// open, and an open one repaints off its own motion, its panel and the
+    /// caret in its field. A search that opens or closes, or whose resting
+    /// control changes, moves, and motion already answers here. A folded
+    /// search asks nothing of the field it does not draw: a field that keeps
+    /// state of its own would otherwise keep the window drawing frames
+    /// nothing shows.
+    /// What the search holds is clean once the frame drew it, or once the
+    /// frame chose not to: a closed search draws nothing, so what its field
+    /// and panel hold was not shown and is made again when it opens.
+    fn mark_drawn(&mut self) {
+        crate::widget::Widget::mark_drawn(&mut self.field);
+        crate::widget::Widget::mark_drawn(&mut self.panel.replace_field);
+    }
+
     fn needs_redraw(&self) -> bool {
-        self.presence.is_moving(crate::motion::frame_now())
-            || self.field.needs_redraw()
+        let now = crate::motion::frame_now();
+        self.presence.is_moving(now)
+            || (self.presence.is_visible(now)
+                && (self.field.needs_redraw() || self.field.needs_animation_frame()))
             || self.panel.needs_redraw()
-            || (self.panel.is_drawn() && self.panel.replace_field.needs_redraw())
+            || (self.panel.is_drawn()
+                && (self.panel.replace_field.needs_redraw()
+                    || self.panel.replace_field.needs_animation_frame()))
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2387,6 +2406,24 @@ mod tests {
         assert_eq!(tip, "Search in this window (Ctrl+F)");
         let node = search.accessibility().expect("the control is announced");
         assert_eq!(node.name.as_deref(), Some("Search in this window"));
+    }
+
+    /// A folded search draws one control: the field it holds is not drawn,
+    /// so its own paint state must not keep the window drawing frames
+    /// nothing of it shows. Opening it asks for the frames that show it.
+    #[test]
+    fn a_folded_search_asks_for_no_frame() {
+        let mut search = WindowSearch::new();
+        search.place(Rect::new(100.0, 8.0, 128.0, 36.0), 600.0);
+        search.mark_drawn();
+        assert!(!search.is_open());
+        assert!(
+            !search.needs_redraw(),
+            "a folded search changed nothing it draws"
+        );
+        assert!(!search.needs_animation_frame());
+        search.open(InPlace::Document, MotionSource::Keyboard);
+        assert!(search.needs_redraw(), "an opening search is drawn");
     }
 
     #[test]

@@ -15,6 +15,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import tomllib
 
@@ -25,34 +26,77 @@ def run(argv, *, env=None, capture=False):
                           text=capture)
 
 
-def applications(repo):
-    rows = []
+def report(message):
+    """Say what the cohort is, on the builder's log."""
+    print(f'apps+runtime: {message}', file=sys.stderr, flush=True)
+
+
+def required_runtimes(package):
+    """The further runtime builds an authored app requires, by exact version.
+
+    The manifest key is `optional-runtimes`; the app needs every build it
+    names to run at all (the Browser's engine)."""
+    pins = package.get('optional-runtimes', [])
+    for pin in pins:
+        if not re.fullmatch(r'tilo-runtime/[0-9A-Za-z][0-9A-Za-z._+-]*', pin):
+            raise ValueError(f'invalid required runtime {pin!r}')
+    if len(set(pins)) != len(pins):
+        raise ValueError(f'a required runtime of {package.get("id")!r} is listed twice')
+    return list(pins)
+
+
+def application_entries(repo):
+    """Every authored application in the runtime graph: its directory, manifest
+    identity, cargo package, entrypoint binary, toolkit release and the further
+    runtime builds it requires."""
+    entries = []
     for path in sorted((repo / 'apps').glob('*/tilo-app.toml')):
         manifest = tomllib.loads(path.read_text())
+        package = manifest['package']
         cargo = tomllib.loads(path.with_name('Cargo.toml').read_text())
-        release = manifest['package'].get('runtime', '')
+        release = package.get('runtime', '')
         if not re.fullmatch(r'tilo-runtime/[0-9A-Za-z.-]+', release):
             raise ValueError('apps+runtime requires an authored toolkit release')
         entry = manifest.get('entrypoint', {}).get('bin', '')
         if not entry.startswith('bin/') or '/' in entry[4:]:
             raise ValueError('apps+runtime requires a native binary entrypoint')
-        rows.append((cargo['package']['name'], entry[4:], release))
-    if not rows or len({row[2] for row in rows}) != 1:
+        entries.append({'dir': path.parent.name, 'id': package.get('id', ''),
+                        'name': package.get('name', ''),
+                        'package': cargo['package']['name'],
+                        'binary': entry[4:], 'release': release,
+                        'pins': required_runtimes(package)})
+    if not entries or len({entry['release'] for entry in entries}) != 1:
         raise ValueError('apps+runtime must share one authored toolkit release')
-    return rows
+    return entries
 
 
-def selected_applications(repo, app):
-    rows = applications(repo)
-    if app is None:
-        return rows
-    if not re.fullmatch(r'[A-Za-z0-9_-]+', app):
-        raise ValueError('invalid selected application directory')
-    manifest = repo / 'apps' / app / 'tilo-app.toml'
-    if not manifest.is_file():
-        raise ValueError('selected app is outside the canonical runtime graph')
-    cargo = tomllib.loads(manifest.with_name('Cargo.toml').read_text())
-    return [row for row in rows if row[0] == cargo['package']['name']]
+def applications(repo):
+    """Every application in the runtime graph, as (cargo package, binary, release)."""
+    return [(entry['package'], entry['binary'], entry['release'])
+            for entry in application_entries(repo)]
+
+
+def named_applications(repo, cohort, app=None):
+    """The applications one chosen assembly is made of: the app directories the
+    caller decided on, or the single app it selected, in source order."""
+    entries = application_entries(repo)
+    if app is not None:
+        if not re.fullmatch(r'[A-Za-z0-9_-]+', app):
+            raise ValueError('invalid selected application directory')
+        if not (repo / 'apps' / app / 'tilo-app.toml').is_file():
+            raise ValueError('selected app is outside the canonical runtime graph')
+        entries = [entry for entry in entries if entry['dir'] == app]
+    if cohort is None:
+        return entries
+    names = [name for name in cohort.split(',') if name]
+    if not names:
+        raise ValueError('the cohort names no authored application')
+    if len(set(names)) != len(names):
+        raise ValueError('the cohort names an application twice')
+    known = {entry['dir'] for entry in entries}
+    if any(name not in known for name in names):
+        raise ValueError('the cohort names an application this source does not author')
+    return [entry for entry in entries if entry['dir'] in set(names)]
 
 
 def private_ancestors(path, outputs):
@@ -71,7 +115,7 @@ def private_ancestors(path, outputs):
 
 
 def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None, compiler=None,
-                      source_inventory=None):
+                      source_inventory=None, cohort=None):
     """Final-path binds preserve registry paths, with only owned outputs writable."""
     tree = stage / 'tree'
     runtime = tree / 'usr/lib/tilo-runtime'
@@ -115,6 +159,8 @@ def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None,
              '--profile', profile, '--stage', str(stage)]
     if source_inventory is not None:
         argv += ['--source-inventory', source_inventory]
+    if cohort is not None:
+        argv += ['--cohort', cohort]
     if app is not None:
         argv += ['--app', app]
     if compiler is not None:
@@ -127,6 +173,47 @@ def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None,
 
 def profile_directory(profile):
     return 'debug' if profile == 'dev' else profile
+
+
+def lto_enabled(value):
+    return value is True or (isinstance(value, str)
+                             and value.strip().lower() not in ('', '0', 'false', 'off', 'no', 'none'))
+
+
+def profile_links_with_lto(repo, profile, environ):
+    """Whether `profile` links its binaries with LTO.
+
+    Cargo's own setting decides: `CARGO_PROFILE_<PROFILE>_LTO` when the caller
+    sets it, else the `[profile.<name>]` chain in Cargo.toml, where `inherits`
+    hands the parent's value down.
+    """
+    key = 'CARGO_PROFILE_{}_LTO'.format(profile.upper().replace('-', '_'))
+    if key in environ:
+        return lto_enabled(environ[key])
+    profiles = tomllib.loads((Path(repo) / 'Cargo.toml').read_text()).get('profile', {})
+    seen = set()
+    while profile in profiles and profile not in seen:
+        seen.add(profile)
+        settings = profiles[profile]
+        if 'lto' in settings:
+            return lto_enabled(settings['lto'])
+        profile = settings.get('inherits')
+    return False
+
+
+def packaging_budget(repo, profile, environ):
+    """`TAPP_BUDGET` for packing this build's apps.
+
+    The per-app size budgets are measured on the thin-LTO release binaries the
+    image ships. A build linked without LTO is larger for the same code, so its
+    over-budget packages are reported instead of refusing the cohort, the way
+    the image treats its own non-LTO builds. A caller that packs binaries the
+    budgets measure names them: `TAPP_BUDGET=enforce`, or the LTO setting that
+    made them so.
+    """
+    if 'TAPP_BUDGET' in environ:
+        return environ['TAPP_BUDGET']
+    return 'enforce' if profile_links_with_lto(repo, profile, environ) else 'report'
 
 
 def runtime_dependencies():
@@ -204,12 +291,15 @@ def publish_runtime_fonts(repo, fonts, catalogs):
     return catalog
 
 
-def source_membership(repo, destination, digest):
-    """Seal the exact source membership inside the signed toolkit payload."""
+def source_membership(destination, digest, apps):
+    """Seal the exact cohort membership inside the signed toolkit payload.
+
+    It is what the daemon admits the layer by: the installed store must be
+    exactly these applications, so an app the assembly left out is neither
+    claimed nor silently expected."""
     if not re.fullmatch(r'[0-9a-f]{64}', digest):
         raise ValueError('invalid source inventory digest')
-    ids = [tomllib.loads(path.read_text())['package']['id']
-           for path in sorted((repo / 'apps').glob('*/tilo-app.toml'))]
+    ids = list(apps)
     if not ids or len(ids) > 512 or len(set(ids)) != len(ids):
         raise ValueError('source system application membership is empty, oversized or duplicated')
     destination.write_text(json.dumps({'schema': 1, 'source_inventory': digest,
@@ -219,8 +309,9 @@ def source_membership(repo, destination, digest):
 
 def assemble_inside(args):
     repo, target, stage = args.repo, args.target_dir, args.stage
-    rows = applications(repo)
-    binaries = [target / profile_directory(args.profile) / row[1] for row in rows]
+    entries = named_applications(repo, args.cohort, args.app)
+    binaries = [target / profile_directory(args.profile) / entry['binary']
+                for entry in entries]
     if any(not binary.is_file() for binary in binaries):
         raise ValueError('a required cohort binary is absent; refusing a partial store')
     toolkit = target / profile_directory(args.profile) / 'libruntime_dylib.so'
@@ -239,13 +330,14 @@ def assemble_inside(args):
     publish_runtime_fonts(repo, fonts, stage / 'tree/usr/share/tilo/font-catalogs')
     includes = list(dict.fromkeys([toolkit, *engines, std[0], *closure, fonts]))
     if args.source_inventory is not None:
-        includes.append(source_membership(repo, stage / 'work/system-app-cohort.json',
-                                          args.source_inventory))
+        includes.append(source_membership(stage / 'work/system-app-cohort.json',
+                                          args.source_inventory,
+                                          [entry['id'] for entry in entries]))
     identity = stage / 'work/runtime-identity.json'
     version_file = stage / 'work/runtime-version'
     run([str(bundle), 'key', 'generate', '--out', str(identity)])
     try:
-        command = [str(bundle), 'build', '--release', rows[0][2].split('/')[1],
+        command = [str(bundle), 'build', '--release', entries[0]['release'].split('/')[1],
                    '--arch', platform.machine(), '--from', '/',
                    '--identity', str(identity), '--out-root', '/usr/lib/tilo-runtime',
                    '--version-out', str(version_file)]
@@ -283,16 +375,9 @@ def assemble_inside(args):
 
 
 def engine_pins(repo):
-    """The further runtimes the cohort's apps require by exact version (the
-    Browser's engine): they ship with the apps or the cohort is refused."""
-    pins = set()
-    for path in sorted((repo / 'apps').glob('*/tilo-app.toml')):
-        manifest = tomllib.loads(path.read_text())
-        pins.update(manifest['package'].get('optional-runtimes', []))
-    for pin in pins:
-        if not re.fullmatch(r'tilo-runtime/[0-9A-Za-z][0-9A-Za-z._+-]*', pin):
-            raise ValueError(f'invalid required runtime {pin!r}')
-    return sorted(pins)
+    """The further runtimes the source's apps require by exact version (the
+    Browser's engine): each ships with its app or the app leaves the cohort."""
+    return sorted({pin for entry in application_entries(repo) for pin in entry['pins']})
 
 
 def container_host_root():
@@ -318,41 +403,91 @@ def host_runtime_roots(environ=os.environ, host_root=None):
 def fetch_runtime(reference, destination, app_cli):
     """Fetch `reference` through the workspace's own verified install (the
     `app` CLI built with the other tools) into `destination`, never into this
-    person's runtime directory."""
+    person's runtime directory. Returns why no registry offered it, or None
+    when one did."""
     destination.mkdir(parents=True, exist_ok=True)
-    run([str(app_cli), 'runtime', 'install', reference],
-        env=dict(os.environ, TILO_RUNTIME_BUNDLE_DIR=str(destination)))
+    result = subprocess.run([str(app_cli), 'runtime', 'install', reference],
+                            env=dict(os.environ, TILO_RUNTIME_BUNDLE_DIR=str(destination)),
+                            capture_output=True, text=True)
+    if result.returncode == 0:
+        return None
+    said = [line.strip() for line in (result.stderr or result.stdout).splitlines()
+            if line.strip()]
+    return said[-1] if said else f'{app_cli} exited {result.returncode}'
 
 
-def stage_engine_runtimes(repo, stage, bundle, roots=None, fetch=None):
-    """Ship every engine the cohort's apps pin inside the layer, at the exact
-    version, and trust the publisher that signed it. A userspace swap that
-    replaced the Browser without its engine would leave it saying "not
-    installed"; so the engine comes from this host's bundles, else the
-    registry, and the cohort is refused when neither has it."""
-    publishers = set()
-    runtime_root = stage / 'tree/usr/lib/tilo-runtime'
+def engine_sources(repo, stage, app_cli, roots=None, fetch=None):
+    """Locate the bundle behind every engine pin: this host's installed copy,
+    else the registry through the `app` CLI. What neither offers is reported
+    as unavailable rather than refused here: the apps that pin it then leave
+    the cohort (see `cohort_entries`)."""
     if roots is None:
         roots = host_runtime_roots(host_root=container_host_root())
+    sources, unavailable = {}, {}
     for reference in engine_pins(repo):
         version = reference.split('/', 1)[1]
         source = next((root / version for root in roots
                        if (root / version / 'bundle.toml').is_file()), None)
         if source is None:
             fetched = stage / 'work/engine-fetch'
-            if fetch is None:
-                fetch_runtime(reference, fetched, bundle.parent / 'app')
-            else:
-                fetch(reference, fetched)
+            reason = (fetch or (lambda reference, destination: fetch_runtime(
+                reference, destination, app_cli)))(reference, fetched)
             source = fetched / version
-        if not (source / 'bundle.toml').is_file():
-            raise ValueError(f'the engine {reference} the apps pin is neither on this host nor in the registry')
-        report = run([str(bundle), 'verify', str(source), '--require-signature',
-                      '--require-arch', platform.machine()], capture=True).stdout
+            if reason is not None or not (source / 'bundle.toml').is_file():
+                unavailable[reference] = reason or 'no registry offered a bundle for it'
+                continue
+        sources[reference] = source
+    return sources, unavailable
+
+
+def cohort_entries(repo, sources, app=None):
+    """The applications this assembly builds and ships, and the ones it cannot.
+
+    An app runs only with every runtime build it pins, so the two ship
+    together or not at all: an app whose engine neither this host nor the
+    registry offers is left out, and says so, because a cohort that keeps
+    every other app is worth more than one app that would install and then
+    refuse to start. A selected app (`app`) ships alone as a package the
+    ordinary installer fetches its engine for, so it is never left out.
+
+    What is required still refuses the assembly: a malformed pin, an engine
+    that does not verify, a signed version that disagrees with its directory,
+    engines from two publishers, a toolkit release that is not one — and, at
+    packing time, `check-shipped-runtimes.sh` for the installed cohort."""
+    entries = application_entries(repo)
+    if app is not None:
+        return named_applications(repo, None, app), []
+    missing = {entry['dir']: [pin for pin in entry['pins'] if pin not in sources]
+               for entry in entries}
+    cohort = [entry for entry in entries if not missing[entry['dir']]]
+    left_out = [(entry, missing[entry['dir']]) for entry in entries if missing[entry['dir']]]
+    if not cohort:
+        raise ValueError('no application in the cohort has the runtime it requires')
+    return cohort, left_out
+
+
+def report_left_out(left_out, unavailable):
+    for entry, pins in left_out:
+        reasons = '; '.join(f'{pin}: {unavailable[pin]}' for pin in pins)
+        report(f'left out apps/{entry["dir"]} ({entry["name"]}): an app ships with the '
+               f'runtimes it requires or not at all, and {reasons}')
+
+
+def stage_engine_runtimes(stage, bundle, sources):
+    """Ship every located engine inside the layer, at the exact version, and
+    trust the publisher that signed it. A userspace swap that installed the
+    Browser without its engine would leave it saying "not installed", so the
+    cohort's apps and their engines always travel together."""
+    publishers = set()
+    runtime_root = stage / 'tree/usr/lib/tilo-runtime'
+    for reference, source in sources.items():
+        version = reference.split('/', 1)[1]
+        report_text = run([str(bundle), 'verify', str(source), '--require-signature',
+                           '--require-arch', platform.machine()], capture=True).stdout
         manifest = tomllib.loads((source / 'bundle.toml').read_text())
         if manifest.get('version') != version:
             raise ValueError(f'{reference} directory contains a different signed engine version')
-        found = re.search(r'publisher: ed25519:([0-9a-f]{64})', report)
+        found = re.search(r'publisher: ed25519:([0-9a-f]{64})', report_text)
         if not found:
             raise ValueError(f'{reference} is not signed by a publisher')
         publishers.add(found.group(1))
@@ -365,7 +500,7 @@ def stage_engine_runtimes(repo, stage, bundle, roots=None, fetch=None):
 
 def package_inside(args):
     repo, target, stage = args.repo, args.target_dir, args.stage
-    rows = selected_applications(repo, args.app)
+    entries = named_applications(repo, args.cohort, args.app)
     version = (stage / 'work/runtime-version').read_text().strip()
     bundle = target / 'release/tilo-runtime-bundle'
     env = dict(os.environ, REPO=str(repo), STORE='/usr/share/tilo-apps',
@@ -374,18 +509,20 @@ def package_inside(args):
                INSTALL_BIN=str(target / 'release/tilo-install'),
                BUNDLE_BIN=str(bundle), SHIM_BIN=str(target / 'release/tilo-cli-shim'),
                PUBKEY_OUT=str(stage / 'tree/usr/share/tilo/app-publisher.hex'),
-               RUNTIME_ID='tilo-runtime/' + version, REQUIRE_MIN=str(len(rows)))
+               RUNTIME_ID='tilo-runtime/' + version, REQUIRE_MIN=str(len(entries)),
+               COHORT_APPS=' '.join(entry['dir'] for entry in entries),
+               TAPP_BUDGET=packaging_budget(repo, args.profile, os.environ))
     # A complete cohort carries each app once, as its installed tree and signed
     # record; tilo-vmd rebuilds the archive it installs from those.
     if args.app is not None:
-        env.update(APP_DIR=args.app, TAPP_OUT=str(stage / 'work/selected.tapp'),
+        env.update(TAPP_OUT=str(stage / 'work/selected.tapp'),
                    STAGE=str(stage / 'work/selected-pack'))
     run(['bash', str(repo / 'os/scripts/pack-apps.sh')], env=env)
 
 
-
-def prepare(args):
-    repo, target = args.repo.resolve(), args.target_dir.resolve()
+def prepare_tools(args):
+    """The tools this assembly runs itself, including the registry fallback for
+    a pinned engine: locating one is what decides the cohort."""
     cargo = os.environ.get('CARGO', 'cargo')
     tools_env = dict(os.environ, CARGO_PROFILE_RELEASE_LTO='off',
                      CARGO_PROFILE_RELEASE_CODEGEN_UNITS='16')
@@ -396,13 +533,19 @@ def prepare(args):
     if args.compiler_interface_out is not None:
         tools += ['-p', 'tilo-app-cli']
     run(tools, env=tools_env)
+
+
+def prepare_applications(args, entries):
+    repo, target = args.repo.resolve(), args.target_dir.resolve()
     env = dict(os.environ, REPO=str(repo), TARGET_DIR=str(target),
                PROFILE=args.profile, APP_FEATURES=args.features)
-    for variable in ('EXCLUDE_PACKAGES', 'INCLUDE_PACKAGES', 'BUILD_PACKAGES', 'EXTRA_CARGO_ARGS'):
+    for variable in ('INCLUDE_PACKAGES', 'BUILD_PACKAGES', 'EXTRA_CARGO_ARGS'):
         env.pop(variable, None)
-    # The SDK is shared by the complete collection, including native libraries
-    # linked only by an app. Warm unchanged targets are reused by Cargo; a
-    # selected update packages only that app but derives the same complete SDK.
+    # An app the cohort leaves out is not built with it: build-thin-apps.sh
+    # leaves its features out too, and its binary then never exists to be
+    # packaged.
+    env['EXCLUDE_PACKAGES'] = ' '.join(
+        entry['package'] for entry in application_entries(repo) if entry not in entries)
     if args.compiler_interface_out is not None:
         env['SDK_COMPILER_UNITS'] = str(args.compiler_capture.parent / 'compiler-units.jsonl')
     run(['bash', str(repo / 'os/scripts/build-thin-apps.sh')], env=env)
@@ -411,8 +554,8 @@ def prepare(args):
              '--units', str(args.compiler_capture.parent / 'compiler-units.jsonl'),
              '--output', str(args.compiler_capture)])
 
-    for _, binary, _ in selected_applications(repo, args.app):
-        if not (target / profile_directory(args.profile) / binary).is_file():
+    for entry in entries:
+        if not (target / profile_directory(args.profile) / entry['binary']).is_file():
             raise ValueError('full cohort build did not produce all applications')
 
 
@@ -425,13 +568,20 @@ def assemble(args):
         stage = Path(directory)
         args.compiler_capture = (stage / 'compiler-capture'
                                  if args.compiler_interface_out is not None else None)
-        prepare(args)
+        prepare_tools(args)
         fetch_runtime_fonts(repo, target)
+        sources, unavailable = engine_sources(repo, stage, target / 'release/app')
+        entries, left_out = cohort_entries(repo, sources, args.app)
+        report_left_out(left_out, unavailable)
+        prepare_applications(args, entries)
+        cohort = ','.join(entry['dir'] for entry in entries)
         run(namespace_command(repo, stage, target, args.profile, app=args.app,
-                              compiler=args.compiler_capture, source_inventory=args.source_inventory))
+                              compiler=args.compiler_capture,
+                              source_inventory=args.source_inventory, cohort=cohort))
         if args.app is None:
-            stage_engine_runtimes(repo, stage, target / 'release/tilo-runtime-bundle')
-        run(namespace_command(repo, stage, target, args.profile, packaging=True, app=args.app))
+            stage_engine_runtimes(stage, target / 'release/tilo-runtime-bundle', sources)
+        run(namespace_command(repo, stage, target, args.profile, packaging=True,
+                              app=args.app, cohort=cohort))
         if args.app is not None:
             shutil.copyfile(stage / 'work/selected.tapp', args.tapp_out)
             return
@@ -456,6 +606,7 @@ def main():
     parser.add_argument('--features')
     parser.add_argument('--source-inventory', help='verified complete source inventory digest')
     parser.add_argument('--app')
+    parser.add_argument('--cohort', help='the app directories this assembly ships')
     parser.add_argument('--tapp-out', type=Path)
     parser.add_argument('--dest', type=Path)
     parser.add_argument('--compiler-interface-out', type=Path, help='separate signed developer SDK; never part of the userspace layer')
@@ -473,7 +624,7 @@ def main():
             parser.error('selected app must use the canonical cohort profile')
         args.features = ','.join(cohort.get('features', []))
     if args.app is not None:
-        selected_applications(args.repo, args.app)
+        named_applications(args.repo, None, args.app)
     if args.compiler_interface_out is not None and not args.inside:
         args.compiler_interface_out = args.compiler_interface_out.resolve()
         if args.app is not None or args.compiler_interface_out.exists():
@@ -483,11 +634,15 @@ def main():
     if args.inside:
         if args.stage is None:
             parser.error('private assembly needs its owned stage')
+        if args.cohort is None:
+            parser.error('private assembly needs the cohort it ships')
         if args.packaging:
             package_inside(args)
         else:
             assemble_inside(args)
     else:
+        if args.cohort is not None:
+            parser.error('the assembly decides the cohort its caller asked for')
         if args.app is not None:
             if args.tapp_out is None or args.dest is not None:
                 parser.error('selected app needs only --tapp-out')

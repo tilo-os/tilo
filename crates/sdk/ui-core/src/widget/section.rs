@@ -3,8 +3,8 @@
 //!
 //! A section is an intrinsic-height stack whose items sit `rhythm.sibling`
 //! apart. Consecutive [`ListRow`]s are one list: they sit edge to edge with
-//! an inset separator between them, hidden beside the selected row; their
-//! badge columns share one width, and a run of selected rows is one lift.
+//! no rule between them; their badge columns share one width, and a run of
+//! selected rows is one lift.
 //! The optional header carries the group's title (sentence case, in
 //! `Heading` for a section of a page or `Subheading` for a group inside
 //! one), a count of what it holds, and one trailing text action ("Clear
@@ -54,7 +54,7 @@ use crate::tokens::TextRole;
 use crate::widget::list_row::RowStatus;
 use crate::widget::{
     AvatarFace, Button, ButtonFace, ButtonRole, ControlSize, Element, Interaction, TaffyTreeExt,
-    Text, Widget,
+    Text, Tone, Widget,
 };
 
 /// How prominent a section's title is.
@@ -294,10 +294,16 @@ pub struct SectionHeaderFace<'a> {
     title: &'a str,
     level: Level,
     count: Option<usize>,
+    /// How many items the header stands over, on the trailing edge, where the rows' facts
+    /// end: the quiet number a group's heading carries in a list.
+    trailing_count: Option<usize>,
     action: Option<&'a str>,
     /// Whether the header shows a chevron, and which way it points: a header a person presses
     /// to fold what stands under it.
     disclosure: Option<bool>,
+    /// How a group's heading and its count read, when it reads in a tone: a day gone by is
+    /// overdue in the danger tone. The neutral tone is the quiet heading every group has.
+    tone: Option<Tone>,
 }
 
 impl<'a> SectionHeaderFace<'a> {
@@ -307,8 +313,10 @@ impl<'a> SectionHeaderFace<'a> {
             title,
             level: Level::Section,
             count: None,
+            trailing_count: None,
             action: None,
             disclosure: None,
+            tone: None,
         }
     }
 
@@ -323,6 +331,14 @@ impl<'a> SectionHeaderFace<'a> {
     #[must_use]
     pub fn count(mut self, count: usize) -> Self {
         self.count = Some(count);
+        self
+    }
+
+    /// How many items the header stands over, as a quiet number on the trailing edge, in the
+    /// column the rows' facts end on: a group's heading in a list says its count there.
+    #[must_use]
+    pub fn trailing_count(mut self, count: usize) -> Self {
+        self.trailing_count = Some(count);
         self
     }
 
@@ -342,13 +358,20 @@ impl<'a> SectionHeaderFace<'a> {
         self
     }
 
+    /// The tone a group's heading and its count read in ([`Tone::Danger`] for what is
+    /// overdue). The neutral tone is the quiet heading a group has by default.
+    #[must_use]
+    pub fn tone(mut self, tone: Tone) -> Self {
+        self.tone = (!matches!(tone, Tone::Neutral)).then_some(tone);
+        self
+    }
+
     /// The header's height: one small control's, or the title's wrapped
     /// lines when they are taller.
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         let m = HeaderMetrics::new(theme);
         let style = theme.text(self.level.role());
-        let room =
-            (width - self.leading_inset(theme, &m) - self.trailing_width(text, theme, &m)).max(1.0);
+        let room = (width - self.trailing_width(text, theme, &m)).max(1.0);
         let title_h = f64::from(
             text.measure_style(self.title, Some(crate::num::f32_of_f64(room)), &style)
                 .1,
@@ -366,21 +389,16 @@ impl<'a> SectionHeaderFace<'a> {
         })
     }
 
-    /// The room the chevron takes before the title.
-    fn leading_inset(&self, theme: &Theme, m: &HeaderMetrics) -> f64 {
-        if self.disclosure.is_some() {
-            f64::from(theme.tokens.metrics.icon_sm) + m.gap
-        } else {
-            0.0
-        }
-    }
-
     fn trailing_width(&self, text: &mut TextRenderer, theme: &Theme, m: &HeaderMetrics) -> f64 {
         let count = self.count.map_or(0.0, |count| {
             m.count_size(text, &count.to_string()).0 + m.gap
         });
+        let trailing_count = self.trailing_count.map_or(0.0, |count| {
+            f64::from(text.measure_style(&count.to_string(), None, &m.count).0) + m.gap
+        });
         let action = self.action_width(text, theme);
         count
+            + trailing_count
             + if action > 0.0 {
                 action - m.action_pad + m.gap
             } else {
@@ -411,8 +429,7 @@ impl<'a> SectionHeaderFace<'a> {
         let theme = ctx.theme;
         let m = HeaderMetrics::new(theme);
         let style = theme.text(self.level.role());
-        let inset = self.leading_inset(theme, &m);
-        let room = (rect.width() - inset - self.trailing_width(ctx.text, theme, &m)).max(1.0);
+        let room = (rect.width() - self.trailing_width(ctx.text, theme, &m)).max(1.0);
         let wrap = crate::num::f32_of_f64(room);
         let (title_w, title_h) = ctx.text.measure_style(self.title, Some(wrap), &style);
         let first_line = f64::from(style.line_height_px());
@@ -424,27 +441,60 @@ impl<'a> SectionHeaderFace<'a> {
             cy - f64::from(title_h) / 2.0
         };
         if let Some(open) = self.disclosure {
+            // The chevron hangs in the gutter left of the content column, as a row's does:
+            // folding never pushes the heading off the column its rows stand in.
             let side = f64::from(theme.tokens.metrics.icon_sm);
-            let chevron = Rect::new(rect.x0, cy - side / 2.0, rect.x0 + side, cy + side / 2.0);
+            let gutter = side + m.gap;
+            let chevron = Rect::new(
+                rect.x0 - gutter,
+                cy - side / 2.0,
+                rect.x0 - gutter + side,
+                cy + side / 2.0,
+            );
             let icon = if open {
                 Icon::ChevronDown
             } else {
                 Icon::ChevronRight
             };
-            icon.draw(ctx.scene, ctx.transform, chevron, theme.text_dim);
+            icon.draw(
+                ctx.scene,
+                ctx.transform,
+                chevron,
+                self.tone.map_or(theme.text_dim, |tone| tone.colour(theme)),
+            );
         }
+        // How a group's heading reads: its tone's colour, the quiet dim of a heading that
+        // names the rows under it, or the section's own ink.
+        let ink = match (self.level, self.tone) {
+            (_, Some(tone)) => tone.colour(theme),
+            (Level::Group, None) => theme.text_dim,
+            (Level::Section, None) => theme.text_primary,
+        };
         ctx.text(
             self.title,
             &style,
-            theme.text_primary,
-            Point::new(rect.x0 + inset, top),
+            ink,
+            Point::new(rect.x0, top),
             Some(wrap),
         );
         if let Some(count) = self.count {
             let label = count.to_string();
             let (w, h) = m.count_size(ctx.text, &label);
-            let x = rect.x0 + inset + f64::from(title_w).min(room) + m.gap;
+            let x = rect.x0 + f64::from(title_w).min(room) + m.gap;
             paint_count(ctx, Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0), &label);
+        }
+        if let Some(count) = self.trailing_count {
+            // On the trailing edge, in the column the rows' facts end on.
+            let label = count.to_string();
+            let (w, h) = ctx.text.measure_style(&label, None, &m.count);
+            let x = rect.x1 - f64::from(w);
+            ctx.text(
+                &label,
+                &m.count,
+                self.tone.map_or(theme.text_dim, |tone| tone.colour(theme)),
+                Point::new(x, cy - f64::from(h) / 2.0),
+                None,
+            );
         }
         if let (Some(label), Some(target)) = (self.action, self.action_rect(rect, ctx.text, theme))
         {
@@ -465,7 +515,7 @@ impl<'a> SectionHeaderFace<'a> {
             .with_name(self.title)
             .with_level(usize::from(self.level.heading_level()))
             .with_bounds(rect);
-        if let Some(count) = self.count {
+        if let Some(count) = self.count.or(self.trailing_count) {
             node = node.with_value(count.to_string());
         }
         node
@@ -703,7 +753,12 @@ impl Widget for HeaderRow {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.own_paint_changed() || self.parts.children.iter().any(|child| child.needs_redraw())
+        self.own_paint_changed()
+            || self
+                .parts
+                .children
+                .iter()
+                .any(|child| child.needs_redraw() || child.needs_animation_frame())
     }
 
     /// Where its hover, press or focus changed, and what its parts changed:
@@ -1578,11 +1633,10 @@ impl Section {
             .collect()
     }
 
-    /// Bring the rows of each run of consecutive list rows into one list: a
-    /// separator under each row a row follows (hidden beside a selected
-    /// one), one lift across adjacent selected rows, and one badge column.
+    /// Bring the rows of each run of consecutive list rows into one list: one lift across
+    /// adjacent selected rows, and one badge column.
     fn sync_rows(&mut self, text: &mut TextRenderer, theme: &Theme) {
-        self.sync_row_separators();
+        self.sync_row_join();
         // Badge columns, per run of consecutive rows.
         let badges: Vec<Option<Option<String>>> = self
             .parts
@@ -1653,9 +1707,9 @@ impl Section {
         }
     }
 
-    /// A list row gets a separator when a list row follows it, hidden when
-    /// either is selected; a selected row's lift joins a selected neighbour.
-    fn sync_row_separators(&mut self) {
+    /// A selected row's lift joins a selected neighbour: rows are one lift and one edge, with
+    /// no rule between them.
+    fn sync_row_join(&mut self) {
         // Each item's selection when it is a row of the list (a disclosure
         // row is never selected), `None` when it is not a row.
         let selected: Vec<Option<bool>> = self
@@ -1681,13 +1735,10 @@ impl Section {
                 continue;
             };
             if let Some(row) = any.downcast_mut::<crate::widget::ListRow>() {
-                row.set_separator(next.is_some(), next.unwrap_or(false));
                 row.set_join(RowJoin::new(
                     previous.unwrap_or(false),
                     next.unwrap_or(false),
                 ));
-            } else if let Some(row) = any.downcast_mut::<crate::widget::DisclosureRow>() {
-                row.set_separator(next.is_some() && next != Some(true));
             }
         }
     }
@@ -1703,6 +1754,10 @@ pub struct StatusLine {
     style: Option<TextStyle>,
     dot: f64,
     gap: f64,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1717,6 +1772,7 @@ enum OwnedStatus {
 impl StatusLine {
     fn with(status: OwnedStatus, text: impl Into<String>) -> Self {
         Self {
+            dirty: true,
             status,
             text: text.into(),
             rect: Rect::ZERO,
@@ -1753,6 +1809,7 @@ impl StatusLine {
 
     /// Replace the sentence (a live count).
     pub fn set_text(&mut self, text: impl Into<String>) {
+        self.dirty = true;
         self.text = text.into();
     }
 
@@ -1849,6 +1906,14 @@ impl Widget for StatusLine {
             Point::new(x, self.rect.y0),
             Some(crate::num::f32_of_f64((self.rect.x1 - x).max(1.0))),
         );
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

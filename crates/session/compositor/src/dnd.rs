@@ -55,6 +55,7 @@ use smithay::wayland::selection::data_device::{
     ClientDndGrabHandler, ServerDndGrabHandler, SourceMetadata, start_dnd, with_source_metadata,
 };
 use smithay::xwayland::X11Surface;
+use smithay::xwayland::xwm::XwmId;
 
 use crate::render::OutputRenderElement;
 use crate::selection::{MAX_SELECTION_BYTES, host_offer, normalized_mimes, serve, value_for};
@@ -77,10 +78,9 @@ pub(crate) struct Dnd {
     incoming: Option<Incoming>,
     /// The data our drag serves the X11 window it was dropped on.
     x_served: Option<XServed>,
-    /// The XDND connection, once Xwayland is ready.
-    bridge: Option<XdndBridge>,
-    /// The proxy window, as the window manager sees it.
-    proxy_surface: Option<X11Surface>,
+    /// The XDND connections, one per workspace display with an X11 window
+    /// to drop on.
+    bridged: Vec<Bridged>,
     /// Bytes read off the loop, for the loop.
     deliveries: Option<Sender<Delivery>>,
     /// The drag grab of an X11 client's drag ended: Xwayland must see the
@@ -149,8 +149,9 @@ enum Target {
         index: usize,
         mime: Option<String>,
     },
-    /// An X11 window; `aware` when it takes XDND drops.
+    /// An X11 window of `xwm`'s display; `aware` when it takes XDND drops.
     X11 {
+        xwm: XwmId,
         window: u32,
         aware: bool,
     },
@@ -162,7 +163,13 @@ impl Target {
         match (self, under) {
             (Self::Nothing, Under::Nothing) | (Self::Client, Under::Client(..)) => true,
             (Self::Host { index, .. }, Under::Host(new)) => index == new,
-            (Self::X11 { window, .. }, Under::X11(new)) => window == new,
+            (
+                Self::X11 { xwm, window, .. },
+                Under::X11 {
+                    xwm: under_xwm,
+                    window: under_window,
+                },
+            ) => xwm == under_xwm && window == under_window,
             _ => false,
         }
     }
@@ -173,18 +180,23 @@ enum Under {
     Nothing,
     Client(WlSurface, Point<f64, Logical>),
     Host(usize),
-    X11(u32),
+    X11 { xwm: XwmId, window: u32 },
 }
 
 /// What a compositor-started Wayland drag serves.
 enum Served {
     Host(Arc<BTreeMap<String, Vec<u8>>>),
-    /// The X11 drag's types, read through the bridge.
-    X11(Vec<String>),
+    /// The X11 drag's types, read through the bridge of `xwm`'s display.
+    X11 {
+        xwm: XwmId,
+        types: Vec<String>,
+    },
 }
 
 /// An X11 client's drag over the proxy.
 struct Incoming {
+    /// The display the drag came from.
+    xwm: XwmId,
     types: Vec<String>,
     mimes: Vec<String>,
     /// The hosted surface it is over while Xwayland still runs the drag.
@@ -199,11 +211,32 @@ struct Incoming {
 
 /// Data our XDND drag serves an X11 window.
 struct XServed {
+    /// The display of the window it is dropped on.
+    xwm: XwmId,
     values: BTreeMap<String, Vec<u8>>,
     /// Formats still being read from the Wayland source.
     loading: Vec<String>,
     /// Requests for formats still loading.
     waiting: Vec<Request>,
+}
+
+/// The XDND connection to one workspace's display.
+struct Bridged {
+    xwm: XwmId,
+    bridge: XdndBridge,
+    /// The proxy window, as the window manager sees it.
+    proxy: Option<X11Surface>,
+}
+
+impl Dnd {
+    /// The XDND connection of `xwm`'s display.
+    fn bridged(&self, xwm: XwmId) -> Option<&Bridged> {
+        self.bridged.iter().find(|bridged| bridged.xwm == xwm)
+    }
+
+    fn bridged_mut(&mut self, xwm: XwmId) -> Option<&mut Bridged> {
+        self.bridged.iter_mut().find(|bridged| bridged.xwm == xwm)
+    }
 }
 
 /// Bytes read off the loop.
@@ -459,7 +492,13 @@ impl State {
         match self.surface_under(at) {
             Some((window, surface, origin)) => match window.x11_surface() {
                 Some(_) if x11_source => Under::Nothing,
-                Some(x11) => Under::X11(x11.window_id()),
+                Some(x11) => match x11.xwm_id() {
+                    Some(xwm) => Under::X11 {
+                        xwm,
+                        window: x11.window_id(),
+                    },
+                    None => Under::Nothing,
+                },
                 None => Under::Client(surface, origin),
             },
             None => Under::Nothing,
@@ -516,9 +555,9 @@ impl State {
                         host.drop_left();
                     }
                 }
-                Target::X11 { .. } => {
-                    if let Some(bridge) = self.dnd.bridge.as_mut() {
-                        bridge.source_leave();
+                Target::X11 { xwm, .. } => {
+                    if let Some(bridged) = self.dnd.bridged_mut(xwm) {
+                        bridged.bridge.source_leave();
                     }
                 }
                 Target::Client | Target::Nothing => {}
@@ -536,17 +575,23 @@ impl State {
                 self.source_feedback(mime.as_deref(), action);
                 Target::Host { index, mime }
             }
-            Under::X11(window) => {
+            Under::X11 { xwm, window } => {
                 let aware = match old {
-                    Target::X11 { window: was, aware } if same && was == window => aware,
-                    _ => self.dnd.bridge.as_mut().is_some_and(|bridge| {
-                        bridge.source_enter(window, &xdnd::targets_of_mimes(&mimes))
+                    Target::X11 {
+                        xwm: was_xwm,
+                        window: was,
+                        aware,
+                    } if same && was == window && was_xwm == xwm => aware,
+                    _ => self.dnd.bridged_mut(xwm).is_some_and(|bridged| {
+                        bridged
+                            .bridge
+                            .source_enter(window, &xdnd::targets_of_mimes(&mimes))
                     }),
                 };
-                if aware && let Some(bridge) = &self.dnd.bridge {
-                    bridge.source_position(at.x, at.y, action);
+                if aware && let Some(bridged) = self.dnd.bridged(xwm) {
+                    bridged.bridge.source_position(at.x, at.y, action);
                 }
-                Target::X11 { window, aware }
+                Target::X11 { xwm, window, aware }
             }
         };
         if let Some(drag) = self.dnd.drag.as_mut() {
@@ -674,7 +719,9 @@ impl State {
                 }
                 Some(false)
             }
-            Target::X11 { aware: true, .. } => Some(self.drop_on_x11()),
+            Target::X11 {
+                aware: true, xwm, ..
+            } => Some(self.drop_on_x11(xwm)),
             Target::X11 { .. } => Some(false),
             Target::Client | Target::Nothing => None,
         };
@@ -719,10 +766,13 @@ impl State {
         else {
             return;
         };
+        let Some(xwm) = self.dnd.incoming.as_ref().map(|incoming| incoming.xwm) else {
+            return;
+        };
         let mut writer = None;
         self.read_for_host(index, mime, finish_x11, |fd| writer = Some(fd));
-        if let (Some(fd), Some(bridge)) = (writer, self.dnd.bridge.as_mut()) {
-            bridge.convert(target, fd);
+        if let (Some(fd), Some(bridged)) = (writer, self.dnd.bridged_mut(xwm)) {
+            bridged.bridge.convert(target, fd);
         }
     }
 
@@ -809,6 +859,9 @@ impl State {
                 self.finish_source();
             }
             Delivery::ReadAhead { mime, bytes } => {
+                let Some(xwm) = self.dnd.x_served.as_ref().map(|served| served.xwm) else {
+                    return;
+                };
                 let Some(served) = self.dnd.x_served.as_mut() else {
                     return;
                 };
@@ -816,27 +869,26 @@ impl State {
                 served.values.insert(mime, bytes);
                 let waiting = std::mem::take(&mut served.waiting);
                 for request in waiting {
-                    self.answer_x11(request);
+                    self.answer_x11(xwm, request);
                 }
             }
         }
         self.x11_dnd_events();
     }
 
-    /// Drop on the X11 window under the drag: what it may ask for is read
-    /// ahead (a Wayland source) or at hand (a hosted one).
-    fn drop_on_x11(&mut self) -> bool {
+    /// Drop on the X11 window of `xwm`'s display under the drag: what it may
+    /// ask for is read ahead (a Wayland source) or at hand (a hosted one).
+    fn drop_on_x11(&mut self, xwm: XwmId) -> bool {
         let Some(drag) = &self.dnd.drag else {
             return false;
         };
         if !self
             .dnd
-            .bridge
-            .as_ref()
-            .is_some_and(XdndBridge::source_accepted)
+            .bridged(xwm)
+            .is_some_and(|bridged| bridged.bridge.source_accepted())
         {
-            if let Some(bridge) = self.dnd.bridge.as_mut() {
-                bridge.source_leave();
+            if let Some(bridged) = self.dnd.bridged_mut(xwm) {
+                bridged.bridge.source_leave();
             }
             return false;
         }
@@ -845,6 +897,7 @@ impl State {
                 let source = source.clone();
                 let loading = xdnd::read_ahead(&drag.mimes);
                 self.dnd.x_served = Some(XServed {
+                    xwm,
                     values: BTreeMap::new(),
                     loading: loading.clone(),
                     waiting: Vec::new(),
@@ -859,6 +912,7 @@ impl State {
             }
             Source::Host { values, .. } => {
                 self.dnd.x_served = Some(XServed {
+                    xwm,
                     values: values.as_ref().clone(),
                     loading: Vec::new(),
                     waiting: Vec::new(),
@@ -868,37 +922,47 @@ impl State {
             Source::X11 => return false,
         }
         self.dnd
-            .bridge
-            .as_mut()
-            .is_some_and(XdndBridge::source_drop)
+            .bridged_mut(xwm)
+            .is_some_and(|bridged| bridged.bridge.source_drop())
     }
 
-    /// Answer an X11 window's request for our drag's data.
-    fn answer_x11(&mut self, request: Request) {
-        let Some(bridge) = self.dnd.bridge.as_mut() else {
-            return;
+    /// Answer an X11 window of `xwm`'s display asking for our drag's data.
+    fn answer_x11(&mut self, xwm: XwmId, request: Request) {
+        let answer: Option<Vec<u8>> = match self
+            .dnd
+            .x_served
+            .as_mut()
+            .filter(|served| served.xwm == xwm)
+        {
+            None => None,
+            Some(served) => {
+                let available: Vec<String> = served
+                    .values
+                    .keys()
+                    .chain(served.loading.iter())
+                    .cloned()
+                    .collect();
+                match xdnd::pick_format(&request.target, &available) {
+                    Some(mime) if served.loading.contains(&mime) => {
+                        // The bytes are still being read: answered when they
+                        // arrive.
+                        served.waiting.push(request);
+                        return;
+                    }
+                    Some(mime) => served.values.get(&mime).cloned(),
+                    None => None,
+                }
+            }
         };
-        let Some(served) = self.dnd.x_served.as_mut() else {
-            bridge.answer(&request, None);
-            return;
-        };
-        let available: Vec<String> = served
-            .values
-            .keys()
-            .chain(served.loading.iter())
-            .cloned()
-            .collect();
-        match xdnd::pick_format(&request.target, &available) {
-            Some(mime) if served.loading.contains(&mime) => served.waiting.push(request),
-            Some(mime) => bridge.answer(&request, served.values.get(&mime).map(Vec::as_slice)),
-            None => bridge.answer(&request, None),
+        if let Some(bridged) = self.dnd.bridged_mut(xwm) {
+            bridged.bridge.answer(&request, answer.as_deref());
         }
     }
 
     // X11 clients' drags.
 
-    /// Connect the XDND bridge to Xwayland's display `display`.
-    pub(crate) fn start_xdnd(&mut self, display: u32) {
+    /// Connect an XDND bridge to the display of `xwm`'s server.
+    pub(crate) fn start_xdnd(&mut self, display: u32, xwm: XwmId) {
         let bridge = match XdndBridge::connect(display) {
             Ok(bridge) => bridge,
             Err(error) => {
@@ -920,84 +984,92 @@ impl State {
             tracing::warn!(%error, "no drag-and-drop with X11 windows");
             return;
         }
-        self.dnd.bridge = Some(bridge);
+        self.dnd.bridged.retain(|bridged| bridged.xwm != xwm);
+        self.dnd.bridged.push(Bridged {
+            xwm,
+            bridge,
+            proxy: None,
+        });
     }
 
-    /// Whether `surface` is the bridge's proxy; the window manager keeps
-    /// it out of the scene.
-    pub(crate) fn dnd_proxy(&mut self, surface: &X11Surface) -> bool {
+    /// Whether `surface` is the proxy of `xwm`'s display; the window manager
+    /// keeps it out of the scene.
+    pub(crate) fn dnd_proxy(&mut self, xwm: XwmId, surface: &X11Surface) -> bool {
         let proxy = self
             .dnd
-            .bridge
-            .as_ref()
-            .is_some_and(|bridge| bridge.proxy() == surface.window_id());
-        if proxy {
-            self.dnd.proxy_surface = Some(surface.clone());
+            .bridged_mut(xwm)
+            .is_some_and(|bridged| bridged.bridge.proxy() == surface.window_id());
+        if proxy && let Some(bridged) = self.dnd.bridged_mut(xwm) {
+            bridged.proxy = Some(surface.clone());
         }
         proxy
     }
 
-    /// Whether an X11 window holds the pointer's press or a finger
+    /// The display whose X11 window holds the pointer's press or a finger
     /// (Xwayland runs any X11 drag under either).
-    fn x11_held(&self) -> bool {
-        let is_x11 = |surface: &WlSurface| {
+    fn x11_held(&self) -> Option<XwmId> {
+        let xwm_of = |surface: &WlSurface| {
             self.space
                 .elements()
-                .any(|window| crate::xwayland::x11_wl_surface(window).as_ref() == Some(surface))
+                .find(|window| crate::xwayland::x11_wl_surface(window).as_ref() == Some(surface))
+                .and_then(|window| window.x11_surface())
+                .and_then(X11Surface::xwm_id)
         };
         let pressed = self
             .seat
             .get_pointer()
             .and_then(|pointer| pointer.grab_start_data())
             .and_then(|start| start.focus)
-            .is_some_and(|(surface, _)| is_x11(&surface));
-        pressed
-            || self
-                .touch
+            .and_then(|(surface, _)| xwm_of(&surface));
+        pressed.or_else(|| {
+            self.touch
                 .clients
                 .iter()
                 .filter_map(|finger| finger.focus.as_ref())
-                .any(|(surface, _)| is_x11(surface))
+                .find_map(|(surface, _)| xwm_of(surface))
+        })
     }
 
-    /// Raise the proxy while an X11 client may be dragging — under the
-    /// pointer or a finger — over something that is not an X11 window;
-    /// take it down otherwise.
+    /// Raise the proxy of the display an X11 client may be dragging from —
+    /// under the pointer or a finger — over something that is not an X11
+    /// window; take the other proxies down.
     pub(crate) fn x11_drag_motion(&mut self, at: Point<f64, Logical>) {
-        let Some(bridge) = &self.dnd.bridge else {
-            return;
-        };
-        let wanted = bridge.x11_may_drag()
-            && self.dnd.drag.is_none()
-            && self.x11_held()
-            && !matches!(self.drag_under(at, false), Under::X11(_));
-        // A compositor drag that took an X11 drag over needs the proxy to
-        // end it.
-        let keep = self
+        let held = self.x11_held();
+        let over_x11 = matches!(self.drag_under(at, false), Under::X11 { .. });
+        let dragging = self.dnd.drag.is_none();
+        let taken_over = self
             .dnd
             .incoming
             .as_ref()
-            .is_some_and(|incoming| incoming.grabbed);
-        if let Some(bridge) = self.dnd.bridge.as_mut() {
-            bridge.show_proxy(wanted || keep);
+            .filter(|incoming| incoming.grabbed)
+            .map(|incoming| incoming.xwm);
+        for bridged in &mut self.dnd.bridged {
+            let wanted =
+                Some(bridged.xwm) == held && dragging && !over_x11 && bridged.bridge.x11_may_drag();
+            let keep = taken_over == Some(bridged.xwm);
+            bridged.bridge.show_proxy(wanted || keep);
         }
     }
 
     /// Handle what the X11 side sent.
     pub(crate) fn x11_dnd_events(&mut self) {
-        let Some(bridge) = self.dnd.bridge.as_mut() else {
-            return;
-        };
-        for event in bridge.events() {
-            self.x11_dnd_event(event);
+        let mut events = Vec::new();
+        for bridged in &mut self.dnd.bridged {
+            for event in bridged.bridge.events() {
+                events.push((bridged.xwm, event));
+            }
+        }
+        for (xwm, event) in events {
+            self.x11_dnd_event(xwm, event);
         }
     }
 
-    fn x11_dnd_event(&mut self, event: BridgeEvent) {
+    fn x11_dnd_event(&mut self, xwm: XwmId, event: BridgeEvent) {
         match event {
             BridgeEvent::Enter { types } => {
                 let mimes = xdnd::mimes_of_targets(&types);
                 self.dnd.incoming = Some(Incoming {
+                    xwm,
                     types,
                     mimes,
                     host: None,
@@ -1033,18 +1105,21 @@ impl State {
                 self.dnd.x_served = None;
                 self.finish_source();
             }
-            BridgeEvent::Request(request) => self.answer_x11(request),
+            BridgeEvent::Request(request) => self.answer_x11(xwm, request),
         }
     }
 
     /// The X11 drag is at `at` over the proxy, Xwayland still running it.
     fn incoming_position(&mut self, at: Point<f64, Logical>) {
+        let Some(xwm) = self.dnd.incoming.as_ref().map(|incoming| incoming.xwm) else {
+            return;
+        };
         let Some(incoming) = &self.dnd.incoming else {
             return;
         };
         if incoming.grabbed {
             // The compositor drag took over; the drop decides.
-            self.x11_status(true);
+            self.x11_status(xwm, true);
             return;
         }
         let mimes = incoming.mimes.clone();
@@ -1066,7 +1141,7 @@ impl State {
                 if let Some(incoming) = self.dnd.incoming.as_mut() {
                     incoming.host = Some((index, mime));
                 }
-                self.x11_status(accept);
+                self.x11_status(xwm, accept);
             }
             Under::Client(surface, origin) => {
                 if let Some(incoming) = self.dnd.incoming.as_mut() {
@@ -1074,18 +1149,18 @@ impl State {
                 }
                 self.take_over_x11_drag(surface, origin, mimes);
             }
-            Under::Nothing | Under::X11(_) => {
+            Under::Nothing | Under::X11 { .. } => {
                 if let Some(incoming) = self.dnd.incoming.as_mut() {
                     incoming.host = None;
                 }
-                self.x11_status(false);
+                self.x11_status(xwm, false);
             }
         }
     }
 
-    fn x11_status(&self, accept: bool) {
-        if let Some(bridge) = &self.dnd.bridge {
-            bridge.status(accept, Action::Copy);
+    fn x11_status(&self, xwm: XwmId, accept: bool) {
+        if let Some(bridged) = self.dnd.bridged(xwm) {
+            bridged.bridge.status(accept, Action::Copy);
         }
     }
 
@@ -1098,18 +1173,24 @@ impl State {
         origin: Point<f64, Logical>,
         mimes: Vec<String>,
     ) {
+        let Some(xwm) = self.dnd.incoming.as_ref().map(|incoming| incoming.xwm) else {
+            return;
+        };
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
         let Some(start) = pointer.grab_start_data() else {
-            self.x11_status(false);
+            self.x11_status(xwm, false);
             return;
         };
         let Some(incoming) = self.dnd.incoming.as_mut() else {
             return;
         };
         incoming.grabbed = true;
-        self.dnd.served = Some(Served::X11(incoming.types.clone()));
+        self.dnd.served = Some(Served::X11 {
+            xwm,
+            types: incoming.types.clone(),
+        });
         self.dnd.drag = Some(Drag {
             source: Source::X11,
             mimes: mimes.clone(),
@@ -1144,7 +1225,7 @@ impl State {
             },
         );
         pointer.frame(self);
-        self.x11_status(true);
+        self.x11_status(xwm, true);
     }
 
     /// The X11 source dropped on the proxy.
@@ -1171,8 +1252,8 @@ impl State {
         let Some(incoming) = self.dnd.incoming.take() else {
             return;
         };
-        if let Some(bridge) = self.dnd.bridge.as_mut() {
-            bridge.finish(success, Action::Copy);
+        if let Some(bridged) = self.dnd.bridged_mut(incoming.xwm) {
+            bridged.bridge.finish(success, Action::Copy);
         }
         if incoming.grabbed {
             self.refocus_pointer();
@@ -1183,10 +1264,14 @@ impl State {
     /// on the proxy so Xwayland sees the button up (it releases every
     /// button a returning pointer holds) and the source drops there.
     fn release_x11_source(&mut self) {
+        let Some(xwm) = self.dnd.incoming.as_ref().map(|incoming| incoming.xwm) else {
+            self.finish_incoming(false);
+            return;
+        };
         let Some(surface) = self
             .dnd
-            .proxy_surface
-            .as_ref()
+            .bridged(xwm)
+            .and_then(|bridged| bridged.proxy.as_ref())
             .and_then(X11Surface::wl_surface)
         else {
             self.finish_incoming(false);
@@ -1206,6 +1291,42 @@ impl State {
             },
         );
         pointer.frame(self);
+    }
+
+    /// The display of `xwm`'s server is gone: its bridge, its windows'
+    /// drags and what they served go with it.
+    pub(crate) fn forget_x11_dnd(&mut self, xwm: XwmId) {
+        self.dnd.bridged.retain(|bridged| bridged.xwm != xwm);
+        if self
+            .dnd
+            .incoming
+            .as_ref()
+            .is_some_and(|incoming| incoming.xwm == xwm)
+        {
+            self.dnd.incoming = None;
+            if self
+                .dnd
+                .drag
+                .as_ref()
+                .is_some_and(|drag| matches!(drag.source, Source::X11))
+            {
+                self.dnd.drag = None;
+                self.dnd.release_x11_source = false;
+            }
+        }
+        if self
+            .dnd
+            .x_served
+            .as_ref()
+            .is_some_and(|served| served.xwm == xwm)
+        {
+            self.dnd.x_served = None;
+        }
+        if self.dnd.served.as_ref().is_some_and(
+            |served| matches!(served, Served::X11 { xwm: served, .. } if *served == xwm),
+        ) {
+            self.dnd.served = None;
+        }
     }
 }
 
@@ -1261,23 +1382,23 @@ impl ClientDndGrabHandler for State {
 
 impl ServerDndGrabHandler for State {
     fn send(&mut self, mime_type: String, fd: OwnedFd, _seat: Seat<Self>) {
-        match &self.dnd.served {
-            Some(Served::Host(values)) => {
-                if let Some(bytes) = value_for(values, &mime_type) {
-                    serve(fd, bytes.to_vec());
-                } else {
-                    tracing::debug!(mime_type, "drag asked for a format it does not offer");
-                }
+        let x11 = match &self.dnd.served {
+            Some(Served::X11 { xwm, types }) => Some((*xwm, xdnd::pick_format(&mime_type, types))),
+            _ => None,
+        };
+        if let Some((xwm, target)) = x11 {
+            if let (Some(target), Some(bridged)) = (target, self.dnd.bridged_mut(xwm)) {
+                bridged.bridge.convert(target, fd);
             }
-            Some(Served::X11(types)) => {
-                if let (Some(target), Some(bridge)) = (
-                    xdnd::pick_format(&mime_type, types),
-                    self.dnd.bridge.as_mut(),
-                ) {
-                    bridge.convert(target, fd);
-                }
-            }
-            None => {}
+            return;
+        }
+        let Some(Served::Host(values)) = &self.dnd.served else {
+            return;
+        };
+        if let Some(bytes) = value_for(values, &mime_type) {
+            serve(fd, bytes.to_vec());
+        } else {
+            tracing::debug!(mime_type, "drag asked for a format it does not offer");
         }
     }
 
