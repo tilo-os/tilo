@@ -371,10 +371,6 @@ pub fn pull(mut ask: impl FnMut(*mut u8, usize) -> i32) -> Vec<u8> {
 }
 
 /// Fail the call, with what the host reports as its refusal.
-#[expect(
-    clippy::panic,
-    reason = "a failed call never returns; the host that links it natively reads the refusal it recorded before this"
-)]
 pub fn fail(message: &str) -> ! {
     unsafe { host::fail(message.as_ptr(), message.len()) };
     // The host does not return from `fail`. A module runs only as wasm, where a call that
@@ -383,6 +379,17 @@ pub fn fail(message: &str) -> ! {
     #[cfg(target_arch = "wasm32")]
     core::arch::wasm32::unreachable();
     #[cfg(not(target_arch = "wasm32"))]
+    native_fail(message)
+}
+
+/// A failed call in a host that links the model rather than running it as a module: it cannot
+/// return, and the host reads the refusal recorded before this.
+#[cfg(not(target_arch = "wasm32"))]
+#[expect(
+    clippy::panic,
+    reason = "a failed call never returns; the host reads the refusal recorded before this"
+)]
+fn native_fail(message: &str) -> ! {
     panic!("{message}");
 }
 
