@@ -1150,7 +1150,7 @@ workspace-notice-renamed = { $name } renamed the workspace to { $workspace }
 # they asked for, why, and the button that tries it again.
 answer-app-not-opened = { $app } could not open
 answer-app-stopped = { $app } stopped working
-answer-why-stopped = It stopped unexpectedly.
+answer-why-stopped = It ended unexpectedly.
 answer-app-closed-for-memory = { $app } was closed to free memory
 answer-app-closed-for-runaway = { $app } was using too much memory
 answer-why-runaway = It was closed so the rest keeps running.

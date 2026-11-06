@@ -66,7 +66,10 @@ impl Outcome {
             return why.to_owned();
         }
         let mut said = self.what.trim_end_matches('.').to_owned();
-        said.push_str(": ");
+        // A reason written as a sentence of its own follows as one; one written
+        // as a clause follows the colon.
+        let sentence = why.chars().next().is_some_and(char::is_uppercase);
+        said.push_str(if sentence { ". " } else { ": " });
         said.push_str(why);
         said
     }

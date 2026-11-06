@@ -72,7 +72,7 @@ mod tests {
             crate::outcome::Closed::Crashed
                 .outcome("Canvas", t("answer-reopen"))
                 .detail(),
-            "Canvas stopped working: it was closed to keep the rest of the desktop running"
+            "Canvas stopped working. It ended unexpectedly."
         );
         assert_eq!(
             crate::outcome::Closed::Memory
@@ -84,11 +84,19 @@ mod tests {
             crate::outcome::Closed::Runaway
                 .outcome("Canvas", t("answer-reopen"))
                 .detail(),
-            "Canvas was using too much memory: it was closed to keep the rest of the desktop running"
+            "Canvas was using too much memory. It was closed so the rest keeps running."
         );
         assert_eq!(
             t_args("answer-app-not-opened", &[("app", "Notes".into())]),
             "Notes could not open"
+        );
+        assert_eq!(
+            t_args("answer-app-stopped", &[("app", "Notes".into())]),
+            "Notes stopped working"
+        );
+        assert_eq!(
+            t("answer-why-not-opened"),
+            "It was stopped before a window appeared."
         );
     }
 
