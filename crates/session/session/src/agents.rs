@@ -8,6 +8,10 @@
 //! ([`tilo_action_broker::services::AgentRoster`]). Nothing here keeps state
 //! of its own beyond the record this device has open: who works here is the
 //! record's.
+//!
+//! The person who keeps an agent runs it: the pass hands the agents kept
+//! here to the session's launches ([`Kept`]), which start each one's
+//! process — the record is who works, and whose device runs them.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -16,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use tilo_action_policy::{Standing, WorkspacePolicy};
 use tilo_app::framework::WorkspaceRecord;
-use tilo_app::tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents as Record};
+use tilo_app::tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents as Record, same_person};
 use ui::permissions::{LivePermissions, PermissionContext};
 use ui::record::workspace::WorkspaceRecords;
 use ui::record::{RecordId, RecordOwners};
@@ -24,6 +28,20 @@ use ui::record::{RecordId, RecordOwners};
 /// How this session names a record it opened, where the record's history is
 /// told.
 const SESSION_APP: (&str, &str) = ("tilo-session", "Workspace settings");
+
+/// An agent this device runs because the person sitting here keeps it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Kept {
+    /// The workspace whose record names it.
+    pub workspace: String,
+    /// Its id, which its actor works as (`agent:<id>`).
+    pub id: String,
+    /// Its name, as people read it.
+    pub name: String,
+    /// The model its keeper chose for it, as `provider/model`; `None`
+    /// follows the keeper's default here.
+    pub model: Option<String>,
+}
 
 /// Who keeps each of the workspaces' agents, as the pass read their records.
 #[derive(Default)]
@@ -84,10 +102,12 @@ impl Agents {
         Arc::clone(&self.roster)
     }
 
-    /// Read each workspace's agents record as `person`, and hand who keeps
-    /// each agent to the broker.
-    pub(crate) fn feed(&self, person: &str, workspaces: &[(String, WorkspacePolicy)]) {
+    /// Read each workspace's agents record as `person`, hand who keeps each
+    /// agent to the broker, and answer the agents kept here: this device runs
+    /// those.
+    pub(crate) fn feed(&self, person: &str, workspaces: &[(String, WorkspacePolicy)]) -> Vec<Kept> {
         let mut keepers = BTreeMap::new();
+        let mut kept = Vec::new();
         for (workspace, policy) in workspaces {
             let Some(record) = self.record(workspace, policy, person) else {
                 continue;
@@ -98,11 +118,20 @@ impl Agents {
                     (workspace.clone(), agent.id.0.clone()),
                     agent.keeper.clone(),
                 );
+                if same_person(&agent.keeper, person) {
+                    kept.push(Kept {
+                        workspace: workspace.clone(),
+                        id: agent.id.0.clone(),
+                        name: agent.name.clone(),
+                        model: agent.model.clone(),
+                    });
+                }
             }
         }
         if let Ok(mut held) = self.roster.keepers.lock() {
             *held = keepers;
         }
+        kept
     }
 
     /// The workspace's agents record, opened here where it is not, at the
