@@ -22,6 +22,9 @@ pub struct FieldInfo {
     pub name: String,
     pub ty: Ty,
     pub kind: FieldKind,
+    /// `personal today: Bool = false`: one value per person, in a record everyone shares
+    /// ([`tilolang::personal`]).
+    pub personal: bool,
     /// What the field is of its type, where it declares it (`(title)`, `(done)`, `(time of:
     /// due)`): what a sentence about a change to it reads with ([`crate::did`]).
     pub role: Option<FieldRole>,
@@ -180,6 +183,7 @@ fn type_info(t: &TypeMeta, app: &str) -> Result<TypeInfo, String> {
                 name: f.name.clone(),
                 ty,
                 kind,
+                personal: f.personal,
                 role: f.role.clone(),
                 default: f.default.clone(),
                 derived,

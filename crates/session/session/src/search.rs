@@ -351,6 +351,9 @@ impl SessionSearch {
             sources.push(Box::new(Jobs(apps.jobs())));
             published.extend(apps.published());
         }
+        sources.push(Box::new(tilo_desktop_search::providers::Captures(
+            published.clone(),
+        )));
         sources.push(Box::new(tilo_desktop_search::providers::Published(
             published,
         )));

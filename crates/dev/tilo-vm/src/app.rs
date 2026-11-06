@@ -4352,6 +4352,7 @@ impl App {
                 component: component.clone(),
                 layer: layer.clone(),
                 info,
+                partner: None,
             })
         })?;
         if result.changed && result.policy == Policy::SessionRestart {

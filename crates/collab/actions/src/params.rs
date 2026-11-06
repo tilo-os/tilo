@@ -211,6 +211,12 @@ pub struct ActionParam {
     /// not invent one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub required: bool,
+    /// Whether one line of typed text fills this parameter, and the others
+    /// the words it says (`title: Text (entry)`). An action with one is
+    /// offered as a capture: a person types "call landlord fri 10am" and the
+    /// action's own field types read the rest.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub entry: bool,
     pub description: Str,
     /// When non-empty, the only values this parameter accepts.
     ///
@@ -238,6 +244,7 @@ impl ActionParam {
             name: Cow::Borrowed(name),
             ty,
             required: true,
+            entry: false,
             description: Cow::Borrowed(description),
             choices: Vec::new(),
             schema: None,
@@ -251,6 +258,7 @@ impl ActionParam {
             name: Cow::Borrowed(name),
             ty,
             required: false,
+            entry: false,
             description: Cow::Borrowed(description),
             choices: Vec::new(),
             schema: None,
@@ -269,6 +277,7 @@ impl ActionParam {
             name: name.into(),
             ty,
             required: true,
+            entry: false,
             description: description.into(),
             choices: Vec::new(),
             schema: None,
@@ -286,11 +295,20 @@ impl ActionParam {
             name: name.into(),
             ty,
             required: false,
+            entry: false,
             description: description.into(),
             choices: Vec::new(),
             schema: None,
             nullable: false,
         }
+    }
+
+    /// Have one line of typed text fill this parameter, and the parameters
+    /// the words say ([`ActionParam::entry`]).
+    #[must_use]
+    pub fn taking_entry(mut self) -> Self {
+        self.entry = true;
+        self
     }
 
     /// Restrict this parameter to `choices`. Binding refuses anything else.

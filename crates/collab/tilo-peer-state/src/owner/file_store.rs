@@ -235,7 +235,7 @@ fn read_index(path: &Path, index: StoredIndex) -> Result<(NativeAuthorityStorage
 fn drop_recovery_projections(record: &mut NativeAuthorityStorage) {
     record.workspaces.values_mut().for_each(|workspace| {
         if let Some(publication) = workspace.publication.as_mut() {
-            publication.clear_projection();
+            publication.projection.clear();
         }
     });
 }

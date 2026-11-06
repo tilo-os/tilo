@@ -21,6 +21,9 @@ d-g6kykjp2 = Due
 d-qadph346 = At
     .doc = The moment on that day it is due at, if it has one.
 
+d-gga7tyz2 = Picked
+    .doc = Whether the person looking picked it for their Today: their pick of a task everyone shares, so the same task can stand in two people's Today for reasons of their own.
+
 d-ftjnco6i = Notes
     .doc = Anything worth remembering about it.
 
@@ -133,7 +136,7 @@ d-ifftrju4 = Its project, as a project's list is of one
 d-ymvliuk3 = Adopt steps
     .doc = Gives each step of a task from before steps were tasks a task of its own, under the task it was a step of, in the order it was in.
 
-d-u7a3fue4 = Quick add
+d-u7a3fue4 = Add a task
     .doc = Adds what was typed in the entry at the end of a list as a task, to the inbox or to `p`, in the lane `s` of its board.
 
 d-rs3ubifz = New task
@@ -148,6 +151,9 @@ d-vwgro4iv = Complete
 d-fykojijd = Add subtask
     .doc = Adds a subtask under a task: a task of its own, in its project and section, under the title given.
     .did = added a subtask
+
+d-wfskl55q = Pick for today
+    .doc = Picks a task for the person looking's Today, or lets it go.
 
 d-tmwdrpev = Today
     .doc = Sets the day a task is due by, or clears it: the presets take the day, and one entry asks for any day.
@@ -231,6 +237,8 @@ d-m2xarbfd = Copy below
     .doc = Copies the tasks under `t` under `copy`, each in its place, so a copy reads as the task it copies did; answers the last task the copies end with.
 
 d-qwizihx4 = Check~present
+
+d-zfdqnzdd = Pick~present
 
 d-mdzqe3gc = Due today~present
 
