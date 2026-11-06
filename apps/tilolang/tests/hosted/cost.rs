@@ -743,3 +743,37 @@ fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
         top = now;
     }
 }
+
+/// What a change to one task re-indexes: the entries of the resources it touched, whatever the
+/// workspace holds. The session's search index keeps an entry per resource; checking one task of
+/// ten thousand replaces that task's entry, and the whole set is published again only when the
+/// publication cannot say what moved.
+#[test]
+fn a_change_reindexes_the_resources_it_touched() {
+    let _motion = ui::motion::testing::settled();
+    let doc = seeded_tasks(SEEDED);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::tasks_over_in(&route, doc, None);
+    session.settle();
+    // Opening published every entry; what the change publishes is counted from here.
+    session.forget_sent();
+
+    let (title, x, y) = first_check(&mut session);
+    session.window.click_at(x, y);
+    session.settle();
+    assert!(
+        checked_off(&mut session, &title),
+        "the row a person checked reads checked: {title}"
+    );
+
+    let (upserted, dropped, whole) = session.index_published();
+    assert!(
+        !whole,
+        "a change publishes the entries it moved, not every entry again"
+    );
+    assert_eq!(
+        (upserted, dropped),
+        (1, 0),
+        "checking one task of {SEEDED} replaces one entry, not the workspace's"
+    );
+}

@@ -347,6 +347,8 @@ impl Window {
 struct Session {
     host: TilolangHost,
     window: Window,
+    /// The requests the instance's connection sent.
+    sent: Sent,
     /// The broker's end of the instance's connection.
     _broker: Box<dyn std::any::Any>,
 }
@@ -414,6 +416,7 @@ impl Session {
             automerge::AutoCommit::new(),
             None,
             Box::new(()),
+            Rc::default(),
             |hosted| {
                 let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
                 app.init_layout();
@@ -441,7 +444,7 @@ impl Session {
         let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
         let manager = CollaborationManager::with_peer_transport(Broker {
             route: route.clone(),
-            sent,
+            sent: Rc::clone(&sent),
             inbox: Rc::clone(&inbox),
             joined: None,
         });
@@ -453,6 +456,7 @@ impl Session {
             automerge::AutoCommit::new(),
             None,
             Box::new(inbox),
+            sent,
             window,
         )
     }
@@ -468,7 +472,7 @@ impl Session {
         let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
         let manager = CollaborationManager::with_peer_transport(Broker {
             route: route.clone(),
-            sent,
+            sent: Rc::clone(&sent),
             inbox: Rc::clone(&inbox),
             joined: None,
         });
@@ -480,6 +484,7 @@ impl Session {
             doc,
             storage,
             Box::new(inbox),
+            sent,
             |hosted| {
                 Window::Harness(Box::new(FrameHarness::new(
                     ui::State::new(),
@@ -500,7 +505,7 @@ impl Session {
         let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
         let manager = CollaborationManager::with_peer_transport(Broker {
             route: route.clone(),
-            sent,
+            sent: Rc::clone(&sent),
             inbox: Rc::clone(&inbox),
             joined: None,
         });
@@ -512,6 +517,7 @@ impl Session {
             doc,
             storage,
             Box::new(inbox),
+            sent,
             |hosted| {
                 Window::Harness(Box::new(FrameHarness::new(
                     ui::State::new(),
@@ -535,9 +541,12 @@ impl Session {
         doc: ui::tilo_resource::Doc,
         storage: Option<std::path::PathBuf>,
         broker: Box<dyn std::any::Any>,
+        sent: Sent,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
-        let mut session = Self::launch(manager, route, app, person, doc, storage, broker, window);
+        let mut session = Self::launch(
+            manager, route, app, person, doc, storage, broker, sent, window,
+        );
         session.settle();
         session
     }
@@ -551,6 +560,7 @@ impl Session {
         doc: ui::tilo_resource::Doc,
         storage: Option<std::path::PathBuf>,
         broker: Box<dyn std::any::Any>,
+        sent: Sent,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
         assert!(manager.send(CollabRequest::Hello {
@@ -585,8 +595,35 @@ impl Session {
         Self {
             host,
             window: window(HostedWindow::over(theirs)),
+            sent,
             _broker: broker,
         }
+    }
+
+    /// The requests the instance sent its broker connection.
+    fn sent(&self) -> Sent {
+        Rc::clone(&self.sent)
+    }
+
+    /// Forget the requests the instance sent so far.
+    fn forget_sent(&self) {
+        self.sent.borrow_mut().clear();
+    }
+
+    /// The entries the instance published to the session's search index since `from`: what it
+    /// upserted, the keys it dropped, and whether it sent the whole set again.
+    fn index_published(&self) -> (usize, usize, bool) {
+        let mut published = (0, 0, false);
+        for request in self.sent.borrow().iter() {
+            if let CollabRequest::PublishSearchIndex { delta_json } = request {
+                let delta = ui::tilo_resource::search_index::IndexDelta::decode(delta_json)
+                    .expect("the session takes every delta");
+                published.0 += delta.upsert.len();
+                published.1 += delta.remove.len();
+                published.2 |= delta.reset;
+            }
+        }
+        published
     }
 
     /// The host's frames and the window's, until neither has anything left to do.

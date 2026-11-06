@@ -1034,6 +1034,11 @@ impl Store for AmStore {
             if let Some(doc) = inner.docs.get_mut(&id) {
                 commit_with_note(doc, note)?;
             }
+            let collections: Vec<FieldKey> = fields
+                .iter()
+                .filter(|key| listings.contains_key(*key))
+                .cloned()
+                .collect();
             let listings = fields
                 .iter()
                 .filter_map(|key| {
@@ -1046,6 +1051,7 @@ impl Store for AmStore {
             inner.notify(&ChangeSummary {
                 doc: id,
                 fields: fields.into_iter().collect(),
+                collections,
                 listings,
                 by: Some(note.invoker.clone()),
             });
