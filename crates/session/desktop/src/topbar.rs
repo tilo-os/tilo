@@ -1320,7 +1320,10 @@ impl Widget for TopBarChrome {
             return;
         }
         self.handle_keyboard(event, ctx.handled);
-        if *ctx.handled || self.handle_app_tray_press(event, ctx.handled) {
+        if *ctx.handled
+            || self.handle_app_tray_press(event, ctx.handled)
+            || self.handle_secondary_press(event, ctx.handled)
+        {
             return;
         }
         if is_left_release(event) {

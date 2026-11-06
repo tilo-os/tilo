@@ -131,8 +131,9 @@ pub trait DesktopRules {
 /// What the desktop asks of its host.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DesktopAsk {
-    /// A request of the bar the layers do not answer themselves: the
-    /// people and profile popovers, inviting, quick settings, the clock.
+    /// A request of the chrome the layers do not answer themselves: the
+    /// people and profile popovers, inviting, quick settings, the clock, and
+    /// the menu a secondary press on the desk asks for at that place.
     Intent(ChromeIntent),
     /// The person chose a host action (`id`) in the workspace menu.
     HostAction(String),
@@ -219,8 +220,22 @@ pub struct DeskLayer {
     handle: DesktopHandle,
     /// The workspace whose picture the backdrop shows.
     workspace: Cell<Option<u64>>,
+    /// Where the pointer is, in the desk's own coordinates: a press carries
+    /// no place, and the menu a secondary press opens stands at the pointer.
+    cursor: Option<Point>,
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     rect: Rect,
+}
+
+/// A place on the screen as a chrome intent carries it: the logical pixel
+/// the person pressed, rounded to the pixel they saw.
+pub(crate) fn place(at: Point) -> (i32, i32) {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a place on the screen, in the logical pixels it was pressed in"
+    )]
+    let place = (at.x.round() as i32, at.y.round() as i32);
+    place
 }
 
 /// Close the tab `tab` on this device's desk, wherever it stands.
@@ -296,9 +311,24 @@ impl DeskLayer {
             area,
             handle,
             workspace: Cell::new(workspace),
+            cursor: None,
             asks,
             rect: Rect::ZERO,
         }
+    }
+
+    /// Where a secondary press landed, when `event` is one and the pointer
+    /// stands on the desk: the menu a press asks for stands there.
+    fn secondary_press(&self, event: &WindowEvent) -> Option<(i32, i32)> {
+        let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Right,
+            ..
+        } = event
+        else {
+            return None;
+        };
+        self.cursor.filter(|at| self.rect.contains(*at)).map(place)
     }
 
     /// The area under the bar: the surface and what lies beneath it.
@@ -538,9 +568,31 @@ impl Widget for DeskLayer {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.cursor = Some(Point::new(
+                position.x / ctx.scale_factor,
+                position.y / ctx.scale_factor,
+            ));
+        } else if matches!(event, WindowEvent::CursorLeft { .. }) {
+            self.cursor = None;
+        }
         if let [_, _, area] = ctx.taffy.children(ctx.node_id).unwrap_or_default()[..] {
             self.area
                 .handle_event(event, &mut ctx.reborrow(ctx.path, area));
+        }
+        // A secondary press the desk takes — no window stands under the
+        // pointer, and nothing in the desk beneath it claimed the press — is
+        // the menu of the place it pressed: the chrome's own, offered where
+        // the person is looking.
+        if !*ctx.handled
+            && let Some(at) = self.secondary_press(event)
+        {
+            self.asks
+                .borrow_mut()
+                .push(DesktopAsk::Intent(ChromeIntent::ToggleWorkspaceMenu {
+                    at: Some(at),
+                }));
+            *ctx.handled = true;
         }
     }
 
@@ -1214,13 +1266,25 @@ impl DesktopChrome {
                 }
             }
             ChromeIntent::ShowActivity(_) => self.activity_by(None),
-            ChromeIntent::ToggleWorkspaceMenu => {
+            ChromeIntent::ToggleWorkspaceMenu { at } => {
                 if self.tilo_menu.is_menu_open() {
                     self.tilo_menu.toggle(Rect::ZERO, self.rect);
                 }
-                let model = self.workspace_menu_model();
-                self.workspace_menu
-                    .toggle(&model, self.bar.workspace_menu_rect(), self.rect);
+                let model = self.workspace_menu_model(at.is_some());
+                match at {
+                    Some((x, y)) => self.workspace_menu.open_at(
+                        &model,
+                        Point::new(f64::from(x), f64::from(y)),
+                        self.rect,
+                    ),
+                    None => {
+                        self.workspace_menu.toggle(
+                            &model,
+                            self.bar.workspace_menu_rect(),
+                            self.rect,
+                        );
+                    }
+                }
             }
             ChromeIntent::ToggleOverview => self.toggle_overview(),
             ChromeIntent::RenameWorkspace { name } => self.rename_workspace(name),
@@ -1285,9 +1349,23 @@ impl DesktopChrome {
 
     /// What the workspace menu offers now: this desktop's workspaces and
     /// the person's others the host knows, where it is hosted, the host's
-    /// own workspace commands, and what this person may change.
-    fn workspace_menu_model(&self) -> WorkspaceMenuModel {
+    /// own workspace commands, and what this person may change. Opened on the
+    /// desk (`desk`), it holds the desk's own commands as well: the welcome
+    /// verbs its launchpad declares, which the same host actions run from the
+    /// cards, search and an agent.
+    fn workspace_menu_model(&self, desk: bool) -> WorkspaceMenuModel {
         let actions = self.handle.host_actions();
+        let mut desk_actions = Vec::new();
+        if desk {
+            desk_actions.extend(actions.iter().filter(|action| action.source.is_none()).map(
+                |action| WorkspaceAction {
+                    id: action.id.clone(),
+                    title: action.title.clone(),
+                    icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
+                    destructive: action.destructive,
+                },
+            ));
+        }
         let mut workspaces = self.handle.read(|tree| {
             tree.workspaces
                 .iter()
@@ -1309,6 +1387,7 @@ impl DesktopChrome {
                 }),
         );
         WorkspaceMenuModel {
+            desk: desk_actions,
             workspaces,
             host: self.rules.workspace_host(),
             actions: actions
@@ -2166,7 +2245,7 @@ impl DesktopChrome {
                 ChromeIntent::ToggleTiloMenu
             }
             ChromeEffect::QuickSettings => ChromeIntent::ToggleQuickSettings,
-            ChromeEffect::WorkspaceMenu => ChromeIntent::ToggleWorkspaceMenu,
+            ChromeEffect::WorkspaceMenu => ChromeIntent::ToggleWorkspaceMenu { at: None },
             ChromeEffect::SwitchWorkspace {
                 delta: Some(delta), ..
             } => ChromeIntent::SwitchWorkspace(i32::try_from(*delta).unwrap_or_default()),

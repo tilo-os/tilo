@@ -281,7 +281,7 @@ fn a_hidden_bar_gives_its_strip_to_the_windows_and_shows_over_them_in_place() {
     assert!(click(&mut bar, menu), "shown, its controls work");
     assert_eq!(
         chrome.borrow().intents.as_slice(),
-        &[ChromeIntent::ToggleWorkspaceMenu]
+        &[ChromeIntent::ToggleWorkspaceMenu { at: None }]
     );
 
     bar.set_presence(TopBarPresence::Hidden);
@@ -928,7 +928,7 @@ fn keyboard_activation_matches_pointer_actions() {
     assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Space));
     assert_eq!(
         chrome.borrow().intents.last(),
-        Some(&ChromeIntent::ToggleWorkspaceMenu)
+        Some(&ChromeIntent::ToggleWorkspaceMenu { at: None })
     );
 }
 
@@ -980,7 +980,7 @@ fn the_bar_names_the_strip_after_the_workspace_and_it_opens_the_strip_switcher()
     assert!(click(&mut bar, pill));
     assert_eq!(
         chrome.borrow().intents.last(),
-        Some(&ChromeIntent::ToggleWorkspaceMenu)
+        Some(&ChromeIntent::ToggleWorkspaceMenu { at: None })
     );
 }
 
@@ -1248,9 +1248,9 @@ fn the_bar_leads_with_one_menu_and_ends_with_you() {
     assert_eq!(
         intents,
         [
-            ChromeIntent::ToggleWorkspaceMenu,
+            ChromeIntent::ToggleWorkspaceMenu { at: None },
             ChromeIntent::ToggleProfile,
-            ChromeIntent::ToggleWorkspaceMenu
+            ChromeIntent::ToggleWorkspaceMenu { at: None }
         ]
     );
 }
