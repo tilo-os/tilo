@@ -347,8 +347,8 @@ impl Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActMadeFrom, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, AgentNamed, ArgAt,
-            BytesLength, CallFn, ChangeView, CollCount, CollInsert, CollMove, CollMoveAmong,
+            Abort, ActMadeFrom, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, AgentNamed,
+            ArgAt, BytesLength, CallFn, ChangeView, CollCount, CollInsert, CollMove, CollMoveAmong,
             CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, CountBy, DayParse,
             DayPart, DayShift, DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef,
             DurationText, EditField, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew,
