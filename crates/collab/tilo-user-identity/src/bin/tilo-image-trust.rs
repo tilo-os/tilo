@@ -147,6 +147,13 @@ fn bootc_status_field_bytes(bytes: &[u8], selector: &str) -> Result<String, Stri
         "booted-image" => ("booted", &["image", "image", "image"]),
         "staged-image" => ("staged", &["image", "image", "image"]),
         "rollback-image" => ("rollback", &["image", "image", "image"]),
+        // The transport the booted deployment was installed from: `registry`
+        // for an image pulled from a registry, `oci-archive`/`oci` and the
+        // other local transports for one installed from a local medium. An
+        // absent transport reads as `registry`, which is what bootc itself
+        // assumes for a deployment that predates the field.
+        "booted-transport" => ("booted", &["image", "image", "transport"]),
+        "staged-transport" => ("staged", &["image", "image", "transport"]),
         "booted-version" => ("booted", &["image", "version"]),
         "staged-version" => ("staged", &["image", "version"]),
         "rollback-version" => ("rollback", &["image", "version"]),
@@ -1167,6 +1174,43 @@ mod tests {
                 "abc"
             );
             assert!(bootc_status_field_bytes(status, "arbitrary-expression").is_err());
+        }
+
+        // Phase: bootc_status_transport_tells_a_local_install_from_a_registry_one.
+        {
+            // A deployment installed from a local medium records that transport;
+            // this is what keeps the update policy from replacing a developer's
+            // own image with a registry build.
+            let local = br#"{"status":{"booted":{"image":{"image":{"image":"/var/tmp/image.oci.tar","transport":"oci-archive"}}},"staged":null}}"#;
+            assert_eq!(
+                bootc_status_field_bytes(local, "booted-transport").unwrap(),
+                "oci-archive"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(local, "staged-transport").unwrap(),
+                ""
+            );
+            let registry = br#"{"status":{"booted":{"image":{"image":{"image":"registry.tilo.so/tilo/tilo:latest","transport":"registry"}}}}}"#;
+            assert_eq!(
+                bootc_status_field_bytes(registry, "booted-transport").unwrap(),
+                "registry"
+            );
+            // No deployment, or a deployment that records no transport: nothing,
+            // which the update policy reads as the registry default bootc uses.
+            assert_eq!(
+                bootc_status_field_bytes(br#"{"status":{"booted":null}}"#, "booted-transport")
+                    .unwrap(),
+                ""
+            );
+            assert_eq!(
+                bootc_status_field_bytes(
+                    br#"{"status":{"booted":{"image":{"image":{"image":"registry.tilo.so/tilo/tilo:latest"}}}}}"#,
+                    "booted-transport"
+                )
+                .unwrap(),
+                ""
+            );
+            assert!(bootc_status_field_bytes(br#"{"status":{}}"#, "booted-transport").is_err());
         }
     }
 
