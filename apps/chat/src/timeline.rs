@@ -244,8 +244,9 @@ impl ChatApp {
             show_header.hash(&mut hasher);
             (timeline.thread(&m.id) != 0).hash(&mut hasher);
             self.expanded_reasoning.contains(&m.id).hash(&mut hasher);
-            if let Some(att) = &m.attachment {
-                self.embed_allowed(att.blob()).hash(&mut hasher);
+            for file in m.files() {
+                self.embed_allowed(file.blob().unwrap_or_default())
+                    .hash(&mut hasher);
             }
             self.is_my_live_share(m).hash(&mut hasher);
             let key = hasher.finish();
@@ -378,14 +379,17 @@ impl ChatApp {
     fn row_is_live(&self, m: &Message, rm: &RowM) -> bool {
         rm.editing
             || m.share.as_ref().is_some_and(|share| !share.ended)
-            || match &m.attachment {
-                Some(crate::model::Attachment::Image { blob, .. }) => {
+            || m.files().any(|file| match file {
+                tilo_reference::Attached::Image { blob, .. } => {
                     self.embed_allowed(blob)
                         && !blob.starts_with(crate::images::DEMO_SCHEME)
                         && self.images.get(&crate::images::blob_key(blob)).is_none()
                 }
-                _ => false,
-            }
+                tilo_reference::Attached::Video { .. }
+                | tilo_reference::Attached::File { .. }
+                | tilo_reference::Attached::Resource { .. }
+                | tilo_reference::Attached::Text { .. } => false,
+            })
     }
 
     /// Everything about `m` its row's paint depends on beyond the column's
@@ -409,26 +413,31 @@ impl ChatApp {
             self.message_author_name(m).hash(&mut hasher);
             self.shown_avatar(m).is_some().hash(&mut hasher);
         }
-        match &m.attachment {
-            Some(crate::model::Attachment::Image { blob, .. }) => {
-                self.embed_allowed(blob).hash(&mut hasher);
-                self.images
+        for file in m.files() {
+            let Some(blob) = file.blob() else { continue };
+            self.embed_allowed(blob).hash(&mut hasher);
+            match file {
+                tilo_reference::Attached::Image { .. } => self
+                    .images
                     .get(&crate::images::blob_key(blob))
                     .is_some()
-                    .hash(&mut hasher);
+                    .hash(&mut hasher),
+                tilo_reference::Attached::Video { .. } => {
+                    self.video_poster(blob).is_some().hash(&mut hasher);
+                }
+                tilo_reference::Attached::File { .. }
+                | tilo_reference::Attached::Resource { .. }
+                | tilo_reference::Attached::Text { .. } => {}
             }
-            Some(crate::model::Attachment::Video { blob, .. }) => {
-                self.embed_allowed(blob).hash(&mut hasher);
-                self.video_poster(blob).is_some().hash(&mut hasher);
-            }
-            Some(att) => self.embed_allowed(att.blob()).hash(&mut hasher),
-            None => {}
         }
-        if m.reference.is_some() {
+        for (index, attached) in m.attachments.iter().enumerate() {
+            if !matches!(attached, tilo_reference::Attached::Resource { .. }) {
+                continue;
+            }
             self.resource_navigation
-                .label(&m.id, false)
+                .label(&m.id, index, false)
                 .hash(&mut hasher);
-            match self.resource_navigation.status(&m.id) {
+            match self.resource_navigation.status(&m.id, index) {
                 None => 0.hash(&mut hasher),
                 Some(Ok(())) => 1.hash(&mut hasher),
                 Some(Err(why)) => why.hash(&mut hasher),
@@ -528,8 +537,12 @@ impl ChatApp {
         if !rm.editing && row.height() > 0.0 {
             self.message_rows.push((row, m.id.clone()));
         }
-        if m.reference.is_some() && m.share.is_none() && rm.resource_h > 0.0 {
-            self.resource_navigation.shown(&m.id);
+        if m.share.is_none() && rm.resource_h > 0.0 {
+            for (index, attached) in m.attachments.iter().enumerate() {
+                if matches!(attached, tilo_reference::Attached::Resource { .. }) {
+                    self.resource_navigation.shown(&m.id, index);
+                }
+            }
         }
         if self.row_is_live(&m, rm) {
             let mut at = *y;

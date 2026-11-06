@@ -379,8 +379,8 @@ impl ChatApp {
         if let Some(work) = &message.work {
             height += measure_agent_work(tr, theme, work, width);
         }
-        if let Some(attachment) = &message.attachment {
-            height += self.attachment_flow_height(attachment, f64::from(width), tr, theme);
+        for file in message.files() {
+            height += self.attachment_flow_height(file, f64::from(width), tr, theme);
         }
         if !message.reactions.is_empty() {
             height += ui::widget::reaction_strip::measure_height(
@@ -469,14 +469,14 @@ impl ChatApp {
             );
             yy += height;
         }
-        if let Some(att) = &m.attachment {
+        for file in m.files() {
             self.draw_attachment(
                 PaintCtx::new(scene, tf, tr, theme),
-                att,
+                file,
                 Point::new(tx, yy),
                 f64::from(tw),
             );
-            yy += self.attachment_flow_height(att, f64::from(tw), tr, theme);
+            yy += self.attachment_flow_height(file, f64::from(tw), tr, theme);
         }
         if !m.reactions.is_empty() {
             yy += self.draw_reactions(

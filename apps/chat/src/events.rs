@@ -842,12 +842,17 @@ impl ChatApp {
                 self.attach_file(doc, std::path::Path::new(&path));
             }
             Hit::AttachDevice => self.choose_device_files(),
-            Hit::Attachment { msg, action } => match action {
+            Hit::Attachment {
+                msg,
+                attachment,
+                action,
+            } => match action {
                 ui::widget::conversation::AttachmentAction::OpenFullSize => {
-                    self.attachment_view = Some(crate::attachment_view::AttachmentView::new(msg));
+                    self.attachment_view =
+                        Some(crate::attachment_view::AttachmentView::new(msg, attachment));
                 }
                 ui::widget::conversation::AttachmentAction::Save => {
-                    self.begin_attachment_save(&msg);
+                    self.begin_attachment_save(&msg, attachment);
                 }
                 ui::widget::conversation::AttachmentAction::OpenSaved => {
                     self.reveal_saved_copy();
@@ -864,8 +869,10 @@ impl ChatApp {
                 // The same device-local handler the public effect reaches.
                 let _ = self.answer_effect(crate::effects::ChatEffect::StopSharingLiveContext);
             }
-            Hit::CopyResourceLink(message) => self.begin_resource_navigation(&message),
-            Hit::OpenResource(message) => self.open_shared_resource(&message),
+            Hit::CopyResourceLink { msg, attachment } => {
+                self.begin_resource_navigation(&msg, attachment);
+            }
+            Hit::OpenResource { msg, attachment } => self.open_shared_resource(&msg, attachment),
             Hit::ReplayRecording(message) => self.replay_recording(&message),
             Hit::OpenShare(message) => self.open_share(&message),
             Hit::StopShare(message) => self.stop_share(doc, &message),
@@ -1757,7 +1764,7 @@ impl ChatApp {
                     text,
                     parent: parent.as_deref().map(item),
                     body: Some(body),
-                    attachment: None,
+                    attachments: Vec::new(),
                     mentions: None,
                     written: None,
                 },
@@ -2026,10 +2033,11 @@ impl ChatApp {
             .held_messages()
             .iter()
             .filter(|(_, message)| message.ts >= since && self.is_me(&message.author.0))
-            .filter_map(|(_, message)| match message.attachment.as_ref()? {
-                crate::model::Attachment::File { size, .. }
-                | crate::model::Attachment::Video { size, .. } => Some(*size),
-                crate::model::Attachment::Image { .. } => None,
+            .flat_map(|(_, message)| {
+                message
+                    .attachments
+                    .iter()
+                    .filter_map(tilo_reference::Attached::size)
             })
             .fold(0, u64::saturating_add);
         (shared.saturating_add(size) > files.member_hourly).then(|| {
@@ -2148,8 +2156,8 @@ impl ChatApp {
             self.attachment_status = Some(format!("Not shared: {reason}"));
             return;
         }
-        let attachment = if video {
-            crate::model::Attachment::Video {
+        let file = if video {
+            tilo_reference::StoredFile::Video {
                 name,
                 blob,
                 w: 0,
@@ -2157,14 +2165,14 @@ impl ChatApp {
                 size,
             }
         } else if width > 0 && height > 0 {
-            crate::model::Attachment::Image {
+            tilo_reference::StoredFile::Image {
                 name,
                 blob,
                 w: width,
                 h: height,
             }
         } else {
-            crate::model::Attachment::File { name, blob, size }
+            tilo_reference::StoredFile::File { name, blob, size }
         };
         self.submit_part(ChatPart::POST.with(chat_part::Post {
             message: NewMessage {
@@ -2172,7 +2180,7 @@ impl ChatApp {
                 text: String::new(),
                 parent: None,
                 body: None,
-                attachment: Some(crate::record::AttachmentUpdate::of(&attachment)),
+                attachments: vec![tilo_reference::Attached::from(file)],
                 mentions: None,
                 written: None,
             },

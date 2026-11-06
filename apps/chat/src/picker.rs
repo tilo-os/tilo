@@ -28,7 +28,7 @@ pub struct PickEntry {
     pub name: String,
     pub size: u64,
     /// True when this is a video container — the composer posts it as a
-    /// [`crate::model::Attachment::Video`] (inline play card) rather than an
+    /// [`tilo_reference::Attached::Video`] (inline play card) rather than an
     /// image thumbnail.
     pub is_video: bool,
 }
@@ -46,7 +46,7 @@ const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 
 /// Video containers the picker offers. The selected local source is imported
 /// into the app's content store before the inline card is posted;
-/// default builds do not decode video frames (see [`crate::model::Attachment::Video`]).
+/// default builds do not decode video frames (see [`tilo_reference::Attached::Video`]).
 const VIDEO_EXTS: &[&str] = &["mp4", "webm", "mov", "mkv", "m4v", "avi", "ogv"];
 
 fn has_ext(name: &str, exts: &[&str]) -> bool {

@@ -114,7 +114,7 @@ impl ChatApp {
                     text: text.to_owned(),
                     parent: None,
                     body: None,
-                    attachment: None,
+                    attachments: Vec::new(),
                     mentions: None,
                     written: None,
                 },

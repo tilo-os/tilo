@@ -46,16 +46,18 @@ pub(crate) fn message(report: &FeedbackReport) -> Option<crate::record::Message>
             attrs: std::collections::BTreeMap::new(),
         })
         .collect();
-    let attachment = feedback
+    let attachments = feedback
         .screenshot
         .as_ref()
-        .map(|picture| crate::model::Attachment::Image {
+        .map(|picture| tilo_reference::Attached::Image {
             name: PICTURE_NAME.into(),
             blob: picture.hash.to_ascii_lowercase(),
             w: picture.width,
             h: picture.height,
         })
-        .filter(crate::record::valid_attachment);
+        .filter(|attached| crate::record::valid_attached(attached))
+        .into_iter()
+        .collect();
     Some(crate::record::Message {
         channel: Id::from_raw(submission.destination.channel.clone()),
         author: report.author.clone(),
@@ -63,7 +65,7 @@ pub(crate) fn message(report: &FeedbackReport) -> Option<crate::record::Message>
         text: lines.join("\n"),
         body,
         reactions: report.reactions.clone(),
-        attachment,
+        attachments,
         ..crate::record::Message::default()
     })
 }

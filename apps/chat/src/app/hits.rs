@@ -82,6 +82,8 @@ pub(crate) enum Hit {
     /// or show the copy the person saved.
     Attachment {
         msg: Id,
+        /// Which of the message's files: a message may post several.
+        attachment: usize,
         action: ui::widget::conversation::AttachmentAction,
     },
     /// Close the open attachment.
@@ -92,10 +94,16 @@ pub(crate) enum Hit {
     AttachDevice,
     StartCall,
     StopSharingLiveContext,
-    CopyResourceLink(Id),
+    CopyResourceLink {
+        msg: Id,
+        attachment: usize,
+    },
     /// Replay the recording the report a message shows carries.
     ReplayRecording(Id),
-    OpenResource(Id),
+    OpenResource {
+        msg: Id,
+        attachment: usize,
+    },
     /// Open the window a message shares, as a window of this person's own.
     OpenShare(Id),
     /// Stop sharing the window a message of yours shares.
@@ -164,17 +172,23 @@ impl Hit {
             Self::ThreadScroll(end) => format!("chat.thread-scroll-{end}"),
             Self::AgentReasoning(id) => format!("chat.reasoning.{id}"),
             Self::Attach => "chat.attach".into(),
-            Self::Attachment { msg, action } => {
-                format!("chat.attachment:{msg}:{}", action.key())
-            }
+            Self::Attachment {
+                msg,
+                attachment,
+                action,
+            } => format!("chat.attachment:{msg}:{attachment}:{}", action.key()),
             Self::CloseAttachment => "chat.close-attachment".into(),
             Self::AttachPick(path) => format!("chat.attach-pick:{path}"),
             Self::AttachDevice => "chat.attach-device".into(),
             Self::StartCall => "chat.start-call".into(),
             Self::StopSharingLiveContext => "chat.stop-sharing-live-context".into(),
-            Self::CopyResourceLink(id) => format!("chat.copy-resource-link:{id}"),
+            Self::CopyResourceLink { msg, attachment } => {
+                format!("chat.copy-resource-link:{msg}:{attachment}")
+            }
             Self::ReplayRecording(id) => format!("chat.replay-recording:{id}"),
-            Self::OpenResource(id) => format!("chat.open-resource:{id}"),
+            Self::OpenResource { msg, attachment } => {
+                format!("chat.open-resource:{msg}:{attachment}")
+            }
             Self::OpenShare(id) => format!("chat.open-share:{id}"),
             Self::StopShare(id) => format!("chat.stop-sharing:{id}"),
             Self::SwitchShare(id, access) => format!("chat.switch-share:{id}:{}", access.as_str()),
@@ -438,22 +452,25 @@ impl ChatApp {
                         Role::Button,
                         false,
                     ),
-                    Hit::CopyResourceLink(message) => (
+                    Hit::CopyResourceLink { msg, attachment } => (
                         ControlName {
-                            text: self.resource_navigation.label(message, true),
-                            interface: self.resource_navigation.label_is_copy(message),
+                            text: self.resource_navigation.label(msg, *attachment, true),
+                            interface: self.resource_navigation.label_is_copy(msg, *attachment),
                         },
                         Role::Button,
                         false,
                     ),
-                    Hit::OpenResource(message) => (
+                    Hit::OpenResource { msg, attachment } => (
                         content(
                             self.resource_navigation.open_label(
-                                message,
+                                msg,
+                                *attachment,
                                 &self
-                                    .message(message)
-                                    .and_then(|m| m.reference.as_ref().map(|r| r.label.clone()))
-                                    .unwrap_or_default(),
+                                    .message(msg)
+                                    .and_then(|m| m.attachments.get(*attachment))
+                                    .map_or_else(String::new, |attached| {
+                                        attached.label().to_owned()
+                                    }),
                             ),
                         ),
                         Role::Button,
@@ -466,9 +483,8 @@ impl ChatApp {
                                 &[
                                     (
                                         "title",
-                                        m.reference
-                                            .as_ref()
-                                            .map(|r| r.label.clone())
+                                        m.resource()
+                                            .map(|at| at.reference.label.clone())
                                             .unwrap_or_default()
                                             .into(),
                                     ),

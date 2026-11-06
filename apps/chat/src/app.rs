@@ -1366,15 +1366,23 @@ impl ChatApp {
         // the timeline and the open thread panel.
         for m in &self.messages {
             let _ = self.shown_avatar(m);
-            match &m.attachment {
+            for file in m.files() {
                 // Never hydrate the bytes of an embed this peer isn't granted.
-                Some(crate::model::Attachment::Image { blob, .. }) if self.embed_allowed(blob) => {
-                    let _ = self.images.get(&crate::images::blob_key(blob));
+                let Some(blob) = file.blob() else { continue };
+                if !self.embed_allowed(blob) {
+                    continue;
                 }
-                Some(crate::model::Attachment::Video { blob, .. }) if self.embed_allowed(blob) => {
-                    let _ = self.video_poster(blob);
+                match file {
+                    tilo_reference::Attached::Image { .. } => {
+                        let _ = self.images.get(&crate::images::blob_key(blob));
+                    }
+                    tilo_reference::Attached::Video { .. } => {
+                        let _ = self.video_poster(blob);
+                    }
+                    tilo_reference::Attached::File { .. }
+                    | tilo_reference::Attached::Resource { .. }
+                    | tilo_reference::Attached::Text { .. } => {}
                 }
-                _ => {}
             }
         }
         // Also warm any thumbnails visible in an open attachment picker.

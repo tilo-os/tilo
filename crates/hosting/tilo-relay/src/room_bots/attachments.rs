@@ -163,23 +163,19 @@ pub struct Referenced {
 /// reference.
 #[must_use]
 pub fn referenced(part: &[u8]) -> Vec<Referenced> {
-    use chat::model::Attachment;
     let Ok(doc) = AutoCommit::load(part) else {
         return Vec::new();
     };
     chat::messages::read_part(&doc)
         .messages
         .values()
-        .filter_map(|message| {
-            let attachment = message.attachment.as_ref()?;
-            let size = match attachment {
-                Attachment::Image { .. } => None,
-                Attachment::Video { size, .. } | Attachment::File { size, .. } => Some(*size),
-            };
-            Some(Referenced {
-                hash: attachment.blob().to_ascii_lowercase(),
-                member: message.author.0.clone(),
-                size,
+        .flat_map(|message| {
+            message.attachments.iter().filter_map(move |attached| {
+                Some(Referenced {
+                    hash: attached.blob()?.to_ascii_lowercase(),
+                    member: message.author.0.clone(),
+                    size: attached.size(),
+                })
             })
         })
         .collect()
