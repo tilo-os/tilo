@@ -1,17 +1,30 @@
-//! Content that is sometimes there: [`When`] and [`optional`].
+//! Content a host puts around a view: [`When`] shows it on a condition and [`optional`] stands
+//! in for it, and [`Fitted`] carries the fit its arguments asked for into a described
+//! component's slot.
 //!
 //! A `Column` or `Row` spaces its children with one gap between each pair.
 //! A child that is absent must take that gap with it, or a missing caption
 //! leaves a doubled hole. An absent child is not laid out at all
 //! (`Display::None`), so the containers skip it the way they skip a
 //! zero-size spacer, and nothing of it is drawn, focused or read out.
+//!
+//! A `stack`, `row`, `grid` or `page` holds each child in a slot whose [`Fit`] is the child's
+//! arguments: `text(x, fill)` takes its share of the column. A described component's slot is
+//! not a layout the view wrote, though: a card's body, a window's content and a nav shell's
+//! column put what the view gave them where the component decides, and a component that
+//! decides cannot see arguments written on a node it never places. The host wraps each view in
+//! a [`Fitted`] carrying that fit, which [`Slot::new`](super::arrange::Slot::new) takes for the
+//! slot the component puts it in, so a view that says `fill` fills the room the component gives
+//! it rather than hugging its content. `Fitted` is a [`Decorator`]: it builds the view's own
+//! node, forwards input, sync and paint, and changes nothing but the fit.
 
 use std::collections::HashMap;
 
 use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
-use super::{AppModel, Element, ModelPath, TaffyTreeExt, Widget};
+use super::arrange::Fit;
+use super::{AppModel, Decorator, Element, ModelPath, TaffyTreeExt, Widget};
 use crate::theme::Theme;
 
 /// A placeholder that takes no room: no layout box, no gap, no paint.
@@ -195,6 +208,59 @@ impl super::Decorator for When {
 
     fn name(&self) -> &str {
         "When"
+    }
+}
+
+/// A view with the fit its node asked for, for a described component's slot: a host wraps the
+/// view in it, and the component holds it at that fit.
+#[crate::component::not_a_component(
+    framework,
+    "the fit a view's arguments ask for, carried into a described component's slot"
+)]
+pub struct Fitted {
+    inner: Element,
+    fit: Fit,
+}
+
+impl Fitted {
+    /// `inner`, carrying `fit`.
+    #[must_use]
+    pub fn new(inner: Element, fit: Fit) -> Self {
+        Self { inner, fit }
+    }
+
+    /// What it shows.
+    #[must_use]
+    pub fn content(&self) -> &Element {
+        &self.inner
+    }
+
+    /// What it shows, to change in place.
+    pub fn content_mut(&mut self) -> &mut Element {
+        &mut self.inner
+    }
+
+    /// The fit it carries.
+    #[must_use]
+    pub const fn fit(&self) -> Fit {
+        self.fit
+    }
+
+    /// Carry `fit` instead.
+    pub fn set_fit(&mut self, fit: Fit) {
+        self.fit = fit;
+    }
+}
+
+impl Decorator for Fitted {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.inner.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.inner.as_mut()
     }
 }
 

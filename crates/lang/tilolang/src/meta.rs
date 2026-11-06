@@ -14,20 +14,61 @@ pub const META_SECTION: &str = "tilolang.meta";
 /// (i18n.md). Outside the module hash, as the metadata is.
 pub const LOCALES_SECTION: &str = "tilolang.locales";
 
+/// The custom section naming where each function's declaration is written: JSON
+/// `[{export, file, line}, …]`. Outside the module hash, as the metadata is: what a profile
+/// reads a unit's line from, not what the module runs.
+pub const LINES_SECTION: &str = "tilolang.lines";
+
+/// Where a function is written: the file of the package its declaration is in, and the line in
+/// it, counted from 1. A block, or a function made without a declaration, is written nowhere and
+/// has no entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Line {
+    /// The function's export (`a_<id>`, `v_<id>`, `q_<id>`, …).
+    pub export: String,
+    /// The file's path within the package (`/` when it was compiled from one source string).
+    pub file: String,
+    pub line: u32,
+}
+
+/// Appends `lines` to the compiled module `wasm` as its [`LINES_SECTION`]; nothing when there
+/// are none.
+pub fn append_lines(wasm: &mut Vec<u8>, lines: &[Line]) {
+    if lines.is_empty() {
+        return;
+    }
+    append_json_section(wasm, LINES_SECTION, lines);
+}
+
+/// Where the functions `wasm` was compiled from are written; none for a module compiled without
+/// them.
+#[must_use]
+pub fn lines_from_wasm(wasm: &[u8]) -> Vec<Line> {
+    custom_section(wasm, LINES_SECTION)
+        .and_then(|data| serde_json::from_slice(data).ok())
+        .unwrap_or_default()
+}
+
+/// Appends `value` as JSON in the custom section `name`. A custom section may follow every other
+/// section, so the module stays valid.
+fn append_json_section<T: Serialize + ?Sized>(wasm: &mut Vec<u8>, name: &str, value: &T) {
+    let data = serde_json::to_vec(value).unwrap_or_default();
+    let mut payload = Vec::new();
+    write_leb(&mut payload, name.len());
+    payload.extend_from_slice(name.as_bytes());
+    payload.extend_from_slice(&data);
+    wasm.push(0);
+    write_leb(wasm, payload.len());
+    wasm.extend_from_slice(&payload);
+}
+
 /// Appends `locales` to the compiled module `wasm` as its [`LOCALES_SECTION`]; nothing when
 /// there are none. A custom section may follow every other section, so the module stays valid.
 pub fn append_locales(wasm: &mut Vec<u8>, locales: &[(String, String)]) {
     if locales.is_empty() {
         return;
     }
-    let data = serde_json::to_vec(locales).unwrap_or_default();
-    let mut payload = Vec::new();
-    write_leb(&mut payload, LOCALES_SECTION.len());
-    payload.extend_from_slice(LOCALES_SECTION.as_bytes());
-    payload.extend_from_slice(&data);
-    wasm.push(0);
-    write_leb(wasm, payload.len());
-    wasm.extend_from_slice(&payload);
+    append_json_section(wasm, LOCALES_SECTION, locales);
 }
 
 /// The catalogues a compiled module carries, `(locale, Fluent text)`; none when it has none.
@@ -74,6 +115,11 @@ pub struct PackageMeta {
     /// (`app ... (records: .own)`), which only that person's devices read.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_records: bool,
+    /// The hosts the app's `uses web` requests may reach, as its header declares them
+    /// (`app ... (web: ["example.com", "*.rss.org"])`). A request to any other host is refused
+    /// as a value, and recorded with the invocation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub web: Vec<String>,
     /// SHA-256 (hex) of the wasm module without the metadata section.
     pub module_hash: String,
     pub types: Vec<TypeMeta>,
@@ -92,7 +138,8 @@ pub struct PackageMeta {
     #[serde(default)]
     pub roots: Vec<String>,
     /// The packages it uses (`use app.id`), by their app ids now (a `use` of an id one had
-    /// before names it by its current one).
+    /// before names it by its current one), and the standard library every module compiles
+    /// with (`tilo.std`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uses: Vec<String>,
     /// The named roots (`root notes: Notes`): what other packages reach as `alias.notes`.
@@ -114,6 +161,9 @@ pub struct PackageMeta {
     /// Named seed data (`scenario "name" { ... }`), each run by its hidden action.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scenarios: Vec<ScenarioMeta>,
+    /// The actions the package runs by itself (`trigger due(t: Task) at t.at: notify_due(t)`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<TriggerMeta>,
     /// The arguments of actions views apply that compute from view state (`set(open, not
     /// open)`): functions the runtime runs when the control's event fires, on the view state
     /// as it is then. Each is exported as `e_<id>`.
@@ -176,6 +226,44 @@ pub struct ScenarioMeta {
     pub name: String,
     /// The id of the scenario's action.
     pub action: String,
+}
+
+/// A `trigger`: when a package's action runs by itself, for the resources of one type.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TriggerMeta {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub doc: String,
+    /// The id of the action it runs.
+    pub action: String,
+    /// The id of the type of the resources it runs for.
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// The action's arguments, in the order the call passes them.
+    pub args: Vec<TriggerArgMeta>,
+    /// When it runs.
+    pub when: TriggerWhenMeta,
+}
+
+/// What a trigger passes its action: the record it runs for, or a root of the package.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerArgMeta {
+    /// The resource the trigger runs for.
+    Subject,
+    /// A root record, by its type's id (the records the platform keeps as `root-<type id>`).
+    Root(String),
+}
+
+/// When a trigger runs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerWhenMeta {
+    /// At each multiple of these seconds, counted from the epoch.
+    Every(i64),
+    /// At the instant the field (by id) of the resource holds.
+    At(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,6 +344,10 @@ pub struct TypeMeta {
     /// which the system keeps in step with the service (`crate::origin`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// `(attached)`: its records are about the resource they were made from, a comment on a
+    /// task, so `linked` tells them apart from work made from it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub attached: bool,
 }
 
 /// What search, a list's filters and agents offer of a type (search.md, "What a type declares"):
@@ -325,10 +417,6 @@ pub struct FilterMeta {
     /// (`filter done (icon: .circle_check)`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    /// Whether the place it makes shows how many of its items it holds, as its declaration says
-    /// (`filter "Today" = due <= today (count: true)`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub count: bool,
 }
 
 /// What a filter compares, and so the control it is.
@@ -449,8 +537,8 @@ pub struct ParamMeta {
     /// no such view (a palette over the item alone) supplies `.none`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub place: bool,
-    /// Whether the text of an entry fills it (`title: Text (entry)`): the action carries what
-    /// the words before the entry type say into its other parameters, the rest titles the item
+    /// Whether the text of an entry fills it: an action's one `Text` parameter is what the
+    /// words before the entry type say into its other parameters, the rest titles the item
     /// (`crate::entry`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub entry: bool,
@@ -566,6 +654,10 @@ pub struct ActionMeta {
     /// surface showing the resource's actions draws directly rather than behind the rest.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub frequent: bool,
+    /// `uses web, random, time`: the effects the action's body reads, each of which its
+    /// invocation records and a replay answers from the record ([`crate::effects::Effect`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uses: Vec<String>,
     /// Whether the action keeps a requirement its subject alone decides, exported as
     /// [`crate::ir::guard_export`]: the first reason it cannot run on the subject now, or empty
     /// while it can. What a surface offering the action reads its availability from.
@@ -654,6 +746,9 @@ pub struct FlowMeta {
     pub result: Option<String>,
     pub class: EffectClass,
     pub reaches: Vec<Reach>,
+    /// `uses web, time`: the effects the flow's body reads ([`crate::effects::Effect`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uses: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -838,6 +933,43 @@ fn read_leb(bytes: &[u8], pos: &mut usize) -> Option<usize> {
             return None;
         }
     }
+}
+
+/// The module `wasm` without the custom section `name`: the module apart from what the
+/// compiler writes beside its code for tools, which the same code written in one file and in
+/// several does not share (the lines each declaration is on).
+#[must_use]
+pub fn without_section(wasm: &[u8], name: &str) -> Vec<u8> {
+    let mut out = wasm.get(..8).unwrap_or_default().to_vec();
+    let mut pos = 8usize;
+    while pos < wasm.len() {
+        let start = pos;
+        let Some(id) = wasm.get(pos).copied() else {
+            break;
+        };
+        pos += 1;
+        let Some(size) = read_leb(wasm, &mut pos) else {
+            break;
+        };
+        let Some(end) = pos.checked_add(size) else {
+            break;
+        };
+        if end > wasm.len() {
+            break;
+        }
+        let named = id == 0 && {
+            let mut p = pos;
+            match read_leb(wasm, &mut p) {
+                Some(len) => wasm.get(p..p.saturating_add(len)) == Some(name.as_bytes()),
+                None => false,
+            }
+        };
+        if !named {
+            out.extend_from_slice(&wasm[start..end]);
+        }
+        pos = end;
+    }
+    out
 }
 
 /// The payload of the named custom section of a wasm module.

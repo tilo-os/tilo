@@ -71,10 +71,15 @@ pub(crate) type Controls = (
     Rc<RefCell<Readout>>,
 );
 
+/// The desktop's one shortcut table, shared: one reader matches a press
+/// against it, another shows its chord, and a person's rebinding reaches all
+/// of them.
+pub(crate) type Shortcuts = Rc<RefCell<ui::shortcut_table::ShortcutConfig>>;
+
 pub(crate) fn mount_controls(
     compositor: &mut Compositor,
     doors: &mut Doors,
-    shortcuts: Rc<RefCell<ui::shortcut_table::ShortcutConfig>>,
+    shortcuts: Shortcuts,
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
     guide: GuideKeys,
     KeyContext {
@@ -145,6 +150,7 @@ pub(crate) fn mount_activities(
     compositor: &mut Compositor,
     doors: &mut Doors,
     reader: &Rc<crate::chrome::Activities>,
+    cards: &crate::cards::Cards,
     banners: Reserved,
     readout: Reserved,
     options: &crate::Options,
@@ -161,6 +167,7 @@ pub(crate) fn mount_activities(
                 app,
                 link.clone(),
                 Rc::clone(reader),
+                cards.clone(),
                 banners,
                 readout,
                 options.scale,

@@ -1374,8 +1374,8 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
                 &share,
                 serde_json::json!({
                     "channel": "c_chat",
-                    "reference": {"id":"chat.message:target", "kind":"chat.message", "label":"Target"},
-                    "source_provider":"record:so.tilo.chat:"
+                    "attached": {"app":"so.tilo.chat",
+                        "id":"chat.message:target", "kind":"chat.message", "label":"Target"}
                 })
                 .as_object()
                 .unwrap(),
@@ -1385,7 +1385,7 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
         frame.relayout();
         let shared = crate::testing::messages_in(&records, "c_chat")
             .into_iter()
-            .find(|message| message.reference.is_some())
+            .find(|message| message.resource().is_some())
             .unwrap();
         let copy = BoundActionAddress {
             instance_id: 1,

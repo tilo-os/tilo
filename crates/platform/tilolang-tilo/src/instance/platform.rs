@@ -6,6 +6,9 @@
 
 use std::rc::Rc;
 
+use tilolang_runtime::flow::WebRequest;
+use tilolang_runtime::web::WebReply;
+
 use crate::background::Waker;
 use crate::bundle::Bundle;
 use crate::host::Host;
@@ -91,6 +94,15 @@ pub trait Platform {
         value.to_owned()
     }
 
+    /// The answer to a `web.get` or `web.post` the instance's code makes: this device's
+    /// network, which runs each request once, and the platform's limits for it. A platform that
+    /// reaches no services answers [`WebReply::failed`], saying so; so does one whose device is
+    /// offline. The call may block for as long as [`tilolang_runtime::web::TIMEOUT`].
+    fn web(&self, request: &WebRequest) -> WebReply {
+        let _ = request;
+        WebReply::failed("this host reaches no services")
+    }
+
     /// What wakes the instance when work it waits for is ready (an index read off the frame).
     fn waker(&self) -> Waker;
 
@@ -99,6 +111,16 @@ pub trait Platform {
     fn publish(&self, host: &Host, wake: Waker) -> Option<Box<dyn Publication>> {
         let _ = (host, wake);
         None
+    }
+}
+
+/// Where an instance's `web.get` and `web.post` reach: this device's network, as the platform
+/// running the instance answers it.
+pub struct PlatformWeb(pub(super) Rc<dyn Platform>);
+
+impl tilolang_runtime::web::WebTransport for PlatformWeb {
+    fn fetch(&self, request: &WebRequest) -> WebReply {
+        self.0.web(request)
     }
 }
 

@@ -280,6 +280,12 @@ fn a_reminder_a_person_was_told_reaches_none_of_their_devices_again() {
         look(&first, "bo", at(9, 31)).due.is_empty(),
         "the device that told him does not tell him again"
     );
+    let kept = look(&first, "bo", at(9, 31));
+    assert_eq!(
+        kept.heard.len(),
+        1,
+        "the reminder still stands, so the one he was shown stays: {kept:#?}"
+    );
     // The other device reads the same mark once the record reaches it.
     first.sync_with(&mut second);
     let found = look(&second, "bo", at(9, 31));
@@ -287,6 +293,7 @@ fn a_reminder_a_person_was_told_reaches_none_of_their_devices_again() {
         found.due.is_empty(),
         "one notification for one person: {found:#?}"
     );
+    assert_eq!(found.heard.len(), 1, "and it hears of what he was told");
     // Before the mark arrived, the second device would have shown it: the mark is the only thing
     // that keeps the two apart.
     let (mut ada, _) = workspace();

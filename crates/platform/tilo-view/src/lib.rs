@@ -11,8 +11,8 @@
 //! # use tilo_view::{ui, ViewCx};
 //! # use tilo_view::node::{Node, ResourceRef, Principal};
 //! fn page(cx: &ViewCx) -> Node {
-//!     let node = ui::TextBuilder::new(cx.key("title"), "Groceries").into();
-//!     ui::stack(cx.key("page"), ui::Gap::Sibling, vec![node])
+//!     let node = ui::TextBuilder::new(&cx.key("title"), "Groceries").into();
+//!     ui::stack(&cx.key("page"), ui::Gap::Sibling, vec![node])
 //! }
 //! ```
 //!

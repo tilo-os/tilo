@@ -88,6 +88,10 @@ pub struct Core {
     pub store: RefCell<Box<dyn Store>>,
     pub authority: Box<dyn Authority>,
     pub models: RefCell<Option<Box<dyn ModelHost>>>,
+    /// Where `web.get` and `web.post` reach (`Runtime::set_web`): the network of the device
+    /// whose code makes the request. Until the host sets one, every request answers with a
+    /// failure saying the host reaches no services.
+    pub web: RefCell<Option<Box<dyn crate::web::WebTransport>>>,
     /// What names principals; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
@@ -144,10 +148,16 @@ pub struct Core {
     /// The seen marks the person set here, for the host to keep in their own record
     /// ([`crate::seen`]).
     pub seen_writes: RefCell<Vec<crate::seen::SeenWrite>>,
+    /// What each unit costs while a profile is on, shared with the engine that measures fuel.
+    pub(crate) costs: Rc<crate::cost::Recorder>,
     /// The row being rendered, while a view renders one: the rows of the list it is a row
     /// of, and where in them it stands. A row reads the rows around it by that place, without
     /// walking the list.
     pub row_place: RefCell<Option<(Rc<crate::value::CollRef>, usize)>>,
+    /// The Rust apps' views the host told the runtime, by app: what a resource of a Rust app's
+    /// type is drawn with, where a tilolang view's export would be called
+    /// ([`crate::rust_views`]).
+    pub rust_views: crate::rust_views::Shared,
 }
 
 /// What `now` reads while the host has set no clock.
@@ -229,6 +239,8 @@ impl Core {
         limits: EngineLimits,
     ) -> Result<Rc<Self>, String> {
         let engine = Engine::new(limits)?;
+        let costs = Rc::new(crate::cost::Recorder::default());
+        engine.watch_costs(Rc::clone(&costs));
         let core = Rc::new_cyclic(|me| Self {
             me: me.clone(),
             engine,
@@ -237,6 +249,7 @@ impl Core {
             store: RefCell::new(store),
             authority,
             models: RefCell::new(None),
+            web: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),
             members: RefCell::new(crate::members::Members::default()),
@@ -257,8 +270,10 @@ impl Core {
             reader: RefCell::new(None),
             trying: std::cell::Cell::new(false),
             foreign: RefCell::new(crate::foreign::Foreign::default()),
+            rust_views: crate::rust_views::Shared::default(),
             wanted_packages: RefCell::new(crate::foreign::WantedPackages::default()),
             seen_writes: RefCell::new(Vec::new()),
+            costs,
             row_place: RefCell::new(None),
         });
         // The types the host provides to every module, such as `Invocation`.
@@ -332,25 +347,26 @@ impl Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, AgentNamed, ArgAt, CallFn,
-            ChangeView, CollCount, CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered,
-            CollRemove, CollWhere, CollWhereWith, CountBy, DayParse, DayPart, DayShift,
-            DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef, DurationText, EditField,
-            EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH,
-            EnumSetI, EventPart, EventValue, FilterLit, Filters, Find, FirstUnseen, FloatAbs,
-            FloatCeil, FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo, FloatMax, FloatMin,
-            FloatRound, FloatRoundTo, FloatToStr, ForeignRef, FromPop, FromPush, Grep, GroupBy,
-            IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, Invoke, Invoker, InvokerPop,
-            InvokerPush, IsError, IsSome, Keep, Lenses, Links, ListAvg, ListEnd, ListGetF,
-            ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH,
-            ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MapGetH, MapKeys, MapPut,
-            MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf,
-            ModelCall, NoneV, Now, OfType, Others, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind,
-            PrincipalName, PrincipalNamed, PrincipalRole, Print, PrintRows, ProposalNote, Query,
-            QueueBlock, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs,
-            RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt, ResAddF,
-            ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef,
-            RichEmpty, RichNew, RichPart, RichTime, RunChanges, SeedState, SetAdd, SetRemove,
+            Abort, ActMadeFrom, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, AgentNamed,
+            ArgAt, BytesLength, CallFn, ChangeView, CollCount, CollInsert, CollMove, CollMoveAmong,
+            CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, CountBy, DayParse,
+            DayPart, DayShift, DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef,
+            DurationText, EditField, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew,
+            EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged, FilterLit, Filters,
+            Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor,
+            FloatFloorTo, FloatMax, FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef,
+            Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop,
+            InvocationPush, Invoke, Invoker, IsError, IsSome, Keep, Lenses, Links, ListAvg,
+            ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious,
+            ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI,
+            MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members,
+            Mentions, MetaOf, ModelCall, NoneV, Now, OfType, Others, Outside, OutsideAt, Phrase,
+            PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Print,
+            PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
+            RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq,
+            RefId, RefIs, RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt,
+            ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
+            ResourceRef, RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove,
             Single, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps,
             StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit,
             StrLower, StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim,
@@ -358,7 +374,8 @@ impl Core {
             TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
             UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
             UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
-            Versions, Viewer, WallClock, Withdraw, Word, WorkspaceMembers,
+            Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
+            WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
@@ -374,32 +391,20 @@ impl Core {
             | ListPrevious | TupleNew | TupleSetI | TupleSetF | TupleSetH | TupleGetI
             | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV | IsSome | UnwrapI
             | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
-            CollWhere => {
-                let found = self.coll_where(a.h(0)?, a.h(1)?)?;
-                self.ret_h(found)
-            }
-            CollWhereWith => {
-                let found = self.coll_where_with(a.h(0)?, a.h(1)?, a.h(2)?)?;
-                self.ret_h(found)
-            }
-            CollOrdered => {
-                let found = self.coll_ordered(a.h(0)?, a.h(1)?)?;
-                self.ret_h(found)
-            }
-            Query => {
-                let found = self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?;
-                self.ret_h(found)
-            }
+            CollWhere => self.ret_h(self.coll_where(a.h(0)?, a.h(1)?)?),
+            CollWhereWith => self.ret_h(self.coll_where_with(a.h(0)?, a.h(1)?, a.h(2)?)?),
+            CollOrdered => self.ret_h(self.coll_ordered(a.h(0)?, a.h(1)?)?),
+            Query => self.ret_h(self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?),
             Filters | FilterLit => self.catalogue_import(imp, a),
-            IdentPart => {
-                let part = self.ident_part(a.h(0)?, a.h(1)?)?;
-                self.ret_h(part)
-            }
+            IdentPart => self.ret_h(self.ident_part(a.h(0)?, a.h(1)?)?),
             RepeatNext | RepeatNextAt | RepeatLabel | ReminderAt | ReminderLabel | WallClock => {
                 self.recurrence_import(imp, a)
             }
             Today | TimeDay | TimeOfDay | TimeSpan | DayShift | DayPart | DayWeekday
             | DayStartOfWeek | DayParse | TimeParse => self.time_import(imp, a),
+            RandomInt | RandomFloat | RandomChoice | RandomShuffle | RandomId => {
+                self.random_import(imp, a)
+            }
             RichNew | RichPart | RichEmpty | RichTime => self.rich_import(imp, a),
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
@@ -410,16 +415,18 @@ impl Core {
             | ResourceRef => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
             | OutsideAt | Withdraw | ModelCall | Invoker | PrincipalEq | PrincipalName
-            | QueueBlock | Now | TimeShift | PrincipalNamed | AgentNamed | InvokerPush
-            | InvokerPop | FromPush | FromPop | SeedState => self.effect_import(imp, a),
+            | QueueBlock | Now | TimeShift | PrincipalNamed | AgentNamed | InvocationPush
+            | InvocationPop => self.effect_import(imp, a),
+            WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
+            | WebText | BytesLength => self.web_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet
-            | ActThen | ActOpen | ActUndo | ChangeView | UiActions | UiAction => {
+            | ActThen | ActMadeFrom | ActOpen | ActUndo | ChangeView | UiActions | UiAction => {
                 self.ui_import(imp, a)
             }
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
-            | RunChanges | Unseen | FirstUnseen | Mentions | Others | Steps | VersionEnd | Phrase | Word
-            | EntryParts | Viewer => self.platform_import(imp, a),
+            | RunChanges | Unseen | FirstUnseen | Mentions | Others | Steps | VersionEnd
+            | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }

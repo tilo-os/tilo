@@ -250,11 +250,39 @@ impl Gpu {
                 vec![Region::new(0, 0, renderer.width, renderer.height)]
             }
         };
-        self.pixels = renderer.readback_current();
         let complete = self.pixels.len() == length((renderer.width, renderer.height));
         self.finished_frames |= complete;
+        // Only what changed leaves the GPU: a typing frame copies the glyph,
+        // not the surface.
+        if let Some(area) = covered(&changed) {
+            renderer.readback_into(
+                (area.x, area.y),
+                (area.width, area.height),
+                &mut self.pixels,
+            );
+        }
         complete.then_some(changed)
     }
+}
+
+/// The smallest region holding every one of `regions`.
+fn covered(regions: &[Region]) -> Option<Region> {
+    let left = regions.iter().map(|region| region.x).min()?;
+    let top = regions.iter().map(|region| region.y).min()?;
+    let right = regions
+        .iter()
+        .map(|region| region.x.saturating_add(region.width))
+        .max()?;
+    let bottom = regions
+        .iter()
+        .map(|region| region.y.saturating_add(region.height))
+        .max()?;
+    Some(Region::new(
+        left,
+        top,
+        right.saturating_sub(left),
+        bottom.saturating_sub(top),
+    ))
 }
 
 /// Whether hosted surfaces' frames are drawn on a GPU here: never on a
@@ -345,6 +373,20 @@ mod tests {
             out,
             vec![Region::new(1, 1, 5, 5), Region::new(90, 90, 10, 10)]
         );
+    }
+
+    #[test]
+    fn the_readback_covers_every_region_that_changed() {
+        assert_eq!(
+            covered(&[
+                Region::new(10, 5, 4, 4),
+                Region::new(20, 9, 2, 3),
+                Region::new(12, 6, 1, 1),
+            ]),
+            Some(Region::new(10, 5, 12, 7)),
+            "a typing frame reads the glyph's box, not the whole surface"
+        );
+        assert_eq!(covered(&[]), None);
     }
 
     /// A hosted surface's device can be lost under it. The surface then draws

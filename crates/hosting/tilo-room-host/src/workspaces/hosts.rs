@@ -140,20 +140,14 @@ impl Workspaces {
                 .await
                 .map_err(|error| error.to_string())?;
             let governed = governed.lock().await;
-            let mut bootstrap =
-                governed
-                    .governed()
-                    .bootstrap([0; 32], member.clone(), MemberRole::Editor);
+            let mut bootstrap = governed
+                .governed()
+                .bootstrap([0; 32], member.clone(), MemberRole::Editor)
+                .map_err(|error| error.to_string())?;
             // The host follows governance alone: records reach it over the
             // attach session, and leaving them here keeps the hand-over
             // within one action frame.
             bootstrap.records.clear();
-            bootstrap.governance_messages.retain(|bytes| {
-                !matches!(
-                    postcard::from_bytes::<neighbour_wire::NeighbourMsg>(bytes),
-                    Ok(neighbour_wire::NeighbourMsg::AppDocument { .. })
-                )
-            });
             let hint = self
                 .transport_hint(&governed)
                 .map_err(|error| error.to_string())?;

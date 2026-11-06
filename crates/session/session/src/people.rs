@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{HostKey, HostLayer, SurfaceHost};
+use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect};
 use tilo_surface_host::{Doors, Placement, Published, WidgetHost};
@@ -306,6 +307,8 @@ pub(crate) fn mount(
     options: &crate::Options,
     handle: &DesktopHandle,
     sync: Option<Rc<crate::sync::Client>>,
+    intents: Rc<RefCell<Vec<ChromeIntent>>>,
+    invitable: Rc<Cell<bool>>,
 ) -> Rc<RefCell<People>> {
     let shown = Rc::new(RefCell::new(Shown::default()));
     let asks: Rc<RefCell<Vec<PeopleAsk>>> = Rc::default();
@@ -316,6 +319,8 @@ pub(crate) fn mount(
         handle: handle.clone(),
         drawn: Cell::new(0),
         sync,
+        intents,
+        invitable,
         asks: Rc::clone(&asks),
         profile: ProfileCard::default(),
         card_node: None,
@@ -481,6 +486,12 @@ struct Panel {
     /// asks for no frame.
     drawn: Cell<u64>,
     sync: Option<Rc<crate::sync::Client>>,
+    /// Where the bar's intents go: inviting from the roster's footer is the
+    /// bar's own invite, raised here.
+    intents: Rc<RefCell<Vec<ChromeIntent>>>,
+    /// Whether the person may invite someone into the workspace in front, as
+    /// the session's loop last answered it.
+    invitable: Rc<Cell<bool>>,
     /// What the card asked of the session.
     asks: Rc<RefCell<Vec<PeopleAsk>>>,
     /// The one card of a person, as any host of it shows them.
@@ -685,13 +696,15 @@ impl Panel {
                 };
                 self.open_activity(&author);
             }
-            // No directory to invite from here (it is its own surface), no
-            // call to join (a call is Chat's, in an app window), and nothing
-            // else to do: the roster kept the press.
-            CollaboratorsHit::Invite
-            | CollaboratorsHit::JoinCall(_)
-            | CollaboratorsHit::Pin
-            | CollaboratorsHit::Absorb => {}
+            // Inviting from here is the bar's own invite: the roster offers
+            // its footer only while the person may hand out a link into this
+            // workspace.
+            CollaboratorsHit::Invite => {
+                self.intents.borrow_mut().push(ChromeIntent::Invite);
+            }
+            // No call to join from here (a call is Chat's, in an app window),
+            // and nothing else to do: the roster kept the press.
+            CollaboratorsHit::JoinCall(_) | CollaboratorsHit::Pin | CollaboratorsHit::Absorb => {}
         }
     }
 
@@ -751,10 +764,10 @@ impl Panel {
             rows: &rows,
             unavailable: None,
             exposure: None,
-            // Inviting is the directory's own surface here, and the pinned
-            // overlay keeps the list on screen: neither is offered from this
-            // panel yet.
-            may_invite: false,
+            // Inviting is the invite sheet's own surface here, offered from
+            // the footer while the person may hand out a link into this
+            // workspace; keeping the list on screen is not offered yet.
+            may_invite: self.invitable.get(),
             may_pin: false,
             followed_id: followed.as_deref(),
             following_pairs: &following,

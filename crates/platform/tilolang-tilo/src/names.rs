@@ -22,28 +22,31 @@ pub fn unnamed(id: &str) -> String {
     }
     // A package updating its own records: "Board, updating to version 1a2b3c4d".
     if let Some((app, module)) = crate::authority::migration_of(id) {
-        let app = app.rsplit('.').next().unwrap_or(app);
-        let mut chars = app.chars();
-        let app: String = chars
-            .next()
-            .map(|first| first.to_uppercase().chain(chars).collect())
-            .unwrap_or_default();
         let version: String = module.chars().take(KEPT).collect();
-        return format!("{app}, updating to version {version}");
+        return format!("{}, updating to version {version}", app_named(app));
+    }
+    // An app running one of its own actions: "Board, on its own".
+    if let Some(app) = crate::authority::trigger_of(id) {
+        return format!("{}, on its own", app_named(app));
     }
     if let Some(kind) = id.strip_prefix("agent:") {
-        let mut chars = kind.chars();
-        let kind: String = chars
-            .next()
-            .map(|first| first.to_uppercase().chain(chars).collect())
-            .unwrap_or_default();
-        return format!("{kind} (agent)");
+        return format!("{} (agent)", app_named(kind));
     }
     if id.chars().count() <= KEPT * 2 {
         id.to_owned()
     } else {
         id.chars().take(KEPT).collect()
     }
+}
+
+/// The app `app` as a person reads it: its own name, capitalized (`so.tilo.board` is `Board`).
+fn app_named(app: &str) -> String {
+    let app = app.rsplit('.').next().unwrap_or(app);
+    let mut chars = app.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// What the window said it calls the participants.
@@ -128,6 +131,7 @@ mod tests {
             told.name(&Principal::new("agent:planner".to_owned())),
             "Planner (agent)"
         );
+        assert_eq!(unnamed("trigger:t.board"), "Board, on its own");
         assert!(told.tell(
             "Ada".to_owned(),
             vec![("ben-id".to_owned(), "Ben".to_owned())]

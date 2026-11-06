@@ -30,12 +30,15 @@ use ui::widget::conversation::{
 use ui::widget::{Button, ButtonFace, ControlSize};
 
 use crate::app::{ChatApp, Hit};
-use crate::model::{Attachment, Id};
+use crate::model::Id;
+use tilo_reference::Attached;
 
 /// The attachment the person has open over the conversation.
 pub(crate) struct AttachmentView {
     /// The message it came from: the bytes stay where the message says.
     pub(crate) msg: Id,
+    /// Which of the message's files it is.
+    pub(crate) attachment: usize,
     /// The copy the person saved while the viewer was open.
     pub(crate) saved: Option<SavedCopy>,
 }
@@ -60,31 +63,40 @@ pub(crate) enum SaveStep {
 }
 
 impl AttachmentView {
-    pub(crate) fn new(msg: Id) -> Self {
-        Self { msg, saved: None }
+    pub(crate) fn new(msg: Id, attachment: usize) -> Self {
+        Self {
+            msg,
+            attachment,
+            saved: None,
+        }
     }
 }
 
 /// What kind of thing an attachment is.
-pub(crate) fn kind_of(att: &Attachment) -> AttachmentKind {
+pub(crate) fn kind_of(att: &Attached) -> AttachmentKind {
     match att {
-        Attachment::Image { .. } => AttachmentKind::Image,
-        Attachment::Video { .. } => AttachmentKind::Video,
-        Attachment::File { .. } => AttachmentKind::File,
+        Attached::Image { .. } => AttachmentKind::Image,
+        Attached::Video { .. } => AttachmentKind::Video,
+        Attached::File { .. } | Attached::Resource { .. } | Attached::Text { .. } => {
+            AttachmentKind::File
+        }
     }
 }
 
 impl ChatApp {
-    /// The attachment on the message `msg`, when it has one.
-    pub(crate) fn attachment_of(&self, msg: &str) -> Option<Attachment> {
-        self.message(msg).and_then(|m| m.attachment.clone())
+    /// The file among the message `msg`'s attachments, when it has one.
+    pub(crate) fn attachment_of(&self, msg: &str, attachment: usize) -> Option<Attached> {
+        self.message(msg)
+            .and_then(|m| m.attachments.get(attachment))
+            .filter(|attached| attached.blob().is_some())
+            .cloned()
     }
 
     /// What the ladder needs to know about the open attachment, in the
     /// toolkit's vocabulary.
-    pub(crate) fn attachment_summary<'a>(&self, att: &'a Attachment) -> AttachmentSummary<'a> {
-        let mut summary = AttachmentSummary::ready(kind_of(att), att.name(), att.size());
-        if !self.embed_allowed(att.blob()) {
+    pub(crate) fn attachment_summary<'a>(&self, att: &'a Attached) -> AttachmentSummary<'a> {
+        let mut summary = AttachmentSummary::ready(kind_of(att), att.label(), att.size());
+        if !self.embed_allowed(att.blob().unwrap_or_default()) {
             summary = summary.in_state(Availability::NotShared);
         }
         if let Some(view) = &self.attachment_view
@@ -96,14 +108,14 @@ impl ChatApp {
     }
 
     /// Ask the host where to put a copy of `att`, then write it there.
-    pub(crate) fn begin_attachment_save(&mut self, msg: &str) {
-        let Some(att) = self.attachment_of(msg) else {
+    pub(crate) fn begin_attachment_save(&mut self, msg: &str, attachment: usize) {
+        let Some(att) = self.attachment_of(msg, attachment) else {
             return;
         };
         if self.attachment_save.is_some() {
             return;
         }
-        let name = att.name().to_owned();
+        let name = att.label().to_owned();
         let pick = ui::portal::PickRequest::save(
             &crate::i18n::t("chat-attachment-save-title"),
             &crate::i18n::t("chat-attachment-save-accept"),
@@ -113,7 +125,7 @@ impl ChatApp {
         .send_save_destination();
         self.attachment_save = Some(AttachmentSave {
             step: SaveStep::Choosing(pick),
-            blob: att.blob().to_owned(),
+            blob: att.blob().unwrap_or_default().to_owned(),
             msg: msg.to_owned(),
         });
     }
@@ -237,11 +249,12 @@ impl ChatApp {
             return;
         };
         let msg = view.msg.clone();
+        let index = view.attachment;
         ui::overlay::scrim::modal(scene, tf, self.rect, 1.0, theme);
         // Anywhere on the scrim closes: the picture is the only thing that
         // keeps a click.
         ChatApp::push_hit(hits, self.rect, Hit::Dismiss);
-        let Some(att) = self.attachment_of(&msg) else {
+        let Some(att) = self.attachment_of(&msg, index) else {
             // The message went while the viewer was open.
             self.attachment_view = None;
             return;
@@ -359,6 +372,7 @@ impl ChatApp {
                 AttachmentAction::OpenSaved.icon(),
                 Hit::Attachment {
                     msg: msg.clone(),
+                    attachment: index,
                     action: AttachmentAction::OpenSaved,
                 },
             );
@@ -372,6 +386,7 @@ impl ChatApp {
                 AttachmentAction::Save.icon(),
                 Hit::Attachment {
                     msg,
+                    attachment: index,
                     action: AttachmentAction::Save,
                 },
             );
@@ -379,7 +394,7 @@ impl ChatApp {
         // The name, at the leading edge of the toolbar.
         let title_style = theme.text(TextRole::Subheading);
         paint.text(
-            att.name(),
+            att.label(),
             &title_style,
             theme.text_primary,
             Point::new(
@@ -392,11 +407,11 @@ impl ChatApp {
 
     /// The decoded picture of an image, or a clip's poster frame: what the
     /// viewer shows at full size.
-    pub(crate) fn attachment_picture(&self, att: &Attachment) -> Option<vello::peniko::ImageData> {
+    pub(crate) fn attachment_picture(&self, att: &Attached) -> Option<vello::peniko::ImageData> {
         match att {
-            Attachment::Image { blob, .. } => self.images.get(&crate::images::blob_key(blob)),
-            Attachment::Video { blob, .. } => self.video_poster(blob),
-            Attachment::File { .. } => None,
+            Attached::Image { blob, .. } => self.images.get(&crate::images::blob_key(blob)),
+            Attached::Video { blob, .. } => self.video_poster(blob),
+            Attached::File { .. } | Attached::Resource { .. } | Attached::Text { .. } => None,
         }
     }
 

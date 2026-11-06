@@ -195,20 +195,26 @@ class RpmBuildGraphTest(unittest.TestCase):
                     for p in destination.rglob("*") if p.is_file()
                 },
                 {
+                    "usr/bin/tilo-model-gateway",
+                    "usr/bin/tilo-model-http",
                     "usr/libexec/tilo/tilo-model-gateway",
                     "usr/libexec/tilo/tilo-model-http",
                 },
             )
             for binary in (destination / "usr/libexec/tilo").iterdir():
                 self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
-            # The old command names are links to tilo, which runs the program
-            # from /usr/libexec/tilo under the name it was called by.
+            # The old command names run their programs: a session component
+            # is swapped onto images whose tilo may not know the name yet, so
+            # its links name the program itself.
             self.assertEqual(
                 {
                     link.name: os.readlink(link)
                     for link in (destination / "usr/bin").iterdir()
                 },
-                {"tilo-model-gateway": "tilo", "tilo-model-http": "tilo"},
+                {
+                    "tilo-model-gateway": "../libexec/tilo/tilo-model-gateway",
+                    "tilo-model-http": "../libexec/tilo/tilo-model-http",
+                },
             )
 
 

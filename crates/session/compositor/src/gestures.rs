@@ -164,10 +164,15 @@ impl GestureTracker {
         {
             let began = !self.strip_pan_engaged;
             self.strip_pan_engaged = true;
+            // Positive travel carries the strip toward later windows, the
+            // way the person's hand carried it: with natural scrolling the
+            // content follows the fingers, so their leftward travel goes
+            // toward later windows, and without it the content goes the
+            // other way.
             let travel = if self.config.natural_scroll {
-                horizontal
-            } else {
                 -horizontal
+            } else {
+                horizontal
             };
             return Some(GestureAction::StripPanUpdate { travel, began });
         }
@@ -439,6 +444,9 @@ mod tests {
 
     #[test]
     fn horizontal_streaming_and_natural_scroll_direction() {
+        // Fingers moving left: with natural scrolling the strip goes with
+        // them, toward later windows (positive travel); without it the
+        // content goes the other way and the strip toward earlier ones.
         {
             let mut tracker = GestureTracker::new(cfg());
             tracker.swipe_begin(3);
@@ -446,21 +454,21 @@ mod tests {
             assert_eq!(
                 tracker.swipe_update(-8.0, 1.0),
                 Some(GestureAction::StripPanUpdate {
-                    travel: 12.0,
+                    travel: -12.0,
                     began: true,
                 })
             );
             assert_eq!(
                 tracker.swipe_update(-20.0, 40.0),
                 Some(GestureAction::StripPanUpdate {
-                    travel: 32.0,
+                    travel: -32.0,
                     began: false,
                 })
             );
             assert_eq!(
                 tracker.swipe_update(24.0, 0.0),
                 Some(GestureAction::StripPanUpdate {
-                    travel: 8.0,
+                    travel: -8.0,
                     began: false,
                 })
             );
@@ -475,7 +483,7 @@ mod tests {
             assert_eq!(
                 tracker.swipe_update(-16.0, 0.0),
                 Some(GestureAction::StripPanUpdate {
-                    travel: -16.0,
+                    travel: 16.0,
                     began: true,
                 })
             );

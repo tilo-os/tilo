@@ -2827,4 +2827,5 @@ mod tree_tests;
 
 #[path = "virtual_list_component.rs"]
 mod component;
+pub(crate) use component::by_hand;
 pub use component::{DescribedList, DescribedRows, ItemRow, ListItemProps, VirtualListProps};

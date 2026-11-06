@@ -13,7 +13,8 @@ pub const KEYWORDS: &[&str] = &[
 
 /// Words that are keywords only where a declaration starts: `window` and `lens` at the start
 /// of a statement of a view body; `root`, `default`, `row` (before `view`), `scenario`,
-/// `primary`, `destructive`, `migration` and `internal` (before `action`) at the start of an item;
+/// `trigger`, `every`, `at`, `primary`, `destructive`, `migration` and `internal` (before
+/// `action`) at the start of an item;
 /// `root` before a type in a scenario; `derive` before a derived key in a type. Elsewhere they
 /// are ordinary names.
 pub const CONTEXTUAL: &[&str] = &[
@@ -23,6 +24,9 @@ pub const CONTEXTUAL: &[&str] = &[
     "default",
     "row",
     "scenario",
+    "trigger",
+    "every",
+    "at",
     "primary",
     "destructive",
     "migration",

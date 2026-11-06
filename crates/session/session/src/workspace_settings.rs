@@ -164,6 +164,7 @@ fn show(
         review,
         fed.personal,
         fed.emoji,
+        fed.engine,
     );
     shown.notice = seat.notice();
     seat.show(shown);
@@ -645,6 +646,7 @@ fn settings(
     review: Option<&str>,
     personal: Option<&RefCell<Personal>>,
     emoji: &EmojiTab,
+    engine: Option<&Engine>,
 ) -> sheet::Settings {
     let workspace = tree.active_workspace();
     let names = PeopleNames::of(tree, person, own_name().as_deref());
@@ -661,7 +663,7 @@ fn settings(
         close: t("workspace-settings-close"),
         tabs: tabs(),
         tab,
-        general: general(tree, person, personal),
+        general: general(tree, person, personal, engine),
         people: workspace.map_or_else(sheet::People::default, |ws| people(ws, &names, person)),
         permissions: workspace.map_or_else(sheet::Permissions::default, |ws| {
             permissions(ws, person, &apps)
@@ -691,9 +693,16 @@ fn general(
     tree: &DesktopTree,
     person: &UserId,
     personal: Option<&RefCell<Personal>>,
+    engine: Option<&Engine>,
 ) -> sheet::General {
     let workspace = tree.active_workspace();
     let manage = workspace.is_some_and(|workspace| workspace.may_administer(person));
+    // Inviting is the workspace's own grant, not an administrator's part: a
+    // moderator or an editor it lets invite makes a link like anyone else it
+    // allows. The invite sheet asks again when the link is made.
+    let invitable = workspace.is_some_and(|workspace| {
+        crate::invite::may_invite(engine, &workspace.id().to_string(), person)
+    });
     // What the workspace holds, in the three measures a person acts on: who
     // is in it, what it gives particular people or apps, and which apps it
     // opens things with.
@@ -735,14 +744,14 @@ fn general(
         rename_note: (!manage).then(|| t("workspace-settings-rename-admin-only")),
         invite: sheet::Group {
             title: t("workspace-settings-invite-title"),
-            description: t(if manage {
+            description: t(if invitable {
                 "workspace-settings-invite-description"
             } else {
-                "workspace-settings-invite-admin-only"
+                "workspace-settings-invite-not-allowed"
             }),
         },
         invite_label: t("workspace-settings-invite-create"),
-        can_invite: manage,
+        can_invite: invitable,
         glance_title: t("workspace-settings-glance-title"),
         stats: vec![
             stat("workspace-settings-stat-members", members),

@@ -146,15 +146,21 @@ imports! {
     PrincipalEq = "principal_eq" ([H, H] -> [I32]);
     PrincipalName = "principal_name" ([H] -> [H]);
     Now = "now" ([] -> [H]);
+    WebGet = "web_get" ([H, H, H] -> [H]);
+    WebPost = "web_post" ([H, H, H] -> [H]);
+    WebOk = "web_ok" ([H] -> [I32]);
+    WebStatus = "web_status" ([H] -> [I64]);
+    WebStatusText = "web_status_text" ([H] -> [H]);
+    WebHeaders = "web_headers" ([H] -> [H]);
+    WebBody = "web_body" ([H] -> [H]);
+    WebText = "web_text" ([H] -> [H]);
+    BytesLength = "bytes_length" ([H] -> [I64]);
     TimeShift = "time_shift" ([H, I64, I32] -> [H]);
     WallClock = "wall_clock" ([H] -> [H]);
     PrincipalNamed = "principal_named" ([H] -> [H]);
     AgentNamed = "agent_named" ([H] -> [H]);
-    InvokerPush = "invoker_push" ([H, H] -> []);
-    InvokerPop = "invoker_pop" ([] -> []);
-    FromPush = "from_push" ([H] -> []);
-    FromPop = "from_pop" ([] -> []);
-    SeedState = "seed_state" ([I32, H, H] -> []);
+    InvocationPush = "invocation_push" ([H, H, H] -> []);
+    InvocationPop = "invocation_pop" ([] -> []);
     PrincipalKind = "principal_kind" ([H] -> [I64]);
     PrincipalRole = "principal_role" ([H] -> [H]);
 
@@ -211,6 +217,7 @@ imports! {
     StateGet = "state_get" ([I32, H, H] -> [H]);
     ActSet = "act_set" ([I32, H, H] -> [H]);
     ActThen = "act_then" ([H, H] -> [H]);
+    ActMadeFrom = "act_made_from" ([H, H] -> [H]);
     ActOpen = "act_open" ([H, H, I32] -> [H]);
     ActUndo = "act_undo" ([H, I32] -> [H]);
     ChangeView = "change_view" ([H, I32, H] -> [H]);
@@ -228,6 +235,7 @@ imports! {
     Versions = "versions" ([H] -> [H]);
     Links = "links" ([H] -> [H]);
     VersionEnd = "version_end" ([H, I32] -> [H]);
+    FieldChanged = "field_changed" ([H, H] -> [H]);
     RunChanges = "run_changes" ([H] -> [H]);
     Unseen = "unseen" ([H] -> [H]);
     Others = "others" ([H, H] -> [H]);
@@ -266,6 +274,13 @@ imports! {
     DayStartOfWeek = "day_start_of_week" ([H] -> [H]);
     DayParse = "day_parse" ([H, H] -> [H]);
     TimeParse = "time_parse" ([H, H] -> [H]);
+    // A draw (`uses random`): a number in `0..upto`, one call per number, which the invocation
+    // records so a replay reads the same value.
+    RandomInt = "random_int" ([I64, I64] -> [I64]);
+    RandomFloat = "random_float" ([] -> [F64]);
+    RandomChoice = "random_choice" ([H] -> [H]);
+    RandomShuffle = "random_shuffle" ([H] -> [H]);
+    RandomId = "random_id" ([] -> [H]);
     EventPart = "event_part" ([I32] -> [H]);
     CollMoveAmong = "coll_move_among" ([H, H, H, I64, H] -> []);
     UiActions = "ui_actions" ([H, H, H] -> []);

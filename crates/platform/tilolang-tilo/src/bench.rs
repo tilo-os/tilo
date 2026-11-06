@@ -989,6 +989,19 @@ impl Workspace {
         profile: bool,
         index: Option<IndexDir>,
     ) -> Result<Self, String> {
+        Self::open_counting(doc, packages, app, profile, index, false)
+    }
+
+    /// [`Self::open`], counting what each unit costs from the moment the host is made: what
+    /// the opening work is made of, by unit ([`crate::cost`]).
+    fn open_counting(
+        doc: Doc,
+        packages: &[Compiled],
+        app: &str,
+        profile: bool,
+        index: Option<IndexDir>,
+        costs: bool,
+    ) -> Result<Self, String> {
         let start = Instant::now();
         let host = Host::open(
             Opening {
@@ -1004,6 +1017,7 @@ impl Workspace {
         // changed (`updated(r)`) is the same in every run, whatever the wall clock reads.
         host.runtime().set_clock(|| BENCH_TIME.to_owned());
         host.runtime().engine().profile(profile);
+        host.runtime().record_costs(costs);
         let hosted = Instant::now();
         // As a launcher does: from the modules built with Tilo, compiling no source.
         for compiled in packages {
@@ -2666,5 +2680,38 @@ mod tests {
         fill_registers(&mut record, &[("when".to_owned(), optional)])
             .unwrap_or_else(|e| panic!("{e}"));
         assert!(matches!(record.get("when"), Some(DynValue::Register(slot)) if slot.is_null()));
+    }
+}
+
+#[cfg(test)]
+mod costs {
+    use super::*;
+
+    /// What opening a workspace of ten thousand tasks costs, in the language's own terms
+    /// ([`tilolang_runtime::cost`]): each unit by name, the calls it ran, the fuel it spent and
+    /// what it read.
+    ///
+    /// The target: a requirement is decided once for each row on screen, because that is what a
+    /// person can act on. The workspace's ten thousand tasks are what a list pages through, not
+    /// what a row can be right-clicked on.
+    #[test]
+    fn opening_ten_thousand_tasks_evaluates_each_requirement_once_per_row_shown() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/tasks");
+        let packages = compile(&dir).expect("the tasks package compiles");
+        let doc = seeded_record(&packages, 10_000).expect("the workspace seeds");
+        let app = packages.last().expect("a package").meta.app.clone();
+        let mut workspace = Workspace::open_counting(doc, &packages, &app, false, None, true)
+            .expect("the workspace opens");
+        workspace.settle();
+        let costs = workspace
+            .host
+            .runtime()
+            .costs()
+            .expect("the opening is counted");
+        println!("{}", costs.render());
+        let shown = u64::try_from(PAGE).expect("the rows a window shows");
+        tilolang_runtime::assert_costs("open", &costs, |c| {
+            c.calls("Task.due_today requirement") <= shown
+        });
     }
 }

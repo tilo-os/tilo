@@ -385,7 +385,14 @@ impl Core {
             if let Some(newest) =
                 crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs, mark_others).pop()
             {
-                unseen.push(newest);
+                // A change a record made from `resource` stands under both, as that record's
+                // own change and as a change to what it was made from: the window counts it
+                // once, where the record that made it stands.
+                if newest.resource == resource
+                    || !unseen.iter().any(|other| other.change == newest.change)
+                {
+                    unseen.push(newest);
+                }
             }
         }
         if unseen.is_empty() {

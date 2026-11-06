@@ -28,6 +28,10 @@ pub const ACTION_TYPE: &str = "tl.action";
 /// The key of the map in a resource that holds the migrations that ran on it, by action id.
 pub const MIGRATED_KEY: &str = "$migrated";
 
+/// The key of the map in a resource that holds what each trigger last did for it, by trigger
+/// id: the period it ran in, or the instant it fired at.
+pub const TRIGGERS_KEY: &str = "$triggers";
+
 /// The key of the map in the workspace record that holds every tilolang resource.
 pub const RECORDS_KEY: &str = "tl";
 
@@ -58,7 +62,7 @@ pub struct Authorship {
     /// The module hash that declares the action.
     pub module: String,
     /// When the action was invoked, recorded like an argument: what reflection reads as the
-    /// time of the versions it made (a scenario's `as who at time` sets it).
+    /// time of the versions it made (a scenario's `invoke(..., at: time)` sets it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<String>,
     /// The resource the invocation was made from, when it was made from one: what the resources
@@ -158,6 +162,13 @@ pub enum DynEdit {
     /// Record that the migration `migration` (its action id) ran on the resource `id`, in the
     /// same change as what it did, so it runs once on each resource an earlier version wrote.
     Migrated { id: String, migration: String },
+    /// Record what the trigger `key` last did for the resource `id` (`value`: the period it ran
+    /// in, or the instant it fired at), in the same change as what it did, so it runs once.
+    TriggerRan {
+        id: String,
+        key: String,
+        value: String,
+    },
 }
 
 impl DynEdit {
@@ -207,7 +218,8 @@ impl DynEdit {
             | Self::Remove { .. }
             | Self::OutboxSettle { .. }
             | Self::OutboxMark { .. }
-            | Self::Migrated { .. } => false,
+            | Self::Migrated { .. }
+            | Self::TriggerRan { .. } => false,
         }
     }
 
@@ -223,7 +235,8 @@ impl DynEdit {
             | Self::OutboxPush { id, .. }
             | Self::OutboxSettle { id, .. }
             | Self::OutboxMark { id, .. }
-            | Self::Migrated { id, .. } => id,
+            | Self::Migrated { id, .. }
+            | Self::TriggerRan { id, .. } => id,
             Self::In { edit, .. } => edit.resource(),
         }
     }
@@ -368,6 +381,7 @@ impl DynAction {
                 | DynEdit::OutboxSettle { .. }
                 | DynEdit::OutboxMark { .. }
                 | DynEdit::Migrated { .. }
+                | DynEdit::TriggerRan { .. }
                 | DynEdit::In { .. } => {}
             }
         }
@@ -511,6 +525,7 @@ impl DynAction {
                 | DynEdit::OutboxSettle { .. }
                 | DynEdit::OutboxMark { .. }
                 | DynEdit::Migrated { .. }
+                | DynEdit::TriggerRan { .. }
                 | DynEdit::In { .. } => {}
             }
         }
@@ -540,7 +555,8 @@ impl DynAction {
             | DynEdit::OutboxPush { id, .. }
             | DynEdit::OutboxSettle { id, .. }
             | DynEdit::OutboxMark { id, .. }
-            | DynEdit::Migrated { id, .. }) = edit
+            | DynEdit::Migrated { id, .. }
+            | DynEdit::TriggerRan { id, .. }) = edit
             else {
                 continue;
             };
@@ -593,7 +609,8 @@ fn target_map(
         | DynEdit::OutboxPush { id, .. }
         | DynEdit::OutboxSettle { id, .. }
         | DynEdit::OutboxMark { id, .. }
-        | DynEdit::Migrated { id, .. } => stored_map(doc, records, app, id),
+        | DynEdit::Migrated { id, .. }
+        | DynEdit::TriggerRan { id, .. } => stored_map(doc, records, app, id),
     };
     match held {
         Some(map) => Ok(map),
@@ -699,6 +716,7 @@ fn apply_one(
             write_outbox_entry(doc, &app, edit)?;
         }
         DynEdit::Migrated { id, migration } => mark_migrated(doc, &app, id, migration)?,
+        DynEdit::TriggerRan { id, key, value } => mark_trigger(doc, &app, id, key, value)?,
         DynEdit::In { .. } => {}
     }
     Ok(())
@@ -732,6 +750,43 @@ fn mark_migrated(
 pub fn migrated(doc: &Doc, obj: &automerge::ObjId, migration: &str) -> bool {
     map_in(doc, obj, MIGRATED_KEY)
         .is_some_and(|done| doc.get(&done, migration).ok().flatten().is_some())
+}
+
+/// Record for the resource `id`, in the same change as what the trigger did, what the trigger
+/// `key` last did for it (`value`: the period it ran in, or the instant it fired at).
+fn mark_trigger(
+    doc: &mut Doc,
+    app: &automerge::ObjId,
+    id: &str,
+    key: &str,
+    value: &str,
+) -> Result<(), ActionError> {
+    let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(app, id)? else {
+        return Err(ActionError::Refused(format!("there is no resource `{id}`")));
+    };
+    // Where changes are applied in order, a second run of the same period or instant is
+    // refused as it is made, not applied twice.
+    if triggered(doc, &obj, key).as_deref() == Some(value) {
+        return Err(ActionError::Refused(format!(
+            "the trigger `{key}` already ran as `{value}` on `{id}`"
+        )));
+    }
+    let done = ensure_map(doc, &obj, TRIGGERS_KEY)?;
+    doc.put(&done, key, value)?;
+    Ok(())
+}
+
+/// What the trigger `key` last did for the resource at the map `obj`, as it recorded it.
+#[must_use]
+pub fn triggered(doc: &Doc, obj: &automerge::ObjId, key: &str) -> Option<String> {
+    let done = map_in(doc, obj, TRIGGERS_KEY)?;
+    match doc.get(&done, key).ok().flatten() {
+        Some((AmValue::Scalar(scalar), _)) => match scalar.as_ref() {
+            automerge::ScalarValue::Str(text) => Some(text.to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// The items of each collection of a record being stored, in order, by the item holding the
@@ -1159,7 +1214,8 @@ impl DynAction {
             | DynEdit::OutboxPush { id, .. }
             | DynEdit::OutboxSettle { id, .. }
             | DynEdit::OutboxMark { id, .. }
-            | DynEdit::Migrated { id, .. } => (id, None),
+            | DynEdit::Migrated { id, .. }
+            | DynEdit::TriggerRan { id, .. } => (id, None),
             DynEdit::In { .. } => return None,
         };
         let root = crate::reads::resource_obj(doc, &self.app, id)?;

@@ -246,6 +246,21 @@ impl Core {
         }))
     }
 
+    /// `a.made_from(r)`: the action `a`, invoked made from the resource `r`: what the resources
+    /// it makes record as what they were made from (`created(r)?.from`), as a block a scenario
+    /// runs `made from r { ... }` says of its changes.
+    fn act_made_from(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let action = self.val(a.h(0)?)?;
+        let Value::Action(action) = action else {
+            return trap(format!(
+                "`made_from` takes an action, not {}",
+                action.kind_name()
+            ));
+        };
+        let from = self.ref_arg(a.h(1)?)?;
+        self.ret_h(Value::Action(action.made_from(Some(&from.target))))
+    }
+
     fn act_open(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         // The resource, or the place of the one an event carries.
         let target = match self.val(a.h(0)?)? {
@@ -446,6 +461,7 @@ impl Core {
             Imp::UiBindState => self.bind_state(a),
             Imp::ActSet => self.act_set(a),
             Imp::ActThen => self.act_then(a),
+            Imp::ActMadeFrom => self.act_made_from(a),
             Imp::ActOpen => self.act_open(a),
             Imp::ActUndo => self.act_undo(a),
             Imp::ChangeView => self.change_view(a),

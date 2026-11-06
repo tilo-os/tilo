@@ -91,19 +91,26 @@ fn fullscreen_granted(window: &Window) -> bool {
 }
 
 impl State {
+    /// The display `window` fills: the compositor gave it one to fill, and
+    /// its content covers the whole of it.
+    pub(crate) fn filled_display(&self, window: &Window) -> Option<&smithay::output::Output> {
+        if !fullscreen_granted(window) {
+            return None;
+        }
+        let geometry = self.space.element_geometry(window)?;
+        self.space.outputs().find(|output| {
+            self.space
+                .output_geometry(output)
+                .is_some_and(|area| geometry.contains_rect(area))
+        })
+    }
+
     /// Whether a fullscreen window covers `output`: its content fills the
     /// display, which may then run at a variable refresh rate.
     pub(crate) fn fullscreen_on(&self, output: &smithay::output::Output) -> bool {
-        let Some(area) = self.space.output_geometry(output) else {
-            return false;
-        };
-        self.space.elements().any(|window| {
-            fullscreen_granted(window)
-                && self
-                    .space
-                    .element_geometry(window)
-                    .is_some_and(|geometry| geometry.contains_rect(area))
-        })
+        self.space
+            .elements()
+            .any(|window| self.filled_display(window) == Some(output))
     }
 
     /// The displays a fullscreen window owns: the display holding its

@@ -477,7 +477,9 @@ impl Core {
         ret_void()
     }
 
-    fn list_items(&self, h: i32) -> HResult<Vec<Value>> {
+    /// The items of the list behind `h`, as values: what an import that draws one of them or
+    /// reorders them works on.
+    pub(crate) fn list_items(&self, h: i32) -> HResult<Vec<Value>> {
         match self.val_whole(h)? {
             Value::List(items) => Ok(items),
             other => trap(format!("expected a list, got {}", other.kind_name())),

@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 use tilolang_cli::dev::{self, DevOptions};
 use tilolang_cli::package::{self, BuildOptions};
+use tilolang_cli::profile::{self, ProfileOptions};
 use tilolang_cli::repl::{self, ReplOptions};
 use tilolang_cli::run::{self, RunOptions};
 
@@ -34,6 +35,16 @@ usage:
       file, runtime directory or control socket): every saved .tl file is compiled, installed
       and taken over by the app there, and --runtime BIN bakes the runtime binary into a signed
       runtime bundle installed in that session. See docs/tilolang-dev.md.
+  tilolang profile [DIR] [--search DIR]... [--scenario NAME] [--seed N] [--size WxH]
+                   [--root NAME] [--then INTERACTION]...
+      count what the app in DIR (default: .) costs to open and to use, in the language's own
+      terms: each unit of its code by source line, with the calls it ran, the fuel it spent and
+      what it read from the host, sorted by fuel. --seed N opens a workspace of N items (as
+      `tilolang bench` seeds one); --scenario stages that scenario of the app (the app's first
+      by default); --then runs an interaction after the app is open and counts that alone:
+      key:Tab, click:X,Y, type:TEXT or scroll:DX,DY, in logical pixels. --size is the window's
+      size (default 1280x800), --root the layer of a package with more than one root. The counts
+      are the same on any machine at any load.
   tilolang describe [DIR] [--search DIR]...
       print what the app in DIR publishes as tilolang: its resources' types, enums and actions,
       a native app (its committed surface.toml) and a tilolang package alike
@@ -44,7 +55,7 @@ usage:
       door, or the person's own session (--real), where the person admits it. Each entry is a
       program for the door's `tilo` tool, run as the REPL's task: lets are kept, refs (n3) name
       what answers showed, a bulk change previews until `confirm`, `undo` takes a step back.
-  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--json] [--root NAME] [--key KEY]... [--dump WxH [--shots DIR [--theme NAME]...]]
+  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--dump WxH [--shots DIR [--theme NAME]...]]
       lay out every view of each app headlessly, staged from each of its scenarios, at window
       sizes from 320x568 to 3440x1440, display scales 1 and 2 and text scales 1 and 1.5, and
       report overflow, clipped text, overlapping siblings, hit targets below the minimum and
@@ -56,6 +67,9 @@ usage:
       them in that shipped theme (default, glass, block, ...) instead of the stock pair, light and
       dark each. --root lays out the layer a package with more than one root names (the shell's
       `Desk`, its desk with the bar and the dock), instead of the package's first root.
+      --state stages a view state at a value the app's own code names (`place=Task.today`, a
+      filter; `side=Side.right`, a case of its enum) before any window opens: the place a
+      window stands on when nobody has picked one, as a scenario that laid it out would.
       --key sends a key press (`Tab`, `Down`, `Space`) to each window before it is read, in the
       order given, at the `--dump` size, so a shot and a dump show the layout a person reaches
       by keyboard.
@@ -70,6 +84,7 @@ fn main() -> ExitCode {
         Some("run") => run_command(rest),
         Some("dev") => dev_command(rest),
         Some("describe") => describe_command(rest),
+        Some("profile") => profile_command(rest),
         Some("repl") => repl_command(rest),
         Some("layout-check") => return layout_check_command(rest),
         Some("-h" | "--help") | None => {
@@ -101,6 +116,50 @@ fn value(args: &mut std::slice::Iter<'_, String>, flag: &str) -> Result<String, 
     args.next()
         .cloned()
         .ok_or_else(|| format!("{flag} needs a value"))
+}
+
+fn profile_command(args: &[String]) -> Result<(), String> {
+    let mut dir = PathBuf::from(".");
+    let mut options = ProfileOptions {
+        dir: PathBuf::new(),
+        search: Vec::new(),
+        scenario: None,
+        seed: None,
+        size: (1280, 800),
+        root: None,
+        then: Vec::new(),
+    };
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--search" => options.search.push(value(&mut iter, arg)?.into()),
+            "--scenario" => options.scenario = Some(value(&mut iter, arg)?),
+            "--seed" => {
+                let n = value(&mut iter, arg)?;
+                options.seed = Some(
+                    n.parse()
+                        .map_err(|_| format!("--seed {n}: not a number of items"))?,
+                );
+            }
+            "--size" => {
+                let size = value(&mut iter, arg)?;
+                let (w, h) = size
+                    .split_once(['x', 'X'])
+                    .ok_or_else(|| format!("--size {size}: expected WxH"))?;
+                let number = |text: &str| {
+                    text.parse::<u32>()
+                        .map_err(|_| format!("--size {size}: {text:?} is not a size"))
+                };
+                options.size = (number(w)?, number(h)?);
+            }
+            "--root" => options.root = Some(value(&mut iter, arg)?),
+            "--then" => options.then.push(value(&mut iter, arg)?),
+            flag if flag.starts_with("--") => return Err(format!("profile: no flag {flag}")),
+            dir_arg => dir = PathBuf::from(dir_arg),
+        }
+    }
+    options.dir = dir;
+    profile::profile(&options)
 }
 
 fn build(args: &[String]) -> Result<(), String> {
@@ -154,6 +213,7 @@ fn layout_check_command(args: &[String]) -> ExitCode {
                 "--shots" => options.shots = Some(value(&mut iter, arg)?.into()),
                 "--theme" => options.themes.push(value(&mut iter, arg)?),
                 "--root" => options.root = Some(value(&mut iter, arg)?),
+                "--state" => options.states.push(value(&mut iter, arg)?),
                 "--key" => options.keys.push(value(&mut iter, arg)?),
                 "--dump" => {
                     let size = value(&mut iter, arg)?;

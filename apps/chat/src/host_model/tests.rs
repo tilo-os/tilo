@@ -427,11 +427,11 @@ fn a_messages_name_says_which_file_it_shares() {
     let mut message = reply(&doc, &start["reply"]);
     message.work = None;
     message.text = String::new();
-    message.attachment = Some(crate::model::Attachment::File {
+    message.attachments = vec![tilo_reference::Attached::File {
         name: "plan.txt".into(),
         blob: "ff".into(),
         size: 5,
-    });
+    }];
     assert!(app.model_message_label(&message).ends_with(": plan.txt"));
     message.text = "see this".into();
     assert!(

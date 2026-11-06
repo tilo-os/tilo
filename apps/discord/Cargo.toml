@@ -42,6 +42,7 @@ discord-samples = { package = "discord", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # The bridge reads a real Chat record in its tests.
 chat = { path = "../chat" }
+tilo-reference = { path = "../../crates/collab/reference" }
 # The bridge bot's program is built and checked against the real surfaces.
 tilo-automation = { path = "../../crates/collab/automation" }
 

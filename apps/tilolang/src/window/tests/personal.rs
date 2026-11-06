@@ -10,14 +10,14 @@ use tilolang_tilo::runtime::view_state::StateLayer;
 use ui::automerge::{ObjType, ROOT, ReadDoc as _, Value as AmValue};
 use ui::prelude::TestApp;
 
-/// The value of the place the person picked, as the runtime holds a filter: Today.
+/// The value of the place the person picked, as the runtime holds a filter: Today. A filter is
+/// its key, label, icon, what choosing it asks and whether it is a toggle.
 fn today_filter() -> RtValue {
     RtValue::Tuple(vec![
         RtValue::text("today"),
         RtValue::text("Today"),
         RtValue::Opt(Some(Box::new(RtValue::text("star")))),
         RtValue::text("is:today"),
-        RtValue::Bool(true),
         RtValue::Bool(true),
     ])
 }

@@ -410,13 +410,16 @@ fn derived_document_uuid(
     workspace_id: &str,
     record_id: &str,
 ) -> uuid::Uuid {
+    derived_uuid(domain, &[app_id, workspace_id, record_id])
+}
+
+/// The domain-separated id derived from `parts`: length-prefixed, so no two
+/// tuples of parts hash alike, and fixed to `UUIDv8` so it reads as an id.
+pub(crate) fn derived_uuid(domain: &[u8], parts: &[&str]) -> uuid::Uuid {
     let mut hash = Sha256::new();
     hash.update(domain);
-    for part in [
-        app_id.as_bytes(),
-        workspace_id.as_bytes(),
-        record_id.as_bytes(),
-    ] {
+    for part in parts {
+        let part = part.as_bytes();
         hash.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_le_bytes());
         hash.update(part);
     }

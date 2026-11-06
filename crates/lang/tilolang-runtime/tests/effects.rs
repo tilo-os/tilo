@@ -1,0 +1,179 @@
+//! What an invocation read that a replay cannot compute again: the clock and zone are recorded
+//! where the invocation reads them, kept beside an action's change and in a flow's journal, so a
+//! replay answers from the record instead of the host.
+
+#[cfg(test)]
+#[path = "common/mod.rs"]
+mod common;
+
+#[cfg(test)]
+mod cases {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use super::common::*;
+    use tilolang_runtime::flow::{Clock, JournalEntry};
+    use tilolang_runtime::{
+        AmStore, FlowOutcome, Resolution, ResourceRef, Runtime, SimpleAuthority, Store, Value,
+    };
+
+    /// Two hours ahead of UTC: their midnight is 22:00 UTC.
+    const ZONE: i64 = 2 * 3600;
+    const ZONE_NAME: &str = "Europe/Berlin";
+
+    const NOTE: &str = r#"app so.tilo.stamp "Stamp"
+
+type Note {
+    text: Text (title)
+    at: Time = Time("2026-01-01T00:00:00Z")
+}
+
+action stamp(n: Note) uses time {
+    n.at = now
+}
+
+action retitle(n: Note, text: Text) {
+    n.text = text
+}
+"#;
+
+    const DEMO: &str = r#"app so.tilo.demo "Demo"
+
+type Board {
+    marks: Int merge counter
+}
+
+action mark(b: Board) {
+    b.marks += 1
+}
+"#;
+
+    /// The runner's flow reads the clock, then invokes another package's action, which asks.
+    const RUNNER: &str = r#"app so.tilo.runner "Runner"
+
+use so.tilo.demo as demo
+
+flow start(b: demo.Board) -> Time uses time {
+    let started = now
+    demo.mark(b)
+    return started
+}
+"#;
+
+    struct HostClock {
+        now: Rc<RefCell<String>>,
+    }
+
+    impl HostClock {
+        fn new(now: &str) -> Self {
+            Self {
+                now: Rc::new(RefCell::new(now.to_owned())),
+            }
+        }
+
+        fn set(&self, now: &str) {
+            now.clone_into(&mut self.now.borrow_mut());
+        }
+
+        fn install(&self, rt: &Runtime) {
+            let reading = Rc::clone(&self.now);
+            rt.set_clock(move || reading.borrow().clone());
+            rt.set_zone(move || ZONE);
+            rt.set_zone_name(move || Some(ZONE_NAME.to_owned()));
+        }
+    }
+
+    fn runtime(clock: &HostClock) -> (Runtime, AmStore) {
+        let store = AmStore::new();
+        let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
+        clock.install(&rt);
+        (rt, store)
+    }
+
+    #[test]
+    fn an_actions_journal_is_kept_beside_its_change() {
+        let clock = HostClock::new("2026-06-30T09:00:00Z");
+        let (rt, _store) = runtime(&clock);
+        let app = App::compile(NOTE, &[]);
+        app.load(&rt);
+        let note = rt.create("Note").unwrap();
+        let stamp = app.action("stamp");
+        rt.invoke_action(&me(), (stamp.as_str(), vec![Value::resource(&note)]))
+            .unwrap();
+
+        let history = rt.history(&note.doc).unwrap();
+        let note_made = history.last().expect("the change it made");
+        assert_eq!(note_made.at.as_deref(), Some("2026-06-30T09:00:00Z"));
+        assert_eq!(
+            note_made.effects,
+            [JournalEntry::Clock(Clock {
+                now: "2026-06-30T09:00:00Z".to_owned(),
+                zone: Some(ZONE_NAME.to_owned()),
+                offset: ZONE,
+            })],
+            "the moment and zone the change was made of are kept with it"
+        );
+
+        // An action that reads no clock records none: nothing of its is replayed differently.
+        let retitle = app.action("retitle");
+        rt.invoke_action(
+            &me(),
+            (
+                retitle.as_str(),
+                vec![Value::resource(&note), Value::text("renamed")],
+            ),
+        )
+        .unwrap();
+        let history = rt.history(&note.doc).unwrap();
+        assert!(history.last().unwrap().effects.is_empty());
+    }
+
+    #[test]
+    fn a_flow_resumed_the_next_day_reads_the_moment_it_started() {
+        let clock = HostClock::new("2026-06-30T09:00:00Z");
+        let (rt, mut store) = runtime(&clock);
+        let demo = App::compile(DEMO, &[]);
+        let runner = App::compile(RUNNER, &[demo.meta().clone()]);
+        demo.load(&rt);
+        runner.load(&rt);
+        let board = rt.create("Board").unwrap();
+
+        let out = rt
+            .run_flow(&me(), &runner.flow("start"), vec![Value::resource(&board)])
+            .unwrap();
+        let FlowOutcome::Suspended(first) = out else {
+            panic!("the other package's action must ask: {out:?}");
+        };
+
+        // The moment the run started is in its journal before it goes on.
+        let journal = store
+            .load_journal(&first.run)
+            .unwrap()
+            .expect("a suspended run's journal");
+        assert_eq!(
+            journal.entries,
+            [JournalEntry::Clock(Clock {
+                now: "2026-06-30T09:00:00Z".to_owned(),
+                zone: Some(ZONE_NAME.to_owned()),
+                offset: ZONE,
+            })]
+        );
+
+        // Tomorrow, the run resumed reads the moment it started, not the host's.
+        clock.set("2026-07-01T15:30:00Z");
+        let out = rt.resolve(&first.run, &me(), Resolution::Approve).unwrap();
+        assert_eq!(
+            out,
+            FlowOutcome::Done(Value::text("2026-06-30T09:00:00Z")),
+            "a resumed run sees the clock it first read"
+        );
+        assert_eq!(marks(&rt, &board), 1, "the step it approved ran once");
+    }
+
+    fn marks(rt: &Runtime, board: &ResourceRef) -> i64 {
+        match rt.read(board, "marks").unwrap() {
+            Value::Int(n) => n,
+            other => panic!("marks is {other:?}"),
+        }
+    }
+}

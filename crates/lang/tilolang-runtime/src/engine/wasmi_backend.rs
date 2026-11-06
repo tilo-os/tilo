@@ -228,7 +228,13 @@ impl Backend for Wasmi {
     ) -> Result<Option<Wasm>, CallError> {
         pooled.store.data_mut().cx = Some(cx);
         let outcome = run(pooled, export, args, fuel);
-        pooled.store.data_mut().cx = None;
+        // What the call spent, charged to the unit that made it: a call that ran out spent it
+        // all.
+        let spent = fuel.saturating_sub(pooled.store.get_fuel().unwrap_or(0));
+        let cx = pooled.store.data_mut().cx.take();
+        if let Some(costs) = cx.and_then(|cx| cx.costs) {
+            costs.fuel(spent);
+        }
         outcome
     }
 }

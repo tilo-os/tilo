@@ -31,6 +31,21 @@ fn concat(a: Ex, b: Ex) -> Ex {
     Ex::host(Imp::StrConcat, vec![a, b], Ty::Text)
 }
 
+/// What an application applies, once the steps that carry it are stripped:
+/// `send(c, d).then(set(d, ""))` is `send`, and `act(x).made_from(r)` is `act` — the button
+/// takes its look and the arguments it reads from it, while what it runs keeps `r` as what it
+/// is made from.
+fn applied_action(e: &ast::Expr) -> &ast::Expr {
+    let mut applied = e;
+    while let ExprKind::Call { callee, .. } = &applied.kind
+        && let ExprKind::Field { base, name } = &callee.kind
+        && matches!(name.name.as_str(), "then" | "made_from")
+    {
+        applied = base;
+    }
+    applied
+}
+
 impl Checker<'_> {
     /// Lowers the primitives whose lowering is their own; `None` for the rest.
     pub(super) fn native(&mut self, p: &Prim, c: &UiCall, args: &[ast::Arg]) -> Option<LocalId> {
@@ -925,14 +940,7 @@ impl Checker<'_> {
         let first = args
             .iter()
             .find(|a| a.name.is_none() && !self.is_flag(None, &a.value))?;
-        // `send(c, draft).then(set(draft, ""))` presents as `send`.
-        let mut applied = &first.value;
-        while let ExprKind::Call { callee, .. } = &applied.kind
-            && let ExprKind::Field { base, name } = &callee.kind
-            && name.name == "then"
-        {
-            applied = base;
-        }
+        let applied = applied_action(&first.value);
         let ExprKind::Call { callee, .. } = &applied.kind else {
             return None;
         };
@@ -959,13 +967,7 @@ impl Checker<'_> {
         if label.is_none() && icon.is_none() && on.is_none() {
             return;
         }
-        let mut call = applied;
-        while let ExprKind::Call { callee: c, .. } = &call.kind
-            && let ExprKind::Field { base, name } = &c.kind
-            && name.name == "then"
-        {
-            call = base;
-        }
+        let call = applied_action(applied);
         let ExprKind::Call { args, .. } = &call.kind else {
             return;
         };
@@ -1691,10 +1693,8 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
         b.stmts.iter().find_map(|s| match &s.kind {
             StmtKind::Expr(x) | StmtKind::Let { value: x, .. } => mentions(x, names),
             StmtKind::Return(x) => x.as_ref().and_then(|x| mentions(x, names)),
-            StmtKind::Assign { value, .. } | StmtKind::SeedState { value, .. } => {
-                mentions(value, names)
-            }
-            StmtKind::For { iter, .. } | StmtKind::As { who: iter, .. } => mentions(iter, names),
+            StmtKind::Assign { value, .. } => mentions(value, names),
+            StmtKind::For { iter, .. } => mentions(iter, names),
         })
     };
     match &e.kind {
@@ -1727,7 +1727,6 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
             .or_else(|| block(then))
             .or_else(|| els.as_deref().and_then(|x| mentions(x, names))),
         ExprKind::Block(b) => block(b),
-        ExprKind::MadeFrom { of, body } => mentions(of, names).or_else(|| block(body)),
         ExprKind::Match { scrutinee, arms } => mentions(scrutinee, names)
             .or_else(|| arms.iter().find_map(|a| mentions(&a.body, names))),
         ExprKind::Str(parts) => parts.iter().find_map(|p| match p {

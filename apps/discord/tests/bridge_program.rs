@@ -435,7 +435,10 @@ fn pass() -> Vec<Step> {
             let mut body = vec![guild("fetch-file", "fetch-asset", &[("op", item("fetch"))])];
             body.extend(mirrored_post(
                 "file",
-                &[("attachment", plan_step("fetch-file", "/attachment"))],
+                &[(
+                    "attachments",
+                    Binding::List(vec![plan_step("fetch-file", "/attachment")]),
+                )],
             ));
             body
         }),

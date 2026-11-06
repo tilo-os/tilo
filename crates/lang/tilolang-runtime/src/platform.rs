@@ -350,7 +350,12 @@ impl Core {
                 self.note_state_read(key, generation, &value);
                 self.ret_h(value)
             }
-            Imp::Versions | Imp::VersionEnd | Imp::RunChanges | Imp::Unseen | Imp::Steps => {
+            Imp::Versions
+            | Imp::VersionEnd
+            | Imp::FieldChanged
+            | Imp::RunChanges
+            | Imp::Unseen
+            | Imp::Steps => {
                 let value = self.versions_import(imp, a)?;
                 self.ret_h(value)
             }
@@ -953,7 +958,7 @@ impl Core {
         // runs, and its reading carries none of it: nothing of it is held here.
         if crate::foreign::is_foreign(at) {
             return Ok(match imp {
-                Imp::VersionEnd => Value::none(),
+                Imp::VersionEnd | Imp::FieldChanged => Value::none(),
                 _ => Value::List(Vec::new()),
             });
         }
@@ -963,6 +968,19 @@ impl Core {
                 let end = self.store.borrow().version_end(at, last).map_err(trapped)?;
                 self.read_versions_of(at);
                 match end {
+                    Some(v) => Value::some(self.version_value(v, at)?),
+                    None => Value::none(),
+                }
+            }
+            Imp::FieldChanged => {
+                let field = self.text(a.h(1)?)?;
+                let changed = self
+                    .store
+                    .borrow()
+                    .field_changed(at, &field)
+                    .map_err(trapped)?;
+                self.read_field_of(at, &field);
+                match changed {
                     Some(v) => Value::some(self.version_value(v, at)?),
                     None => Value::none(),
                 }
@@ -1093,9 +1111,9 @@ impl Core {
         Ok(match &frame.kind {
             FrameKind::View(view) => view.viewer.0.clone(),
             FrameKind::Action(state) => state
-                .acting_as
+                .invocations
                 .last()
-                .map_or(&state.invoker, |(who, _)| who)
+                .map_or(&state.invoker, |inv| &inv.who)
                 .0
                 .clone(),
             _ => return trap("unseen: only a view or an action has someone looking"),
@@ -1108,25 +1126,34 @@ impl Core {
         mark_of(self.view_states.borrow().get(&key))
     }
 
-    /// `person`'s seen mark that covers `resource`: its own, else the mark of whatever holds
-    /// it, then of whatever holds that. Opening a conversation marks seen what its window
-    /// showed (task-legibility.md §4), and what it showed is the messages in it: items are
-    /// stored flat by id (convergence.md, "Items"), so the collection holding one names its
-    /// holder, never the path down to it.
+    /// `person`'s seen mark that covers `resource`: its own, else the mark of what it was made
+    /// from and of whatever holds it, then of what those were made from or holds. Opening a
+    /// conversation marks seen what its window showed (task-legibility.md §4), and what it
+    /// showed is the messages in it: items are stored flat by id (convergence.md, "Items"), so
+    /// the collection holding one names its holder, never the path down to it. Reading what a
+    /// record was made from reads the record, as a task's page shows the comments under it.
     pub(crate) fn seen_mark_of_tree(&self, person: &str, at: &ResourceRef) -> Option<SeenMark> {
-        if let Some(mark) = self.seen_mark(person, &at.id_string()) {
-            return Some(mark);
-        }
-        let mut holding = at.clone();
-        // A collection of items nests at most a few deep (a board's card, a card's comment).
+        let mut at = at.clone();
+        // A record is made from one record and held by a few containers (a board's card, a
+        // card's comment): the walk up ends either way in a few steps.
         for _ in 0..8 {
-            let Ok(Some((holder, _))) = self.store.borrow().container(&holding) else {
-                return None;
-            };
-            if let Some(mark) = self.seen_mark(person, &holder.id_string()) {
+            if let Some(mark) = self.seen_mark(person, &at.id_string()) {
                 return Some(mark);
             }
-            holding = holder;
+            let from = self
+                .store
+                .borrow()
+                .version_end(&at, false)
+                .ok()
+                .flatten()
+                .and_then(|made| made.from);
+            at = match from {
+                Some(from) => from,
+                None => match self.store.borrow().container(&at) {
+                    Ok(Some((holder, _))) => holder,
+                    _ => return None,
+                },
+            };
         }
         None
     }
@@ -1538,6 +1565,20 @@ impl Core {
         }
     }
 
+    /// Record in a view's frame that it read when the field `field` of `target` last changed: it
+    /// runs again when that field changes, and when a change that set it at creation is taken
+    /// back.
+    pub(crate) fn read_field_of(&self, target: &crate::value::ResourceRef, field: &str) {
+        if let Some(vs) = self.frames.borrow_mut().view_mut() {
+            vs.reads
+                .push((target.id_string(), crate::store::changed_field(field)));
+            vs.reads.push((
+                target.id_string(),
+                crate::store::Reflected::CREATED.to_owned(),
+            ));
+        }
+    }
+
     /// What an action is called where history names it: its label, or what the host did.
     pub(crate) fn action_label(&self, id: &str) -> String {
         if let Some(found) = self
@@ -1598,6 +1639,23 @@ impl Core {
     /// What the platform shows of the type `ty`, and of the resource `r` of it when there is
     /// one: a `host.Meta`.
     fn type_meta(&self, ty: &str, r: Option<&RefValue>) -> HResult<Value> {
+        // A type a Rust app's views draw has no package declaring it: its metadata comes from the
+        // views the app declared (a place shows a resource of it when its type has a default
+        // view), and the runtime draws it through that view (one-app-model.md §2).
+        if let Some(views) = crate::rust_views::app_of(&self.rust_views, ty) {
+            let kind = crate::rust_views::kind_of(&views, ty);
+            let name = kind.rsplit(['#', '.']).next().unwrap_or(&kind).to_owned();
+            let type_name = sentence(&name);
+            let opens = views.views_of(&kind).iter().any(|view| view.is_default);
+            return Ok(Value::Tuple(vec![
+                Value::Text(type_name.clone()),
+                Value::Text(type_name.clone()),
+                Value::Text(type_name.clone()),
+                Value::Text(type_name),
+                Value::none(),
+                Value::Bool(opens),
+            ]));
+        }
         // Another app's resource names its type `app#Type`, as its readings come in: a type
         // whose package is not loaded here asks for it, and the call runs again when it comes.
         let (pkg, info) = self.type_of_ref(ty)?;
@@ -1621,6 +1679,7 @@ impl Core {
                 .map_or_else(Value::none, |icon| Value::some(Value::Text(icon))),
             Value::Bool(meta.default_view(ty).is_some()),
             Value::Bool(meta.row_view(ty).is_some()),
+            Value::Bool(declared.attached),
         ]))
     }
 
@@ -1836,7 +1895,8 @@ impl Core {
     /// The offer of making what `action` makes from a subject of the `source`'s type: `action`
     /// makes a type its package declares, puts it in the package's root its first parameter
     /// names, and takes the source, when a parameter's type is the source's type, and the title
-    /// its type is called by; what it leaves to default means a menu runs it as it is. Answers
+    /// its type is called by; what it leaves to default means a menu runs it as it is, and an
+    /// optional one before the title is passed `.none`, which is what its default is. Answers
     /// the type it makes, whether the source is a parameter of it, and the offer.
     fn make_offer<'m>(
         &self,
@@ -1889,6 +1949,14 @@ impl Core {
             } else if !title_arg && param.name == title.name && param.ty == "Text" {
                 args.push(Value::Text(source.title.clone()));
                 title_arg = true;
+            } else if param
+                .default
+                .as_ref()
+                .is_some_and(crate::meta::DefaultMeta::is_none)
+            {
+                // A parameter whose default is `.none` needs nothing before it: the offer passes
+                // it there, so the title the action takes after it still stands.
+                args.push(Value::none());
             } else if param.default.is_some() {
                 break;
             } else {

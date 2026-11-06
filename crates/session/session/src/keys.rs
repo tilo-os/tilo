@@ -1027,13 +1027,27 @@ impl Shared {
         let mut invocations = self.invocations.borrow_mut();
         for gesture in gestures {
             invocations.push(match gesture {
-                DeskGesture::StepWindow(steps) => Invocation::shortcut(if steps < 0 {
-                    ShortcutAction::FocusPreviousWindow
-                } else {
-                    ShortcutAction::FocusNextWindow
-                }),
                 DeskGesture::StepStrip(steps) => {
                     Invocation::new(CHROME_RESOURCE, "step-strip").with("steps", steps)
+                }
+                // A strip under the fingers is the desk's own drawing, as
+                // the strip deck is: the fingers move it here, where the
+                // frame is, rather than through a published action that
+                // would arrive a pass later.
+                DeskGesture::StripDrag { travel, began } => {
+                    self.desktop.with_widgets(|host| {
+                        if began {
+                            host.begin_strip_carry(travel);
+                        } else {
+                            host.drag_strip_carry(travel);
+                        }
+                    });
+                    continue;
+                }
+                DeskGesture::StripDragEnd { cancelled } => {
+                    self.desktop
+                        .with_widgets(|host| host.end_strip_carry(cancelled));
+                    continue;
                 }
                 // The deck is the desk's own drawing: the fingers move it
                 // here, where the frame is, rather than through a published

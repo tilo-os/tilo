@@ -43,7 +43,23 @@ fn a_package_split_over_files_is_the_same_module_as_one_file() {
     .unwrap();
     let split = compile(&split_counter()).unwrap_or_else(|d| panic!("{d:#?}"));
     assert_eq!(split.meta, whole.meta);
-    assert_eq!(split.wasm, whole.wasm);
+    // The code is the same module; the lines beside it name the files each declaration is
+    // written in, which one written in a single file does not have.
+    assert_eq!(
+        tilolang::meta::without_section(&split.wasm, tilolang::meta::LINES_SECTION),
+        tilolang::meta::without_section(&whole.wasm, tilolang::meta::LINES_SECTION)
+    );
+    let split_lines = tilolang::meta::lines_from_wasm(&split.wasm);
+    assert!(
+        split_lines.iter().any(|line| line.file == "b.tl"),
+        "the action is placed in the file it is written in: {split_lines:?}"
+    );
+    assert!(
+        tilolang::meta::lines_from_wasm(&whole.wasm)
+            .iter()
+            .all(|line| line.file == "/"),
+        "one file's declarations are all placed in it"
+    );
     assert_eq!(split.ids.to_text(), whole.ids.to_text());
 }
 
@@ -435,10 +451,11 @@ fn imports_are_found_among_sibling_packages_and_compiled_first() {
         .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
     assert_eq!(names.last().map(String::as_str), Some("today"));
-    for dep in ["notes", "tasks", "chat"] {
+    // `discussion` is not today's own import: tasks and notes use it, so it comes first.
+    for dep in ["notes", "tasks", "chat", "discussion"] {
         assert!(names.contains(&dep.to_string()), "{names:?}");
     }
-    assert_eq!(names.len(), 4, "only what today imports: {names:?}");
+    assert_eq!(names.len(), 5, "only what today imports: {names:?}");
     let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
         built.last().unwrap().compiled.meta.app,
@@ -460,6 +477,22 @@ fn a_missing_import_names_the_app_and_where_it_looked() {
         error.contains("`use t.nowhere`") && error.contains("--path"),
         "{error}"
     );
+}
+
+#[test]
+fn the_agent_library_is_provided_like_the_host() {
+    let scratch = Scratch::new("agent");
+    let dir = scratch.package(
+        "a",
+        &[(
+            "app.tl",
+            "app t.a \"A\"\n\nuse tilo.agent as agent\n\ntype Tag {\n    title: Text\n}\n\naction who() -> Principal {\n    return agent.me\n}\n\naction what() -> Text {\n    return agent.describe(Tag)\n}\n",
+        )],
+    );
+    let order = dependency_order(&dir, &[]).unwrap();
+    assert_eq!(order, vec![dir]);
+    let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(built[0].compiled.meta.uses, ["tilo.agent", "tilo.std"]);
 }
 
 #[test]
@@ -505,7 +538,11 @@ fn a_use_of_an_earlier_id_imports_the_renamed_package() {
     assert_eq!(order, vec![tasks, dir.clone()]);
     let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
     let main = &built[1].compiled.meta;
-    assert_eq!(main.uses, ["t.tasks"], "imported under the id it has now");
+    assert_eq!(
+        main.uses,
+        ["t.tasks", "tilo.std"],
+        "imported under the id it has now, and the library every module compiles with"
+    );
     assert_eq!(main.views[0].name, "item");
     // The importer's source stays as written.
     assert_eq!(std::fs::read_to_string(dir.join("app.tl")).unwrap(), source);
@@ -535,7 +572,7 @@ fn an_id_a_package_still_has_is_its_own_not_a_renamed_ones() {
     let order = dependency_order(&dir, &[]).unwrap();
     assert_eq!(order, vec![todo, dir]);
     let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(built[1].compiled.meta.uses, ["t.todo"]);
+    assert_eq!(built[1].compiled.meta.uses, ["t.todo", "tilo.std"]);
 }
 
 #[test]
@@ -579,4 +616,154 @@ fn the_stamp_changes_with_a_source_file_and_not_with_the_ids_lock() {
     assert_eq!(Stamp::of(&dirs), before);
     std::fs::write(dir.join("b.tl"), "fn f() -> Int {\n    return 1\n}\n").unwrap();
     assert_ne!(Stamp::of(&dirs), before);
+}
+
+/// A library: a record type of its own, an enum, a function over its resource type, the action
+/// that writes its records, and the view of its root.
+const LIBRARY_PACKAGE: &str = r#"app test.marks "Marks"
+
+/// How much a mark matters.
+enum Importance {
+    /// Low
+    low
+    /// High
+    high
+}
+
+/// One mark on the board.
+type Mark {
+    title: Text
+    importance: Importance
+}
+
+/// The board's marks.
+type Marks {
+    marks: Collection<Mark>
+}
+
+root marks: Marks
+
+default view board for marks
+
+/// How many marks the board holds.
+fn count(m: Marks) -> Int {
+    m.marks.len()
+}
+
+/// Adds a mark to the board.
+action add(m: Marks, title: Text, importance: Importance) {
+    m.marks.insert(Mark(title: title, importance: importance))
+}
+
+/// The board: its marks.
+view board(m: Marks) {
+    page {
+        for mark in m.marks {
+            text(mark.title)
+        }
+    }
+}
+"#;
+
+/// The package that uses it: its own root and its own view, the library's action applied from a
+/// flow and its function called from the view.
+const LIBRARY_USER: &str = r#"app test.notes "Notes"
+
+use test.marks as marks
+
+/// A note of the notebook.
+type Note {
+    title: Text
+}
+
+/// The notebook's notes.
+type Notes = Collection<Note>
+
+root notes: Notes
+
+default view main for notes
+
+/// Adds a high mark to the board through the library's action.
+flow add_high() {
+    marks.add(marks.marks, "High", .high)
+}
+
+/// The notebook: its notes, and how many marks the board holds.
+view main(n: Notes) {
+    page {
+        for note in n {
+            text(note.title)
+        }
+        text("{marks.count(marks.marks)}")
+        button("Add high", on: add_high())
+    }
+}
+"#;
+
+/// Names of the declarations of `meta`'s kind, in order.
+fn names<'a>(items: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
+    items.collect()
+}
+
+/// A library package's declarations are as much a package's as any other's: a type, an enum, an
+/// action, a function and a resource type, all of them under the library's app id, and a package
+/// that uses it reaches them as `marks.*`.
+#[test]
+fn a_library_package_declares_types_fns_and_a_resource_of_its_own() {
+    let scratch = Scratch::new("library");
+    let library = scratch.package("marks", &[("app.tl", LIBRARY_PACKAGE)]);
+    let notes = scratch.package("notes", &[("app.tl", LIBRARY_USER)]);
+    let order = dependency_order(&notes, &[]).unwrap();
+    assert_eq!(order, vec![library, notes]);
+    let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
+    let (lib, user) = (&built[0].compiled, &built[1].compiled);
+
+    // The library is a package: its declarations are its own, with ids locked in its `app.ids`.
+    assert_eq!(lib.meta.app, "test.marks");
+    assert_eq!(
+        names(lib.meta.types.iter().map(|t| t.name.as_str())),
+        ["Mark", "Marks"]
+    );
+    assert_eq!(
+        names(lib.meta.enums.iter().map(|e| e.name.as_str())),
+        ["Importance"]
+    );
+    assert_eq!(
+        names(lib.meta.actions.iter().map(|a| a.name.as_str())),
+        ["add"]
+    );
+    assert_eq!(
+        names(lib.meta.fns.iter().map(|f| f.name.as_str())),
+        ["count"]
+    );
+    assert_eq!(lib.meta.roots.len(), 1, "a resource of the library's own");
+    for name in ["Mark", "Marks", "Importance", "add", "count"] {
+        assert!(lib.ids.get(name).is_some(), "`{name}` is locked");
+    }
+    assert!(lib.ids.get("Mark.title").is_some());
+    assert!(lib.ids.get("Importance.high").is_some());
+
+    // The package that uses it reaches the same declarations, owned by the library.
+    assert_eq!(user.meta.app, "test.notes");
+    assert_eq!(user.meta.uses, ["test.marks", "tilo.std"]);
+    assert!(
+        user.meta.actions.is_empty(),
+        "the library's action is not copied"
+    );
+    assert!(
+        user.meta.enums.is_empty(),
+        "the library's enum is not copied"
+    );
+    for name in ["Mark", "Importance", "add", "count"] {
+        assert!(user.ids.get(name).is_none(), "`{name}` stays the library's");
+    }
+    // Its own view and flow compile against the library's names.
+    assert_eq!(
+        names(user.meta.offered_views().map(|v| v.name.as_str())),
+        ["main"]
+    );
+    assert_eq!(
+        names(user.meta.flows.iter().map(|f| f.name.as_str())),
+        ["add_high"]
+    );
 }

@@ -36,12 +36,16 @@ fn source() -> String {
 /// it, with the ids lock committed beside it.
 fn workspace() -> Replica {
     let source = source();
-    // The shell `use`s the three apps its places read (`notes`, `tasks`, `chat`), so they
-    // compile first, as the session compiles them.
+    // The shell `use`s the apps its places read (`discussion`, `notes`, `tasks`, `chat`), so
+    // they compile first, as the session compiles them.
     let (mut replica, _) = Replica::new(
         "ada",
         AutoCommit::new(),
         &[
+            (
+                include_str!("../../../../apps/tl/discussion/app.tl"),
+                include_str!("../../../../apps/tl/discussion/app.ids"),
+            ),
             (
                 include_str!("../../../../apps/tl/chat/app.tl"),
                 include_str!("../../../../apps/tl/chat/app.ids"),
@@ -66,6 +70,7 @@ fn workspace() -> Replica {
     )
     .expect("the session's description reads");
     let mut imports: Vec<_> = [
+        "so.tilo.lang.discussion",
         "so.tilo.lang.chat",
         "so.tilo.lang.notes",
         "so.tilo.lang.tasks",

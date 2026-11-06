@@ -24,7 +24,8 @@ type Row {
 /// One file of the tree: where it stands, and what it is.
 type File {
     title: Text (title)
-    parent: Text
+    /// The file it stands under; none at the top of the tree.
+    parent: Option<File> (parent) = .none
     folder: Bool
     size: Int
 }
@@ -79,9 +80,9 @@ view data(d: Data) {
             }
         }
         ui.Section("Tree") {
-            ui.TreeView(name: .some("Project"), fill: false) {
+            ui.TreeView(name: .some("Project"), fill: false, hide_root: true) {
                 for f in d.files {
-                    ui.TreeViewNode(f, f.title, branch: f.folder) {
+                    ui.TreeViewNode(f, f.title, parent: f.parent, branch: f.folder) {
                         row: {
                             ui.TreeViewRow(
                                 icon: if f.folder { .folder } else { .file_text },
@@ -136,9 +137,9 @@ scenario "data" {
     d.rows.insert(Row(title: "Readme.md", state: "Edited", size: 1204))
     d.rows.insert(Row(title: "release.toml", state: "New", size: 312))
     d.rows.insert(Row(title: "notes.txt", state: "Locked", size: 48))
-    d.files.insert(File(title: "Project", parent: "", folder: true))
-    d.files.insert(File(title: "src", parent: "Project", folder: true, size: 0))
-    d.files.insert(File(title: "main.rs", parent: "src", folder: false, size: 880))
+    let project = d.files.insert(File(title: "Project", folder: true))
+    let src = d.files.insert(File(title: "src", parent: project, folder: true, size: 0))
+    d.files.insert(File(title: "main.rs", parent: src, folder: false, size: 880))
     d.messages.insert(
         Message(
             title: "a",

@@ -332,6 +332,27 @@ pub(crate) fn keep_root(
         .context("keep the workspace root in the host's secret store")
 }
 
+/// Keep the mounted root for a workspace that starts fresh under an id it
+/// kept, checking it against the root already stored when there is one.
+pub(crate) fn adopt_root(
+    store: &tilo_secrets::SecretStore,
+    workspace: &str,
+    root: &SigningKey,
+) -> anyhow::Result<()> {
+    match store
+        .item("room-root", workspace)
+        .get_blocking()
+        .context("read the workspace root from the host's secret store")?
+    {
+        Some(stored) => ensure!(
+            stored.expose() == root.to_bytes(),
+            "the mounted workspace root is not this workspace's owner"
+        ),
+        None => keep_root(store, workspace, root)?,
+    }
+    Ok(())
+}
+
 pub(crate) fn check_stored_root(
     store: &tilo_secrets::SecretStore,
     workspace: &str,
@@ -546,7 +567,8 @@ fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> anyhow::Result<()>
 
 /// The governed workspace: the one named in `room_id_file`, else the only workspace
 /// this relay governs (a start interrupted between keeping the root and
-/// writing the file), else a new one.
+/// writing the file), else a new one. An id whose state is gone starts again
+/// under it: the id is the workspace's address, which the id file keeps.
 async fn governed_room(
     workspaces: &Workspaces,
     shown: &str,
@@ -560,6 +582,20 @@ async fn governed_room(
         Err(error) => return Err(error).context("read the workspace id file"),
     };
     let workspace = match known {
+        Some(workspace)
+            if !workspaces
+                .list()
+                .await
+                .iter()
+                .any(|room| room.workspace == workspace) =>
+        {
+            let created = workspaces
+                .create_workspace(shown, Some(&workspace))
+                .await
+                .map_err(anyhow::Error::msg)?;
+            adopt_root(store, &created.workspace, root)?;
+            created.workspace
+        }
         Some(workspace) => workspace,
         None => match workspaces.list().await.as_slice() {
             [only] => only.workspace.clone(),

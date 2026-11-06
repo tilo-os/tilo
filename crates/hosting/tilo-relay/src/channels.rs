@@ -273,6 +273,16 @@ impl ChannelDirectory for Directory {
                 .collect(),
         )
     }
+    fn unit_scope(
+        &self,
+        workspace: WorkspaceId,
+        route: &ChannelRoute,
+        now: u64,
+    ) -> Option<ChannelId> {
+        let at = UNIX_EPOCH.checked_add(Duration::from_secs(now))?;
+        let state = lock(&self.states).get(&workspace.to_string())?.clone();
+        state.governance().unit_scope(at, route).ok()
+    }
 }
 
 /// Read `workspace`'s state again into `directory`.

@@ -138,14 +138,18 @@ impl Alarm {
 pub struct Look {
     /// The reminders whose instant has come, earliest first.
     pub due: Vec<Alarm>,
+    /// The reminders whose instant has come and that `told` says the person was told of already:
+    /// nothing left to say to them, kept so whoever shows a reminder knows not to take the one
+    /// it showed back while the item still stands.
+    pub heard: Vec<Alarm>,
     /// The earliest instant, later than the one asked at, that any of the person's reminders
     /// comes.
     pub next: Option<DateTime<Utc>>,
 }
 
-/// The reminders `host` holds for `person` that have come due by `now` and that `told` says they
-/// were not shown yet, and when their next one comes: every package's documents and the items of
-/// their collections, the reminders of items their type marks done left out.
+/// The reminders `host` holds for `person` that have come due by `now`, told or not, and when
+/// their next one comes: every package's documents and the items of their collections, the
+/// reminders of items their type marks done left out.
 #[must_use]
 pub fn look(
     host: &crate::host::Host,
@@ -173,6 +177,7 @@ pub fn look(
         walk.visit(&root, &record);
     }
     walk.found.due.sort_by_key(|alarm| alarm.at);
+    walk.found.heard.sort_by_key(|alarm| alarm.at);
     walk.found
 }
 
@@ -230,8 +235,9 @@ impl Walk<'_> {
         }
     }
 
-    /// Keep the reminder of the item `record` at `path` as one the person `who` is due, unless
-    /// they were told of it already: on this device or, through `told`, another of theirs.
+    /// Keep the reminder of the item `record` at `path` as one the person `who` is due, and as
+    /// one they were told of already when `told` says so: on this device or, through `told`,
+    /// another of theirs.
     fn ring(&mut self, path: &str, record: &DynRecord, reminder: &Due, who: &str) {
         let key = format!("{path}@{}", reminder.at.timestamp());
         let heard = self
@@ -239,10 +245,7 @@ impl Walk<'_> {
             .told
             .iter()
             .any(|held| held.person.eq_ignore_ascii_case(self.person) && held.reminder == key);
-        if heard {
-            return;
-        }
-        self.found.due.push(Alarm {
+        let alarm = Alarm {
             app: self.app.clone(),
             app_title: self.app_title.clone(),
             path: path.to_owned(),
@@ -253,7 +256,12 @@ impl Walk<'_> {
             title: title(record),
             actions: offers(self.host, &record.schema().id),
             key,
-        });
+        };
+        if heard {
+            self.found.heard.push(alarm);
+        } else {
+            self.found.due.push(alarm);
+        }
     }
 }
 

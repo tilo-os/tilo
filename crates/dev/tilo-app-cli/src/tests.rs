@@ -35,10 +35,10 @@ fn assert_generated_tree_source(source: &str) {
     syn::parse_file(source).unwrap();
     for needle in [
         "pub struct ProjectTreeConfig",
-        "M: TreeModel + 'static",
-        "TreeView::from_model(model)",
-        ".with_row_delegate(",
-        ".reorderable()",
+        "M: ListModel + 'static",
+        "VirtualList::with_selection_delegate(",
+        ".with_tree(marks)",
+        "TreeMarks",
     ] {
         assert!(source.contains(needle), "missing {needle:?}");
     }
@@ -643,7 +643,7 @@ fn the_component_wizard_exposes_every_component_template() {
 
         assert_eq!(template, ComponentTemplate::Tree);
         let transcript = String::from_utf8(output).unwrap();
-        assert!(transcript.contains("Any TreeModel"));
+        assert!(transcript.contains("Any ListModel shown as a tree"));
     }
 
     // Phase: component_wizard_exposes_the_sparse_list_template.

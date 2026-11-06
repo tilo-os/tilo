@@ -1303,7 +1303,7 @@ mod tests {
     /// entry parameter the typed line fills.
     fn captures() -> Vec<PublishedActions> {
         let capture = tilo_actions::ActionSpec::prompted_param(
-            "quick_add",
+            "new_task",
             "New task",
             tilo_actions::ActionParam::required(
                 "title",
@@ -1362,7 +1362,7 @@ mod tests {
             panic!("the capture runs the app's own action");
         };
         assert_eq!(invoke.app, "so.tilo.lang.tasks");
-        assert_eq!(invoke.address.action.as_str(), "quick_add");
+        assert_eq!(invoke.address.action.as_str(), "new_task");
         assert_eq!(
             invoke.arguments.get("title"),
             Some(&serde_json::Value::String(line.to_owned())),

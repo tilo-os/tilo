@@ -64,6 +64,8 @@ pub struct CallState {
     /// has no local screen-capture producer, so production never sets it; it
     /// is cleared on every join/leave and staged only by screenshot scenarios.
     pub sharing: bool,
+    /// When the call began, for the reading a card shows.
+    pub started: Option<ui::time::Instant>,
     /// Who the docked call shows large: the last other person the call
     /// heard, kept until someone else speaks, so the tile does not flip
     /// back and forth between two people taking turns.
@@ -83,6 +85,7 @@ impl Default for CallState {
             audio_only: true,
             sharing: false,
             featured: None,
+            started: None,
         }
     }
 }
@@ -121,6 +124,7 @@ impl CallState {
     pub fn join(&mut self, channel: impl Into<String>) {
         self.active = true;
         self.channel = channel.into();
+        self.started = Some(ui::time::now());
         self.expanded = false;
         self.placement.reset_attached();
         self.deafened = false;
@@ -133,6 +137,7 @@ impl CallState {
     /// End the call and clear transient overlay layout.
     pub fn leave(&mut self) {
         self.active = false;
+        self.started = None;
         self.expanded = false;
         self.placement.reset_attached();
         self.sharing = false;

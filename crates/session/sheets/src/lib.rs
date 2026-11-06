@@ -13,6 +13,7 @@ pub mod directory;
 pub mod display_confirm;
 pub mod displays;
 pub mod file_picker;
+pub mod invite;
 pub mod keyboard_shortcuts;
 pub mod lock;
 pub mod portal;

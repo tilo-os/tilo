@@ -17,7 +17,7 @@ use super::columns::{
 };
 use super::derived;
 use super::lists::Entry;
-use super::reflect::{self, CREATED, Stamp, UPDATED};
+use super::reflect::{self, CREATED, Ends, Stamp, UPDATED};
 use super::{CYCLES, IN, IndexError, KEY, TYPE, Writer};
 use crate::items::{Items, Nested, fits};
 use crate::reads::{Placed, default_value, field_of_slot, type_at};
@@ -509,6 +509,17 @@ struct Whole<'a> {
     resolved: &'a Resolved,
 }
 
+/// Write what `end` holds of the resource's versions into an empty sink: the first and the
+/// last version, and when each field last changed ([`reflect::Ends`]).
+fn write_ends(sink: &mut impl Sink, resource: &str, end: &Ends) -> Result<(), IndexError> {
+    sink.put_field(resource, CREATED, &end.first.value())?;
+    sink.put_field(resource, UPDATED, &end.last.value())?;
+    for (field, stamp) in &end.fields {
+        sink.put_field(resource, &reflect::changed_field(field), &stamp.value())?;
+    }
+    Ok(())
+}
+
 /// The value of `field` of the resource at `path` as the sink holds it, its default when it
 /// holds none; a collection as the [`FieldValue::Counter`] of its items.
 pub(super) fn field_value(
@@ -569,8 +580,8 @@ impl<'d> Derive<'d> {
     }
 
     /// Derive every record of `app` into `sink`, which holds none of them, with the versions
-    /// `ends` holds of its resources: the first and last of the record's whole log
-    /// ([`reflect::ends_of`]).
+    /// `ends` holds of its resources: the first and last of the record's whole log and the
+    /// last change of each field ([`reflect::ends_of`]).
     ///
     /// # Errors
     /// The sink cannot be written.
@@ -578,17 +589,16 @@ impl<'d> Derive<'d> {
         &mut self,
         sink: &mut impl Sink,
         app: &str,
-        ends: &BTreeMap<String, (Stamp, Stamp)>,
+        ends: &BTreeMap<String, Ends>,
     ) -> Result<(), IndexError> {
         // Written first, so the columns of each resource are derived with its versions; those
         // of resources the record no longer holds go again once the records are derived.
-        let of_app: Vec<(&String, &(Stamp, Stamp))> = ends
+        let of_app: Vec<(&String, &Ends)> = ends
             .iter()
             .filter(|(resource, _)| self.of_app(resource, app))
             .collect();
-        for (resource, (first, last)) in &of_app {
-            sink.put_field(resource, CREATED, &first.value())?;
-            sink.put_field(resource, UPDATED, &last.value())?;
+        for (resource, end) in &of_app {
+            write_ends(sink, resource, end)?;
         }
         self.all(sink, app)?;
         for (resource, _) in of_app {
@@ -603,7 +613,6 @@ impl<'d> Derive<'d> {
     fn of_app(&self, path: &str, app: &str) -> bool {
         self.docs.get(doc_of(path)).is_some_and(|(a, _)| a == app)
     }
-
     /// Take in the versions `ends` holds (the first and last versions of the resources new
     /// changes changed, [`reflect::ends_of`]) of the resources of `app` the sink holds, after
     /// the changes themselves were derived: each resource's first version stays unless one
@@ -616,28 +625,58 @@ impl<'d> Derive<'d> {
         &mut self,
         sink: &mut impl Sink,
         app: &str,
-        ends: &BTreeMap<String, (Stamp, Stamp)>,
+        ends: &BTreeMap<String, Ends>,
     ) -> Result<(), IndexError> {
-        for (resource, (first, last)) in ends {
+        for (resource, end) in ends {
             if !self.of_app(resource, app) {
                 continue;
             }
             let Some(schema) = sink.text(resource, TYPE)?.and_then(|ty| lookup(&ty)) else {
                 continue;
             };
-            let held = |sink: &mut _, field| -> Result<Option<Stamp>, IndexError> {
+            let held = |sink: &mut _, field: &str| -> Result<Option<Stamp>, IndexError> {
                 Ok(Sink::field(sink, resource, field)?
                     .as_ref()
                     .and_then(Stamp::of_value))
             };
+            // A step took a change to it back: its versions are its whole log read anew, so
+            // they replace what the index holds, and each field it was made with says so.
+            if end.restored {
+                let mut end = end.clone();
+                let made = end.first.clone();
+                for field in &schema.fields {
+                    end.fields
+                        .entry(field.id.clone())
+                        .or_insert_with(|| made.clone());
+                }
+                write_ends(sink, resource, &end)?;
+                self.links(sink, resource, schema)?;
+                if sink.keeps_columns() {
+                    let placed = placed_in(sink, resource)?;
+                    let scope = placed
+                        .as_ref()
+                        .map(|(holder, coll, key)| (holder.as_str(), coll.as_str(), key.as_str()));
+                    for field in [CREATED, UPDATED] {
+                        self.index_columns(sink, resource, schema, scope, Some(field))?;
+                    }
+                }
+                continue;
+            }
             let mut moved = Vec::new();
-            if held(sink, CREATED)?.is_none_or(|held| first.before(&held)) {
-                sink.put_field(resource, CREATED, &first.value())?;
+            if held(sink, CREATED)?.is_none_or(|held| end.first.before(&held)) {
+                sink.put_field(resource, CREATED, &end.first.value())?;
                 moved.push(CREATED);
             }
-            if held(sink, UPDATED)?.is_none_or(|held| held.before(last)) {
-                sink.put_field(resource, UPDATED, &last.value())?;
+            if held(sink, UPDATED)?.is_none_or(|held| held.before(&end.last)) {
+                sink.put_field(resource, UPDATED, &end.last.value())?;
                 moved.push(UPDATED);
+            }
+            // When each field last changed, which a list groups or sorts by.
+            for (field, stamp) in &end.fields {
+                let id = reflect::changed_field(field);
+                if held(sink, &id)?.is_none_or(|held| held.before(stamp)) {
+                    sink.put_field(resource, &id, &stamp.value())?;
+                }
             }
             if moved.is_empty() {
                 continue;
@@ -1178,11 +1217,14 @@ impl<'d> Derive<'d> {
         // An item back in a collection was dropped with its versions when it left: they are
         // read again from the whole log, as a derivation anew reads them.
         if sink.keeps_columns() {
-            let ends = reflect::ends_of(&self.doc.committed_document().get_changes(&[]));
-            for (resource, (first, last)) in &ends {
+            let ends = reflect::ends_of(
+                &self.doc.committed_document().get_changes(&[]),
+                self.doc,
+                self.docs,
+            );
+            for (resource, end) in &ends {
                 if doc_of(resource) == doc {
-                    sink.put_field(resource, CREATED, &first.value())?;
-                    sink.put_field(resource, UPDATED, &last.value())?;
+                    write_ends(sink, resource, end)?;
                 }
             }
         }

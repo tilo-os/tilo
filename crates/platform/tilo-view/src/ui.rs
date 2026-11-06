@@ -7,7 +7,7 @@
 //! ```
 //! # use tilo_view::ui;
 //! let title = ui::TextBuilder::new("title", "Groceries");
-//! let row = ui::ListRowBuilder::new("row").into();
+//! let row: tilo_view::node::Node = ui::ListRowBuilder::new("row").into();
 //! ```
 //!
 //! [`build`] makes a node of a component by name, checked against the catalogue where it is

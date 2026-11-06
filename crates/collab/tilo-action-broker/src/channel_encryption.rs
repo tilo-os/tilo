@@ -210,6 +210,25 @@ pub trait ChannelDirectory: Send {
         route: Option<&ChannelRoute>,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>>;
+    /// The key scope the storage unit on `route` seals under in `workspace`:
+    /// [`collab_types::workspace_scope`] while every device that may read the
+    /// workspace may read the record too, the record's own channel when the
+    /// policy narrows its readers ([`Self::allowed_devices`] then names the
+    /// narrower set for that channel). The unit's keys come from this scope's
+    /// group; content stays bound to the unit's own channel.
+    ///
+    /// `None` (the default) when this directory cannot decide it: the
+    /// workspace's governance is unknown, and a guessed scope could hand a
+    /// device keys the record's policy withholds.
+    fn unit_scope(
+        &self,
+        workspace: WorkspaceId,
+        route: &ChannelRoute,
+        now: u64,
+    ) -> Option<ChannelId> {
+        let _ = (workspace, route, now);
+        None
+    }
     /// The [`tilo_identity_host::policy_change`] epoch (or a test's own) when
     /// every write to what [`Self::allowed_devices`] reads is announced and
     /// its expiries can be timed: groups then re-check on announcements and
@@ -382,6 +401,11 @@ pub struct ChannelEncryption {
     /// Channels whose frames arrived while this device took no part in
     /// them: they have a group, so this device never creates one.
     groups_seen: std::collections::HashSet<ChannelId>,
+    /// The key scope carrying each storage unit this device knows the route
+    /// of, by the unit's own channel. A unit seals under its scope's keys
+    /// while naming its own channel, so a payload's channel is turned back
+    /// into its group here.
+    units: HashMap<ChannelId, ChannelId>,
 }
 
 impl ChannelEncryption {
@@ -417,6 +441,18 @@ impl ChannelEncryption {
                 }
             }
         }
+        // The scope each unit seals under now, read again from the policy
+        // rather than remembered: a unit whose state was kept from before key
+        // scopes keeps it for reading while new content seals under the scope.
+        let routes: Vec<(WorkspaceId, ChannelRoute)> = service
+            .peers
+            .values()
+            .filter_map(|entry| Some((entry.workspace, entry.route.clone()?)))
+            .collect();
+        let wall = tilo_clock::unix_now();
+        for (workspace, route) in routes {
+            service.resolve_scope(workspace, &route, wall);
+        }
         Ok(service)
     }
 
@@ -448,6 +484,7 @@ impl ChannelEncryption {
             unopened: HashMap::new(),
             registered: HashMap::new(),
             groups_seen: std::collections::HashSet::new(),
+            units: HashMap::new(),
         }
     }
 
@@ -457,9 +494,60 @@ impl ChannelEncryption {
     }
 
     /// The [`Self::generation`] at which `channel`'s keys or access last
-    /// changed; 0 while they never did in this service.
+    /// changed; 0 while they never did in this service. A storage unit
+    /// changes when the scope carrying it does, so asking by the unit's
+    /// channel answers with its scope's change too.
     pub fn channel_change(&self, channel: ChannelId) -> u64 {
-        self.changed.get(&channel).copied().unwrap_or(0)
+        if let Some(change) = self.changed.get(&channel) {
+            return *change;
+        }
+        self.units
+            .get(&channel)
+            .and_then(|scope| self.changed.get(scope))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The key scope that carries every unit of `workspace` whose readers
+    /// are the workspace's participants.
+    fn workspace_scope(workspace: WorkspaceId) -> ChannelId {
+        collab_types::workspace_scope(&workspace.to_string())
+    }
+
+    /// The scope the storage unit on `route` seals under in `workspace`,
+    /// remembered so a payload naming only the unit finds its group, or
+    /// `None` while this device cannot decide it
+    /// ([`ChannelDirectory::unit_scope`]).
+    fn resolve_scope(
+        &mut self,
+        workspace: WorkspaceId,
+        route: &ChannelRoute,
+        wall: u64,
+    ) -> Option<ChannelId> {
+        let unit = route.channel(&workspace.to_string());
+        let scope = self.directory.unit_scope(workspace, route, wall)?;
+        self.units.insert(unit, scope);
+        Some(scope)
+    }
+
+    /// The group that carries `unit`'s keys here: the scope its route named,
+    /// or else the unit's own group when this device holds one (a record
+    /// whose readers policy narrows, or one whose group was made before key
+    /// scopes), or else the workspace's scope.
+    fn scope_here(&self, workspace: WorkspaceId, unit: ChannelId) -> ChannelId {
+        self.units
+            .get(&unit)
+            .copied()
+            .or_else(|| self.takes_part_in(workspace, unit).then_some(unit))
+            .unwrap_or_else(|| Self::workspace_scope(workspace))
+    }
+
+    /// Whether this device holds the state of `channel`, one of `workspace`'s
+    /// groups.
+    fn takes_part_in(&self, workspace: WorkspaceId, channel: ChannelId) -> bool {
+        self.peers
+            .get(&channel)
+            .is_some_and(|entry| entry.workspace == workspace)
     }
 
     /// What an endpoint of this device may do with `channel` in `workspace`.
@@ -540,18 +628,66 @@ impl ChannelEncryption {
 
     /// [`Self::access`] for the channel of `route`'s record in `workspace`,
     /// remembering the route: this device then decides Read on the record
-    /// itself, and sends the route with its access request.
+    /// itself, and sends the route with its access request. The answer's
+    /// channel is the record's own; its keys are the ones the record's key
+    /// scope carries, named for the record.
     pub fn access_record(
         &mut self,
         workspace: WorkspaceId,
         route: &ChannelRoute,
         now: Instant,
     ) -> (ChannelId, ChannelAccess) {
-        let channel = route.channel(&workspace.to_string());
-        (
-            channel,
-            self.access_routed(workspace, channel, Some(route), now),
-        )
+        let unit = route.channel(&workspace.to_string());
+        let Some(scope) = self.resolve_scope(workspace, route, tilo_clock::unix_now()) else {
+            // Nothing here names the scope, and a guessed one could hand a
+            // device keys the record's policy withholds.
+            self.note_unopened(unit, Unopened::unnamed(workspace, Some(route.clone())));
+            return (unit, ChannelAccess::Unavailable);
+        };
+        // A unit with readers of its own is carried by its own group, whose
+        // record this device decides Read on; the workspace's scope is read
+        // by the workspace's participants, and needs no route.
+        let routed = (scope == unit).then_some(route);
+        let access = self.access_routed(workspace, scope, routed, now);
+        (unit, self.for_unit(workspace, unit, scope, access))
+    }
+
+    /// [`Self::access`] for the group carrying the storage unit `unit`, whose
+    /// route this caller does not have: the scope is the one learned for it,
+    /// its own group here, or the workspace's scope. The answer's keys are
+    /// named for the unit.
+    fn access_unit(
+        &mut self,
+        workspace: WorkspaceId,
+        unit: ChannelId,
+        now: Instant,
+    ) -> ChannelAccess {
+        let scope = self.scope_here(workspace, unit);
+        let access = self.access_routed(workspace, scope, None, now);
+        self.for_unit(workspace, unit, scope, access)
+    }
+
+    /// `access`, the answer for the group `scope`, as the storage unit `unit`
+    /// uses it: its keys named for the unit, with the keys of a group the
+    /// unit had before key scopes merged in, so its whole history opens.
+    fn for_unit(
+        &self,
+        workspace: WorkspaceId,
+        unit: ChannelId,
+        scope: ChannelId,
+        access: ChannelAccess,
+    ) -> ChannelAccess {
+        let ChannelAccess::Ready(keys) = access else {
+            return access;
+        };
+        let mut keys = keys.for_unit(unit);
+        if scope != unit
+            && let Some(own) = self.existing_keys(workspace, unit)
+            && let Ok(merged) = keys.clone().with_earlier(&own)
+        {
+            keys = merged;
+        }
+        ChannelAccess::Ready(keys)
     }
 
     /// Keep `route`, proven to be `channel`'s in `workspace`, with the channel's
@@ -664,28 +800,56 @@ impl ChannelEncryption {
             .and_then(|entry| entry.peer.content_keys())
     }
 
-    /// `channel`'s keys as this device holds them, opening, joining or
-    /// creating nothing: `None` when this device takes part in no channel of
-    /// `workspace`, `Some(Err(_))` when it does and holds none of this one yet.
+    /// `unit`'s keys as this device holds them, opening, joining or creating
+    /// nothing: `None` when this device takes part in no group that could
+    /// carry `unit` of `workspace`, `Some(Err(_))` when it does and holds none
+    /// of its keys yet. `scope` is the scope its route named, when the caller
+    /// has one.
     fn record_keys(
         &self,
         workspace: WorkspaceId,
-        channel: ChannelId,
+        unit: ChannelId,
+        scope: Option<ChannelId>,
     ) -> Option<Result<ChannelContentKeys, String>> {
-        if let Some(keys) = self.existing_keys(workspace, channel) {
+        let scope = scope.unwrap_or_else(|| self.scope_here(workspace, unit));
+        if let Some(keys) = self.unit_keys(workspace, unit, scope) {
             return Some(Ok(keys));
         }
         // The directory names a channel's readers only for a device that may
-        // read it: an unnameable channel is no channel of this device's.
+        // read it: an unnameable scope is no group of this device's.
         if self.store.is_none()
             || self
                 .directory
-                .allowed_devices(workspace, channel, None, tilo_clock::unix_now())
+                .allowed_devices(workspace, scope, None, tilo_clock::unix_now())
                 .is_none()
         {
             return None;
         }
         Some(Err("this device holds no channel keys yet".into()))
+    }
+
+    /// The keys that open `unit` here: those of the group carrying it, named
+    /// for the unit, with the keys of a group the unit had before key scopes
+    /// merged in. `None` while neither is here yet.
+    fn unit_keys(
+        &self,
+        workspace: WorkspaceId,
+        unit: ChannelId,
+        scope: ChannelId,
+    ) -> Option<ChannelContentKeys> {
+        let held = self.existing_keys(workspace, scope);
+        let own = (scope != unit)
+            .then(|| self.existing_keys(workspace, unit))
+            .flatten();
+        match (held, own) {
+            (Some(held), Some(own)) => {
+                let keys = held.for_unit(unit);
+                Some(keys.clone().with_earlier(&own).unwrap_or(keys))
+            }
+            (Some(held), None) => Some(held.for_unit(unit)),
+            (None, Some(own)) => Some(own.for_unit(unit)),
+            (None, None) => None,
+        }
     }
 
     fn device(&self) -> Option<Ed25519PublicKey> {
@@ -1386,9 +1550,14 @@ impl ChannelKeyAccess {
         workspace: WorkspaceId,
         route: &ChannelRoute,
     ) -> Option<Result<ChannelContentKeys, String>> {
-        let channel = route.channel(&workspace.to_string());
-        self.run(|service| service.record_keys(workspace, channel))
-            .unwrap_or_else(|| Some(Err("the channel service is unavailable".into())))
+        let unit = route.channel(&workspace.to_string());
+        self.run(|service| {
+            let scope = service
+                .directory
+                .unit_scope(workspace, route, tilo_clock::unix_now());
+            service.record_keys(workspace, unit, scope)
+        })
+        .unwrap_or_else(|| Some(Err("the channel service is unavailable".into())))
     }
 
     /// See [`ChannelEncryption::access`]; also returns the service's
@@ -1396,6 +1565,26 @@ impl ChannelKeyAccess {
     pub fn access(&self, workspace: WorkspaceId, channel: ChannelId) -> (ChannelAccess, u64) {
         let Some((access, generation, queued)) = self.run(|service| {
             let access = service.access(workspace, channel, Instant::now());
+            (
+                access,
+                service.generation(),
+                std::mem::take(&mut service.queued),
+            )
+        }) else {
+            return (ChannelAccess::Unavailable, 0);
+        };
+        if queued && let Some(wake) = &self.wake {
+            wake();
+        }
+        (access, generation)
+    }
+
+    /// The keys of the group carrying the storage unit `unit`, as
+    /// [`Self::access`] has them for a group, opened or joined when this
+    /// device takes part and asked for when it does not.
+    fn access_unit(&self, workspace: WorkspaceId, unit: ChannelId) -> (ChannelAccess, u64) {
+        let Some((access, generation, queued)) = self.run(|service| {
+            let access = service.access_unit(workspace, unit, Instant::now());
             (
                 access,
                 service.generation(),
@@ -1459,7 +1648,7 @@ impl ChannelKeyAccess {
         let metadata = envelope.encryption.ok_or("the write is not sealed")?;
         let ciphertext =
             collab_types::sealed_ciphertext(envelope).map_err(|error| error.to_string())?;
-        let (ChannelAccess::Ready(keys), _) = self.access(workspace, metadata.channel) else {
+        let (ChannelAccess::Ready(keys), _) = self.access_unit(workspace, metadata.channel) else {
             return Err("this device holds no key for the write's channel".into());
         };
         Ok((keys, metadata, ciphertext))
@@ -1479,7 +1668,7 @@ impl ChannelKeyAccess {
         let retention = metadata
             .retention()
             .ok_or("the write is not sealed with a content key")?;
-        let (ChannelAccess::Ready(keys), _) = self.access(workspace, metadata.channel) else {
+        let (ChannelAccess::Ready(keys), _) = self.access_unit(workspace, metadata.channel) else {
             return Err("this device holds no key for the write's channel".into());
         };
         let plaintext = keys
@@ -1848,1565 +2037,5 @@ mod history;
 
 #[cfg(test)]
 mod tests {
-    use super::testing::*;
-    use super::*;
-    use collab_types::{ArtifactId, ContentRetention};
-    use std::sync::atomic::Ordering;
-
-    struct Device {
-        service: ChannelEncryption,
-        broker: Arc<Mutex<BrokerChannels>>,
-        endpoint: Endpoint,
-    }
-
-    /// Device `seed` of workspace `workspace_id`, with its state under `dir`
-    /// and transport endpoint `id` of `workspace`.
-    fn device(
-        workspace: &Arc<Workspace>,
-        workspace_id: WorkspaceId,
-        id: usize,
-        seed: u8,
-        policy: &Policy,
-        dir: &Path,
-    ) -> Device {
-        workspace.queues.lock().unwrap().entry(id).or_default();
-        let broker = Arc::new(Mutex::new(BrokerChannels::default()));
-        let service = ChannelEncryption::open(
-            ChannelEncryptionConfig {
-                root: dir.join("channels"),
-                vault: VaultKey::new([seed; 32]),
-                device_key: key(seed),
-            },
-            Box::new(Directory {
-                policy: policy.clone(),
-            }),
-            Arc::clone(&broker),
-        )
-        .unwrap();
-        Device {
-            service,
-            broker,
-            endpoint: Endpoint {
-                workspace: Arc::clone(workspace),
-                id,
-                workspace_id,
-            },
-        }
-    }
-
-    /// Run every device's protocol for `seconds` of simulated time.
-    fn run(devices: &mut [&mut Device], now: &mut Instant, seconds: u64) {
-        for _ in 0..seconds.saturating_mul(4) {
-            *now = now.checked_add(Duration::from_millis(250)).unwrap();
-            for device in devices.iter_mut() {
-                device.service.pump(&device.endpoint, *now, 1_000);
-            }
-        }
-    }
-
-    /// `device` opens `channel` and creates its group, as it does once it
-    /// waited its while and no genesis arrived.
-    fn create(
-        device: &mut Device,
-        workspace_id: WorkspaceId,
-        channel: ChannelId,
-        now: Instant,
-    ) -> ChannelAccess {
-        device.service.access(workspace_id, channel, now);
-        if let Some(entry) = device.service.peers.get_mut(&channel) {
-            entry.founding.at = now;
-        }
-        device.service.found(channel, now, 1_000);
-        device.service.access(workspace_id, channel, now)
-    }
-
-    fn ready_epoch(access: &ChannelAccess) -> Option<u64> {
-        match access {
-            ChannelAccess::Ready(keys) => Some(keys.epoch()),
-            _ => None,
-        }
-    }
-
-    fn refuses_plaintext(device: &Device, channel: ChannelId) -> bool {
-        !device
-            .broker
-            .lock()
-            .unwrap()
-            .document_encryption_allowed(channel, None)
-    }
-
-    #[test]
-    fn observing_live_keys_never_opens_a_channel_or_rejoins_after_removal() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let policy = Policy::default();
-        policy.allowed.lock().unwrap().insert(public(2));
-        policy.allowed.lock().unwrap().insert(public(1));
-        let (owner_dir, member_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut owner = device(&workspace, workspace_id, 0, 1, &policy, owner_dir.path());
-        let mut member = device(&workspace, workspace_id, 1, 2, &policy, member_dir.path());
-        for service in [&owner.service, &member.service] {
-            let generation = service.generation();
-            assert!(service.existing_keys(workspace_id, channel).is_none());
-            assert!(service.peers.is_empty());
-            assert_eq!(service.generation(), generation);
-        }
-
-        // Only this explicit fixture admission creates or requests keys.
-        let mut now = Instant::now();
-        owner.service.access(workspace_id, channel, now);
-        member.service.access(workspace_id, channel, now);
-        run(&mut [&mut owner, &mut member], &mut now, 5);
-        assert!(
-            member
-                .service
-                .existing_keys(workspace_id, channel)
-                .is_some()
-        );
-        assert!(
-            member
-                .service
-                .existing_keys(WorkspaceId::new(), channel)
-                .is_none()
-        );
-        assert!(
-            owner
-                .service
-                .existing_keys(WorkspaceId::new(), channel)
-                .is_none()
-        );
-
-        policy.allowed.lock().unwrap().remove(&public(2));
-        run(&mut [&mut owner, &mut member], &mut now, 3);
-        let generation = member.service.generation();
-        let rejoin = member.service.peers.get(&channel).unwrap().rejoin;
-        assert!(!rejoin);
-        assert!(
-            member
-                .service
-                .existing_keys(workspace_id, channel)
-                .is_none()
-        );
-        assert_eq!(member.service.generation(), generation);
-        assert!(!member.service.peers.get(&channel).unwrap().rejoin);
-    }
-
-    #[test]
-    fn opening_a_channel_wakes_a_parked_pump_and_reading_it_does_not() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let dir = tempfile::tempdir().unwrap();
-        let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counted = Arc::clone(&wakes);
-        let owner = device(
-            &workspace,
-            workspace_id,
-            0,
-            1,
-            &Policy::readers([1, 2]),
-            dir.path(),
-        );
-        let access = ChannelKeyAccess::with_wake(
-            owner.service,
-            Arc::new(move || {
-                counted.fetch_add(1, Ordering::SeqCst);
-            }),
-        );
-        let channel = ChannelId::new();
-        access.access(workspace_id, channel);
-        assert_eq!(
-            wakes.load(Ordering::SeqCst),
-            1,
-            "a new group has a genesis to announce"
-        );
-        access.access(workspace_id, channel);
-        assert_eq!(
-            wakes.load(Ordering::SeqCst),
-            1,
-            "an open channel queues nothing new"
-        );
-
-        let member_dir = tempfile::tempdir().unwrap();
-        let member = device(
-            &workspace,
-            workspace_id,
-            1,
-            2,
-            &Policy::readers([1, 2]),
-            member_dir.path(),
-        );
-        let member_wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counted = Arc::clone(&member_wakes);
-        let member = ChannelKeyAccess::with_wake(
-            member.service,
-            Arc::new(move || {
-                counted.fetch_add(1, Ordering::SeqCst);
-            }),
-        );
-        assert!(matches!(
-            member.access(workspace_id, channel).0,
-            ChannelAccess::Waiting
-        ));
-        assert_eq!(
-            member_wakes.load(Ordering::SeqCst),
-            1,
-            "a new member has an access request to make"
-        );
-        member.access(workspace_id, channel);
-        assert_eq!(member_wakes.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn a_new_channel_is_encrypted_from_creation_and_follows_the_policy() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let policy = Policy::readers([1]);
-        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut now = Instant::now();
-        let mut owner = device(&workspace, workspace_id, 0, 1, &policy, owner_dir.path());
-        let mut laptop = device(&workspace, workspace_id, 1, 2, &policy, laptop_dir.path());
-
-        assert!(ready_epoch(&create(&mut owner, workspace_id, channel, now)).is_some());
-        assert!(
-            refuses_plaintext(&owner, channel),
-            "encrypted from creation"
-        );
-        assert!(matches!(
-            laptop.service.access(workspace_id, channel, now),
-            ChannelAccess::Unavailable
-        ));
-
-        // Not named yet: nobody can admit it, and its route hears when that
-        // changes.
-        run(&mut [&mut owner, &mut laptop], &mut now, 5);
-        assert!(matches!(
-            laptop.service.access(workspace_id, channel, now),
-            ChannelAccess::Unavailable
-        ));
-
-        policy.allowed.lock().unwrap().insert(public(2));
-        run(&mut [&mut owner, &mut laptop], &mut now, 5);
-        assert!(matches!(
-            laptop.service.access(workspace_id, channel, now),
-            ChannelAccess::Waiting
-        ));
-        run(&mut [&mut owner, &mut laptop], &mut now, 8);
-        let owner_epoch = ready_epoch(&owner.service.access(workspace_id, channel, now));
-        assert_eq!(
-            ready_epoch(&laptop.service.access(workspace_id, channel, now)),
-            owner_epoch
-        );
-        assert!(
-            refuses_plaintext(&laptop, channel),
-            "gate: {:?} peer: {:?}",
-            laptop.service.registered.get(&channel),
-            laptop
-                .service
-                .peers
-                .get(&channel)
-                .map(|e| (e.peer.access(), e.peer.gate()))
-        );
-
-        policy.allowed.lock().unwrap().remove(&public(2));
-        run(&mut [&mut owner, &mut laptop], &mut now, 3);
-        assert!(matches!(
-            laptop.service.access(workspace_id, channel, now),
-            ChannelAccess::Removed
-        ));
-    }
-
-    /// A participant that cannot name a channel's record (it lost the route,
-    /// and no grant names the record) cannot tell who may read it: it removes
-    /// no one, though the policy it can read names no one. Named
-    /// again, the group follows the policy once more.
-    #[test]
-    fn a_participant_that_cannot_name_the_record_removes_no_one() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let route = ChannelRoute::new("notes", "plan");
-        let channel = route.channel(&workspace_id.to_string());
-        let policy = Policy::default();
-        policy.allowed.lock().unwrap().insert(public(2));
-        policy.allowed.lock().unwrap().insert(public(1));
-        let dirs = [(); 2].map(|()| tempfile::tempdir().unwrap());
-        let mut now = Instant::now();
-        let mut owner = device(&workspace, workspace_id, 0, 1, &policy, dirs[0].path());
-        let mut laptop = device(&workspace, workspace_id, 1, 2, &policy, dirs[1].path());
-        for device in [&mut owner, &mut laptop] {
-            device.service.access(workspace_id, channel, now);
-        }
-        run(&mut [&mut owner, &mut laptop], &mut now, 8);
-        let epoch = ready_epoch(&laptop.service.access(workspace_id, channel, now));
-        assert!(epoch.is_some());
-        assert_eq!(
-            ready_epoch(&owner.service.access(workspace_id, channel, now)),
-            epoch
-        );
-
-        // Everyone loses the route; the record is no longer named.
-        policy.unnamed.lock().unwrap().insert(channel);
-        run(&mut [&mut owner, &mut laptop], &mut now, 5);
-        assert_eq!(
-            ready_epoch(&owner.service.access(workspace_id, channel, now)),
-            epoch
-        );
-        assert_eq!(
-            ready_epoch(&laptop.service.access(workspace_id, channel, now)),
-            epoch
-        );
-
-        // Named again, the group follows the policy: the laptop is removed.
-        owner.service.learn_route(workspace_id, channel, &route);
-        policy.allowed.lock().unwrap().remove(&public(2));
-        run(&mut [&mut owner, &mut laptop], &mut now, 3);
-        assert!(matches!(
-            laptop.service.access(workspace_id, channel, now),
-            ChannelAccess::Removed
-        ));
-        assert!(ready_epoch(&owner.service.access(workspace_id, channel, now)) > epoch);
-    }
-
-    /// A Read Deny on one record takes the denied device out of that
-    /// record's channel alone: a participant removes it in a new epoch there,
-    /// the workspace's other channels keep their epoch and the device keeps their
-    /// keys, and a request of the denied device never makes a participant
-    /// create a group for the denied record.
-    #[test]
-    fn a_device_withheld_from_one_channel_loses_only_that_channels_key() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let (payroll, notes, budget) = (ChannelId::new(), ChannelId::new(), ChannelId::new());
-        let policy = Policy::default();
-        policy.allowed.lock().unwrap().insert(public(2));
-        policy.allowed.lock().unwrap().insert(public(1));
-        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut now = Instant::now();
-        let mut owner = device(&workspace, workspace_id, 0, 1, &policy, owner_dir.path());
-        let mut laptop = device(&workspace, workspace_id, 1, 2, &policy, laptop_dir.path());
-        for channel in [payroll, notes] {
-            owner.service.access(workspace_id, channel, now);
-            laptop.service.access(workspace_id, channel, now);
-        }
-        run(&mut [&mut owner, &mut laptop], &mut now, 5);
-        let notes_epoch = ready_epoch(&owner.service.access(workspace_id, notes, now));
-        let payroll_epoch = ready_epoch(&owner.service.access(workspace_id, payroll, now));
-        assert!(ready_epoch(&laptop.service.access(workspace_id, payroll, now)).is_some());
-        assert_eq!(
-            ready_epoch(&laptop.service.access(workspace_id, notes, now)),
-            notes_epoch
-        );
-
-        policy
-            .withheld
-            .lock()
-            .unwrap()
-            .extend([payroll, budget].map(|channel| (channel, BTreeSet::from([public(2)]))));
-        run(&mut [&mut owner, &mut laptop], &mut now, 3);
-        assert!(matches!(
-            laptop.service.access(workspace_id, payroll, now),
-            ChannelAccess::Removed
-        ));
-        let rotated = ready_epoch(&owner.service.access(workspace_id, payroll, now));
-        assert!(rotated > payroll_epoch, "the denied record's key rotates");
-        assert_eq!(
-            ready_epoch(&owner.service.access(workspace_id, notes, now)),
-            notes_epoch,
-            "another record's channel keeps its epoch"
-        );
-        assert_eq!(
-            ready_epoch(&laptop.service.access(workspace_id, notes, now)),
-            notes_epoch
-        );
-        // Asking again for the denied record, or first for another denied
-        // one, admits nothing and creates no group at the owner.
-        laptop.service.access(workspace_id, budget, now);
-        run(&mut [&mut owner, &mut laptop], &mut now, 5);
-        for channel in [payroll, budget] {
-            assert!(ready_epoch(&laptop.service.access(workspace_id, channel, now)).is_none());
-        }
-        assert!(!owner.service.peers.contains_key(&budget));
-        assert!(
-            !owner.service.peers[&payroll]
-                .peer
-                .members()
-                .contains(&public(2))
-        );
-
-        policy.withheld.lock().unwrap().clear();
-        run(&mut [&mut owner, &mut laptop], &mut now, 5);
-        assert_eq!(
-            ready_epoch(&laptop.service.access(workspace_id, payroll, now)),
-            ready_epoch(&owner.service.access(workspace_id, payroll, now))
-        );
-    }
-
-    /// A Read Deny on an app takes the denied device out of every channel
-    /// of that app whose route a participant knows (from its own endpoint or
-    /// from the device's routed request) in a new epoch of each, and out of
-    /// no other app's channel. A record of the app first asked for after the
-    /// Deny, and a channel asked for without a route, admit nothing and
-    /// create no group. A route that is not its channel's is refused. The
-    /// owner keeps the routes: opened again, it still withholds the app's
-    /// channels and admits the device to nothing of it.
-    #[test]
-    fn a_read_deny_on_an_app_withholds_every_routed_channel_of_it() {
-        let workspace = Arc::new(Workspace::default());
-        let id = WorkspaceId::new();
-        let workspace_name = id.to_string();
-        let routes = [
-            ChannelRoute::new("finance", "payroll"),
-            ChannelRoute::new("finance", "q3"),
-            ChannelRoute::new("notes", "draft"),
-        ];
-        let [payroll, q3, draft] = routes.clone().map(|route| route.channel(&workspace_name));
-        let policy = Policy::default();
-        policy.allowed.lock().unwrap().insert(public(2));
-        policy.allowed.lock().unwrap().insert(public(1));
-        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut now = Instant::now();
-        let mut owner = device(&workspace, id, 0, 1, &policy, owner_dir.path());
-        let mut laptop = device(&workspace, id, 1, 2, &policy, laptop_dir.path());
-        // The owner's own endpoint opens payroll; q3 and draft the owner
-        // learns from the laptop's routed requests alone.
-        owner.service.access_record(id, &routes[0], now);
-        for route in &routes {
-            laptop.service.access_record(id, route, now);
-        }
-        run(&mut [&mut owner, &mut laptop], &mut now, 5);
-        // Whichever of the two created q3's and draft's groups, the owner
-        // takes part in them too.
-        for channel in [q3, draft] {
-            owner.service.access(id, channel, now);
-        }
-        run(&mut [&mut owner, &mut laptop], &mut now, 8);
-        let epoch = |device: &mut Device, channel, now| {
-            ready_epoch(&device.service.access(id, channel, now))
-        };
-        let before: Vec<Option<u64>> = [payroll, q3, draft]
-            .into_iter()
-            .map(|channel| epoch(&mut owner, channel, now))
-            .collect();
-        for channel in [payroll, q3, draft] {
-            assert!(epoch(&mut laptop, channel, now).is_some());
-            assert!(owner.service.peers[&channel].route.is_some());
-        }
-
-        policy
-            .withheld_apps
-            .lock()
-            .unwrap()
-            .insert("finance".into(), BTreeSet::from([public(2)]));
-        run(&mut [&mut owner, &mut laptop], &mut now, 3);
-        for (index, channel) in [payroll, q3].into_iter().enumerate() {
-            assert!(matches!(
-                laptop.service.access(id, channel, now),
-                ChannelAccess::Removed
-            ));
-            assert!(
-                epoch(&mut owner, channel, now) > before[index],
-                "the denied app's key rotates"
-            );
-        }
-        assert_eq!(epoch(&mut owner, draft, now), before[2]);
-        assert_eq!(epoch(&mut laptop, draft, now), before[2]);
-
-        // A new finance record, a channel asked for with no route, and one
-        // whose route is a forgery admit nothing and create no group.
-        let budget = ChannelRoute::new("finance", "budget");
-        laptop.service.access_record(id, &budget, now);
-        let unrouted = ChannelRoute::new("notes", "plan").channel(&workspace_name);
-        laptop.service.access(id, unrouted, now);
-        let forged = ChannelRoute::new("notes", "forged").channel(&workspace_name);
-        let request = member_request(&laptop_dir.path().join("forged"), forged, 2);
-        owner
-            .service
-            .receive_request(id, request, Some(&routes[2]), now, 0);
-        run(&mut [&mut owner, &mut laptop], &mut now, 5);
-        for channel in [budget.channel(&workspace_name), unrouted, forged] {
-            assert!(!owner.service.peers.contains_key(&channel));
-            assert!(epoch(&mut laptop, channel, now).is_none());
-        }
-
-        // Opened again, the owner still knows every route and admits the
-        // device to nothing of the app, however often it asks.
-        drop(owner);
-        let mut owner = device(&workspace, id, 0, 1, &policy, owner_dir.path());
-        for channel in [payroll, q3, draft] {
-            assert!(owner.service.peers[&channel].route.is_some());
-        }
-        for route in &routes {
-            laptop.service.access_record(id, route, now);
-        }
-        run(&mut [&mut owner, &mut laptop], &mut now, 5);
-        for channel in [payroll, q3] {
-            assert!(epoch(&mut laptop, channel, now).is_none());
-            assert!(
-                !owner.service.peers[&channel]
-                    .peer
-                    .members()
-                    .contains(&public(2))
-            );
-        }
-        assert!(epoch(&mut laptop, draft, now).is_some());
-
-        policy.withheld_apps.lock().unwrap().clear();
-        run(&mut [&mut owner, &mut laptop], &mut now, 5);
-        for channel in [payroll, q3] {
-            assert_eq!(
-                epoch(&mut laptop, channel, now),
-                epoch(&mut owner, channel, now)
-            );
-        }
-    }
-
-    /// The access request device `seed` makes for `channel`, with its state
-    /// under `dir`.
-    fn member_request(dir: &Path, channel: ChannelId, seed: u8) -> MlsAccessRequestV1 {
-        std::fs::create_dir_all(dir).unwrap();
-        ChannelPeer::waiting(
-            Some(dir),
-            channel,
-            Box::new(key(seed)),
-            &VaultKey::new([2; 32]),
-        )
-        .unwrap()
-        .access_request_now(1, false, &VaultKey::new([2; 32]))
-        .unwrap()
-        .unwrap()
-    }
-
-    /// Run every device's protocol for `seconds` of simulated time the way
-    /// the broker's drain thread does: a device runs a pass only
-    /// when a message waits for it or the wait its last pass returned has
-    /// run out, and otherwise stays parked. `parked` carries each device's
-    /// wait across calls (`None`: parked until a message); a test that calls
-    /// [`ChannelEncryption::access`] wakes the device as the installed pump
-    /// wake would. Returns the passes run.
-    fn run_parked(
-        devices: &mut [&mut Device],
-        parked: &mut [Option<Instant>],
-        now: &mut Instant,
-        seconds: u64,
-    ) -> usize {
-        let end = now.checked_add(Duration::from_secs(seconds)).unwrap();
-        let mut passes = 0_usize;
-        loop {
-            let mut ran = false;
-            for (device, until) in devices.iter_mut().zip(parked.iter_mut()) {
-                let inbound = device
-                    .endpoint
-                    .workspace
-                    .queues
-                    .lock()
-                    .unwrap()
-                    .get(&device.endpoint.id)
-                    .is_some_and(|queue| !queue.is_empty());
-                if !inbound && until.is_none_or(|until| until > *now) {
-                    continue;
-                }
-                device.service.pump(&device.endpoint, *now, 1_000);
-                *until = wait_after_pass(device.service.next_pump_deadline(*now), *now)
-                    .map(|wait| now.checked_add(wait).unwrap());
-                passes = passes.saturating_add(1);
-                ran = true;
-                assert!(passes < 10_000, "a parked pump must not spin");
-            }
-            if ran {
-                continue;
-            }
-            match parked.iter().flatten().min() {
-                Some(next) if *next <= end => *now = *next,
-                _ => {
-                    *now = end;
-                    return passes;
-                }
-            }
-        }
-    }
-
-    /// #3998: a device in a channel's group re-checks its policy once a
-    /// reconcile interval, whoever created the group; a device with no
-    /// channel has nothing to pump.
-    #[test]
-    fn only_a_group_member_or_an_unfinished_member_has_a_pump_deadline() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let policy = Policy::default();
-        policy.allowed.lock().unwrap().insert(public(2));
-        let (owner_dir, member_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut now = Instant::now();
-        let mut owner = device(&workspace, workspace_id, 0, 1, &policy, owner_dir.path());
-        let mut member = device(&workspace, workspace_id, 1, 2, &policy, member_dir.path());
-        assert_eq!(owner.service.next_pump_deadline(now), None, "no channel");
-        assert_eq!(member.service.next_pump_deadline(now), None, "no channel");
-
-        owner.service.access(workspace_id, channel, now);
-        member.service.access(workspace_id, channel, now);
-        assert_eq!(
-            owner.service.next_pump_deadline(now),
-            Some(now),
-            "a new group reconciles at once"
-        );
-        assert_eq!(
-            member.service.next_pump_deadline(now),
-            Some(now),
-            "a new member asks at once"
-        );
-
-        run(&mut [&mut owner, &mut member], &mut now, 5);
-        assert!(ready_epoch(&member.service.access(workspace_id, channel, now)).is_some());
-        for device in [&owner, &member] {
-            let reconcile = device.service.next_pump_deadline(now).unwrap();
-            assert!(reconcile > now.checked_sub(RECONCILE_INTERVAL).unwrap());
-            assert!(reconcile <= now.checked_add(RECONCILE_INTERVAL).unwrap());
-        }
-        assert_eq!(
-            wait_after_pass(Some(now), now),
-            Some(RECONCILE_INTERVAL),
-            "work a pass left due is retried at the old cadence, not spun on"
-        );
-        assert_eq!(wait_after_pass(None, now), None);
-    }
-
-    /// #3998: a device waiting to be admitted to a group it did not found
-    /// asks again on its backoff, and is due exactly then.
-    #[test]
-    fn a_waiting_member_is_due_on_its_request_backoff() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let dir = tempfile::tempdir().unwrap();
-        // The directory announces its policy changes, so nothing but the
-        // request backoff is ever due here.
-        let policy = Policy::readers([1, 2]);
-        *policy.announces.lock().unwrap() = Some(Announcements::Own(Arc::new(
-            std::sync::atomic::AtomicU64::new(1),
-        )));
-        let mut member = device(&workspace, workspace_id, 1, 2, &policy, dir.path());
-        // The channel's group exists: this device saw its genesis, so it
-        // waits to be admitted instead of founding one of its own.
-        member.service.groups_seen.insert(channel);
-        let now = Instant::now();
-        assert!(matches!(
-            member.service.access(workspace_id, channel, now),
-            ChannelAccess::Waiting
-        ));
-        member.service.pump(&member.endpoint, now, 1_000);
-        assert_eq!(
-            member.service.next_pump_deadline(now),
-            Some(now.checked_add(REQUEST_FIRST).unwrap())
-        );
-        let later = now.checked_add(REQUEST_FIRST).unwrap();
-        member.service.pump(&member.endpoint, later, 1_000);
-        assert_eq!(
-            member.service.next_pump_deadline(later),
-            Some(later.checked_add(REQUEST_FIRST.saturating_mul(2)).unwrap())
-        );
-    }
-
-    /// A peer another member's access request opened answers that member
-    /// and asks nothing itself. The first read that wants the channel asks
-    /// for it: the read queues the pass, so a parked pump sends the request
-    /// instead of sleeping with the keys never asked for.
-    #[test]
-    fn a_read_that_first_wants_a_channel_queues_the_pass_that_asks() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let policy = Policy::readers([1, 2]);
-        let dir = tempfile::tempdir().unwrap();
-        let mut member = device(&workspace, workspace_id, 1, 2, &policy, dir.path());
-        // The group exists; this device only learns of it on admission.
-        member.service.groups_seen.insert(channel);
-        let now = Instant::now();
-        let request = member_request(&dir.path().join("asking"), channel, 1);
-        member
-            .service
-            .receive_request(workspace_id, request, None, now, 1_000);
-        {
-            let entry = member
-                .service
-                .peers
-                .get_mut(&channel)
-                .expect("another member's request opened the channel");
-            assert!(!entry.wanted, "answering a request wants nothing here");
-            // The pass that took the request in has run: nothing is owed.
-            entry.dirty = false;
-        }
-        // The pass that took the request in: it answers, and settles nothing
-        // of its own.
-        member.service.pump(&member.endpoint, now, 1_000);
-        member.service.queued = false;
-        assert_eq!(
-            member.service.next_pump_deadline(now),
-            Some(now.checked_add(RECONCILE_INTERVAL).unwrap()),
-            "a pass that answered only another member's request has no work of its own, only the \
-             re-check of a channel whose directory announces nothing"
-        );
-        let woke = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let flag = Arc::clone(&woke);
-        let keys = ChannelKeyAccess::with_wake(
-            member.service,
-            Arc::new(move || flag.store(true, Ordering::Relaxed)),
-        );
-        assert!(matches!(
-            keys.access(workspace_id, channel).0,
-            ChannelAccess::Waiting
-        ));
-        assert!(
-            woke.load(Ordering::Relaxed),
-            "reading the channel wakes the pass that asks for it"
-        );
-    }
-
-    /// #3998: devices that park between deadlines reach the same outcome
-    /// in the same simulated time as devices pumped on a fixed tick:
-    /// admission, then removal once the policy drops the member.
-    #[test]
-    fn parked_pumps_follow_the_policy_like_a_fixed_tick() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let policy = Policy::readers([1]);
-        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut now = Instant::now();
-        let mut owner = device(&workspace, workspace_id, 0, 1, &policy, owner_dir.path());
-        let mut laptop = device(&workspace, workspace_id, 1, 2, &policy, laptop_dir.path());
-
-        assert!(ready_epoch(&create(&mut owner, workspace_id, channel, now)).is_some());
-        assert!(matches!(
-            laptop.service.access(workspace_id, channel, now),
-            ChannelAccess::Unavailable
-        ));
-        let mut parked = [Some(now), Some(now)];
-        run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 5);
-        assert!(matches!(
-            laptop.service.access(workspace_id, channel, now),
-            ChannelAccess::Unavailable
-        ));
-
-        policy.allowed.lock().unwrap().insert(public(2));
-        run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 5);
-        assert!(matches!(
-            laptop.service.access(workspace_id, channel, now),
-            ChannelAccess::Waiting
-        ));
-        parked[1] = Some(now); // what the endpoint's access does to its pump
-        run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 5);
-        let owner_epoch = ready_epoch(&owner.service.access(workspace_id, channel, now));
-        assert_eq!(
-            ready_epoch(&laptop.service.access(workspace_id, channel, now)),
-            owner_epoch
-        );
-        assert!(
-            parked[1].is_some(),
-            "the admitted member re-checks the policy as every group member does"
-        );
-
-        // Ten idle seconds cost each group member one policy re-check a
-        // reconcile interval.
-        let idle = run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 10);
-        assert!(idle <= 22, "{idle} passes in ten idle seconds");
-
-        policy.allowed.lock().unwrap().remove(&public(2));
-        run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 3);
-        assert!(matches!(
-            laptop.service.access(workspace_id, channel, now),
-            ChannelAccess::Removed
-        ));
-    }
-
-    /// #4022: with a directory that announces its changes, an idle group
-    /// has no deadline at all, and a revocation is enforced as soon as it is
-    /// announced, with no clock having run in between.
-    #[test]
-    fn an_announced_revocation_is_enforced_at_once_and_idle_groups_park() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let epoch = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let policy = Policy::default();
-        *policy.announces.lock().unwrap() = Some(Announcements::Own(Arc::clone(&epoch)));
-        policy.allowed.lock().unwrap().insert(public(2));
-        policy.allowed.lock().unwrap().insert(public(1));
-        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut now = Instant::now();
-        let mut owner = device(&workspace, workspace_id, 0, 1, &policy, owner_dir.path());
-        let mut laptop = device(&workspace, workspace_id, 1, 2, &policy, laptop_dir.path());
-        assert!(ready_epoch(&create(&mut owner, workspace_id, channel, now)).is_some());
-        assert!(matches!(
-            laptop.service.access(workspace_id, channel, now),
-            ChannelAccess::Waiting
-        ));
-        let mut parked = [Some(now), Some(now)];
-        run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 5);
-        assert!(ready_epoch(&laptop.service.access(workspace_id, channel, now)).is_some());
-        assert_eq!(parked, [None, None], "both park once the member holds keys");
-
-        // A minute with nothing announced runs no pass at all.
-        let idle = run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 60);
-        assert_eq!(idle, 0, "an idle group polls nothing");
-        assert!(owner.service.waits_for_policy_change());
-
-        // The revocation, announced. The owner is due at once, and one
-        // pass removes the member.
-        policy.allowed.lock().unwrap().remove(&public(2));
-        epoch.fetch_add(1, Ordering::SeqCst);
-        assert!(!owner.service.waits_for_policy_change());
-        assert_eq!(owner.service.next_pump_deadline(now), Some(now));
-        parked[0] = Some(now); // what the armed watch's wake does
-        run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 1);
-        assert!(matches!(
-            laptop.service.access(workspace_id, channel, now),
-            ChannelAccess::Removed
-        ));
-    }
-
-    /// #4022: announcements in quick succession cost at most one re-check
-    /// a reconcile interval, and none waits longer than that.
-    #[test]
-    fn announcements_in_quick_succession_coalesce() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let epoch = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let policy = Policy::default();
-        policy.allowed.lock().unwrap().insert(public(1));
-        *policy.announces.lock().unwrap() = Some(Announcements::Own(Arc::clone(&epoch)));
-        let dir = tempfile::tempdir().unwrap();
-        let mut now = Instant::now();
-        let mut owner = device(&workspace, workspace_id, 0, 1, &policy, dir.path());
-        assert!(ready_epoch(&create(&mut owner, workspace_id, channel, now)).is_some());
-        owner.service.pump(&owner.endpoint, now, 1_000);
-        let reconciled = now;
-        now = now.checked_add(Duration::from_millis(100)).unwrap();
-        epoch.fetch_add(1, Ordering::SeqCst);
-        assert_eq!(
-            owner.service.next_pump_deadline(now),
-            Some(reconciled.checked_add(RECONCILE_INTERVAL).unwrap()),
-            "a change right after a re-check waits out the interval"
-        );
-    }
-
-    /// #4022: a grant that expires while nothing else happens is enforced
-    /// when it expires: the owner registers the expiry to be announced
-    /// at, parks with no timer of its own, and the announcement at the
-    /// expiry wakes the one pass that removes the member. The test thread's
-    /// wall clock is held, so the expiry is reached when the test moves it
-    /// there; no other test sees that time.
-    #[test]
-    fn a_grant_expiring_while_idle_is_enforced_at_its_expiry() {
-        let start = tilo_clock::unix_now();
-        let at = |second: u64| std::time::UNIX_EPOCH + Duration::from_secs(second);
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let policy = Policy::default();
-        *policy.announces.lock().unwrap() = Some(Announcements::Process);
-        policy.allowed.lock().unwrap().insert(public(2));
-        policy.allowed.lock().unwrap().insert(public(1));
-        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut owner = device(&workspace, workspace_id, 0, 1, &policy, owner_dir.path());
-        let laptop = device(&workspace, workspace_id, 1, 2, &policy, laptop_dir.path());
-        create(&mut owner, workspace_id, channel, Instant::now());
-        let (owner_endpoint, laptop_endpoint) = (owner.endpoint, laptop.endpoint);
-        let owner = ChannelKeyAccess::new(owner.service);
-        let laptop = ChannelKeyAccess::new(laptop.service);
-        // Match the drainer's Notify: concurrent announcements leave one
-        // pending wake, not a queue of already-reconciled epochs to pump again.
-        let (woke, wakes) = std::sync::mpsc::sync_channel(1);
-        let watch = tilo_identity_host::policy_change::Watch::new(move || {
-            let _ = woke.try_send(());
-        });
-        let parked = |owner: &ChannelKeyAccess| {
-            tilo_test_env::wait_until("the owner parked", || {
-                match owner.pump_until_due(&owner_endpoint) {
-                    Some(wait) => {
-                        let _ = wakes.recv_timeout(wait);
-                        false
-                    }
-                    None => owner.arm_policy_watch(&watch),
-                }
-            });
-        };
-        let expiry = start.saturating_add(3);
-
-        // This thread pumps both devices, so the time it reads is the time
-        // the owner judges the grant by.
-        tilo_clock::testing::with_wall(at(start), || {
-            assert!(ready_epoch(&owner.access(workspace_id, channel).0).is_some());
-            tilo_test_env::wait_until("the laptop joined", || {
-                let _ = owner.pump_until_due(&owner_endpoint);
-                let _ = laptop.pump_until_due(&laptop_endpoint);
-                ready_epoch(&laptop.access(workspace_id, channel).0).is_some()
-            });
-
-            // Replace the admitted member's permission with an expiring
-            // grant, announced through the production watch, and let the
-            // owner register the expiry and park.
-            policy.until.lock().unwrap().insert(public(2), expiry);
-            policy.allowed.lock().unwrap().remove(&public(2));
-            tilo_identity_host::policy_change::announce();
-            parked(&owner);
-            assert_eq!(
-                policy.announce_at.lock().unwrap().last(),
-                Some(&expiry),
-                "the owner registered the expiry"
-            );
-            let _ = laptop.pump_until_due(&laptop_endpoint);
-            assert!(ready_epoch(&laptop.access(workspace_id, channel).0).is_some());
-        });
-
-        // Short of the expiry, a pass (another announcement) keeps the member.
-        tilo_clock::testing::with_wall(at(expiry - 1), || {
-            tilo_identity_host::policy_change::announce();
-            assert!(wakes.try_recv().is_ok(), "the armed watch woke");
-            parked(&owner);
-            let _ = laptop.pump_until_due(&laptop_endpoint);
-            assert!(
-                ready_epoch(&laptop.access(workspace_id, channel).0).is_some(),
-                "removed before the grant ended"
-            );
-        });
-
-        // The expiry: its announcement wakes the parked owner, whose
-        // re-check (at most a reconcile interval after the last) removes the
-        // member.
-        tilo_clock::testing::with_wall(at(expiry), || {
-            tilo_identity_host::policy_change::announce();
-            assert!(wakes.try_recv().is_ok(), "the expiry woke the owner");
-            tilo_test_env::wait_until("the member applied the removal", || {
-                let _ = owner.pump_until_due(&owner_endpoint);
-                let _ = laptop.pump_until_due(&laptop_endpoint);
-                matches!(
-                    laptop.access(workspace_id, channel).0,
-                    ChannelAccess::Removed
-                )
-            });
-        });
-    }
-
-    /// #3964: an app endpoint waiting on its route's channel hears of its
-    /// admission and its removal the moment this device's service records
-    /// them, and of nothing that happens to another channel.
-    #[test]
-    fn a_route_hears_of_its_own_channel_changes_and_only_those() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let (channel, other) = (ChannelId::new(), ChannelId::new());
-        let policy = Policy::readers([1]);
-        let announced = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        *policy.announces.lock().unwrap() = Some(Announcements::Own(Arc::clone(&announced)));
-        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut now = Instant::now();
-        let mut owner = device(&workspace, workspace_id, 0, 1, &policy, owner_dir.path());
-        let Device {
-            service, endpoint, ..
-        } = device(&workspace, workspace_id, 1, 2, &policy, laptop_dir.path());
-        let keys = ChannelKeyProvider::default();
-        keys.set(Some(ChannelKeyAccess::new(service)));
-        let laptop = keys.get().unwrap();
-        assert!(ready_epoch(&create(&mut owner, workspace_id, channel, now)).is_some());
-        assert!(matches!(
-            laptop.access(workspace_id, channel).0,
-            ChannelAccess::Unavailable
-        ));
-        let mut pump = |rounds: usize| {
-            for _ in 0..rounds {
-                now = now.checked_add(Duration::from_millis(250)).unwrap();
-                owner.service.pump(&owner.endpoint, now, 1_000);
-                laptop.pump_at(&endpoint, now);
-            }
-        };
-        // A wait, polled by hand: parked on the service when this returns,
-        // and woken (its waker called) only by a change it has to look at.
-        let wait = |after: u64| {
-            let keys = keys.clone();
-            let mut waiting =
-                Waiting::new(async move { keys.channel_changed(channel, after).await });
-            assert_eq!(waiting.poll(), None, "nothing changed since {after}");
-            waiting
-        };
-
-        let before = laptop.channel_change(channel);
-        let mut waiting = wait(before);
-        pump(8);
-        assert_eq!(waiting.poll(), None, "not admitted, nothing changed");
-
-        policy.allowed.lock().unwrap().insert(public(2));
-        announced.fetch_add(1, Ordering::SeqCst);
-        pump(8);
-        assert!(waiting.woken(), "admission wakes the wait");
-        let admitted = waiting.poll().expect("admission is announced");
-        assert_ne!(admitted, before);
-        assert!(matches!(
-            laptop.access(workspace_id, channel).0,
-            ChannelAccess::Waiting
-        ));
-        pump(8);
-        assert!(ready_epoch(&laptop.access(workspace_id, channel).0).is_some());
-
-        let mut waiting = wait(laptop.channel_change(channel));
-        assert!(matches!(
-            laptop.access(workspace_id, other).0,
-            ChannelAccess::Waiting
-        ));
-        pump(20);
-        assert!(ready_epoch(&laptop.access(workspace_id, other).0).is_some());
-        assert_ne!(laptop.channel_change(other), 0, "the other channel changed");
-        if let Some(change) = waiting.poll() {
-            panic!("woken by another channel's change ({change})");
-        }
-
-        policy.allowed.lock().unwrap().remove(&public(2));
-        announced.fetch_add(1, Ordering::SeqCst);
-        pump(8);
-        assert!(waiting.woken(), "removal wakes the wait");
-        assert!(waiting.poll().is_some(), "removal is announced");
-        assert!(matches!(
-            laptop.access(workspace_id, channel).0,
-            ChannelAccess::Removed
-        ));
-    }
-
-    /// A future polled by hand, which counts the wakes it asks for.
-    struct Waiting {
-        future: std::pin::Pin<Box<dyn std::future::Future<Output = u64>>>,
-        wakes: Arc<WakeCount>,
-    }
-
-    #[derive(Default)]
-    struct WakeCount(std::sync::atomic::AtomicUsize);
-
-    impl std::task::Wake for WakeCount {
-        fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
-    impl Waiting {
-        fn new(future: impl std::future::Future<Output = u64> + 'static) -> Self {
-            Self {
-                future: Box::pin(future),
-                wakes: Arc::default(),
-            }
-        }
-
-        /// Whether the future asked to be polled since it was last polled.
-        fn woken(&self) -> bool {
-            self.wakes.0.load(Ordering::SeqCst) > 0
-        }
-
-        fn poll(&mut self) -> Option<u64> {
-            self.wakes.0.store(0, Ordering::SeqCst);
-            let waker = std::task::Waker::from(Arc::clone(&self.wakes));
-            match self
-                .future
-                .as_mut()
-                .poll(&mut std::task::Context::from_waker(&waker))
-            {
-                std::task::Poll::Ready(change) => Some(change),
-                std::task::Poll::Pending => None,
-            }
-        }
-    }
-
-    /// A device that is not a member yet (a browser, which learns nothing
-    /// about the workspace's governance but what the host carries) learns from
-    /// the workspace that the channel exists and is encrypted.
-    #[test]
-    fn a_new_channel_announces_its_genesis_to_the_workspace() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let policy = Policy::default();
-        policy.allowed.lock().unwrap().insert(public(5));
-        let owner_dir = tempfile::tempdir().unwrap();
-        let mut now = Instant::now();
-        let mut owner = device(&workspace, workspace_id, 0, 5, &policy, owner_dir.path());
-        let observer = Endpoint {
-            workspace: Arc::clone(&workspace),
-            id: 1,
-            workspace_id,
-        };
-        workspace.queues.lock().unwrap().entry(1).or_default();
-        assert!(ready_epoch(&create(&mut owner, workspace_id, channel, now)).is_some());
-        run(&mut [&mut owner], &mut now, 3);
-        let genesis: Vec<_> = observer
-            .take_inbound()
-            .into_iter()
-            .filter_map(|inbound| match inbound {
-                InboundChannelGovernance::Frame { frame, .. } => Some(frame),
-                InboundChannelGovernance::AccessRequest { .. } => None,
-            })
-            .collect();
-        assert_eq!(genesis.len(), 1, "announced once per session");
-        assert_eq!(genesis[0].channel, channel);
-        assert_eq!(genesis[0].signed_by, public(5));
-        assert!(matches!(
-            genesis[0].action,
-            collab_types::MlsGovernanceAction::Genesis
-        ));
-    }
-
-    #[test]
-    fn delivery_survives_a_network_outage() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let policy = Policy::default();
-        policy.allowed.lock().unwrap().insert(public(4));
-        policy.allowed.lock().unwrap().insert(public(3));
-        let (owner_dir, phone_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut now = Instant::now();
-        let mut owner = device(&workspace, workspace_id, 0, 3, &policy, owner_dir.path());
-        let mut phone = device(&workspace, workspace_id, 1, 4, &policy, phone_dir.path());
-        create(&mut owner, workspace_id, channel, now);
-        phone.service.access(workspace_id, channel, now);
-        // The request gets through, then the network fails before the
-        // genesis and the Welcome can. The phone, hearing of no group,
-        // creates its own.
-        run(&mut [&mut phone], &mut now, 1);
-        workspace.down.store(true, Ordering::SeqCst);
-        run(&mut [&mut owner, &mut phone], &mut now, 30);
-        assert!(!owner.service.peers[&channel].peer.outbox().is_empty());
-        workspace.down.store(false, Ordering::SeqCst);
-        run(&mut [&mut owner, &mut phone], &mut now, 130);
-        let epoch = ready_epoch(&phone.service.access(workspace_id, channel, now));
-        assert!(epoch.is_some());
-        assert_eq!(
-            ready_epoch(&owner.service.access(workspace_id, channel, now)),
-            epoch
-        );
-        assert_eq!(
-            owner.service.peers[&channel].peer.members(),
-            phone.service.peers[&channel].peer.members(),
-            "one group"
-        );
-        assert!(
-            owner.service.peers[&channel].peer.outbox().is_empty(),
-            "the outbox drains once the transport takes it"
-        );
-    }
-
-    #[test]
-    fn channel_state_and_gates_survive_a_restart() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let policy = Policy::default();
-        policy.allowed.lock().unwrap().insert(public(6));
-        policy.allowed.lock().unwrap().insert(public(5));
-        let (owner_dir, tablet_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut now = Instant::now();
-        {
-            let mut owner = device(&workspace, workspace_id, 0, 5, &policy, owner_dir.path());
-            let mut tablet = device(&workspace, workspace_id, 1, 6, &policy, tablet_dir.path());
-            owner.service.access(workspace_id, channel, now);
-            tablet.service.access(workspace_id, channel, now);
-            run(&mut [&mut owner, &mut tablet], &mut now, 5);
-            assert!(ready_epoch(&tablet.service.access(workspace_id, channel, now)).is_some());
-        }
-        for (id, seed, dir) in [(0, 5, owner_dir.path()), (1, 6, tablet_dir.path())] {
-            let mut restarted = device(&workspace, workspace_id, id, seed, &policy, dir);
-            assert!(
-                refuses_plaintext(&restarted, channel),
-                "the plaintext gate holds from the first op after a restart"
-            );
-            assert!(ready_epoch(&restarted.service.access(workspace_id, channel, now)).is_some());
-        }
-    }
-
-    /// Key loss: a laptop is lost with all its channel state. Restoring the
-    /// person's identity backup on a replacement machine brings back the
-    /// root identity, not the lost device key; onboarding certifies a new
-    /// device key. Once the workspace's directory names that certificate, the
-    /// policy allows the new device, a participant admits it, and its key
-    /// history opens everything written before the loss. The lost device is
-    /// removed, so it cannot read what is written afterwards.
-    #[test]
-    fn a_restored_identity_regains_the_whole_channel_on_its_new_device() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let artifact = collab_types::ArtifactId::new();
-        let policy = Policy::readers([7]);
-        policy.allowed.lock().unwrap().insert(public(8));
-        let (owner_dir, lost_dir, new_dir) = (
-            tempfile::tempdir().unwrap(),
-            tempfile::tempdir().unwrap(),
-            tempfile::tempdir().unwrap(),
-        );
-        let mut now = Instant::now();
-        let mut owner = device(&workspace, workspace_id, 0, 7, &policy, owner_dir.path());
-        let mut lost = device(&workspace, workspace_id, 1, 8, &policy, lost_dir.path());
-        owner.service.access(workspace_id, channel, now);
-        lost.service.access(workspace_id, channel, now);
-        run(&mut [&mut owner, &mut lost], &mut now, 5);
-        let ChannelAccess::Ready(keys) = create(&mut owner, workspace_id, channel, now) else {
-            panic!("owner keys");
-        };
-        let before = keys
-            .seal_content(
-                artifact,
-                collab_types::ContentRetention::Delta,
-                b"before the loss",
-            )
-            .unwrap();
-        let ChannelAccess::Ready(lost_keys) = lost.service.access(workspace_id, channel, now)
-        else {
-            panic!("the laptop was a member");
-        };
-        drop(lost);
-
-        // The replacement machine's new device key replaces the lost one in
-        // the person's certified device set.
-        {
-            let mut allowed = policy.allowed.lock().unwrap();
-            allowed.remove(&public(8));
-            allowed.insert(public(9));
-        }
-        let mut restored = device(&workspace, workspace_id, 2, 9, &policy, new_dir.path());
-        assert!(matches!(
-            restored.service.access(workspace_id, channel, now),
-            ChannelAccess::Waiting
-        ));
-        run(&mut [&mut owner, &mut restored], &mut now, 5);
-        let ChannelAccess::Ready(restored_keys) =
-            restored.service.access(workspace_id, channel, now)
-        else {
-            panic!("the restored identity's new device is admitted");
-        };
-        assert!(
-            restored_keys
-                .open_content(artifact, &before.0, &before.1)
-                .is_ok(),
-            "its key history opens everything written before the loss"
-        );
-        let ChannelAccess::Ready(keys) = create(&mut owner, workspace_id, channel, now) else {
-            panic!("owner keys");
-        };
-        let after = keys
-            .seal_content(
-                artifact,
-                collab_types::ContentRetention::Delta,
-                b"after the loss",
-            )
-            .unwrap();
-        assert!(
-            restored_keys
-                .open_content(artifact, &after.0, &after.1)
-                .is_ok()
-        );
-        assert!(
-            lost_keys
-                .open_content(artifact, &after.0, &after.1)
-                .is_err(),
-            "the lost device was removed and cannot read what follows"
-        );
-    }
-
-    fn sealed_op(
-        artifact: collab_types::ArtifactId,
-        (metadata, payload): (EncryptionMetadata, Vec<u8>),
-        kind: collab_types::OpKind,
-    ) -> SignedOp {
-        SignedOp::new_unsigned_with_encryption(
-            payload,
-            artifact,
-            public(1),
-            collab_types::AttestationId::default(),
-            kind,
-            std::time::SystemTime::UNIX_EPOCH,
-            1,
-            metadata,
-        )
-    }
-
-    /// The key holder compacting a sealed record reads its whole history,
-    /// older epochs included, and seals the merged record as a current
-    /// checkpoint that opens as a new write; a new write still opens only
-    /// under the current epoch.
-    #[test]
-    fn a_key_holder_opens_history_and_a_current_checkpoint() {
-        use collab_types::OpKind;
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let artifact = collab_types::ArtifactId::new();
-        let policy = Policy::default();
-        policy.allowed.lock().unwrap().insert(public(12));
-        policy.allowed.lock().unwrap().insert(public(11));
-        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut now = Instant::now();
-        let mut owner = device(&workspace, workspace_id, 0, 11, &policy, owner_dir.path());
-        let mut laptop = device(&workspace, workspace_id, 1, 12, &policy, laptop_dir.path());
-        let ChannelAccess::Ready(first) = create(&mut owner, workspace_id, channel, now) else {
-            panic!("owner keys");
-        };
-        let old = sealed_op(
-            artifact,
-            first
-                .seal_content(artifact, ContentRetention::Delta, b"before the rotation")
-                .unwrap(),
-            OpKind::Change,
-        );
-        laptop.service.access(workspace_id, channel, now);
-        run(&mut [&mut owner, &mut laptop], &mut now, 5);
-        let keys = ChannelKeyAccess::new(owner.service);
-        let (ChannelAccess::Ready(current), _) = keys.access(workspace_id, channel) else {
-            panic!("owner keys");
-        };
-        assert!(current.epoch() > first.epoch(), "adding the laptop rotated");
-
-        assert!(keys.open_new_write(workspace_id, &old).is_err());
-        assert_eq!(
-            keys.open_history_write(workspace_id, &old).unwrap(),
-            b"before the rotation"
-        );
-        let sealed = current
-            .seal_content(artifact, ContentRetention::Checkpoint, b"merged record")
-            .unwrap();
-        assert_eq!(sealed.0.epoch, current.epoch());
-        assert_eq!(sealed.0.retention(), Some(ContentRetention::Checkpoint));
-        let payload = collab_types::SealedCompaction::new(std::slice::from_ref(&old), sealed.1)
-            .unwrap()
-            .encode()
-            .unwrap();
-        let compaction = sealed_op(artifact, (sealed.0, payload), OpKind::Compaction);
-        assert_eq!(
-            keys.open_new_write(workspace_id, &compaction).unwrap(),
-            b"merged record"
-        );
-        assert_eq!(
-            keys.open_history_write(workspace_id, &compaction).unwrap(),
-            b"merged record"
-        );
-    }
-
-    fn sealed_write(artifact: collab_types::ArtifactId, keys: &ChannelContentKeys) -> SignedOp {
-        let (metadata, payload) = keys
-            .seal_content(artifact, collab_types::ContentRetention::Delta, b"the edit")
-            .unwrap();
-        SignedOp::new_unsigned_with_encryption(
-            payload,
-            artifact,
-            public(10),
-            collab_types::document_attestation_id("test.app", "workspace", ""),
-            collab_types::OpKind::Change,
-            std::time::SystemTime::now(),
-            1,
-            metadata,
-        )
-    }
-
-    #[test]
-    fn a_renewal_keeps_a_current_ciphertext_and_reseals_one_from_before_a_rotation() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let artifact = collab_types::ArtifactId::new();
-        let policy = Policy::readers([10]);
-        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut now = Instant::now();
-        let mut owner = device(&workspace, workspace_id, 0, 10, &policy, owner_dir.path());
-        let mut laptop = device(&workspace, workspace_id, 1, 11, &policy, laptop_dir.path());
-        let ChannelAccess::Ready(before) = create(&mut owner, workspace_id, channel, now) else {
-            panic!("the owner holds the channel's keys");
-        };
-        let stale = sealed_write(artifact, &before);
-        policy.allowed.lock().unwrap().insert(public(11));
-        laptop.service.access(workspace_id, channel, now);
-        run(&mut [&mut owner, &mut laptop], &mut now, 5);
-        let access = ChannelKeyAccess::new(owner.service);
-        let (ChannelAccess::Ready(current), _) = access.access(workspace_id, channel) else {
-            panic!("the owner holds the channel's keys");
-        };
-        assert!(
-            current.epoch() > before.epoch(),
-            "adding a member rotated the epoch"
-        );
-
-        let fresh = sealed_write(artifact, &current);
-        assert_eq!(
-            access.renew_sealed(workspace_id, &fresh).unwrap(),
-            (fresh.encryption.unwrap(), fresh.payload.clone()),
-            "a current-epoch write renews with its identical ciphertext"
-        );
-
-        let (metadata, payload) = access.renew_sealed(workspace_id, &stale).unwrap();
-        assert_eq!(metadata.epoch, current.epoch());
-        assert_eq!(
-            current
-                .open_current_content(artifact, &metadata, &payload)
-                .unwrap()
-                .as_slice(),
-            b"the edit",
-            "the re-sealed content opens as a current write"
-        );
-        assert!(
-            current
-                .open_current_content(artifact, &stale.encryption.unwrap(), &stale.payload)
-                .is_err(),
-            "the stale ciphertext itself would be refused as a new write"
-        );
-
-        let mut tampered = stale;
-        tampered.payload[0] ^= 1;
-        assert!(access.renew_sealed(workspace_id, &tampered).is_err());
-        let mut plaintext = fresh;
-        plaintext.encryption = None;
-        assert!(access.renew_sealed(workspace_id, &plaintext).is_err());
-    }
-
-    #[test]
-    fn a_device_without_ready_access_renews_nothing() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let artifact = collab_types::ArtifactId::new();
-        let policy = Policy::readers([12, 13]);
-        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let now = Instant::now();
-        let mut owner = device(&workspace, workspace_id, 0, 12, &policy, owner_dir.path());
-        let laptop = device(&workspace, workspace_id, 1, 13, &policy, laptop_dir.path());
-        let ChannelAccess::Ready(keys) = create(&mut owner, workspace_id, channel, now) else {
-            panic!("the owner holds the channel's keys");
-        };
-        let write = sealed_write(artifact, &keys);
-        let waiting = ChannelKeyAccess::new(laptop.service);
-        let state = waiting.access(workspace_id, channel).0;
-        assert!(matches!(state, ChannelAccess::Waiting), "{state:?}");
-        assert!(
-            waiting.renew_sealed(workspace_id, &write).is_err(),
-            "a device still waiting for access renews nothing"
-        );
-    }
-
-    #[test]
-    fn opening_history_never_creates_a_channel_without_an_existing_key() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        let artifact = ArtifactId::new();
-        let owner_dir = tempfile::tempdir().unwrap();
-        let mut owner = device(
-            &workspace,
-            workspace_id,
-            0,
-            1,
-            &Policy::readers([1, 2]),
-            owner_dir.path(),
-        );
-        create(&mut owner, workspace_id, channel, Instant::now());
-        let keys = ChannelKeyAccess::new(owner.service);
-        let (ChannelAccess::Ready(held), _) = keys.access(workspace_id, channel) else {
-            panic!("explicit fixture admission provides the original key");
-        };
-        let sealed = sealed_op(
-            artifact,
-            held.seal_content(artifact, ContentRetention::Delta, b"existing history")
-                .unwrap(),
-            collab_types::OpKind::Change,
-        );
-        let generation = keys.generation();
-        assert_eq!(
-            keys.open_history_write(workspace_id, &sealed).unwrap(),
-            b"existing history"
-        );
-        assert_eq!(keys.generation(), generation);
-        assert!(
-            keys.open_history_write(WorkspaceId::new(), &sealed)
-                .is_err()
-        );
-        assert_eq!(keys.generation(), generation);
-
-        let fresh_dir = tempfile::tempdir().unwrap();
-        let fresh = device(
-            &workspace,
-            workspace_id,
-            0,
-            1,
-            &Policy::readers([1, 2]),
-            fresh_dir.path(),
-        );
-        let fresh = ChannelKeyAccess::new(fresh.service);
-        let generation = fresh.generation();
-        assert!(fresh.open_history_write(workspace_id, &sealed).is_err());
-        let state = fresh.inner.lock().unwrap();
-        assert!(
-            state.peers.is_empty(),
-            "reading history must not mint replacement keys or request access"
-        );
-        assert!(
-            !state.queued,
-            "reading history must not enqueue channel governance"
-        );
-        assert_eq!(state.generation(), generation);
-        drop(state);
-    }
-
-    include!("channel_encryption_unopened_tests.rs");
-
-    /// A device whose secret store did not open keeps no channel state of
-    /// its own. A workspace is answered that it has no secret store; asking again
-    /// creates nothing, sends nothing and leaves its pump nothing to do, so
-    /// nobody asks on a timer.
-    #[test]
-    fn without_a_store_nothing_is_due() {
-        let workspace = Arc::new(Workspace::default());
-        let workspace_id = WorkspaceId::new();
-        let channel = ChannelId::new();
-        // The directory announces policy changes, as a session's does.
-        let policy = Policy::default();
-        *policy.announces.lock().unwrap() = Some(Announcements::Own(Arc::new(
-            std::sync::atomic::AtomicU64::new(1),
-        )));
-        let broker = Arc::new(Mutex::new(BrokerChannels::default()));
-        let mut service = ChannelEncryption::without_store(
-            Box::new(Directory {
-                policy: policy.clone(),
-            }),
-            Arc::clone(&broker),
-        );
-        let endpoint = Endpoint::join(&workspace, workspace_id, 0);
-        let now = Instant::now();
-        assert!(matches!(
-            service.access(workspace_id, channel, now),
-            ChannelAccess::NoSecretStore
-        ));
-        let generation = service.generation();
-        for later in 1..=3 {
-            let now = now.checked_add(Duration::from_secs(later * 60)).unwrap();
-            service.pump(&endpoint, now, 1_000);
-            assert!(matches!(
-                service.access(workspace_id, channel, now),
-                ChannelAccess::NoSecretStore
-            ));
-            assert_eq!(service.next_pump_deadline(now), None, "nothing is due");
-        }
-        assert_eq!(service.generation(), generation, "nothing changed");
-        assert!(service.peers.is_empty());
-        assert!(service.existing_keys(workspace_id, channel).is_none());
-        assert!(
-            workspace.queues.lock().unwrap().values().all(Vec::is_empty),
-            "no governance was sent"
-        );
-        // The workspace is a governed one too: still no state of its own.
-        let mut governed = ChannelEncryption::without_store(Box::new(Directory { policy }), broker);
-        assert!(matches!(
-            governed.access(workspace_id, channel, now),
-            ChannelAccess::NoSecretStore
-        ));
-        assert!(governed.peers.is_empty());
-    }
-
-    include!("channel_encryption_personal_cluster_tests.rs");
-
-    include!("channel_encryption_held_frame_tests.rs");
-
-    include!("channel_encryption_catch_up_tests.rs");
+    include!("channel_encryption_tests.rs");
 }

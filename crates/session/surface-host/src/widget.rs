@@ -300,6 +300,50 @@ impl WidgetHost {
 
     /// Draw the desk's strips following the fingers.
     fn deck_drag(&mut self, travel: f64, began: bool) {
+        self.with_surface(|surface| {
+            let shown = surface.shown_strip_id();
+            let slides = surface.slides_mut();
+            if began {
+                slides.begin_lift(shown);
+            }
+            slides.lift_to(travel);
+        });
+        self.owe();
+    }
+
+    /// Three fingers landed on the strip shown, `travel` pixels into the
+    /// gesture: the strip follows them from here.
+    pub fn begin_strip_carry(&mut self, travel: f64) {
+        self.with_surface(|surface| {
+            surface.carry_strip(travel, true);
+        });
+        self.owe();
+    }
+
+    /// The fingers have carried the shown strip `travel` pixels since they
+    /// landed: it moves with them, one pixel of their travel to one of its
+    /// own, against the rubber band past either end.
+    pub fn drag_strip_carry(&mut self, travel: f64) {
+        self.with_surface(|surface| {
+            surface.carry_strip(travel, false);
+        });
+        self.owe();
+    }
+
+    /// The fingers lifted (or the hand was taken back): the strip coasts on
+    /// the velocity they let go at and comes to rest, focusing the window it
+    /// left in view.
+    pub fn end_strip_carry(&mut self, cancelled: bool) {
+        self.with_surface(|surface| {
+            surface.release_strip(cancelled);
+        });
+        self.owe();
+    }
+
+    /// The desktop surface the tree draws, when it draws one: the strips,
+    /// window bars and edges, whatever wraps them (the desk's own widgets
+    /// and launchpad) around.
+    fn with_surface<R>(&mut self, work: impl FnOnce(&mut DesktopSurface) -> R) -> Option<R> {
         self.with_reports(|host| {
             let mut walk: Vec<&mut dyn Widget> = vec![host.root_widget_mut()];
             while let Some(next) = walk.pop() {
@@ -307,18 +351,12 @@ impl WidgetHost {
                     .as_any_mut()
                     .and_then(|any| any.downcast_mut::<DesktopSurface>())
                 {
-                    let shown = surface.shown_strip_id();
-                    let slides = surface.slides_mut();
-                    if began {
-                        slides.begin_lift(shown);
-                    }
-                    slides.lift_to(travel);
-                    return;
+                    return Some(work(surface));
                 }
                 walk.extend(next.children_mut());
             }
-        });
-        self.owe();
+            None
+        })
     }
 
     /// Where what the tree publishes stands: it may have changed only when

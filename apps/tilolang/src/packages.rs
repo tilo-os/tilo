@@ -27,6 +27,8 @@ pub struct Embedded {
 /// toolkit's components, which shows an app can do what the standard library does.
 pub const EMBEDDED: &[Embedded] = &[
     embedded!("counter"),
+    // Tasks is made of tasks and the comments on them.
+    embedded!("discussion"),
     embedded!("tasks"),
     embedded!("notes"),
     // A desk of letters, the shape the outbox and suggestion tests were written against.

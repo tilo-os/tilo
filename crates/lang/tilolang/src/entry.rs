@@ -1,9 +1,9 @@
 //! What the text of an entry will make, read from the create action it runs: the action's
 //! declared parameters say what it takes out of the text, and their types say how.
 //!
-//! An entry ([`std.add_entry`]) is handed the action it commits — a call that left the
-//! `(entry)` parameter for it (`quick_add(tasks, p: project)`). The words before the entry
-//! type say what the parameters take:
+//! An entry ([`std.add_entry`]) is handed the action it commits — a call of an action with one
+//! `Text` parameter, which the call left for the text (`new_task(tasks, p: project)`). The
+//! words before the entry type say what the parameters take:
 //!
 //! - a `Date` or `Time` parameter takes a day or a moment, as people say it
 //!   ([`crate::natural`]): "tomorrow", "fri 10am", "in 2 weeks", "3 nov";

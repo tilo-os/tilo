@@ -144,6 +144,9 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # What a door's invitation is verified as before a workspace is joined: only
 # a grant signed for this person's key joins it.
 tilo-workspace-join = { path = "../../collab/workspace-join" }
+# The address an invitation names, signed: this device's own endpoint, for a
+# link it makes into a workspace it holds.
+tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # The models an agent may plan with: the person's own provider settings.
 agent-provider-config = { path = "../../agent/provider-config" }
