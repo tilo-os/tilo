@@ -1497,10 +1497,14 @@ impl State {
                 .map_element(window.clone(), arrangement.location, activated);
         }
         // A card an app draws stays in front of the windows it floats over.
-        for window in self.space.elements().cloned().collect::<Vec<_>>() {
-            if describe(self, &window).is_some_and(|info| self.policy.overlay(&info)) {
-                self.space.raise_element(&window, true);
-            }
+        let cards: Vec<_> = self
+            .space
+            .elements()
+            .filter(|window| describe(self, window).is_some_and(|info| self.policy.overlay(&info)))
+            .cloned()
+            .collect();
+        for window in cards {
+            self.space.raise_element(&window, true);
         }
         self.apply_policy_focus_and_closes();
     }

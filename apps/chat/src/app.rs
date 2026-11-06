@@ -1701,6 +1701,29 @@ impl Widget for ChatApp {
     }
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
+        // A control pressed on the call's card or the bar's pill stands in
+        // for the one the person would press in Chat's own window.
+        for command in crate::live::take_commands() {
+            match command {
+                crate::live::Command::Mute => {
+                    let channel = self
+                        .native_voice
+                        .channel
+                        .clone()
+                        .unwrap_or_else(|| self.call.channel.clone());
+                    if let Err(error) = self.native_voice_command(
+                        &channel,
+                        ui::native_media::Command::SetMuted {
+                            muted: !self.call.muted,
+                        },
+                    ) {
+                        self.media_error = Some(error);
+                    }
+                }
+                crate::live::Command::Leave => self.leave_voice(),
+            }
+        }
+        self.publish_call();
         if self.thread_open.is_some() {
             self.thread_scroll.sync(doc, path);
         }
@@ -2363,29 +2386,9 @@ impl Widget for ChatApp {
     /// mid-slide, an overlay being dragged, or attachment images still
     /// decoding in the background. A live-but-static call does **not** force
     /// continuous redraws (the roster/rings are static), so an idle call
-    /// no longer pins a core.
+    /// no longer pins a core: it wakes once a second for the reading its card
+    /// and the bar's pill show, and not again until that.
     fn update(&mut self, _doc: &AppModel, _path: &ModelPath) -> bool {
-        for command in crate::live::take_commands() {
-            match command {
-                crate::live::Command::Mute => {
-                    let channel = self
-                        .native_voice
-                        .channel
-                        .clone()
-                        .unwrap_or_else(|| self.call.channel.clone());
-                    if let Err(error) = self.native_voice_command(
-                        &channel,
-                        ui::native_media::Command::SetMuted {
-                            muted: !self.call.muted,
-                        },
-                    ) {
-                        self.media_error = Some(error);
-                    }
-                }
-                crate::live::Command::Leave => self.leave_voice(),
-            }
-        }
-        self.publish_call();
         let model_changed = self.pump_model();
         let workspace_changed = self.take_workspace();
         self.settle_attachment_save();

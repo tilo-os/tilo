@@ -651,8 +651,12 @@ impl Answers<'_> {
                 }
             }
             // The app's own geometry is a request: the layer's place stands.
-            FloatingSurfaceClientMessage::SurfaceGeometry { .. }
-            | FloatingSurfaceClientMessage::SourceCleared { .. }
+            // A card it presents again after standing it down draws the
+            // activity there once more.
+            FloatingSurfaceClientMessage::SurfaceGeometry { id, .. } => {
+                self.cards.presented_again(&app, connection, &id);
+            }
+            FloatingSurfaceClientMessage::SourceCleared { .. }
             | FloatingSurfaceClientMessage::DestinationPresented { .. } => {}
             // The app draws the activity in its own window again: its card
             // stands down until it presents one again.

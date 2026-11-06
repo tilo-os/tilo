@@ -55,20 +55,8 @@ pub(crate) struct Presented {
 }
 
 impl Presented {
-    /// The whole window the app draws, body and soft frame around it.
-    #[must_use]
-    pub(crate) fn window(&self, body: Rect) -> Rect {
-        let [left, top, right, bottom] = self.frame;
-        Rect::new(
-            body.x0 - left,
-            body.y0 - top,
-            body.x1 + right,
-            body.y1 + bottom,
-        )
-    }
-
-    /// The body inside the whole window the layer places: the inverse of
-    /// [`Presented::window`].
+    /// The body inside the whole window the floating layer places: the soft
+    /// frame the app draws around it, taken off.
     #[must_use]
     pub(crate) fn body(&self, window: Rect) -> Rect {
         let [left, top, right, bottom] = self.frame;
@@ -80,7 +68,7 @@ impl Presented {
         )
     }
 
-    /// The size of that window.
+    /// The whole window's size: the body and the soft frame around it.
     #[must_use]
     pub(crate) fn window_size(&self) -> Size {
         let [left, top, right, bottom] = self.frame;
@@ -329,6 +317,21 @@ impl Cards {
         Some(card.clone())
     }
 
+    /// The app presents the activity in the card again after standing it
+    /// down: while the layer shows the card it draws the activity there once
+    /// more. Returns whether that is news.
+    pub(crate) fn presented_again(&self, app: &str, connection: u64, activity: &str) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let Some(card) = shared.cards.get_mut(&(app.to_owned(), activity.to_owned())) else {
+            return false;
+        };
+        if card.connection != connection || !card.stood_down {
+            return false;
+        }
+        card.stood_down = false;
+        true
+    }
+
     /// The app ended the card: nothing of it is placed again.
     pub(crate) fn dismissed(&self, connection: u64, activity: &str) -> Option<Presented> {
         let mut shared = self.shared.borrow_mut();
@@ -406,8 +409,11 @@ mod tests {
         assert_eq!(again.content, Size::new(360.0, 240.0));
         assert_eq!(again.frame, [8.0, 8.0, 8.0, 8.0]);
         assert_eq!(again.window_size(), Size::new(376.0, 256.0));
-        let body = Rect::new(16.0, 24.0, 376.0, 264.0);
-        assert_eq!(again.body(again.window(body)), body, "the frame and back");
+        assert_eq!(
+            again.body(Rect::new(8.0, 16.0, 384.0, 272.0)),
+            Rect::new(16.0, 24.0, 376.0, 264.0),
+            "the layer's place inside the frame is the app's body"
+        );
     }
 
     #[test]
@@ -507,6 +513,34 @@ mod tests {
         assert!(
             cards.adopt("so.tilo.chat", "chat-call:voice"),
             "fresh after a return"
+        );
+    }
+
+    #[test]
+    fn a_card_its_app_presents_again_after_standing_it_down_is_drawn_again() {
+        let cards = Cards::new();
+        cards
+            .present("so.tilo.chat", 7, &call("chat-call:voice"))
+            .unwrap();
+        cards.told(
+            "so.tilo.chat",
+            "chat-call:voice",
+            Some(Rect::new(0.0, 0.0, 360.0, 240.0)),
+        );
+        let stood_down = cards
+            .stood_down("so.tilo.chat", 7, "chat-call:voice")
+            .expect("stood down");
+        cards.told("so.tilo.chat", "chat-call:voice", None);
+        assert!(!cards.presented_again("so.tilo.chat", 8, "chat-call:voice"));
+        assert!(
+            cards.presented()[0].stood_down,
+            "another window changes nothing"
+        );
+        assert!(cards.presented_again("so.tilo.chat", 7, &stood_down.activity));
+        assert!(!cards.presented()[0].stood_down);
+        assert!(
+            !cards.presented_again("so.tilo.chat", 7, "chat-call:voice"),
+            "told once"
         );
     }
 

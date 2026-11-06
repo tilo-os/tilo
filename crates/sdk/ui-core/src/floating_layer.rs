@@ -122,18 +122,6 @@ impl Card {
         }
     }
 
-    /// A card `app` draws itself, `size` big.
-    #[must_use]
-    pub fn rich(app: impl Into<String>, summary: Summary, size: Size) -> Self {
-        Self {
-            app: app.into(),
-            summary,
-            loose: None,
-            rich: true,
-            size: Some(size),
-        }
-    }
-
     /// The activity's own name, what the layer reports it by.
     #[must_use]
     pub fn activity(&self) -> &str {
