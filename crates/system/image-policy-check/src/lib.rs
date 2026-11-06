@@ -380,6 +380,38 @@ fn scope_problem(
     Ok(None)
 }
 
+/// Whether `requirements` is exactly the development key's sigstore signature
+/// of `repository` itself, which is what a dev image writes in place of the
+/// release requirement for the dev repositories.
+fn is_developer_scope(repository: &str, requirements: Option<&Json>) -> bool {
+    if !DEV_REPOSITORIES.contains(&repository) {
+        return false;
+    }
+    let Some(Json::Array(items)) = requirements else {
+        return false;
+    };
+    let [Json::Object(fields)] = items.as_slice() else {
+        return false;
+    };
+    let get = |key: &str| fields.iter().find(|(k, _)| k == key).map(|(_, v)| v);
+    if get("type").and_then(Json::as_str) != Some("sigstoreSigned")
+        || fields.len() != 3
+        || !fields
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .eq(["type", "keyPath", "signedIdentity"].into_iter())
+    {
+        return false;
+    }
+    if get("keyPath").and_then(Json::as_str) != Some(DEV_KEY) {
+        return false;
+    }
+    matches!(get("signedIdentity"), Some(Json::Object(identity))
+        if identity.len() == 1
+            && identity.iter().all(|(k, v)| k == "type"
+                && ACCEPTED_IDENTITIES.contains(&v.as_str().unwrap_or_default())))
+}
+
 fn may_accept(transport: &str, scope: &str) -> bool {
     if transport == "docker" {
         USER_CHOSEN_REGISTRIES.iter().any(|registry| {
@@ -414,6 +446,25 @@ fn effective_rule<'a>(
     ("the default rule".to_owned(), policy.get("default"))
 }
 
+/// The development-signing key a dev image (`os/Containerfile.dev`,
+/// `os/scripts/finalize-dev-image.py`) admits the dev repositories with.
+pub const DEV_KEY: &str = "/usr/share/tilo/cosign-dev.pub";
+/// The repositories whose scope a dev image rewrites to that key: the dev
+/// channel's image of this device, and a branch's own build. Only these, and
+/// only on an image whose own `/usr/lib/tilo/image-flavour` says `dev`.
+pub const DEV_REPOSITORIES: [&str; 2] = [
+    "registry.tilo.so/tilo/tilo-vm",
+    "registry.tilo.so/tilo/tilo-vm-ref",
+];
+
+/// A scope this policy lets a dev image verify with the development key
+/// instead of the release trust, with its reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeveloperOverride {
+    pub repository: String,
+    pub key: String,
+}
+
 /// What a policy failed on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
@@ -437,6 +488,29 @@ impl Failure {
 /// # Errors
 /// The first thing that keeps the policy from proving the requirement.
 pub fn check(text: &str, trust: &Trust) -> Result<(), Failure> {
+    check_policy(text, trust, false).map(drop)
+}
+
+/// [`check`] for an image that is a developer's own build: a dev image's
+/// policy admits the two dev repositories with the development key, and this
+/// reports each such scope as a developer-mode override instead of failing
+/// on it. Nothing else moves — the release scopes, every other guarded
+/// repository, the default reject and the accepted-anything rule are held to
+/// exactly what [`check`] holds them to, so a device that is not a dev image
+/// cannot use this and a dev image cannot smuggle a release scope through it.
+///
+/// # Errors
+/// As [`check`].
+pub fn check_developer(text: &str, trust: &Trust) -> Result<Vec<DeveloperOverride>, Failure> {
+    check_policy(text, trust, true)
+}
+
+fn check_policy(
+    text: &str,
+    trust: &Trust,
+    developer: bool,
+) -> Result<Vec<DeveloperOverride>, Failure> {
+    let mut overrides: Vec<DeveloperOverride> = Vec::new();
     let policy = parse(text).map_err(Failure::Policy)?;
     let Json::Object(_) = policy else {
         return Err(Failure::Policy("policy is not a JSON object".to_owned()));
@@ -480,6 +554,13 @@ pub fn check(text: &str, trust: &Trust) -> Result<(), Failure> {
         if !tilo {
             continue;
         }
+        if developer && is_developer_scope(scope, Some(requirements)) {
+            overrides.push(DeveloperOverride {
+                repository: scope.clone(),
+                key: DEV_KEY.to_owned(),
+            });
+            continue;
+        }
         if let Some(problem) =
             scope_problem(Some(requirements), true, trust).map_err(Failure::Crash)?
         {
@@ -488,6 +569,15 @@ pub fn check(text: &str, trust: &Trust) -> Result<(), Failure> {
     }
     for repository in GUARDED_REPOSITORIES {
         let (scope, requirements) = effective_rule(&policy, docker, repository);
+        if developer && is_developer_scope(repository, requirements) {
+            if !overrides.iter().any(|held| held.repository == repository) {
+                overrides.push(DeveloperOverride {
+                    repository: repository.to_owned(),
+                    key: DEV_KEY.to_owned(),
+                });
+            }
+            continue;
+        }
         if let Some(problem) = scope_problem(requirements, true, trust).map_err(Failure::Crash)? {
             return Err(Failure::Policy(format!(
                 "{repository}: governed by {scope}: {problem}"
@@ -518,7 +608,7 @@ pub fn check(text: &str, trust: &Trust) -> Result<(), Failure> {
             }
         }
     }
-    Ok(())
+    Ok(overrides)
 }
 
 /// `str(OSError)` as Python wrote it: `[Errno N] reason: 'path'`.
@@ -546,12 +636,28 @@ fn decode_message(bytes: &[u8], error: &std::str::Utf8Error) -> String {
 /// The command line, without the program name; writes the report to `out`
 /// and the usage to `err`, and returns the exit status.
 pub fn main(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
-    if args.len() > 2 {
-        let _ = writeln!(err, "usage: tilo-image-policy-check [POLICY [TRUST_DIR]]");
+    // `--developer` must be named: a dev image's policy is not a release
+    // policy, and only the caller that has established this image is a
+    // developer's build may ask for the narrower answer. It may appear before
+    // or after the two paths.
+    let mut developer = false;
+    let mut paths: Vec<&String> = Vec::new();
+    for argument in args {
+        if argument == "--developer" {
+            developer = true;
+        } else {
+            paths.push(argument);
+        }
+    }
+    if paths.len() > 2 {
+        let _ = writeln!(
+            err,
+            "usage: tilo-image-policy-check [--developer] [POLICY [TRUST_DIR]]"
+        );
         return 2;
     }
-    let path = args.first().map_or(DEFAULT_POLICY, String::as_str);
-    let trust_dir = args.get(1).map_or(DEFAULT_TRUST_DIR, String::as_str);
+    let path = paths.first().map_or(DEFAULT_POLICY, |path| path.as_str());
+    let trust_dir = paths.get(1).map_or(DEFAULT_TRUST_DIR, |dir| dir.as_str());
     let mut report = String::new();
     let code = match std::fs::read(path) {
         Err(error) => {
@@ -576,24 +682,41 @@ pub fn main(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
                     let _ = write!(report, "{path}: {message}");
                     1
                 }
-                Ok(trust) => match check(&text.replace("\r\n", "\n").replace('\r', "\n"), &trust) {
-                    Ok(()) => {
-                        let _ = write!(
-                            report,
-                            "{path}: Tilo image scopes require {}",
-                            trust.describe()
-                        );
-                        0
+                Ok(trust) => {
+                    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+                    let checked = if developer {
+                        check_developer(&text, &trust).map(|overrides| {
+                            let mut accepted = String::new();
+                            for DeveloperOverride { repository, key } in overrides {
+                                let _ = write!(
+                                    accepted,
+                                    "; {repository} is verified with the development key {key}, which a developer-built image admits in its own place"
+                                );
+                            }
+                            accepted
+                        })
+                    } else {
+                        check(&text, &trust).map(|()| String::new())
+                    };
+                    match checked {
+                        Ok(accepted) => {
+                            let _ = write!(
+                                report,
+                                "{path}: Tilo image scopes require {}{accepted}",
+                                trust.describe()
+                            );
+                            0
+                        }
+                        Err(Failure::Policy(message)) => {
+                            let _ = write!(report, "{path}: {message}");
+                            1
+                        }
+                        Err(Failure::Crash(message)) => {
+                            let _ = writeln!(err, "TypeError: {message}");
+                            return 1;
+                        }
                     }
-                    Err(Failure::Policy(message)) => {
-                        let _ = write!(report, "{path}: {message}");
-                        1
-                    }
-                    Err(Failure::Crash(message)) => {
-                        let _ = writeln!(err, "TypeError: {message}");
-                        return 1;
-                    }
-                },
+                }
             },
         },
     };

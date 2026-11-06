@@ -625,6 +625,10 @@ esac
 # key, or the offline root once /usr/share/tilo/release/root.crt exists), so a
 # signed sibling scope cannot stand in for a weakened Tilo scope, and an
 # unreadable or malformed policy fails rather than passes.
+#
+# A dev image is the one deliberate exception, and it is read from the image
+# itself (/usr/lib/tilo/image-flavour, which only os/Containerfile.dev writes)
+# rather than from anything a running machine can set.
 policy=/etc/containers/policy.json
 image_policy_check=/usr/libexec/tilo-image-policy-check
 
@@ -648,17 +652,70 @@ for tool in p11tool gnutls-cli; do
   fi
 done
 
-if ! policy_report="$("$image_policy_check" "$policy" 2>&1)"; then
-  warn "Tilo image signature policy does not require the pinned signature: ${policy_report:-$image_policy_check produced no verdict}"
-elif [ ! -s /usr/share/tilo/release/rekor.pub ]; then
-  warn "Tilo image signature policy requires a transparency-log entry, but /usr/share/tilo/release/rekor.pub is missing or empty"
-elif [ -e /usr/share/tilo/release/root.crt ] && [ ! -s /usr/share/tilo/release/root.crt ]; then
-  warn "Tilo image signature policy chains to /usr/share/tilo/release/root.crt, but that root certificate is empty"
-elif [ ! -e /usr/share/tilo/release/root.crt ] && [ ! -s /usr/share/tilo/cosign.pub ]; then
-  warn "Tilo image signature policy pins /usr/share/tilo/cosign.pub, but that verification key is missing or empty"
-else
-  ok "container signature policy pins signed Tilo images to the installed release trust: ${policy_report#*: }"
-fi
+# A developer's own image is a developer device on purpose: it admits the dev
+# channel's repository (registry.tilo.so/tilo/tilo-vm, and a branch's own build
+# beside it) with keys/cosign-dev.pub, in its own place, and nothing else.
+# `tilo-image-policy-check --developer` holds every other invariant exactly as
+# it does on a release image and reports those two scopes instead of failing on
+# them; a release image is never asked, so it cannot use the dev key at all.
+# A dev key anywhere else — a release scope, another Tilo repository, a
+# weakened requirement — still fails, on both kinds of image.
+#
+# The paths are overridable so os/tests/security_audit_kconfig.sh, and anyone
+# reading this, can run the decision on a fixture rather than on the machine.
+policy="${TILO_AUDIT_POLICY:-/etc/containers/policy.json}"
+image_policy_check="${TILO_AUDIT_POLICY_CHECK:-/usr/libexec/tilo-image-policy-check}"
+image_flavour_file="${TILO_AUDIT_IMAGE_FLAVOUR:-/usr/lib/tilo/image-flavour}"
+release_dir="${TILO_AUDIT_RELEASE_DIR:-/usr/share/tilo/release}"
+pinned_key="${TILO_AUDIT_PINNED_KEY:-/usr/share/tilo/cosign.pub}"
+dev_key="${TILO_AUDIT_DEV_KEY:-/usr/share/tilo/cosign-dev.pub}"
+
+# What this image's container-policy check must prove. Prints the check's own
+# verdict on stdout; the return status is what the audit acts on:
+#
+#   0  a release image's policy proves the pinned release trust (or chains to
+#      the offline root), and the rekor/root/key files it names are present;
+#   2  a developer image's policy proves the same, except that the two dev
+#      repositories are verified with the development key, which this image
+#      installs and which nothing else here accepts. Reported as a note;
+#   1  anything else: an invariant is inactive, and the caller counts it.
+check_image_policy() {
+  local developer=0 report
+  [ "$(cat "$image_flavour_file" 2>/dev/null || true)" = dev ] && developer=1
+  if ! report="$("$image_policy_check" "$policy" 2>&1)"; then
+    [ "$developer" -eq 1 ] || { printf '%s\n' "$report"; return 1; }
+    report="$("$image_policy_check" --developer "$policy" 2>&1)" \
+      || { printf '%s\n' "$report"; return 1; }
+    if [ ! -s "$dev_key" ]; then
+      printf 'acceptable: /etc/containers/policy.json admits the dev channel with %s, but that key is missing or empty\n' "$dev_key"
+      return 1
+    fi
+    printf '%s\n' "$report"
+    return 2
+  fi
+  if [ ! -s "$release_dir/rekor.pub" ]; then
+    printf 'Tilo image signature policy requires a transparency-log entry, but %s/rekor.pub is missing or empty\n' "$release_dir"
+    return 1
+  fi
+  if [ -e "$release_dir/root.crt" ] && [ ! -s "$release_dir/root.crt" ]; then
+    printf 'Tilo image signature policy chains to %s/root.crt, but that root certificate is empty\n' "$release_dir"
+    return 1
+  fi
+  if [ ! -e "$release_dir/root.crt" ] && [ ! -s "$pinned_key" ]; then
+    printf 'Tilo image signature policy pins %s, but that verification key is missing or empty\n' "$pinned_key"
+    return 1
+  fi
+  printf '%s\n' "$report"
+  return 0
+}
+
+policy_status=0
+policy_report="$(check_image_policy)" || policy_status=$?
+case "$policy_status" in
+  0) ok "container signature policy pins signed Tilo images to the installed release trust: ${policy_report#*: }" ;;
+  2) note "developer image: signed Tilo images keep the release trust, and the dev channel is verified with the development key in its own place (${policy_report#*: })" ;;
+  *) warn "Tilo image signature policy does not require the pinned signature: ${policy_report:-$image_policy_check produced no verdict}" ;;
+esac
 
 if [ -e /var/lib/tilo/image-trust/required ]; then
   trust_meta="$(stat -c '%u:%a' /var/lib/tilo/image-trust 2>/dev/null || echo invalid)"
