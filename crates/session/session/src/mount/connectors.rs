@@ -20,7 +20,6 @@
 use std::collections::HashMap;
 use std::os::fd::AsFd as _;
 use std::os::fd::OwnedFd;
-use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
 use tilo_app_launch::Planned;
@@ -122,12 +121,6 @@ impl Drop for ConnectorHost {
     }
 }
 
-/// The launcher's path, as the session starts packages through it.
-#[must_use]
-pub fn launcher_binary(launcher: &PathBuf) -> PathBuf {
-    launcher.clone()
-}
-
 /// Start the connectors the session's services keep records in step with
 /// (`docs/architecture/apps.md` §1, §8): for each origin a service names, the process of the
 /// app whose package declares it, in the sandbox its signed manifest gives that origin, and
@@ -146,11 +139,7 @@ pub(crate) fn start_all(session: &mut crate::Session) {
     let wake = session.shared.wake_handle.clone();
     // The service that keeps an origin in step is told what wakes the loop: an answer from
     // the service it asked, which the next pass polls and writes.
-    session
-        .shared
-        .services
-        .borrow_mut()
-        .wake_origins(std::sync::Arc::clone(&wake));
+    session.shared.services.borrow_mut().wake_origins(&wake);
     let connectors = session.shared.services.borrow().connectors();
     if connectors.is_empty() {
         return;

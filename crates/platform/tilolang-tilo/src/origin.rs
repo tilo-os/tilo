@@ -142,7 +142,7 @@ pub fn uses_origin(meta: &Meta, origin: &str) -> bool {
 
 /// How an origin reaches the connector the session runs for it: the socket the session handed
 /// both ends of, made into the origin's native client (the mail origin's over the mail
-/// connector, the YouTube origin's over the YouTube one).
+/// connector, the `YouTube` origin's over the `YouTube` one).
 ///
 /// An origin's own crate registers one as it loads ([`register_remote`]), so the crate that
 /// keeps a package's records (a session's [`crate::records_service::RecordService`], a tilolang

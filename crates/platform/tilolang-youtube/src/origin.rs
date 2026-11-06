@@ -327,7 +327,10 @@ impl Origin for YouTubeOrigin {
     fn poll(&mut self, cx: &OriginCx<'_>) -> Polled {
         let mut polled = Polled::default();
         if self.woken.swap(false, Ordering::AcqRel) {
-            polled.wrote = self.take_answers(cx.host);
+            polled.wrote = self.take_answers(cx.host, cx.app);
+            // The effect the service carried out is settled: what became of it is in the
+            // record, and the outbox takes it as answered rather than asking again.
+            polled.settle = true;
         }
         let _ = self.changed.take();
         polled
@@ -368,14 +371,12 @@ impl Origin for YouTubeOrigin {
 
 impl YouTubeOrigin {
     /// Write what the service answered since the last poll, and say whether anything changed.
-    fn take_answers(&mut self, host: &Host) -> bool {
+    fn take_answers(&mut self, host: &Host, app: &str) -> bool {
         let Some(types) = self.types.take().or_else(|| {
-            // The first poll after the instance opened: the package is loaded by then.
-            host.packages()
-                .last()
-                .and_then(|package| Self::types_of(host, &package.meta.app))
+            // The first poll, with the package whose types hold the YouTube kinds: the one the
+            // origin writes into.
+            Self::types_of(host, app)
         }) else {
-            // Nothing to write yet, and nothing to lose: try again on the next poll.
             return false;
         };
         let mut wrote = false;
@@ -387,11 +388,14 @@ impl YouTubeOrigin {
             .drain(..)
             .collect();
         for answer in took {
-            if let Some(waiting) = self.waiting.pop_front() {
-                self.waiting.push_front(Waiting {
-                    pending: waiting.pending,
-                    answered: Some(answer),
-                });
+            // The oldest question still waiting on the service takes this answer, in the order
+            // it was asked; one already answered is not asked again.
+            if let Some(waiting) = self
+                .waiting
+                .iter_mut()
+                .find(|waiting| waiting.answered.is_none())
+            {
+                waiting.answered = Some(answer);
             }
         }
         while let Some(waiting) = self.waiting.pop_front() {

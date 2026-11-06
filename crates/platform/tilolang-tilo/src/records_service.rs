@@ -268,29 +268,44 @@ impl RecordService {
         if self.origins.borrow().is_empty() {
             return false;
         }
-        if !self
-            .origins
-            .borrow()
-            .iter()
-            .any(|origin| origin.borrow().due())
-        {
-            return false;
-        }
         let now = crate::host::system_time();
         let waker = self.origin_waker.clone().unwrap_or_else(|| Arc::new(|| {}));
         let origins: Vec<crate::origin::SharedOrigin> = self.origins.borrow().clone();
-        let packages = self.host.packages();
-        let app = packages
-            .last()
-            .map_or("", |package| package.meta.app.as_str());
         let mut wrote = false;
+        // The outside effects a package's action queued, handed to the origin that carries
+        // them out: an effect queued since the last pass goes now, whether or not any origin is
+        // already due (an origin is due once something is handed to it). What cannot be carried
+        // out yet waits in the record, as a window's does.
+        match self.host.settle_outbox() {
+            Ok(settled) if settled.written > 0 => wrote = true,
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "outside effects could not be settled"),
+        }
         for origin in &origins {
             if !origin.borrow().due() {
                 continue;
             }
+            // The app whose types hold this origin's kinds: the package that declares them, so
+            // an origin writes into the records of the app that holds its resources.
+            let name = origin.borrow().name().to_owned();
+            let prefix = format!("{name}.");
+            let app = self
+                .host
+                .packages()
+                .iter()
+                .rev()
+                .find(|package| {
+                    package.meta.types.iter().any(|ty| {
+                        ty.origin
+                            .as_deref()
+                            .is_some_and(|kind| kind.starts_with(&prefix))
+                    })
+                })
+                .map(|package| package.meta.app.clone())
+                .unwrap_or_default();
             let cx = crate::origin::OriginCx {
                 host: &self.host,
-                app,
+                app: &app,
                 waker: &waker,
                 now: now.clone(),
             };
@@ -298,21 +313,6 @@ impl RecordService {
             if polled.wrote {
                 wrote = true;
             }
-        }
-        // The outside effects a package's action queued, handed to the origin that carries
-        // them out: what it cannot carry out yet waits in the record, as a window's does.
-        match self.host.settle_outbox() {
-            Ok(settled) if settled.written > 0 => {
-                for committed in self.host.take_committed() {
-                    use tilo_actions::Action as _;
-                    let _ = committed.action.apply(&mut self.record);
-                }
-                self.record.commit();
-                self.host.sync_from(&self.record);
-                self.publications.settle(&self.host, &self.planner);
-            }
-            Ok(_) => {}
-            Err(error) => tracing::warn!(%error, "outside effects could not be settled"),
         }
         if wrote {
             // What the origins wrote is committed to the record this service publishes, as the

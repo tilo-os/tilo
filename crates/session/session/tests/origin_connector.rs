@@ -31,7 +31,6 @@ mod common;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::json;
 use tilo_compositor::OutputConfig;
@@ -56,11 +55,15 @@ fn youtube_connector_child() {
     if std::env::var_os(CHILD_ENV).is_none() {
         return;
     }
-    // The launcher's release: the descriptor the connector's door came in on.
+    // The launcher's release: the descriptor the connector's door came in on. The stand-in
+    // launcher is the launcher's sandbox here: it hands the door straight into this process,
+    // where a real launch would hand it in as the `tilolang-origin` service.
     if runtime_portal::registration_gate::wait_on_stdin().is_err() {
         return;
     }
-    let door = runtime_portal::origin_connector::take_door().expect("the connector's door");
+    let Some(door) = runtime_portal::registration_gate::take_window_door() else {
+        return;
+    };
     let attachments = std::iter::from_fn(move || {
         match runtime_portal::origin_connector::receive_attachment(&door) {
             Ok(Some(connection)) => Some(std::os::unix::net::UnixStream::from(connection)),
@@ -93,6 +96,9 @@ fn scripted() -> tilolang_youtube::Scripted {
                     title: VIDEO.to_owned(),
                     channel_key: "UC-lowlevel".to_owned(),
                     channel_name: NAME.to_owned(),
+                    published: "2026-11-01T12:00:00Z".to_owned(),
+                    duration: 900,
+                    views: 12_000,
                     ..tilolang_youtube::VideoItem::default()
                 }],
             },
@@ -161,7 +167,7 @@ fn installed_tube(home: &tilo_test_env::TestHome) -> tilo_test_env::StandIn {
         home.home().join("tilo-launcher"),
         &format!(
             "export {CHILD_ENV}=1\n\
-             exec '{exe}' --exact origin_connector::youtube_connector_child --nocapture\n",
+             exec '{exe}' --exact youtube_connector_child --nocapture\n",
             exe = std::env::current_exe()
                 .expect("this test's program")
                 .display(),
@@ -173,7 +179,7 @@ fn installed_tube(home: &tilo_test_env::TestHome) -> tilo_test_env::StandIn {
 /// A headless session with the shell as the whole screen and the seeded apps published (the
 /// YouTube client among them), its apps started through `home`'s launcher.
 fn session(
-    home: &tilo_test_env::TestHome,
+    _home: &tilo_test_env::TestHome,
     root: &Path,
     launcher: &tilo_test_env::StandIn,
 ) -> Session {
@@ -204,15 +210,6 @@ fn session(
     .expect("session")
 }
 
-/// The published reading of the client's root, as the session's door reads it.
-fn youtube_root(session: &Session) -> Option<serde_json::Value> {
-    session
-        .resources()
-        .into_iter()
-        .find(|resource| resource.kind == format!("tl.{TUBE}.YouTube"))
-        .and_then(|resource| session.read(resource.id.as_str()))
-}
-
 #[test]
 fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() {
     let _settled = ui::motion::testing::settled();
@@ -221,57 +218,116 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
     let root = private_home();
     let mut session = session(&home, root.path(), &launcher);
 
-    // The client's root is published by the seeded apps, with its search settled as it stood.
-    let before = common::wait_for(&mut session, "the client's root", |session| {
-        youtube_root(session)
+    // The client's root is published by the seeded apps, and the video the scripted service
+    // answers with is not in it: only the scenario's own are.
+    common::until(&mut session, "the client's root", |session| {
+        session
+            .resources()
+            .iter()
+            .any(|resource| resource.kind == format!("tl.{TUBE}.YouTube"))
     });
-    assert_eq!(
-        before["search_state"], "",
-        "nothing was searched yet: {before}"
+    assert!(
+        !record_says(&session, VIDEO),
+        "the answer's video is not in the record before the search"
     );
 
     // The person's search, through the session's door as any action: the outside effect it
     // queues goes to the connector the session started for the app's origin.
-    let created = session
+    let root = session
+        .resources()
+        .into_iter()
+        .find(|resource| resource.kind == format!("tl.{TUBE}.YouTube"))
+        .expect("the client's root");
+    // The client's search: the one action of its root that asks a query.
+    let search = root
+        .actions
+        .iter()
+        .find(|action| action.params().iter().any(|param| param.name == "query"))
+        .map(|action| action.id.clone())
+        .unwrap_or_else(|| {
+            panic!(
+                "the client offers its search: {:?}",
+                root.actions
+                    .iter()
+                    .map(|action| (&action.id, &action.label))
+                    .collect::<Vec<_>>()
+            )
+        });
+    session
         .invoke(
-            youtube_root_id(&session).as_str(),
-            "search",
+            root.id.as_str(),
+            &search,
             &serde_json::Map::from_iter([("query".to_owned(), json!("compositor"))]),
         )
         .expect("the search action runs");
 
-    // The answer lands in the client's record: the video the scripted service found, and the
-    // search settled (so its view never reads "searching" for ever).
-    let after = common::wait_for(&mut session, "the search answered", |session| {
-        youtube_root(session).filter(|root| root["search_state"] == "done")
+    // The answer lands in the client's record: the video the scripted service found and the
+    // channel it names, each a resource of the client's the door reads, and the search settled
+    // (`search_state` `done`, so the client's view stops saying it searches).
+    common::until(&mut session, "the answer in the record", |session| {
+        record_says(session, VIDEO) && record_says(session, NAME)
     });
-    assert_eq!(after["search_state"], "done", "{after}");
+    let videos = client_items(&session, "Video");
     assert!(
-        after["videos"].as_array().is_some_and(|videos| {
-            videos
-                .iter()
-                .any(|video| video["value"]["title"] == json!(VIDEO))
-        }),
-        "the video YouTube answered with is in the record: {after}"
+        videos.iter().any(|(_, title)| title == VIDEO),
+        "the video YouTube answered with is a resource of the client's: {videos:?}"
     );
-    // The videos were found for the query, so a search's view lists them.
+    let channels = client_items(&session, "Channel");
     assert!(
-        after["videos"]
-            .as_array()
-            .expect("videos")
-            .iter()
-            .any(|video| video["value"]["found_for"] == json!("compositor")),
-        "{after}"
+        channels.iter().any(|(_, name)| name == NAME),
+        "the channel YouTube answered with is a resource of the client's: {channels:?}"
     );
-    let _ = created;
 }
 
-/// The published id of the client's root.
-fn youtube_root_id(session: &Session) -> String {
-    session
+/// The client's items of the kind `kind` (`Video`, `Channel`): each its published id and the
+/// text of each of its fields that is a text, read through the session's door.
+fn client_items(session: &Session, kind: &str) -> Vec<(String, String)> {
+    let Some(root) = session
         .resources()
         .into_iter()
         .find(|resource| resource.kind == format!("tl.{TUBE}.YouTube"))
-        .map(|resource| resource.id.as_str().to_owned())
-        .expect("the client's root")
+    else {
+        return Vec::new();
+    };
+    let Some(reading) = session.read(root.id.as_str()) else {
+        return Vec::new();
+    };
+    let wanted = format!("#{kind}");
+    let mut items = Vec::new();
+    for list in reading
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, value)| value["list"].as_array())
+    {
+        for item in list {
+            let (Some(id), Some(ty)) = (item["ref"].as_str(), item["ty"].as_str()) else {
+                continue;
+            };
+            if !ty.ends_with(&wanted) {
+                continue;
+            }
+            if let Some(fields) = session.read(id) {
+                for text in fields
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|(_, value)| value.as_str())
+                {
+                    items.push((id.to_owned(), text.to_owned()));
+                }
+            }
+        }
+    }
+    items
+}
+
+/// Whether any of the client's records holds `text` in a text field, as the session's door
+/// reads them.
+fn record_says(session: &Session, text: &str) -> bool {
+    ["Video", "Channel"].into_iter().any(|kind| {
+        client_items(session, kind)
+            .iter()
+            .any(|(_, held)| held == text)
+    })
 }

@@ -288,10 +288,10 @@ impl Services {
 
     /// Have `wake` called whenever an origin a service keeps in step has an answer, so the
     /// session's loop polls the service and the answer lands in its records.
-    pub fn wake_origins(&mut self, wake: Wake) {
+    pub fn wake_origins(&mut self, wake: &Wake) {
         for service in &mut self.started {
             if !service.connectors().is_empty() {
-                service.wake_origins(std::sync::Arc::clone(&wake));
+                service.wake_origins(std::sync::Arc::clone(wake));
             }
         }
     }
