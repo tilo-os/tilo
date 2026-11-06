@@ -12,7 +12,7 @@ use tilo_desktop::desktop_host::{
     SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
 };
 use tilo_desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
-use tilo_desktop::overlays::Slot;
+use tilo_desktop::overlays::{Anchor, Slot};
 use tilo_sheets::power::PowerEffect;
 use ui::shortcut_table::{ShortcutAction, ShortcutHome};
 
@@ -21,6 +21,10 @@ use crate::{
     AppLists, Magnify, SessionAction, SessionCommand, Shared, identity, mount, people,
     workspace_settings, workspaces,
 };
+
+/// How far a popover stands clear of the caret it was opened from, logical
+/// pixels.
+const CARET_GAP: f64 = 6.0;
 
 impl Shared {
     /// Carry out what the desktop asked since the last frame.
@@ -448,6 +452,20 @@ impl Shared {
         }
     }
 
+    /// Open the panel where the person types, for the clipboard's copies:
+    /// beside the caret that asked for it, and under the tray when no field
+    /// holds one.
+    fn show_quick_settings_beside_caret(&self) {
+        if !self.quick_settings {
+            return;
+        }
+        let anchor = self
+            .overlays
+            .caret()
+            .map(|at| Anchor::Beside { at, gap: CARET_GAP });
+        self.overlays.open(Slot::QuickSettings, anchor);
+    }
+
     /// A desktop shortcut the desk left to its host: the device's own
     /// answers, and the surfaces over the desk. Every shortcut of the
     /// session's is named here ([`ShortcutAction::home`]), so one the table
@@ -477,7 +495,7 @@ impl Shared {
                 self.panel_asks.borrow_mut().push("show-notifications");
             }
             ShortcutAction::ClipboardHistory => {
-                self.show_quick_settings();
+                self.show_quick_settings_beside_caret();
                 self.panel_asks.borrow_mut().push("paste");
             }
             ShortcutAction::Search => {

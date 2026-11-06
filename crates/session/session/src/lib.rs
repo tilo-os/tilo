@@ -803,10 +803,13 @@ pub struct Session {
     /// How often the keyboard's app was started on the display it stands on,
     /// so one that keeps exiting is given up on rather than started for ever.
     keyboard_starts: u32,
-    /// Where quick settings' app stands, while its slot is up, and how often
-    /// it was started at that place: one that keeps exiting is given up on.
+    /// Where quick settings' app stands, and how often it was started at
+    /// that place: one that keeps exiting is given up on.
     quick_settings_run: quick_settings::Run,
     quick_settings_starts: u32,
+    /// Whether the compositor shows its panel now: the app runs for the
+    /// session's life, and its slot opens and closes over a hidden surface.
+    quick_settings_shown: bool,
     /// The portal's link to the loop, while the portal serves.
     portal: Option<portal_link::SessionLink>,
     /// The apps this session started, told to the portal: which of them run
@@ -2121,6 +2124,7 @@ impl Session {
             keyboard_starts: 0,
             quick_settings_run: quick_settings::Run::Down,
             quick_settings_starts: 0,
+            quick_settings_shown: false,
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             action_plane,
@@ -2349,6 +2353,10 @@ impl Session {
             .copied()
             .find(|output| output.contains(ui::kurbo::Point::new(x, y)));
         self.shared.overlays.set_displays(&outputs, focused);
+        // Where the person types, for the surfaces a key opens at the caret.
+        self.shared
+            .overlays
+            .set_caret(self.readout_place.borrow().caret());
     }
 
     /// Take the displays a fullscreen window owns from the compositor, so

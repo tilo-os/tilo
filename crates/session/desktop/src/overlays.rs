@@ -495,6 +495,9 @@ struct SlotState {
 struct Displays {
     outputs: Vec<Rect>,
     focused: Option<Rect>,
+    /// Where the person types, when a field holds the caret: the place a
+    /// surface a key opens for the text stands against.
+    caret: Option<Rect>,
 }
 
 impl Displays {
@@ -591,10 +594,21 @@ impl Overlays {
         if stack.displays.outputs.as_slice() == outputs && stack.displays.focused == focused {
             return;
         }
-        stack.displays = Displays {
-            outputs: outputs.to_vec(),
-            focused,
-        };
+        stack.displays.outputs = outputs.to_vec();
+        stack.displays.focused = focused;
+    }
+
+    /// The caret of the field the person types into, as the desktop last saw
+    /// it: what a surface a key opens for the text stands beside.
+    pub fn set_caret(&self, caret: Option<Rect>) {
+        self.0.borrow_mut().displays.caret = caret;
+    }
+
+    /// The caret a surface a key opens for the text stands beside, when a
+    /// field holds one.
+    #[must_use]
+    pub fn caret(&self) -> Option<Rect> {
+        self.0.borrow().displays.caret
     }
 
     /// Put `slot` up, standing at `anchor` or where the slot stands by
@@ -837,6 +851,24 @@ mod tests {
         let place = overlays.place(Slot::QuickSettings).expect("placed");
         assert_eq!(place.x1, edge.x0 - 4.0);
         assert!(place.x1 <= edge.x0, "still clear of the caret");
+    }
+
+    #[test]
+    fn the_caret_a_key_opens_at_outlives_the_displays_changing() {
+        let overlays = overlays();
+        let caret = Rect::new(600.0, 300.0, 602.0, 320.0);
+        overlays.set_caret(Some(caret));
+        // The outputs came and went while the person typed: where they type
+        // is still where the surface a key opens for the text stands.
+        overlays.set_displays(&[Rect::new(0.0, 0.0, 1000.0, 700.0)], Some(DISPLAY));
+        assert_eq!(overlays.caret(), Some(caret));
+        overlays.open(
+            Slot::QuickSettings,
+            overlays.caret().map(|at| Anchor::Beside { at, gap: 6.0 }),
+        );
+        let place = overlays.place(Slot::QuickSettings).expect("placed");
+        assert_eq!(place.x0, caret.x1 + 6.0, "clear of the caret");
+        assert_eq!(place.y0, caret.y0, "level with it");
     }
 
     #[test]

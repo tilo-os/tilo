@@ -44,11 +44,18 @@ use crate::state::{ClientState, State};
 pub(crate) struct Layers {
     shell: WlrLayerShellState,
     surfaces: Vec<Placed>,
+    /// Which layer surfaces the session shows, by the name their client gave
+    /// them: one whose app the session keeps running between openings is
+    /// hidden here instead. A name the session never named is shown.
+    visibility: std::collections::BTreeMap<String, bool>,
 }
 
 /// One layer surface and where it is on its output.
 struct Placed {
     surface: LayerSurface,
+    /// The name its client gave it, as the session asks for it: `tilo-` and
+    /// the surface's name.
+    namespace: String,
     /// The output it asked for, until an output exists to put it on.
     output: Option<Output>,
     layer: Layer,
@@ -60,7 +67,7 @@ struct Placed {
 impl Placed {
     /// Whether the client drew it: a layer surface shows nothing before its
     /// first buffer.
-    fn shown(&self) -> bool {
+    fn has_buffer(&self) -> bool {
         with_renderer_surface_state(self.surface.wl_surface(), |state| state.buffer().is_some())
             .unwrap_or(false)
     }
@@ -87,6 +94,7 @@ impl Layers {
         Self {
             shell,
             surfaces: Vec::new(),
+            visibility: std::collections::BTreeMap::new(),
         }
     }
 
@@ -104,6 +112,22 @@ impl Layers {
     /// Forget the layer surfaces whose clients are gone.
     pub(crate) fn refresh(&mut self) {
         self.surfaces.retain(|placed| placed.surface.alive());
+    }
+
+    /// Whether the person sees `placed` and input reaches it: the session
+    /// shows it, and its client has drawn it.
+    fn visible(&self, placed: &Placed) -> bool {
+        self.visibility
+            .get(&placed.namespace)
+            .copied()
+            .unwrap_or(true)
+            && placed.has_buffer()
+    }
+
+    /// Whether the session shows the layer surface `namespace`; `None` when
+    /// it never said, which is shown.
+    fn shows(&self, namespace: &str) -> Option<bool> {
+        self.visibility.get(namespace).copied()
     }
 
     /// Whether `surface` is (part of) a layer surface's tree.
@@ -139,7 +163,7 @@ impl Layers {
         };
         self.on(output, want)
             .rev()
-            .filter(|placed| placed.shown())
+            .filter(|placed| self.visible(placed))
             .find_map(|placed| {
                 let rect = placed.rect;
                 if !rect.to_f64().contains(point) {
@@ -163,12 +187,14 @@ impl State {
     pub(crate) fn add_layer_surface(
         &mut self,
         surface: LayerSurface,
+        namespace: String,
         output: Option<&WlOutput>,
         layer: Layer,
     ) {
         let output = output.and_then(Output::from_resource);
         self.layers.surfaces.push(Placed {
             surface,
+            namespace,
             output,
             layer,
             rect: Rectangle::default(),
@@ -235,9 +261,36 @@ impl State {
         let Some(index) = self.layers.index_of(surface) else {
             return;
         };
+        // Frames of a surface the session hid change nothing on the desk.
+        if self
+            .layers
+            .surfaces
+            .get(index)
+            .is_some_and(|placed| !self.layers.visible(placed))
+        {
+            self.place_layer(index, true);
+            return;
+        }
         self.place_layer(index, true);
         self.layer_keyboard_focus(index);
         self.mark_redraw_all();
+    }
+
+    /// Show the session's layer surface `namespace`, or hide it: a surface
+    /// whose app the session keeps running between openings stands here
+    /// without drawing, taking input or keeping room.
+    pub(crate) fn set_layer_shown(&mut self, namespace: &str, shown: bool) {
+        if self.layers.shows(namespace) == Some(shown) {
+            return;
+        }
+        self.layers.visibility.insert(namespace.to_owned(), shown);
+        self.mark_redraw_all();
+    }
+
+    /// Whether the session shows the layer surface `namespace`, or hid it;
+    /// `None` when it has not said, which is shown.
+    pub(crate) fn layer_shown(&self, namespace: &str) -> Option<bool> {
+        self.layers.shows(namespace)
     }
 
     /// Place every layer surface again: an output came, went or changed.
@@ -294,7 +347,9 @@ impl State {
         if placed.request().keyboard_interactivity != KeyboardInteractivity::Exclusive {
             return;
         }
-        if !matches!(placed.layer, Layer::Top | Layer::Overlay) || !placed.shown() || self.locked()
+        if !matches!(placed.layer, Layer::Top | Layer::Overlay)
+            || !self.layers.visible(placed)
+            || self.locked()
         {
             return;
         }
@@ -382,7 +437,10 @@ impl State {
             )
         };
         let mut elements = Vec::new();
-        for placed in self.layers.on(output, want).filter(|placed| placed.shown()) {
+        for placed in self.layers.on(output, want) {
+            if !self.layers.visible(placed) {
+                continue;
+            }
             let location = (placed.rect.loc - geometry.loc).to_f64();
             elements.extend(render_elements_from_surface_tree::<R, _>(
                 renderer,
@@ -409,7 +467,8 @@ impl State {
             .layers
             .surfaces
             .iter()
-            .filter(|placed| placed.output.as_ref() == Some(output) && placed.shown())
+            .filter(|placed| placed.output.as_ref() == Some(output))
+            .filter(|placed| self.layers.visible(placed))
         {
             let surface = placed.surface.wl_surface();
             send_frames_surface_tree(
@@ -441,7 +500,7 @@ impl State {
         };
         self.layers
             .on(output, |_| true)
-            .filter(|placed| placed.shown())
+            .filter(|placed| self.layers.visible(placed))
             .filter_map(|placed| {
                 let request = placed.request();
                 let ExclusiveZone::Exclusive(zone) = request.exclusive_zone else {
@@ -553,7 +612,7 @@ impl WlrLayerShellHandler for State {
         namespace: String,
     ) {
         tracing::debug!(%namespace, ?layer, "layer surface");
-        self.add_layer_surface(surface, output.as_ref(), layer);
+        self.add_layer_surface(surface, namespace, output.as_ref(), layer);
     }
 
     fn ack_configure(&mut self, surface: WlSurface, configure: LayerSurfaceConfigure) {

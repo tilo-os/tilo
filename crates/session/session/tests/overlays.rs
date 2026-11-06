@@ -435,6 +435,60 @@ fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
 }
 
 #[test]
+fn the_panel_stands_hidden_between_openings_and_the_next_opening_starts_nothing() {
+    let (mut session, _panel) = session_with_quick_settings();
+    open(&mut session, "quick-settings", None);
+    assert!(
+        session.surfaces().running("quick-settings"),
+        "the app draws the panel"
+    );
+    assert_eq!(
+        session
+            .compositor()
+            .layer_shown(quick_settings::SURFACE_NAMESPACE),
+        Some(true),
+        "and the compositor shows it"
+    );
+
+    // Closed: the app keeps running, hidden, so the next opening draws the
+    // panel instead of starting it.
+    session
+        .invoke(
+            tilo_desktop::desk_verbs::CHROME_RESOURCE,
+            "quick-settings",
+            &args(&json!({})),
+        )
+        .expect("the bar asks for the panel");
+    session.step(REFRESH).expect("a turn of the session");
+    assert!(!session.quick_settings_open());
+    assert!(
+        session.surfaces().running("quick-settings"),
+        "the panel's app is resident"
+    );
+    assert_eq!(
+        session
+            .compositor()
+            .layer_shown(quick_settings::SURFACE_NAMESPACE),
+        Some(false),
+        "and hidden, drawing nothing and keeping no room"
+    );
+
+    open(&mut session, "quick-settings", None);
+    assert!(session.quick_settings_open());
+    assert!(
+        session.surfaces().running("quick-settings"),
+        "the opening started nothing"
+    );
+    assert_eq!(
+        session
+            .compositor()
+            .layer_shown(quick_settings::SURFACE_NAMESPACE),
+        Some(true),
+        "the surface it stands on is shown again"
+    );
+}
+
+#[test]
 fn a_press_outside_the_popover_closes_it_and_one_inside_it_does_not() {
     let (mut session, _panel) = session_with_quick_settings();
     open(&mut session, "quick-settings", None);
