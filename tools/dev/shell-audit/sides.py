@@ -315,12 +315,19 @@ class Side:
 
     def find_action(self, ident: str | None = None, *, contains: str | None = None,
                     provider: str | None = None) -> dict | None:
+        """The action an id names: its tail after the provider, or the whole id
+        when the caller spells the provider out (`desktop:chrome` + `open-app`)."""
         for row in self.action_rows():
             if provider is not None and row.get("provider") != provider:
                 continue
+            full = str(row.get("id") or "")
             tail = self.tail(row)
-            if ident is not None and tail == ident:
-                return row
+            if ident is not None:
+                if "\x1f" in ident:
+                    if full == ident or full.endswith(ident):
+                        return row
+                elif tail == ident:
+                    return row
             if contains is not None and contains in tail:
                 return row
         return None
@@ -750,12 +757,17 @@ class NewSide(Side):
     # -- apps --
 
     def launch_app(self, app: str) -> dict:
+        """Open an app through the desktop's own open-app door."""
         if self.session is None:
             raise Failed("the session is not running")
+        ident = app if "." in app else f"so.tilo.{'file-explorer' if app == 'files' else app}"
+        row = self.find_action("desktop:chrome\x1fopen-app")
+        if row is None:
+            raise DoorMissing("the session lists no open-app action")
+        self.invoke(row, {"app": ident})
         try:
-            window = self.session.launch(app)
-            self.session.answering(app)
-        except self.real_apps.Failed as error:
+            window = self.wait_window(app)
+        except Failed as error:
             raise Failed(str(error))
         self.app_windows[app] = window
         return window

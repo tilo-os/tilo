@@ -248,7 +248,10 @@ class Run:
         # Parking the pointer keeps it out of the picture; a story about a hover
         # keeps it where the person left it.
         if park:
-            self.doors.inert()
+            try:
+                self.doors.inert()
+            except Failed:
+                pass
         time.sleep(settle)
         return self.side.snapshot(self.raw / f"{name}.png")
 
@@ -263,7 +266,14 @@ class Run:
                "capture": scenario.get("capture", ""), "measure": scenario.get("measure", []),
                "outcome": "captured", "door_missing": None, "error": None,
                "steps": [], "started_s": round(time.monotonic() - self.side.started_at, 2)}
-        before = self.capture(f"_{name}-before", settle=0.2)
+        # A side can stop answering frames — a locked session does — and the
+        # story still runs: what it answers is the finding, not a reason to end
+        # the whole audit.
+        try:
+            before = self.capture(f"_{name}-before", settle=0.2)
+        except Failed as error:
+            before = None
+            row["frames"] = f"no frame before the story: {str(error)[:300]}"
         started = time.monotonic()
         print(f"  [{name}] {scenario.get('story', '')}"[:150], flush=True)
         for index, step in enumerate(scenario["steps"]):
@@ -328,8 +338,9 @@ class Run:
             target = pair / f"{self.side.name}.png"
             shutil.copy2(shot, target)
             row["png"] = str(target)
-            row["changed_px"] = changed_pixels(before, shot)
-            row["changed_bbox"] = diff_bbox(before, shot)
+            if before is not None:
+                row["changed_px"] = changed_pixels(before, shot)
+                row["changed_bbox"] = diff_bbox(before, shot)
             row["targets"] = {entry.get("name"): [round(value, 1) for value in entry["rect"]]
                               for entry in self.side.targets()}
             row["target_count"] = len(row["targets"])
@@ -369,7 +380,10 @@ class Run:
                 closed.append(self.doors.window_close_all())
             except Failed as error:
                 closed.append(f"windows left: {str(error)[:120]}")
-        self.doors.inert()
+        try:
+            self.doors.inert()
+        except Failed:
+            pass
         time.sleep(0.2)
         return ", ".join(entry for entry in closed if entry)
 

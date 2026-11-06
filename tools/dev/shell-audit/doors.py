@@ -166,10 +166,17 @@ class Doors:
                 if "foreign-surface" in str(row.get("name")) or "surface" in str(row.get("name"))]
         boxes = [row for row in rows if row["rect"][3] > 80]
         if not boxes:
-            windows = self.side.windows()
-            if not windows:
+            # A session that hosts app windows as their own surfaces names no
+            # box for them; its desk area is where the window in front stands.
+            if not self.side.windows():
                 raise DoorMissing("no window on the desk")
-            raise DoorMissing("the desk lists windows but no surface to press")
+            desks = [row for row in self.side.targets()
+                     if "hosted applications" in str(row.get("name")).lower()]
+            if not desks:
+                raise DoorMissing("the desk lists no area to press")
+            rect = max(desks, key=lambda entry: entry["rect"][2] * entry["rect"][3])["rect"]
+            self.side.click(rect[0] + rect[2] / 2, rect[1] + rect[3] / 2)
+            return {"rect": rect}
         row = max(boxes, key=lambda entry: entry["rect"][2] * entry["rect"][3])
         rect = row["rect"]
         self.side.click(rect[0] + rect[2] / 2, rect[1] + rect[3] / 2)
@@ -284,7 +291,7 @@ class Doors:
     def hung(self):
         """What a person can do about an app that stopped answering."""
         if self.new:
-            return self.tail("desktop:desk\x1fforce-quit-app")
+            return self.tail("desktop:desk\x1fforce-quit-app", args={"tab": self.focused_tab()})
         raise DoorMissing("the old shell lists no force-quit action for a hung app")
 
     def osd(self, kind: str):
@@ -469,7 +476,12 @@ class Doors:
         if self.new:
             self.quick_settings(open=True)
             time.sleep(0.9)
-            return self.tail_contains("toggle-wifi")
+            row = self.side.find_action(contains="set-wifi") or \
+                self.side.find_action(contains="toggle-wifi")
+            if row is None:
+                raise DoorMissing(f"the panel publishes no radio control here; the "
+                                  f"session lists {self._radio_actions()}")
+            return self.side.invoke(row, {"on": True if on is None else on})
         self.quick_settings(open=True)
         time.sleep(0.9)
         return self.tail("toggle-wifi")
@@ -478,10 +490,23 @@ class Doors:
         if self.new:
             self.quick_settings(open=True)
             time.sleep(0.9)
-            return self.tail_contains("toggle-bluetooth")
+            row = self.side.find_action(contains="set-bluetooth") or \
+                self.side.find_action(contains="toggle-bluetooth")
+            if row is None:
+                raise DoorMissing(f"the panel publishes no radio control here; the "
+                                  f"session lists {self._radio_actions()}")
+            return self.side.invoke(row, {"on": True if on is None else on})
         self.quick_settings(open=True)
         time.sleep(0.9)
         return self.tail("toggle-bluetooth")
+
+    def _radio_actions(self) -> str:
+        titles = []
+        for row in self.side.action_rows():
+            text = f"{row.get('id')} {row.get('title')}".lower()
+            if any(word in text for word in ("wifi", "wi-fi", "bluetooth", "network")):
+                titles.append(str(row.get("title") or row.get("id")))
+        return ", ".join(sorted(set(titles))) or "none"
 
     def escape(self):
         self.side.key("Escape")
@@ -537,7 +562,12 @@ class Doors:
 
     def activity(self):
         if self.new:
-            return self.tail("desktop:chrome\x1factivity")
+            tree = self.side.state().get("workspace_tree") or {}
+            active = tree.get("active")
+            if active is None:
+                raise DoorMissing("no workspace is open whose history to show")
+            return self.tail("desktop:chrome\x1factivity",
+                             args={"workspace": str(active), "view": {"explore": None}})
         return self.tail("room.activity.open")
 
     def invite(self):
@@ -585,11 +615,10 @@ class Doors:
     def app_picker(self):
         """The launchpad's 'open an app' door: a palette over every app."""
         if self.new:
-            for needle in ("open app", "app öffnen", "open-an-app"):
-                row = self.side.target(needle)
-                if row is not None:
-                    return self.press_at(row)
-            return self.tail("desktop:chrome\x1fopen-app", args={"app": "", "beside": False})
+            # This session opens an app from its search overlay, where a name
+            # is typed, or from the cards an empty desk's launchpad shows; it
+            # has no separate palette over every installed app.
+            return self.search()
         return self.press("open-app")
 
     def pick(self, app: str):
@@ -608,13 +637,19 @@ class Doors:
         if not rows:
             raise DoorMissing("no window on the desk")
         for row in rows:
-            if row.get("focused"):
+            if row.get("focused") or row.get("active"):
                 return row
         return rows[0]
 
+    def focused_group(self) -> str:
+        return str(self.focused_window().get("group"))
+
+    def focused_tab(self) -> str:
+        return str(self.focused_window().get("tab"))
+
     def window_close(self):
         if self.new:
-            return self.tail("desktop:chrome\x1fclose-window")
+            return self.tail("desktop:chrome\x1fclose-window", args={"group": self.focused_group()})
         return self.tail("group.close")
 
     def window_close_all(self):
@@ -636,12 +671,14 @@ class Doors:
 
     def maximize(self, on: bool):
         if self.new:
-            return self.tail("desktop:chrome\x1fmaximize", args={"on": on})
+            return self.tail("desktop:chrome\x1fmaximize",
+                             args={"group": self.focused_group(), "on": on})
         return self.tail("group.toggle-maximize" if on else "group.restore")
 
     def fullscreen(self, on: bool):
         if self.new:
-            return self.tail("desktop:chrome\x1ffullscreen", args={"on": on})
+            return self.tail("desktop:chrome\x1ffullscreen",
+                             args={"group": self.focused_group(), "on": on})
         return self.tail("group.fullscreen")
 
     def minimize(self):
@@ -651,7 +688,10 @@ class Doors:
 
     def window_menu(self):
         if self.new:
-            self.click_window_body()
+            try:
+                self.click_window_body()
+            except DoorMissing:
+                pass
             self.side.right_click(*self.tab_point())
             return "right click on the window's tab"
         return self.tail("tab.menu")
@@ -695,24 +735,26 @@ class Doors:
 
     def group_move(self, direction: str):
         if self.new:
-            raise DoorMissing("the new session moves a tab by naming its destination "
-                              "(desktop:chrome move-tab), not left/right")
+            # A person carries the window group along its strip with the key
+            # the desktop binds for it.
+            return self.tail("desktop:chrome\x1fshortcut",
+                             args={"action": f"move_group_{direction}"})
         return self.tail("group.move-left" if direction == "left" else "group.move-right")
 
     def group_width(self, direction: str):
         if self.new:
-            raise DoorMissing("the new session sets a group's width in permille "
-                              "(desktop:chrome set-width)")
+            return self.tail("desktop:chrome\x1fshortcut",
+                             args={"action": f"resize_{'wider' if direction == 'wider' else 'narrower'}"})
         return self.tail("group.wider" if direction == "wider" else "group.narrower")
 
     def split_right(self):
         if self.new:
-            return self.tail("desktop:chrome\x1fsplit-right")
+            return self.tail("desktop:chrome\x1fsplit-right", args={"tab": self.focused_tab()})
         return self.tail("tab.split-right")
 
     def new_group(self):
         if self.new:
-            return self.tail("desktop:chrome\x1fnew-group")
+            return self.tail("desktop:chrome\x1fnew-group", args={"tab": self.focused_tab()})
         return self.tail("tab.move-to-new-group")
 
     # -- tabs -------------------------------------------------------------
@@ -727,7 +769,7 @@ class Doors:
 
     def tab_close(self):
         if self.new:
-            return self.tail("desktop:chrome\x1fclose-window")
+            return self.tail("desktop:chrome\x1fclose-window", args={"group": self.focused_group()})
         return self.tail("tab.close")
 
     def tab_step(self, steps: int):
@@ -737,12 +779,13 @@ class Doors:
 
     def tab_rename(self, name: str):
         if self.new:
-            return self.tail("desktop:chrome\x1frename", args={"name": name})
+            return self.tail("desktop:chrome\x1frename",
+                             args={"group": self.focused_group(), "name": name})
         return self.tail("tab.rename", args={"name": name})
 
     def tab_detach(self):
         if self.new:
-            return self.tail("desktop:chrome\x1fnew-group")
+            return self.tail("desktop:chrome\x1fnew-group", args={"tab": self.focused_tab()})
         return self.tail("tab.move-to-new-group")
 
     def tab_reopen(self):
