@@ -145,9 +145,13 @@ fn listed_paths(root: &Path) -> Result<Vec<String>, CliError> {
     {
         let path = std::str::from_utf8(raw)
             .map_err(|_| CliError::InvalidInput("source path is not UTF-8".into()))?;
+        // `.tilo-vm` names the machine this worktree builds for: which target
+        // a person picks is theirs to change while layers build from it, and it
+        // is not source either way.
         if path.split('/').any(|part| part == ".git")
             || path.starts_with("target/")
             || path.starts_with(".tilo-vm-inputs-")
+            || path == crate::config::WORKTREE_FILE
         {
             continue;
         }
@@ -204,6 +208,47 @@ pub(crate) fn verify(root: &Path, inventory: &Path) -> Result<String, CliError> 
 mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
+
+    /// The machine a worktree builds for is local state, not source: choosing
+    /// another one while layers build must not look like the worktree changed
+    /// under the build, once for the inventory and once per file it names.
+    #[test]
+    fn the_machine_a_worktree_builds_for_is_not_a_source_input() {
+        let root = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .current_dir(root.path())
+                    .args(args)
+                    .status_locked()
+                    .unwrap()
+                    .success()
+            );
+        };
+        git(&["init", "-q"]);
+        std::fs::write(root.path().join("sdk.rs"), "source").unwrap();
+        git(&["add", "sdk.rs"]);
+        git(&[
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-qm",
+            "initial",
+        ]);
+        let worktree = Worktree::detect(root.path()).unwrap();
+        std::fs::write(root.path().join(crate::config::WORKTREE_FILE), "opi").unwrap();
+        let snapshot = Snapshot::create(&worktree, "app:terminal").unwrap();
+        let target = crate::config::WORKTREE_FILE.to_owned();
+        assert!(
+            !snapshot.paths.contains(&target) && snapshot.paths.iter().any(|path| path == "sdk.rs"),
+            "the source inventory holds the source and not the target choice: {:?}",
+            snapshot.paths
+        );
+        std::fs::write(root.path().join(crate::config::WORKTREE_FILE), "opi-2").unwrap();
+        snapshot.unchanged(root.path()).unwrap();
+    }
 
     #[test]
     fn remote_app_source_inventory_detects_dirty_sdk_and_cleans_owned_file() {
