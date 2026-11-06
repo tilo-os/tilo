@@ -524,7 +524,6 @@ fn said_chip(
     chip
 }
 
-/// The take an intent names.
 /// Whether `take` asks for the window in front and there is none to take:
 /// the studio then comes up to choose one rather than answering with a
 /// failure the person never saw.
@@ -532,6 +531,7 @@ fn nothing_in_front(take: &Take) -> bool {
     take.source == SourceMode::Window && take.targets.is_empty()
 }
 
+/// The take an intent names.
 fn take(intent: &CaptureIntent) -> Take {
     Take {
         source: intent.source,
