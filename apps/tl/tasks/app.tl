@@ -179,10 +179,7 @@ internal action quick_add(
     at: Option<Time> = .none,
     assignee: Option<Principal> = .none,
     title: Text (entry) = "",
-) -> Task uses time (
-    label: "Add a task",
-    icon: .plus,
-) {
+) -> Task uses time (label: "Add a task", icon: .plus) {
     let due: Option<Date> = if let d = due {
         .some(d)
     } else if today { .some(now.day()) } else { .none }
