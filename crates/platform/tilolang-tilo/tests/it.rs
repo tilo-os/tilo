@@ -12,6 +12,7 @@
 
 mod agent_queries;
 mod bundle;
+mod capture;
 mod chained;
 mod chat;
 mod collab;
@@ -54,6 +55,7 @@ mod sync;
 mod task;
 mod task_door;
 mod tasks;
+mod tasks_today;
 #[cfg(feature = "record")]
 mod undo_own;
 mod unions;

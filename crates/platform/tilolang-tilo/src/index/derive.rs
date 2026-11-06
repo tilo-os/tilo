@@ -783,90 +783,131 @@ impl<'d> Derive<'d> {
             {
                 continue;
             }
-            let now = columns::values(column, schema, &mut |field| field_value(sink, path, field))?;
-            let held = sink
-                .text(path, &column_field(&column.name))?
-                .map(|h| split_values(&h));
-            if held.as_ref() != Some(&now) {
-                let before = held.unwrap_or_default();
-                if column.filter {
-                    let ty = &schema.id;
-                    for value in before.iter().filter(|v| !now.contains(v)) {
-                        sink.remove_entry(&type_list(ty, &column.name), &type_entry(value, path))?;
-                        if column.kind == crate::schema::ColumnKind::Ident {
-                            sink.remove_entry(
-                                &columns::reversed_list(ty, &column.name),
-                                &type_entry(&reversed(value), path),
-                            )?;
-                        }
-                    }
-                    for value in now.iter().filter(|v| !before.contains(v)) {
-                        self.add(sink, type_list(ty, &column.name), type_entry(value, path))?;
-                        if column.kind == crate::schema::ColumnKind::Ident {
-                            self.add(
-                                sink,
-                                columns::reversed_list(ty, &column.name),
-                                type_entry(&reversed(value), path),
-                            )?;
-                        }
-                    }
-                }
-                if let Some((parent, coll, key)) = scope
-                    && let Some(id) = id_of(path)
-                {
-                    let list = scope_list(parent, coll, &column.name);
-                    let counted = columns::counted(column);
-                    for value in before.iter().filter(|v| !now.contains(v)) {
-                        sink.remove_entry(&list, &scope_entry(value, key, id))?;
-                        if counted {
-                            sink.count(&list, value, -1)?;
-                        }
-                    }
-                    for value in now.iter().filter(|v| !before.contains(v)) {
-                        sink.insert(&list, scope_entry(value, key, id))?;
-                        if counted {
-                            sink.count(&list, value, 1)?;
-                        }
-                    }
-                }
-                sink.put_text(path, &column_field(&column.name), &join_values(&now))?;
+            // A personal field holds a value per person: one column per person of the record,
+            // each named for theirs (`id@person`), so what a filter, an order or a count reads
+            // is the value of whoever asks, from the index.
+            let each: Vec<crate::schema::ColumnSchema> = match column
+                .field
+                .as_deref()
+                .and_then(|id| schema.field(id))
+                .filter(|field| field.personal)
+            {
+                Some(field) => match field_value(sink, path, field)? {
+                    FieldValue::Entries(entries) => entries
+                        .into_iter()
+                        .map(|(person, _)| {
+                            let mut each = column.clone();
+                            each.name = tilolang::personal::id(&field.id, &person);
+                            each
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                },
+                None => vec![column.clone()],
+            };
+            for each in &each {
+                let now =
+                    columns::values(each, schema, &mut |field| field_value(sink, path, field))?;
+                self.column(sink, path, schema, (each, split), (scope, &mut open), &now)?;
+                out.push((each.name.clone(), now));
             }
-            // The item's values as they count for a place: its own while it is open, none once
-            // it is finished. The counts keep them apart from the finished items', so a place's
-            // count reads how many it holds without reading the run.
-            if split {
-                let open = if let Some(open) = open {
-                    open
-                } else {
-                    let held = open_of(sink, path, schema)?;
-                    open = Some(held);
-                    held
-                };
-                let counted = if open { now.clone() } else { Vec::new() };
-                let was = sink
-                    .text(path, &open_field(&column.name))?
-                    .map(|h| split_values(&h));
-                if was.as_ref() != Some(&counted) {
-                    let before = was.unwrap_or_default();
-                    let list = scope.map(|(parent, coll, _)| {
-                        columns::open_list(&scope_list(parent, coll, &column.name))
-                    });
-                    for value in before.iter().filter(|v| !counted.contains(v)) {
-                        if let Some(list) = &list {
-                            sink.count(list, value, -1)?;
-                        }
-                    }
-                    for value in counted.iter().filter(|v| !before.contains(v)) {
-                        if let Some(list) = &list {
-                            sink.count(list, value, 1)?;
-                        }
-                    }
-                    sink.put_text(path, &open_field(&column.name), &join_values(&counted))?;
-                }
-            }
-            out.push((column.name.clone(), now));
         }
         Ok(out)
+    }
+
+    /// Bring the entries of one column of the resource at `path` (of the type `schema`) in line
+    /// with the values `now` it holds: the column's across the workspace, the collection's, the
+    /// open counts a place reads, and what it held.
+    fn column(
+        &mut self,
+        sink: &mut impl Sink,
+        path: &str,
+        schema: &TypeSchema,
+        (column, split): (&crate::schema::ColumnSchema, bool),
+        (scope, open): (Option<Scope<'_>>, &mut Option<bool>),
+        now: &[String],
+    ) -> Result<(), IndexError> {
+        let held = sink
+            .text(path, &column_field(&column.name))?
+            .map(|h| split_values(&h));
+        if held.as_deref() != Some(now) {
+            let before = held.unwrap_or_default();
+            if column.filter {
+                let ty = &schema.id;
+                for value in before.iter().filter(|v| !now.contains(v)) {
+                    sink.remove_entry(&type_list(ty, &column.name), &type_entry(value, path))?;
+                    if column.kind == crate::schema::ColumnKind::Ident {
+                        sink.remove_entry(
+                            &columns::reversed_list(ty, &column.name),
+                            &type_entry(&reversed(value), path),
+                        )?;
+                    }
+                }
+                for value in now.iter().filter(|v| !before.contains(v)) {
+                    self.add(sink, type_list(ty, &column.name), type_entry(value, path))?;
+                    if column.kind == crate::schema::ColumnKind::Ident {
+                        self.add(
+                            sink,
+                            columns::reversed_list(ty, &column.name),
+                            type_entry(&reversed(value), path),
+                        )?;
+                    }
+                }
+            }
+            if let Some((parent, coll, key)) = scope
+                && let Some(id) = id_of(path)
+            {
+                let list = scope_list(parent, coll, &column.name);
+                let counted = columns::counted(column);
+                for value in before.iter().filter(|v| !now.contains(v)) {
+                    sink.remove_entry(&list, &scope_entry(value, key, id))?;
+                    if counted {
+                        sink.count(&list, value, -1)?;
+                    }
+                }
+                for value in now.iter().filter(|v| !before.contains(v)) {
+                    sink.insert(&list, scope_entry(value, key, id))?;
+                    if counted {
+                        sink.count(&list, value, 1)?;
+                    }
+                }
+            }
+            sink.put_text(path, &column_field(&column.name), &join_values(now))?;
+        }
+        // The item's values as they count for a place: its own while it is open, none once it
+        // is finished. The counts keep them apart from the finished items', so a place's count
+        // reads how many it holds without reading the run.
+        if split {
+            let is_open = if let Some(is_open) = *open {
+                is_open
+            } else {
+                let held = open_of(sink, path, schema)?;
+                *open = Some(held);
+                held
+            };
+            let counted: Vec<String> = if is_open { now.to_vec() } else { Vec::new() };
+            let was = sink
+                .text(path, &open_field(&column.name))?
+                .map(|h| split_values(&h));
+            if was.as_ref() != Some(&counted) {
+                let before = was.unwrap_or_default();
+                let list = scope.map(|(parent, coll, _)| {
+                    columns::open_list(&scope_list(parent, coll, &column.name))
+                });
+                for value in before.iter().filter(|v| !counted.contains(v)) {
+                    if let Some(list) = &list {
+                        sink.count(list, value, -1)?;
+                    }
+                }
+                for value in counted.iter().filter(|v| !before.contains(v)) {
+                    if let Some(list) = &list {
+                        sink.count(list, value, 1)?;
+                    }
+                }
+                sink.put_text(path, &open_field(&column.name), &join_values(&counted))?;
+            }
+        }
+        Ok(())
     }
 
     /// Put `entry` in `list`: now, or with the rest of a whole derivation's.
@@ -1011,9 +1052,11 @@ impl<'d> Derive<'d> {
                     .as_ref(),
             );
             for (column, values) in values {
-                let schema = item_schema.column(&column);
-                let counted = schema.is_some_and(columns::counted);
-                let split = schema.is_some_and(|c| columns::open_split(c, item_schema.done()));
+                let schema = item_schema.column_for(&column);
+                let counted = schema.as_ref().is_some_and(columns::counted);
+                let split = schema
+                    .as_ref()
+                    .is_some_and(|c| columns::open_split(c, item_schema.done()));
                 let name = scope_list(path, &field.id, &column);
                 for value in values {
                     if counted {

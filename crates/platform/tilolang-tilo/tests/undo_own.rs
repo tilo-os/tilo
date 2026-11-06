@@ -482,6 +482,57 @@ fn undo_opens_a_checked_task_and_every_task_under_it_at_once() {
     );
 }
 
+/// Whether `r`'s person reads `task` as one they picked, from the page the pick is offered on:
+/// the command follows their own value, not anyone else's.
+fn picked(r: &Replica, task: &ResourceRef) -> bool {
+    let page = crate::tasks::task_page(r, &Value::resource(task));
+    crate::tasks::page_commands(&page)
+        .iter()
+        .any(|command| command.label == "Let go")
+}
+
+/// A pick for today is a step of the person who made it: their Undo takes their pick back and
+/// leaves another person's pick of the same task standing.
+#[test]
+fn undo_takes_back_one_persons_pick_for_today_and_leaves_anothers() {
+    let (mut ada, mut ben) = workspace();
+    let tasks = root(&ada, TASKS_APP);
+    let called = target(&call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "new_task",
+        vec![tasks, Value::text("Call the landlord")],
+    ));
+    ada.commit();
+    ben.sync_with(&mut ada);
+    for (r, who) in [(&mut ada, "ada"), (&mut ben, "ben")] {
+        call(
+            r,
+            who,
+            TASKS_APP,
+            "pick",
+            vec![Value::resource(&called), Value::Bool(true)],
+        );
+        r.commit();
+    }
+    ada.sync_with(&mut ben);
+    for r in [&ada, &ben] {
+        assert!(picked(r, &called), "{} reads their own pick", r.name);
+    }
+    // Ada's Undo takes back her pick alone, and it leaves Ben's as it was.
+    undo(&mut ada);
+    ada.sync_with(&mut ben);
+    assert!(!picked(&ada, &called), "Ada's pick is gone");
+    assert!(picked(&ben, &called), "Ben's pick stands");
+    // His own Undo takes his.
+    undo(&mut ben);
+    ada.sync_with(&mut ben);
+    for r in [&ada, &ben] {
+        assert!(!picked(r, &called), "{} picked it no more", r.name);
+    }
+}
+
 /// The tasks as they stand, by id.
 fn order(r: &Replica, tasks: &ResourceRef) -> Vec<String> {
     match r.host.runtime().read(tasks, "items").unwrap() {

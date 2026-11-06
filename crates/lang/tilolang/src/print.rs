@@ -1153,7 +1153,8 @@ impl Printer<'_> {
     fn field(&mut self, f: &FieldDecl) {
         self.docs(&f.doc);
         self.comments_before(f.span.start);
-        let mut text = format!("{}: {}", f.name.name, print_type(&f.ty));
+        let personal = if f.personal { "personal " } else { "" };
+        let mut text = format!("{personal}{}: {}", f.name.name, print_type(&f.ty));
         if let Some(m) = &f.merge {
             text.push_str(&format!(" merge {}", m.kind.name()));
         }

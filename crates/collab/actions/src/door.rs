@@ -106,11 +106,24 @@ impl ActionDescriptor {
             InputSpec::Text { .. } => self
                 .params
                 .iter()
-                .find(|param| param.required)
+                .find(|param| param.entry)
+                .or_else(|| self.params.iter().find(|param| param.required))
                 .or_else(|| self.params.first())
                 .map(|param| param.name.as_ref()),
             InputSpec::None => None,
         }
+    }
+
+    /// The parameter one line of typed text fills, when the action is a
+    /// capture: it declares an entry (`title: Text (entry)`), what a person
+    /// writes down from wherever they are and what a palette offers as "New
+    /// task", run with the line they typed.
+    #[must_use]
+    pub fn entry_param(&self) -> Option<&str> {
+        self.params
+            .iter()
+            .find(|param| param.entry)
+            .map(|param| param.name.as_ref())
     }
 
     /// `arguments` as this action takes them. A text argument on the wire

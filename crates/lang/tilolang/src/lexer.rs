@@ -28,6 +28,7 @@ pub const CONTEXTUAL: &[&str] = &[
     "migration",
     "internal",
     "derive",
+    "personal",
 ];
 
 #[derive(Clone, Debug, PartialEq)]

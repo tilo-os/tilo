@@ -347,7 +347,7 @@ impl ChatApp {
     fn draw_unread_line(&self, mut paint: PaintCtx<'_>, area: Rect, y: f64, height: f64) -> f64 {
         let band = Rect::new(area.x0, y, area.x1, y + height);
         let (leading, trailing) = (area.x0 + self.chrome.gutter, area.x1 - self.chrome.gutter);
-        UnreadDividerFace::paint(&mut paint, band, leading, trailing);
+        UnreadDividerFace::paint(&mut paint, band, leading, trailing, "");
         y + height
     }
 

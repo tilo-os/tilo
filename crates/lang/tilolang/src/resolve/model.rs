@@ -13,6 +13,9 @@ pub struct FieldInfo {
     pub ty: Ty,
     pub merge: MergeKind,
     pub doc: String,
+    /// `personal today: Bool = false`: one value per person, in a record everyone shares
+    /// ([`crate::personal`]).
+    pub personal: bool,
     pub default: Option<serde_json::Value>,
     /// What the field is to the platform, from its marker (`(title)`, `(repeats: due)`).
     pub role: Option<crate::types::FieldRole>,

@@ -438,6 +438,20 @@ pub fn types_of(resources: &[ResourceSpec]) -> BTreeMap<String, tilo_actions::Re
     out
 }
 
+/// The parameter a create action's one line of typed text fills, when the
+/// action takes one ([`tilo_actions::ActionParam::entry`]): what makes it a
+/// capture — a person writes "call landlord fri 10am" from wherever they
+/// are and the action's own field types read the rest.
+fn capture_param(action: &tilo_actions::ActionDescriptor) -> Option<&str> {
+    action.entry_param()?;
+    action.prompt_param()
+}
+
+/// How strongly the workspace's captures are offered for text that names
+/// none of them: enough to stay on the card under what does match, so a
+/// sentence a person wrote has somewhere to go.
+const CAPTURE_SCORE: i32 = 40;
+
 /// Whether a person may pick `action` for `needle`: it reaches people, and
 /// it has something to act on now or `needle` names it exactly (where
 /// running it says why not).
@@ -453,6 +467,12 @@ fn descriptor_offered(action: &tilo_actions::ActionDescriptor, needle: &str) -> 
 /// ranked by label, other words and what they act on, run by address.
 pub struct Published(pub Vec<PublishedActions>);
 
+/// The workspace's captures: the create actions that take one line a person
+/// types ([`capture_param`]), offered before anything is typed so writing
+/// something down needs no app, and asked what was typed word for word — a
+/// sentence is their line, never a query.
+pub struct Captures(pub Vec<PublishedActions>);
+
 impl Published {
     /// The id of one action's row.
     fn row_id(published: &PublishedActions, address: &ActionAddress) -> String {
@@ -461,6 +481,63 @@ impl Published {
             published.app, published.workspace, address.resource, address.action
         )
     }
+
+    /// `action` as `published` lists it, in `provider`'s group, ranked
+    /// `score`, run with `arguments`.
+    fn row(
+        provider: &str,
+        published: &PublishedActions,
+        action: &tilo_actions::ActionDescriptor,
+        score: i32,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Hit {
+        Hit {
+            row: None,
+            preview: None,
+            faces: Vec::new(),
+            outcome: None,
+            kind: ResourceKind::Action,
+            provider: provider.into(),
+            id: Self::row_id(published, &action.address),
+            title: action.action_label.clone(),
+            // An action whose description only repeats its name says it
+            // once: the row's line under the name is for what the name
+            // does not already say.
+            subtitle: action.description.clone().filter(|description| {
+                ui::search::fold_search_text(description)
+                    != ui::search::fold_search_text(&action.action_label)
+            }),
+            facts: Vec::new(),
+            score,
+            icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
+            target: Target::Invoke(Box::new(crate::model::InvokeTarget {
+                app: published.app.clone(),
+                workspace: published.workspace.clone(),
+                address: action.address.clone(),
+                arguments,
+                descriptor: Some(action.clone()),
+            })),
+        }
+    }
+}
+
+/// Equal matches: the action that does it in one step before the one asking
+/// for input, and a switch before a view of the same thing.
+fn strongest_first(hits: &mut [Hit]) {
+    hits.sort_by_key(|hit| {
+        let descriptor = match &hit.target {
+            Target::Invoke(target) => target.descriptor.as_ref(),
+            _ => None,
+        };
+        let one_step = descriptor.is_some_and(|action| action.params.is_empty());
+        let toggles = descriptor.is_some_and(|action| action.state.toggles);
+        (
+            std::cmp::Reverse(hit.score),
+            2_i32
+                .saturating_sub(i32::from(one_step))
+                .saturating_sub(i32::from(toggles)),
+        )
+    });
 }
 
 impl Source for Published {
@@ -472,8 +549,13 @@ impl Source for Published {
         crate::i18n::t("search-source-published-actions")
     }
 
+    fn browse_rank(&self) -> u8 {
+        crate::model::BROWSE_RANK_ACTIONS
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
-        // Every provider's actions would bury everything else unasked.
+        // Nothing typed: every provider's actions would bury everything
+        // else, so the card holds the captures ([`Captures`]) alone.
         if needle.trim().is_empty() {
             return Vec::new();
         }
@@ -534,51 +616,90 @@ impl Source for Published {
             let Some(score) = score.max(by_type) else {
                 continue;
             };
-            hits.push(Hit {
-                row: None,
-                preview: None,
-                faces: Vec::new(),
-                outcome: None,
-                kind: ResourceKind::Action,
-                provider: self.id().into(),
-                id: Self::row_id(published, &action.address),
-                title: action.action_label.clone(),
-                // An action whose description only repeats its name says it
-                // once: the row's line under the name is for what the name
-                // does not already say.
-                subtitle: action.description.clone().filter(|description| {
-                    ui::search::fold_search_text(description)
-                        != ui::search::fold_search_text(&action.action_label)
-                }),
-                facts: Vec::new(),
+            hits.push(Self::row(
+                self.id(),
+                published,
+                action,
                 score,
-                icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
-                target: Target::Invoke(Box::new(crate::model::InvokeTarget {
-                    app: published.app.clone(),
-                    workspace: published.workspace.clone(),
-                    address: action.address.clone(),
-                    arguments: serde_json::Map::new(),
-                    descriptor: Some(action.clone()),
-                })),
-            });
+                serde_json::Map::new(),
+            ));
         }
-        // Equal matches: the action that does it in one step before the
-        // one asking for input, and a switch before a view of the same
-        // thing.
-        hits.sort_by_key(|hit| {
-            let descriptor = match &hit.target {
-                Target::Invoke(target) => target.descriptor.as_ref(),
-                _ => None,
-            };
-            let one_step = descriptor.is_some_and(|action| action.params.is_empty());
-            let toggles = descriptor.is_some_and(|action| action.state.toggles);
-            (
-                std::cmp::Reverse(hit.score),
-                2_i32
-                    .saturating_sub(i32::from(one_step))
-                    .saturating_sub(i32::from(toggles)),
+        strongest_first(&mut hits);
+        hits
+    }
+}
+
+impl Source for Captures {
+    fn id(&self) -> &'static str {
+        "captures"
+    }
+
+    fn name(&self) -> String {
+        crate::i18n::t("search-source-captures")
+    }
+
+    fn browse_rank(&self) -> u8 {
+        crate::model::BROWSE_RANK_ACTIONS
+    }
+
+    /// What the person typed is the line, word for word: "call the landlord"
+    /// is the task, and the words a query never has to match are part of it.
+    fn verbatim(&self) -> bool {
+        true
+    }
+
+    fn query(&self, needle: &str) -> Vec<Hit> {
+        let typed = needle.trim();
+        let offered: Vec<_> = self
+            .0
+            .iter()
+            .flat_map(|published| {
+                published
+                    .actions
+                    .iter()
+                    .filter(|action| capture_param(action).is_some())
+                    .map(move |action| (published, action))
+            })
+            .collect();
+        let scores = if typed.is_empty() {
+            offered.iter().map(|_| Some(MAX_PROVIDER_SCORE)).collect()
+        } else {
+            rank::action_match_scores(
+                needle,
+                offered.iter().map(|(_, action)| {
+                    (
+                        action.action_label.as_str(),
+                        action.keywords.as_slice(),
+                        action.resource_label.as_str(),
+                    )
+                }),
             )
-        });
+        };
+        let mut hits = Vec::new();
+        for ((published, action), score) in offered.into_iter().zip(scores) {
+            // A capture the text names none of still answers it: what the
+            // person typed is its line.
+            let score = score.unwrap_or(CAPTURE_SCORE);
+            // What a person typed is the line the capture runs with, not a
+            // step to type it into again.
+            let mut arguments = serde_json::Map::new();
+            if !typed.is_empty()
+                && let Some(param) = capture_param(action)
+            {
+                arguments.insert(
+                    param.to_owned(),
+                    serde_json::Value::String(typed.to_owned()),
+                );
+            }
+            hits.push(Published::row(
+                self.id(),
+                published,
+                action,
+                score,
+                arguments,
+            ));
+        }
+        strongest_first(&mut hits);
         hits
     }
 }
@@ -2495,5 +2616,88 @@ mod tests {
     fn a_type_and_a_title_together_find_the_one_they_both_name() {
         let found = opened("mail archive", &mail());
         assert_eq!(found.first().map(String::as_str), Some("mail/archive"));
+    }
+
+    /// Tasks as it publishes its capture: the app's root, with the action that takes the one
+    /// line a person types (`title` is the entry parameter).
+    fn tasks() -> Vec<ResourceSpec> {
+        let capture = tilo_actions::ActionSpec::prompted_param(
+            "quick_add",
+            "New task",
+            tilo_actions::ActionParam::required(
+                "title",
+                tilo_actions::ParamType::Text,
+                "What to do",
+            )
+            .taking_entry(),
+            "Call the landlord fri 10am",
+            tilo_actions::ExecutionLocus::ClientLocal,
+            |text| tilo_actions::EncodedAction {
+                type_id: "test.action".into(),
+                payload: text.as_bytes().to_vec(),
+            },
+        );
+        vec![
+            typed(
+                "tasks",
+                "Tasks",
+                ("task", "tasks"),
+                ("Tasks", "tasks"),
+                true,
+                &[],
+            )
+            .with_action(capture),
+        ]
+    }
+
+    fn captures(needle: &str) -> Vec<Hit> {
+        let published = Captures(vec![PublishedActions::of("Tasks", "", &tasks())]);
+        search(needle, &[&published], 0, &|_| 0.0)
+            .into_iter()
+            .flat_map(|group| group.results)
+            .collect()
+    }
+
+    /// The ways to write something down from here are on the card before anything is typed,
+    /// and one answers the sentence a person wrote: the words they typed are its line, not a
+    /// step to type them into again.
+    #[test]
+    fn a_capture_is_offered_and_answers_what_the_person_typed() {
+        let empty = captures("");
+        assert!(
+            empty.iter().any(|hit| hit.title == "New task"),
+            "the capture leads the empty card: {:?}",
+            empty.iter().map(|hit| &hit.title).collect::<Vec<_>>()
+        );
+
+        let line = "Call the landlord fri 10am";
+        let rows = captures(line);
+        let capture = rows
+            .iter()
+            .find(|hit| hit.title == "New task")
+            .unwrap_or_else(|| {
+                panic!(
+                    "a sentence still has somewhere to go: {:?}",
+                    rows.iter().map(|hit| &hit.title).collect::<Vec<_>>()
+                )
+            });
+        let Target::Invoke(invoke) = &capture.target else {
+            panic!("a capture runs the app's own action: {:?}", capture.target);
+        };
+        assert_eq!(
+            invoke.address.action.as_str(),
+            "quick_add",
+            "the action that takes an entry"
+        );
+        assert_eq!(
+            invoke.arguments.get("title"),
+            Some(&serde_json::Value::String(line.to_owned())),
+            "what the person typed is the line it runs with"
+        );
+        assert_eq!(
+            invoke.descriptor.as_ref().and_then(|d| d.entry_param()),
+            Some("title"),
+            "the row says which parameter the line fills"
+        );
     }
 }
