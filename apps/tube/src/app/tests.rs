@@ -1230,3 +1230,58 @@ fn youtube_answers_the_platform_search_as_it_is_typed_and_stale_answers_drop() {
         "and offers nothing from YouTube"
     );
 }
+
+/// Every catalogue row says what it is from its declared type: a channel is
+/// a `Channel` of the Tube app, a video a `Video`, so search finds "youtube
+/// videos of <channel>" and "youtube channels of <name>" with nothing Tube
+/// writes for it, and another app's query naming what something is matches a
+/// Rust row exactly as it matches a tilolang item.
+#[test]
+fn a_catalogue_rows_type_is_its_declarations() {
+    // The app names itself where its definition is made, as a host opening it
+    // does.
+    let _ = crate::definition();
+    let app = TubeApp::sample();
+    let resources: Vec<_> = {
+        let tube = app.tube();
+        crate::rows::live_rows(&tube.model, tube.device_sync_view())
+            .into_iter()
+            .map(ui::framework::LiveRow::into_resource)
+            .collect()
+    };
+    fn find<'a>(
+        resources: &'a [ui::tilo_actions::ResourceSpec],
+        prefix: &str,
+    ) -> Option<&'a ui::tilo_actions::ResourceSpec> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str().starts_with(prefix) {
+                Some(resource)
+            } else {
+                find(&resource.children, prefix)
+            }
+        })
+    }
+    let words = |prefix: &str| {
+        find(&resources, prefix)
+            .unwrap_or_else(|| panic!("a {prefix} row is published"))
+            .resource_type
+            .clone()
+            .expect("a catalogue row says what it is")
+    };
+
+    let channel = words("tube.channel:");
+    assert_eq!(
+        (channel.noun.one.as_str(), channel.noun.many.as_str()),
+        ("channel", "channels"),
+        "its type's noun, in words"
+    );
+    assert_eq!(channel.app.one, "Tube", "the app that declares it");
+    assert!(!channel.root, "a channel is not the app's root");
+
+    let video = words("tube.video:");
+    assert_eq!(
+        (video.noun.one.as_str(), video.noun.many.as_str()),
+        ("video", "videos")
+    );
+    assert_eq!(video.app, channel.app);
+}

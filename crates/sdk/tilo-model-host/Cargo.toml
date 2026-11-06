@@ -37,6 +37,13 @@ tilo-automerge.workspace = true
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 # The session's door: a service publishes what it keeps there.
 tilo-service = { path = "../../session/service" }
+# The engine a model module runs on, and the host imports it is answered through: the same
+# engine a tilolang package's module runs on.
+tilolang-runtime = { path = "../../lang/tilolang-runtime" }
+# The ABI the module calls, and the model side's request and answer types.
+tilo-model-abi = { version = "0.1.0", path = "../tilo-model-abi" }
+# The entropy a module never has of its own: a record's actor id is drawn here.
+getrandom.workspace = true
 
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state", optional = true }
 durable-store = { version = "0.1.0", path = "../../system/durable-store", optional = true }

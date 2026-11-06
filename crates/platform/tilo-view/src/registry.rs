@@ -64,6 +64,19 @@ impl std::fmt::Debug for View {
 // A view is registered by its declaration, at link time.
 inventory::collect!(View);
 
+/// A resource type a view shows: the app's own model type, which says what kind it is and which
+/// app it belongs to, so its views are found by a place's `shown_as` and by `open(r)`.
+///
+/// `#[resource(kind = "tube.Channel")]` derives it with the model, so a type that is a resource
+/// is a view's type already; a type with only views says it by hand.
+pub trait ViewResource: Default + serde::de::DeserializeOwned {
+    /// The type's kind (`tube.channel`, or the tilolang package's `tl.<app>.<Type>` reconciled by
+    /// the host): what a place's resource names as its type, and what a view is found by.
+    const KIND: &'static str;
+    /// The app the kind belongs to (`tube`), as the shell names it.
+    const APP: &'static str;
+}
+
 /// Every view registered so far, by resource kind and name: the lookup a shell does when a place
 /// names a view of a resource of an app written in Rust.
 #[derive(Clone, Copy, Debug)]
@@ -141,4 +154,13 @@ pub fn init() {
         let count = inventory::iter::<View>.into_iter().count();
         tracing::debug!(count, "the views of this app are registered");
     });
+}
+
+/// The views a kind's type may be shown through, by name: a place's `shown_as` finds one here, or
+/// the type's default view when it names none.
+#[must_use]
+pub fn views_of(kind: &str) -> Vec<&'static View> {
+    ViewRegistry::views()
+        .filter(|view| view.kind == kind)
+        .collect()
 }

@@ -9,8 +9,8 @@ use wasmi::{
 };
 
 use super::{
-    Backend, CallError, Cx, EngineLimits, GROWTH_LIMITED, OUT_OF_FUEL, Translation, Unwind, Wasm,
-    import, trap_text,
+    Backend, CallError, Cx, EngineLimits, GROWTH_LIMITED, HostFail, Imports, OUT_OF_FUEL,
+    Translation, Unwind, Wasm, guest_answer, guest_import, import, trap_text,
 };
 use crate::abi::{self, IMPORTS};
 
@@ -91,6 +91,47 @@ fn run_import(
     }
 }
 
+fn run_guest_import(
+    module: &str,
+    name: &str,
+    mut caller: Caller<'_, Slot>,
+    params: &[Val],
+    results: &mut [Val],
+) -> Result<(), wasmi::Error> {
+    let args = params.iter().map(to_wasm).collect::<Result<Vec<_>, _>>()?;
+    let memory = caller.get_export("memory").and_then(Extern::into_memory);
+    let answer = {
+        let bytes: &[u8] = memory.as_ref().map_or(&[][..], |m| m.data(&caller));
+        guest_import(caller.data().cx.as_ref(), module, name, bytes, &args)
+            .map_err(|fail| wasmi::Error::host(Unwind(fail)))?
+    };
+    let (value, written) = guest_answer(answer);
+    if let Some((offset, bytes)) = written {
+        let Some(memory) = memory else {
+            return Err(wasmi::Error::host(Unwind(HostFail::Trap(
+                "the module has no memory to answer in".into(),
+            ))));
+        };
+        let data = memory.data_mut(&mut caller);
+        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+        let end = start
+            .checked_add(bytes.len())
+            .filter(|&end| end <= data.len())
+            .ok_or_else(|| {
+                wasmi::Error::host(Unwind(HostFail::Trap(
+                    "the answer does not fit the module's memory".into(),
+                )))
+            })?;
+        data.get_mut(start..end)
+            .unwrap_or_default()
+            .copy_from_slice(&bytes);
+    }
+    if let (Some(slot), Some(w)) = (results.first_mut(), value) {
+        *slot = from_wasm(w);
+    }
+    Ok(())
+}
+
 fn classify(e: &wasmi::Error) -> CallError {
     if let Some(unwind) = e.downcast_ref::<Unwind>() {
         return unwind.into();
@@ -116,7 +157,7 @@ impl Backend for Wasmi {
         module.exports().map(|e| e.name().to_owned()).collect()
     }
 
-    fn linker(&self) -> Result<Linker<Slot>, String> {
+    fn linker(&self, imports: &[Imports]) -> Result<Linker<Slot>, String> {
         let mut linker = Linker::<Slot>::new(&self.engine);
         for (id, (_, name, params, result)) in IMPORTS.iter().enumerate() {
             let ty = FuncType::new(params.bytes().map(val_type), result.bytes().map(val_type));
@@ -130,6 +171,19 @@ impl Backend for Wasmi {
                     },
                 )
                 .map_err(|e| format!("defining import {name}: {e}"))?;
+        }
+        for &(module, name, params, result) in imports.get(IMPORTS.len()..).unwrap_or_default() {
+            let ty = FuncType::new(params.bytes().map(val_type), result.bytes().map(val_type));
+            linker
+                .func_new(
+                    module,
+                    name,
+                    ty,
+                    move |caller: Caller<'_, Slot>, params: &[Val], results: &mut [Val]| {
+                        run_guest_import(module, name, caller, params, results)
+                    },
+                )
+                .map_err(|e| format!("defining import {module}::{name}: {e}"))?;
         }
         Ok(linker)
     }

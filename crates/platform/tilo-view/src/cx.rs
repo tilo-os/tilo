@@ -106,7 +106,7 @@ impl ViewCx {
         self.attach(
             node,
             event,
-            &Effect::Action {
+            Effect::Action {
                 action: action.into(),
             },
         )
@@ -125,7 +125,7 @@ impl ViewCx {
         self.attach(
             node,
             event,
-            &Effect::On {
+            Effect::On {
                 target,
                 action: action.into(),
             },
@@ -139,7 +139,7 @@ impl ViewCx {
         self.attach(
             node,
             event,
-            &Effect::Open {
+            Effect::Open {
                 target,
                 view: view.map(str::to_owned),
             },
@@ -150,13 +150,15 @@ impl ViewCx {
     /// (a disclosure's open, a checked box).
     #[must_use]
     pub fn set(&self, node: &Node, event: &str, name: impl Into<String>) -> Event {
-        self.attach(node, event, &Effect::State { name: name.into() })
+        self.attach(node, event, Effect::State { name: name.into() })
     }
 
-    /// Attach `effect` to the event of `node` and hand back what the host reads: the resource
-    /// and action the event runs (or the field it toggles), which the event carries as data.
-    fn attach(&self, _node: &Node, _event: &str, effect: &Effect) -> Event {
-        match effect {
+    /// Attach `effect` to the event `event` of `node` and hand back what the host reads: the
+    /// resource and action the event runs, which the event carries as data. What the event does
+    /// in full (the place it opens, the state it sets) is kept for the runtime, by `node`'s key
+    /// and the event's name, so a press runs through the same door a tilolang view's does.
+    fn attach(&self, node: &Node, event: &str, effect: Effect) -> Event {
+        let wire = match &effect {
             Effect::Action { action } => Event {
                 toggles: None,
                 invokes: Some((self.resource.id_string(), action.clone())),
@@ -166,7 +168,11 @@ impl ViewCx {
                 invokes: Some((target.id_string(), action.clone())),
             },
             Effect::Open { .. } | Effect::State { .. } | Effect::None => Event::default(),
-        }
+        };
+        self.events
+            .borrow_mut()
+            .insert((node.key.clone(), event.to_owned()), effect);
+        wire
     }
 
     /// Record what the event `event` of the node `key` does, for the runtime that runs the
@@ -184,6 +190,13 @@ impl ViewCx {
             .borrow()
             .get(&(key.to_owned(), event.to_owned()))
             .cloned()
+    }
+
+    /// Every event the view attached, by the node's key and the event's name: what the runtime
+    /// reads back when a press reaches it.
+    #[must_use]
+    pub fn recorded(&self) -> BTreeMap<(String, String), Effect> {
+        self.events.borrow().clone()
     }
 
     // ----- state --------------------------------------------------------------------------

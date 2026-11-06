@@ -32,11 +32,13 @@
 //! package's). An app's connection reads and invokes them by the same
 //! addresses it would have used had it kept the record itself.
 
+mod module;
 mod record;
 pub mod service;
 #[cfg(feature = "store")]
 mod store;
 
+pub use module::{Module, ModuleError};
 pub use record::{Invoker, Opened, Record, RecordError};
 pub use service::ModelService;
 #[cfg(feature = "store")]

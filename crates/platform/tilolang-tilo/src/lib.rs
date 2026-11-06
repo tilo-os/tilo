@@ -46,6 +46,7 @@ pub mod task;
 pub mod task_records;
 pub mod triggers;
 pub mod upgrade;
+pub mod views;
 
 pub use action::{Authorship, DynAction, DynEdit, register_actions};
 pub use effects::{HostEffect, OpenEffect, OpenPlan};

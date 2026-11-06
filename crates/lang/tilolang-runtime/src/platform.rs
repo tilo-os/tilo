@@ -1639,6 +1639,23 @@ impl Core {
     /// What the platform shows of the type `ty`, and of the resource `r` of it when there is
     /// one: a `host.Meta`.
     fn type_meta(&self, ty: &str, r: Option<&RefValue>) -> HResult<Value> {
+        // A type a Rust app's views draw has no package declaring it: its metadata comes from the
+        // views the app declared (a place shows a resource of it when its type has a default
+        // view), and the runtime draws it through that view (one-app-model.md §2).
+        if let Some(views) = crate::rust_views::app_of(&self.rust_views, ty) {
+            let kind = crate::rust_views::kind_of(&views, ty);
+            let name = kind.rsplit(['#', '.']).next().unwrap_or(&kind).to_owned();
+            let type_name = sentence(&name);
+            let opens = views.views_of(&kind).iter().any(|view| view.is_default);
+            return Ok(Value::Tuple(vec![
+                Value::Text(type_name.clone()),
+                Value::Text(type_name.clone()),
+                Value::Text(type_name.clone()),
+                Value::Text(type_name),
+                Value::none(),
+                Value::Bool(opens),
+            ]));
+        }
         // Another app's resource names its type `app#Type`, as its readings come in: a type
         // whose package is not loaded here asks for it, and the call runs again when it comes.
         let (pkg, info) = self.type_of_ref(ty)?;

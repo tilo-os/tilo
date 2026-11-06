@@ -32,13 +32,14 @@ mod wasmi_backend;
 #[cfg(feature = "wasmtime")]
 mod wasmtime_backend;
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, Ref, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::abi;
 use crate::ids::ModuleHash;
 
 /// A wasm scalar crossing the boundary. Handles and bools travel as `I32`.
@@ -67,6 +68,69 @@ pub trait Host {
     ///
     /// A [`HostFail`] traps or suspends the guest.
     fn import(&self, id: usize, memory: &[u8], args: &[Wasm]) -> Result<Option<Wasm>, HostFail>;
+
+    /// Run the import a module of another ABI calls, by its module and name. `memory` is the
+    /// caller's exported memory, as [`Self::import`] is given it.
+    ///
+    /// The document host runs an app's model as a module of its own (`tilo_model_host`), whose
+    /// imports are the record's, not the `tl` table's. A host that answers for such an ABI
+    /// names it with [`Self::guest_abi`]; that ABI's imports are linked, and each is answered
+    /// here.
+    ///
+    /// # Errors
+    ///
+    /// A [`HostFail`] traps or suspends the guest.
+    fn guest_import(
+        &self,
+        _module: &str,
+        _name: &str,
+        _memory: &[u8],
+        _args: &[Wasm],
+    ) -> Result<GuestAnswer, HostFail> {
+        Err(HostFail::Trap(format!(
+            "this host imports no {_module}::{_name}"
+        )))
+    }
+
+    /// The imports a module of its own ABI calls, as `(module, name, parameters, result)` in
+    /// the signs [`crate::abi`] writes: `i` (i32, which also carries handles and bools), `l`
+    /// (i64) and `f` (f64). They are linked beside the `tl` table, so a module of this ABI
+    /// loads with no import missing. An empty slice, the default, links none: the engine runs
+    /// packages and nothing else.
+    fn guest_abi(&self) -> &'static [(&'static str, &'static str, &'static str, &'static str)] {
+        &[]
+    }
+}
+
+/// What an import of another ABI answers.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GuestAnswer {
+    /// Nothing.
+    Nothing,
+    /// This value, as the import's result.
+    Value(Wasm),
+    /// These bytes, copied to `offset` of the guest's memory; and this value, if any, as the
+    /// import's result — the shape an import that answers a `(pointer, length)` uses.
+    Bytes {
+        offset: u32,
+        bytes: Vec<u8>,
+        result: Option<Wasm>,
+    },
+}
+
+/// A signature [`Host::guest_abi`] writes, as the parameters and the result each one's signs.
+pub(crate) fn signs(signature: &'static str) -> (Vec<u8>, Vec<u8>) {
+    let bytes = signature.as_bytes();
+    let split = bytes
+        .iter()
+        .position(|sign| !sign.is_ascii_alphabetic())
+        .unwrap_or(bytes.len());
+    let (params, _) = bytes.split_at(split);
+    // The result names the sign it is, and nothing after it.
+    (
+        params.to_vec(),
+        bytes.get(split).copied().into_iter().collect(),
+    )
 }
 
 /// Why a call into a module failed.
@@ -309,7 +373,9 @@ trait Backend: Send + Sync + Sized + 'static {
 
     fn compile(&self, bytes: &[u8]) -> Result<Self::Module, String>;
     fn exports(module: &Self::Module) -> Vec<String>;
-    fn linker(&self) -> Result<Self::Linker, String>;
+    /// Import `(module, name, params, result)` of another ABI, answered by
+    /// [`Host::guest_import`].
+    fn linker(&self, imports: &[Imports]) -> Result<Self::Linker, String>;
     /// An instance with fuel for one call, its start function run.
     fn instantiate(
         &self,
@@ -345,6 +411,52 @@ fn import(
         profile.set(p);
     }
     result
+}
+
+/// [`import`] for an import of another ABI, with the guest's memory to write an answer into.
+fn guest_import(
+    cx: Option<&Cx>,
+    module: &str,
+    name: &str,
+    memory: &[u8],
+    args: &[Wasm],
+) -> Result<GuestAnswer, HostFail> {
+    let cx = cx.ok_or_else(|| HostFail::Trap("import called outside a host call".into()))?;
+    let started = cx.profile.as_ref().map(|_| Instant::now());
+    let result = cx.host.guest_import(module, name, memory, args);
+    if let (Some(profile), Some(started)) = (&cx.profile, started) {
+        let mut p = profile.get();
+        p.imports = p.imports.saturating_add(1);
+        p.in_imports = p.in_imports.saturating_add(started.elapsed());
+        profile.set(p);
+    }
+    result
+}
+
+/// [`GuestAnswer`] as the engine answers a caller: what it puts in the results, and the bytes
+/// to copy into the guest's memory.
+pub(crate) fn guest_answer(answer: GuestAnswer) -> (Option<Wasm>, Option<(u32, Vec<u8>)>) {
+    match answer {
+        GuestAnswer::Nothing => (None, None),
+        GuestAnswer::Value(value) => (Some(value), None),
+        GuestAnswer::Bytes {
+            offset,
+            bytes,
+            result,
+        } => (result, Some((offset, bytes))),
+    }
+}
+
+/// The `tl` import table, one runtime's imports: what a [`Backend::Linker`] links for a host
+/// that runs packages.
+pub(crate) type Imports = (&'static str, &'static str, &'static str, &'static str);
+
+/// The imports [`Backend::linker`] links when no host named an ABI of its own: the `tl` table.
+fn package_imports() -> Vec<Imports> {
+    abi::IMPORTS
+        .iter()
+        .map(|(_, name, params, result)| (abi::MODULE, *name, *params, *result))
+        .collect()
 }
 
 /// An import that did not return, carried through the engine back to [`Backend::call`].
@@ -511,17 +623,55 @@ struct Compiled<B: Backend> {
 /// One runtime's instances of the modules it loaded, on one engine.
 struct Pools<B: Backend> {
     compiler: &'static Compiler<B>,
-    linker: B::Linker,
+    /// The imports of the host's own ABI, beside the `tl` table ([`Engine::link`]): empty
+    /// until a host that runs modules of another ABI names it.
+    abi: Cell<&'static [Imports]>,
+    /// The linker, and the ABI it was linked for: made again when [`Self::abi`] moves.
+    linker: RefCell<(&'static [Imports], B::Linker)>,
     modules: RefCell<HashMap<ModuleHash, Compiled<B>>>,
 }
 
 impl<B: Backend> Pools<B> {
     fn new(compiler: &'static Compiler<B>) -> Result<Self, String> {
+        const NONE: &[Imports] = &[];
         Ok(Self {
-            linker: compiler.backend.linker()?,
+            abi: Cell::new(NONE),
+            linker: RefCell::new((NONE, compiler.backend.linker(&package_imports())?)),
             compiler,
             modules: RefCell::new(HashMap::new()),
         })
+    }
+
+    /// Link the host's own ABI ([`Engine::link`]) from now on.
+    fn link(&self, abi: &'static [Imports]) -> Result<(), String> {
+        self.abi.set(abi);
+        // The linker is made again by the next load, for both this ABI and the `tl` table.
+        let mut imports = package_imports();
+        imports.extend_from_slice(abi);
+        let linker = self.compiler.backend.linker(&imports)?;
+        *self.linker.borrow_mut() = (abi, linker);
+        Ok(())
+    }
+
+    /// The linker that links the `tl` table and the host's ABI, made now when it is not the
+    /// one that was.
+    fn linker(&self) -> Result<Ref<'_, B::Linker>, CallError> {
+        let abi = self.abi.get();
+        {
+            let linked = self.linker.borrow();
+            if std::ptr::eq(linked.0, abi) {
+                return Ok(Ref::map(linked, |(_, linker)| linker));
+            }
+        }
+        let mut imports = package_imports();
+        imports.extend_from_slice(abi);
+        let linker = self
+            .compiler
+            .backend
+            .linker(&imports)
+            .map_err(CallError::Link)?;
+        *self.linker.borrow_mut() = (abi, linker);
+        Ok(Ref::map(self.linker.borrow(), |(_, linker)| linker))
     }
 
     fn compile(
@@ -557,10 +707,12 @@ impl<B: Backend> Pools<B> {
         module: B::Module,
         limits: &EngineLimits,
     ) -> Result<(), CallError> {
-        let first = self
-            .compiler
-            .backend
-            .instantiate(&self.linker, &module, limits)?;
+        let first = {
+            let linker = self.linker()?;
+            self.compiler
+                .backend
+                .instantiate(&linker, &module, limits)?
+        };
         self.modules.borrow_mut().insert(
             hash.clone(),
             Compiled {
@@ -607,10 +759,12 @@ impl<B: Backend> Pools<B> {
         };
         match idle {
             Some(instance) => Ok(instance),
-            None => self
-                .compiler
-                .backend
-                .instantiate(&self.linker, &compiled, limits),
+            None => {
+                let linker = self.linker()?;
+                self.compiler
+                    .backend
+                    .instantiate(&linker, &compiled, limits)
+            }
         }
     }
 
@@ -732,6 +886,11 @@ impl TieredPools {
         } else {
             self.base.call(hash, export, args, limits, cx)
         }
+    }
+
+    fn link(&self, abi: &'static [Imports]) -> Result<(), String> {
+        self.base.link(abi)?;
+        self.top.link(abi)
     }
 }
 
@@ -866,7 +1025,9 @@ impl Engine {
         }
     }
 
-    /// Compile (or fetch from the cache) the module with these bytes.
+    /// Compile (or fetch from the cache) the module with these bytes, whose imports `host`
+    /// answers: the `tl` table and, when it names one, the imports of its own ABI
+    /// ([`Host::guest_abi`]).
     ///
     /// # Errors
     ///
@@ -877,6 +1038,17 @@ impl Engine {
             |took: Duration| self.count(|p| p.compiling = p.compiling.saturating_add(took));
         on_engine!(&self.pooled, pools => pools.compile(&hash, bytes, &self.limits, counted))?;
         Ok(hash)
+    }
+
+    /// Link `abi`'s imports beside the `tl` table, from now on: the imports a host that runs
+    /// modules of its own ABI ([`Host::guest_abi`]) answers ([`Host::guest_import`]). A module
+    /// loaded after this links with them; one loaded before is dropped and loaded again.
+    ///
+    /// # Errors
+    ///
+    /// The engine cannot link them.
+    pub fn link(&self, abi: &'static [Imports]) -> Result<(), String> {
+        on_engine!(&self.pooled, pools => pools.link(abi))
     }
 
     /// The names of the module's exports.

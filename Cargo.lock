@@ -19636,6 +19636,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-model-abi"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-model-client"
 version = "0.1.0"
 dependencies = [
@@ -19696,10 +19705,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-model-guest"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "getrandom 0.4.3",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-model-abi",
+ "tilo-resource",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-model-host"
 version = "0.1.0"
 dependencies = [
  "durable-store",
+ "getrandom 0.4.3",
  "serde",
  "serde_json",
  "tasks-model",
@@ -19708,8 +19733,10 @@ dependencies = [
  "tilo-app-state",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-model-abi",
  "tilo-resource",
  "tilo-service",
+ "tilolang-runtime",
  "tracing",
  "workspace-hack",
 ]
@@ -22260,8 +22287,18 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-render-protocol",
  "tilo-ui-graph",
+ "tilo-view-macros",
  "tracing",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-view-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -22831,6 +22868,7 @@ dependencies = [
  "tilo-service",
  "tilo-ui",
  "tilo-ui-host",
+ "tilo-view",
  "tilolang",
  "tilolang-runtime",
  "toml 1.0.6+spec-1.1.0",

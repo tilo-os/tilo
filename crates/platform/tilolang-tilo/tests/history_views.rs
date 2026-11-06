@@ -1063,7 +1063,7 @@ fn typing_in_a_bound_field_reads_as_an_edit_of_that_field() {
     let title =
         crate::fixtures::field_id(&ada.host.package(TASKS_APP).unwrap().meta, "Task", "title");
     let page = ada.host.open_resource(&at, None).unwrap();
-    let input = bound_key(page.tree(), title).expect("the task's title is bound to its input");
+    let input = bound_key(page.tree(), &title).expect("the task's title is bound to its input");
     page.edit(&input, &Value::text("Bring oat milk")).unwrap();
     ada.commit();
     drop(page);
