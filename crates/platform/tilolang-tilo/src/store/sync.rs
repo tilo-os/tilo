@@ -116,6 +116,7 @@ impl TiloStore {
         for (key, ids) in moved {
             items.entry(key).or_default().extend(ids);
         }
+        let makers = changed.by;
         let docs = named(changed.docs, items.keys(), wholes, notified, &ends);
         if changed.unplaced || changed.layout {
             inner.changed();
@@ -131,12 +132,13 @@ impl TiloStore {
                 let listings = listings.remove(&doc).unwrap_or_default();
                 let collections = collections.remove(&doc).unwrap_or_default();
                 inner.notify(&ChangeSummary {
-                    doc,
+                    doc: doc.clone(),
                     fields,
                     collections,
                     listings,
-                    // The record's change: who made it is read per resource, not here.
-                    by: None,
+                    // Who the record's change names as its maker: a window tells its own
+                    // person's change by it, and keeps the rows it changed where they stand.
+                    by: makers.get(&doc).cloned().flatten(),
                 });
             }
         }

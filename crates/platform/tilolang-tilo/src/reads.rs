@@ -365,7 +365,13 @@ pub struct Changed {
     /// The documents an entry of a nested collection (a record written before items were
     /// flat) was put in or deleted from: where their nested items are is read again.
     pub nested: BTreeSet<DocId>,
+    /// Per document, the person the record's change names as the one who made it: `None` for a
+    /// document several people changed, and for a change that names nobody.
+    pub by: By,
 }
+
+/// Per document, who made the record's change to it.
+pub type By = BTreeMap<DocId, Option<String>>;
 
 /// Per document, the items whose placement changes wrote, each with whether they made it.
 pub type Placed = BTreeMap<DocId, BTreeMap<String, bool>>;
@@ -391,6 +397,20 @@ impl Changed {
             self.placed.entry(doc).or_default().extend(items);
         }
         self.nested.extend(other.nested);
+        for (doc, who) in other.by {
+            match self.by.get(&doc) {
+                // Nobody said yet.
+                None => {
+                    self.by.insert(doc, who);
+                }
+                // Known, and this change names nobody, or someone else.
+                Some(Some(seen)) if who.as_deref() != Some(seen.as_str()) => {
+                    self.by.insert(doc, None);
+                }
+                // Already unknown, or known and named again.
+                Some(None | Some(_)) => {}
+            }
+        }
     }
 }
 
@@ -409,9 +429,10 @@ pub fn changed_by(
     doc: &Doc,
     index: &BTreeMap<DocId, (AppId, TypeId)>,
 ) -> Changed {
-    // Per object, the keys written and whether an object was made under each.
-    let mut writes: BTreeMap<String, BTreeMap<Option<String>, bool>> = BTreeMap::new();
+    let mut out = ChangedBuilder::default();
     for change in changes {
+        // Per object, the keys written and whether an object was made under each.
+        let mut writes: BTreeMap<String, BTreeMap<Option<String>, bool>> = BTreeMap::new();
         for op in change.decode().operations {
             let key = match op.key {
                 LegacyKey::Map(key) => Some(key.to_string()),
@@ -425,23 +446,29 @@ pub fn changed_by(
                 .or_default();
             *held = *held || made;
         }
-    }
-    let mut out = ChangedBuilder::default();
-    for (obj, keys) in writes {
-        let Some(path) = path_of(doc, &obj) else {
-            out.unplaced = true;
-            continue;
-        };
-        for (key, made) in keys {
-            let mut props: Vec<&Prop> = path.iter().collect();
-            let own = key.map(Prop::Map);
-            if let Some(own) = own.as_ref() {
-                props.push(own);
+        out.maker = maker_of(change);
+        for (obj, keys) in writes {
+            let Some(path) = path_of(doc, &obj) else {
+                out.unplaced = true;
+                continue;
+            };
+            for (key, made) in keys {
+                let mut props: Vec<&Prop> = path.iter().collect();
+                let own = key.map(Prop::Map);
+                if let Some(own) = own.as_ref() {
+                    props.push(own);
+                }
+                out.patch(&props, made, (doc, index));
             }
-            out.patch(&props, made, (doc, index));
         }
     }
     out.finish()
+}
+
+/// The person the change `change` names as the one who made it, when its message names one.
+fn maker_of(change: &Change) -> Option<String> {
+    let context = tilo_actions::ActionContext::from_change_message(change.message()?)?;
+    context.invoker.map(|invoker| invoker.actor)
 }
 
 /// The keys from the record's root down to the object `obj` (as Automerge prints its id).
@@ -464,6 +491,9 @@ struct ChangedBuilder {
     layout: bool,
     placed: Placed,
     nested: BTreeSet<DocId>,
+    /// Who the change being read names as its maker, when it names one.
+    maker: Option<String>,
+    by: By,
 }
 
 fn key_of(prop: &Prop) -> Option<&str> {
@@ -626,6 +656,7 @@ impl ChangedBuilder {
     }
 
     fn whole(&mut self, doc: &str) {
+        self.made_by(doc);
         self.whole.insert(doc.to_owned());
         self.docs.insert(doc.to_owned(), Vec::new());
     }
@@ -634,6 +665,7 @@ impl ChangedBuilder {
         if self.whole.contains(doc) {
             return;
         }
+        self.made_by(doc);
         self.docs.entry(doc.to_owned()).or_default().push(FieldKey {
             resource: resource.to_owned(),
             field: field.to_owned(),
@@ -646,6 +678,7 @@ impl ChangedBuilder {
 
     /// The placement of the item `item` of `doc` was written; `made` when this made the item.
     fn place(&mut self, doc: &str, item: &str, made: bool) {
+        self.made_by(doc);
         let held = self
             .placed
             .entry(doc.to_owned())
@@ -653,6 +686,25 @@ impl ChangedBuilder {
             .entry(item.to_owned())
             .or_default();
         *held = *held || made;
+    }
+
+    /// Note that the document `doc` changed by the change being read, and who made it: a
+    /// document two people's changes reached in one batch names nobody.
+    fn made_by(&mut self, doc: &str) {
+        let Some(who) = self.maker.as_deref() else {
+            // The change names nobody: it says nothing of who made it.
+            self.by.entry(doc.to_owned()).or_insert(None);
+            return;
+        };
+        match self.by.get(doc) {
+            None => {
+                self.by.insert(doc.to_owned(), Some(who.to_owned()));
+            }
+            Some(Some(seen)) if seen != who => {
+                self.by.insert(doc.to_owned(), None);
+            }
+            _ => {}
+        }
     }
 
     fn finish(self) -> Changed {
@@ -668,6 +720,7 @@ impl ChangedBuilder {
             layout: self.layout,
             placed: self.placed,
             nested: self.nested,
+            by: self.by,
         }
     }
 }

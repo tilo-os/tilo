@@ -2283,30 +2283,13 @@ impl Store for TiloStore {
         for (doc, keys) in inner.provisional_versions(&versioned, state.start, note, &made) {
             touched.entry(doc).or_default().extend(keys);
         }
-        let mut listings = state.listings;
-        let mut collections = state.collections;
-        for (doc, fields) in touched {
-            inner
-                .notes
-                .entry(doc.clone())
-                .or_default()
-                .push(note.clone());
-            // An outside effect queued alone changes no field a view reads.
-            if fields.is_empty() {
-                continue;
-            }
-            let (own, rest): (Vec<ListingChange>, Vec<ListingChange>) = listings
-                .into_iter()
-                .partition(|change| change.key.doc() == doc);
-            listings = rest;
-            let collections = collections.remove(&doc).unwrap_or_default();
-            inner.notify(&ChangeSummary {
-                doc,
-                fields: fields.into_iter().collect(),
-                collections: collections.into_iter().collect(),
-                listings: own,
-                by: Some(note.invoker.clone()),
-            });
+        // What changed is told to those who read the mirror once, when the record brings the
+        // change back and the indexes hold what it derives ([`TiloStore::sync_from`]): told
+        // here, it would be a second note of the same step, and one lacking what the record's
+        // derivation adds. Until then the write is the mirror's open transaction, read through
+        // the overlay like any other.
+        for doc in touched.into_keys() {
+            inner.notes.entry(doc).or_default().push(note.clone());
         }
         Ok(())
     }
