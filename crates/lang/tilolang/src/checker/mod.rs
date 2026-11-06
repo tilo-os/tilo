@@ -176,8 +176,9 @@ struct FnState {
     types: HashMap<String, Ty>,
     /// What node keys start with after the view's id: the templates being expanded, by call.
     prefix: String,
-    /// The templates being expanded, outermost first.
-    expanding: Vec<String>,
+    /// The templates being expanded, outermost first, each by the package whose names its body
+    /// sees and its name: two packages' views of the same name are not the same view.
+    expanding: Vec<(Option<String>, String)>,
     /// The resource the view being lowered shows: its first parameter, when that is one. What
     /// the system's parts of its controls are about (a rich input's `@` drawer).
     subject: Option<(LocalId, Ty)>,

@@ -1168,6 +1168,24 @@ fn a_generic_view_with_a_lambda_and_view_state_expands_where_it_is_called() {
     );
 }
 
+/// A package may name a view as the library names one: only the same package's view is the same
+/// view, so an app's own `composer` calling `std.composer` expands the library's, not itself.
+#[test]
+fn an_apps_view_named_as_the_libraries_expands_the_libraries() {
+    let (m, _) = lower(
+        "type Chat {\n    topic: Text\n}\naction send(c: Chat, text: RichText) {\n}\nview composer(c: Chat) {\n    window draft: RichText = RichText(\"\")\n    std.composer(draft, \"Message {c.topic}\", send(c, draft))\n}\nview chat(c: Chat) {\n    composer: {\n        composer(c)\n    }\n}",
+    );
+    let calls = ui_calls(func(&m, "chat"));
+    assert!(
+        has(&calls, "on submit"),
+        "the composer's field sends: {calls:#?}"
+    );
+    assert!(
+        calls.iter().any(|c| c.starts_with("node ui.BlockEditor")),
+        "the thread's field is drawn: {calls:#?}"
+    );
+}
+
 /// `ui.Time(at)` of a `Time` is the toolkit's relative time: a node whose `at` is the moment,
 /// marked as a time for the host to read it as one.
 #[test]

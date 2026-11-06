@@ -306,7 +306,8 @@ impl Checker<'_> {
     ) -> LocalId {
         let span = c.call.span;
         let view = &t.decl;
-        if self.st.expanding.contains(&view.name.name) {
+        let itself = (t.ns.clone(), view.name.name.clone());
+        if self.st.expanding.contains(&itself) {
             self.err(
                 "E061",
                 span,
@@ -566,7 +567,7 @@ impl Checker<'_> {
             ui: self.st.ui,
         };
         let saved = self.enter(&scope, HashMap::new());
-        self.st.expanding.push(view.name.name.clone());
+        self.st.expanding.push(itself);
         // The defaults of the values left out, read in the template's scope.
         for (i, p) in view.params.iter().enumerate() {
             let Kind::Value(te) = kind_of(&p.ty) else {
