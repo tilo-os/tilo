@@ -3,7 +3,7 @@
 //! agent's invocation name, and the rest handed to the session.
 
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, Destination};
-use ui::shortcut_table::{ShortcutAction, ShortcutHome};
+use ui::shortcut_table::ShortcutAction;
 
 use super::{DesktopAsk, DesktopChrome};
 use crate::chrome::ChromeIntent;
@@ -23,12 +23,8 @@ impl DesktopChrome {
             ShortcutAction::EmojiPicker => self.toggle_emoji(),
             ShortcutAction::FocusPreviousWindow => self.step_focus(-1),
             ShortcutAction::FocusNextWindow => self.step_focus(1),
-            ShortcutAction::PreviousTab => {
-                self.step_tab(-1);
-            }
-            ShortcutAction::NextTab => {
-                self.step_tab(1);
-            }
+            ShortcutAction::PreviousTab => self.step_tab(-1),
+            ShortcutAction::NextTab => self.step_tab(1),
             ShortcutAction::PreviousStrip => self.step_strip(-1),
             ShortcutAction::NextStrip => self.step_strip(1),
             ShortcutAction::PreviousWorkspace => {
@@ -37,16 +33,9 @@ impl DesktopChrome {
             ShortcutAction::NextWorkspace => self.apply_intent(ChromeIntent::SwitchWorkspace(1)),
             ShortcutAction::MaximizeWindow => self.maximize_focused(Some(true)),
             ShortcutAction::RestoreWindow => self.maximize_focused(Some(false)),
-            // The window the person closed last in the shown workspace comes
-            // back where it was. Nothing closed is no reason to leave the
-            // chord to whatever holds the keyboard: the desktop answers it
-            // either way, as the shell it replaces did.
-            ShortcutAction::ReopenClosedTab => {
-                self.dispatch(ChromeEffect::ReopenClosed);
-            }
-            // A window covers the display it stands on by covering the whole
-            // strip, bar's room included: the chord and the window menu's
-            // row are the same request.
+            // The window the person closed last comes back where it was; the
+            // desk answers the chord either way, as the shell it replaces did.
+            ShortcutAction::ReopenClosedTab => self.dispatch(ChromeEffect::ReopenClosed),
             ShortcutAction::ToggleMaximize => self.maximize_focused(None),
             ShortcutAction::ToggleFullscreen => self.toggle_fullscreen(),
             // The tab leaves its window for one of its own, as the window
@@ -65,29 +54,68 @@ impl DesktopChrome {
             ShortcutAction::OpenFiles => self.open_app("so.tilo.file-explorer"),
             ShortcutAction::OpenTerminal => self.open_app("so.tilo.terminal"),
             ShortcutAction::ReportProblem => self.asks.borrow_mut().push(DesktopAsk::ReportProblem),
-            other => {
-                if let Some(index) = other.focus_strip_index() {
-                    if !self.go_to_strip(|_| Some(index)) {
-                        return false;
-                    }
-                } else if let Some(index) = other.focus_group_index() {
-                    if let Some(tab) = self.window_tab(None, Some(index)) {
-                        self.handle.focus_tab(tab);
-                    }
-                } else if other.home() == ShortcutHome::Session {
-                    self.asks.borrow_mut().push(DesktopAsk::Shortcut(other));
-                    return false;
-                } else {
-                    return false;
-                }
+            ShortcutAction::FocusGroup1 => self.focus_group(0),
+            ShortcutAction::FocusGroup2 => self.focus_group(1),
+            ShortcutAction::FocusGroup3 => self.focus_group(2),
+            ShortcutAction::FocusGroup4 => self.focus_group(3),
+            ShortcutAction::FocusGroup5 => self.focus_group(4),
+            ShortcutAction::FocusGroup6 => self.focus_group(5),
+            ShortcutAction::FocusGroup7 => self.focus_group(6),
+            ShortcutAction::FocusGroup8 => self.focus_group(7),
+            ShortcutAction::FocusGroup9 => self.focus_group(8),
+            ShortcutAction::FocusStrip1 => self.focus_strip(0),
+            ShortcutAction::FocusStrip2 => self.focus_strip(1),
+            ShortcutAction::FocusStrip3 => self.focus_strip(2),
+            ShortcutAction::FocusStrip4 => self.focus_strip(3),
+            ShortcutAction::FocusStrip5 => self.focus_strip(4),
+            ShortcutAction::FocusStrip6 => self.focus_strip(5),
+            ShortcutAction::FocusStrip7 => self.focus_strip(6),
+            ShortcutAction::FocusStrip8 => self.focus_strip(7),
+            ShortcutAction::FocusStrip9 => self.focus_strip(8),
+            // The rest belong to the session under the desk: the device, the
+            // surfaces over it and the people and agents here.
+            ShortcutAction::Search
+            | ShortcutAction::Lock
+            | ShortcutAction::QuickSettings
+            | ShortcutAction::ShortcutHelp
+            | ShortcutAction::TabMenu
+            | ShortcutAction::ClipboardHistory
+            | ShortcutAction::Notifications
+            | ShortcutAction::PowerMenu
+            | ShortcutAction::NextInputSource
+            | ShortcutAction::ToggleMagnifier
+            | ShortcutAction::MagnifierZoomIn
+            | ShortcutAction::MagnifierZoomOut
+            | ShortcutAction::AskAgent
+            | ShortcutAction::SaySomething
+            | ShortcutAction::DictationToggle
+            | ShortcutAction::DictationFinish
+            | ShortcutAction::DictationCancel => {
+                self.asks.borrow_mut().push(DesktopAsk::Shortcut(action));
+                return false;
             }
         }
         true
     }
 
+    /// Put the keyboard on the window group `index` of the shown strip, as a
+    /// click on its window does. A strip with fewer windows leaves the focus
+    /// where it was.
+    fn focus_group(&self, index: usize) {
+        if let Some(tab) = self.window_tab(None, Some(index)) {
+            self.handle.focus_tab(tab);
+        }
+    }
+
+    /// Bring strip `index` of the shown workspace to the front of its display;
+    /// a workspace with fewer strips leaves the focus where it was.
+    fn focus_strip(&self, index: usize) {
+        self.go_to_strip(|_| Some(index));
+    }
+
     /// Step the windows of the shown strip by `steps`: the focus follows
     /// along it, as the window menu's row and a click on a window do.
-    fn step_focus(&mut self, steps: isize) {
+    fn step_focus(&self, steps: isize) {
         if let Some(tab) = self.window_tab(Some(steps), None) {
             self.handle.focus_tab(tab);
         }
@@ -95,7 +123,7 @@ impl DesktopChrome {
 
     /// Cycle the tabs of the window in front by `steps`, wrapping as the tab
     /// bar does: its ring is small, so the last tab leads back to the first.
-    fn step_tab(&mut self, steps: isize) {
+    fn step_tab(&self, steps: isize) {
         let next = self.handle.read(|tree| {
             let workspace = tree.active_workspace()?;
             let strip_id = tree.active_strip.get(&workspace.slot).copied()?;
@@ -132,7 +160,7 @@ impl DesktopChrome {
 
     /// Detach the tab in front into a window of its own, right after the one
     /// it is in.
-    fn split_focused_tab(&mut self) {
+    fn split_focused_tab(&self) {
         let Some(route) = self.focused_route() else {
             return;
         };
@@ -141,7 +169,7 @@ impl DesktopChrome {
 
     /// Put the tab in front into the window `direction` places away in its
     /// strip, its tab standing last there.
-    fn attach_focused_tab(&mut self, direction: isize) {
+    fn attach_focused_tab(&self, direction: isize) {
         let Some(route) = self.focused_route() else {
             return;
         };
@@ -173,7 +201,7 @@ impl DesktopChrome {
 
     /// Move the window in front one place along its strip: the keyboard twin
     /// of dragging its tab bar's ground.
-    fn reorder_focused_group(&mut self, direction: isize) {
+    fn reorder_focused_group(&self, direction: isize) {
         let Some(route) = self.focused_route() else {
             return;
         };
@@ -219,7 +247,7 @@ impl DesktopChrome {
 
     /// Carry the window in front into the strip above (`steps < 0`) or below,
     /// landing last there; focus follows it.
-    fn move_focused_group_to_strip(&mut self, steps: isize) {
+    fn move_focused_group_to_strip(&self, steps: isize) {
         let Some(route) = self.focused_route() else {
             return;
         };
@@ -247,7 +275,7 @@ impl DesktopChrome {
     }
 
     /// Show the window in front on the display `steps` on.
-    fn move_focused_group_to_display(&mut self, steps: isize) {
+    fn move_focused_group_to_display(&self, steps: isize) {
         let Some(route) = self.focused_route() else {
             return;
         };
@@ -275,7 +303,7 @@ impl DesktopChrome {
     }
 
     /// Give the window in front `delta` permille more or less of its strip.
-    fn resize_focused_group(&mut self, delta: i64) {
+    fn resize_focused_group(&self, delta: i64) {
         let snapshot = self.handle.snapshot(&self.generation, Vec::new());
         let (Some(route), Some(permille)) = (snapshot.active, snapshot.width_permille) else {
             return;
@@ -289,7 +317,7 @@ impl DesktopChrome {
     }
 
     /// Open the app `app` in the shown strip, as its launcher card does.
-    fn open_app(&mut self, app: &str) {
+    fn open_app(&self, app: &str) {
         self.dispatch(ChromeEffect::OpenApp {
             app: app.to_owned(),
             beside: None,

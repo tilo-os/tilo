@@ -274,7 +274,9 @@ fn in_front_group(handle: &DesktopHandle) -> Option<(u64, u64)> {
 
 /// The groups of the shown strip, left to right.
 fn groups_of_shown_strip(handle: &DesktopHandle) -> Vec<u64> {
-    let (_, strip) = in_front_group(handle).expect("a window in front");
+    let Some((_, strip)) = in_front_group(handle) else {
+        return Vec::new();
+    };
     handle.read(|tree| {
         tree.workspaces[0]
             .strips

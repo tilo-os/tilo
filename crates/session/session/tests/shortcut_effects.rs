@@ -358,7 +358,7 @@ fn the_session_answers_every_shortcut_of_its_side() {
         press(&mut session, action);
         match action {
             ShortcutAction::Search => {
-                until(&mut session, "the search", |session| searching(session))
+                until(&mut session, "the search", |session| searching(session));
             }
             ShortcutAction::TabMenu => until(&mut session, "the window menu", |session| {
                 menu_tab(session).as_deref() == Some("20")
