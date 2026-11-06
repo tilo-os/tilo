@@ -1548,6 +1548,10 @@ suite = "os/containers/tilo-lounge/test-image.sh"
 reason = "needs the built Lounge image"
 
 [[unrequired]]
+suite = "os/containers/tilo-lounge/test-integration.sh"
+reason = "starts the built Lounge image and drives its web entry, so it needs both the image and the desktop bundle"
+
+[[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
 reason = "needs the built registry-server image"
 
