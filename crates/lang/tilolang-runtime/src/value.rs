@@ -383,9 +383,6 @@ pub enum Value {
     /// An action offered in a component's prop (`ui.MenuButton(actions: actions(r))`): how
     /// its control shows it, and the event of the node that runs it (host-internal).
     Offered(Rc<tilolang::toolkit::Offered>),
-    /// A picture in a component's prop (`ui.Image(photo)`): where its bytes are read from
-    /// (host-internal).
-    Picture(String),
     /// An argument of an action reference computed from view state (`set(open, not open)`,
     /// `send(c, "{draft}!")`): the function `e_<id>` of `module` over `args`, run when the
     /// event fires, after the view state among `args` is read. A `scalar` result is boxed
@@ -404,6 +401,10 @@ pub enum Value {
     /// kinds of `json.Value` are its kinds. `json.decode<T>` builds a `T` from one; a value
     /// `json.encode` writes keeps it as it was read.
     Json(Box<Json>),
+    /// A picture in a component's prop (`ui.Image(photo)`): where its bytes are read from
+    /// (host-internal). It stays last: a value's compact encoding names a variant by its place
+    /// (`tools/policy/check_wire_enums.py`).
+    Picture(String),
 }
 
 impl Value {
