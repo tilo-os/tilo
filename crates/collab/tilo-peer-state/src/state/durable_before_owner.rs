@@ -182,12 +182,12 @@ mod tests {
     /// The state this build writes for the kept workspace, hex, kept so the
     /// layout cannot change under the version devices already hold. It is
     /// [`kept_state`] as `postcard` wrote it.
-    const KEPT: &str = "KEPT_HEX";
+    const KEPT: &str = "04042433303264353965302d663538362d343265312d613539652d33616136313366306638363601010101010101010101010101010101010101010101010101010101010101010104856f4a83000000000107070707070707070707070707070707070707070707070707070707070707070a0105010c";
 
     /// The same state as a build before the owner root wrote it, hex: the
     /// governing device's certificate where this build names the owner's key,
     /// with that certificate's root as the owner.
-    const KEPT_BEFORE_OWNER: &str = "KEPT_BEFORE_OWNER_HEX";
+    const KEPT_BEFORE_OWNER: &str = "04032433303264353965302d663538362d343265312d613539652d3361613631336630663836368a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394106c6f756e676520726f6f6d20686f73740000010101004048a78b5536b7a22f7a66cc88614c4d63ed508deb3bb8096ba692949dda1b96f1efe9f37b768745a6f4b4f5cfb1ecb302821d4e28fca992957661212609627a060104856f4a83000000000107070707070707070707070707070707070707070707070707070707070707070a0105010c";
 
     /// Bytes kept as hex, as a test reads them.
     fn kept(hex: &str) -> Vec<u8> {
@@ -241,19 +241,6 @@ mod tests {
             pending: kept_pending(),
             pending_bytes: 12,
         }
-    }
-
-    /// Temporary: print the kept bytes.
-    #[test]
-    fn print_kept() {
-        println!(
-            "CURRENT={}",
-            hex::encode(postcard::to_stdvec(&kept_state()).unwrap())
-        );
-        println!(
-            "BEFORE={}",
-            hex::encode(postcard::to_stdvec(&kept_before_owner()).unwrap())
-        );
     }
 
     /// A state this build writes reads back the way the bytes kept beside it
