@@ -425,6 +425,8 @@ fn workspace_activity_replay_starts_where_the_workspace_does() {
                     note: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             }],
             active_tab: tab,
             width: WindowWidth::Wide,
@@ -441,6 +443,7 @@ fn workspace_activity_replay_starts_where_the_workspace_does() {
                 mine: &|id| id >> 48 == 1,
                 retained: &|_| true,
                 carried: device::Writer::NOTHING_CARRIED,
+                records: device::Writer::NOTHING_NOTED,
             },
         )
         .unwrap();

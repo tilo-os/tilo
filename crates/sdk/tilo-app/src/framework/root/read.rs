@@ -107,6 +107,9 @@ pub(super) fn read(
         None if resource.readable => match typed.read_content(state, doc, item) {
             Ok(content) => content,
             Err(error) if !reads_as_item(resource, item) => return Err(error),
+            // A read that does not answer this item is asked for the table's
+            // own content instead.
+            // ignored-failure: the record table answers what the typed read did not
             Err(_) => item_content(resource, state, item)?,
         },
         None => item_content(resource, state, item)?,

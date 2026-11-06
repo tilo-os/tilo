@@ -248,8 +248,8 @@ echo '{"op":"type","text":"hello"}' | nc -U $TILO_TEST_CONTROL
 echo '{"op":"snapshot","path":"/tmp/state.png"}' | nc -U $TILO_TEST_CONTROL
 
 # Get the live workspace tree + chrome state as JSON. A workspace's
-# append-only history (effect receipts, task audit trails, ownership-transfer
-# records) is left out; add "include_history":true to get it:
+# append-only history (effect receipts, task audit trails) is left out; add
+# "include_history":true to get it:
 echo '{"op":"state_dump"}' | nc -U $TILO_TEST_CONTROL
 
 # Just the open windows, one row per tab:

@@ -61,12 +61,7 @@ impl State {
         let windows: Vec<(Window, WindowInfo)> = self
             .space
             .elements()
-            .filter_map(|window| {
-                Some((
-                    window.clone(),
-                    describe(&self.display, &self.icons, window)?,
-                ))
-            })
+            .filter_map(|window| Some((window.clone(), describe(self, window)?)))
             .collect();
         let Toplevels { state, listed } = &mut self.capture.toplevels;
         listed.retain(|listed| {

@@ -9,14 +9,13 @@ use std::sync::Arc;
 use tilo_action_policy::Role;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
-    AppTrayIcon, AppTrayItem, AppTrayStatus, AvatarAsk, ChromeIntent, ChromeOverlays,
-    ClockActivity, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, OwnChip,
-    SystemStatus,
+    AppTrayIcon, AppTrayItem, AppTrayStatus, AvatarAsk, ChromeIntent, ClockSnapshot,
+    DesktopChromeSnapshot, DesktopChromeSource, OwnChip, SystemStatus,
 };
 use tilo_desktop::desktop_host::DesktopRules;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome};
 use tilo_desktop::launchpad::LaunchpadAction;
-use tilo_desktop::overlays::{Overlays, Slot};
+use tilo_desktop::overlays::{Overlays, Slot, Target};
 use tilo_desktop::topbar::{Placement, TopBarChrome};
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_model::commands::{DesktopCommand, Standing, may_command, may_create_workspace};
@@ -25,27 +24,51 @@ use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::notifications::Notification;
 use tilo_desktop_surface::{DesktopHandle, DesktopNotifications};
 use tilo_surface_host::{Placement as SurfacePlacement, WidgetHost};
+use ui::floating_layer::Card;
+use ui::live_activity::{Published, Summary};
 use ui::search::Scope;
+use ui::vello::kurbo::Rect;
 
 use crate::notifications::NoticeSignals;
 
-/// The app whose live activity the bar shows as its clock.
+/// The app whose live activity is the clocks app's when the desk reads the
+/// running timer.
 pub(crate) const CLOCKS_APP: &str = "so.tilo.clocks";
 
-/// The clock's live activity: the board every app shows its activity on,
-/// and the moment the person hid the floating timer from the bar.
-pub(crate) struct Clock {
+/// The apps' live activities, as the session presents them: every summary
+/// the apps publish on the board, and the person's own say over them.
+///
+/// Apps describe, the session places (the floating layer's layout does the
+/// placing): this keeps what only the person decides — what they put away,
+/// what they folded into the bar, what they pulled out of it, where they
+/// left a card loose, and which card they touched last.
+pub(crate) struct Activities {
     board: Arc<runtime_collab::LiveActivities>,
-    /// The board revision the person hid the overlay at; a change of the
-    /// activity is the app's answer and shows it again.
-    hidden_at: Cell<Option<u64>>,
+    /// Per activity, the identity (its id and title) the person put away:
+    /// it stays away until the app shows something with another identity.
+    hidden: RefCell<std::collections::BTreeMap<String, (String, String)>>,
+    /// Activities folded back into the bar.
+    collapsed: RefCell<std::collections::BTreeSet<String>>,
+    /// Activities the person pulled out of the bar's pill.
+    pulled: RefCell<std::collections::BTreeSet<String>>,
+    /// Every activity the person touched, most recent first.
+    touched: RefCell<Vec<String>>,
+    /// Where each card was left loose (this device only).
+    loose: RefCell<std::collections::BTreeMap<String, Rect>>,
+    /// The announcements posted, by `app:id`.
+    announced: RefCell<std::collections::BTreeSet<String>>,
 }
 
-impl Clock {
+impl Activities {
     pub(crate) fn new(board: Arc<runtime_collab::LiveActivities>) -> Self {
         Self {
             board,
-            hidden_at: Cell::new(None),
+            hidden: RefCell::default(),
+            collapsed: RefCell::default(),
+            pulled: RefCell::default(),
+            touched: RefCell::default(),
+            loose: RefCell::default(),
+            announced: RefCell::default(),
         }
     }
 
@@ -54,116 +77,230 @@ impl Clock {
         &self.board
     }
 
-    /// Hand a control pressed on the floating clock back to Clocks.
-    pub(crate) fn press(&self, command: &str, activity_id: Option<&str>) {
+    /// What one app publishes now.
+    pub(crate) fn published(&self, app: &str) -> Option<Published> {
+        let activity = self.board.activity(app)?;
+        serde_json::from_value(activity)
+            .inspect_err(|error| tracing::warn!(%error, app, "a live activity does not read back"))
+            .ok()
+    }
+
+    /// Every activity shown now, as the bar's pill names them: the app and
+    /// its summary, in app id order.
+    pub(crate) fn summaries(&self) -> Vec<(String, Summary)> {
+        self.read()
+            .into_iter()
+            .filter_map(|(app, published)| {
+                let summary = published.summary?;
+                self.shows(&app, &summary).then_some((app, summary))
+            })
+            .collect()
+    }
+
+    /// The cards the floating layer draws: what asks to float and what the
+    /// person pulled out of the bar, at most [`ui::floating_layer::MAX_CARDS`]
+    /// — the least recently touched fold into the pill.
+    pub(crate) fn cards(&self) -> Vec<Card> {
+        let mut cards: Vec<(usize, Card)> = self
+            .read()
+            .into_iter()
+            .filter_map(|(app, published)| {
+                let summary = published.summary?;
+                if !self.shows(&app, &summary) {
+                    return None;
+                }
+                let key = key(&app, &summary);
+                let pulled = self.pulled.borrow().contains(&key);
+                let collapsed = self.collapsed.borrow().contains(&key);
+                if collapsed || !(published.overlay || pulled) {
+                    return None;
+                }
+                Some((
+                    self.recently_touched(&key).unwrap_or(usize::MAX),
+                    Card::new(app, summary),
+                ))
+            })
+            .collect();
+        cards.sort_by_key(|(order, _)| *order);
+        cards.truncate(ui::floating_layer::MAX_CARDS);
+        cards
+            .into_iter()
+            .map(|(_, mut card)| {
+                card.loose = self
+                    .loose
+                    .borrow()
+                    .get(&key(&card.app, &card.summary))
+                    .copied();
+                card
+            })
+            .collect()
+    }
+
+    /// Whether a phone-width card is pulled out of the bar.
+    pub(crate) fn expanded(&self) -> bool {
+        !self.pulled.borrow().is_empty()
+    }
+
+    /// A control the person pressed on an activity reaches its app.
+    pub(crate) fn press(&self, app: &str, activity: &str, command: &str) {
+        self.touch(app, activity);
         self.board.press(
-            CLOCKS_APP,
-            serde_json::json!({ "command": command, "activity_id": activity_id }),
+            app,
+            serde_json::json!({
+                "command": command,
+                "activity_id": (!activity.is_empty()).then_some(activity),
+            }),
         );
     }
 
-    /// The person closed the overlay: it stays away until Clocks shows
-    /// something new.
-    pub(crate) fn hide(&self) {
-        self.hidden_at.set(Some(self.board.revision()));
+    /// The person ended or put away an activity: an app that offers a close
+    /// has it asked to end it, and one that cannot be stopped from outside
+    /// goes away until it shows something else.
+    pub(crate) fn close(&self, app: &str, activity: &str) {
+        let summary = self
+            .read()
+            .into_iter()
+            .find(|(shown, _)| shown == app)
+            .and_then(|(_, published)| published.summary)
+            .filter(|summary| summary.id == activity);
+        let Some(summary) = summary else {
+            return;
+        };
+        let key = key(app, &summary);
+        self.loose.borrow_mut().remove(&key);
+        self.pulled.borrow_mut().remove(&key);
+        self.collapsed.borrow_mut().remove(&key);
+        self.touched.borrow_mut().retain(|touched| touched != &key);
+        if let Some(close) = summary.close_control() {
+            self.press(app, activity, &close.id);
+        } else {
+            self.hidden
+                .borrow_mut()
+                .insert(key, (summary.id, summary.title));
+        }
     }
 
-    /// Whether the bar's clock shows the activity floating over the windows: it asks to, and
-    /// the person has not put this very activity away.
-    pub(crate) fn floating(&self, overlay: bool) -> bool {
-        overlay && self.hidden_at.get() != Some(self.board.revision())
+    /// The person folded the card back into the bar.
+    pub(crate) fn collapse(&self, app: &str, activity: &str) {
+        let key = format!("{app}:{activity}");
+        self.pulled.borrow_mut().remove(&key);
+        self.collapsed.borrow_mut().insert(key);
     }
 
-    /// What the clocks app shows now.
-    fn activity(&self) -> Option<ClocksActivity> {
+    /// The person pulled the activity out of the bar's pill: its card shows
+    /// again, however the app asked for it. The board is what knows which
+    /// app publishes the activity the pill named.
+    pub(crate) fn expand(&self, activity: &str) {
+        let Some((app, summary)) = self.read().into_iter().find_map(|(app, published)| {
+            let summary = published.summary?;
+            (summary.id == activity).then_some((app, summary))
+        }) else {
+            return;
+        };
+        let key = key(&app, &summary);
+        self.collapsed.borrow_mut().remove(&key);
+        self.pulled.borrow_mut().insert(key);
+        self.touch(&app, activity);
+    }
+
+    /// The person left a card `at` a place of its own (`None`: back in the
+    /// column the layer docks it in).
+    pub(crate) fn moved(&self, app: &str, activity: &str, at: Option<Rect>) {
+        let key = format!("{app}:{activity}");
+        match at {
+            Some(rect) => self.loose.borrow_mut().insert(key, rect),
+            None => self.loose.borrow_mut().remove(&key),
+        };
+        self.touch(app, activity);
+    }
+
+    /// Keyboard focus came to the cards, or left them.
+    pub(crate) fn focus(&self, on: bool) {
+        if on
+            && let Some((app, activity)) = self
+                .cards()
+                .first()
+                .map(|card| (card.app.clone(), card.summary.id.clone()))
+        {
+            self.touch(&app, &activity);
+        }
+    }
+
+    /// The due events the apps want announced, each posted once.
+    pub(crate) fn announce(&self, notices: &DesktopNotifications) {
+        for (app, published) in self.read() {
+            let Some(announcement) = published.announce else {
+                continue;
+            };
+            let key = format!("{app}:{}", announcement.id);
+            if !self.announced.borrow_mut().insert(key) {
+                continue;
+            }
+            let title = if announcement.title.is_empty() {
+                crate::i18n::t("clock-due-title")
+            } else {
+                announcement.title
+            };
+            let body = if announcement.body.is_empty() {
+                crate::i18n::t("clock-due-body")
+            } else {
+                announcement.body
+            };
+            notices.post(Notification::new(title, body));
+        }
+    }
+
+    /// What every app publishes now, by app.
+    fn read(&self) -> Vec<(String, Published)> {
         self.board
-            .activity(CLOCKS_APP)
-            .and_then(|activity| serde_json::from_value(activity).ok())
+            .activities()
+            .into_iter()
+            .filter_map(|(app, activity)| {
+                serde_json::from_value(activity)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, app, "a live activity does not read back");
+                    })
+                    .ok()
+                    .map(|published| (app, published))
+            })
+            .collect()
     }
 
-    /// Whether the activity floats over the windows for the person to see.
-    fn overlay(&self, activity: &ClocksActivity) -> bool {
-        self.floating(activity.overlay)
+    /// Whether `summary` shows: an activity the person put away stays away
+    /// until the app shows another one.
+    fn shows(&self, app: &str, summary: &Summary) -> bool {
+        let key = key(app, summary);
+        let hidden = self.hidden.borrow().get(&key).cloned();
+        let identity = (summary.id.clone(), summary.title.clone());
+        match hidden {
+            Some(put_away) if put_away == identity => false,
+            Some(_) => {
+                // The app's answer: it shows something new, and shows again.
+                self.hidden.borrow_mut().remove(&key);
+                true
+            }
+            None => true,
+        }
+    }
+
+    fn touch(&self, app: &str, activity: &str) {
+        let key = format!("{app}:{activity}");
+        let mut touched = self.touched.borrow_mut();
+        touched.retain(|seen| seen != &key);
+        touched.insert(0, key);
+    }
+
+    fn recently_touched(&self, key: &str) -> Option<usize> {
+        self.touched
+            .borrow()
+            .iter()
+            .position(|touched| touched == key)
     }
 }
 
-/// What the clocks app puts on its live activity, as the bar reads it: the
-/// timer or stopwatch running, and the due timer it wants announced.
-#[derive(serde::Deserialize)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "active, stopwatch, paused and overlay are independent fields of the activity Clocks shows"
-)]
-struct ClocksActivity {
-    #[serde(default = "active_unless_told")]
-    active: bool,
-    #[serde(default)]
-    activity_id: Option<String>,
-    label: String,
-    remaining_secs: u64,
-    #[serde(default)]
-    stopwatch: bool,
-    #[serde(default)]
-    paused: bool,
-    #[serde(default)]
-    overlay: bool,
-    #[serde(default)]
-    notification_id: Option<String>,
-    #[serde(default)]
-    notification_title: String,
-    #[serde(default)]
-    notification_body: String,
-}
-
-/// An app that names no `active` shows its activity.
-fn active_unless_told() -> bool {
-    true
-}
-
-/// The clock reading the bar shows, and whether it floats: Clocks'
-/// activity as it stands, with a newly due timer announced once.
-fn clock_reading(
-    clock: &Clock,
-    notified: &RefCell<Option<String>>,
-    notices: &DesktopNotifications,
-) -> (Option<ClockActivity>, bool) {
-    let Some(activity) = clock.activity() else {
-        return (None, false);
-    };
-    // A due timer the person has not been told about yet.
-    let due = activity
-        .notification_id
-        .clone()
-        .filter(|id| notified.borrow().as_deref() != Some(id.as_str()));
-    if let Some(id) = due {
-        let title = if activity.notification_title.is_empty() {
-            crate::i18n::t("clock-due-title")
-        } else {
-            activity.notification_title.clone()
-        };
-        let body = if activity.notification_body.is_empty() {
-            crate::i18n::t("clock-due-body")
-        } else {
-            activity.notification_body.clone()
-        };
-        notices.post(Notification::new(title, body));
-        notified.replace(Some(id));
-    }
-    if !activity.active {
-        return (None, false);
-    }
-    let overlay = clock.overlay(&activity);
-    (
-        Some(ClockActivity {
-            activity_id: activity.activity_id,
-            label: activity.label,
-            remaining_secs: activity.remaining_secs,
-            stopwatch: activity.stopwatch,
-            paused: activity.paused,
-            overlay: activity.overlay,
-        }),
-        overlay,
-    )
+/// `<app>:<activity>`: what the person's say over one activity is kept under.
+fn key(app: &str, summary: &Summary) -> String {
+    format!("{app}:{}", summary.id)
 }
 
 /// What the bar reads of the session besides the desk's tree: the
@@ -173,7 +310,7 @@ fn clock_reading(
 pub(crate) struct BarFeeds {
     pub(crate) signals: Rc<NoticeSignals>,
     pub(crate) readings: crate::status::Shared,
-    pub(crate) clock: Rc<Clock>,
+    pub(crate) activities: Rc<Activities>,
     pub(crate) notices: DesktopNotifications,
     /// The applications' tray items, when their watcher serves.
     pub(crate) tray: Option<Arc<tilo_tray_host::Tray>>,
@@ -201,23 +338,28 @@ pub(crate) struct ChromeWiring {
     pub(crate) feeds: BarFeeds,
 }
 
-/// What the snapshot revision was last bumped for: the tree's revision, the
-/// minute, the last wave heard, the ask on the person's avatar, the tray's
-/// revision, the displays a fullscreen window owns, who views the windows
-/// this session shares, the notification count and silence the bell shows,
-/// and the Identify request the chrome answers.
-type Seen = (
-    u64,
-    i64,
-    Option<String>,
-    u64,
-    u64,
-    Vec<String>,
-    Vec<(u64, u64, bool)>,
-    u32,
-    bool,
-    Option<u64>,
-);
+/// What the snapshot revision was last bumped for: the tree's revision, who
+/// is here, the minute, the last wave heard, the ask on the person's avatar,
+/// the tray's revision, the displays a fullscreen window owns, who views the
+/// windows this session shares, the notification count and silence the bell
+/// shows, and the Identify request the chrome answers.
+/// What the snapshot revision was last bumped for (see [`SessionChrome::seen`]).
+#[derive(PartialEq)]
+struct Seen {
+    tree: u64,
+    people: u64,
+    minute: i64,
+    waved: Option<String>,
+    ask: u64,
+    tray: u64,
+    fullscreen: Vec<String>,
+    exposures: Vec<(u64, u64, bool)>,
+    unread: u32,
+    quiet: bool,
+    identify: Option<u64>,
+    activities: u64,
+    words: u64,
+}
 
 /// The bar's view of the session: the desktop's tree, the wall clock, and
 /// the person at this device.
@@ -239,15 +381,14 @@ pub(crate) struct SessionChrome {
     /// The machine as the services last published it: the status cluster's
     /// battery, network and volume glyphs, and the streams being captured.
     pub(crate) readings: crate::status::Shared,
-    /// The clocks app's live activity, which the bar shows as its clock.
-    pub(crate) clock: Rc<Clock>,
+    /// The apps' live activities, which the bar's pill names and the
+    /// floating layer shows as cards.
+    pub(crate) activities: Rc<Activities>,
     /// The desk's notifications, where a due timer is announced.
     pub(crate) notices: DesktopNotifications,
     /// The running applications' status-notifier items, as their host keeps
     /// them.
     pub(crate) tray: Option<Arc<tilo_tray_host::Tray>>,
-    /// The due timer announced last, so an unchanged one is announced once.
-    notified: RefCell<Option<String>>,
     /// The monitors of the displays a fullscreen window owns, which the
     /// loop takes from the compositor each pass.
     fullscreen: Rc<RefCell<Vec<String>>>,
@@ -272,7 +413,7 @@ impl SessionChrome {
         let BarFeeds {
             signals,
             readings,
-            clock,
+            activities,
             notices,
             tray,
             fullscreen,
@@ -288,25 +429,27 @@ impl SessionChrome {
             notifications_only,
             sync,
             readings,
-            clock,
+            activities,
             notices,
             tray,
-            notified: RefCell::new(None),
             fullscreen,
             shares,
             identify,
-            seen: RefCell::new((
-                u64::MAX,
-                0,
-                None,
-                u64::MAX,
-                u64::MAX,
-                Vec::new(),
-                Vec::new(),
-                0,
-                false,
-                None,
-            )),
+            seen: RefCell::new(Seen {
+                tree: u64::MAX,
+                people: u64::MAX,
+                minute: 0,
+                waved: None,
+                ask: u64::MAX,
+                tray: u64::MAX,
+                fullscreen: Vec::new(),
+                exposures: Vec::new(),
+                unread: 0,
+                quiet: false,
+                identify: None,
+                activities: u64::MAX,
+                words: u64::MAX,
+            }),
             revision: Cell::new(0),
         }
     }
@@ -324,28 +467,43 @@ impl DesktopChromeSource for SessionChrome {
     fn snapshot(&self) -> DesktopChromeSnapshot {
         let clock = ClockSnapshot::now();
         let waved = self.sync.as_ref().and_then(|sync| sync.wave_notice());
-        let (clock_activity, clock_overlay) =
-            clock_reading(&self.clock, &self.notified, &self.notices);
+        // A due event is announced once, here, where the bar reads it.
+        self.activities.announce(&self.notices);
+        let activities: Vec<Summary> = self
+            .activities
+            .summaries()
+            .into_iter()
+            .map(|(_, summary)| summary)
+            .collect();
         // The bar's pixels for an ask that comes, opens, folds, is answered
         // or is put off change with it, so the revision moves for those as
         // it does for the tree.
         let exposures = self.shares.borrow().exposures();
         let identify = self.identify.borrow().clone();
-        let seen = (
-            self.handle.revision(),
-            clock.unix_seconds.div_euclid(60),
-            waved.as_ref().map(|notice| notice.from.clone()),
-            self.handle.personal_ask_revision(),
-            self.app_tray_revision(),
-            self.fullscreen.borrow().clone(),
-            exposures
+        let seen = Seen {
+            tree: self.handle.revision(),
+            // Who is here, the window they are in and the call they are in
+            // reach the bar as its faces and roster, and none of it moves
+            // the tree: without this the face of everyone who arrives after
+            // the first frame never draws.
+            people: self.sync.as_ref().map_or(0, |sync| sync.people_revision()),
+            minute: clock.unix_seconds.div_euclid(60),
+            waved: waved.as_ref().map(|notice| notice.from.clone()),
+            ask: self.handle.personal_ask_revision(),
+            tray: self.app_tray_revision(),
+            fullscreen: self.fullscreen.borrow().clone(),
+            exposures: exposures
                 .iter()
                 .map(|exposure| (exposure.surface, exposure.peer, exposure.can_control))
                 .collect(),
-            self.signals.unread(),
-            self.signals.quiet(),
-            identify.as_ref().map(|ask| ask.id),
-        );
+            unread: self.signals.unread(),
+            quiet: self.signals.quiet(),
+            identify: identify.as_ref().map(|ask| ask.id),
+            activities: self.activities.board().revision(),
+            // The bar says its words in the person's language: another one
+            // relabels it as any other change to what it shows does.
+            words: ui::I18nManager::revision(),
+        };
         if *self.seen.borrow() != seen {
             self.seen.replace(seen);
             self.revision.set(self.revision.get().wrapping_add(1));
@@ -357,11 +515,7 @@ impl DesktopChromeSource for SessionChrome {
             fullscreen: self.handle.read(|tree| tree.fullscreen_group().is_some()),
             status: self.status(),
             clock,
-            overlays: ChromeOverlays {
-                clock: clock_overlay,
-                ..ChromeOverlays::default()
-            },
-            clock_activity,
+            activities,
             waved,
             own: Some(OwnChip {
                 // The name they go by, and the root key the picture they
@@ -547,6 +701,22 @@ impl crate::Session {
     }
 }
 
+/// What holds the keyboard over the desk: the desk's search from the pass it
+/// says it is open, and what the overlay stack says otherwise.
+///
+/// The palette is the desk's own state while it is the chrome that draws it
+/// and publishes its surface. A key typed between the desk opening it and the
+/// chrome drawing it is the palette's, not the window's behind it: what the
+/// person typed goes into the search, and the frame that key asks for is the
+/// one that publishes the palette's surface.
+pub(crate) fn keyboard_target(handle: &DesktopHandle, overlays: &Overlays) -> Target {
+    if handle.search_open() {
+        Target::Surface(Slot::Search)
+    } else {
+        overlays.target()
+    }
+}
+
 /// The chrome above the windows (the top bar, overview, menus) as the
 /// session hosts it: its own tree beside the desk's, covering the outputs.
 pub(crate) fn host(
@@ -557,6 +727,7 @@ pub(crate) fn host(
     overview: &crate::mount::overview::Overview,
     emoji: &tilo_desktop::emoji_picker::EmojiLink,
     overlays: &Overlays,
+    switcher: &tilo_desktop::window_switcher::Switcher,
 ) -> WidgetHost {
     let ChromeWiring {
         intents,
@@ -595,13 +766,19 @@ pub(crate) fn host(
     chrome.set_overview(overview.flight(), overview.open_flag());
     chrome.set_emoji(emoji.clone());
     chrome.set_overlays(overlays.clone());
+    chrome.set_switcher(switcher.clone());
     chrome.set_reveals(reveals);
     chrome.set_shortcuts(options.config.shortcuts.clone());
     // Keys come to the chrome while one of the surfaces it draws holds the
     // keyboard: the stack says which, and it says the window's again as soon
     // as the top surface closes.
+    let desk = handle.clone();
     let holds = overlays.clone();
-    let keyboard = Rc::new(move || holds.target().slot().is_some_and(Slot::is_chrome));
+    let keyboard = Rc::new(move || {
+        keyboard_target(&desk, &holds)
+            .slot()
+            .is_some_and(Slot::is_chrome)
+    });
     let placement = SurfacePlacement {
         origin: (0, 0),
         size: (1, 1),
@@ -609,17 +786,45 @@ pub(crate) fn host(
     };
     let mut host = WidgetHost::new(Box::new(chrome), placement, false).named("Top bar");
     host.set_theme((options.presentation)().theme);
+    // What the compositor draws over the chrome: the overview's flying windows,
+    // and the ones the switcher's panel shows in its cards.
     let pictures = overview.clone();
-    host.with_window_pictures(Rc::new(move || pictures.pictures()))
-        .covering_outputs()
-        .with_keyboard(keyboard)
+    let walking = switcher.clone();
+    host.with_window_pictures(Rc::new(move || {
+        let mut shown = pictures.pictures();
+        shown.extend(walking.pictures().into_iter().map(|picture| {
+            let (x, y, width, height) = (
+                picture.rect.x0,
+                picture.rect.y0,
+                picture.rect.width(),
+                picture.rect.height(),
+            );
+            tilo_compositor::WindowPicture {
+                window: picture.window,
+                rect: (x, y, width, height),
+                opacity: 1.0,
+                // A picture stays in its well: paging the cards never spills a
+                // window over the panel's edge.
+                clip: Some((x, y, width, height)),
+            }
+        }));
+        shown
+    }))
+    .covering_outputs()
+    .with_keyboard(keyboard)
 }
 
 impl crate::Shared {
-    /// A card of the empty desk's launchpad: its app, else the desktop's
-    /// search, which finds what to open.
+    /// A verb of the empty desk's launchpad, as its card, its host action
+    /// and its resource action all ask for it: the app action the verb
+    /// declares, what only the session can do, and else the app itself.
     pub(crate) fn launchpad(&self, action: LaunchpadAction) {
+        if let Some(app_action) = action.app_action() {
+            return self.invoke_app_action(app_action);
+        }
         match action {
+            // Bringing people in happens in this workspace's settings.
+            LaunchpadAction::Invite => self.open_workspace_settings(),
             LaunchpadAction::Activity => self
                 .intents
                 .borrow_mut()
@@ -644,93 +849,183 @@ impl crate::Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::live_activity::{Control, ControlKind, Kind, Tone};
 
-    /// Clocks' live activity in the shape its app publishes it: the label
-    /// and remaining time every activity carries, and what `extra` adds.
-    fn timer(extra: &serde_json::Value) -> serde_json::Value {
-        let mut activity = serde_json::json!({ "label": "Tea", "remaining_secs": 90 });
-        if let (Some(activity), Some(extra)) = (activity.as_object_mut(), extra.as_object()) {
-            for (key, value) in extra {
-                activity.insert(key.clone(), value.clone());
-            }
+    /// A timer's summary as Clocks publishes it: the label and countdown
+    /// every timer carries, and what `extra` adds.
+    fn timer(id: &str, title: &str, countdown: i64) -> Summary {
+        Summary::new(
+            Kind::Timer,
+            title,
+            ui::format::timecode(countdown.unsigned_abs()),
+        )
+        .with_id(id)
+        .with_countdown(countdown)
+        .with_control(Control::new("toggle", "Pause", ControlKind::Primary))
+        .with_control(Control::new("close", "End", ControlKind::Close))
+    }
+
+    fn publish(board: &runtime_collab::LiveActivities, app: &str, published: Published) {
+        board.show(app, Some(serde_json::to_value(published).expect("JSON")));
+    }
+
+    /// A running timer is the bar's pill, and its card floats because Clocks
+    /// asks for it.
+    #[test]
+    fn a_floating_timer_is_the_bars_pill_and_its_card() {
+        let board = Arc::new(runtime_collab::LiveActivities::default());
+        let activities = Activities::new(Arc::clone(&board));
+        let mut published = Published::of(timer("timer-1", "Tea", 90));
+        published.overlay = true;
+        publish(&board, CLOCKS_APP, published);
+
+        let summaries = activities.summaries();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].0, CLOCKS_APP);
+        assert_eq!(summaries[0].1.title, "Tea");
+        let cards = activities.cards();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].app, CLOCKS_APP);
+        assert_eq!(cards[0].summary.id, "timer-1");
+
+        // An activity that does not ask to float is the pill's only.
+        let mut quiet = Published::of(timer("timer-2", "Bread", 600));
+        quiet.overlay = false;
+        publish(&board, CLOCKS_APP, quiet);
+        assert_eq!(activities.summaries().len(), 1);
+        assert!(activities.cards().is_empty());
+    }
+
+    /// Ending an activity that offers a close asks its app to end it; one
+    /// that cannot be stopped from outside is put away until the app shows
+    /// another one, and comes back the moment it does.
+    #[tokio::test]
+    async fn an_activity_is_ended_by_its_app_or_put_away() {
+        let board = Arc::new(runtime_collab::LiveActivities::default());
+        let activities = Activities::new(Arc::clone(&board));
+        let clocks = runtime_collab::live_activity::LiveActivityServer::new(
+            CLOCKS_APP,
+            Arc::clone(&board),
+            Arc::new(|| Ok(())),
+        );
+        let mut published = Published::of(timer("timer-1", "Tea", 90));
+        published.overlay = true;
+        publish(&board, CLOCKS_APP, published);
+
+        activities.close(CLOCKS_APP, "timer-1");
+        let (_, controls) = clocks.controls(0).await.expect("Clocks takes the close");
+        let controls: serde_json::Value = serde_json::from_slice(&controls).expect("JSON");
+        assert_eq!(
+            controls,
+            serde_json::json!([{ "command": "close", "activity_id": "timer-1" }]),
+            "the card's close asked the app to end the timer"
+        );
+
+        // An activity with no close to offer is put away instead.
+        let music = Summary::new(Kind::Music, "A song", "").with_id("track-1");
+        publish(&board, "so.tilo.music", Published::of(music.clone()));
+        let shown = || {
+            activities
+                .summaries()
+                .into_iter()
+                .any(|(app, _)| app == "so.tilo.music")
+        };
+        activities.close("so.tilo.music", "track-1");
+        assert!(!shown(), "it is away");
+
+        // The same song ticking on is still the same activity.
+        publish(&board, "so.tilo.music", Published::of(music));
+        assert!(!shown(), "still away");
+
+        // Another song is the app's answer: it shows again.
+        publish(
+            &board,
+            "so.tilo.music",
+            Published::of(Summary::new(Kind::Music, "Another song", "").with_id("track-2")),
+        );
+        assert!(shown(), "shown again");
+    }
+
+    /// A control pressed on a card reaches the app it belongs to, with the
+    /// activity it names, and makes that activity the most recently touched.
+    #[tokio::test]
+    async fn a_pressed_control_reaches_its_app() {
+        let board = Arc::new(runtime_collab::LiveActivities::default());
+        let activities = Activities::new(Arc::clone(&board));
+        let clocks = runtime_collab::live_activity::LiveActivityServer::new(
+            CLOCKS_APP,
+            Arc::clone(&board),
+            Arc::new(|| Ok(())),
+        );
+        activities.press(CLOCKS_APP, "timer-1", "add-minute");
+        let (_, controls) = clocks.controls(0).await.expect("Clocks takes the control");
+        let controls: serde_json::Value = serde_json::from_slice(&controls).expect("JSON");
+        assert_eq!(
+            controls,
+            serde_json::json!([{ "command": "add-minute", "activity_id": "timer-1" }])
+        );
+    }
+
+    /// At most three cards stand at once: the least recently touched folds
+    /// into the bar's pill.
+    #[test]
+    fn at_most_three_cards_keep_the_most_recently_touched() {
+        let board = Arc::new(runtime_collab::LiveActivities::default());
+        let activities = Activities::new(Arc::clone(&board));
+        for (app, id) in [
+            ("so.tilo.maps", "route-1"),
+            ("so.tilo.music", "track-1"),
+            (CLOCKS_APP, "timer-1"),
+            ("so.tilo.chat", "call-1"),
+        ] {
+            let mut published = Published::of(Summary::new(Kind::Other, app, "").with_id(id));
+            published.overlay = true;
+            publish(&board, app, published);
+            activities.press(app, id, "noop");
         }
-        activity
+        let cards = activities.cards();
+        assert_eq!(cards.len(), ui::floating_layer::MAX_CARDS);
+        let kept: Vec<&str> = cards.iter().map(|card| card.summary.id.as_str()).collect();
+        assert!(
+            kept.contains(&"call-1"),
+            "the newest keeps its card: {kept:?}"
+        );
+        assert!(kept.contains(&"timer-1"), "{kept:?}");
+        assert!(kept.contains(&"track-1"), "{kept:?}");
+        assert!(
+            !kept.contains(&"route-1"),
+            "the least recent folded: {kept:?}"
+        );
+        // Every one of them is still in the pill.
+        assert_eq!(activities.summaries().len(), 4);
     }
 
-    /// A running timer is the bar's clock and floats over the windows; the
-    /// person closing the overlay keeps it away until Clocks shows something
-    /// new, and a timer that ended leaves neither.
+    /// Collapsing a card folds it into the bar; pulling an activity out
+    /// brings its card back, however it asked.
     #[test]
-    fn a_running_timer_shows_on_the_bar_and_floats_until_the_person_puts_it_away() {
-        let board = std::sync::Arc::new(runtime_collab::LiveActivities::default());
-        let clock = Clock::new(std::sync::Arc::clone(&board));
-        let notices = DesktopNotifications::default();
-        let notified = RefCell::new(None);
-        board.show(
-            CLOCKS_APP,
-            Some(timer(&serde_json::json!({
-                "active": true,
-                "activity_id": "timer-1",
-                "stopwatch": false,
-                "overlay": true,
-            }))),
-        );
-        let (activity, overlay) = clock_reading(&clock, &notified, &notices);
-        let activity = activity.expect("the timer is the bar's clock");
-        assert_eq!(activity.label, "Tea");
-        assert_eq!(activity.remaining_secs, 90);
-        assert_eq!(activity.activity_id.as_deref(), Some("timer-1"));
-        assert!(overlay, "it floats over the windows");
+    fn collapse_and_expand_move_an_activity_between_the_bar_and_a_card() {
+        let board = Arc::new(runtime_collab::LiveActivities::default());
+        let activities = Activities::new(Arc::clone(&board));
+        let mut published = Published::of(timer("timer-1", "Tea", 90));
+        published.overlay = true;
+        publish(&board, CLOCKS_APP, published);
 
-        clock.hide();
-        let (activity, overlay) = clock_reading(&clock, &notified, &notices);
-        assert!(activity.is_some(), "the bar still reads the time");
-        assert!(!overlay, "but nothing floats");
+        activities.collapse(CLOCKS_APP, "timer-1");
+        assert!(activities.cards().is_empty(), "folded into the bar");
+        assert_eq!(activities.summaries().len(), 1, "the pill still names it");
 
-        // Clocks shows the same timer paused, a change: it is back.
-        board.show(
-            CLOCKS_APP,
-            Some(timer(&serde_json::json!({
-                "active": true,
-                "activity_id": "timer-1",
-                "paused": true,
-                "overlay": true,
-            }))),
-        );
-        assert!(clock_reading(&clock, &notified, &notices).1, "shown again");
-
-        board.show(CLOCKS_APP, None);
-        let (activity, overlay) = clock_reading(&clock, &notified, &notices);
-        assert!(activity.is_none(), "the timer ended");
-        assert!(!overlay);
+        activities.expand("timer-1");
+        assert_eq!(activities.cards().len(), 1, "pulled out");
+        assert_eq!(activities.cards()[0].summary.tone, Tone::Neutral);
     }
 
-    /// An activity the app marked inactive is not the bar's clock.
-    #[test]
-    fn an_inactive_activity_leaves_the_clock_bare() {
-        let board = std::sync::Arc::new(runtime_collab::LiveActivities::default());
-        let clock = Clock::new(std::sync::Arc::clone(&board));
-        let notices = DesktopNotifications::default();
-        board.show(
-            CLOCKS_APP,
-            Some(timer(
-                &serde_json::json!({ "active": false, "overlay": true }),
-            )),
-        );
-        let (activity, overlay) = clock_reading(&clock, &RefCell::new(None), &notices);
-        assert!(activity.is_none());
-        assert!(!overlay);
-    }
-
-    /// A due timer is announced once, in the app's own words when it has
+    /// A due event is announced once, in the app's own words when it has
     /// them and in the desktop's otherwise.
     #[test]
-    fn a_due_timer_is_announced_once() {
-        let board = std::sync::Arc::new(runtime_collab::LiveActivities::default());
-        let clock = Clock::new(std::sync::Arc::clone(&board));
+    fn a_due_event_is_announced_once() {
+        let board = Arc::new(runtime_collab::LiveActivities::default());
+        let activities = Activities::new(Arc::clone(&board));
         let notices = DesktopNotifications::default();
-        let notified = RefCell::new(None);
-        // What the banners show now, by title and body.
         let announced = || {
             notices
                 .log()
@@ -739,59 +1034,42 @@ mod tests {
                 .map(|notification| (notification.title.clone(), notification.body.clone()))
                 .collect::<Vec<_>>()
         };
-        let due = |activity: &serde_json::Value| {
-            board.show(CLOCKS_APP, Some(timer(activity)));
-        };
-        due(&serde_json::json!({
-            "active": true,
-            "overlay": true,
-            "notification_id": "due-1",
-            "notification_title": "Bread",
-            "notification_body": "Out of the oven",
-        }));
-        clock_reading(&clock, &notified, &notices);
+        publish(
+            &board,
+            CLOCKS_APP,
+            Published::announcing(ui::live_activity::Announcement {
+                id: "due-1".into(),
+                title: "Bread".into(),
+                body: "Out of the oven".into(),
+            }),
+        );
+        activities.announce(&notices);
         let live = announced();
-        assert_eq!(live.len(), 1, "one announcement");
-        assert_eq!(live[0].0, "Bread");
-        assert_eq!(live[0].1, "Out of the oven");
-        assert_eq!(notified.borrow().as_deref(), Some("due-1"));
+        assert_eq!(
+            live,
+            [(String::from("Bread"), String::from("Out of the oven"))]
+        );
 
-        // The same due timer, read again, is not announced again.
-        clock_reading(&clock, &notified, &notices);
+        // The same due event, read again, is not announced again.
+        activities.announce(&notices);
         assert_eq!(announced().len(), 1, "still one");
 
-        // A timer that names its own due time in no words gets the
+        // An app that names its own due event in no words gets the
         // desktop's.
         board.show(CLOCKS_APP, None);
-        due(&serde_json::json!({
-            "active": true,
-            "overlay": true,
-            "notification_id": "due-2",
-        }));
-        clock_reading(&clock, &notified, &notices);
+        publish(
+            &board,
+            CLOCKS_APP,
+            Published::announcing(ui::live_activity::Announcement {
+                id: "due-2".into(),
+                title: String::new(),
+                body: String::new(),
+            }),
+        );
+        activities.announce(&notices);
         let live = announced();
-        assert_eq!(live.len(), 2, "the next timer is its own announcement");
+        assert_eq!(live.len(), 2, "the next one is its own announcement");
         assert_eq!(live[1].0, crate::i18n::t("clock-due-title"));
         assert_eq!(live[1].1, crate::i18n::t("clock-due-body"));
-    }
-
-    /// A control pressed on the floating clock reaches Clocks with the timer
-    /// it belongs to.
-    #[tokio::test]
-    async fn a_pressed_control_reaches_clocks() {
-        let board = std::sync::Arc::new(runtime_collab::LiveActivities::default());
-        let clock = Clock::new(std::sync::Arc::clone(&board));
-        let clocks = runtime_collab::live_activity::LiveActivityServer::new(
-            CLOCKS_APP,
-            std::sync::Arc::clone(&board),
-            std::sync::Arc::new(|| Ok(())),
-        );
-        clock.press("add-minute", Some("timer-1"));
-        let (_, controls) = clocks.controls(0).await.expect("Clocks takes the control");
-        let controls: serde_json::Value = serde_json::from_slice(&controls).expect("JSON");
-        assert_eq!(
-            controls,
-            serde_json::json!([{ "command": "add-minute", "activity_id": "timer-1" }])
-        );
     }
 }

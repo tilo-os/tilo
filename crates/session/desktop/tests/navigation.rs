@@ -40,6 +40,8 @@ fn tree() -> DesktopTree {
                     label: "Renamed".into(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             }],
             active_tab: 9_007_199_254_741_001,
             width: WindowWidth::Normal,

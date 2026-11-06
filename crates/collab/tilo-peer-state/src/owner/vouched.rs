@@ -9,6 +9,7 @@ use crate::StatePeer;
 use crate::join::JoinTransportResponse;
 use crate::owner::record::{StoredVouch, StoredWorkspace};
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, publication};
+use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 use web_time::SystemTime;
 
@@ -128,9 +129,97 @@ impl NativeWorkspaceOwner {
             enrollment: None,
             vouched: Some(StoredVouch {
                 bootstrap: bootstrap.to_vec(),
+                hint: None,
             }),
             peer: peer.durable()?,
-            private_direct_conversations: crate::owner::PrivateDirectConversationStore::default(),
+            generation: 1,
+            continuity: 0,
+            publication: Some(publication::StoredPublication::default()),
+            workspace_memberships: std::collections::BTreeMap::new(),
+            effect_receipts: std::collections::BTreeMap::new(),
+            shortcut_change: None,
+            effect_history_root: None,
+            join_ledger: crate::join_ledger::JoinLedger::default(),
+            join_admissions: std::collections::BTreeMap::new(),
+        };
+        self.publish_workspace(workspace, NativeCommittedView { peer, record }, None)?;
+        Ok(true)
+    }
+
+    /// Hold the workspace of `workspace_id` as one of this person's further
+    /// devices: the workspace admits a device certified by a member's root as
+    /// that member's device, so `bootstrap` — the host's membership answer —
+    /// carries the workspace's governance and its roster, and this device
+    /// takes part in the workspace through `hint`, where its host is reached.
+    /// Answers whether that installed the workspace: one already held through
+    /// the same host stays as it is, while one the workspace's governance
+    /// moved to another host starts again from the answer.
+    ///
+    /// # Errors
+    /// The answer is not a membership answer for `device` and this workspace,
+    /// it names another host than the hint, `hint` is not the host's own
+    /// signed address, the workspace's governance does not admit `device`, a
+    /// workspace held through an enrollment would be replaced, or the record
+    /// cannot be published.
+    pub fn install_member(
+        &self,
+        workspace_id: u64,
+        bootstrap: &crate::join::JoinBootstrap,
+        hint: crate::join::TransportHint,
+        device: &DeviceCert,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        if bootstrap.workspace_id != workspace_id || bootstrap.device_cert != *device {
+            return Err("the workspace's membership answer names another device".into());
+        }
+        if hint.host.device_public_key != bootstrap.host.device_public_key {
+            return Err("the workspace's host hint is not the host that answered".into());
+        }
+        IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint)
+            .map_err(|error| error.to_string())?;
+        let workspace =
+            WorkspaceId::parse(&bootstrap.room).ok_or("noncanonical member workspace")?;
+        let _turn = self.0.mutation.lock();
+        if let Some(held) = self.0.authority.read().workspaces.get(&workspace) {
+            if held.enrollment.is_some() {
+                return Err("the workspace is held through an enrollment".into());
+            }
+            if held.workspace_host == bootstrap.host && held.workspace_id == workspace_id {
+                return Ok(false);
+            }
+        }
+        let mut peer = StatePeer::from_join(
+            &bootstrap.room,
+            bootstrap.host.clone(),
+            bootstrap.certified_roster.clone(),
+            &bootstrap.revocations,
+            now,
+        )?;
+        crate::owner::enrollment::install_governance(&mut peer, bootstrap, now)?;
+        if !peer.has_governance() {
+            return Err("a member's workspace arrived without its governance".into());
+        }
+        peer.permissions(device.device_public_key, now)
+            .map_err(|error| error.to_string())?;
+        if !peer.certificates().contains(device) {
+            return Err("the workspace does not admit this device".into());
+        }
+        let answer = postcard::to_stdvec(&JoinTransportResponse::MembershipComplete(
+            bootstrap.clone(),
+        ))
+        .map_err(|error| error.to_string())?;
+        let record = StoredWorkspace {
+            version: 2,
+            workspace,
+            workspace_id,
+            workspace_host: bootstrap.host.clone(),
+            device: device.clone(),
+            enrollment: None,
+            vouched: Some(StoredVouch {
+                bootstrap: answer,
+                hint: Some(hint),
+            }),
+            peer: peer.durable()?,
             generation: 1,
             continuity: 0,
             publication: Some(publication::StoredPublication::default()),

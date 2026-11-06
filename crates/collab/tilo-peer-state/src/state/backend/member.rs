@@ -1,7 +1,6 @@
 //! One current-member algorithm over actual admitted workspace data.
 use super::{GovernedIdentity, PeerCore, Role, SystemTime};
 use crate::state::MembershipError;
-use crate::workspace::key_hex::KeyHex;
 use std::collections::BTreeMap;
 use tilo_action_policy::{Bound, Grant, Subject};
 use tilo_workspace_join::delegation::Delegate;
@@ -11,6 +10,8 @@ trait Policy {
     fn members(&self) -> &BTreeMap<String, Role>;
     fn grants(&self) -> &[Grant];
     fn identity(&self) -> &GovernedIdentity;
+    /// The rows of this policy that did not decode.
+    fn damaged(&self) -> &crate::workspace::policy::Damaged;
     /// The role `person` acts with in `workspace`: none for a stranger or a
     /// blocked member.
     fn role(&self, workspace: &str, person: &str) -> Option<Role> {
@@ -29,8 +30,17 @@ trait Policy {
         (!blocked).then_some(role)
     }
 }
-fn key_text(key: &[u8; 32]) -> KeyHex {
-    KeyHex::new(key)
+fn key_text(key: &[u8; 32]) -> String {
+    hex::encode(key)
+}
+/// Why `person` holds no role here: a row of their access that did not read
+/// back, which is theirs to know, or none at all.
+fn absence(damaged: &crate::workspace::policy::Damaged, person: &str) -> MembershipError {
+    if damaged.hides(person) {
+        MembershipError::UnreadableAccess
+    } else {
+        MembershipError::NoMembership
+    }
 }
 /// A current member's role, and the bound on it when its device is a
 /// delegate.
@@ -72,7 +82,7 @@ fn current<'peer, P: Policy>(
     let person = key_text(&cert.user_public_key);
     let role = policy
         .role(&peer.workspace, person.as_str())
-        .ok_or(MembershipError::NoMembership)?;
+        .ok_or_else(|| absence(policy.damaged(), person.as_str()))?;
     // A delegate acts with its person's authority bounded by its own: an
     // agent by the agent preset, a bot by its derived grant in the workspace's
     // policy. Neither governs the workspace, and neither rises above an Editor.
@@ -116,6 +126,9 @@ impl Policy for LegacyPolicy<'_> {
     }
     fn identity(&self) -> &GovernedIdentity {
         self.identity
+    }
+    fn damaged(&self) -> &crate::workspace::policy::Damaged {
+        &self.data.damaged
     }
 }
 pub(in crate::state) fn legacy(

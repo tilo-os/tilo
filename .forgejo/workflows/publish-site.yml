@@ -1,9 +1,11 @@
-name: Publish / web entry
+name: Publish / site
 
-# The image tilo.coffee runs: the web entry, built from one commit of main,
-# tested and pushed as dev-<commit>. The site is released by hand and
-# independently of stable: whoever releases it dispatches this on main and
-# pins the receipt's digest in the infra repository.
+# The images tilo.coffee runs, built from one commit of main, tested and
+# pushed as dev-<commit>: the web entry (the Tilo app on the web) and the
+# Lounge (one always-on public workspace, relay and Discord bridge). The site
+# is released by hand and independently of stable: whoever releases it
+# dispatches this on main and pins each receipt's digest in the infra
+# repository.
 #
 # One job of the CI builder:
 # privileged only inside the disposable guest, where buildah builds and tests
@@ -65,6 +67,15 @@ jobs:
         # The download cache step turns font fetching off for hermetic test
         # suites; the scripts here fetch and verify the fonts they ship.
         run: echo TILO_FONT_ASSETS_OFFLINE=0 >> "$GITHUB_ENV"
+
+      - name: Build the Lounge programs
+        run: bash tools/ci/publish/lounge-binaries.sh "$OUT/lounge/binaries"
+
+      - name: Test the Lounge entrypoint
+        # The deployment's TILO_ROOMS_* to the host's flags, against a stub
+        # relay: the image's program starts with what the deployment says.
+        run: bash os/containers/tilo-lounge/test-entrypoint.sh
+
       - name: Install buildah and skopeo
         run: |
           set -euo pipefail
@@ -84,8 +95,8 @@ jobs:
 
       - name: Give buildah a scratch disk
         # Its overlay driver refuses the job container's own overlayfs; a t step
-        # had an ext4 scratch disk. The image is small (a caddy base), so a
-        # tmpfs holds its layers.
+        # had an ext4 scratch disk. The images are small (a caddy base and a
+        # minimal Fedora with two programs), so a tmpfs holds their layers.
         run: |
           set -euo pipefail
           mkdir -p /var/tmp/buildah-scratch
@@ -105,6 +116,15 @@ jobs:
           bash tools/ci/publish/oci-build.sh "$dir/context" "$dir/context/Containerfile" "$dir" --build-arg "SOURCE_REVISION=$revision"
           bash crates/browser/tilo-browser-runtime/container/test-image.sh "$dir/image.oci.tar"
 
+      - name: Build and test the Lounge image
+        run: |
+          set -euo pipefail
+          dir=$OUT/lounge
+          bash tools/ci/publish/lounge-context.sh "$dir/context" "$dir/binaries"
+          revision=$(cat "$dir/context/source-revision")
+          bash tools/ci/publish/oci-build.sh "$dir/context" "$dir/context/Containerfile" "$dir" --build-arg "SOURCE_REVISION=$revision"
+          bash os/containers/tilo-lounge/test-image.sh "$dir/image.oci.tar"
+
       - name: Publish
         env:
           REGISTRY_USER: ${{ github.actor }}
@@ -113,8 +133,12 @@ jobs:
           set -euo pipefail
           bash tools/ci/publish/oci-publish.sh dev "registry.tilo.so/tilo/web-entry" "$OUT/web-entry" 'dev-{commit}'
           echo "::notice::web-entry: $(cat "$OUT/web-entry/receipt.json")"
+          bash tools/ci/publish/oci-publish.sh dev "registry.tilo.so/tilo/lounge" "$OUT/lounge" 'dev-{commit}'
+          echo "::notice::lounge: $(cat "$OUT/lounge/receipt.json")"
       - name: Keep the receipts
         uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: receipts
-          path: out/web-entry/receipt.json
+          path: |
+            out/web-entry/receipt.json
+            out/lounge/receipt.json

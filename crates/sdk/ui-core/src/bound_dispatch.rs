@@ -761,12 +761,17 @@ const MAX_PUBLICATION_ALIAS: usize = 4096;
 pub(crate) struct BoundPublication {
     host: uuid::Uuid,
     owners: RefCell<HashMap<uuid::Uuid, CallbackBinding>>,
+    /// Bumped every time a component published a resource here: a host that
+    /// could not reach a destination yet watches it and asks again when it
+    /// moves, instead of asking again frame after frame.
+    published: Cell<u64>,
 }
 impl Default for BoundPublication {
     fn default() -> Self {
         Self {
             host: uuid::Uuid::new_v4(),
             owners: RefCell::new(HashMap::new()),
+            published: Cell::new(0),
         }
     }
 }
@@ -774,6 +779,13 @@ impl BoundPublication {
     pub(crate) fn clear(&self) {
         self.owners.borrow_mut().clear();
     }
+
+    /// How many resources the components here have published since this
+    /// frame started.
+    pub(crate) fn published(&self) -> u64 {
+        self.published.get()
+    }
+
     pub(crate) fn alias(
         &self,
         binding: &CallbackBinding,
@@ -807,6 +819,7 @@ impl BoundPublication {
         let mut alias = prefix;
         alias.push_str(&hex::encode(resource));
         owners.insert(binding.lifetime_id, binding.clone());
+        self.published.set(self.published.get().wrapping_add(1));
         Ok(alias)
     }
     pub(crate) fn target(
@@ -1468,6 +1481,10 @@ struct CachedBoundResources {
     snapshot: BoundResourceSnapshot,
     generation: u64,
     local_generation: u64,
+    /// The language the snapshot's names were resolved in: a resource is
+    /// named when it is published, so an owner that keeps serving its record
+    /// is published again once the person changes language.
+    locale: u64,
     permissions: crate::permissions::DirectoryPermissionWitness,
     revisions: Vec<Option<String>>,
     /// The token the snapshot's forest was filtered under: kept while the
@@ -1554,6 +1571,7 @@ pub(crate) fn discover_cached_bound_resources(
                     revisions
                 })
                 .map_err(|error| format!("{error:?}"))?;
+            let locale = crate::i18n::I18nManager::revision();
             let cached = cache
                 .0
                 .borrow()
@@ -1562,6 +1580,7 @@ pub(crate) fn discover_cached_bound_resources(
                     entry.snapshot.binding.same_component(binding)
                         && generation == Some(entry.generation)
                         && entry.local_generation == local_generation
+                        && entry.locale == locale
                         && entry.permissions == permissions
                         && entry.revisions == revisions
                 })
@@ -1625,6 +1644,7 @@ pub(crate) fn discover_cached_bound_resources(
                         snapshot: snapshot.clone(),
                         generation,
                         local_generation,
+                        locale,
                         permissions,
                         revisions,
                         filter_token,

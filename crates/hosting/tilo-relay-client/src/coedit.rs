@@ -188,16 +188,6 @@ pub enum Inbound {
         /// The piece, as the sender encoded it.
         frame: Vec<u8>,
     },
-    /// A live-plane frame (presence, previews) another live member of the
-    /// workspace published: a native shell, a browser, an agent. The host
-    /// checked its sealed form and stamped the sender from its
-    /// authenticated session.
-    Live {
-        /// The publishing device's public key.
-        from: [u8; 32],
-        /// The canonical `tilo_relay_protocol::live::SealedLiveFrame` bytes.
-        frame: Vec<u8>,
-    },
     /// A device of the workspace joined (`active`) or left the host's live
     /// plane: a member this device reaches through the host, which may
     /// hand over the content the workspace's records reference.
@@ -276,9 +266,6 @@ pub enum CoeditError {
     /// module encodes; surfaced rather than hidden so a future payload
     /// shape that can't serialize fails loudly instead of panicking.
     Encode(postcard::Error),
-    /// A live frame that is not sealed with its record's channel keys is
-    /// never sent.
-    Unsealed,
 }
 
 impl std::fmt::Display for CoeditError {
@@ -286,7 +273,6 @@ impl std::fmt::Display for CoeditError {
         match self {
             CoeditError::Disconnected => f.write_str("relay co-edit session disconnected"),
             CoeditError::Encode(error) => write!(f, "co-edit payload encode failed: {error}"),
-            CoeditError::Unsealed => f.write_str("a live frame is sent only sealed"),
         }
     }
 }

@@ -12,6 +12,9 @@ use ui::{
 #[derive(Clone)]
 pub(crate) struct Sending {
     client: Option<MessagingClient>,
+    /// The conversations with the workspace's people are Chat's: they are
+    /// written through Chat's published operations.
+    direct: bool,
     pub(crate) draft: LocalState<String>,
     pub(crate) operation: LocalState<String>,
     generation: LocalState<u64>,
@@ -25,9 +28,11 @@ impl Sending {
         client: Option<MessagingClient>,
         principal: Option<&str>,
         drafts: Option<PersonRecord<crate::drafts::MessageDrafts>>,
+        direct: bool,
     ) -> Self {
         Self {
             client: client.filter(|c| principal == Some(c.principal())),
+            direct,
             draft: LocalState::new(String::new()),
             operation: LocalState::new(uuid::Uuid::new_v4().to_string()),
             generation: LocalState::new(0),
@@ -132,14 +137,22 @@ impl Sending {
         self.operation.set(uuid::Uuid::new_v4().to_string());
     }
     pub(crate) fn available(&self) -> bool {
-        self.client.is_some()
+        self.client.is_some() || self.direct
     }
     pub(crate) fn supports(&self, route: &tilo_contact_directory::routing::Route) -> bool {
+        if route.service == "tilo" {
+            return self.direct;
+        }
         self.client
             .as_ref()
             .is_some_and(|client| client.supports(route))
     }
     pub(crate) fn account_state(&self, choice: &Choice) -> tilo_messaging::AccountState {
+        // A Tilo conversation needs no service account: the workspace holds
+        // it.
+        if choice.service == "tilo" {
+            return tilo_messaging::AccountState::Ready;
+        }
         self.client
             .as_ref()
             .map_or(tilo_messaging::AccountState::Unavailable, |client| {
@@ -179,12 +192,15 @@ impl Sending {
         else {
             return Err(CATALOG.t("messages-transport-unavailable"));
         };
+        let choice: Choice =
+            serde_json::from_str(&choice).map_err(|_| CATALOG.t("messages-contact-missing"))?;
+        if choice.service == "tilo" {
+            return self.send_direct(sources, selection, history, &choice, &operation, &text, cx);
+        }
         let client = self
             .client
             .clone()
             .ok_or_else(|| CATALOG.t("messages-transport-unavailable"))?;
-        let choice: Choice =
-            serde_json::from_str(&choice).map_err(|_| CATALOG.t("messages-contact-missing"))?;
         let route = crate::history::current_route(sources, &selection.get(), &choice)?;
         let sent_route = route.clone();
         let sent_operation = operation.clone();
@@ -232,6 +248,57 @@ impl Sending {
                     };Err(CATALOG.t(key))
                 },
             }
+        }))
+    }
+
+    /// Send `text` into the conversation with one of the workspace's people,
+    /// through Chat's operation for it: the same message Chat sends.
+    fn send_direct(
+        &self,
+        sources: &Sources,
+        selection: &LocalState<Selection>,
+        history: &crate::history::HistoryView,
+        choice: &Choice,
+        operation: &str,
+        text: &str,
+        cx: &mut EffectCx<Messages>,
+    ) -> EffectAnswer {
+        if !sources.tilo {
+            return Err(CATALOG.t("messages-transport-unavailable"));
+        }
+        let route = crate::history::current_route(sources, &selection.get(), choice)?;
+        let peer = selection.get().person;
+        let call = crate::history::tilo_call(crate::history::SEND_DIRECT_MESSAGE, &peer)
+            .with(serde_json::json!({ "public_key": peer, "text": text }));
+        // The words are the message: an attempt that is asked for twice is
+        // the same message, under the operation it was asked with.
+        let answered = operation.to_owned();
+        let sent_text = text.to_owned();
+        let sent_route = route;
+        let history = history.clone();
+        let sending = self.clone();
+        Ok(cx.call(&call, move |(), sent, cx| {
+            let _ = sent?;
+            // Read the conversation again: the message is in it now, and the
+            // composer empties only once it is.
+            let read = crate::history::tilo_call(crate::history::OPEN_DIRECT_CONVERSATION, &peer);
+            let opened = history.clone();
+            let sending = sending.clone();
+            let sent_text = sent_text.clone();
+            let answered = answered.clone();
+            Ok(cx.call(&read, move |(), read, _| {
+                let page = crate::history::direct_page(sent_route, &peer, read?)?;
+                opened.publish(page);
+                if sending.draft.get() == sent_text {
+                    sending.draft.set(String::new());
+                    sending.operation.set(uuid::Uuid::new_v4().to_string());
+                    sending.sent_draft(&sending.open.get(), &sent_text);
+                }
+                Ok(Effected::value(serde_json::json!({
+                    "operation": answered,
+                    "status": "submitted",
+                })))
+            }))
         }))
     }
 }

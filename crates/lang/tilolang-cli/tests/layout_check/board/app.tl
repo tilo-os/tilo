@@ -27,20 +27,38 @@ view board(b: Board) {
         ui.Scroll(across: true) {
             ui.Board {
                 for col in b.columns {
+                    let title: Option<Text> = if col.title == "" { .none } else { .some(col.title) }
                     ui.BoardLane(
                         col,
-                        title: col.title,
+                        title: title,
                         count: col.cards.len(),
                         action: "New card",
                     ) {
                         for card in col.cards {
-                            ui.BoardCard(card, title: card.title)
+                            ui.BoardCard(card) {
+                                card_row(card)
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
+
+/// A board nobody named: a project with no sections, whose one lane heads nothing, so the
+/// cards start where a list's first row does.
+scenario "a board no lane heads" {
+    let b = root Board
+    let loose = b.columns.insert(Column(title: ""))
+    loose.cards.insert(Card(title: "Order boxes and tape"))
+    loose.cards.insert(Card(title: "Book the van"))
+    loose.cards.insert(Card(title: "Hand the keys over"))
+}
+
+/// A card as its row, which the card shows as a card.
+view card_row(card: Card) {
+    row(card.title)
 }
 
 /// A board of three lanes: six cards in the first, which a window shows at once; one in the

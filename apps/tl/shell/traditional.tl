@@ -1,8 +1,8 @@
 /// The traditional desktop (`docs/designs/app-language/shell.md` §4, §8.2 step 5): the preset
 /// furthest from the strips and the canvas. Nothing is scrolled or zoomed; every window is a
 /// frame standing where the person dropped it on a floating desk, with its own bar; a top bar
-/// across the screen names the focused window's commands the way macOS's action bar does; and
-/// the dock rides the bottom edge (`docks.tl`, reused as it is).
+/// across the screen names the focused window and holds its commands the way macOS's action bar
+/// does; and the dock rides the bottom edge (`docks.tl`, reused as it is).
 ///
 /// Everything here is a view over resources the session publishes and the shell's own record:
 ///
@@ -10,10 +10,9 @@
 ///   type's own view (`show(r)`, §8), its header holding its title and actions, or a well a
 ///   foreign window shows in (§4 `frame_classic`) — with the shell's controls at the end of its
 ///   one bar;
-/// - the **action bar** is the focused place's resource's published actions (`actions(r)` on
-///   `resource(p.record)`): the frequent ones shown directly, and the rest in the run each
-///   action's own declaration names (`group:`), in the app's order. It is never a generated
-///   list of everything the app can do;
+/// - the **action bar** is the focused place's window's menu: the host fills it with every
+///   action `resource(p.record)` publishes, so the window in front keeps one list of what it can
+///   do now, in the app's own words;
 /// - the **top bar** is one row, edge to edge: the system menu and the focused window's
 ///   commands leading, the tasks, the time, who is here, the status, the notifications and the
 ///   person's own face flush at its trailing edge, as every desktop since 1986 has. The
@@ -26,7 +25,7 @@
 /// window policy put it. Each place keeps its canvas point in the arrangement, so a drag that
 /// ends in one arranging action moves the frame and its window together. `lists` says whether
 /// the desk's bar lists the window in front's actions (`bar_lists_actions`), as each frame is
-/// told.
+/// told: the window's bar then keeps its title and the shell's controls alone.
 view traditional_desktop(a: Arrangement, lists: Bool) {
     let front = front_place(a)
     ui.Map(name: .some("Desktop"), ground: true, fill) {
@@ -88,7 +87,8 @@ view desktop_frame(
 /// one bar, never the shell's stacked on the app's. A foreign window stands in its well, under
 /// the frame's own bar naming the place. The controls stay the shell's, so a press there never
 /// reaches the app. `lists`: the desk's bar lists the window's actions (`bar_lists_actions`), so
-/// the frame tells its header to let what does not fit give way to that menu instead of a door.
+/// the frame tells the window's bar to keep its title and the shell's controls alone, the actions
+/// standing once in the desk's bar's menu.
 view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool, lists: Bool) {
     ui.WindowFrame(name: .some(place_title(p)), focused: focused, lists_actions: lists, fill) {
         controls: {
@@ -132,18 +132,23 @@ view frame_buttons(a: Arrangement, p: ArrangementPlace) {
     }
 }
 
-/// The focused window's commands, as a macOS menu bar draws an app's: the window's name, then the
-/// actions its resource publishes (exactly what the app's window header offers), the frequent ones
-/// as controls and the rest in the run each action's declaration names. A place that shows no
-/// record (a foreign surface) offers the shell's commands on the window, so the strip is never
-/// empty. `room` is how much the bar has: on a narrow bar the frequent ones stand only in their
-/// runs' menus, and on the narrowest every run is one menu named by the window, so the bar sheds
-/// into menus and never wraps.
+/// The focused window's commands, as a macOS menu bar draws an app's: the window's name, and
+/// under it every action its resource publishes — exactly what the window's own heading would
+/// offer, in the app's own words, the host filling the menu from the declarations so a view
+/// never lists them itself. A place that shows no record (a foreign surface) offers the shell's
+/// commands on the window instead, so the bar is never empty. `room` is how much the top bar has:
+/// on the narrowest it stands as the window's icon, named by the window.
 view action_bar(a: Arrangement, room: BarRoom) {
     if let s = focused_strip(a) {
         if let p = active_place(a, s) {
             if let r = placed_resource(p.record) {
-                action_run(place_title(p), actions(r), room)
+                ui.MenuButton(
+                    place_title(p),
+                    icon: .app_window,
+                    icon_only: room == .one,
+                    role: .bar,
+                    subject: r,
+                )
             } else {
                 window_commands(a, p, room)
             }
@@ -151,104 +156,14 @@ view action_bar(a: Arrangement, room: BarRoom) {
     }
 }
 
-/// How much room the top bar has for the focused window's commands.
+/// How much room the top bar has: for the focused window's menu, and for its parts.
 enum BarRoom {
-    /// The frequent commands as controls, every run as a menu.
+    /// The most: the menu by its window's name, the tasks and who is here too.
     roomy
-    /// Every run as a menu; the frequent commands within them.
+    /// The menu by its window's name, but not the tasks and who is here.
     menus
-    /// One menu, named by the window, with every run in it.
+    /// The least: the menu stands as the window's icon, and only what a phone keeps stays.
     one
-}
-
-/// The window's name, then the frequent commands of `offered` as bar controls, then one menu
-/// per run the app declared, in the order the app declared them, and the commands that name no
-/// run under the window's own name. So every action the app published stays reachable, and
-/// each stands under the app's own name for it — never a surface's own generated list of what
-/// did not fit. Below the room the bar's fixed parts take (the system menu, the time, the
-/// notifications), the one menu stands as the window's icon, named by the window.
-view action_run(name: Text, offered: List<host.Action>, room: BarRoom) {
-    let loose = offered.filter(c -> c.group == .none and (room != .roomy or not c.frequent))
-    row(gap: .tight, align: .center) {
-        if room == .one {
-            ui.MenuButton(name, icon: .app_window, icon_only: true, role: .bar) {
-                for c in offered {
-                    ui.MenuItem(c.label, icon: c.icon, destructive: c.destructive, checked: c.on) {
-                        on choose: c.run
-                    }
-                }
-            }
-        } else {
-            if loose.is_empty() {
-                ui.Text(name, role: .label, lines: 1, truncate)
-            } else {
-                ui.MenuButton(name, role: .bar) {
-                    for c in loose {
-                        ui.MenuItem(
-                            c.label,
-                            icon: c.icon,
-                            destructive: c.destructive,
-                            checked: c.on,
-                        ) {
-                            on choose: c.run
-                        }
-                    }
-                }
-            }
-            if room == .roomy {
-                for c in offered {
-                    if c.frequent {
-                        action_control(c)
-                    }
-                }
-            }
-            for c in offered {
-                if starts_run(offered, c) {
-                    ui.MenuButton(c.group ?? "", role: .bar) {
-                        for b in in_run(offered, c.group ?? "") {
-                            ui.MenuItem(
-                                b.label,
-                                icon: b.icon,
-                                destructive: b.destructive,
-                                checked: b.on,
-                            ) {
-                                on choose: b.run
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// One command the person reaches for often: a bar control, lifted while the state it toggles
-/// is on.
-view action_control(c: host.Action) {
-    if c.on != .none {
-        ui.Button(c.label, icon: c.icon, toggled: c.on, role: .bar) {
-            on press: c.run
-        }
-    } else {
-        ui.Button(c.label, icon: c.icon, role: .bar) {
-            on press: c.run
-        }
-    }
-}
-
-/// Whether `c` is the first command of its run: the run's menu is drawn once, at the place the
-/// app declared its first command, so the menus come in the app's own order.
-fn starts_run(offered: List<host.Action>, c: host.Action) -> Bool {
-    if c.group == .none {
-        false
-    } else if let first = offered.find(b -> (b.group ?? "") == (c.group ?? "")) {
-        first.label == c.label
-    } else { false }
-}
-
-/// The commands of `offered` that stand in the run `run`, in the app's order.
-fn in_run(offered: List<host.Action>, run: Text) -> List<host.Action> {
-    offered.filter(c -> (c.group ?? "") == run)
 }
 
 /// The strip in front: the one the shell's own view of the arrangement names, else the first
@@ -301,17 +216,19 @@ view window_commands(a: Arrangement, p: ArrangementPlace, room: BarRoom) {
     }
 }
 
-/// The desktop's top bar, one row edge to edge: the system menu and the focused window's commands
+/// The desktop's top bar, one row edge to edge: the system menu and the focused window's menu
 /// leading, and the tasks running, the time, who is here, the status, the notifications and the
 /// person's own face flush at the trailing edge, as a macOS or GNOME bar has them. As the output
-/// narrows the window's commands shed into their menus, the tasks and who is here give way, and
-/// on a phone the sound does too (the time, the connection, the charge, the notifications and the
-/// person's face stay), so the row never wraps and its parts never press into each other.
+/// narrows the window's menu stands as its icon, the tasks and who is here give way, and on a
+/// phone the sound does too (the time, the connection, the charge, the notifications and the
+/// person's face stay), so the row never wraps. Its controls stand a cluster gap apart at every
+/// width, a finger's or a mouse's press target being wider than the face it is drawn in: at the
+/// tightest gap a press between two would reach whichever is drawn last.
 view traditional_bar(d: Desk) {
     let room = if space.width_class == .wide {
         BarRoom.roomy
     } else if space.compact { BarRoom.one } else { BarRoom.menus }
-    row(gap: if room == .one { .tight } else { .related }, align: .center, fill) {
+    row(gap: .related, align: .center, fill) {
         ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
             on press: session.tilo_menu()
         }
@@ -330,7 +247,11 @@ view traditional_bar(d: Desk) {
         if room != .one {
             people_button(d)
         }
-        status_icons()
+        if not space.compact {
+            volume_status()
+        }
+        network_status()
+        battery_status()
         bell(d)
         if d.person != "" {
             ui.Avatar(name: .some(d.person))

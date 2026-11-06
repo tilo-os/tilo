@@ -56,7 +56,7 @@ pub(super) fn writes_derived(
 /// Commit a transaction that wrote only what an origin derives: tell each reader what changed,
 /// and queue, send and version nothing. Whether it did (a transaction with any saved write is
 /// the record's, and the caller commits it as ever).
-pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState) -> bool {
+pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState, by: &str) -> bool {
     if state.saved > 0 {
         return false;
     }
@@ -73,6 +73,7 @@ pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState) -> bool {
             doc,
             fields: fields.into_iter().collect(),
             listings: own,
+            by: Some(by.to_owned()),
         });
     }
     true
@@ -96,8 +97,9 @@ impl Inner {
         self.changed_within(&reached);
     }
 
-    /// Derive one write into the overlay.
-    pub(super) fn derive_write(&mut self, write: &LocalWrite) {
+    /// Derive one write into the overlay, naming what it derived to whoever reads: a value the
+    /// index works out may move on an item the write did not name.
+    pub(super) fn derive_write(&mut self, write: &mut LocalWrite) {
         let Some(mirror) = self.mirror.clone() else {
             return;
         };
@@ -113,6 +115,13 @@ impl Inner {
         let mut derive = crate::index::derive::Derive::new(&mirror, &self.index, &self.nested);
         if let Err(error) = derive.changes(&mut sink, &write.app, &write.reached()) {
             tracing::warn!(app = write.app, %error, "a change was not indexed");
+        }
+        for keys in derive.derived_keys.into_values() {
+            for key in keys {
+                if !write.touched.contains(&key) {
+                    write.touched.push(key);
+                }
+            }
         }
     }
 

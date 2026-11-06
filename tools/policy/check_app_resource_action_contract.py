@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rust_source import blank_test_items, code_only, line_number  # noqa: E402
+from rust_source import blank_test_items, code_only, line_number, matching  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -154,6 +154,8 @@ NOT_CONTROL_CALLBACKS = {
     "on_dismiss": "a dialog's or popover's close control, published as a native view action; "
     "a banner's follows its published dismiss button",
     "on_expand": "folds or unfolds a row: what this window shows, no edit",
+    "on_fold": "reports a row's subtasks folded or opened, however they were folded: what "
+    "this window shows, no edit",
     "on_open_toggle": "folds or unfolds a disclosure: what this window shows, no edit",
     "on_header_click": "sorts a table by a column: what this window shows, no edit",
     "on_edit_requested": "turns a breadcrumb into its editable field: what this window shows",
@@ -228,17 +230,90 @@ CLOSURE_CALLBACK_DEFINITION = re.compile(
     re.DOTALL,
 )
 CLOSURE_TYPE = re.compile(r"\bFn(?:Mut|Once)?\s*\(")
+# The dispatcher's doors, and what a call through one submits: a published
+# action of the resource. `dispatcher.submit(Tracker::PLACE.with(..))` is a
+# verb, `dispatcher.submit(Tracker::paths().title.set(..))` a field edit;
+# either names its action at the call, so the audit reads it there.
+DISPATCHER_SUBMIT = re.compile(
+    r"\.\s*submit(?:_on_its_own|_now|_gesture|_confirming)?\s*\("
+)
+PUBLISHED_ACTION = re.compile(
+    r"(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)+"
+    r"(?:[A-Z][A-Z0-9_]*\b|paths\s*\(\s*\))"
+)
+# A callback a builder is handed often comes from a helper the view binds
+# first: `let check_row = row_check(..); row.check(on_check(check_row))`.
+LET_BINDING = re.compile(
+    r"\blet\s+(?:mut\s+)?([a-z_][A-Za-z0-9_]*)\s*(?::[^=;]*)?=\s*([^;]*);"
+)
+
+
+def call_text(code: str, open_paren: int) -> str:
+    """The text a call whose `(` is at `open_paren` passes."""
+    return code[open_paren + 1 : matching(code, open_paren) - 1]
+
+
+def submits_a_published_action(code: str) -> bool:
+    """Whether `code` submits a published action through the dispatcher."""
+    return any(
+        PUBLISHED_ACTION.search(call_text(code, submit.end() - 1))
+        for submit in DISPATCHER_SUBMIT.finditer(code)
+    )
+
+
+def callback_fragments(code: str) -> dict[str, list[str]]:
+    """What a name in this file runs when a callback reaches for it: the body
+    of the function it names, or the closure a `let` binds to it."""
+    fragments = function_bodies(code)
+    for binding in LET_BINDING.finditer(code):
+        fragments.setdefault(binding.group(1), []).append(binding.group(2))
+    return fragments
+
+
+def reaches_closure(code: str, open_paren: int) -> bool:
+    """Whether the callback at `open_paren` reaches a submit of a published
+    action: written as a closure there, or named here and defined in this
+    file, directly or through what those functions and bindings reach."""
+    argument = call_text(code, open_paren)
+    if submits_a_published_action(argument):
+        return True
+    fragments = callback_fragments(code)
+    pending = [
+        name
+        for name in re.findall(r"\b([a-z_][A-Za-z0-9_]*)\b", argument)
+        if name in fragments
+    ]
+    seen: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        for fragment in fragments[name]:
+            if submits_a_published_action(fragment):
+                return True
+            pending.extend(
+                called
+                for called in re.findall(r"\b([a-z_][A-Za-z0-9_]*)\s*\(", fragment)
+                if called in fragments and called not in seen
+            )
+    return False
 
 
 def closure_controls(code: str, raw: str, matches: list[re.Match]) -> list[re.Match]:
     """The callback calls that hand a control something to run: not a
-    widget's own handler called on `self`, nor a call without arguments."""
+    widget's own handler called on `self`, nor a call without arguments, nor
+    one whose callback hands the dispatcher a published action: that is the
+    shared action route, and the palette, an agent, history, undo and the
+    permission check reach what it submits as they reach a bound control's."""
     kept = []
     for match in matches:
         if code[match.end() :].lstrip().startswith(")"):
             continue
         before = code[: match.start()].rstrip()
         if re.search(r"(?<![\w.])self$", before):
+            continue
+        if ".submit" in code and reaches_closure(code, match.end() - 1):
             continue
         kept.append(match)
     return kept

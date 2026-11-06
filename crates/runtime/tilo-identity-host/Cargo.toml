@@ -53,6 +53,9 @@ threshold-identity = { path = "../../collab/threshold-identity" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# The `tracing` target the session log keeps whatever `RUST_LOG` says, under
+# which every certificate renewal a join depends on is reported.
+tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 # The fleet certifies disk-unlock boot keys and holds the secret-sync custody.
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }

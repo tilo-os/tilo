@@ -7,6 +7,8 @@
 //! drives an ordinary toolkit app and draws its frames into those buffers;
 //! nothing here knows how the pixels were made.
 
+use std::sync::Arc;
+
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Buffer, Rectangle};
 
@@ -41,34 +43,247 @@ impl Region {
     }
 }
 
-/// Whether the compositor showing hosted surfaces' frames composes on the
-/// CPU, reading their pixels itself: such a surface rasterizes its frames
-/// where it stands instead of drawing them on a GPU to copy them back every
-/// frame. Said by the compositor as it opens its backend, as there is one
-/// compositor in a process.
-static COMPOSES_ON_CPU: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// How many pixels a side of one coverage cell is: the granularity at which
+/// a frame says what it shows.
+const CELL: u32 = 8;
 
-/// Set by the compositor when it opens its backend: what
-/// [`hosted_frames_on_cpu`] answers from then on.
-pub(crate) fn composes_on_cpu(composes: bool) {
-    COMPOSES_ON_CPU.store(composes, std::sync::atomic::Ordering::Relaxed);
+/// What one cell of a frame holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cell {
+    /// Every pixel of it is transparent: nothing is shown there.
+    Empty,
+    /// Something is drawn in it.
+    Partly,
+    /// Every pixel of it is opaque: nothing under it shows through.
+    Opaque,
 }
 
-/// Whether the compositor that will show a hosted frame reads its pixels
-/// itself, in memory, rather than sampling them as a texture on a GPU: a
-/// surface's frames are then rasterized on the CPU, and a machine with a GPU
-/// never copies them back from it.
-#[must_use]
-pub fn hosted_frames_on_cpu() -> bool {
-    COMPOSES_ON_CPU.load(std::sync::atomic::Ordering::Relaxed)
+/// What a frame shows and what of it nothing shows through, by cells: kept as
+/// the host draws into the frame, so a layer costs what it draws where it
+/// draws it rather than the whole frame it draws in.
+#[derive(Clone, Debug)]
+struct Coverage {
+    columns: u32,
+    cells: Vec<Cell>,
+}
+
+impl Coverage {
+    /// The coverage of a transparent frame of `size` pixels.
+    fn new(size: (u32, u32)) -> Self {
+        let columns = size.0.div_ceil(CELL);
+        let rows = size.1.div_ceil(CELL);
+        Self {
+            columns,
+            cells: vec![
+                Cell::Empty;
+                usize::try_from(columns)
+                    .unwrap_or(0)
+                    .saturating_mul(usize::try_from(rows).unwrap_or(0))
+            ],
+        }
+    }
+
+    /// Read the cells `regions` (frame pixels) of `pixels` (premultiplied
+    /// RGBA, `width` pixels a row) now hold.
+    fn record(&mut self, pixels: &[u8], size: (u32, u32), regions: &[Region]) {
+        let width = size.0;
+        let columns = usize::try_from(self.columns).unwrap_or(0).max(1);
+        let cells = &mut self.cells;
+        for region in regions {
+            let Some(area) = clip(region, size) else {
+                continue;
+            };
+            let first_row = area.1 / CELL;
+            let last_row = area.3.saturating_sub(1) / CELL;
+            let first_column = area.0 / CELL;
+            let last_column = area.2.saturating_sub(1) / CELL;
+            for row in first_row..=last_row {
+                let cell_top = row.saturating_mul(CELL);
+                let cell_bottom = cell_top.saturating_add(CELL).min(size.1);
+                for column in first_column..=last_column {
+                    let cell_left = column.saturating_mul(CELL);
+                    let cell_right = cell_left.saturating_add(CELL).min(size.0);
+                    let drawn = (
+                        area.0.max(cell_left),
+                        area.1.max(cell_top),
+                        area.2.min(cell_right),
+                        area.3.min(cell_bottom),
+                    );
+                    let whole = drawn == (cell_left, cell_top, cell_right, cell_bottom);
+                    let (mut shows, mut opaque) = (false, true);
+                    for y in drawn.1..drawn.3 {
+                        for x in drawn.0..drawn.2 {
+                            let Some(alpha) = alpha_at(pixels, width, x, y) else {
+                                continue;
+                            };
+                            shows |= alpha > 0;
+                            opaque &= alpha == 255;
+                        }
+                    }
+                    let Some(cell) = usize::try_from(row)
+                        .ok()
+                        .and_then(|row| row.checked_mul(columns))
+                        .and_then(|slot| slot.checked_add(usize::try_from(column).ok()?))
+                        .and_then(|slot| cells.get_mut(slot))
+                    else {
+                        continue;
+                    };
+                    *cell = if whole {
+                        // The drawn part is the whole cell: what it holds now
+                        // is what the cell holds.
+                        if opaque {
+                            Cell::Opaque
+                        } else if shows {
+                            Cell::Partly
+                        } else {
+                            Cell::Empty
+                        }
+                    } else if opaque && *cell == Cell::Opaque {
+                        // Opaque pixels over part of an opaque cell leave it
+                        // opaque.
+                        Cell::Opaque
+                    } else if !shows && *cell == Cell::Empty {
+                        Cell::Empty
+                    } else {
+                        // Part of it is not the part drawn: the rest of what
+                        // it holds is not known from this draw.
+                        Cell::Partly
+                    };
+                }
+            }
+        }
+    }
+
+    /// The smallest rectangle of the frame holding anything it shows.
+    fn shown(&self, size: (u32, u32)) -> Option<Region> {
+        let columns = usize::try_from(self.columns).unwrap_or(0).max(1);
+        let mut shown: Option<(u32, u32, u32, u32)> = None;
+        for (row, cells) in self.cells.chunks(columns).enumerate() {
+            let top = u32::try_from(row).unwrap_or(0).saturating_mul(CELL);
+            let bottom = top.saturating_add(CELL).min(size.1);
+            for (column, cell) in cells.iter().enumerate() {
+                if *cell == Cell::Empty {
+                    continue;
+                }
+                let left = u32::try_from(column).unwrap_or(0).saturating_mul(CELL);
+                let right = left.saturating_add(CELL).min(size.0);
+                shown = Some(match shown {
+                    None => (left, top, right, bottom),
+                    Some((was_left, was_top, was_right, was_bottom)) => (
+                        was_left.min(left),
+                        was_top.min(top),
+                        was_right.max(right),
+                        was_bottom.max(bottom),
+                    ),
+                });
+            }
+        }
+        let (left, top, right, bottom) = shown?;
+        Some(Region::new(
+            left,
+            top,
+            right.saturating_sub(left),
+            bottom.saturating_sub(top),
+        ))
+    }
+
+    /// The parts of the frame that are wholly opaque, as whole cells merged
+    /// into as few rectangles as the rows give.
+    fn opaque(&self, size: (u32, u32)) -> Vec<Region> {
+        let columns = usize::try_from(self.columns).unwrap_or(0).max(1);
+        let mut done: Vec<Region> = Vec::new();
+        let mut running: Vec<Region> = Vec::new();
+        for (row, cells) in self.cells.chunks(columns).enumerate() {
+            let top = u32::try_from(row).unwrap_or(0).saturating_mul(CELL);
+            let bottom = top.saturating_add(CELL).min(size.1);
+            let height = bottom.saturating_sub(top);
+            // Where the row's opaque cells start and stop, by column.
+            let mut runs: Vec<(u32, u32)> = Vec::new();
+            let mut start: Option<u32> = None;
+            for (column, cell) in cells.iter().enumerate() {
+                let column = u32::try_from(column).unwrap_or(0);
+                match (*cell == Cell::Opaque, start) {
+                    (true, None) => start = Some(column),
+                    (false, Some(from)) => {
+                        runs.push((from, column));
+                        start = None;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(from) = start {
+                runs.push((from, self.columns));
+            }
+            // A run the row above also had goes on growing there.
+            let mut next: Vec<Region> = Vec::with_capacity(runs.len());
+            for (from, to) in runs {
+                let left = from.saturating_mul(CELL);
+                let right = to.saturating_mul(CELL).min(size.0);
+                let width = right.saturating_sub(left);
+                if let Some(above) = running
+                    .iter_mut()
+                    .find(|above| above.x == left && above.width == width)
+                {
+                    above.height = above.height.saturating_add(height);
+                    next.push(*above);
+                } else {
+                    next.push(Region::new(left, top, width, height));
+                }
+            }
+            done.extend(
+                running
+                    .iter()
+                    .filter(|above| {
+                        !next
+                            .iter()
+                            .any(|run| run.x == above.x && run.width == above.width)
+                    })
+                    .copied(),
+            );
+            running = next;
+        }
+        done.extend(running);
+        done
+    }
+}
+
+/// The part of `region` inside a frame of `size` pixels, as
+/// `(left, top, right, bottom)`: `None` where it lies outside it.
+fn clip(region: &Region, size: (u32, u32)) -> Option<(u32, u32, u32, u32)> {
+    let left = region.x.min(size.0);
+    let top = region.y.min(size.1);
+    let right = region.x.saturating_add(region.width).min(size.0);
+    let bottom = region.y.saturating_add(region.height).min(size.1);
+    (left < right && top < bottom).then_some((left, top, right, bottom))
+}
+
+/// The alpha of the pixel at `(x, y)` of `pixels`, `width` pixels a row.
+fn alpha_at(pixels: &[u8], width: u32, x: u32, y: u32) -> Option<u8> {
+    let index = usize::try_from(y)
+        .ok()?
+        .checked_mul(usize::try_from(width).ok()?)?
+        .checked_add(usize::try_from(x).ok()?)?
+        .checked_mul(4)?
+        .checked_add(3)?;
+    pixels.get(index).copied()
 }
 
 /// The pixels a hosted surface shows: premultiplied RGBA, kept as the buffer
 /// the compositor draws, so a host only hands over what changed.
+///
+/// It also keeps what it shows: which part of it holds anything, and which
+/// part is wholly opaque. A layer the size of a display that paints a bar
+/// costs its bar, not the display, and nothing under an opaque part of it is
+/// drawn.
 #[derive(Clone, Debug)]
 pub struct HostFrame {
     buffer: MemoryRenderBuffer,
     size: (u32, u32),
+    /// The cell map of the frames written into it; `None` for a buffer this
+    /// side did not see drawn, whose frame is taken whole.
+    coverage: Option<Arc<Coverage>>,
+    /// The part of the frame it shows anything in, in its own pixels.
+    shown: Option<Region>,
 }
 
 impl HostFrame {
@@ -87,6 +302,8 @@ impl HostFrame {
                 None,
             ),
             size,
+            coverage: Some(Arc::new(Coverage::new(size))),
+            shown: None,
         }
     }
 
@@ -97,10 +314,16 @@ impl HostFrame {
     }
 
     /// A frame showing `buffer`, a surface of `size` physical pixels: for a
-    /// host that made its own.
+    /// host that made its own. What it shows is taken to be all of it, as
+    /// this side has not seen it drawn.
     #[must_use]
     pub const fn from_buffer(buffer: MemoryRenderBuffer, size: (u32, u32)) -> Self {
-        Self { buffer, size }
+        Self {
+            buffer,
+            size,
+            coverage: None,
+            shown: Some(Region::new(0, 0, size.0, size.1)),
+        }
     }
 
     /// The size of the surface in physical pixels.
@@ -109,12 +332,31 @@ impl HostFrame {
         self.size
     }
 
+    /// The part of the frame it shows anything in, in its own pixels:
+    /// nothing when the host has drawn nothing (or drew it all transparent)
+    /// and there is no layer to composite.
+    #[must_use]
+    pub const fn shown(&self) -> Option<Region> {
+        self.shown
+    }
+
     /// Copy the `regions` of `pixels` (premultiplied RGBA, `width * 4` bytes
-    /// a row of this frame's surface) into the frame, telling it what
-    /// changed.
+    /// a row of this frame's surface) into the frame, telling it and the
+    /// compositor what changed, and what the frame now shows.
     pub fn set_pixels(&mut self, pixels: &[u8], regions: &[Region]) {
+        if regions.is_empty() {
+            return;
+        }
         let width = self.size.0 as usize;
-        let drawn = self.buffer.render().draw(|memory: &mut [u8]| {
+        let size = self.size;
+        let Self {
+            buffer,
+            coverage,
+            shown,
+            ..
+        } = self;
+        let mut context = buffer.render();
+        let drawn = context.draw(|memory: &mut [u8]| {
             for region in regions {
                 for row in region.y..region.y.saturating_add(region.height) {
                     let start = (row as usize)
@@ -128,6 +370,11 @@ impl HostFrame {
                         to.copy_from_slice(from);
                     }
                 }
+            }
+            let coverage = coverage.as_mut().map(Arc::make_mut);
+            if let Some(coverage) = coverage {
+                coverage.record(memory, size, regions);
+                *shown = coverage.shown(size);
             }
             Ok::<_, std::convert::Infallible>(
                 regions
@@ -147,6 +394,25 @@ impl HostFrame {
         });
         if let Err(never) = drawn {
             match never {}
+        }
+        // What nothing under shows through: the compositor draws no layer
+        // beneath it and clears no pixel it covers.
+        if let Some(coverage) = coverage {
+            let opaque = coverage
+                .opaque(size)
+                .into_iter()
+                .filter_map(|region| {
+                    Some(Rectangle::<i32, Buffer>::new(
+                        (i32::try_from(region.x).ok()?, i32::try_from(region.y).ok()?).into(),
+                        (
+                            i32::try_from(region.width).ok()?,
+                            i32::try_from(region.height).ok()?,
+                        )
+                            .into(),
+                    ))
+                })
+                .collect();
+            context.update_opaque_regions(Some(opaque));
         }
     }
 }
@@ -346,18 +612,27 @@ pub trait SurfaceHost {
     }
 
     /// When this surface next needs a frame with no input to bring one: now
-    /// while what it shows moves or a wake it took has not drawn yet, else
-    /// the earliest deadline its content sets (a banner's exit, a caret's
-    /// blink). The loop waits no longer than this; `None` leaves it to the
+    /// when a wake it took has not drawn yet, else the earliest deadline its
+    /// content sets (a banner's exit, a caret's blink). A surface whose
+    /// content only moves draws on the display's cadence the compositor gave
+    /// it ([`SurfaceHost::set_frame_interval`]), not once per turn of the
+    /// loop. The loop waits no longer than this; `None` leaves it to the
     /// loop's own idle.
     fn next_deadline(&self) -> Option<std::time::Instant> {
         None
     }
 
-    /// The outputs' logical rectangles `(x, y, w, h)`, now and whenever
-    /// one is added, removed or moved: a surface covering the desktop
-    /// (the top bar, the chrome above the windows) follows them.
-    fn outputs_changed(&mut self, _outputs: &[(i32, i32, i32, i32)]) {}
+    /// How long the displays this surface is shown on hold each frame: a
+    /// frame of its own is due once per one of these, so the screens show as
+    /// many frames as they run at and not one per turn of the loop.
+    fn set_frame_interval(&mut self, _interval: std::time::Duration) {}
+
+    /// The outputs as they stand, now and whenever one is added, removed,
+    /// moved or scaled: each one's logical rectangle and the scale it draws
+    /// at. A surface covering the desktop (the top bar, the chrome above the
+    /// windows) follows them, and draws at the scale of the output it is on
+    /// so what it paints is as crisp as the display allows.
+    fn outputs_changed(&mut self, _outputs: &[crate::output::HostedOutput]) {}
 
     /// The pointer shape while the pointer is over the surface (a text
     /// beam over a field, a hand over a link).
@@ -390,4 +665,142 @@ pub trait SurfaceHost {
     /// A drag this surface started ([`crate::Compositor::start_drag`])
     /// ended: `dropped` when a target took it.
     fn drag_ended(&mut self, _dropped: bool) {}
+}
+
+#[cfg(test)]
+mod tests {
+    //! What a frame says it shows, which is what a layer costs.
+
+    use super::*;
+
+    const SIZE: (u32, u32) = (64, 48);
+
+    /// A transparent frame of [`SIZE`].
+    fn frame() -> HostFrame {
+        HostFrame::new(SIZE)
+    }
+
+    /// Pixels of a whole frame, `paint` giving each pixel.
+    fn pixels(paint: impl Fn(u32, u32) -> [u8; 4]) -> Vec<u8> {
+        let mut pixels = Vec::new();
+        for y in 0..SIZE.1 {
+            for x in 0..SIZE.0 {
+                pixels.extend_from_slice(&paint(x, y));
+            }
+        }
+        pixels
+    }
+
+    const OPAQUE_RED: [u8; 4] = [255, 0, 0, 255];
+    const CLEAR: [u8; 4] = [0, 0, 0, 0];
+    const HALF_BLUE: [u8; 4] = [0, 0, 128, 128];
+
+    #[test]
+    fn a_frame_nothing_was_drawn_into_shows_nothing() {
+        assert_eq!(frame().shown(), None, "an empty layer has no layer");
+    }
+
+    #[test]
+    fn a_frame_shows_the_cells_it_drew_in() {
+        let mut frame = frame();
+        let mut drawn = pixels(|_, _| CLEAR);
+        for y in 16..24 {
+            for x in 8..32 {
+                let start = ((y * SIZE.0 + x) * 4) as usize;
+                drawn[start..start + 4].copy_from_slice(&OPAQUE_RED);
+            }
+        }
+        frame.set_pixels(&drawn, &[Region::new(8, 16, 24, 8)]);
+        assert_eq!(
+            frame.shown(),
+            Some(Region::new(8, 16, 24, 8)),
+            "the bar it drew, and no more"
+        );
+    }
+
+    #[test]
+    fn what_is_wholly_opaque_is_said_to_be() {
+        let mut frame = frame();
+        frame.set_pixels(&pixels(|_, _| OPAQUE_RED), &[Region::new(0, 0, 64, 48)]);
+        let coverage = frame.coverage.clone().expect("a frame this side drew");
+        assert_eq!(
+            coverage.opaque(SIZE),
+            vec![Region::new(0, 0, 64, 48)],
+            "the whole frame, as one rectangle"
+        );
+    }
+
+    #[test]
+    fn a_translucent_part_shows_but_is_not_opaque() {
+        let mut frame = frame();
+        let mut drawn = pixels(|_, _| CLEAR);
+        for y in 0..8 {
+            for x in 0..8 {
+                let start = ((y * SIZE.0 + x) * 4) as usize;
+                drawn[start..start + 4].copy_from_slice(&HALF_BLUE);
+            }
+        }
+        frame.set_pixels(&drawn, &[Region::new(0, 0, 8, 8)]);
+        assert_eq!(frame.shown(), Some(Region::new(0, 0, 8, 8)));
+        let coverage = frame.coverage.clone().expect("a frame this side drew");
+        assert_eq!(
+            coverage.opaque(SIZE),
+            Vec::new(),
+            "a translucent cell is not opaque"
+        );
+    }
+
+    #[test]
+    fn a_cell_drawn_over_again_transparent_is_empty_and_no_longer_shown() {
+        let mut frame = frame();
+        let mut drawn = pixels(|_, _| CLEAR);
+        for y in 0..8 {
+            for x in 0..8 {
+                let start = ((y * SIZE.0 + x) * 4) as usize;
+                drawn[start..start + 4].copy_from_slice(&OPAQUE_RED);
+            }
+        }
+        frame.set_pixels(&drawn, &[Region::new(0, 0, 8, 8)]);
+        assert_eq!(frame.shown(), Some(Region::new(0, 0, 8, 8)));
+        frame.set_pixels(&pixels(|_, _| CLEAR), &[Region::new(0, 0, 8, 8)]);
+        assert_eq!(
+            frame.shown(),
+            None,
+            "drawing the cell transparent shows nothing there"
+        );
+    }
+
+    #[test]
+    fn the_layers_shown_rectangle_grows_with_what_it_draws_and_shrinks_with_what_it_erases() {
+        let mut frame = frame();
+        let mut drawn = pixels(|_, _| CLEAR);
+        for y in 40..48 {
+            for x in 48..56 {
+                let start = ((y * SIZE.0 + x) * 4) as usize;
+                drawn[start..start + 4].copy_from_slice(&OPAQUE_RED);
+            }
+        }
+        frame.set_pixels(&drawn, &[Region::new(48, 40, 8, 8)]);
+        assert_eq!(frame.shown(), Some(Region::new(48, 40, 8, 8)));
+        // Drawn over the whole cell: an erase of what was there.
+        frame.set_pixels(&pixels(|_, _| CLEAR), &[Region::new(48, 40, 8, 8)]);
+        assert_eq!(frame.shown(), None, "nothing is shown there any more");
+    }
+
+    #[test]
+    fn a_frame_from_a_hosts_own_buffer_is_taken_whole() {
+        let buffer = MemoryRenderBuffer::new(
+            smithay::backend::allocator::Fourcc::Abgr8888,
+            (64, 48),
+            1,
+            smithay::utils::Transform::Normal,
+            None,
+        );
+        let frame = HostFrame::from_buffer(buffer, SIZE);
+        assert_eq!(
+            frame.shown(),
+            Some(Region::new(0, 0, 64, 48)),
+            "what it shows is unknown, so all of it is drawn"
+        );
+    }
 }

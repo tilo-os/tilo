@@ -536,7 +536,8 @@ impl WorkspaceAccounts {
                     }
                     // No reading: the record is no connector, or the host
                     // could not answer now; the next refresh asks again.
-                    Err(_) => {
+                    Err(error) => {
+                        tracing::warn!(app = %owned, %error, "a linked account's reading could not be read");
                         known.readings.remove(&owned);
                     }
                 }

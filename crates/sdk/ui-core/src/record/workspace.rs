@@ -41,13 +41,6 @@ pub fn record_id(kind: &str) -> String {
     collab_types::workspace_record_id(kind)
 }
 
-/// The id of the record the two people of `pair` share
-/// ([`collab_types::direct_record`]).
-#[must_use]
-pub fn direct_record_id(pair: &str) -> String {
-    collab_types::direct_record(pair)
-}
-
 /// Opens the store an app keeps in the window's workspace.
 type OpenStore = dyn Fn(&str) -> Result<RecordStore, RecordOpenError>;
 
@@ -109,38 +102,33 @@ impl WorkspaceRecords {
         self.open_at(owner, id, kind, initialize)
     }
 
-    /// The record the two people of `pair`
-    /// ([`collab_types::direct_pair_id`]) share in the workspace, kept by
-    /// `owner`, created with `initialize` where nothing holds it yet. Only
-    /// their devices read or change it, whichever app holds it open: the
-    /// workspace's grants decide nothing here.
+    /// The record `id` of `kind` that `owner` keeps in the workspace, created
+    /// with `initialize` where nothing holds it yet, whatever names it: a
+    /// conversation's record is one, named by the two people it is between.
+    /// The workspace's grants on the owner's node decide every change to it
+    /// like any other record of the owner's.
     ///
     /// # Errors
-    /// `pair` names no pair, or the record could not be read or created.
-    pub fn open_direct(
+    /// `id` names no record, or the record could not be read or created.
+    pub fn open_record_at(
         &self,
         owner: &str,
-        pair: &str,
+        id: &str,
         kind: &str,
         initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<StoredRecord, RecordOpenError> {
-        let id = RecordId::of_direct(pair).ok_or(RecordOpenError::IdentityMismatch)?;
+        let id = RecordId::parse(id).ok_or(RecordOpenError::IdentityMismatch)?;
         self.open_at(owner, id, kind, initialize)
     }
 
-    /// Whether `owner`'s store holds the record the two people of `pair`
-    /// share, of `kind`, without opening or creating it: a list asks this to
-    /// show the conversations that exist, not to make one per person.
+    /// Whether `owner`'s store holds the record `id` of `kind`, without
+    /// opening or creating it: a list asks this to show the records that
+    /// exist, not to make one for everything it could name.
     ///
     /// # Errors
-    /// `pair` names no pair, or the record could not be read.
-    pub fn holds_direct(
-        &self,
-        owner: &str,
-        pair: &str,
-        kind: &str,
-    ) -> Result<bool, RecordOpenError> {
-        let id = RecordId::of_direct(pair).ok_or(RecordOpenError::IdentityMismatch)?;
+    /// `id` names no record, or the record could not be read.
+    pub fn holds_record(&self, owner: &str, id: &str, kind: &str) -> Result<bool, RecordOpenError> {
+        let id = RecordId::parse(id).ok_or(RecordOpenError::IdentityMismatch)?;
         let store = (self.open)(owner)?;
         let checkout = RecordCheckout::new(id, RecordKind::new(kind));
         match store.try_open_record(&checkout) {
@@ -148,6 +136,15 @@ impl WorkspaceRecords {
             Err(RecordOpenError::MissingRecord) => Ok(false),
             Err(error) => Err(error),
         }
+    }
+
+    /// The store `owner` keeps its records of this workspace in: where a chain
+    /// kept beside one of them ([`RecordId::part`]) has its parts.
+    ///
+    /// # Errors
+    /// Rejects a package or workspace that names no store.
+    pub fn store_of(&self, owner: &str) -> Result<RecordStore, RecordOpenError> {
+        (self.open)(owner)
     }
 
     /// Open `id` in the store `owner` keeps, and in this app's, so that every
@@ -220,25 +217,23 @@ mod tests {
     }
 
     #[test]
-    fn a_pairs_record_syncs_on_the_app_that_holds_it() {
+    fn a_conversations_record_syncs_on_the_app_that_holds_it() {
         let store = Rc::new(durable_store::MemoryStore::new());
         let workspace = "00000000-0000-4000-8000-0000000000aa";
         let pair =
             collab_types::direct_pair_id(workspace, &"11".repeat(32), &"22".repeat(32)).unwrap();
+        let id = collab_types::direct_record(&pair);
         let record = records(&store, "alice")
-            .open_direct("so.tilo.chat", &pair, "so.tilo.chat", &|_| Ok(()))
+            .open_record_at("so.tilo.chat", &id, "so.tilo.chat", &|_| Ok(()))
             .unwrap();
-        let route = record.route().expect("a pair's record syncs");
+        let route = record.route().expect("a conversation's record syncs");
         assert_eq!(route.app_id, "so.tilo.chat");
-        assert_eq!(
-            route.record.as_deref(),
-            Some(collab_types::direct_record(&pair).as_str())
-        );
+        assert_eq!(route.record.as_deref(), Some(id.as_str()));
         assert!(
             records(&store, "alice")
-                .open_direct("so.tilo.chat", "direct_nope", "so.tilo.chat", &|_| Ok(()))
+                .open_record_at("so.tilo.chat", "direct_nope", "so.tilo.chat", &|_| Ok(()))
                 .is_err(),
-            "a key that names no pair names no record"
+            "an id that names no record opens none"
         );
     }
 

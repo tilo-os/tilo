@@ -75,7 +75,7 @@ mod activity_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -110,7 +110,7 @@ mod api_tester_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -145,7 +145,7 @@ mod calculator_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -180,7 +180,7 @@ mod calendar_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -215,7 +215,7 @@ mod camera_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -250,7 +250,7 @@ mod canvas_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -285,7 +285,7 @@ mod chat_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -320,7 +320,7 @@ mod chip_design_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -355,7 +355,7 @@ mod clocks_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -390,7 +390,7 @@ mod contacts_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -425,7 +425,7 @@ mod diffmerge_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -460,7 +460,7 @@ mod ebook_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -495,7 +495,7 @@ mod feeds_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -530,7 +530,7 @@ mod hex_editor_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -565,7 +565,7 @@ mod maps_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -600,7 +600,7 @@ mod messages_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -635,7 +635,7 @@ mod model_providers_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -670,7 +670,7 @@ mod music_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -705,7 +705,7 @@ mod notes_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -740,7 +740,7 @@ mod passwords_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -775,7 +775,7 @@ mod pdf_viewer_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -810,7 +810,7 @@ mod photos_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -845,7 +845,7 @@ mod poker_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -880,7 +880,7 @@ mod scratchpad_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -915,7 +915,7 @@ mod sheets_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -950,7 +950,7 @@ mod shortcuts_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -985,7 +985,7 @@ mod slides_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -1020,7 +1020,7 @@ mod snippets_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -1055,7 +1055,7 @@ mod speed_test_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -1090,7 +1090,7 @@ mod tasks_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -1125,7 +1125,7 @@ mod themes_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -1160,7 +1160,7 @@ mod totp_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -1195,7 +1195,7 @@ mod tube_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -1230,7 +1230,7 @@ mod typst_editor_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -1265,7 +1265,7 @@ mod video_editor_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -1300,7 +1300,7 @@ mod video_player_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -1335,7 +1335,7 @@ mod weather_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {
@@ -1370,7 +1370,7 @@ mod word_processor_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(APP, load, definition))
+        Box::pin(crate::split::definition(load, definition))
     }
 
     pub(super) fn register() {

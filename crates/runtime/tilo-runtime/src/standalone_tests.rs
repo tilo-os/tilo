@@ -363,18 +363,81 @@ const WRITER_RECORD: &str = "0b7d9a3e-5c1f-4a8e-9d2b-7f6e5a4c3b21";
 const WRITTEN: &str = "written by an SDK app";
 
 /// What the workspace host this session runs keeps of the writer's record in the
-/// profile's own workspace, opened with the channel's keys.
-fn written(session: &Standalone) -> Option<String> {
+/// profile's own workspace, opened with the channel's keys. `Err` says where the
+/// write stops on the way there, so a write that never arrives is explained.
+fn written(session: &Standalone) -> Result<Option<String>, String> {
     use automerge::ReadDoc as _;
-    let workspace = WorkspaceId::parse(session.workspace())?;
-    let record = ui::record::RecordId::for_file_record(uuid::Uuid::parse_str(WRITER_RECORD).ok()?);
+    let workspace = WorkspaceId::parse(session.workspace())
+        .ok_or_else(|| "the session names no workspace".to_owned())?;
+    let record = ui::record::RecordId::for_file_record(
+        uuid::Uuid::parse_str(WRITER_RECORD).map_err(|error| error.to_string())?,
+    );
     let bytes = session
         .joined
         .test_kept_document(workspace, WRITER_APP, record.as_str())?;
-    let doc = automerge::AutoCommit::load(&bytes).ok()?;
-    doc.get(automerge::ROOT, "text")
-        .ok()?
-        .and_then(|(value, _)| value.into_string().ok())
+    let doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+    Ok(doc
+        .get(automerge::ROOT, "text")
+        .ok()
+        .flatten()
+        .and_then(|(value, _)| value.into_string().ok()))
+}
+
+/// Wait until `manager`'s primary route is joined, failing the moment it
+/// cannot be: a manager that went offline, or whose route the workspace
+/// refused, never connects, so its reason is the failure rather than the hang
+/// bound. One still joining says what holds it up.
+pub(crate) fn wait_until_joined(manager: &mut ui::collaboration::CollaborationManager) {
+    let started = Instant::now();
+    loop {
+        let _ = manager.poll();
+        if manager.is_connected() {
+            return;
+        }
+        if let Some(refusal) = manager.join_refusal() {
+            panic!("the app's route was refused: {refusal}");
+        }
+        if let ui::collaboration::CollaborationState::Offline(reason) = manager.state() {
+            panic!("the app never joined: {reason}");
+        }
+        assert!(
+            started.elapsed() < tilo_test_env::hang_bound(),
+            "the app never joined: {:?}, held by {:?}",
+            manager.state(),
+            manager.join_hold()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Stay in the helper until the test that started it stops it, failing the
+/// moment the SDK stops publishing the write that was queued: a manager that
+/// went offline keeps nothing more, so its reason is the failure rather than
+/// the test waiting out its bound on a write that will never come.
+fn watch_for_stop(manager: &mut ui::collaboration::CollaborationManager) -> ! {
+    loop {
+        let _ = manager.poll();
+        if let Some(ui::collaboration::CollaborationState::Offline(reason)) =
+            manager.take_state_change()
+        {
+            panic!("the app stopped publishing its write: {reason}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// How much sooner than the test that started it a helper child gives up: the
+/// child's reason is written to the test's log while the test still waits, so
+/// a failure reports what the helper waited on instead of the test's own bound.
+const HELPER_LEAD: u64 = 10;
+
+/// The hang bound a helper child is started with, in seconds.
+pub(crate) fn helper_hang_bound() -> String {
+    tilo_test_env::hang_bound()
+        .as_secs()
+        .saturating_sub(HELPER_LEAD)
+        .max(1)
+        .to_string()
 }
 
 #[test]
@@ -393,12 +456,7 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
             ui::record::RecordKind::new(WRITER_KIND),
         );
         let mut manager = ui::collaboration::CollaborationManager::for_record(&checkout);
-        let started = Instant::now();
-        while !manager.is_connected() && started.elapsed() < tilo_test_env::hang_bound() {
-            let _ = manager.poll();
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(manager.is_connected(), "{:?}", manager.state());
+        wait_until_joined(&mut manager);
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "text", WRITTEN).unwrap();
         doc.commit();
@@ -407,10 +465,7 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
                 doc.save()
             ))
         );
-        loop {
-            let _ = manager.poll();
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        watch_for_stop(&mut manager);
     }
     let Some(root) = isolated_root(WRITER_TEST) else {
         return;
@@ -421,15 +476,21 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
     command
         .args(["--exact", WRITER_TEST, "--nocapture"])
         .env(WRITER_HELPER, "1")
+        .env(tilo_test_env::hang::HANG_BOUND_ENV, helper_hang_bound())
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone().unwrap()))
         .stderr(Stdio::from(log));
     let mut child = session.launch(WRITER_APP, command).unwrap();
     let deadline = tilo_test_env::hang_deadline();
+    let mut stopped = "the host keeps no body of the record".to_owned();
     let stored = loop {
-        let stored = written(&session);
-        if stored.is_some() || Instant::now() >= deadline {
-            break stored;
+        match written(&session) {
+            Ok(Some(stored)) => break Some(stored),
+            Ok(None) => stopped = format!("{WRITER_APP} keeps {WRITER_RECORD} without the write"),
+            Err(reason) => stopped = reason,
+        }
+        if Instant::now() >= deadline {
+            break None;
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -439,12 +500,17 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
     assert_eq!(
         stored.as_deref(),
         Some(WRITTEN),
-        "the sealed write reaches the workspace's host: {logs}"
+        "the sealed write reaches the workspace's host, which reports {stopped}: {logs}"
     );
     drop(session);
     // Served again, the profile's workspace host still keeps the write.
     let reopened = Standalone::start_in_dev_mode(&root, &mut |_| {}).unwrap();
-    assert_eq!(written(&reopened).as_deref(), Some(WRITTEN));
+    let again = written(&reopened);
+    assert_eq!(
+        again.as_ref().ok().and_then(|stored| stored.as_deref()),
+        Some(WRITTEN),
+        "the workspace host serves the write again: {again:?}"
+    );
 }
 
 const OFFLOAD_TEST: &str =

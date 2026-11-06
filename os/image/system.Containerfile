@@ -96,7 +96,6 @@ COPY \
     os/usr/lib/systemd/user/tilo-projector.service \
     os/usr/lib/systemd/user/tilo-projector.socket \
     os/usr/lib/systemd/user/tilo-cache-gc.service \
-    os/usr/lib/systemd/user/tilo-boot-fallback-notice.service \
     os/usr/lib/systemd/user/tilo-cache-gc.timer \
     os/usr/lib/systemd/user/tilo-app-update.service \
     os/usr/lib/systemd/user/tilo-app-update.timer \
@@ -129,7 +128,6 @@ COPY \
     os/etc/polkit-1/rules.d/49-tilo-disk-unlock.rules \
     os/etc/polkit-1/rules.d/49-tilo-greeter-power.rules \
     os/etc/polkit-1/rules.d/49-tilo-greeter-fingerprint.rules \
-    os/etc/polkit-1/rules.d/49-tilo-session-priority.rules \
     os/etc/polkit-1/rules.d/49-tilo-time-zone.rules \
     os/etc/polkit-1/rules.d/49-tilo-battery-cap.rules \
     /etc/polkit-1/rules.d/
@@ -598,8 +596,8 @@ RUN chmod 0755 /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-conf
 #                              is never blessed and the counter it spent stays spent.
 #   tilo-boot-fallback.service  after the boot loader went back from a deployment
 #                              that failed its tries, makes the running one bootc's
-#                              default and writes what failed; the session's
-#                              tilo-boot-fallback-notice tells the person.
+#                              default and writes what failed; the session reads
+#                              the report and tells the person.
 #   tilo-boot-mode-generator    turns `tilo.mode=repair` on the SEALED command line
 #                              into a boot that comes up at the repair console
 #                              instead of the desktop.
@@ -756,7 +754,6 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
     systemctl enable tilo-rollback-harden.timer && \
     systemctl enable tilo-rollback-confirm.timer && \
     systemctl enable tilo-boot-entries.timer tilo-boot-health.service tilo-boot-fallback.service && \
-    systemctl --global enable tilo-boot-fallback-notice.service && \
     systemctl enable tilo-deployment-status.socket && \
     systemctl enable bootc-fetch-apply-updates.timer && \
     systemctl enable tilo-network-start.service && \

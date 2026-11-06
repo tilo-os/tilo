@@ -40,7 +40,6 @@ async fn dial_error(server: &Endpoint) -> TestResult<LinkError> {
         cert: cert(&root, &device)?,
         host_cert: cert(&root, &host)?,
         revocations: RevocationList::new(),
-        watching: false,
         background: false,
     };
     match tilo_test_env::within("native browser-peer dial", connect(&config, &device)).await {

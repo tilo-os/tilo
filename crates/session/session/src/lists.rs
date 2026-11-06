@@ -1,8 +1,8 @@
 //! The apps search lists of this device: the Tilo apps installed here, the
-//! machine's own, and the apps a person can get. Read once at startup and
-//! again on a worker of their own whenever a directory they are read from
-//! changes (an install, a desktop entry added, a registry's or Flathub's
-//! catalogue refreshed, a block made), never on the session's thread.
+//! machine's own, and the apps a person can get. Read on a worker of their
+//! own, and again whenever a directory they are read from changes (an
+//! install, a desktop entry added, a registry's or Flathub's catalogue
+//! refreshed, a block made), never on the session's thread.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -75,10 +75,11 @@ impl AppLists {
             .filter_map(|app| Some((app.package_id.clone(), app.icon_path()?)))
             .collect();
         let declared = declared(&installed);
-        // The machine's entries through the memoised scan, whose watch this
-        // first read starts: what later asks for an entry's icon or name on
-        // the loop (`crate::app_icons::entry_icon`) finds it read already.
-        let scan = desktop_entry::cache::cached_scan();
+        // The machine's entries through the memoised scan, which this read
+        // starts on the lists' worker: a later ask for an entry's icon or
+        // name (`crate::app_icons::entry_icon`) finds it read, or meets the
+        // read already under way rather than starting one.
+        let scan = desktop_entry::cache::cached_scan(&crate::app_names::entry_locales());
         // An installed Tilo app may keep a desktop entry of its own, as its
         // bundle does: that entry is the same app, listed once.
         let tilo_apps =
@@ -396,8 +397,10 @@ impl Lists {
         Self(Held::Fixed(Arc::new(lists)))
     }
 
-    /// `read` now, and again on a worker named `name` after any change in
-    /// `directories`.
+    /// `read` on a worker named `name`, as it starts, and again after any
+    /// change in `directories`. Starting never waits for the disk: until the
+    /// first read lands the lists are empty, and whoever shows them hears of
+    /// the change ([`Watched::on_change`]).
     ///
     /// # Errors
     /// A directory cannot be watched, or the worker cannot start.
@@ -406,7 +409,8 @@ impl Lists {
         directories: Vec<PathBuf>,
         read: impl Fn() -> AppLists + Send + Sync + 'static,
     ) -> std::io::Result<Self> {
-        Watched::start(name, directories, read).map(|watched| Self(Held::Followed(watched)))
+        Watched::start_unread(name, directories, AppLists::default(), read)
+            .map(|watched| Self(Held::Followed(watched)))
     }
 
     /// This device's lists ([`AppLists::read`]), following their
@@ -453,5 +457,92 @@ mod tests {
         assert!(!machine_entry(&entry("so.tilo.notes"), &tilo_apps));
         // Any other app's entry is one of the machine's.
         assert!(machine_entry(&entry("org.gnome.notes"), &tilo_apps));
+    }
+
+    /// The machine's own apps are named in the person's language, not in the
+    /// machine's: on a German desktop with English chosen the list reads
+    /// `Files`, and the same desktop with no language chosen reads `Dateien`.
+    #[test]
+    fn the_machines_apps_are_named_in_the_persons_language() {
+        let home = tempfile::tempdir().unwrap();
+        let data = home.path().join("data");
+        let applications = data.join("applications");
+        std::fs::create_dir_all(&applications).unwrap();
+        std::fs::write(
+            applications.join("org.example.Files.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Files\nName[de]=Dateien\n\
+             Exec=/bin/true\n",
+        )
+        .unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path());
+        env.set("XDG_DATA_HOME", &data);
+        env.set("XDG_DATA_DIRS", &data);
+        env.set("LANG", "de_DE.UTF-8");
+        for unset in ["LC_ALL", "LC_MESSAGES", "LANGUAGE"] {
+            env.remove(unset);
+        }
+        let listed = || {
+            AppLists::read()
+                .host_apps
+                .iter()
+                .find(|app| app.desktop_id == "org.example.Files")
+                .map(|app| app.name.clone())
+        };
+
+        // The person chose English, on a German machine.
+        let english = serde_json::json!({"appearance": {"language": "en-US"}})
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let chosen = settings_store::scoped_source(Some(std::sync::Arc::new(
+            settings_store::HostDocument::new(english, |_| Ok(())),
+        )));
+        assert_eq!(
+            listed().as_deref(),
+            Some("Files"),
+            "the person's language names the machine's apps"
+        );
+        drop(chosen);
+
+        // Nothing chosen: the machine's locale is the default, not a second
+        // source that survives a choice.
+        let none = settings_store::scoped_source(Some(std::sync::Arc::new(
+            settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
+        )));
+        assert_eq!(
+            listed().as_deref(),
+            Some("Dateien"),
+            "with no choice the device's own locale decides"
+        );
+        drop(none);
+    }
+
+    #[test]
+    fn the_lists_arrive_from_their_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let lists = Lists::follow(
+            "tilo-search-lists-test",
+            vec![dir.path().to_owned()],
+            || AppLists {
+                applications: vec![AppEntry {
+                    id: "so.tilo.notes".to_owned(),
+                    title: "Notes".to_owned(),
+                    category: None,
+                    description: None,
+                }],
+                ..AppLists::default()
+            },
+        )
+        .unwrap();
+        // The worker's own read is the one that counts: what this thread has
+        // asked for never does.
+        tilo_test_env::wait_until("the lists' worker to read them", || {
+            lists
+                .latest()
+                .applications
+                .iter()
+                .any(|app| app.id == "so.tilo.notes")
+        });
     }
 }

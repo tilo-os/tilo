@@ -13,6 +13,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
 use std::sync::Arc;
@@ -150,15 +152,12 @@ fn pump(
     client: &mut TestClient,
     mut done: impl FnMut(&mut Session, &TestClient) -> bool,
 ) {
-    for _ in 0..500 {
+    common::wait_for(session, "what the test asked of the session", |session| {
         client.exchange();
-        session.step(Duration::from_millis(2)).expect("step");
+        let answer = done(session, client);
         client.exchange();
-        if done(session, client) {
-            return;
-        }
-    }
-    panic!("condition not reached");
+        answer.then_some(())
+    });
 }
 
 /// Let the session run until `done` holds. The accelerometer is read a few
@@ -172,7 +171,7 @@ fn until(
     client: &mut TestClient,
     mut done: impl FnMut(&mut Session, &TestClient) -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = tilo_test_env::hang_deadline();
     while Instant::now() < deadline {
         client.exchange();
         session.step(Duration::from_millis(20)).expect("step");
@@ -276,7 +275,7 @@ fn fill(
     app: &str,
     want: (i32, i32, i32),
 ) {
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = tilo_test_env::hang_deadline();
     let mut drawn = None;
     while Instant::now() < deadline {
         client.exchange();
@@ -374,8 +373,10 @@ fn the_lock_turns_the_outputs_and_the_desk_follows() {
         .set(true)
         .expect("the person's setting");
     hold(&sensor, (0, -9, 0));
-    let settle = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < settle {
+    // Two seconds of the desk's own time with the machine on its side: the
+    // turn has long been read and debounced by now, so anything that were to
+    // follow the sensor would have happened.
+    for _ in 0..100 {
         client.exchange();
         session.step(Duration::from_millis(20)).expect("step");
         client.exchange();

@@ -62,6 +62,24 @@ pub trait OwnerCustody: Send + Sync + 'static {
     /// Send the owner's outgoing custody of `workspace` to its peers soon:
     /// what was just committed leaves this device. Queued, never awaited.
     fn schedule_publication(&self, workspace: WorkspaceId);
+    /// Start `record`, which `workspace` holds not yet, as this device: empty,
+    /// in the kind its app named, under the exact declarations its installed
+    /// package carries. The owner is then the record's creator at its first
+    /// revision, and the app's own change is admitted on top of it like every
+    /// later one.
+    ///
+    /// # Errors
+    /// The app is not installed here, declares no such kind, the workspace
+    /// does not let its app author records or this person change this one, or
+    /// the owner could not publish it.
+    fn prepare_record(
+        &self,
+        owner: &NativeWorkspaceOwner,
+        workspace: WorkspaceId,
+        app: &str,
+        record: &str,
+        kind: &str,
+    ) -> Result<(), String>;
 }
 
 /// The broker's owner commits, through `custody`.
@@ -124,6 +142,16 @@ impl OwnerCommitService for NativeOwnerCommits {
             .health()
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
+        self.commit_with_record_kind(request, None)
+    }
+    /// A document write whose record the owner does not hold yet starts it
+    /// empty first, in the kind the app named; the write is then admitted
+    /// like any other change of it.
+    fn commit_with_record_kind(
+        &self,
+        request: OwnerCommitRequest,
+        record_kind: Option<String>,
+    ) -> CommitFuture {
         let custody = Arc::clone(&self.custody);
         let writes = self.writes.clone();
         Box::pin(writes.run(move || {
@@ -134,6 +162,15 @@ impl OwnerCommitService for NativeOwnerCommits {
             let now = std::time::SystemTime::now();
             if !matches!(request.operation, CommitOperation::EffectReceipt { .. }) {
                 custody.check_custody(&owner, room)?;
+                if let (CommitOperation::Document { app, record, .. }, Some(kind)) =
+                    (&request.operation, record_kind.as_deref())
+                {
+                    let held = owner
+                        .with_current(room, |view| Ok(view.peer().holds_document(app, record)))?;
+                    if !held {
+                        custody.prepare_record(&owner, room, app, record, kind)?;
+                    }
+                }
                 let receipt = owner.commit_document(request, now)?;
                 // What the owner committed leaves for the workspace's peers
                 // from its custody, the one copy every write goes through.

@@ -10,13 +10,13 @@ use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::platform::wayland::WindowExtWayland;
 use winit::window::Window;
 
 use super::super::App;
 use super::super::host_commands::HostCommandsKey;
 use crate::host_chrome::HostChrome;
-use crate::host_chrome::header_bar::{HeaderBar, HeaderRequest, app_draws_frame, resize_edge};
+use crate::host_chrome::frame::app_draws_frame;
+use crate::host_chrome::header_bar::{HeaderBar, HeaderRequest, resize_edge};
 use crate::widget::Widget;
 
 pub(super) enum Decorations {
@@ -42,6 +42,10 @@ pub(super) struct LiveHeader {
     /// A fullscreen window has no frame: the bar neither draws, takes
     /// input, nor insets the content until the window leaves fullscreen.
     hidden: bool,
+    /// The app draws the window's one bar itself (its row of slots): this
+    /// header draws no second one and insets nothing, keeping only the
+    /// window's edges.
+    passenger: bool,
 }
 
 /// What the runner still has to do after the bar saw an event.
@@ -52,11 +56,12 @@ pub(super) struct Routed {
 
 impl Decorations {
     /// Settle who decorates, then keep the bar current. Call every frame
-    /// before layout: the bar's height is the app's top inset.
-    pub(super) fn refresh(&mut self, app: &mut App, window: &Window) {
+    /// before layout, after the window's slot row: the header is the frame
+    /// only while the app shows no bar of its own (`slot_row_shown`).
+    pub(super) fn refresh(&mut self, app: &mut App, window: &Window, slot_row_shown: bool) {
         if matches!(self, Self::Unsettled) {
             let chrome = HostChrome::current(app.input.platform);
-            *self = match app_draws_frame(chrome, window.server_side_decorations()) {
+            *self = match app_draws_frame(chrome, tilo_presentation::desktop_draws_frame(window)) {
                 None => return,
                 Some(true) => {
                     window.set_decorations(false);
@@ -67,7 +72,7 @@ impl Decorations {
             };
         }
         if let Self::Bar(header) = self {
-            header.refresh(app, window);
+            header.refresh(app, window, slot_row_shown);
         }
     }
 
@@ -83,6 +88,7 @@ impl Decorations {
     pub(super) fn draw(&mut self, app: &mut App, scene: &mut Scene, transform: Affine) {
         if let Self::Bar(header) = self
             && !header.hidden
+            && !header.passenger
         {
             let (text, theme, presence) = (&mut app.text_renderer, &app.theme, &app.presence_ctx);
             header.bar.draw(scene, transform, text, theme, presence);
@@ -115,10 +121,11 @@ impl LiveHeader {
             pointer: Point::ORIGIN,
             repaint: true,
             hidden: false,
+            passenger: false,
         }
     }
 
-    fn refresh(&mut self, app: &mut App, window: &Window) {
+    fn refresh(&mut self, app: &mut App, window: &Window, slot_row_shown: bool) {
         let physical = window.inner_size();
         let size =
             crate::scale::logical_size((physical.width, physical.height), window.scale_factor());
@@ -131,10 +138,21 @@ impl LiveHeader {
             self.window = Rect::ZERO;
         }
         if hidden {
-            if app.layout.safe_area.top != 0.0 {
-                app.layout.safe_area.top = 0.0;
-                app.layout.layout_dirty = true;
-            }
+            Self::insets(app, 0.0);
+            return;
+        }
+        // The app's own bar is the window's bar: this header stands aside
+        // while it shows, and lays itself out again if it goes.
+        if self.passenger != slot_row_shown {
+            self.passenger = slot_row_shown;
+            self.repaint = true;
+            self.window = Rect::ZERO;
+        }
+        if self.passenger {
+            self.node = None;
+            // The window's bounds still place its edges.
+            self.window = bounds;
+            Self::insets(app, 0.0);
             return;
         }
         let key = app.host_commands_key();
@@ -164,8 +182,14 @@ impl LiveHeader {
         if self.node.is_none() {
             return;
         }
+        Self::insets(app, self.bar.get_rect().height());
+    }
+
+    /// Leave `top` for the bar above the app's content, or none when the
+    /// bar draws nothing.
+    fn insets(app: &mut App, top: f64) {
         let area = crate::scale::SafeArea {
-            top: self.bar.get_rect().height(),
+            top,
             ..app.layout.safe_area
         };
         if area != app.layout.safe_area {
@@ -179,13 +203,12 @@ impl LiveHeader {
             consumed: false,
             close: false,
         };
-        let Some(node) = self.node else {
-            return routed;
-        };
         if let WindowEvent::CursorMoved { position, .. } = event {
             let scale = window.scale_factor();
             self.pointer = Point::new(position.x / scale, position.y / scale);
         }
+        // The window's edges are the header's wherever the app decorates
+        // itself, drawn or not.
         let edge = (!window.is_maximized() && self.bar.modal_capture().is_none())
             .then(|| resize_edge(self.pointer, self.window, &app.theme))
             .flatten();
@@ -208,6 +231,7 @@ impl LiveHeader {
                 routed.consumed = true;
                 return routed;
             }
+            _ if self.passenger => return routed,
             WindowEvent::CursorMoved { .. }
             | WindowEvent::MouseInput { .. }
             | WindowEvent::MouseWheel { .. }
@@ -216,6 +240,9 @@ impl LiveHeader {
             WindowEvent::KeyboardInput { .. } if self.bar.modal_capture().is_some() => {}
             _ => return routed,
         }
+        let Some(node) = self.node else {
+            return routed;
+        };
         let mut handled = false;
         let mut focus = None;
         self.bar.handle_event(

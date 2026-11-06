@@ -16,11 +16,11 @@ view desk(d: Desk) {
     desk_around(d, .none, fill)
 }
 
-/// The desk, with the arrangement `front` filling the room between its bar and its dock when
-/// there is one, as its preset shows it (`shown_preset`). On a compact output, where a desk of
-/// windows standing where they were left would show their corners cut off, the traditional
-/// desktop shows the window the person is in that way, and the dock takes its own room at the
-/// foot rather than standing over the window, as a phone's does.
+/// The desk, with the arrangement `front` filling the room between its bar and its foot, as its
+/// preset shows it (`shown_preset`): the dock stands over that room on its own edge, as the
+/// chrome's does, so a window is as tall as the desk rather than stopping short of the dock. On a
+/// compact output that room is a phone's, too little for a window's bar to lose to a floating
+/// dock, so the dock takes its own room at the foot instead and the window fills what is left.
 ///
 /// The switcher is a panel over the desk rather than a page of it: it takes that room and
 /// centres itself there, where the surfaces that go on past a display are given the same room
@@ -29,8 +29,14 @@ view desk(d: Desk) {
 /// nothing over either.
 view desk_around(d: Desk, front: Option<Arrangement>) {
     let s = shell
-    let docked = front != .none and dock_shows(s, d) and s.dock_edge == .bottom
-    let resting = d.here == "" or d.here == "none" or d.here == "desk" or d.here == "switcher" and not d.switcher_revealed
+    let dock_takes_room = front != .none
+        and dock_shows(s, d)
+        and s.dock_edge == .bottom
+        and space.compact
+    let resting = d.here == ""
+        or d.here == "none"
+        or d.here == "desk"
+        or d.here == "switcher" and not d.switcher_revealed
     layers {
         stack(gap: .tight, fill) {
             if bar_shows(s, d) {
@@ -40,7 +46,15 @@ view desk_around(d: Desk, front: Option<Arrangement>) {
                 if let a = front {
                     stack(gap: .tight, fill) {
                         at_rest(d)
-                        shown_preset(a, bar_lists_actions(s, d, space.width_class == .expanded or space.width_class == .wide), fill)
+                        shown_preset(
+                            a,
+                            bar_lists_actions(
+                                s,
+                                d,
+                                space.width_class == .expanded or space.width_class == .wide,
+                            ),
+                            fill,
+                        )
                     }
                 } else {
                     at_rest(d)
@@ -52,38 +66,28 @@ view desk_around(d: Desk, front: Option<Arrangement>) {
                     surface(d)
                 }
             }
-            if docked {
+            if dock_takes_room {
                 row(align: .center, distribute: .center) {
-                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .bottom, material: if s.dock_finish == .translucent { .glass } else { .calm }, fill: if s.dock_fit == .full { 1 } else { 0 }) {
-                        dock(s, d)
-                    }
+                    dock_ground(s, d, .bottom)
                 }
             }
         }
-        if dock_shows(s, d) and not docked {
+        if dock_shows(s, d) and not dock_takes_room {
             if s.dock_edge == .bottom {
                 row(at: .bottom, fill, align: .center, distribute: .center) {
-                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .bottom, material: if s.dock_finish == .translucent { .glass } else { .calm }, fill: if s.dock_fit == .full { 1 } else { 0 }) {
-                        dock(s, d)
-                    }
+                    dock_ground(s, d, .bottom)
                 }
             } else if s.dock_edge == .top {
                 row(at: .top, fill, align: .center, distribute: .center) {
-                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .top, material: if s.dock_finish == .translucent { .glass } else { .calm }, fill: if s.dock_fit == .full { 1 } else { 0 }) {
-                        dock(s, d)
-                    }
+                    dock_ground(s, d, .top)
                 }
             } else if s.dock_edge == .left {
                 stack(at: .leading, fill, align: .center) {
-                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .leading, material: if s.dock_finish == .translucent { .glass } else { .calm }) {
-                        dock(s, d)
-                    }
+                    dock_ground(s, d, .left)
                 }
             } else {
                 stack(at: .trailing, fill, align: .center) {
-                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .trailing, material: if s.dock_finish == .translucent { .glass } else { .calm }) {
-                        dock(s, d)
-                    }
+                    dock_ground(s, d, .right)
                 }
             }
         }
@@ -119,25 +123,46 @@ view screen(a: Arrangement) {
     }
 }
 
+/// The dock's ground on `edge`: the theme's material for the style the person picked, edge to
+/// edge along a top or a foot and inset with rounded corners on a floating dock, which `edge`
+/// as `ui.Chrome` names it. What stands on it is the dock's own run (`dock`).
+view dock_ground(s: Shell, d: Desk, edge: Edge) {
+    if edge == .top or edge == .bottom {
+        ui.Chrome(
+            name: "Dock",
+            shape: if s.dock_fit == .full { .square } else { .rounded },
+            edge: if edge == .top { .top } else { .bottom },
+            material: if s.dock_finish == .translucent { .glass } else { .calm },
+            fill: if s.dock_fit == .full { 1 } else { 0 },
+        ) {
+            dock(s, d)
+        }
+    } else {
+        ui.Chrome(
+            name: "Dock",
+            shape: if s.dock_fit == .full { .square } else { .rounded },
+            edge: if edge == .left { .leading } else { .trailing },
+            material: if s.dock_finish == .translucent { .glass } else { .calm },
+        ) {
+            dock(s, d)
+        }
+    }
+}
+
 /// What stands between the bar and the dock when the desk shows the arrangement: the places as
 /// the preset the person picked lays them out, under the switch between the presets, as
 /// `desk_view` shows them. The traditional desktop shows the window in front alone here, as a
-/// compact display does, its header's actions giving way when the bar lists them (`lists`).
+/// compact display does, its bar's actions giving way when the desk's bar lists them (`lists`).
 view shown_preset(a: Arrangement, lists: Bool) {
     let v = viewing
     if v.showing == .desktop {
         front_window(a, lists, fill)
+    } else if v.showing == .frames {
+        framed_canvas(a, fill)
+    } else if v.showing == .spaces {
+        spaces_canvas(a, fill)
     } else {
-        stack(gap: .tight, fill) {
-            preset_switch(v)
-            if v.showing == .frames {
-                framed_canvas(a, fill)
-            } else if v.showing == .spaces {
-                spaces_canvas(a, fill)
-            } else {
-                strips_view(a, v, fill)
-            }
-        }
+        strips_view(a, v, lists, fill)
     }
 }
 
@@ -147,28 +172,54 @@ view shown_preset(a: Arrangement, lists: Bool) {
 /// output it spans is what its fit says.
 view bar_on_edge(s: Shell, d: Desk) {
     let on_top = s.bar_edge == .top
-    if s.bar_fit == .full and on_top {
-        row(at: .top, fill, align: .center) {
-            ui.Chrome(name: "Top bar", shape: .square, edge: .top, material: if s.bar_finish == .translucent { .glass } else { .calm }, fill) {
-                top_bar(d)
+    // The stack holds the bar at its own height: the bar fills the desk's width, and takes no
+    // share of its height, so the desk's windows get the room the bar leaves.
+    stack {
+        if s.bar_fit == .full and on_top {
+            row(at: .top, fill, align: .center) {
+                ui.Chrome(
+                    name: "Top bar",
+                    shape: .square,
+                    edge: .top,
+                    material: if s.bar_finish == .translucent { .glass } else { .calm },
+                    fill,
+                ) {
+                    top_bar(d)
+                }
             }
-        }
-    } else if s.bar_fit == .full {
-        row(at: .bottom, fill, align: .center) {
-            ui.Chrome(name: "Top bar", shape: .square, edge: .bottom, material: if s.bar_finish == .translucent { .glass } else { .calm }, fill) {
-                top_bar(d)
+        } else if s.bar_fit == .full {
+            row(at: .bottom, fill, align: .center) {
+                ui.Chrome(
+                    name: "Top bar",
+                    shape: .square,
+                    edge: .bottom,
+                    material: if s.bar_finish == .translucent { .glass } else { .calm },
+                    fill,
+                ) {
+                    top_bar(d)
+                }
             }
-        }
-    } else if on_top {
-        row(at: .top, align: .center, padding: .related) {
-            ui.Chrome(name: "Top bar", shape: .rounded, edge: .top, material: if s.bar_finish == .translucent { .glass } else { .calm }) {
-                top_bar(d)
+        } else if on_top {
+            row(at: .top, align: .center, padding: .related) {
+                ui.Chrome(
+                    name: "Top bar",
+                    shape: .rounded,
+                    edge: .top,
+                    material: if s.bar_finish == .translucent { .glass } else { .calm },
+                ) {
+                    top_bar(d)
+                }
             }
-        }
-    } else {
-        row(at: .bottom, align: .center, padding: .related) {
-            ui.Chrome(name: "Top bar", shape: .rounded, edge: .bottom, material: if s.bar_finish == .translucent { .glass } else { .calm }) {
-                top_bar(d)
+        } else {
+            row(at: .bottom, align: .center, padding: .related) {
+                ui.Chrome(
+                    name: "Top bar",
+                    shape: .rounded,
+                    edge: .bottom,
+                    material: if s.bar_finish == .translucent { .glass } else { .calm },
+                ) {
+                    top_bar(d)
+                }
             }
         }
     }
@@ -194,9 +245,10 @@ view top_bar(d: Desk) {
 /// The desk at rest under its bar: the banner a notice rose as. A person with windows sees
 /// them through the compositor behind this, and who is here is in the bar's own menu, so the
 /// desk at rest adds nothing to its bar's band: closed, it lays nothing out and draws nothing.
+/// A banner stands the desk's gutter in from the window's edge, as a surface does.
 view at_rest(d: Desk) {
-    stack(gap: .section) {
-        if d.banner != "" {
+    if d.banner != "" {
+        stack(padding: if space.compact { .section } else { .none }) {
             banner(d)
         }
     }
@@ -204,25 +256,29 @@ view at_rest(d: Desk) {
 
 /// The surface the person is in, at the place its kind shows: the launcher fills the desk
 /// under the bar, the overview and the workspaces fill it, the centre sits at the trailing
-/// edge and the composer at the foot.
+/// edge and the composer at the foot. Every one of them stands the desk's gutter in from the
+/// window's edge, where that window is narrow enough to have no page gutter of its own: a
+/// surface is a panel over the desk, not a band of the window.
 view surface(d: Desk) {
-    if d.here == "overview" {
-        overview(d, fill)
-    } else if d.here == "switcher" {
-        switcher(d, fill)
-    } else if d.here == "launcher" {
-        launcher(d, fill)
-    } else if d.here == "centre" {
-        notices(d, fill)
-    } else if d.here == "quick-settings" {
-        quick_settings(d, fill)
-    } else if d.here == "workspaces" {
-        workspaces(d, fill)
-    } else if d.here == "composer" {
-        composer(d, fill)
-    } else if d.here == "conversation" {
-        if let r = d.runs.last() {
-            conversation(r, fill)
+    stack(fill, padding: if space.compact { .section } else { .none }) {
+        if d.here == "overview" {
+            overview(d, fill)
+        } else if d.here == "switcher" {
+            switcher(d, fill)
+        } else if d.here == "launcher" {
+            launcher(d, fill)
+        } else if d.here == "centre" {
+            notices(d, fill)
+        } else if d.here == "quick-settings" {
+            quick_settings(d, fill)
+        } else if d.here == "workspaces" {
+            workspaces(d, fill)
+        } else if d.here == "composer" {
+            composer(d, fill)
+        } else if d.here == "conversation" {
+            if let r = d.runs.last() {
+                conversation(r, fill)
+            }
         }
     }
 }

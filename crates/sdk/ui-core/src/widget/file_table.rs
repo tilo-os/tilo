@@ -920,6 +920,36 @@ impl<R: FileRow> FileTable<R> {
             .as_mut()
             .is_some_and(|table| table.perform_action(action, key_path, state, path))
     }
+
+    /// Run an assistive technology's `action` on the synthetic row the
+    /// semantic target `target` names: the row an access node forwarded from
+    /// this table addresses.
+    pub fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &crate::widget::ModelPath,
+    ) -> bool {
+        // An activation is the row the app opens, read by the host once a
+        // frame ([`Self::take_row_requests`]) and opened as a double-click or
+        // Enter opens it. The table's own view operation is not this app's
+        // open: the file explorer navigates from the command, not from an
+        // operation published for a window it does not host.
+        if matches!(action, crate::a11y::Action::Activate)
+            && let Some(index) = self
+                .table
+                .as_ref()
+                .and_then(|table| table.semantic_row(target))
+        {
+            self.mailbox.activate.set(Some(index));
+            return true;
+        }
+        let Some(table) = self.table.as_mut() else {
+            return false;
+        };
+        Widget::perform_semantic_action(table, target, action, state, path)
+    }
 }
 
 fn table_rect<R>(table: Option<&DataTable<R>>) -> Rect
@@ -1041,8 +1071,9 @@ mod tests {
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
-        // The activation publishes the list's own open action; the app answers
-        // it on the way out of the accessibility call, as it does for a press.
+        // The activation publishes the list's own open action; the host
+        // answers it on the way out of the accessibility call, as it does for
+        // a press.
         assert_eq!(
             crate::testing::answer_controls(table.table.as_mut().expect("the table")),
             1
@@ -1067,5 +1098,39 @@ mod tests {
             rect.contains(at),
             "opened where that row stands: {at:?} in {rect:?}"
         );
+
+        // A row this list shows on another widget's node (the file view
+        // forwards this table's tree) is reached by the semantic target it
+        // carries: the list holds the table outside the window's widget tree,
+        // where no host drains what a press publishes, so the activation is
+        // answered here and the row it opened is waiting to be read.
+        let node = table.accessibility().expect("list semantics");
+        let target = node.children[2]
+            .action_target
+            .clone()
+            .expect("the row carries its semantic target");
+        assert!(table.perform_semantic_action(
+            &target,
+            &crate::a11y::Action::Activate,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        let (open, menu) = table.take_row_requests();
+        assert_eq!(open, Some(2), "the row the target named opens");
+        assert_eq!(menu, None);
+
+        let target = node.children[1]
+            .action_target
+            .clone()
+            .expect("the row carries its semantic target");
+        assert!(table.perform_semantic_action(
+            &target,
+            &crate::a11y::Action::ShowContextMenu,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        let (open, menu) = table.take_row_requests();
+        assert_eq!(open, None, "a menu is not an activation");
+        assert_eq!(menu.expect("the menu the row asked for").0, 1);
     }
 }

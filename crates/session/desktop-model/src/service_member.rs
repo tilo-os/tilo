@@ -1,34 +1,23 @@
-//! Service members: cloud and relay identities admitted to a workspace's
-//! end-to-end encrypted channels as explicit members.
+//! Service members: cloud and relay identities recorded in a workspace's
+//! grants as explicit members, listed with its agents under their purpose.
 //!
-//! A cloud agent run, server-side search or a preview renderer never gets a
-//! plaintext side door. It reads a workspace's content only as a member of the
-//! workspace's channels, like a person's device:
-//!
-//! - it has its own device key, and its MLS leaf is that key;
-//! - an administrator grants it membership with a purpose and the kinds of
-//!   action it may perform, optionally until a deadline;
-//! - it is listed with the workspace's agents, with its purpose, for as long as
-//!   it holds the grant;
-//! - when the grant expires or its job ends and the grant is revoked, the
-//!   next reconcile removes its device from every channel of the workspace. The
-//!   removal is an MLS commit, so the content keys rotate: the service
-//!   keeps what it read before and cannot read anything written after.
-//!
-//! A grant is an ordinary grant on the workspace whose subject is the agent
-//! `service:<device key hex>` and whose id carries the purpose, so it
-//! replicates, persists and is revoked with the rest of the workspace's grants.
+//! A service member is an agent principal `service:<device key hex>` holding an
+//! ordinary grant on the workspace, whose id is `service-member:<device key>:<purpose>`.
+//! That is the stored spelling an older build wrote when an administrator
+//! admitted one; the Agents tab still reads it, so the grants a workspace
+//! already holds keep their purpose, access and deadline. New agents join as
+//! bots ([`crate::bots::WorkspaceBot`]), which hold their own membership.
 
 use collab_types::Ed25519PublicKey;
-use tilo_action_policy::{Answer, Grant, GrantId, KindSet, Lifetime, Subject, TreePath};
+use tilo_action_policy::{Answer, GrantId, KindSet, Lifetime, Subject};
 
 use crate::Workspace;
 use crate::workspace::context_at;
 
+/// The principal prefix a service member's grants are held under.
 const AGENT_PREFIX: &str = "service:";
+/// The grant id prefix that carries a service member's purpose.
 const ID_PREFIX: &str = "service-member:";
-/// Longest purpose a grant records.
-pub const MAX_PURPOSE_CHARS: usize = 80;
 
 /// One live service member of a workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,48 +33,12 @@ pub struct ServiceMember {
     pub grant_id: GrantId,
 }
 
-/// The agent principal a service member's grants are held by.
-pub fn service_principal(device: &Ed25519PublicKey) -> String {
-    format!("{AGENT_PREFIX}{}", hex::encode(device.as_bytes()))
-}
-
+/// The device key a service member's principal names, or `None` for any other
+/// agent.
 pub fn service_device(principal: &str) -> Option<Ed25519PublicKey> {
     let hex_key = principal.strip_prefix(AGENT_PREFIX)?;
     let bytes: [u8; 32] = hex::decode(hex_key).ok()?.try_into().ok()?;
     Some(Ed25519PublicKey::from_bytes(bytes))
-}
-
-/// The workspace grant that makes `device` a service member, given by
-/// `granted_by`.
-pub fn service_membership(
-    workspace: &str,
-    device: &Ed25519PublicKey,
-    purpose: &str,
-    kinds: KindSet,
-    expires_at: Option<u64>,
-    granted_by: Subject,
-) -> Grant {
-    let purpose: String = purpose
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(MAX_PURPOSE_CHARS)
-        .collect();
-    let grant = Grant::new(
-        format!(
-            "{ID_PREFIX}{}:{}",
-            hex::encode(device.as_bytes()),
-            purpose.trim()
-        ),
-        Subject::agent(service_principal(device)),
-        TreePath::workspace(workspace),
-        kinds,
-        Answer::Allow,
-        granted_by,
-    );
-    match expires_at {
-        Some(deadline) => grant.with_lifetime(Lifetime::Until(deadline.saturating_mul(1000))),
-        None => grant,
-    }
 }
 
 /// Every live service member of `workspace` at `now` (Unix seconds).

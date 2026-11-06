@@ -111,6 +111,7 @@ const SHOT_SOURCES: &[&str] = &[
     "undo_controls_shots.rs",
     "widget_states_shots.rs",
     "window_chrome_shots.rs",
+    "window_of_its_own_shots.rs",
 ];
 const PERF_SOURCES: &[&str] = &[
     "dashboard_perf_bench.rs",

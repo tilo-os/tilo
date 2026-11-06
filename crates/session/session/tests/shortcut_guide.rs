@@ -17,6 +17,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -123,13 +125,9 @@ fn chord(session: &mut Session, keys: &[u32]) {
 /// Step the session until `done` holds.
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    for _ in 0..500 {
-        session.step(Duration::from_millis(2)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!("condition not reached");
+    common::wait_for(session, "what the test asked for", |session| {
+        done(session).then_some(())
+    });
 }
 
 /// What the guide shows now.

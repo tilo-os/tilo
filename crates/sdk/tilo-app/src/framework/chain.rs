@@ -87,9 +87,9 @@ pub trait Chained: Resource {
     fn chain() -> RecordId;
 
     /// The chain that belongs beside `base` rather than beside the app's own
-    /// record: the messages of one direct conversation, kept in the record
-    /// the two people share ([`RecordId::of_direct`]). [`Self::chain`] for
-    /// every chain there is only one of.
+    /// record: the messages of one conversation, kept beside its record
+    /// ([`RecordId::of_direct`]). [`Self::chain`] for every chain there is
+    /// only one of.
     fn chain_beside(base: &RecordId) -> RecordId {
         let _ = base;
         Self::chain()
@@ -344,7 +344,7 @@ impl<P: Chained> ChainState<P> {
                     }
                     Ok(Opened::Asked) => {}
                     Err(error) => {
-                        tracing::debug!(kind = P::KIND, part = index, %error, "earlier part not opened");
+                        tracing::warn!(kind = P::KIND, part = index, %error, "earlier part not opened");
                     }
                 }
             }
@@ -406,7 +406,7 @@ impl<P: Chained> ChainState<P> {
         };
         opened
             .map_err(|error| {
-                tracing::debug!(kind = P::KIND, part = newest, %error, "chain head not opened");
+                tracing::warn!(kind = P::KIND, part = newest, %error, "chain head not opened");
             })
             .is_ok()
     }
@@ -546,11 +546,9 @@ impl<P: Chained> ChainState<P> {
             if !self.workspace.store.takes_writes() {
                 return Err("the part is migrated once the store takes writes".into());
             }
-            self.workspace
-                .store
-                .with(&part, tilo_resource::evolution::migrate::<P>)
-                .ok_or("the part is not open here")?
-                .map_err(|error| error.to_string())?;
+            self.workspace.store.migrate(&part, |doc| {
+                tilo_resource::evolution::migrate::<P>(doc).map_err(|error| error.to_string())
+            })?;
         }
         let reader = self
             .workspace
@@ -950,6 +948,14 @@ impl<P: Chained> Chain<P> {
         Self { state, dispatch }
     }
 
+    /// The chain an app holds outside a view, beside one of the workspace's
+    /// records ([`WorkspaceHandle::chain_beside`](super::WorkspaceHandle::chain_beside)):
+    /// its actions are applied as `me` when the app asks for them
+    /// ([`Self::invoke`]), not submitted to a host's door.
+    pub(crate) fn applying(state: &Rc<ChainState<P>>, app_id: &'static str, me: &str) -> Self {
+        Self::new(Rc::clone(state), detached_dispatch(app_id, state, me))
+    }
+
     /// The address the chain is published under: what an agent or a
     /// script invokes its actions on.
     #[must_use]
@@ -1281,17 +1287,27 @@ impl Chains {
         base: &RecordId,
         base_state: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Rc<ChainState<P>>> {
-        let chain = P::chain_beside(base);
-        if let Some(held) = self.opened::<P>(&chain) {
+        self.open_at::<P>(workspace?, &P::chain_beside(base), base_state)
+    }
+
+    /// The chain of `P` kept at `chain` in `workspace`, opened on first use.
+    /// The base is one of the app's own record, or a record of a workspace it
+    /// keeps beside its own (a chat, whose parts hold its messages).
+    pub(crate) fn open_at<P: Chained>(
+        &self,
+        workspace: &WorkspaceRecords,
+        chain: &RecordId,
+        base_state: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
+    ) -> Option<Rc<ChainState<P>>> {
+        if let Some(held) = self.opened::<P>(chain) {
             return Some(held);
         }
-        let workspace = workspace?.clone();
         let state = Rc::new(ChainState::<P>::open_at(
-            workspace,
+            workspace.clone(),
             Rc::new(base_state),
             chain.clone(),
         )?);
-        self.hold(&chain, &state);
+        self.hold(chain, &state);
         Some(state)
     }
 

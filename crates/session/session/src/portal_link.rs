@@ -571,7 +571,9 @@ impl SessionLink {
                 // The stream waits for a session that is locked or an
                 // output that is off.
                 Err(tilo_compositor::Error::Backend(_)) if !compositor.locked() => gone.push(*node),
-                Err(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, node, "a shared window's frame could not be read");
+                }
             }
         }
         for node in gone {

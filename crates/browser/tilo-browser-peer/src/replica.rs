@@ -179,9 +179,9 @@ impl Replicas {
         let Some(workspace) = self.workspaces.get(&workspace_id) else {
             return Err("the workspace has no governance".into());
         };
-        let report = self
-            .owner
-            .receive(*workspace, origin(author, retained), message, now)?;
+        let report =
+            self.owner
+                .receive(*workspace, origin(author, retained), message, None, now)?;
         Ok(report.changed || report.metadata_changed)
     }
 

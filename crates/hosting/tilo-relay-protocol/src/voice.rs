@@ -19,8 +19,8 @@
 //! participation not heard from for [`PARTICIPATION_TTL`] ends. When the
 //! roster changes, the relay sends each remaining participant a fresh
 //! grant. The call's media does not travel through the relay: the members'
-//! devices put it on the call's own lane (`tilo-call-lane`), which the
-//! workspace's channel keys seal.
+//! devices publish it on the workspace's live plane (`tilo-live`), which the
+//! workspace's keys seal.
 //!
 //! A device that does not read the workspace's governance itself (a browser
 //! session) learns its calls with
@@ -157,7 +157,7 @@ pub struct VoiceParticipant {
 }
 
 /// What a participant shows besides its voice: its pictures travel the
-/// call's lane while it shows them (tilo-video/1, `tilo_call_lane`).
+/// workspace's live plane while it shows them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,

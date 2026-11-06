@@ -11,7 +11,7 @@ crate::component::part_slot!(SegmentProps);
 
 /// A small set of choices, one of which is made: an alignment, a density, a unit. The chosen
 /// one is a thumb lifted off the track. What switches what a window shows is [`ViewTabs`].
-#[derive(Component, Default)]
+#[derive(Component)]
 #[component(name = "ToggleGroup", role = "Group", label = "caption")]
 pub struct ToggleGroupProps {
     /// The choices, in order.
@@ -34,6 +34,22 @@ pub struct ToggleGroupProps {
     pub change: Event,
 }
 
+/// A choosable strip is enabled until something says otherwise, like the segments in it.
+impl Default for ToggleGroupProps {
+    fn default() -> Self {
+        Self {
+            options: Vec::new(),
+            selected: None,
+            caption: None,
+            label: None,
+            size: ControlSize::default(),
+            fill: false,
+            enabled: true,
+            change: Event::default(),
+        }
+    }
+}
+
 /// One choice of a [`ToggleGroup`] or a [`ViewTabs`]: what it says, and how it shows.
 #[derive(Clone, Component)]
 #[component(name = "Segment", role = "RadioButton", label = "label")]
@@ -43,7 +59,8 @@ pub struct SegmentProps {
     pub label: String,
     /// What it shows when its full label does not fit its share: "Mon" for "Monday".
     pub short: Option<String>,
-    /// A glyph instead of the label.
+    /// A glyph: before the label on a tab ([`ViewTabs`]), and instead of it on
+    /// any other strip, named by the label either way.
     pub icon: Option<Icon>,
     /// Its keyboard shortcut, named in its tooltip: "B", "Shift+R".
     pub hint: Option<String>,
@@ -82,7 +99,7 @@ impl From<SegmentProps> for Segment {
 /// Tabs that switch what a window's content shows: a request's Params, Headers and Body, a
 /// container's Logs and Stats. Assistive technology meets them as a tab list whose chosen tab
 /// is selected, not checked.
-#[derive(Component, Default)]
+#[derive(Component)]
 #[component(name = "ViewTabs", role = "TabBar", label = "label")]
 pub struct ViewTabsProps {
     /// The tabs, in order.
@@ -101,6 +118,21 @@ pub struct ViewTabsProps {
     /// Another tab was chosen: carries its index, counted from 0.
     #[component(event(value = i64))]
     pub change: Event,
+}
+
+/// Tabs are enabled until something says otherwise: a bar draws them to be chosen from.
+impl Default for ViewTabsProps {
+    fn default() -> Self {
+        Self {
+            tabs: Vec::new(),
+            selected: None,
+            label: None,
+            size: ControlSize::default(),
+            fill: false,
+            enabled: true,
+            change: Event::default(),
+        }
+    }
 }
 
 /// `index` as a choice among `count` options: the last one for an index past the end.

@@ -1,5 +1,5 @@
 use crate::TransportOrigin;
-use crate::owner::testing::{APP, WORKSPACE, raw_fixture};
+use crate::owner::testing::{APP, WORKSPACE, raw_fixture, record_on_disk};
 use crate::owner::{
     DocumentRead, NativeWorkspaceOwner, PendingEnrollmentId, WorkspaceId, open_file,
 };
@@ -59,6 +59,7 @@ fn enrolled() -> Enrolled {
                 workspace,
                 TransportOrigin::RetainedRelayDelta(governor),
                 message,
+                Some(&crate::owner::testing::member_key()),
                 now,
             )
             .unwrap();
@@ -71,6 +72,45 @@ fn enrolled() -> Enrolled {
         now,
         replay,
     }
+}
+
+/// The file one workspace's record is in, as this device holds it.
+fn workspace_file(path: &std::path::Path, workspace: WorkspaceId) -> PathBuf {
+    let name = workspace.to_string();
+    std::fs::read_dir(crate::owner::file_store::parts_of(path))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|file| {
+            file.file_name()
+                .and_then(|file| file.to_str())
+                .is_some_and(|file| file.starts_with(&name))
+        })
+        .expect("the record holds the workspace's file")
+}
+
+/// One workspace's record as its own file holds it.
+fn workspace_json(path: &std::path::Path, workspace: WorkspaceId) -> serde_json::Value {
+    serde_json::from_slice(&std::fs::read(workspace_file(path, workspace)).unwrap()).unwrap()
+}
+
+/// The record as a build before the split wrote it: JSON a file holds whole.
+fn whole_record(path: &std::path::Path) -> serde_json::Value {
+    serde_json::to_value(crate::owner::read_file(path).unwrap()).unwrap()
+}
+
+/// Every file under `root`, looking into its directories.
+fn files_under(root: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(root).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(files_under(&path));
+        } else {
+            files.push((path.clone(), std::fs::read(&path).unwrap()));
+        }
+    }
+    files
 }
 
 fn member() -> SigningKey {
@@ -109,7 +149,7 @@ fn edit_from_view(
         APP,
         "",
         chat.save_after(&before),
-        &member(),
+        &crate::owner::testing::member_key(),
         now,
     )?;
     let NeighbourMsg::AppDocument { envelope, .. } = message else {
@@ -148,11 +188,13 @@ fn a_joined_workspace_is_kept_in_its_own_private_file_and_reopens() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        let mode = std::fs::metadata(&joined.path)
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o077, 0, "the record is owner-only");
+        let parts = crate::owner::file_store::parts_of(&joined.path);
+        let mode = std::fs::metadata(&parts).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "the record's directory is owner-only");
+        for (file, _) in record_on_disk(&joined.path) {
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "{} is owner-only", file.display());
+        }
     }
 }
 
@@ -165,11 +207,11 @@ fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
         .owner
         .commit_document(request.clone(), joined.now)
         .unwrap();
-    let committed = std::fs::read(&joined.path).unwrap();
+    let committed = record_on_disk(&joined.path);
     let retry = joined.owner.commit_document(request, joined.now).unwrap();
     assert_eq!(retry.generation, receipt.generation);
     assert_eq!(
-        std::fs::read(&joined.path).unwrap(),
+        record_on_disk(&joined.path),
         committed,
         "an exact retry does not rewrite"
     );
@@ -228,48 +270,6 @@ fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
         .unwrap();
 }
 
-/// Commit one original edit that the governor has not yet admitted, then give
-/// the route a fresh governor checkpoint that does not cover it, so the next
-/// `reconcile_outgoing` signs a recovery projection at the dense `floor + 1`.
-fn with_pending_original(joined: &Enrolled) {
-    let governor_key = SigningKey::from_bytes(&[61; 32]);
-    let mut remote = joined
-        .owner
-        .with_current(joined.workspace, |view| Ok(view.peer().clone()))
-        .unwrap();
-    let original = edit_with(
-        &joined.owner,
-        joined.workspace,
-        joined.now,
-        "original awaiting ack",
-    );
-    joined.owner.commit_document(original, joined.now).unwrap();
-    for message in remote
-        .publication_mut()
-        .durable_bootstrap_messages(&governor_key, joined.now, 600)
-        .unwrap()
-    {
-        joined
-            .owner
-            .receive(
-                joined.workspace,
-                TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
-                message,
-                joined.now,
-            )
-            .unwrap();
-    }
-}
-
-fn projections(joined: &Enrolled) -> usize {
-    joined
-        .owner
-        .with_current(joined.workspace, |view| {
-            Ok(crate::owner::testing::projection(view)?.len())
-        })
-        .unwrap()
-}
-
 /// A write signed outside the owner turn the way every SDK document signer
 /// signs it: with the process-wide unordered sequence, not `floor + 1`.
 fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
@@ -310,41 +310,9 @@ fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
 }
 
 #[test]
-fn dense_snapshot_sequence_is_stale_after_an_intervening_recovery_projection() {
+fn a_write_signed_outside_the_owner_turn_commits_with_exact_admission_evidence() {
     let joined = enrolled();
-    with_pending_original(&joined);
-    let dense = edit_with(&joined.owner, joined.workspace, joined.now, "dense edit");
-    assert_eq!(projections(&joined), 0);
-    joined
-        .owner
-        .reconcile_outgoing(joined.workspace, &member(), joined.now)
-        .unwrap();
-    assert_eq!(
-        projections(&joined),
-        1,
-        "the owner's own turn must sign a recovery projection at floor + 1"
-    );
-    assert_eq!(
-        joined.owner.commit_document(dense, joined.now).unwrap_err(),
-        "native local document signed sequence is stale"
-    );
-}
-
-#[test]
-fn unordered_sequence_survives_an_intervening_recovery_projection() {
-    let joined = enrolled();
-    with_pending_original(&joined);
     let request = unordered_edit(&joined, "unordered edit");
-    assert_eq!(projections(&joined), 0);
-    joined
-        .owner
-        .reconcile_outgoing(joined.workspace, &member(), joined.now)
-        .unwrap();
-    assert_eq!(
-        projections(&joined),
-        1,
-        "the owner's own turn must sign a recovery projection at floor + 1"
-    );
     joined
         .owner
         .commit_document(request.clone(), joined.now)
@@ -501,6 +469,7 @@ fn a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused() {
                 joined.workspace,
                 TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
                 frame,
+                Some(&crate::owner::testing::member_key()),
                 joined.now,
             )
             .unwrap();
@@ -795,7 +764,7 @@ fn a_member_with_no_sealed_history_past_its_bound_compacts_nothing() {
         .owner
         .compact_outgoing(
             joined.workspace,
-            &member(),
+            &crate::owner::testing::member_key(),
             &mut |_| {
                 opened += 1;
                 Err("no history is due".to_owned())
@@ -828,7 +797,7 @@ fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_or
         .owner
         .renew_outgoing(
             joined.workspace,
-            &member(),
+            &crate::owner::testing::member_key(),
             &mut |op| {
                 asked += 1;
                 let metadata = op.encryption.ok_or("not sealed")?;
@@ -882,13 +851,13 @@ fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_or
     drop(joined.owner);
     let reopened = open_file(&joined.path).unwrap();
     assert_eq!(sent(&reopened, joined.workspace, later), vec![bytes]);
-    for file in std::fs::read_dir(joined.path.parent().unwrap()).unwrap() {
-        let contents = std::fs::read(file.unwrap().path()).unwrap();
+    for (file, contents) in files_under(joined.path.parent().unwrap()) {
         assert!(
             !contents
                 .windows(SECRET.len())
                 .any(|window| window == SECRET.as_bytes()),
-            "the keyless owner's files hold the plaintext"
+            "the keyless owner's files hold the plaintext in {}",
+            file.display()
         );
     }
 }
@@ -898,7 +867,7 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
     let joined = enrolled();
     let (keys, _) = rotated_channel();
     commit_sealed(&joined, &keys);
-    let committed = std::fs::read(&joined.path).unwrap();
+    let committed = record_on_disk(&joined.path);
     let later = joined
         .now
         .checked_add(std::time::Duration::from_secs(301))
@@ -907,12 +876,12 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
         .owner
         .renew_outgoing(
             joined.workspace,
-            &member(),
+            &crate::owner::testing::member_key(),
             &mut |_| Err("this device holds no current key".into()),
             later,
         )
         .unwrap();
-    assert_eq!(std::fs::read(&joined.path).unwrap(), committed);
+    assert_eq!(record_on_disk(&joined.path), committed);
     assert_eq!(
         joined
             .owner
@@ -936,21 +905,18 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
 }
 
 #[test]
-fn a_state_file_names_a_workspaces_host_under_the_stored_key() {
+fn a_workspace_file_names_its_host_under_the_stored_key() {
     let joined = enrolled();
     let host = joined
         .owner
         .with_current(joined.workspace, |view| Ok(view.workspace_host().clone()))
         .unwrap();
     drop(joined.owner);
-    let value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
-    let stored = value["rooms"][joined.workspace.to_string()]
-        .as_object()
-        .expect("a stored workspace");
+    let value = workspace_json(&joined.path, joined.workspace);
+    let stored = value.as_object().expect("a stored workspace");
     assert!(
         stored.contains_key("room_host"),
-        "a build any image can roll back to reads this key: {}",
+        "one key, one spelling: {}",
         serde_json::to_string_pretty(&value).unwrap()
     );
     assert!(
@@ -976,16 +942,15 @@ fn a_host_written_under_each_renamed_key_reads() {
             .with_current(joined.workspace, |view| Ok(view.workspace_host().clone()))
             .unwrap();
         drop(joined.owner);
+        let file = workspace_file(&joined.path, joined.workspace);
         let mut value: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
-        let stored = value["rooms"][joined.workspace.to_string()]
-            .as_object_mut()
-            .expect("a stored workspace");
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        let stored = value.as_object_mut().expect("a stored workspace");
         let named_as_the_host = stored
             .remove("room_host")
             .expect("the record names the host");
         stored.insert(key.into(), named_as_the_host);
-        std::fs::write(&joined.path, serde_json::to_vec(&value).unwrap()).unwrap();
+        std::fs::write(&file, serde_json::to_vec(&value).unwrap()).unwrap();
         let reopened = open_file(&joined.path).expect("a file written under that key reads");
         assert_eq!(
             reopened
@@ -998,32 +963,18 @@ fn a_host_written_under_each_renamed_key_reads() {
 }
 
 #[test]
-fn a_state_file_names_its_workspaces_under_the_stored_key() {
-    let joined = enrolled();
-    drop(joined.owner);
-    let value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
-    let object = value.as_object().expect("a storage object");
-    assert!(
-        object.contains_key("rooms"),
-        "a build any image can roll back to reads this key: {}",
-        serde_json::to_string_pretty(&value).unwrap()
-    );
-    assert!(!object.contains_key("workspaces"), "one key, one spelling");
-}
-
-#[test]
 fn an_owner_file_written_while_the_map_was_named_for_workspaces_restores() {
     let joined = enrolled();
     drop(joined.owner);
-    let mut value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
+    let mut value = whole_record(&joined.path);
     let workspaces = value
         .as_object_mut()
         .expect("a storage object")
         .remove("rooms")
         .expect("the storage names its workspaces");
     value["workspaces"] = workspaces;
+    // That build's file, where the split layout this build keeps is not.
+    std::fs::remove_dir_all(crate::owner::file_store::parts_of(&joined.path)).unwrap();
     std::fs::write(&joined.path, serde_json::to_vec(&value).unwrap()).unwrap();
     let reopened = open_file(&joined.path).expect("a file written by that build reads");
     assert_eq!(
@@ -1083,8 +1034,7 @@ fn an_owner_file_from_before_the_join_version_bump_restores() {
     let revocations = tilo_user_identity::RevocationList::new();
     // The record's invitation, re-signed as the device that issued it by the
     // build before the version bump.
-    let mut value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
+    let mut value = whole_record(&joined.path);
     let stored = value["rooms"][joined.workspace.to_string()]
         .as_object_mut()
         .expect("a stored workspace");
@@ -1143,6 +1093,8 @@ fn an_owner_file_from_before_the_join_version_bump_restores() {
         "enrollment_intent".into(),
         serde_json::Value::String(STANDARD.encode(&previous_intent)),
     );
+    // That build's file, where the split layout this build keeps is not.
+    std::fs::remove_dir_all(crate::owner::file_store::parts_of(&joined.path)).unwrap();
     std::fs::write(&joined.path, serde_json::to_vec(&value).unwrap()).unwrap();
 
     let reopened = open_file(&joined.path).expect("a file from before the join version bump reads");
@@ -1150,8 +1102,7 @@ fn an_owner_file_from_before_the_join_version_bump_restores() {
 
     // Opened once, the file is written in this build's form; the proof keeps
     // the bytes it was signed as.
-    let value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
+    let value = whole_record(&joined.path);
     let stored_intent = STANDARD
         .decode(
             value["rooms"][joined.workspace.to_string()]["enrollment_intent"]
@@ -1173,14 +1124,17 @@ fn an_owner_file_from_before_the_join_version_bump_restores() {
 }
 
 #[test]
-fn owner_file_holds_byte_fields_as_compact_base64() {
+fn owner_files_hold_byte_fields_as_compact_base64() {
     let joined = enrolled();
-    let current = std::fs::read(&joined.path).unwrap();
-    assert!(!current.contains(&b'\n'), "the owner file is compact");
-    let value: serde_json::Value = serde_json::from_slice(&current).unwrap();
-    let workspace = &value["rooms"][joined.workspace.to_string()];
+    for (file, bytes) in record_on_disk(&joined.path) {
+        assert!(!bytes.contains(&b'\n'), "{} is compact", file.display());
+    }
+    let file = workspace_file(&joined.path, joined.workspace);
+    let bytes = std::fs::read(&file).unwrap();
+    assert!(!bytes.contains(&b'\n'), "the workspace's file is compact");
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     for field in ["peer", "invitation", "enrollment_intent"] {
-        assert!(workspace[field].is_string(), "{field} is base64 text");
+        assert!(value[field].is_string(), "{field} is base64 text");
     }
 }
 
@@ -1194,7 +1148,7 @@ fn retained_replay_reuses_exact_committed_publication() {
         })
         .unwrap();
     let message = joined.replay.clone();
-    let before = std::fs::read(&joined.path).unwrap();
+    let before = record_on_disk(&joined.path);
     let generation = joined
         .owner
         .with_current(joined.workspace, |view| Ok(view.generation()))
@@ -1205,6 +1159,7 @@ fn retained_replay_reuses_exact_committed_publication() {
             joined.workspace,
             TransportOrigin::RetainedRelayDelta(governor),
             message,
+            Some(&crate::owner::testing::member_key()),
             joined.now,
         )
         .unwrap();
@@ -1221,7 +1176,7 @@ fn retained_replay_reuses_exact_committed_publication() {
         "an unchanged authenticated replay must reuse the actual committed generation"
     );
     assert_eq!(
-        std::fs::read(&joined.path).unwrap(),
+        record_on_disk(&joined.path),
         before,
         "an unchanged authenticated replay must not rewrite durable owner state"
     );
@@ -1233,7 +1188,7 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
     let reader = member().verifying_key().to_bytes();
     let (keys, _) = rotated_channel();
     commit_sealed(&joined, &keys);
-    let before = std::fs::read(&joined.path).unwrap();
+    let before = record_on_disk(&joined.path);
     let mut decryptions = 0;
     let mut opener = |op: &collab_types::SignedOp| {
         decryptions += 1;
@@ -1293,7 +1248,7 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
             .unwrap(),
         SECRET
     );
-    assert_eq!(std::fs::read(&joined.path).unwrap(), before);
+    assert_eq!(record_on_disk(&joined.path), before);
     let path = joined.path.clone();
     let workspace = joined.workspace;
     let now = joined.now;
@@ -1307,5 +1262,5 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
                     .map(|bytes| bytes.to_vec()).map_err(|error| error.to_string())
             })
     }).unwrap(), DocumentRead::Unchanged(revision) if revision == captured.revision));
-    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(record_on_disk(&path), before);
 }

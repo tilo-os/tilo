@@ -18,11 +18,12 @@
 use std::collections::HashMap;
 
 use smithay::reexports::wayland_server::Client;
-use smithay::xwayland::X11Surface;
 use smithay::xwayland::XWaylandClientData;
 use smithay::xwayland::xwm::X11Window;
 use smithay::xwayland::xwm::settings::Value;
+use smithay::xwayland::{X11Surface, X11Wm};
 use x11rb::connection::Connection as _;
+use x11rb::protocol::res::ConnectionExt as _;
 use x11rb::protocol::xproto::{Atom, AtomEnum, ConnectionExt as _, InputFocus, PropMode};
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -148,15 +149,14 @@ impl X11Windows {
     /// one display, the session's pointer included. Xwayland draws their
     /// buffers at the same scale, so a window asked for one logical size
     /// covers the pixels the clients drew for it.
-    pub(crate) fn publish_x_hints(&mut self, state: &mut State) {
-        let scale = display_scale(state);
-        let theme = state.cursor.theme_name().to_owned();
+    pub(crate) fn publish_x_hints(&mut self, scale: f64, theme: &str, wm: &mut X11Wm) {
         let rescaled = (scale - self.scale).abs() >= f64::EPSILON;
         if !rescaled && theme == self.cursor_theme {
             return;
         }
         self.scale = scale;
-        self.cursor_theme = theme;
+        self.cursor_theme.clear();
+        self.cursor_theme.push_str(theme);
         // A screen of `BASE_DPI` at scale 1, and `Xft/DPI` in 1/1024ths.
         #[allow(
             clippy::cast_possible_truncation,
@@ -170,7 +170,7 @@ impl X11Windows {
             if let Some(client) = self.client.get_data::<XWaylandClientData>() {
                 client.compositor_state.set_client_scale(scale);
             }
-            if let Some(wm) = state.xwm.as_mut() {
+            {
                 let settings = [
                     (
                         "Xft/DPI".to_owned(),
@@ -244,23 +244,11 @@ impl X11Windows {
         self.identities.get(&window)
     }
 
-    /// Give X input focus to the X11 window the keyboard focus is on, and
-    /// take it away when the focus is on anything else. Xwayland leaves the
-    /// focus to the window manager, so without this a window never sees a
-    /// `FocusIn` while the keyboard already reaches it.
-    pub(crate) fn follow_keyboard(&mut self, state: &State) {
-        let focus = state
-            .seat
-            .get_keyboard()
-            .and_then(|keyboard| keyboard.current_focus());
-        let window = focus.as_ref().and_then(|focus| {
-            state
-                .space
-                .elements()
-                .filter_map(|window| window.x11_surface())
-                .find(|window| window.wl_surface().as_ref() == Some(focus))
-                .map(X11Surface::window_id)
-        });
+    /// Give X input focus to `window` of this display, and take it away when
+    /// the keyboard focus is on anything else. Xwayland leaves the focus to
+    /// the window manager, so without this a window never sees a `FocusIn`
+    /// while the keyboard already reaches it.
+    pub(crate) fn follow_keyboard(&mut self, window: Option<X11Window>) {
         if window == self.focused {
             return;
         }
@@ -274,6 +262,13 @@ impl X11Windows {
         if set.is_ok() {
             self.focused = window;
         }
+    }
+
+    /// How many clients are connected to the display, the session's own
+    /// connections included: `None` when the display cannot say.
+    pub(crate) fn clients(&self) -> Option<usize> {
+        let reply = self.connection.res_query_clients().ok()?.reply().ok()?;
+        Some(reply.clients.len())
     }
 
     /// The window's largest usable icon from `_NET_WM_ICON`.
@@ -366,7 +361,7 @@ pub(crate) fn with_resource(resources: &str, key: &str, value: &str) -> String {
 
 /// The scale X clients are told to draw at: that of the densest output, as
 /// one X server serves every output the session has.
-fn display_scale(state: &State) -> f64 {
+pub(crate) fn display_scale(state: &State) -> f64 {
     state
         .space
         .outputs()

@@ -143,27 +143,34 @@ fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
     drop(app);
 }
 
-/// Clocks' live activity is the bar's clock: a running timer shows there,
-/// floating over the windows, and a timer coming due is announced once.
+/// Clocks' live activity is the bar's clock: a running timer reads there,
+/// over the windows, and a timer coming due is announced once.
 #[test]
 fn a_running_timer_is_the_bars_clock() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     let before = session.accessible_labels();
+    let published = ui::live_activity::Published {
+        summary: Some(
+            ui::live_activity::Summary::new(
+                ui::live_activity::Kind::Timer,
+                "Tea",
+                ui::format::timecode(90),
+            )
+            .with_id("timer-1")
+            .with_countdown(90),
+        ),
+        overlay: true,
+        announce: Some(ui::live_activity::Announcement {
+            id: "due-1".into(),
+            title: "Bread".into(),
+            body: "Out of the oven".into(),
+        }),
+    };
     session.live_activities().show(
         "so.tilo.clocks",
-        Some(serde_json::json!({
-            "active": true,
-            "activity_id": "timer-1",
-            "label": "Tea",
-            "remaining_secs": 90,
-            "stopwatch": false,
-            "overlay": true,
-            "notification_id": "due-1",
-            "notification_title": "Bread",
-            "notification_body": "Out of the oven",
-        })),
+        Some(serde_json::to_value(published).expect("the publication reads as JSON")),
     );
     session.step(Duration::from_millis(1)).unwrap();
     let labels = session.accessible_labels();

@@ -470,6 +470,7 @@ impl NativeFileClipboard {
                 );
             }
             if let Err(error) = Self::attribute(agent, paths) {
+                // ignored-failure: the transfer stays its person's when it cannot be attributed
                 tracing::debug!(%error, "a clipboard transfer stays its person's in file history");
             }
         }
@@ -654,9 +655,18 @@ fn clashes(held: &Held, into: &Path) -> bool {
     let Some(name) = held.path.file_name() else {
         return false;
     };
-    match std::fs::symlink_metadata(into.join(name)) {
+    let there = into.join(name);
+    match std::fs::symlink_metadata(&there) {
         Ok(metadata) => identity(&metadata) != held.object,
-        Err(_) => false,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                path = %there.display(),
+                "a paste destination could not be examined; the paste keeps both"
+            );
+            true
+        }
     }
 }
 

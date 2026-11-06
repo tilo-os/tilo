@@ -39,6 +39,7 @@ fn vouched() -> Vouched {
                 workspace,
                 TransportOrigin::RetainedRelayDelta(governor),
                 message,
+                Some(&crate::owner::testing::member_key()),
                 now,
             )
             .unwrap();
@@ -137,11 +138,15 @@ fn a_member_introduces_itself_and_an_unlisted_device_does_not() {
             held.workspace,
             TransportOrigin::RelayDelta(cert.device_public_key),
             hello(cert),
+            Some(&crate::owner::testing::member_key()),
             held.now,
         )
     };
-    let member =
-        crate::owner::testing::certificate(&SigningKey::from_bytes(&[64; 32]), &member(), "Member");
+    let member = crate::owner::testing::certificate(
+        &SigningKey::from_bytes(&[64; 32]),
+        &crate::owner::testing::member_key(),
+        "Member",
+    );
     receive(&member).unwrap();
     let unlisted = crate::owner::testing::certificate(
         &SigningKey::from_bytes(&[64; 32]),

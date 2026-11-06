@@ -11,9 +11,12 @@
 //!
 //! What the workspace holds is read away from the loop ([`Watched`]): the
 //! records belong to apps this process does not own, and one of them being
-//! slow to read must not hold up a frame. What this device has seen of a
-//! workspace is its own, kept in one file ([`HistoryMaps`]): only the person
-//! here marks it, and it never reaches a shared record.
+//! slow to read must not hold up a frame. A change of what the history reads
+//! — a record an app wrote, an answer another device made — asks the desk
+//! for one frame, which is how an open history lists it with nobody asking.
+//! What this device has seen of a workspace is its own, kept in one file
+//! ([`HistoryMaps`]): only the person here marks it, and it never reaches a
+//! shared record.
 //!
 //! The desk's layout is this session's to write, so a change the person
 //! undoes or restores reaches the desk itself: the model hands the workspace
@@ -40,6 +43,7 @@ use tilo_desktop_surface::activity::{
 };
 use tilo_desktop_surface::history_log;
 use tilo_desktop_surface::session::{ActivityRequests, activity_requests};
+use tilo_device_fabric::link::SharedLink;
 use tilo_files::native::Watched;
 use tilo_lock::MutexRecover as _;
 use ui::record::RecordCheckout;
@@ -47,6 +51,8 @@ use ui::record::RecordCheckout;
 use crate::activity_provider::ActivityWire;
 use crate::desk_doc::{DeskDoc, Kept};
 use crate::lists::Lists;
+use crate::unlock_history::UnlockHistory;
+use tilo_actions::remote::workspace_activity as wire;
 
 /// What this device keeps of its own view of the workspaces' activity: the
 /// changes it has seen, when it left a workspace, and the morning sources it
@@ -63,6 +69,12 @@ pub(crate) fn now_seconds() -> i64 {
         })
 }
 
+/// What the person has been told about one device's lasting refusals: the
+/// workspace it refuses in, the device, and the class of its reason. A device
+/// that refuses a person's next change for the same reason adds another row
+/// to the history, not another notification.
+type ToldRefusal = (String, [u8; 32], neighbour_wire::RefusalReason);
+
 /// A workspace's activity, as this session serves it: to the desk's own
 /// model, and to the apps that ask through the broker.
 #[derive(Clone)]
@@ -72,6 +84,9 @@ struct Inner {
     /// The desk's document, whose changes are its history, and where it is
     /// kept.
     desk: DeskDoc,
+    /// What the person's devices answered when one of them asked to be
+    /// unlocked, as their own record.
+    unlock: UnlockHistory,
     /// Who sits here.
     person: String,
     host: Rc<NativeActivityHost>,
@@ -91,8 +106,8 @@ struct Inner {
     /// The windows' end of what they ask of the activity, and what they
     /// follow.
     requests: ActivityRequests,
-    /// Raised when a window asked or followed something: the desk draws a
-    /// frame to take it.
+    /// Raised when a window asked or followed something, or when what the
+    /// history reads moved: the desk draws a frame to take it.
     woken: Arc<AtomicBool>,
     /// The broker's end of the same activity, once this session serves the
     /// apps it runs.
@@ -100,6 +115,10 @@ struct Inner {
     /// The revision the model last served its reads at, as the apps
     /// following them were last told.
     served: Cell<Option<u64>>,
+    /// What this device has already told the person about its lasting
+    /// refusals: one notice per device and reason, never one per write or per
+    /// pass.
+    told_refusals: RefCell<BTreeSet<ToldRefusal>>,
     /// What the desk's history says its changes were, as a model answered it.
     describer: RefCell<Describer>,
     /// Answers the model gave, waiting for the desk's thread to write them.
@@ -121,6 +140,17 @@ struct Inner {
 /// the person may have configured meanwhile.
 const LOOK_FOR_MODEL: Duration = Duration::from_secs(30);
 
+/// Something the history reads moved — a record an app wrote, an answer
+/// another of the person's devices made: the desk draws a frame to read it,
+/// as it does for a window that asked, and the session's loop wakes to serve
+/// it. Raised by a change alone, never by a pass or a clock.
+fn ask_for_frame(woken: &AtomicBool, wake: Option<&tilo_service::Wake>) {
+    woken.store(true, Ordering::Release);
+    if let Some(wake) = wake {
+        wake();
+    }
+}
+
 impl Activity {
     /// This session's activity: the desk's document under `state` (kept in
     /// memory alone without one), the desk an older Tilo kept at `old_desk`
@@ -138,10 +168,12 @@ impl Activity {
         let requests = activity_requests(Arc::clone(&woken));
         Self(Rc::new(Inner {
             desk: DeskDoc::load(state, old_desk, &person),
+            unlock: UnlockHistory::new(state, &person),
             host: Rc::new(NativeActivityHost {
                 person: person.clone(),
                 maps: HistoryMaps::load(state),
                 lists,
+                engine: RefCell::default(),
             }),
             person,
             records: RefCell::default(),
@@ -153,6 +185,7 @@ impl Activity {
             woken,
             wire: RefCell::default(),
             served: Cell::default(),
+            told_refusals: RefCell::default(),
             describer: RefCell::default(),
             described: Arc::default(),
             describing: Arc::default(),
@@ -160,6 +193,56 @@ impl Activity {
             looked_for_model: Cell::default(),
             wake,
         }))
+    }
+
+    /// Show where a workspace's writes were refused from `engine`, the
+    /// workspaces this device holds: the history rows read the verdicts this
+    /// device recorded, and the one place the person hears of a lasting one.
+    fn attach_engine(&self, engine: Arc<crate::engine::Engine>) {
+        *self.0.host.engine.borrow_mut() = Some(engine);
+    }
+
+    /// Tell the person about the refusals of this device's writes that waiting
+    /// cannot change, once each: a device that will not take the write says
+    /// why, because the change is not arriving there. A verdict that is gone
+    /// is forgotten, so a device that refuses again later is heard again.
+    fn tell_refusals(&self, notifications: &crate::notifications::SessionNotifications) {
+        let Some(engine) = self.0.host.engine.borrow().as_ref().map(Arc::clone) else {
+            return;
+        };
+        let mut told = self.0.told_refusals.borrow_mut();
+        let mut lasting = Vec::new();
+        for (workspace, refusal) in engine.lasting_refusals() {
+            let key = (workspace.clone(), refusal.by, refusal.reason);
+            lasting.push(key.clone());
+            if !told.insert(key) {
+                continue;
+            }
+            let label = engine
+                .device_labels(&workspace)
+                .get(&refusal.by)
+                .filter(|label| !label.is_empty())
+                .cloned()
+                .unwrap_or_else(|| hex::encode(&refusal.by[..4]));
+            notifications.tell(crate::notices::refused_write_notice(
+                &label,
+                refusal.reason.describe(),
+            ));
+        }
+        told.retain(|key| lasting.contains(key));
+    }
+
+    /// Open this device's workspaces and show them in the activity: what
+    /// refused one of the history's writes, and what the devices call
+    /// themselves.
+    pub(crate) fn open_engine(
+        &self,
+        options: &crate::Options,
+        handle: &crate::DesktopHandle,
+    ) -> Option<Arc<crate::engine::Engine>> {
+        let engine = crate::options::open_engine(options, handle)?;
+        self.attach_engine(Arc::clone(&engine));
+        Some(engine)
     }
 
     /// The desk this device left, as its document holds it: what the session
@@ -180,31 +263,107 @@ impl Activity {
         *self.0.wire.borrow_mut() = Some(wire);
     }
 
-    /// Tell the apps following the activity that what they read may have
-    /// moved: once the model served its reads at a revision they have not
-    /// been told of.
-    pub(crate) fn tell_followers(&self) {
+    /// Take part in `link`'s fabric: what the person's devices answer each
+    /// other about unlocking a disk is kept in their own record here.
+    pub(crate) fn watch_fabric(&self, link: SharedLink) {
+        self.0.unlock.watch(link);
+    }
+
+    /// Write what the person's fabric holds now into their own record,
+    /// whether or not a window shows the history: an answer stands for
+    /// minutes, so it is written while it is there to be read. An answer the
+    /// record did not hold yet is a change of the history, and asks the desk
+    /// for the frame that lists it.
+    pub(crate) fn keep_unlock(&self) {
+        if self.0.unlock.absorb() {
+            ask_for_frame(&self.0.woken, self.0.wake.as_ref());
+        }
+    }
+
+    /// Serve what the activity holds on this pass: tell the apps following it
+    /// that what they read may have moved — once the model served its reads at
+    /// a revision they have not been told of — and tell the person about the
+    /// refusals of this device's writes that will not change on their own.
+    pub(crate) fn serve(&self, notifications: &crate::notifications::SessionNotifications) {
         let served = self.0.requests.served_revision();
-        if served == self.0.served.get() {
-            return;
+        if served != self.0.served.get() {
+            self.0.served.set(served);
+            if let Some(wire) = self.0.wire.borrow().as_ref() {
+                wire.changed();
+            }
         }
-        self.0.served.set(served);
-        if let Some(wire) = self.0.wire.borrow().as_ref() {
-            wire.changed();
-        }
+        self.tell_refusals(notifications);
     }
 
     /// Record the desk as `tree` holds it, at `time` (seconds since the
     /// epoch), by the person here: one change of the desk's document, and the
     /// document kept. Whether the desk changed at all.
-    pub(crate) fn record_desk(&self, tree: &DesktopTree, time: i64) -> bool {
-        self.0.desk.record(tree, time)
+    pub(crate) fn record_desk(
+        &self,
+        tree: &DesktopTree,
+        time: i64,
+        shows: &[(tilo_desktop_model::TabId, String)],
+    ) -> bool {
+        self.0.desk.record(tree, time, shows)
     }
 
     /// [`Self::record_desk`], and write even how the desk looks now: what ends
     /// the session, which the next one starts from.
-    pub(crate) fn record_desk_now(&self, tree: &DesktopTree, time: i64) -> bool {
-        self.0.desk.record_now(tree, time)
+    pub(crate) fn record_desk_now(
+        &self,
+        tree: &DesktopTree,
+        time: i64,
+        shows: &[(tilo_desktop_model::TabId, String)],
+    ) -> bool {
+        self.0.desk.record_now(tree, time, shows)
+    }
+
+    /// Record `tree` as `asked`'s arranging action: one change of the desk
+    /// whose own entry names who asked and what they did. Whether the desk
+    /// changed at all.
+    pub(crate) fn record_action(
+        &self,
+        tree: &DesktopTree,
+        time: i64,
+        asked: &tilo_actions::ActionContext,
+        shows: &[(tilo_desktop_model::TabId, String)],
+    ) -> bool {
+        self.0.desk.record_action(tree, time, asked, shows)
+    }
+
+    /// The record each window of the desk shows, by tab, as the desk keeps
+    /// it.
+    pub(crate) fn records(&self) -> Vec<(tilo_desktop_model::TabId, String)> {
+        self.0.desk.records()
+    }
+
+    /// Take back `person`'s last step of the desk, and put the desk it leaves
+    /// where the session takes it up ([`Self::take_restored`]). Whether there
+    /// was a step.
+    pub(crate) fn undo_desk(&self, person: &str) -> bool {
+        self.rewind(person, false)
+    }
+
+    /// Bring back the last step of the desk `person` took back.
+    pub(crate) fn redo_desk(&self, person: &str) -> bool {
+        self.rewind(person, true)
+    }
+
+    fn rewind(&self, person: &str, redo: bool) -> bool {
+        let stepped = if redo {
+            self.0.desk.redo(person)
+        } else {
+            self.0.desk.undo(person)
+        };
+        if stepped && let Some(tree) = self.0.desk.tree() {
+            *self.0.restored.borrow_mut() = Some(tree);
+        }
+        stepped
+    }
+
+    /// The last step of the desk's history, as who made it and what it did.
+    pub(crate) fn last_step(&self, person: &str) -> Option<(String, String)> {
+        self.0.desk.last_step(person)
     }
 
     /// The workspace a change the model wrote back leaves the desk at, if
@@ -219,8 +378,8 @@ impl Activity {
         std::mem::take(&mut *self.0.openings.borrow_mut())
     }
 
-    /// Whether a window asked the model something since this was last
-    /// taken: the desk draws a frame to answer it.
+    /// Whether a window asked the model something, or what the history reads
+    /// moved, since this was last taken: the desk draws a frame to take it.
     pub(crate) fn take_woken(&self) -> bool {
         self.0.woken.swap(false, Ordering::AcqRel)
     }
@@ -320,8 +479,13 @@ impl Activity {
         let read = move || read_workspace_records(&store, &by_workspace);
         let watch = Watched::start("tilo-activity-records", directories, read).ok()?;
         let moved = Arc::clone(&self.0.records_moved);
+        // The record was read again because it changed: the model reading it
+        // is told, so an open history lists the change with no one asking.
+        let woken = Arc::clone(&self.0.woken);
+        let wake = self.0.wake.clone();
         watch.on_change(move || {
             moved.fetch_add(1, Ordering::AcqRel);
+            ask_for_frame(&woken, wake.as_ref());
         });
         let watch = Rc::new(watch);
         self.0.records.borrow_mut().insert(key, Rc::clone(&watch));
@@ -338,7 +502,7 @@ impl HistorySource for Activity {
         Self::id_of(tree, workspace)?;
         // The desk as it stands is the newest change of it: a workspace made
         // this pass is in the document the pane reads, not only in the tree.
-        self.record_desk(tree, now_seconds());
+        self.record_desk(tree, now_seconds(), &[]);
         let mut snapshot = ActivitySnapshot::of_desktop(tree.clone(), self.0.desk.document());
         snapshot.desktop.active = workspace;
         let restored = Rc::downgrade(&self.0);
@@ -356,19 +520,27 @@ impl HistorySource for Activity {
         tree: &DesktopTree,
         workspace: WorkspaceSlot,
     ) -> Vec<DetachedRecordHistory> {
-        let Some(workspace_id) = Self::id_of(tree, workspace) else {
-            return Vec::new();
-        };
-        let Some(watch) = self.records_of(workspace_id) else {
-            return Vec::new();
-        };
-        let held = tree.workspace_records_held.get(&workspace_id);
-        let records = watch.get();
+        let mut records = Vec::new();
+        if let Some(workspace_id) = Self::id_of(tree, workspace)
+            && let Some(watch) = self.records_of(workspace_id)
+        {
+            let held = tree.workspace_records_held.get(&workspace_id);
+            let read = watch.get();
+            records.extend(
+                read.iter()
+                    .filter(|record| {
+                        held.is_none_or(|held| held.contains_key(record.checkout.id.as_str()))
+                    })
+                    .cloned(),
+            );
+        }
+        // What the person's devices answered when one of them asked to be
+        // unlocked is theirs and not any one workspace's: it reads the same
+        // in every workspace's history.
+        if let Some(record) = self.0.unlock.history() {
+            records.push(record);
+        }
         records
-            .iter()
-            .filter(|record| held.is_none_or(|held| held.contains_key(record.checkout.id.as_str())))
-            .cloned()
-            .collect()
     }
 
     fn host(&self) -> Rc<dyn ActivityHost> {
@@ -388,12 +560,23 @@ impl HistorySource for Activity {
                 authors.register_local_identity(actor);
             }
         }
+        // The devices that answered a boot are named as their own snapshots
+        // name them, and this one of them is the person here.
+        history_log::register_authors(authors, &self.0.unlock.authors(), &|_| None);
+        if let Some(actor) = self.0.unlock.local_actor() {
+            authors.register_local_identity(&actor);
+        }
     }
 
     fn revision(&self) -> u64 {
         use std::hash::{Hash as _, Hasher as _};
+        // What the fabric holds now is written before the record is read: a
+        // pass that hears an answer is the pass that lists it. The desk is
+        // reading the history as it stands, so this write needs no frame.
+        self.0.unlock.absorb();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.0.desk.heads().hash(&mut hasher);
+        self.0.unlock.heads().hash(&mut hasher);
         self.0
             .records_moved
             .load(Ordering::Acquire)
@@ -409,6 +592,11 @@ impl HistorySource for Activity {
         tree: &DesktopTree,
         target: &ui::HistoryResourceTarget,
     ) -> Option<tilo_desktop_model::TabId> {
+        // No app holds the person's own record of what their devices
+        // answered: its rows are read in the history, and opened nowhere.
+        if self.0.unlock.holds(&target.id) {
+            return None;
+        }
         let workspace_id = tree.active_workspace().map(Workspace::id)?;
         self.0
             .openings
@@ -517,7 +705,7 @@ fn document_of(
     let stored = match store.read(&StorageKey::record(package, workspace, record)) {
         Ok(stored) => stored?,
         Err(error) => {
-            tracing::debug!(%error, %package, %record, "a record is not read");
+            tracing::warn!(%error, %package, %record, "a record is not read");
             return None;
         }
     };
@@ -528,7 +716,7 @@ fn document_of(
     match AutoCommit::load_with_options(&stored.bytes, options) {
         Ok(doc) => Some(doc),
         Err(error) => {
-            tracing::debug!(%error, %package, %record, "a record does not load");
+            tracing::warn!(%error, %package, %record, "a record does not load");
             None
         }
     }
@@ -540,6 +728,10 @@ struct NativeActivityHost {
     person: String,
     maps: HistoryMaps,
     lists: Lists,
+    /// The workspaces this device holds, once the session opened them: what
+    /// refused one of the history's writes, and what the devices call
+    /// themselves.
+    engine: RefCell<Option<Arc<crate::engine::Engine>>>,
 }
 
 impl ActivityHost for NativeActivityHost {
@@ -597,6 +789,39 @@ impl ActivityHost for NativeActivityHost {
             .find(|entry| entry.id == app)
             .map(|entry| entry.title.clone())
     }
+
+    /// Each write this device refused in `workspace`, once per change it would
+    /// have brought: the history row of that change reads where it is not.
+    fn refusals(&self, workspace: &str) -> Vec<wire::Refusal> {
+        let Some(engine) = self.engine.borrow().as_ref().map(Arc::clone) else {
+            return Vec::new();
+        };
+        let labels = engine.device_labels(workspace);
+        engine
+            .write_refusals(workspace)
+            .into_iter()
+            .flat_map(|refusal| {
+                let label = labels
+                    .get(&refusal.by)
+                    .filter(|label| !label.is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| hex::encode(&refusal.by[..4]));
+                let reason = refusal.reason.describe().to_owned();
+                let permanent = refusal.reason.permanent();
+                refusal
+                    .changes
+                    .into_iter()
+                    .map(|change| wire::Refusal {
+                        change: wire::change_hex(&change),
+                        device: hex::encode(refusal.by),
+                        label: label.clone(),
+                        reason: reason.clone(),
+                        permanent,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
 }
 
 /// This device's private view of the workspaces' activity, kept in one file.
@@ -613,8 +838,25 @@ impl HistoryMaps {
         let path = state.map(|state| state.join("tilo").join(VIEW_FILE));
         let known = path
             .as_deref()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .and_then(|path| match std::fs::read(path) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        path = %path.display(),
+                        "the remembered history map view could not be read"
+                    );
+                    None
+                }
+            })
+            .and_then(|bytes| {
+                serde_json::from_slice(&bytes)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "the remembered history map view does not read back");
+                    })
+                    .ok()
+            })
             .unwrap_or_default();
         Self {
             known: RefCell::new(known),
@@ -713,6 +955,8 @@ mod tests {
                     note: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             };
             let tree = seed_tree(&mut minter, "Studio", vec![notes]);
             let workspace = tree.active;
@@ -734,7 +978,7 @@ mod tests {
         /// recorded it, so what this pass draws is what the desk is.
         fn frame(&mut self) {
             let tree = self.handle.read(Clone::clone);
-            self.activity.record_desk(&tree, now_seconds());
+            self.activity.record_desk(&tree, now_seconds(), &[]);
             ui::Widget::update(&mut self.surface, &AutoCommit::new(), &ui::automerge::ROOT);
         }
 
@@ -820,6 +1064,94 @@ mod tests {
         assert!(
             feed.mutations,
             "the desk's own layout is the person's to undo"
+        );
+    }
+
+    /// Nothing the history reads moved, so no pass asks the desk for a
+    /// frame: the model is read again when a change says so, never on a
+    /// clock and never because a frame was drawn.
+    #[test]
+    fn a_pass_with_nothing_new_asks_for_no_frame() {
+        let mut desk = Desk::new();
+        desk.open_history();
+        let _following = desk.follow();
+        assert!(
+            desk.activity.take_woken(),
+            "the window asking for its history asks for the frame that serves it"
+        );
+        for _ in 0..3 {
+            desk.frame();
+        }
+        assert!(
+            !desk.activity.take_woken(),
+            "nothing moved, so nothing asks for a frame"
+        );
+    }
+
+    /// An arrangement action is one step of the desk's own history: the
+    /// person takes exactly that step back, and the desk it takes them back
+    /// to is staged for the pass to apply.
+    #[test]
+    fn an_arrangements_action_is_one_step_the_person_takes_back() {
+        let mut desk = Desk::new();
+        desk.open_history();
+        desk.rename("Plans");
+        desk.frame();
+        assert_eq!(desk.name(), "Plans");
+
+        // An agent moves the desk as the person asked it to: the change it
+        // made is recorded as that action, not as a change of the desk's own.
+        desk.rename("Lounge");
+        let tree = desk.handle.read(Clone::clone);
+        let asked = tilo_actions::ActionContext {
+            invoker: Some(tilo_actions::ActionInvoker::actor(
+                "agent-task:reading".to_owned(),
+            )),
+            what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
+                tilo_actions::ActionKey::new("so.tilo.session", "arrangement", "move"),
+                std::iter::empty(),
+            ))),
+            ..tilo_actions::ActionContext::default()
+        };
+        assert!(
+            desk.activity
+                .record_action(&tree, now_seconds(), &asked, &[]),
+            "the desk keeps the move"
+        );
+        assert_eq!(
+            desk.activity.last_step("ada"),
+            Some(("agent-task:reading".to_owned(), "move".to_owned())),
+            "the step names who asked and what they did"
+        );
+
+        // The person takes it back: the move is undone, and the rename before
+        // it is still there — the two are separate steps.
+        assert!(desk.activity.undo_desk("ada"), "the person takes it back");
+        let restored = desk
+            .activity
+            .take_restored()
+            .expect("the desk to take the step back is staged for the pass");
+        assert_eq!(
+            restored
+                .active_workspace()
+                .map(|workspace| workspace.name.as_str()),
+            Some("Plans"),
+            "exactly the move is undone"
+        );
+        assert!(
+            desk.activity.undo_desk("ada"),
+            "the rename before it is its own step"
+        );
+        let restored = desk
+            .activity
+            .take_restored()
+            .expect("and the desk before it is staged too");
+        assert_eq!(
+            restored
+                .active_workspace()
+                .map(|workspace| workspace.name.as_str()),
+            Some("Studio"),
+            "the desk the session started on"
         );
     }
 

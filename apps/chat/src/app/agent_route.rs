@@ -29,19 +29,7 @@ impl ChatApp {
             .clone_from(&parent.capture_agent_presence);
         view.agent_authors.clone_from(&parent.agent_authors);
         view.former_ids.clone_from(&parent.former_ids);
-        view.person_subscription = parent.person_subscription;
-        view.direct_person = parent
-            .direct_person
-            .as_ref()
-            .filter(|peer| {
-                parent
-                    .person_subscription
-                    .is_some_and(|token| ui::person_chat::retain_current(peer, token))
-            })
-            .cloned();
-        view.person_contacts.clone_from(&parent.person_contacts);
-        view.person_messages.clone_from(&parent.person_messages);
-        view.person_error.clone_from(&parent.person_error);
+        view.direct_held.clone_from(&parent.direct_held);
         view.active_channel.clone_from(&parent.active_channel);
         view.conversation_surface = true;
         view.thread_open = None;
@@ -57,7 +45,7 @@ impl ChatApp {
     }
 
     pub(crate) fn float_agent_conversation(&mut self) -> bool {
-        let Some(peer) = self.direct_person.clone() else {
+        let Some(peer) = self.direct_person() else {
             return false;
         };
         if !self.main_composer_can_edit() || self.rect.area() <= 0.0 {
@@ -91,13 +79,10 @@ impl ChatApp {
             .channels
             .iter()
             .filter(|channel| {
-                !channel.archived
-                    && channel.kind == model::ChannelKind::Text
-                    && channel.conversation_with.is_none()
+                !channel.archived && channel.kind == model::ChannelKind::Text && !channel.direct
             })
             .min_by_key(|channel| channel.order)
             .map(|channel| channel.id.clone());
-        self.close_person_conversation();
         self.thread_open = None;
         if let Some(channel) = fallback {
             self.active_channel = channel;
@@ -111,7 +96,7 @@ impl ChatApp {
     }
 
     pub(crate) fn begin_agent_conversation_drag(&mut self, origin: Point) {
-        let Some(peer) = self.direct_person.clone() else {
+        let Some(peer) = self.direct_person() else {
             return;
         };
         self.agent_conversation_drag = Some(AgentConversationDrag {
@@ -191,27 +176,11 @@ impl ChatApp {
         if !self.agent_surfaces.contains_key(channel) {
             return;
         }
-        self.close_person_conversation();
         let Some(surface) = self.agent_surfaces.get(channel) else {
             return;
         };
         channel.clone_into(&mut self.active_channel);
-        self.person_subscription = surface.view.person_subscription;
-        self.direct_person = surface
-            .view
-            .direct_person
-            .as_ref()
-            .filter(|peer| {
-                surface
-                    .view
-                    .person_subscription
-                    .is_some_and(|token| ui::person_chat::retain_current(peer, token))
-            })
-            .cloned();
-        self.person_contacts
-            .clone_from(&surface.view.person_contacts);
-        self.person_messages
-            .clone_from(&surface.view.person_messages);
+        self.messages.clone_from(&surface.view.messages);
         self.thread_open = None;
         self.focus = Focus::Main;
         self.scroll = 0.0;
@@ -229,7 +198,7 @@ impl ChatApp {
             self.restore_retained_agent_route(&channel);
         }
         if closed && let Some(surface) = self.agent_surfaces.get_mut(&channel) {
-            surface.close();
+            surface.closed = true;
         }
         if self.focused_agent_surface.as_deref() == Some(id) {
             self.focused_agent_surface = None;

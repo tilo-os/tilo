@@ -209,6 +209,7 @@ impl AppBrokerState {
                     error = %completed.message,
                     "an opening app was not let author its workspace"
                 ),
+                // ignored-failure: the caller is told the authorship answer was not heard
                 Err(_) => tracing::debug!(
                     %workspace,
                     %app,

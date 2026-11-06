@@ -20,12 +20,15 @@ impl Drop for TemporaryConfig {
 fn files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     let mut result = BTreeMap::new();
     for entry in fs::read_dir(root).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if entry.file_type().unwrap().is_dir() {
             result.extend(files(&path));
-        } else {
-            result.insert(path.clone(), fs::read(path).unwrap());
+        } else if entry.file_type().unwrap().is_file() {
+            result.insert(path.clone(), fs::read(&path).unwrap());
         }
+        // A socket beside them is a running door, not configuration: a query
+        // reads it and can leave no file of its own behind.
     }
     result
 }

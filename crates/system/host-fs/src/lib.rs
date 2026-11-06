@@ -6,6 +6,10 @@
 //! Apps that preserve or present such metadata (a backup engine, a file
 //! manager) call these functions; each one says what it does where the
 //! platform has no equivalent, so no app needs its own target checks.
+//!
+//! [`transfer`] is the one way to copy or move a file or folder into a
+//! folder: privately staged, flushed, published by a rename under a name
+//! nothing had, and put back when a move cannot finish.
 
 pub mod attributes;
 pub mod names;
@@ -13,10 +17,16 @@ mod private_dir;
 mod rename;
 mod retained_object;
 mod space;
+/// Crash-safe copies and moves into a folder, shared by every caller that
+/// moves files there.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod transfer;
 pub mod trash;
 
 pub use private_dir::{create_private_dir, mark_private};
 pub use rename::rename_noreplace;
+#[cfg(unix)]
+pub use rename::rename_noreplace_at;
 pub use retained_object::{ObservedObject, RetainedObject};
 pub use space::{Space, space};
 

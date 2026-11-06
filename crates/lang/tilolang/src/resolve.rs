@@ -1,301 +1,19 @@
 //! Name resolution: the module's declarations, its imports, and the signatures the checker
 //! needs before it looks at any body.
 
-use crate::ast::{self, Expr, ExprKind, Item, MergeSpec, StateLayer, TypeExpr, TypeExprKind, UnOp};
+use crate::ast::{self, Expr, ExprKind, Item, MergeSpec, TypeExpr, TypeExprKind, UnOp};
 use crate::diag::{Diagnostic, Span};
 use crate::ids::IdsLock;
 use crate::meta::PackageMeta;
 use crate::prims;
-use crate::types::{EffectClass, MergeKind, Ty, TypeKey};
+use crate::types::{MergeKind, Ty, TypeKey};
 use std::collections::{HashMap, HashSet};
 
-#[derive(Clone, Debug)]
-pub struct FieldInfo {
-    pub name: String,
-    pub id: String,
-    pub ty: Ty,
-    pub merge: MergeKind,
-    pub doc: String,
-    pub default: Option<serde_json::Value>,
-    /// `title` or `body`, from the field's marker.
-    pub role: Option<String>,
-}
+mod derived;
+mod model;
+mod views;
 
-#[derive(Clone, Debug)]
-pub struct TypeInfo {
-    pub key: TypeKey,
-    pub id: String,
-    pub doc: String,
-    pub fields: Vec<FieldInfo>,
-    /// Its filters, default order and hidden fields (search.md, "What a type declares").
-    pub search: crate::meta::SearchMeta,
-    /// `type Notes = Collection<Note>`: a resource that is its one field, [`HOLDER_FIELD`].
-    /// Code uses it as that container.
-    pub holder: bool,
-    /// The kind of an outside service's resource it holds (`crate::origin`).
-    pub origin: Option<String>,
-}
-
-/// The name of the one field of a type that names a container (`type Notes =
-/// Collection<Note>`): its ids lock entry is `Notes.items`.
-pub const HOLDER_FIELD: &str = "items";
-
-impl TypeInfo {
-    /// The container a holder type is.
-    pub fn held(&self) -> Option<&FieldInfo> {
-        if self.holder {
-            self.fields.first()
-        } else {
-            None
-        }
-    }
-
-    pub fn field(&self, name: &str) -> Option<&FieldInfo> {
-        self.fields.iter().find(|f| f.name == name)
-    }
-
-    pub fn field_names(&self) -> String {
-        self.fields
-            .iter()
-            .map(|f| f.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-}
-
-/// One variant of a declared enum and its payload fields.
-#[derive(Clone, Debug)]
-pub struct VariantInfo {
-    pub name: String,
-    pub id: String,
-    pub doc: String,
-    pub label: String,
-    /// `(icon: .x)`: a kebab-case name of the platform's icon set.
-    pub icon: Option<String>,
-    pub fields: Vec<FieldInfo>,
-}
-
-/// A declared `enum`.
-#[derive(Clone, Debug)]
-pub struct EnumInfo {
-    pub key: TypeKey,
-    pub id: String,
-    pub doc: String,
-    pub variants: Vec<VariantInfo>,
-}
-
-impl EnumInfo {
-    pub fn variant(&self, name: &str) -> Option<&VariantInfo> {
-        self.variants.iter().find(|v| v.name == name)
-    }
-
-    pub fn variant_names(&self) -> String {
-        self.variants
-            .iter()
-            .map(|v| format!(".{}", v.name))
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-}
-
-/// A `window` or `lens` declaration of a view.
-#[derive(Clone, Debug)]
-pub struct StateInfo {
-    pub view: String,
-    pub name: String,
-    pub id: String,
-    pub layer: StateLayer,
-    pub ty: Ty,
-}
-
-#[derive(Clone, Debug)]
-pub struct ParamInfo {
-    pub name: String,
-    pub ty: Ty,
-    /// An action parameter's invocation-time default (`done: Bool = not item.done`).
-    pub default: Option<ParamDefault>,
-}
-
-/// How an action parameter's default is computed: when the action is invoked without the
-/// argument, over the arguments before it, on the invoker's state, and recorded as the argument.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ParamDefault {
-    /// The module export computing it: it takes the parameters before this one.
-    pub export: String,
-    /// The function computing it, when the action is declared in this module.
-    pub func: Option<usize>,
-    /// The default as written (`not item.done`), for descriptions.
-    pub text: String,
-}
-
-impl ParamDefault {
-    /// Whether the default is `.none`, a constant: see [`crate::meta::DefaultMeta::is_none`].
-    #[must_use]
-    pub fn is_none(&self) -> bool {
-        self.text == crate::meta::DefaultMeta::NONE
-    }
-}
-
-/// The function of an action parameter's default, which the checker lowers.
-#[derive(Clone, Debug)]
-pub struct DefaultFn {
-    /// The action's name.
-    pub action: String,
-    /// The index of the parameter in the action's parameters.
-    pub param: usize,
-    /// Index into the module's functions.
-    pub func: usize,
-}
-
-/// The export name of the default of the parameter `param` of the action `action` (an id).
-pub fn default_export(action: &str, param: &str) -> String {
-    format!("d_{action}_{param}")
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CKind {
-    Fn,
-    Action,
-    Flow,
-    View,
-}
-
-impl CKind {
-    pub const fn word(self) -> &'static str {
-        match self {
-            Self::Fn => "fn",
-            Self::Action => "action",
-            Self::Flow => "flow",
-            Self::View => "view",
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Callable {
-    pub kind: CKind,
-    pub name: String,
-    pub id: String,
-    pub app: String,
-    pub own: bool,
-    /// Index into the module's functions when declared here.
-    pub func: Option<usize>,
-    pub params: Vec<ParamInfo>,
-    pub result: Ty,
-    /// The class recorded in foreign metadata.
-    pub class: Option<EffectClass>,
-    /// How the platform presents an action or flow: its label, icon and role.
-    pub present: Presentation,
-    /// The hidden action of a `scenario`; its name is the scenario's, which source cannot call.
-    pub scenario: bool,
-}
-
-/// What a button or a menu shows for an action or flow, from its declaration.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Presentation {
-    pub label: String,
-    /// A kebab-case name of the platform's icon set.
-    pub icon: Option<String>,
-    /// `primary` or `destructive`.
-    pub role: Option<String>,
-    /// The id of the hidden view that presents the action's state for its subject, when its
-    /// `label:` or `icon:` is an `if`, or it declares `on:`.
-    pub view: Option<String>,
-    /// `label: "Move to {col.title}"` or `label: if pinned { "Pin" } else { "Unpin" }`: the
-    /// label as written, read where the action is applied with its arguments
-    /// (`button(move_to(b, card, col))`, `button(pin(n))`), so it follows them as they change.
-    pub label_text: Option<Expr>,
-    /// `icon: if n.pinned { .pin_off } else { .pin }`: read where the action is applied, as
-    /// `label_text` is.
-    pub icon_when: Option<Expr>,
-    /// `on: n.pinned`: whether the state it toggles is on, read where the action is applied: a
-    /// button for it shows as toggled.
-    pub on: Option<Expr>,
-    /// `key: "Ctrl+Enter"`: the shortcut that runs the action while its window has the keyboard,
-    /// and (on an item's action) while that item is selected or its view shows. One spelling
-    /// (`Ctrl+Shift+enter`: modifiers in one order, then the key's token), read through the
-    /// person's keymap and the platform's own command modifier, never as a key code.
-    pub key: Option<String>,
-    /// `group: "Reply"`: the run of the resource's actions this one stands in, as the app names
-    /// it. A surface that shows the resource's actions — a window bar, the desktop's action
-    /// bar — draws the runs in the order the app declared them, so an app decides which
-    /// commands read as one without any surface keeping a list of its own.
-    pub group: Option<String>,
-    /// `frequent`: a command the person reaches for on most things of this type, which the
-    /// desktop's action bar shows directly rather than behind its menu of the rest.
-    pub frequent: bool,
-}
-
-/// The shortcut an action's `key:` declares, as it is published and compared: the modifiers in
-/// one order and the key's own token (`Ctrl+Shift+enter`), so `Ctrl+Enter` and `control+Return`
-/// are one shortcut. The error says what is wrong with it, for the person who wrote it.
-fn declared_key(e: &Expr) -> Result<String, String> {
-    let text = plain_text(e).unwrap_or_default();
-    tilo_ui_graph::keys::Chord::parse(&text)
-        .map(|chord| chord.text())
-        .map_err(|said| format!("`key:` takes a shortcut: {said}"))
-}
-
-/// `new_note` as "New note".
-pub fn sentence_case(name: &str) -> String {
-    let spaced = name.replace('_', " ");
-    let mut chars = spaced.trim().chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
-
-/// The first line of a doc comment without its closing period, when there is one.
-fn doc_line(doc: &str) -> Option<String> {
-    let line = doc.lines().next()?.trim();
-    let line = line.strip_suffix('.').unwrap_or(line).trim_end();
-    (!line.is_empty()).then(|| line.to_string())
-}
-
-/// An action's or flow's label: its name in sentence case, or its doc's first line when that is
-/// shorter.
-pub fn action_label(name: &str, doc: &str) -> String {
-    let named = sentence_case(name);
-    match doc_line(doc) {
-        Some(line) if line.chars().count() < named.chars().count() => line,
-        _ => named,
-    }
-}
-
-/// A variant's label: its doc's first line, or its name in sentence case.
-pub fn variant_label(name: &str, doc: &str) -> String {
-    doc_line(doc).unwrap_or_else(|| sentence_case(name))
-}
-
-impl Callable {
-    /// A callable source never names: a scenario's action or an action's presentation view.
-    pub fn hidden(&self) -> bool {
-        self.scenario || self.name.ends_with(crate::ids::PRESENT_SUFFIX)
-    }
-
-    pub fn signature(&self, own_app: &str) -> String {
-        let params: Vec<String> = self
-            .params
-            .iter()
-            .map(|p| {
-                // A default says the argument may be left out, and what it then is.
-                let default = p
-                    .default
-                    .as_ref()
-                    .map(|d| format!(" = {}", d.text))
-                    .unwrap_or_default();
-                format!("{}: {}{default}", p.name, p.ty.display(own_app))
-            })
-            .collect();
-        let result = if matches!(self.result, Ty::Unit) {
-            String::new()
-        } else {
-            format!(" -> {}", self.result.display(own_app))
-        };
-        format!("{}({}){result}", self.name, params.join(", "))
-    }
-}
+pub use model::*;
 
 /// A view expanded where it is called ([`crate::checker`]'s templates): generic, or taking
 /// view state, functions or views of an item. It has no function of its own.
@@ -342,6 +60,9 @@ pub struct Env {
     pub states: Vec<StateInfo>,
     /// `row view v for T`: the type and the view's name.
     pub row_views: Vec<(TypeKey, String)>,
+    /// `views a, b for T`: the type, the views in the order written, and where the
+    /// declaration stands.
+    pub views_of: Vec<(TypeKey, Vec<crate::resolve::ViewsInfo>, Span)>,
     /// The functions of action parameters' defaults, numbered after the presentation views.
     pub defaults: Vec<DefaultFn>,
     /// The toolkit's components, the package `ui`.
@@ -518,6 +239,7 @@ impl Env {
             doc: f.doc.clone(),
             default: f.default.clone(),
             role: f.role.clone(),
+            derived: f.derived.clone(),
         };
         for e in &meta.enums {
             self.enums.push(EnumInfo {
@@ -540,6 +262,7 @@ impl Env {
                             v.label.clone()
                         },
                         icon: v.icon.clone(),
+                        tone: v.tone.clone(),
                         fields: v.fields.iter().map(field_info).collect(),
                     })
                     .collect(),
@@ -579,6 +302,8 @@ impl Env {
                         func: None,
                         text: d.text.clone(),
                     }),
+                    place: p.place,
+                    entry: p.entry,
                 })
                 .collect()
         };
@@ -617,6 +342,7 @@ impl Env {
                 key: a.key.clone(),
                 group: a.group.clone(),
                 frequent: a.frequent,
+                did: a.did.clone(),
             };
             add(
                 CKind::Action,
@@ -925,6 +651,7 @@ impl Resolver<'_> {
                     doc: String::new(),
                     default: None,
                     role: None,
+                    derived: None,
                 }],
                 search: crate::meta::SearchMeta::default(),
                 holder: true,
@@ -956,9 +683,11 @@ impl Resolver<'_> {
                     continue;
                 }
                 let mut info = self.field(&t.name.name, f, lock);
-                info.role = self.marker(&t.name.name, f, &info, &fields);
+                info.role = None;
                 fields.push(info);
             }
+            self.roles(&t.name.name, t, &mut fields);
+            self.derived_keys(&t.name.name, t, &mut fields, lock);
             self.env.types.push(TypeInfo {
                 key: TypeKey {
                     app: self.env.app.clone(),
@@ -1146,15 +875,17 @@ impl Resolver<'_> {
                     doc: String::new(),
                     default: None,
                     role: None,
+                    derived: None,
                 });
             }
             let doc = v.doc.join("\n");
-            let icon = self.variant_icon(v);
+            let (icon, tone) = self.variant_options(v);
             variants.push(VariantInfo {
                 name: v.name.name.clone(),
                 id: id_of(lock, &format!("{name}.{}", v.name.name)),
                 label: variant_label(&v.name.name, &doc),
                 icon,
+                tone,
                 doc,
                 fields,
             });
@@ -1170,38 +901,74 @@ impl Resolver<'_> {
         });
     }
 
-    /// A variant's `(icon: .x)`: what a control shows beside its label.
-    fn variant_icon(&mut self, v: &ast::VariantDecl) -> Option<String> {
+    /// A variant's options: `(icon: .x)`, what a control shows beside its label, and
+    /// `(tone: .x)`, the tone it reads in.
+    fn variant_options(&mut self, v: &ast::VariantDecl) -> (Option<String>, Option<String>) {
         let mut icon = None;
-        let mut seen = false;
+        let mut tone = None;
+        let mut icons = false;
+        let mut tones = false;
         for opt in &v.opts {
-            match (opt.name.name.as_str(), &opt.value.kind) {
-                ("icon", _) if seen => {
-                    self.err("E090", opt.name.span, "`icon:` is given twice");
-                }
-                ("icon", ExprKind::Variant { name, args: None }) => {
-                    seen = true;
+            let case = match &opt.value.kind {
+                ExprKind::Variant { name, args: None } => Some(name),
+                _ => None,
+            };
+            match (opt.name.name.as_str(), case) {
+                ("icon", _) if icons => self.err("E090", opt.name.span, "`icon:` is given twice"),
+                ("icon", Some(name)) => {
+                    icons = true;
                     icon = self.icon(name);
                 }
-                ("icon", _) => self.err(
+                ("icon", None) => self.err(
                     "E090",
                     opt.value.span,
                     "`icon:` takes an icon written with a dot, such as `icon: .pin`",
                 ),
+                ("tone", _) if tones => self.err("E090", opt.name.span, "`tone:` is given twice"),
+                ("tone", Some(name)) => {
+                    tones = true;
+                    tone = self.tone(name);
+                }
+                ("tone", None) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`tone:` takes a tone written with a dot, such as `tone: .warning`",
+                ),
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("a variant takes the option `icon:`; `{other}:` is not one. Its label is its doc comment's first line"),
+                    format!("a variant takes the options `icon:` and `tone:`; `{other}:` is not one. Its label is its doc comment's first line"),
                 ),
             }
         }
-        icon
+        (icon, tone)
+    }
+
+    /// The tone a variant reads in, one of the toolkit's `ui.Tone` cases: a theme role, not a
+    /// colour.
+    fn tone(&mut self, name: &ast::Ident) -> Option<String> {
+        const TONES: [&str; 5] = ["neutral", "success", "warning", "danger", "info"];
+        if let Some(tone) = TONES.iter().find(|tone| **tone == name.name) {
+            return Some((*tone).to_owned());
+        }
+        self.err(
+            "E090",
+            name.span,
+            format!(
+                "`{}` is not a tone; the tones are {}, theme roles a control reads a mark in rather than colours",
+                name.name,
+                TONES.join(", ")
+            ),
+        );
+        None
     }
 
     fn field(&mut self, owner: &str, f: &ast::FieldDecl, lock: &IdsLock) -> FieldInfo {
         let ty = self.resolve_type(&f.ty, true);
         if matches!(ty, Ty::Action | Ty::View) {
             self.err("E023", f.ty.span, format!("a field cannot hold `{ty}`: it is not stored state; fields hold scalars, Text, records, enums, List, Option, Set, Map and Collection"));
+        } else if ty == Ty::Duration {
+            self.err("E023", f.ty.span, "a field cannot hold a `Duration`: a stored length of time keeps the number the app measures it in (`Int`), and `Duration(n)` reads it as one where a moment moves by it".to_string());
         }
         let merge = self.merge(&ty, f.merge.as_ref(), &f.name.name);
         let default = match &f.default {
@@ -1216,38 +983,416 @@ impl Resolver<'_> {
             doc: f.doc.join("\n"),
             default,
             role: None,
+            derived: None,
         }
     }
 
-    /// The role a field's marker gives it: `(title)` or `(body)`, on a Text field, once per
-    /// type.
-    fn marker(
+    /// What the type's fields are to the platform, from their markers: `(title)`, `(body)`,
+    /// `(previously)`, a `std.Repeat`'s `(repeats: due)` and a `std.Reminder`'s `(reminds: due,
+    /// at, who: assignee)`. A marker names the type's own fields, and may name one declared
+    /// after it, so they are read once every field is known.
+    fn roles(&mut self, owner: &str, decl: &ast::TypeDecl, fields: &mut [FieldInfo]) {
+        for f in &decl.fields {
+            let Some(marker) = &f.marker else { continue };
+            let Some(at) = fields.iter().position(|x| x.name == f.name.name) else {
+                continue;
+            };
+            let info = fields[at].clone();
+            if let Some(role) = self.role(owner, marker, &info, fields) {
+                fields[at].role = Some(role);
+            }
+        }
+        // Nothing else says how an item comes round again or when it reminds: a field holding a
+        // repeat or a reminder names the day it reads.
+        // A field whose marker was refused already says what it is; the marker's own error is
+        // the one to read.
+        for f in &decl.fields {
+            if f.marker.is_some() {
+                continue;
+            }
+            let Some(info) = fields.iter().find(|x| x.name == f.name.name) else {
+                continue;
+            };
+            let Some(word) = held_in(&info.ty) else {
+                continue;
+            };
+            let app = self.env.app.clone();
+            let holds = info.ty.display(&app);
+            let declare = if word == "repeats" {
+                format!(
+                    "`{}: {holds} (repeats: due)`, naming the `Date` or `Option<Date>` field it counts from",
+                    f.name.name
+                )
+            } else {
+                format!(
+                    "`{}: {holds} (reminds: due, at, who: assignee)`, naming the `Date` or `Option<Date>` field it is due on, the `Time` or `Option<Time>` it is due at and the `Principal` or `Option<Principal>` of who it reminds, where the type has them",
+                    f.name.name
+                )
+            };
+            self.err(
+                "E092",
+                f.name.span,
+                format!(
+                    "`{owner}.{}` holds a {holds}, so it says which day it reads: the platform finds nothing else that says when it comes round again. Write {declare}",
+                    f.name.name
+                ),
+            );
+        }
+    }
+
+    /// The day a `(time of: due)` field is the time of: the `Date` or `Option<Date>` field it
+    /// names, which reads with it as one fact.
+    fn time_of(
         &mut self,
         owner: &str,
-        f: &ast::FieldDecl,
-        info: &FieldInfo,
-        before: &[FieldInfo],
+        marker: &ast::FieldMarker,
+        marked: &FieldInfo,
+        fields: &[FieldInfo],
+        positional: &[&ast::Ident],
+        named: &[(&str, &ast::Ident)],
     ) -> Option<String> {
-        let m = f.marker.as_ref()?;
+        if let Some(extra) = positional.first() {
+            self.err(
+                "E092",
+                extra.span,
+                "`(time: …)` names no field: it is the time of day of the day it names. Write `(time of: due)`",
+            );
+            return None;
+        }
+        if let Some((name, _)) = named.iter().find(|(name, _)| *name != "of") {
+            self.err(
+                "E092",
+                marker.span,
+                format!(
+                    "`(time: …)` takes `of:` and nothing else; `{name}:` is not one of its names"
+                ),
+            );
+            return None;
+        }
+        let holds = marked.ty.display(&self.env.app);
+        if !holds_a(&marked.ty, &Ty::Time) {
+            let t = holds;
+            self.err(
+                "E092",
+                marker.span,
+                format!(
+                    "only a `Time` or `Option<Time>` field is the time of day of a day, so `(time of: …)` is not its marker: `{}` is {t}. Mark the field holding the time of day instead",
+                    marked.name
+                ),
+            );
+            return None;
+        }
+        let Some((_, day)) = named.iter().find(|(name, _)| *name == "of") else {
+            self.err(
+                "E092",
+                marker.span,
+                format!(
+                    "`(time: …)` names no day, so nothing says which day this time of day belongs to. Write `{}: {} (time of: due)`, naming the `Date` or `Option<Date>` field it is the time of",
+                    marked.name, holds
+                ),
+            );
+            return None;
+        };
+        let Some(found) = fields.iter().find(|x| x.name == day.name) else {
+            self.err(
+                "E092",
+                day.span,
+                format!(
+                    "`{owner}` has no field `{}`; `(time of: …)` names the day this time of day belongs to",
+                    day.name
+                ),
+            );
+            return None;
+        };
+        if !holds_a(&found.ty, &Ty::Date) {
+            let t = found.ty.display(&self.env.app);
+            self.err(
+                "E092",
+                day.span,
+                format!(
+                    "`{}` is {t}, and `(time of: …)` reads a Date; the time of day belongs to a `Date` or `Option<Date>` field",
+                    day.name
+                ),
+            );
+            return None;
+        }
+        if let Some(other) = fields.iter().find(|x| {
+            x.role
+                .as_ref()
+                .and_then(crate::types::FieldRole::time_of)
+                .is_some_and(|date| date == day.name)
+        }) {
+            self.err(
+                "E092",
+                marker.span,
+                format!("`{owner}` already has `{}` as the time of `{}`; a day has one time of day. Remove one of them", other.name, day.name),
+            );
+            return None;
+        }
+        Some(day.name.clone())
+    }
+
+    /// The role a field's marker gives it, and what the marker must name for it: the text that
+    /// names the record, the record's substance, what the type held before, the day a repeat
+    /// counts from, and the day, time of day and person a reminder reads.
+    fn role(
+        &mut self,
+        owner: &str,
+        marker: &ast::FieldMarker,
+        marked: &FieldInfo,
+        fields: &[FieldInfo],
+    ) -> Option<crate::types::FieldRole> {
+        use crate::types::FieldRole;
+        let positional: Vec<&ast::Ident> = marker
+            .args
+            .iter()
+            .filter(|a| a.name.is_none())
+            .map(|a| &a.field)
+            .collect();
+        let named: Vec<(&str, &ast::Ident)> = marker
+            .args
+            .iter()
+            .filter_map(|a| Some((a.name.as_ref()?.name.as_str(), &a.field)))
+            .collect();
+        let word = marker.name.name.as_str();
         // What the type held before: kept in its records, read only by its migrations.
-        if m.name == "previously" {
-            return Some(m.name.clone());
+        if word == "previously" {
+            if !marker.args.is_empty() {
+                self.err(
+                    "E092",
+                    marker.span,
+                    "`(previously)` names no field: it is what the type held before, which only its migrations read",
+                );
+                return None;
+            }
+            return Some(FieldRole::Previously);
         }
-        if !matches!(m.name.as_str(), "title" | "body") {
-            self.err("E092", m.span, format!("`({})` is not a field marker; a Text field can be marked `(title)`, what names the resource, or `(body)`, its main text, and any field `(previously)`, what the type held before, which only its migrations read", m.name));
+        // The flag saying an item is finished: a place leaves it out of its count and folds it
+        // into its foot.
+        if word == "done" {
+            if !marker.args.is_empty() {
+                self.err(
+                    "E092",
+                    marker.span,
+                    "`(done)` names no field: it marks the `Bool` field that says the item is finished",
+                );
+                return None;
+            }
+            if marked.ty != Ty::Bool {
+                let t = marked.ty.display(&self.env.app);
+                self.err("E092", marker.span, format!("only a Bool field can be the done one, the flag saying the item is finished; `{}` is {t}. Mark a Bool field instead, or remove `(done)`", marked.name));
+                return None;
+            }
+            if let Some(other) = fields.iter().find(|x| {
+                x.role
+                    .as_ref()
+                    .is_some_and(crate::types::FieldRole::is_done)
+            }) {
+                self.err("E092", marker.span, format!("`{owner}` already has a done field, `{}`; a type has at most one. Remove `(done)` from one of them", other.name));
+                return None;
+            }
+            return Some(FieldRole::Done);
+        }
+        // The item this one stands under: the field its type's items nest by, which its derived
+        // keys read the items above and under it through.
+        if word == "parent" {
+            if !marker.args.is_empty() {
+                self.err(
+                    "E092",
+                    marker.span,
+                    format!("`(parent)` names no field: it is the `Option<{owner}>` field holding the item this one stands under"),
+                );
+                return None;
+            }
+            if !holds_a(
+                &marked.ty,
+                &Ty::Record(TypeKey {
+                    app: self.env.app.clone(),
+                    name: owner.to_owned(),
+                }),
+            ) {
+                let t = marked.ty.display(&self.env.app);
+                self.err(
+                    "E092",
+                    marker.span,
+                    format!("only an `Option<{owner}>` field is what an `{owner}` stands under; `{}` is {t}. Write `{}: Option<{owner}> (parent) = .none`", marked.name, marked.name),
+                );
+                return None;
+            }
+            if let Some(other) = fields
+                .iter()
+                .find(|x| x.role.as_ref().is_some_and(FieldRole::is_parent))
+            {
+                self.err("E092", marker.span, format!("`{owner}` already has a parent field, `{}`; a type nests by one. Remove `(parent)` from one of them", other.name));
+                return None;
+            }
+            return Some(FieldRole::Parent);
+        }
+        if matches!(word, "title" | "body") {
+            if !marker.args.is_empty() {
+                self.err(
+                    "E092",
+                    marker.span,
+                    format!(
+                        "`({word})` names no field; only `(repeats: due)` and `(reminds: due, at, who: assignee)` do"
+                    ),
+                );
+                return None;
+            }
+            let fits = marked.ty == Ty::Text || (word == "body" && marked.ty == Ty::RichText);
+            if !fits {
+                let t = marked.ty.display(&self.env.app);
+                self.err("E092", marker.span, format!("only a Text field can be the {word}; `{}` is {t}. Mark a Text field instead, or remove `({word})`", marked.name));
+                return None;
+            }
+            if let Some(other) = fields
+                .iter()
+                .find(|x| x.role.as_ref().is_some_and(|role| role.word() == word))
+            {
+                self.err("E092", marker.span, format!("`{owner}` already has a {word} field, `{}`; a type has at most one. Remove `({word})` from one of them", other.name));
+                return None;
+            }
+            return Some(if word == "title" {
+                FieldRole::Title
+            } else {
+                FieldRole::Body
+            });
+        }
+        // The time of day a day is due at: the day and the time read as one fact wherever the
+        // day shows, and one control picks both.
+        if word == "time" {
+            if let Some(day) = self.time_of(owner, marker, marked, fields, &positional, &named) {
+                return Some(FieldRole::TimeOf { date: day });
+            }
             return None;
         }
-        let fits = info.ty == Ty::Text || (m.name == "body" && info.ty == Ty::RichText);
+        let (holds, wants, reads) = match word {
+            "repeats" => (
+                "repeats",
+                "`std.Repeat`",
+                "`(repeats: due)`, naming the `Date` or `Option<Date>` field it counts from",
+            ),
+            "reminds" => (
+                "reminds",
+                "`std.Reminder`",
+                "`(reminds: due, at, who: assignee)`, naming the `Date` or `Option<Date>` field it is due on, the `Time` or `Option<Time>` it is due at where the type has one, and the `Principal` or `Option<Principal>` field of who it reminds where it names one",
+            ),
+            _ => {
+                self.err("E092", marker.span, format!("`({word})` is not a field marker; a Text field can be marked `(title)`, what names the record, or `(body)`, its substance, any field `(previously)`, what the type held before, which only its migrations read, a `std.Repeat` field `(repeats: due)`, the day it counts from, and a `std.Reminder` field `(reminds: due, at, who: assignee)`, a `Time` field `(time of: due)`, the day whose time of day it is"));
+                return None;
+            }
+        };
+        let fits = if word == "repeats" {
+            holds_a(&marked.ty, &Ty::Repeat)
+        } else {
+            holds_a(&marked.ty, &Ty::Reminder)
+        };
         if !fits {
-            let t = info.ty.display(&self.env.app);
-            self.err("E092", m.span, format!("only a Text field can be the {}; `{}` is {t}. Mark a Text field instead, or remove `({})`", m.name, f.name.name, m.name));
+            let t = marked.ty.display(&self.env.app);
+            self.err(
+                "E092",
+                marker.span,
+                format!(
+                    "only a {wants} field {holds}, so `({word}: …)` is not its marker: `{}` is {t}. Mark the item's {wants} field instead, and write {reads}",
+                    marked.name
+                ),
+            );
             return None;
         }
-        if let Some(other) = before.iter().find(|x| x.role.as_deref() == Some(&m.name)) {
-            self.err("E092", m.span, format!("`{owner}` already has a {} field, `{}`; a type has at most one. Remove `({})` from one of them", m.name, other.name, m.name));
+        let day = match positional.first() {
+            Some(day) => *day,
+            None => {
+                self.err(
+                    "E092",
+                    marker.span,
+                    format!("`({word}: …)` names no field, so the platform cannot tell when it {}. Write {reads}", if word == "repeats" { "comes round again" } else { "reminds" }),
+                );
+                return None;
+            }
+        };
+        let most = if word == "repeats" { 1 } else { 2 };
+        if positional.len() > most {
+            self.err(
+                "E092",
+                marker.span,
+                format!(
+                    "`({word}: …)` reads one day{}; write {reads}",
+                    if word == "repeats" {
+                        ""
+                    } else {
+                        " and, where the type has one, one time of day"
+                    }
+                ),
+            );
             return None;
         }
-        Some(m.name.clone())
+        if let Some((name, _)) = named.iter().find(|(name, _)| *name != "who") {
+            self.err(
+                "E092",
+                marker.span,
+                format!("`({word}: …)` takes `who:` and the fields it reads; `{name}:` is not one of its names"),
+            );
+            return None;
+        }
+        let mut read: Vec<(&ast::Ident, &Ty, &str)> = vec![(day, &Ty::Date, "the day it is due")];
+        if let Some(time) = positional.get(1) {
+            read.push((time, &Ty::Time, "the time of day it is due at"));
+        }
+        let who = named
+            .iter()
+            .find(|(name, _)| *name == "who")
+            .map(|(_, f)| *f);
+        if let Some(who) = who {
+            read.push((who, &Ty::Principal, "who it reminds"));
+        }
+        for (field, want, what) in read {
+            let Some(found) = fields.iter().find(|x| x.name == field.name) else {
+                self.err(
+                    "E092",
+                    field.span,
+                    format!(
+                        "`{owner}` has no field `{}`; `({word}: …)` names {what}",
+                        field.name
+                    ),
+                );
+                return None;
+            };
+            if !holds_a(&found.ty, want) {
+                let t = found.ty.display(&self.env.app);
+                self.err(
+                    "E092",
+                    field.span,
+                    format!(
+                        "`{what}` is a {t}, and `({word}: …)` reads a {}; `{}` is {t}",
+                        want.display(&self.env.app),
+                        field.name
+                    ),
+                );
+                return None;
+            }
+        }
+        if fields
+            .iter()
+            .any(|x| x.role.as_ref().is_some_and(|role| role.word() == word))
+        {
+            self.err(
+                "E092",
+                marker.span,
+                format!("`{owner}` already has a field marked `({word}: …)`; a type has at most one. Remove one of them"),
+            );
+            return None;
+        }
+        Some(if word == "repeats" {
+            FieldRole::Repeats {
+                date: day.name.clone(),
+            }
+        } else {
+            FieldRole::Reminds {
+                date: day.name.clone(),
+                time: positional.get(1).map(|f| f.name.clone()),
+                who: who.map(|f| f.name.clone()),
+            }
+        })
     }
 
     /// The merge kind of a field. `Int` and `Float` are registers unless declared
@@ -1513,6 +1658,21 @@ impl Resolver<'_> {
                 let inner = args
                     .first()
                     .map_or(Ty::Error, |a| self.resolve_type(a, set_per_key));
+                if name.name == "Filter" {
+                    return match inner {
+                        Ty::Record(key) if field_position => {
+                            self.err("E023", te.span, format!("`Filter<{}>` is a value code holds and a query takes, not a stored field's type", key.name));
+                            Ty::Error
+                        }
+                        Ty::Record(key) => Ty::Filter(key),
+                        Ty::Error => Ty::Error,
+                        other => {
+                            let t = other.display(&self.env.app);
+                            self.err("E013", te.span, format!("`Filter<T>` is the filters of a type's items; `{t}` is no resource type"));
+                            Ty::Error
+                        }
+                    };
+                }
                 let boxed = Box::new(inner);
                 let ty = match name.name.as_str() {
                     "List" => Ty::List(boxed),
@@ -1586,6 +1746,7 @@ impl Resolver<'_> {
                 "Principal" => return Ty::Principal,
                 "Date" => return Ty::Date,
                 "Time" => return Ty::Time,
+                "Duration" => return Ty::Duration,
                 "RichText" => return Ty::RichText,
                 "Action" => return Ty::Action,
                 "View" => return Ty::View,
@@ -1634,7 +1795,7 @@ impl Resolver<'_> {
             } else {
                 String::new()
             };
-            self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, RichText, Principal, Date, Time, Action, View and {known}{held}"));
+            self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, RichText, Principal, Date, Time, Duration, Action, View and {known}{held}"));
             return Ty::Error;
         }
         if let Some(ty) = std_text_ty(&dotted) {
@@ -1691,9 +1852,71 @@ impl Resolver<'_> {
         Ty::Record(key)
     }
 
+    /// Checks the parameters a view supplies (`above: Option<Task> (above)`): only an action's,
+    /// starting right after its subject, each optional and with no default, and each a place a
+    /// view knows (`above`).
+    fn places(&mut self, written: &[ast::Param], params: &[ParamInfo], kind: CKind, _span: Span) {
+        let mut in_run = true;
+        for (i, p) in written.iter().enumerate() {
+            let Some(place) = &p.place else {
+                if i > 0 {
+                    in_run = false;
+                }
+                continue;
+            };
+            if kind != CKind::Action {
+                self.err("E052", p.name.span, format!("`{}` is a parameter of the {}; only an action takes a place a view supplies (`(above)`)", p.name.name, kind.word()));
+                continue;
+            }
+            if i == 0 {
+                self.err("E053", place.span, format!("`{}` is a place a view supplies: it follows the action's subject directly, as `{}: Option<T> (above)`", p.name.name, p.name.name));
+                continue;
+            }
+            if place.name != "above" {
+                self.err("E054", place.span, format!("`{}` names no place a view supplies; the one there is is `above`, the item just above the one the action is offered on", place.name));
+                continue;
+            }
+            if !in_run {
+                self.err("E053", place.span, format!("`{}` is a place a view supplies: it follows the action's subject directly, as `{}: Option<T> (above)`", p.name.name, p.name.name));
+                continue;
+            }
+            if !matches!(params.get(i).map(|p| &p.ty), Some(Ty::Option(_))) {
+                self.err("E055", p.ty.span, format!("`{}` is a place a view supplies, so it is `Option<…>`: a view may have nothing above the item it offers the action on", p.name.name));
+            }
+            if let Some(default) = &p.default {
+                self.err("E056", default.span, format!("`{}` is a place a view supplies: no caller gives it, so it takes no default", p.name.name));
+            }
+        }
+    }
+
+    /// Checks the parameter the text of an entry fills (`title: Text (entry)`): one action may
+    /// have one, and it is the item's title, so it is a `Text`.
+    fn entries(&mut self, written: &[ast::Param], params: &[ParamInfo], kind: CKind) {
+        let mut seen = false;
+        for (i, p) in written.iter().enumerate() {
+            if !p.entry {
+                continue;
+            }
+            if kind != CKind::Action {
+                self.err("E057", p.name.span, format!("`{}` is a parameter of the {}; only an action takes the text of an entry (`(entry)`)", p.name.name, kind.word()));
+                continue;
+            }
+            if seen {
+                self.err("E058", p.name.span, format!("`{}` is a second entry parameter: one entry fills one parameter of an action", p.name.name));
+            }
+            seen = true;
+            if !matches!(params.get(i).map(|p| &p.ty), Some(Ty::Text)) {
+                self.err("E059", p.ty.span, format!("`{}` takes the text of an entry, so it is `Text`: the words the other parameters leave title the item", p.name.name));
+            }
+            if i + 1 != written.len() {
+                self.err("E068", p.name.span, format!("`{}` takes the text of an entry, so it is the action's last parameter: what a call gives an action comes before it", p.name.name));
+            }
+        }
+    }
+
     /// The parameters of a callable. A view's may be a collection, a set or a map, as a field
     /// is: a view is handed it live (views are components, and these are their props).
-    fn params(&mut self, params: &[ast::Param], view: bool) -> Vec<ParamInfo> {
+    fn params(&mut self, params: &[ast::Param], view: bool, action: bool) -> Vec<ParamInfo> {
         let mut out: Vec<ParamInfo> = Vec::new();
         for p in params {
             if out.iter().any(|x| x.name == p.name.name) {
@@ -1709,6 +1932,8 @@ impl Resolver<'_> {
                 name: p.name.name.clone(),
                 ty,
                 default: None,
+                place: action && p.place.is_some(),
+                entry: action && p.entry,
             });
         }
         out
@@ -1746,6 +1971,7 @@ impl Resolver<'_> {
                 | Item::Root(_)
                 | Item::DefaultView(_)
                 | Item::RowView(_)
+                | Item::Views(_)
                 | Item::Scenario(_) => continue,
             };
             let index = func;
@@ -1754,9 +1980,13 @@ impl Resolver<'_> {
                 self.err("E016", name.span, format!("`{}` names a {}, which starts with a lowercase letter (uppercase is for types)", name.name, kind.word()));
             }
             // A view's name is a UI statement, so it cannot be a primitive's; the others are
-            // called in expressions, where only the built-in functions are taken.
-            let taken = (kind == CKind::View && prims::prim(&name.name).is_some())
-                || prims::BUILTINS.contains(&name.name.as_str());
+            // called in expressions, where the built-in functions and values are taken. A view
+            // is not called in an expression, so it may be named after one: Today's is `today`.
+            let taken = if kind == CKind::View {
+                prims::prim(&name.name).is_some()
+            } else {
+                prims::BUILTINS.contains(&name.name.as_str())
+            };
             if taken {
                 self.err(
                     "E011",
@@ -1779,7 +2009,9 @@ impl Resolver<'_> {
                 );
             }
             let ast_params = params;
-            let params = self.params(params, kind == CKind::View);
+            let params = self.params(params, kind == CKind::View, kind == CKind::Action);
+            self.places(ast_params, &params, kind, name.span);
+            self.entries(ast_params, &params, kind);
             if kind == CKind::Action {
                 let at = self.env.callables.len();
                 defaults.extend(
@@ -1982,6 +2214,7 @@ impl Resolver<'_> {
             key: None,
             group: None,
             frequent: false,
+            did: None,
         };
         let mut seen: Vec<&str> = Vec::new();
         for opt in &a.opts {
@@ -2060,6 +2293,26 @@ impl Resolver<'_> {
                 ),
                 // `frequent: true`: a command the person reaches for on most things of this
                 // type, which a surface showing the resource's actions draws directly.
+                // `did: "moved this"`: what the action did, said after who did it, so history
+                // reads as people say it ("Ana moved this"). A phrase of the app's own, one
+                // verb for each thing a person does.
+                ("did", ExprKind::Str(_)) if plain_text(&opt.value).is_some() => {
+                    let said = plain_text(&opt.value).unwrap_or_default();
+                    if said.trim().is_empty() {
+                        self.err(
+                            "E090",
+                            opt.value.span,
+                            "`did:` says what the action did, after who did it: `did: \"moved this\"`",
+                        );
+                    } else {
+                        out.did = Some(said);
+                    }
+                }
+                ("did", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`did:` takes words in quotes, without `{ }`: `did: \"moved this\"`",
+                ),
                 ("frequent", ExprKind::Bool(frequent)) => out.frequent = *frequent,
                 ("frequent", _) => self.err(
                     "E090",
@@ -2069,7 +2322,7 @@ impl Resolver<'_> {
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:` and `frequent:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `frequent:` and `did:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
                 ),
             }
         }
@@ -2279,8 +2532,29 @@ impl Resolver<'_> {
                         None => self.err("E018", d.view.span, format!("`{}` is not a view of this package", d.view.name)),
                     }
                 }
+                Item::Views(d) => self.views_decl(d),
                 _ => {}
             }
+        }
+        let unnamed: Vec<(Span, String)> = self
+            .env
+            .views_of
+            .iter()
+            .filter_map(|(key, views, span)| {
+                let (_, default) = self.env.default_views.iter().find(|(k, _)| k == key)?;
+                (!views.iter().any(|v| &v.name == default)).then(|| {
+                    (
+                        *span,
+                        format!(
+                            "the views of `{}` leave out its default view `{default}`, the one a window opens on",
+                            key.name
+                        ),
+                    )
+                })
+            })
+            .collect();
+        for (span, what) in unnamed {
+            self.err("E018", span, what);
         }
         let missing: Vec<TypeKey> = self
             .env
@@ -2299,42 +2573,6 @@ impl Resolver<'_> {
                 })
                 .unwrap_or_default();
             self.err("E018", span, format!("the root `{0}` has no default view, which is what opening it shows; add `default view <view> for {0}`", key.name));
-        }
-    }
-
-    /// `row view v for T`: a view of one `T` whose body is one list row, `row(title, ...)`.
-    fn row_view_decl(&mut self, d: &ast::DefaultViewDecl) {
-        let Some(key) = self.own_record(&d.ty, "row view") else {
-            return;
-        };
-        if self.env.row_views.iter().any(|(k, _)| *k == key) {
-            self.err(
-                "E093",
-                d.span,
-                format!("`{}` has two row views; a type has one", key.name),
-            );
-            return;
-        }
-        let fits = self
-            .env
-            .own_callable(&d.view.name)
-            .filter(|c| c.kind == CKind::View)
-            .map(|c| matches!(c.params.as_slice(), [p] if p.ty == Ty::Record(key.clone())));
-        match fits {
-            Some(true) => self.env.row_views.push((key, d.view.name.clone())),
-            Some(false) => self.err(
-                "E093",
-                d.view.span,
-                format!(
-                    "the row view of `{}` takes the item and nothing else: `view {}(x: {})`",
-                    key.name, d.view.name, key.name
-                ),
-            ),
-            None => self.err(
-                "E093",
-                d.view.span,
-                format!("`{}` is not a view of this package", d.view.name),
-            ),
         }
     }
 
@@ -2608,6 +2846,7 @@ fn is_builtin_type(name: &str) -> bool {
             | "Principal"
             | "Date"
             | "Time"
+            | "Duration"
             | "Action"
             | "View"
             | "List"
@@ -2666,4 +2905,24 @@ pub fn find_package<'a>(available: &'a [PackageMeta], app: &str) -> Option<&'a P
             .iter()
             .find(|m| m.previously.iter().any(|old| old == app))
     })
+}
+
+/// Whether `ty` is `want`, or an `Option` of it.
+fn holds_a(ty: &Ty, want: &Ty) -> bool {
+    ty.same(want) || matches!(ty, Ty::Option(inner) if inner.same(want))
+}
+
+/// The marker word a field's type needs, where it needs one: a repeat says the day it counts
+/// from, a reminder the day, time of day and person it reads.
+fn held_in(ty: &Ty) -> Option<&'static str> {
+    match ty {
+        Ty::Repeat => Some("repeats"),
+        Ty::Reminder => Some("reminds"),
+        Ty::Option(inner) => match **inner {
+            Ty::Repeat => Some("repeats"),
+            Ty::Reminder => Some("reminds"),
+            _ => None,
+        },
+        _ => None,
+    }
 }

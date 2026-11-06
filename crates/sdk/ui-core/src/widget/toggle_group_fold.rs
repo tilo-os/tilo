@@ -229,7 +229,7 @@ impl ToggleGroup {
         if let Some(viewport) = presence.viewport.get() {
             // An open menu stays inside the window as it is now.
             if self.menu.is_open() && self.viewport != Some(viewport) {
-                self.menu.constrain_to(viewport);
+                self.menu.set_viewport(Some(viewport));
             }
             self.viewport = Some(viewport);
         }

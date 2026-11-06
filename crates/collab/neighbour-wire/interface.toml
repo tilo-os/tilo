@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 30
+version = 31
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -20,7 +20,6 @@ sources = [
     "crates/collab/neighbour-wire/src/offer.rs",
     "crates/collab/neighbour-wire/src/colorimetry.rs",
     "crates/collab/neighbour-wire/src/hdr_metadata.rs",
-    "crates/collab/neighbour-wire/src/presence_slot.rs",
     "crates/collab/neighbour-wire/src/record_sync.rs",
     "crates/collab/neighbour-wire/src/retention.rs",
     "crates/collab/neighbour-wire/src/unit_chain.rs",
@@ -263,9 +262,6 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::RetiredPresence" = "#3 struct"
 "Envelope::RetiredPresence.payload" = "#1 Vec<u8> with=serde_bytes"
 "Envelope::RetiredPresence.workspace_id" = "#0 u64"
-"Envelope::RoomBootstrap" = "#38 struct"
-"Envelope::RoomBootstrap.bootstrap" = "#1 Vec<u8> with=serde_bytes"
-"Envelope::RoomBootstrap.workspace_id" = "#0 u64"
 "Envelope::Subscribe" = "#0 struct"
 "Envelope::Subscribe.workspace_id" = "#0 u64"
 "Envelope::SubscribeFrom" = "#20 struct"
@@ -312,6 +308,9 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::VoiceShow.participation" = "#2 [u8; 32]"
 "Envelope::VoiceShow.showing" = "#3 Showing"
 "Envelope::VoiceShow.workspace_id" = "#0 u64"
+"Envelope::WorkspaceBootstrap" = "#38 struct"
+"Envelope::WorkspaceBootstrap.bootstrap" = "#1 Vec<u8> with=serde_bytes"
+"Envelope::WorkspaceBootstrap.workspace_id" = "#0 u64"
 "EnvelopeV2" = "enum external"
 "EnvelopeV2::CodedDelta" = "#13 struct"
 "EnvelopeV2::CodedDelta.segments" = "#1 Vec<DeltaSegment>"
@@ -453,6 +452,9 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "NeighbourMsg::PermissionRequest" = "#8 struct"
 "NeighbourMsg::PermissionRequest.capability" = "#1 String"
 "NeighbourMsg::PermissionRequest.peer" = "#0 PeerId"
+"NeighbourMsg::PersonalHosts" = "#31 struct"
+"NeighbourMsg::PersonalHosts.hosts" = "#1 Vec<PersonalHost>"
+"NeighbourMsg::PersonalHosts.user_public_key" = "#0 [u8; 32]"
 "NeighbourMsg::PersonalWorkspaces" = "#22 struct"
 "NeighbourMsg::PersonalWorkspaces.update" = "#1 Box<DirectoryUpdate>"
 "NeighbourMsg::PersonalWorkspaces.user_public_key" = "#0 [u8; 32]"
@@ -547,6 +549,8 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "NeighbourMsg::SyncResp" = "#1 struct"
 "NeighbourMsg::SyncResp.changes" = "#0 Vec<Vec<u8>>"
 "NeighbourMsg::SyncResp.room" = "#1 String"
+"NeighbourMsg::WriteRefusals" = "#30 struct"
+"NeighbourMsg::WriteRefusals.refusals" = "#0 Vec<WriteRefusal>"
 "Offload" = "struct"
 "Offload.app" = "#0 String"
 "Offload.cpu_time_ms" = "#3 u64"
@@ -585,6 +589,8 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "PeerPresencePayload::Following.target" = "#0 Option<String>"
 "PeerPresencePayload::InteractionJson" = "#7 tuple(String)"
 "PeerPresencePayload::Left" = "#5 unit"
+"PeerPresencePayload::Person" = "#15 struct"
+"PeerPresencePayload::Person.name" = "#0 String"
 "PeerPresencePayload::Pointer" = "#0 struct"
 "PeerPresencePayload::Pointer.x" = "#0 f32"
 "PeerPresencePayload::Pointer.y" = "#1 f32"
@@ -604,6 +610,9 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "PeerPresencePayload::Wave" = "#12 struct"
 "PeerPresencePayload::Wave.seq" = "#0 u32"
 "PeerPresencePayload::Wave.target" = "#1 String"
+"PersonalHost" = "struct"
+"PersonalHost.hint" = "#1 Vec<u8> with=serde_bytes"
+"PersonalHost.workspace" = "#0 String"
 "PlaneFrame" = "enum external"
 "PlaneFrame::Action" = "#0 tuple(Box<SignedDeviceAction>)"
 "PlaneFrame::Offer" = "#1 tuple(Box<Query>)"
@@ -624,6 +633,16 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Query.route" = "#2 Route"
 "Query.work" = "#3 Work"
 "Query.workspace" = "#0 String"
+"RefusalReason" = "enum external"
+"RefusalReason::Conflict" = "#6 unit"
+"RefusalReason::Expired" = "#1 unit"
+"RefusalReason::Forbidden" = "#3 unit"
+"RefusalReason::Full" = "#7 unit"
+"RefusalReason::Malformed" = "#4 unit"
+"RefusalReason::MissingDependency" = "#5 unit"
+"RefusalReason::NotCertified" = "#2 unit"
+"RefusalReason::Other" = "#8 unit"
+"RefusalReason::Revoked" = "#0 unit"
 "RevocationEntry" = "struct deny_unknown_fields"
 "RevocationEntry.reason" = "#3 RevocationReason"
 "RevocationEntry.revoked_at_ns" = "#2 u64"
@@ -738,3 +757,16 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Work.inputs" = "#0 Vec<([u8; 32], u64)>"
 "Work.local_wall_ms" = "#2 Option<u64>"
 "Work.offload" = "#3 Option<Offload>"
+"WriteRefusal" = "struct"
+"WriteRefusal.app" = "#1 String"
+"WriteRefusal.at_ns" = "#10 u64"
+"WriteRefusal.author" = "#3 [u8; 32]"
+"WriteRefusal.by" = "#9 [u8; 32]"
+"WriteRefusal.changes" = "#6 Vec<[u8; 32]>"
+"WriteRefusal.detail" = "#8 String"
+"WriteRefusal.operation" = "#5 String"
+"WriteRefusal.reason" = "#7 RefusalReason"
+"WriteRefusal.record" = "#2 String"
+"WriteRefusal.seq" = "#4 u64"
+"WriteRefusal.signature" = "#11 Vec<u8>"
+"WriteRefusal.workspace" = "#0 String"

@@ -276,23 +276,66 @@ impl DirectSync {
 
     /// Admit every frame `remote` sends until its stream ends. A frame the
     /// replica refuses is that message's verdict, not the link's: the link
-    /// stays up for the frames after it.
+    /// stays up for the frames after it, and the device files what it refused
+    /// as its own verdict in the workspace document, so the write's author
+    /// reads why it is not here.
     async fn receive_all(&self, remote: [u8; 32], connection: &Connection) -> Result<(), String> {
         let mut recv = connection
             .accept_uni()
             .await
             .map_err(|error| error.to_string())?;
+        let certificate = self.certificate()?;
         while let Some(message) = read_frame(&mut recv).await? {
-            let admitted = self.0.replica.0.lock_recover().receive_from(
-                TransportOrigin::RelayDelta(remote),
-                message,
-                SystemTime::now(),
-            );
-            if admitted.is_ok_and(|outcome| outcome.changed || outcome.metadata_changed) {
+            let (bump_heads, filed) = {
+                let mut replica = self.0.replica.0.lock_recover();
+                let now = SystemTime::now();
+                match replica.receive_from(
+                    TransportOrigin::RelayDelta(remote),
+                    message.clone(),
+                    now,
+                ) {
+                    Ok(outcome) => {
+                        let landed = outcome.changed || outcome.metadata_changed;
+                        let cleared = landed
+                            && replica.workspace_mut().clear_landed_write(
+                                &certificate,
+                                &message,
+                                &self.0.key,
+                                now,
+                            )?;
+                        (landed, cleared)
+                    }
+                    Err(reason) => (
+                        false,
+                        replica.workspace_mut().refuse_write(
+                            &certificate,
+                            &message,
+                            &reason,
+                            &self.0.key,
+                            now,
+                        )?,
+                    ),
+                }
+            };
+            if bump_heads || filed {
                 self.0.changed.send_modify(bump);
             }
         }
         Ok(())
+    }
+
+    /// This device's certificate in the replica's roster: the one its key signs
+    /// for.
+    fn certificate(&self) -> Result<tilo_user_identity::DeviceCert, String> {
+        let device = self.0.key.verifying_key().to_bytes();
+        self.0
+            .replica
+            .0
+            .lock_recover()
+            .certificates()
+            .into_iter()
+            .find(|certificate| certificate.device_public_key == device)
+            .ok_or_else(|| "this device is not in the workspace roster".into())
     }
 }
 

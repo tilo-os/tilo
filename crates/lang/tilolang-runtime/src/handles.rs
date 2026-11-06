@@ -14,7 +14,7 @@ use crate::flow::Journal;
 use crate::ids::{ModuleHash, Principal, RunId};
 use crate::space::Space;
 use crate::store::Txn;
-use crate::value::{ResourceRef, Value};
+use crate::value::{ActionRef, ResourceRef, Value};
 use crate::view::NodeBuild;
 use crate::view_state::StateKey;
 
@@ -36,6 +36,12 @@ pub struct ActionState {
     pub invoker: Principal,
     /// The recorded suggestion this run approves, if any; see `ExecCtx::origin`.
     pub origin: Option<String>,
+    /// What the person a suggestion was accepted from proposed, if this run is one: recorded in
+    /// its change so history says who suggested it ([`crate::store::Version::suggested_by`]).
+    pub suggested_by: Option<Principal>,
+    /// The actions the action proposed (`suggest act(args)`), recorded once it has committed:
+    /// a proposal is workspace state of its own, never part of this action's transaction.
+    pub suggestions: Vec<(Principal, ActionRef)>,
     /// Blocks to evaluate once the action has committed (`run_block`).
     pub queued: Vec<QueuedBlock>,
     /// Set for a scenario's action, the only one that may act as a named person.
@@ -44,6 +50,9 @@ pub struct ActionState {
     /// time it acts at when it names one; `invoker` and `now` read the last one, or `invoker`
     /// and the invocation's time when there is none.
     pub acting_as: Vec<(Principal, Option<String>)>,
+    /// What a scenario makes resources from (`from r { ... }`), innermost last: the change it
+    /// commits records it as what they were made from, as an action invoked from `r` does.
+    pub made_from: Vec<ResourceRef>,
     /// What the change records about its cause; a scenario commits each `as` block under it,
     /// as the person and at the time the block names.
     pub note: Box<crate::store::ChangeNote>,
@@ -64,6 +73,8 @@ pub struct FlowState {
     pub journal: Journal,
     pub cursor: usize,
     pub invoker: Principal,
+    /// Who proposed the run, when the person running it accepted a suggestion.
+    pub suggested_by: Option<Principal>,
 }
 
 #[derive(Default)]
@@ -72,7 +83,7 @@ pub struct ViewState {
     pub space: Space,
     /// The window the view runs in: what its `window` and `lens` state is kept under.
     pub window: String,
-    /// The person looking: whose `lens` state the view reads.
+    /// The person looking: whose `window` and `lens` state the view reads.
     pub viewer: Principal,
     /// Every view state slot read, with its generation at the time.
     pub state_reads: Vec<(StateKey, u64)>,

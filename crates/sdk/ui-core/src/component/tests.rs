@@ -113,7 +113,8 @@ fn given(key: &str, props: &[(&str, Value)]) -> Given {
 /// A value of `ty` for a required prop.
 fn sample(ty: &Type) -> Value {
     match ty {
-        Type::Text => Value::Text("x".into()),
+        // Text, and a case a binding holds, travel as their words.
+        Type::Text | Type::Enum => Value::Text("x".into()),
         Type::Int => Value::Int(1),
         Type::Float => Value::Float(1.0),
         Type::Bool => Value::Bool(true),
@@ -286,13 +287,10 @@ impl Source for ItemSource<'_> {
     ) -> Result<usize, String> {
         match slot {
             "row" => {
-                let mut row = given(
+                let row = given(
                     &self.item.key,
                     &[("title", Value::Text(self.item.title.clone()))],
                 );
-                if self.item.avatar {
-                    row.props.insert("avatar_space".into(), Value::Bool(false));
-                }
                 read(&mut AvatarRow {
                     row,
                     avatar: self.item.avatar,
@@ -663,11 +661,11 @@ fn rows_that_name_no_group_stand_under_their_own_heading() {
     let model = list.list().expect("the list").model();
     assert_eq!(
         crate::widget::ListModel::group_at(model, 0),
-        Some(RowGroup::Heading("Jul 1".into()))
+        Some(RowGroup::heading("Jul 1"))
     );
     assert_eq!(
         crate::widget::ListModel::group_at(model, 1),
-        Some(RowGroup::Heading("No date".into())),
+        Some(RowGroup::heading("No date")),
         "a row whose item names no group is not the last group's"
     );
     // A list given no heading for them leaves those rows among the others, as before.

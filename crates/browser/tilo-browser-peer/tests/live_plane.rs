@@ -16,8 +16,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 use std::time::Duration;
 use tokio::sync::watch;
@@ -25,13 +25,12 @@ use tokio::sync::watch;
 use channel_crypto::{ChannelGroup, MemberKey};
 use tilo_browser_peer::ChannelContentKeys;
 use tilo_browser_peer::live::{LiveError, UNSUPPORTED};
-use tilo_call_lane::{Opener, Roster, Sealer, Stream, TrackName};
-use tilo_live::admit::{Connected, OriginTask, origin_config};
 use tilo_live::live::{Namespace, Track};
-use tilo_live::plane::{Plane, PlaneError};
+use tilo_live::plane::{Join, Plane, PlaneError};
 use tilo_live::relay::{
     Denied, Direction, LoopbackRelay, Peer, RelayAuthority, SessionAuthorization,
 };
+use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
 use tilo_live::voice::{FRAME_SAMPLES, VoiceObject};
 use tilo_relay_protocol::web::LiveGrant;
@@ -190,218 +189,67 @@ fn voice_object(opus: &[u8], sequence: u32) -> Vec<u8> {
     .unwrap()
 }
 
-/// The native participant: the carrier client a device runs, sealing and
+/// The native participant: the planed device a device runs, sealing and
 /// opening its own tracks with no page code involved.
 struct Native {
-    presence: Sealer,
-    audio: Sealer,
-    opener: Opener,
-    _broadcast: moq_net::broadcast::Producer,
-    presence_track: moq_net::track::Producer,
-    audio_track: Mutex<moq_net::track::Producer>,
-    reading: moq_net::origin::Consumer,
-    _producers: (moq_net::origin::Producer, moq_net::origin::Producer),
-    _publishing: OriginTask,
-    _reading: OriginTask,
-    _connected: Connected,
+    plane: Plane,
+    sequence: std::cell::Cell<u32>,
 }
 
 impl Native {
     async fn join(relay: &LoopbackRelay, keys: ChannelContentKeys, roster: Roster) -> Self {
-        let scope = Scope::workspace(WORKSPACE);
-        let namespace = Namespace::new(&scope, NATIVE);
-        let (publishing, publishing_task) =
-            OriginTask::produce(origin_config(1 << 20, Duration::from_secs(30)));
-        let broadcast = publishing
-            .create_broadcast(namespace.path().as_str())
-            .unwrap();
-        let presence_track = broadcast
-            .create_track(
-                "presence",
-                moq_net::track::Info::default().with_max_age(Duration::from_secs(30)),
-            )
-            .unwrap();
-        broadcast
-            .announce(moq_net::origin::Route::default())
-            .unwrap();
-        let publish = publishing
-            .consume()
-            .scope(
-                "",
-                &moq_net::Patterns::from(
-                    moq_net::Pattern::literal(namespace.path().as_str()).unwrap(),
-                ),
-            )
-            .unwrap();
-        let (reading, reading_task) =
-            OriginTask::produce(origin_config(1 << 20, Duration::from_secs(2)));
-        let subscribe = reading
-            .consume()
-            .scope(
-                "",
-                &moq_net::Patterns::from(
-                    moq_net::Pattern::subtree(namespace.scope_path().as_str()).unwrap(),
-                ),
-            )
-            .unwrap();
-        let url: url::Url = relay.endpoint.parse().unwrap();
-        let connected = tilo_live::carrier::connect(
-            &url,
-            &tilo_live::carrier::Trust::Fingerprints(relay.fingerprints.clone()),
+        let carrier =
+            tilo_live::carrier::WebTransport::new(&relay.endpoint, &relay.fingerprints).unwrap();
+        let plane = Plane::join(
+            &carrier,
             &NATIVE,
-            Some(publish),
-            Some(reading.clone()),
-            Duration::from_secs(5),
+            Join {
+                scope: Scope::workspace(WORKSPACE),
+                device: NATIVE,
+                keys,
+                roster,
+                publish: true,
+            },
         )
         .await
         .unwrap();
         Self {
-            presence: Sealer::new(
-                &keys,
-                NATIVE,
-                Stream::Presence,
-                TrackName::new(&scope, "presence"),
-            )
-            .unwrap(),
-            audio: Sealer::new(
-                &keys,
-                NATIVE,
-                Stream::Microphone,
-                TrackName::new(&scope, "audio"),
-            )
-            .unwrap(),
-            opener: Opener::new(keys, roster),
-            _broadcast: broadcast.clone(),
-            presence_track,
-            audio_track: Mutex::new(
-                broadcast
-                    .create_track(
-                        "audio",
-                        moq_net::track::Info::default().with_max_age(Duration::from_millis(200)),
-                    )
-                    .unwrap(),
-            ),
-            reading: subscribe,
-            _producers: (publishing, reading),
-            _publishing: publishing_task,
-            _reading: reading_task,
-            _connected: connected,
+            plane,
+            sequence: std::cell::Cell::new(0),
         }
     }
 
     fn publish_presence(&self, presence: &[u8]) {
-        let sealed = self.presence.seal(0, presence).unwrap();
-        let mut group = self.presence_track.append_group().unwrap();
-        group
-            .write_frame(moq_net::Timestamp::ZERO, bytes::Bytes::from(sealed))
-            .unwrap();
-        group.finish().unwrap();
-    }
-
-    fn publish_audio(&self, opus: &[u8], seq: u64) {
-        let sealed = self.audio.seal(u32::try_from(seq).unwrap(), opus).unwrap();
-        let timestamp = seq * u64::from(tilo_live::voice::FRAME_SAMPLES);
-        let object = VoiceObject {
-            sequence: seq,
-            timestamp,
-            duration: tilo_live::voice::FRAME_SAMPLES,
-            payload: sealed,
-        }
-        .encode()
-        .unwrap();
-        let at =
-            moq_net::Timestamp::from_scale(timestamp, u64::from(tilo_live::voice::SAMPLE_RATE))
-                .unwrap();
-        self.audio_track
-            .lock()
-            .unwrap()
-            .insert_datagram(seq, at, bytes::Bytes::from(object))
+        let sequence = self.sequence.get();
+        self.sequence.set(sequence.wrapping_add(1));
+        self.plane
+            .publish(Track::Presence, sequence, presence)
             .unwrap();
     }
 
-    /// The page's sealed presence, opened as the page's device.
-    async fn presence_from_page(&self) -> Vec<u8> {
-        let scope = Namespace::new(&Scope::workspace(WORKSPACE), PAGE);
-        let broadcast = tokio::time::timeout(
-            Duration::from_secs(10),
-            self.reading.routed_broadcast(scope.path().as_str()),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let track = broadcast.track("presence").unwrap();
-        let mut subscriber = tokio::time::timeout(
-            Duration::from_secs(10),
-            track.subscribe(
-                moq_net::track::Subscription::default().with_max_age(Duration::from_secs(30)),
-            ),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let mut group = tokio::time::timeout(Duration::from_secs(10), subscriber.recv_group())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        let frame = tokio::time::timeout(Duration::from_secs(10), group.read_frame())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        self.opener
-            .open(
-                PAGE,
-                Stream::Presence,
-                &TrackName::new(&Scope::workspace(WORKSPACE), "presence"),
-                &frame.payload,
-            )
-            .unwrap()
+    fn publish_audio(&self, opus: &[u8], sequence: u32) {
+        let object = voice_object(opus, sequence);
+        self.plane.publish(Track::Audio, sequence, &object).unwrap();
     }
 
-    /// The page's sealed audio objects, opened in order.
-    async fn audio_from_page(&self, count: usize) -> Vec<Vec<u8>> {
-        let scope = Namespace::new(&Scope::workspace(WORKSPACE), PAGE);
-        let broadcast = tokio::time::timeout(
-            Duration::from_secs(10),
-            self.reading.routed_broadcast(scope.path().as_str()),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let track = broadcast.track("audio").unwrap();
-        let mut subscriber = tokio::time::timeout(
-            Duration::from_secs(10),
-            track.subscribe(
-                moq_net::track::Subscription::default().with_max_age(Duration::from_millis(200)),
-            ),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+    /// The page's presence, opened as the page's device.
+    fn presence_from_page(&self) -> Option<Vec<u8>> {
+        std::iter::from_fn(|| self.plane.try_recv())
+            .find(|heard| heard.sender == PAGE && heard.track == Track::Presence)
+            .map(|heard| heard.body)
+    }
+
+    /// The page's audio objects, in order.
+    fn audio_from_page(&self, count: usize) -> Vec<Vec<u8>> {
         let mut opened = Vec::new();
         while opened.len() < count {
-            let datagram =
-                tokio::time::timeout(Duration::from_secs(10), subscriber.recv_datagram())
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .unwrap();
-            for bytes in tilo_live::voice::bundle_objects(&datagram.payload).unwrap() {
-                let object = VoiceObject::decode(bytes).unwrap();
-                let opus = self
-                    .opener
-                    .open(
-                        PAGE,
-                        Stream::Microphone,
-                        &TrackName::new(&Scope::workspace(WORKSPACE), "audio"),
-                        &object.payload,
-                    )
-                    .unwrap();
-                if opened.len() < count {
-                    opened.push(opus);
-                }
+            let Some(heard) = self.plane.try_recv() else {
+                break;
+            };
+            if heard.sender != PAGE || heard.track != Track::Audio {
+                continue;
             }
+            opened.push(VoiceObject::decode(&heard.body).unwrap().payload);
         }
         opened
     }
@@ -459,9 +307,7 @@ async fn a_page_and_a_native_device_exchange_sealed_presence_and_audio_through_a
             page.publish(Track::Presence, presence_sequence, b"role=member")
                 .unwrap();
             presence_sequence = presence_sequence.wrapping_add(1);
-            if let Ok(presence) =
-                tokio::time::timeout(Duration::from_millis(100), native.presence_from_page()).await
-            {
+            if let Some(presence) = native.presence_from_page() {
                 break presence;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -480,9 +326,8 @@ async fn a_page_and_a_native_device_exchange_sealed_presence_and_audio_through_a
             let object = voice_object(&tone, sequence);
             page.publish(Track::Audio, sequence, &object).unwrap();
             sequence = sequence.wrapping_add(1);
-            if let Ok(opened) =
-                tokio::time::timeout(Duration::from_millis(100), native.audio_from_page(1)).await
-            {
+            let opened = native.audio_from_page(1);
+            if !opened.is_empty() {
                 break opened;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -493,7 +338,7 @@ async fn a_page_and_a_native_device_exchange_sealed_presence_and_audio_through_a
     assert_eq!(heard, vec![tone]);
 
     let voiced: Vec<u8> = (100..260).map(|byte| byte as u8).collect();
-    let mut sequence = 0_u64;
+    let mut sequence = 0_u32;
     let opened = published_until(
         "the native device's audio never reached the page",
         || {
@@ -527,46 +372,22 @@ async fn a_pages_presence_reaches_a_device_inside_the_interactive_budget() {
     let native = Native::join(&relay, keys.clone(), roster.clone()).await;
     let page = page(&relay, keys, roster).await;
 
-    // The device's reader stays subscribed to the page's presence, as a
-    // device's plane keeps one open for the whole session.
-    let address = Namespace::new(&Scope::workspace(WORKSPACE), PAGE);
-    let broadcast = tokio::time::timeout(
-        Duration::from_secs(10),
-        native.reading.routed_broadcast(address.path().as_str()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let track = broadcast.track("presence").unwrap();
-    let mut subscriber = tokio::time::timeout(
-        Duration::from_secs(10),
-        track.subscribe(
-            moq_net::track::Subscription::default().with_max_age(Duration::from_secs(30)),
-        ),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-
     let mut sequence = 0_u32;
 
     // The relay's copy subscribes to a publisher's track after its first
-    // write, and a new subscriber starts from what the relay already holds:
-    // both are warmed past before anything is measured.
+    // write: that is warmed past before anything is measured.
     for _ in 0..20 {
         page.publish(Track::Presence, sequence, b"role=member")
             .unwrap();
         sequence = sequence.wrapping_add(1);
-        let mut group = tokio::time::timeout(Duration::from_secs(5), subscriber.recv_group())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        let _ = tokio::time::timeout(Duration::from_secs(5), group.read_frame())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if native.presence_from_page().is_some() {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "the plane is warm");
+            tokio::time::sleep(Duration::from_micros(200)).await;
+        }
     }
 
     let mut latencies = Vec::new();
@@ -575,17 +396,17 @@ async fn a_pages_presence_reaches_a_device_inside_the_interactive_budget() {
         page.publish(Track::Presence, sequence, b"role=member")
             .unwrap();
         sequence = sequence.wrapping_add(1);
-        let mut group = tokio::time::timeout(Duration::from_secs(5), subscriber.recv_group())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        let frame = tokio::time::timeout(Duration::from_secs(5), group.read_frame())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert!(!frame.payload.is_empty(), "a sealed presence object");
+        let deadline = sent + Duration::from_secs(5);
+        loop {
+            if native.presence_from_page().is_some() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the page's presence arrived"
+            );
+            tokio::time::sleep(Duration::from_micros(200)).await;
+        }
         latencies.push(sent.elapsed());
     }
     latencies.sort_unstable();

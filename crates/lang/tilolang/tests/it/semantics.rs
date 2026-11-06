@@ -337,3 +337,25 @@ fn view_state_is_declared_read_bound_and_set() {
         "view state is the view's own"
     );
 }
+
+// A list's rows are a view of their own (`<view>~row<n>`), and a component called in a row that
+// declares `window`/`lens` state keeps it there: the host binds the state by the id the row's
+// body reads (`<row view id>:<component>.<state>`), so the row's view meta carries it.
+#[test]
+fn view_state_of_a_component_called_in_a_lists_row_is_the_rows() {
+    let c = compile(
+        "type Note {\n    title: Text\n}\ntype Book {\n    notes: Collection<Note>\n}\nroot Book\ndefault view book for Book\naction add(b: Book, title: Text) {\n    b.notes.insert(Note(title: title))\n}\nview book(b: Book) {\n    stack {\n        for n in b.notes {\n            text(n.title)\n            std.add_entry(\"New note\", add(b, \"\"))\n        }\n    }\n}",
+    );
+    crate::common::validate(&c.wasm);
+    let view = c.ids.get("book").expect("the view");
+    let row = c
+        .meta
+        .views
+        .iter()
+        .find(|v| v.id == format!("{view}~row0"))
+        .unwrap_or_else(|| panic!("the row of the notes list: {:?}", c.meta.views));
+    let ids: Vec<&str> = row.state.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, vec![format!("{}:add_entry.typed", row.id)]);
+    assert_eq!(row.state[0].name, "typed");
+    assert_eq!(row.state[0].layer, "lens");
+}

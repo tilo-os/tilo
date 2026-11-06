@@ -19,7 +19,6 @@
 //! desktops: field and variant order are the wire, so append only.
 
 pub mod govern;
-pub mod private;
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::{InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage};
@@ -209,7 +208,8 @@ pub struct WorkspaceSummary {
     /// The workspace's name.
     pub name: String,
     pub generation: u64,
-    /// Every person governance records, removed ones included.
+    /// Every person the workspace has — its owner and everyone its governance
+    /// admitted — removed ones included.
     pub members: Vec<GovernedMember>,
 }
 

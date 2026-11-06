@@ -16,7 +16,10 @@ use std::path::Path;
 /// installed desktop entry before the id is believed.
 #[must_use]
 pub fn verified_flatpak_app_id(pid: u32) -> Option<String> {
-    let entries = &desktop_entry::cache::cached_scan().entries;
+    let locales = desktop_entry::locale::language_candidates(
+        settings_store::appearance::preferred_language().as_deref(),
+    );
+    let entries = &desktop_entry::cache::cached_scan(&locales).entries;
     verified_flatpak_app_id_from(Path::new("/proc"), pid, entries)
 }
 
@@ -125,8 +128,12 @@ mod tests {
             ),
         )
         .expect("desktop entry");
-        desktop_entry::scan_dirs(&[apps], &[desktop_entry::scan::CURRENT_DESKTOP.to_string()])
-            .entries
+        desktop_entry::scan_dirs(
+            &[apps],
+            &[desktop_entry::scan::CURRENT_DESKTOP.to_string()],
+            &[],
+        )
+        .entries
     }
 
     fn write_flatpak_proc(root: &Path, pid: u32, app_id: &str, cgroup_app_id: &str) {

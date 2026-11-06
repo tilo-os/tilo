@@ -62,8 +62,8 @@ mode = "off"
 file-chooser = "via-host"
 
 [sandbox.services]
-collab = "optional@16"
-tilo-fs = "optional@16"
+collab = "optional@18"
+tilo-fs = "optional@18"
 
 [entrypoint]
 bin             = "bin/imager"

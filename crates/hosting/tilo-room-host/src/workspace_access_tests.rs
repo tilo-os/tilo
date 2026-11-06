@@ -17,7 +17,7 @@ const MODES: [AdmissionMode; 3] = [
     AdmissionMode::SameOwner,
     AdmissionMode::Governed,
 ];
-const OPS: [WorkspaceOperation; 12] = [
+const OPS: [WorkspaceOperation; 11] = [
     WorkspaceOperation::Subscribe,
     WorkspaceOperation::State,
     WorkspaceOperation::Replay,
@@ -26,10 +26,9 @@ const OPS: [WorkspaceOperation; 12] = [
     WorkspaceOperation::Compute,
     WorkspaceOperation::Environment,
     WorkspaceOperation::RemoteAction,
-    WorkspaceOperation::OwnChannelKeys,
     WorkspaceOperation::DelegateMembership,
     WorkspaceOperation::Publish,
-    WorkspaceOperation::ChannelReadKeys,
+    WorkspaceOperation::ChannelAccess,
 ];
 
 /// One decision as a letter, so a row reads as the planes in order.
@@ -44,12 +43,7 @@ fn letter(decision: Decision) -> char {
         Decision::Deny(DenyReason::AgentWithdrawn) => 'w',
         Decision::Deny(DenyReason::AgentExpired) => 'e',
         Decision::Deny(DenyReason::AgentOutOfScope) => 'o',
-        Decision::Deny(DenyReason::NotTheGovernor) => 's',
         Decision::Deny(DenyReason::NotADelegatedAgent) => 'd',
-        Decision::Deny(DenyReason::WatchOnly) => 'W',
-        Decision::Deny(DenyReason::SpectatorsFull) => 'S',
-        Decision::Deny(DenyReason::SealedFromSpectators) => 'P',
-        Decision::Deny(DenyReason::OverTheChannel) => 'O',
     }
 }
 
@@ -57,8 +51,6 @@ struct Relay {
     owner_root: SigningKey,
     owner: [u8; 32],
     bob: [u8; 32],
-    /// The root of a public workspace's spectator person, a member of it.
-    spectator: [u8; 32],
     revocations: RwLock<RevocationList>,
     policy: RwLock<TrustPolicy>,
     agents: AgentRegistry,
@@ -69,18 +61,15 @@ impl Relay {
         let owner_root = SigningKey::from_bytes(&[1; 32]);
         let owner = owner_root.verifying_key().to_bytes();
         let bob = SigningKey::from_bytes(&[2; 32]).verifying_key().to_bytes();
-        let spectator = SigningKey::from_bytes(&[5; 32]).verifying_key().to_bytes();
-        // The live handshake policy: the owner, and Bob and the spectator
-        // person, whose roots a governed workspace on this relay admits. Carol is
-        // trusted by nothing.
+        // The live handshake policy: the owner and Bob, whose roots a governed
+        // workspace on this relay admits. Carol is trusted by nothing.
         let policy = TrustPolicy::AllowList {
-            users: vec![hex::encode(owner), hex::encode(bob), hex::encode(spectator)],
+            users: vec![hex::encode(owner), hex::encode(bob)],
         };
         Self {
             owner_root,
             owner,
             bob,
-            spectator,
             revocations: RwLock::new(RevocationList::new()),
             policy: RwLock::new(policy),
             agents: Arc::default(),
@@ -179,41 +168,25 @@ struct Case {
 )]
 fn decide_matrix() {
     let relay = Relay::new();
-    let (owner, bob, carol, spectator) = (relay.owner, relay.bob, [3; 32], relay.spectator);
+    let (owner, bob, carol) = (relay.owner, relay.bob, [3; 32]);
     let listed = |device: [u8; 32]| -> Setup {
         Box::new(move |runtime, _| runtime.membership.devices.push(device))
     };
     let none = || -> Setup { Box::new(|_, _| {}) };
-    let watched = move |runtime: &mut WorkspaceRuntime| {
-        runtime.governed_user_roots.insert(spectator);
-        runtime.spectators = Some(Spectators {
-            root: spectator,
-            seats: 2,
-            public: false,
-        });
-    };
-    let public = move |runtime: &mut WorkspaceRuntime| {
-        runtime.governed_user_roots.insert(spectator);
-        runtime.spectators = Some(Spectators {
-            root: spectator,
-            seats: 2,
-            public: true,
-        });
-    };
     // Subscribe, State, Replay, Live, ContentDiscovery, Compute, Environment, RemoteAction,
-    // OwnChannelKeys, DelegateMembership, Publish, ChannelReadKeys
+    // DelegateMembership, Publish, ChannelAccess
     let cases = vec![
         Case {
             name: "owner's member device",
             peer: peer(owner, [10; 32], false, None),
             setup: listed([10; 32]),
-            expected: ["AAAAAAAAsdAO", "AAAAAAAAsdAO", "AAAAAAAAsdAO"],
+            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
         Case {
             name: "owner's unlisted device",
             peer: peer(owner, [11; 32], false, None),
             setup: none(),
-            expected: ["NNNNNNNNsdNO", "ENNAAEANsdNO", "NNNNNNNNsdNO"],
+            expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNdNN"],
         },
         Case {
             name: "owner's device a pending replacement removed",
@@ -222,7 +195,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([12; 32]);
                 runtime.membership_ceiling = Some(HashSet::new());
             }),
-            expected: ["NNNNNNNNsdNO", "NNNNNNNNsdNO", "NNNNNNNNsdNO"],
+            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN", "NNNNNNNNdNN"],
         },
         Case {
             // Failure scenario 1: trusted relay-wide because another workspace's
@@ -232,13 +205,13 @@ fn decide_matrix() {
             setup: Box::new(move |runtime, _| {
                 runtime.governed_user_roots.insert(bob);
             }),
-            expected: ["NNNNNNNNsdNO", "NNNNNNNNsdNO", "NNNNNNNNsdNO"],
+            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN", "NNNNNNNNdNN"],
         },
         Case {
             name: "cross-user exact member device",
             peer: peer(bob, [22; 32], false, None),
             setup: listed([22; 32]),
-            expected: ["AAAAAAAAsdAO", "AAAAAAAAsdAO", "AAAAAAAAsdAO"],
+            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
         Case {
             name: "same-user host this room is attached to",
@@ -246,19 +219,19 @@ fn decide_matrix() {
             setup: Box::new(|runtime, _| {
                 runtime.attached_hosts.insert([30; 32]);
             }),
-            expected: ["AAANNNNNsdAO", "AAAAAEANsdAO", "AAANNNNNsdAO"],
+            expected: ["AAANNNNNdAA", "AAAAAEANdAA", "AAANNNNNdAA"],
         },
         Case {
             name: "same-user host this room is not attached to",
             peer: peer(owner, [31; 32], true, None),
             setup: none(),
-            expected: ["NNNNNNNNsdNO", "ENNAAEANsdNO", "NNNNNNNNsdNO"],
+            expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNdNN"],
         },
         Case {
             name: "cross-user host certificate, listed as a member",
             peer: peer(bob, [32; 32], true, None),
             setup: listed([32; 32]),
-            expected: ["AAAAAAAAsdAO", "AAAAAAAAsdAO", "AAAAAAAAsdAO"],
+            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
         Case {
             name: "agent delegated this room",
@@ -267,7 +240,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([40; 32]);
                 relay.delegate([40; 32], Some((NOW + 1, ROOM)));
             }),
-            expected: ["AAAAAAAAsdAO", "AAAAAAAAsdAO", "AAAAAAAAsdAO"],
+            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
         Case {
             name: "agent whose delegation expired",
@@ -276,7 +249,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([41; 32]);
                 relay.delegate([41; 32], Some((NOW, ROOM)));
             }),
-            expected: ["eeeeeeeeeeee", "eeeeeeeeeeee", "eeeeeeeeeeee"],
+            expected: ["eeeeeeeeeee", "eeeeeeeeeee", "eeeeeeeeeee"],
         },
         Case {
             name: "withdrawn agent",
@@ -285,7 +258,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([42; 32]);
                 relay.delegate([42; 32], None);
             }),
-            expected: ["wwwwwwwwwwww", "wwwwwwwwwwww", "wwwwwwwwwwww"],
+            expected: ["wwwwwwwwwww", "wwwwwwwwwww", "wwwwwwwwwww"],
         },
         Case {
             name: "agent delegated another room",
@@ -294,134 +267,52 @@ fn decide_matrix() {
                 runtime.membership.devices.push([43; 32]);
                 relay.delegate([43; 32], Some((NOW + 1, OTHER_ROOM)));
             }),
-            expected: ["oooooooooooo", "oooooooooooo", "oooooooooooo"],
+            expected: ["ooooooooooo", "ooooooooooo", "ooooooooooo"],
         },
         Case {
             name: "the device governing this room on this relay",
             peer: peer(owner, [70; 32], true, None),
             setup: Box::new(|runtime, _| {
-                runtime.workspace_authority = Some(
-                    crate::workspaces::WorkspaceAuthority::governed_by(ROOM, [70; 32]),
-                );
+                runtime.workspace_authority =
+                    Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
             }),
-            expected: ["NNNNNNNNsdNO", "ENNAAEANsdNO", "NNNNNNNNAdNO"],
+            expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNdNN"],
         },
         Case {
             name: "another listed device of the owner, while this relay governs",
             peer: peer(owner, [71; 32], false, None),
             setup: Box::new(|runtime, _| {
                 runtime.membership.devices.push([71; 32]);
-                runtime.workspace_authority = Some(
-                    crate::workspaces::WorkspaceAuthority::governed_by(ROOM, [70; 32]),
-                );
+                runtime.workspace_authority =
+                    Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
             }),
-            expected: ["AAAAAAAAsdAO", "AAAAAAAAsdAO", "AAAAAAAAsdAO"],
+            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA", "AAAAAAAAdAA"],
         },
         Case {
             name: "agent delegated this room, in a room this relay governs",
             peer: peer(owner, [44; 32], false, None),
             setup: Box::new(|runtime, relay| {
-                runtime.workspace_authority = Some(
-                    crate::workspaces::WorkspaceAuthority::governed_by(ROOM, [70; 32]),
-                );
+                runtime.workspace_authority =
+                    Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
                 relay.delegate([44; 32], Some((NOW + 1, ROOM)));
             }),
-            expected: ["NNNNNNNNsdNO", "ENNAAEANsdNO", "NNNNNNNNsANO"],
+            expected: ["NNNNNNNNdNN", "ENNAAEANdNN", "NNNNNNNNANN"],
         },
         Case {
             name: "another user's agent, in a room this relay governs",
             peer: peer(bob, [45; 32], false, None),
             setup: Box::new(|runtime, relay| {
-                runtime.workspace_authority = Some(
-                    crate::workspaces::WorkspaceAuthority::governed_by(ROOM, [70; 32]),
-                );
+                runtime.workspace_authority =
+                    Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
                 relay.delegate([45; 32], Some((NOW + 1, ROOM)));
             }),
-            expected: ["NNNNNNNNsdNO", "NNNNNNNNsdNO", "NNNNNNNNsdNO"],
-        },
-        Case {
-            name: "spectator device",
-            peer: peer(spectator, [80; 32], false, Some(NOW + 1)),
-            setup: Box::new(move |runtime, _| watched(runtime)),
-            expected: ["AAAWWWWWsdWP", "AAAWWWWWsdWP", "AAAWWWWWsdWP"],
-        },
-        Case {
-            name: "spectator device the room lists",
-            peer: peer(spectator, [81; 32], false, Some(NOW + 1)),
-            setup: Box::new(move |runtime, _| {
-                watched(runtime);
-                runtime.membership.devices.push([81; 32]);
-            }),
-            expected: ["AAAWWWWWsdWP", "AAAWWWWWsdWP", "AAAWWWWWsdWP"],
-        },
-        Case {
-            name: "spectator device whose certificate expired",
-            peer: peer(spectator, [82; 32], false, Some(NOW)),
-            setup: Box::new(move |runtime, _| watched(runtime)),
-            expected: ["xxxxxxxxxxxx", "xxxxxxxxxxxx", "xxxxxxxxxxxx"],
-        },
-        Case {
-            name: "spectator device of a public room, before it holds a seat",
-            peer: peer(spectator, [85; 32], false, Some(NOW + 1)),
-            setup: Box::new(move |runtime, _| public(runtime)),
-            expected: ["AAAWWWWWsdWP", "AAAWWWWWsdWP", "AAAWWWWWsdWP"],
-        },
-        Case {
-            name: "seated spectator device of a public room",
-            peer: peer(spectator, [86; 32], false, Some(NOW + 1)),
-            setup: Box::new(move |runtime, _| {
-                public(runtime);
-                runtime.state_sessions.insert(
-                    [86; 32],
-                    crate::peer::StateSession::for_test(peer(
-                        spectator,
-                        [86; 32],
-                        false,
-                        Some(NOW + 1),
-                    )),
-                );
-            }),
-            expected: ["AAAWWWWWsdWA", "AAAWWWWWsdWA", "AAAWWWWWsdWA"],
-        },
-        Case {
-            name: "seated spectator device of a room that is not public",
-            peer: peer(spectator, [87; 32], false, Some(NOW + 1)),
-            setup: Box::new(move |runtime, _| {
-                watched(runtime);
-                runtime.state_sessions.insert(
-                    [87; 32],
-                    crate::peer::StateSession::for_test(peer(
-                        spectator,
-                        [87; 32],
-                        false,
-                        Some(NOW + 1),
-                    )),
-                );
-            }),
-            expected: ["AAAWWWWWsdWP", "AAAWWWWWsdWP", "AAAWWWWWsdWP"],
-        },
-        Case {
-            name: "spectator device of a room that lets nobody watch",
-            peer: peer(spectator, [83; 32], false, Some(NOW + 1)),
-            setup: Box::new(move |runtime, _| {
-                runtime.governed_user_roots.insert(spectator);
-            }),
-            expected: ["NNNNNNNNsdNO", "NNNNNNNNsdNO", "NNNNNNNNsdNO"],
-        },
-        Case {
-            name: "member device of a room others watch",
-            peer: peer(bob, [84; 32], false, None),
-            setup: Box::new(move |runtime, _| {
-                watched(runtime);
-                runtime.membership.devices.push([84; 32]);
-            }),
-            expected: ["AAAAAAAAsdAO", "AAAAAAAAsdAO", "AAAAAAAAsdAO"],
+            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN", "NNNNNNNNdNN"],
         },
         Case {
             name: "member device whose certificate expired",
             peer: peer(owner, [50; 32], false, Some(NOW)),
             setup: listed([50; 32]),
-            expected: ["xxxxxxxxxxxx", "xxxxxxxxxxxx", "xxxxxxxxxxxx"],
+            expected: ["xxxxxxxxxxx", "xxxxxxxxxxx", "xxxxxxxxxxx"],
         },
         Case {
             name: "revoked member device",
@@ -430,13 +321,13 @@ fn decide_matrix() {
                 runtime.membership.devices.push([51; 32]);
                 relay.revoke([51; 32]);
             }),
-            expected: ["rrrrrrrrrrrr", "rrrrrrrrrrrr", "rrrrrrrrrrrr"],
+            expected: ["rrrrrrrrrrr", "rrrrrrrrrrr", "rrrrrrrrrrr"],
         },
         Case {
             name: "member device of a user the policy no longer trusts",
             peer: peer(carol, [52; 32], false, None),
             setup: listed([52; 32]),
-            expected: ["tttttttttttt", "tttttttttttt", "tttttttttttt"],
+            expected: ["ttttttttttt", "ttttttttttt", "ttttttttttt"],
         },
     ];
     let tmp = tempfile::tempdir().unwrap();
@@ -449,7 +340,6 @@ fn decide_matrix() {
             runtime.governed_user_roots.clear();
             runtime.attached_hosts.clear();
             runtime.workspace_authority = None;
-            runtime.spectators = None;
             runtime.state_sessions.clear();
             runtime.admission = *mode;
             (case.setup)(&mut runtime, &relay);
@@ -474,90 +364,6 @@ fn decide_matrix() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-}
-
-#[test]
-fn a_spectator_subscribes_only_while_a_seat_is_free_and_keeps_its_own() {
-    let relay = Relay::new();
-    let tmp = tempfile::tempdir().unwrap();
-    let mut runtime = workspace(tmp.path());
-    runtime.spectators = Some(Spectators {
-        root: relay.spectator,
-        seats: 2,
-        public: true,
-    });
-    let watching = |device: u8| peer(relay.spectator, [device; 32], false, Some(NOW + 1));
-    let decide = |runtime: &WorkspaceRuntime, device: u8, op: WorkspaceOperation| {
-        decide_in(
-            WorkspaceFacts::current(runtime),
-            &relay.trust(),
-            &watching(device),
-            op,
-            NOW,
-        )
-    };
-    let watch = |runtime: &mut WorkspaceRuntime, device: u8| {
-        runtime.state_sessions.insert(
-            [device; 32],
-            crate::peer::StateSession::for_test(watching(device)),
-        );
-    };
-    // A member's session takes no spectator seat.
-    let member = peer(relay.owner, [10; 32], false, None);
-    runtime.membership.devices.push([10; 32]);
-    runtime
-        .state_sessions
-        .insert([10; 32], crate::peer::StateSession::for_test(member));
-    assert_eq!(
-        decide(&runtime, 90, WorkspaceOperation::Subscribe),
-        Decision::Admit
-    );
-    watch(&mut runtime, 90);
-    watch(&mut runtime, 91);
-    // Both seats taken: a third spectator may not subscribe, yet the two
-    // seated keep theirs when their subscription is audited.
-    assert_eq!(
-        decide(&runtime, 92, WorkspaceOperation::Subscribe),
-        Decision::Deny(DenyReason::SpectatorsFull)
-    );
-    assert!(!seated(&runtime, &watching(92)));
-    // Watching counts the seated two, not the member or the refused page.
-    assert_eq!(seated_spectators(&runtime), 2);
-    for seated_device in [90, 91] {
-        assert_eq!(
-            decide(&runtime, seated_device, WorkspaceOperation::Subscribe),
-            Decision::Admit
-        );
-        assert!(seated(&runtime, &watching(seated_device)));
-    }
-    // A member is never held back by the spectators' seats.
-    assert!(seated(&runtime, &peer(relay.owner, [11; 32], false, None)));
-    // A seat freed is the next spectator's.
-    runtime.state_sessions.remove(&[90; 32]);
-    assert_eq!(
-        decide(&runtime, 92, WorkspaceOperation::Subscribe),
-        Decision::Admit
-    );
-}
-
-#[test]
-fn a_spectator_is_a_recipient_of_host_authored_state_and_never_of_anything_else() {
-    let relay = Relay::new();
-    let tmp = tempfile::tempdir().unwrap();
-    let mut runtime = workspace(tmp.path());
-    runtime.spectators = Some(Spectators {
-        root: relay.spectator,
-        seats: 1,
-        public: true,
-    });
-    let spectator = peer(relay.spectator, [93; 32], false, Some(NOW + 1));
-    for op in OPS {
-        assert_eq!(
-            listed(WorkspaceFacts::current(&runtime), &spectator, op),
-            op.reads(),
-            "{op:?}"
-        );
-    }
 }
 
 #[test]
@@ -592,61 +398,12 @@ fn replay_reads_listed_devices_within_the_ceiling() {
 }
 
 #[test]
-fn only_the_current_governor_takes_its_own_channel_keys() {
-    let relay = Relay::new();
-    let tmp = tempfile::tempdir().unwrap();
-    let mut runtime = workspace(tmp.path());
-    let governor = peer(relay.owner, [80; 32], true, None);
-    let decide = |runtime: &WorkspaceRuntime, peer: &AuthenticatedPeer| {
-        decide_in(
-            WorkspaceFacts::current(runtime),
-            &relay.trust(),
-            peer,
-            WorkspaceOperation::OwnChannelKeys,
-            NOW,
-        )
-    };
-    // A workspace no authority of this relay governs hands its keys to no one.
-    runtime.admission = AdmissionMode::Governed;
-    assert_eq!(
-        decide(&runtime, &governor),
-        Decision::Deny(DenyReason::NotTheGovernor)
-    );
-    runtime.workspace_authority = Some(crate::workspaces::WorkspaceAuthority::governed_by(
-        ROOM, [80; 32],
-    ));
-    assert_eq!(decide(&runtime, &governor), Decision::Admit);
-    // Not the same device: another host of the owner, even a listed member
-    // or a host this workspace is attached to.
-    let other = peer(relay.owner, [81; 32], true, None);
-    runtime.membership.devices.push([81; 32]);
-    runtime.attached_hosts.insert([81; 32]);
-    assert_eq!(
-        decide(&runtime, &other),
-        Decision::Deny(DenyReason::NotTheGovernor)
-    );
-    // The governor's certificate must still be current.
-    let expired = peer(relay.owner, [80; 32], true, Some(NOW));
-    assert_eq!(
-        decide(&runtime, &expired),
-        Decision::Deny(DenyReason::CertExpired)
-    );
-    relay.revoke([80; 32]);
-    assert_eq!(
-        decide(&runtime, &governor),
-        Decision::Deny(DenyReason::Revoked)
-    );
-}
-
-#[test]
 fn an_agent_joins_governance_only_inside_its_live_delegation() {
     let relay = Relay::new();
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = workspace(tmp.path());
     runtime.admission = AdmissionMode::Governed;
-    runtime.workspace_authority = Some(crate::workspaces::WorkspaceAuthority::governed_by(
-        ROOM, [70; 32],
-    ));
+    runtime.workspace_authority = Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
     let agent = peer(relay.owner, [90; 32], false, None);
     let decide = |runtime: &WorkspaceRuntime, now: u64| {
         decide_in(
@@ -682,9 +439,7 @@ fn an_agent_joins_governance_only_inside_its_live_delegation() {
         Decision::Deny(DenyReason::NotADelegatedAgent)
     );
     // Its certificate must still be current.
-    runtime.workspace_authority = Some(crate::workspaces::WorkspaceAuthority::governed_by(
-        ROOM, [70; 32],
-    ));
+    runtime.workspace_authority = Some(crate::workspaces::WorkspaceAuthority::governed_by(ROOM));
     relay.revoke([90; 32]);
     assert_eq!(decide(&runtime, NOW), Decision::Deny(DenyReason::Revoked));
 }
@@ -721,4 +476,64 @@ fn owners_moderators_and_editors_write() {
 /// only; signatures are the handshake's business, not [`decide`]'s.
 pub(crate) fn unsigned_peer(user: [u8; 32], device: [u8; 32]) -> AuthenticatedPeer {
     peer(user, device, false, None)
+}
+
+/// A signed certificate of `root` for `device`, issued at `issued_at_ns`,
+/// granting the member set and expiring a day later.
+fn signed_member(root: &SigningKey, device: &SigningKey, issued_at_ns: u64) -> DeviceCert {
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: "tilo-yoga".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns,
+        expires_at_ns: Some(issued_at_ns.saturating_add(24 * 60 * 60 * 1_000_000_000)),
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
+    cert
+}
+
+/// A joined device's certificate that ran out is refused at a host, and the
+/// renewal of it — the same device and root, issued later, granting no more —
+/// is admitted. This is the shape of a laptop whose certificate lapsed and
+/// whose person's devices renewed it.
+#[test]
+fn a_host_refuses_a_lapsed_certificate_and_admits_its_renewal() {
+    let relay = Relay::new();
+    let root = &relay.owner_root;
+    let device = SigningKey::from_bytes(&[0x5a; 32]);
+    // The matrix's NOW is an arbitrary instant; a certificate is judged
+    // against the clock a device actually has.
+    let now = 1_800_000_000_000_000_000;
+    let lapsed = signed_member(root, &device, now - 48 * 60 * 60 * 1_000_000_000);
+    let renewed = signed_member(root, &device, now - 60 * 1_000_000_000);
+    assert!(
+        lapsed.is_expired_at(now),
+        "the certificate the host knew ran out"
+    );
+    assert!(!renewed.is_expired_at(now), "the renewal is valid now");
+    assert!(renewed.renews(&lapsed));
+
+    let trust = relay.trust();
+    let lapsed_peer = AuthenticatedPeer {
+        user_public_key: lapsed.user_public_key,
+        device_public_key: lapsed.device_public_key,
+        cert: lapsed,
+    };
+    assert_eq!(
+        trust.cert(&lapsed_peer, now),
+        Err(DenyReason::CertExpired),
+        "a host refuses the certificate that ran out"
+    );
+
+    let renewed_peer = AuthenticatedPeer {
+        user_public_key: renewed.user_public_key,
+        device_public_key: renewed.device_public_key,
+        cert: renewed,
+    };
+    assert!(
+        trust.cert(&renewed_peer, now).is_ok(),
+        "and admits the renewal, as the same device"
+    );
 }

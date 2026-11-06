@@ -58,7 +58,11 @@ impl Session {
             .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
             .expect("output");
         compositor.add_host(Box::new(DropZone::new(Rc::clone(&log))));
-        let display = compositor.start_xwayland().expect("Xwayland");
+        let display = compositor
+            .x11_displays()
+            .expect("displays")
+            .display_for("xwayland")
+            .expect("X11 display");
         let (x11, root) = x11_client(&mut compositor, display);
         Self {
             compositor,
@@ -366,7 +370,7 @@ impl Session {
                 self.answer(&event);
                 self.events.push(event);
             }
-            self.compositor.render().expect("render");
+            self.compositor.draw_frame().expect("a frame");
             if done(self) {
                 return;
             }

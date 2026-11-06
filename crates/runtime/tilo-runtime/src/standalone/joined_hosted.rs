@@ -306,51 +306,79 @@ impl Joined {
 #[cfg(test)]
 impl Joined {
     /// `app`'s `record` as this device's host keeps it in `workspace`: its latest
-    /// whole write, opened with the channel's keys. Waits on the host: call
-    /// it from a thread that may block.
+    /// whole write, opened with the channel's keys. `Err` says where the write
+    /// stops on the way there, so one that never arrives is explained rather
+    /// than just missing. Waits on the host: call it from a thread that may
+    /// block.
     pub(in crate::standalone) fn test_kept_document(
         &self,
         workspace: WorkspaceId,
         app: &str,
         record: &str,
-    ) -> Option<Vec<u8>> {
-        let host = Arc::clone(self.room_host()?);
-        let ws = super::workspace_topic(workspace).ok()?;
+    ) -> Result<Vec<u8>, String> {
+        let host = Arc::clone(
+            self.room_host()
+                .ok_or("this profile runs no workspace host")?,
+        );
+        let ws = super::workspace_topic(workspace)?;
         let retained = tilo_rt::app()
             .handle()
-            .block_on(async move { host.workspace_records().retained(ws).await })
-            .ok()?;
+            .block_on(async move { host.workspace_records().retained(ws).await })?;
         let route = collab_types::ChannelRoute::new(app, record);
         let keys = self
             .channel_keys()
-            .get()?
-            .record_keys(workspace, &route)?
-            .ok()?;
-        retained.iter().rev().find_map(|kept| {
+            .get()
+            .ok_or("this device holds no channel keys")?
+            .record_keys(workspace, &route)
+            .ok_or_else(|| {
+                format!(
+                    "the host keeps {} bodies but this device takes part in no channel of {app}'s {record}",
+                    retained.len()
+                )
+            })?
+            .map_err(|error| {
+                format!(
+                    "the host keeps {} bodies but this device holds no keys for {app}'s {record}: {error}",
+                    retained.len()
+                )
+            })?;
+        let mut kept_of_the_record = 0_usize;
+        for kept in retained.iter().rev() {
             let neighbour_wire::NeighbourMsg::AppDocument {
                 app_id,
                 record_id,
                 envelope,
                 ..
-            } = postcard::from_bytes(&kept.body).ok()?
+            } = postcard::from_bytes(&kept.body)
+                .map_err(|error| format!("the host keeps an unreadable body: {error}"))?
             else {
-                return None;
+                continue;
             };
             if app_id != app || record_id != record {
-                return None;
+                continue;
             }
-            let metadata = envelope.encryption?;
-            let ciphertext = collab_types::sealed_ciphertext(&envelope).ok()?;
+            kept_of_the_record = kept_of_the_record.saturating_add(1);
+            let metadata = envelope
+                .encryption
+                .ok_or_else(|| format!("{app}'s {record} reached the host unsealed"))?;
+            let ciphertext = collab_types::sealed_ciphertext(&envelope)
+                .map_err(|error| format!("{app}'s {record} is not sealed as one frame: {error}"))?;
             let plaintext = keys
                 .open_content(envelope.artifact, &metadata, &ciphertext)
-                .ok()?;
-            match collab_types::DocumentFrame::decode(&plaintext).ok()? {
+                .map_err(|error| format!("{app}'s {record} does not open: {error}"))?;
+            match collab_types::DocumentFrame::decode(&plaintext)
+                .map_err(|error| format!("{app}'s {record} is not a document frame: {error}"))?
+            {
                 collab_types::DocumentFrame::Whole(
                     collab_types::DocumentMutation::Snapshot(bytes)
                     | collab_types::DocumentMutation::Incremental(bytes),
-                ) => Some(bytes),
-                collab_types::DocumentFrame::Segment(_) => None,
+                ) => return Ok(bytes),
+                collab_types::DocumentFrame::Segment(_) => {}
             }
-        })
+        }
+        Err(format!(
+            "the host keeps {} bodies, {kept_of_the_record} of them {app}'s {record}, none whole",
+            retained.len()
+        ))
     }
 }

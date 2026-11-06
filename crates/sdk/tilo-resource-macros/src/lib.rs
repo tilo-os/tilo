@@ -1743,8 +1743,9 @@ fn is_action_cx(ty: &Type) -> bool {
     let Type::Reference(reference) = ty else {
         return false;
     };
-    reference.mutability.is_some()
-        && last_ident(&reference.elem).is_some_and(|(name, _)| name == "ActionCx")
+    // An action that only reads the context takes it shared; one that mints
+    // ids takes it mutably.
+    last_ident(&reference.elem).is_some_and(|(name, _)| name == "ActionCx")
 }
 
 /// Turn a record's `#[action]` methods into its replayable, published action
@@ -1765,7 +1766,8 @@ fn is_action_cx(ty: &Type) -> bool {
 /// `Note::EDIT`, an `ActionRef` views bind controls to and tests apply;
 /// then `impl Resource`. Field edits are a built-in variant.
 ///
-/// An action method takes `&mut self`, optionally `cx: &mut ActionCx` and
+/// An action method takes `&mut self`, optionally `cx: &mut ActionCx` (or
+/// `cx: &ActionCx`, for one that only reads it) and
 /// `&mut Outbox<T>` fields of the record (by field name: such an action
 /// reaches outside the document), then its parameters, and returns `()` or
 /// `Result<(), impl Into<Refusal>>`. Its public id is its name in kebab case

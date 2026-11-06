@@ -182,7 +182,7 @@ fn canonical_owner<R: PrivateRead>(
     workspace: &str,
     owner: &[u8; 32],
 ) -> Result<String, Error> {
-    let expected = crate::workspace::key_hex::KeyHex::new(owner);
+    let expected = hex::encode(owner);
     let mut is_string = false;
     let mut owner_is_root = false;
     let owners = read.all(&read.root(), "owner", |value| {
@@ -314,8 +314,8 @@ where
         usize::MAX,
     )
     .map_err(Error::Encoding)?;
-    let text = crate::workspace::key_hex::KeyHex::new(hash.finalize().as_bytes());
-    work.text(text.as_str()).map_err(resource)
+    let text = hex::encode(hash.finalize().as_bytes());
+    work.text(&text).map_err(resource)
 }
 pub(crate) fn legacy_owner(
     read: &LegacyRead<'_, AutoCommit>,

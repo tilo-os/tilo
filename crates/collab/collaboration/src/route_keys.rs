@@ -303,14 +303,17 @@ impl RouteKeys {
         };
         let ciphertext = collab_types::sealed_ciphertext(envelope)
             .map_err(|_| Unopened::Never(Never::Undecryptable))?;
-        let opened = match &mut self.keys {
-            Keys::Plain | Keys::Unsealable => return Err(Unopened::Never(Never::SealedOnPlain)),
-            Keys::Pending(_) => return Err(Unopened::Later),
+        match &mut self.keys {
+            Keys::Plain | Keys::Unsealable => Err(Unopened::Never(Never::SealedOnPlain)),
+            Keys::Pending(_) => Err(Unopened::Later),
             Keys::Group(group) => {
                 if group.channel_id() != metadata.channel {
                     return Err(Unopened::Never(Never::WrongChannel));
                 }
-                group.open_content(envelope.artifact, &metadata, &ciphertext)
+                opened(
+                    group.open_content(envelope.artifact, &metadata, &ciphertext),
+                    false,
+                )
             }
             Keys::Content { keys, .. } => {
                 if keys.channel_id() != metadata.channel {
@@ -319,13 +322,11 @@ impl RouteKeys {
                 if !keys.holds_epoch(metadata.epoch) {
                     return Err(Unopened::Later);
                 }
-                keys.open_content(envelope.artifact, &metadata, &ciphertext)
+                opened(
+                    keys.open_content(envelope.artifact, &metadata, &ciphertext),
+                    true,
+                )
             }
-        };
-        match opened {
-            Ok(plaintext) => Ok(Some(plaintext)),
-            Err(channel_crypto::Error::MissingContentKey(_)) => Err(Unopened::Later),
-            Err(_) => Err(Unopened::Never(Never::Undecryptable)),
         }
     }
 
@@ -403,6 +404,27 @@ impl RouteKeys {
     /// History has nothing older for `artifact`: the ops it never supplied.
     pub(super) fn give_up_owed(&mut self, artifact: ArtifactId) -> Vec<OpKey> {
         self.held_inbound.give_up_owed(artifact)
+    }
+}
+
+/// What an attempt to open a sealed payload came to: its plaintext, a wait for
+/// a key that can still arrive, or content no key of the channel's opens.
+///
+/// An epoch can have a key per branch of a channel whose groups forked before
+/// they settled, and a payload sealed under a branch this device did not
+/// follow does not open until that branch's key is handed over with its next
+/// commit, which the identity service then passes on. That key can still
+/// arrive, so the op waits like one of a missing epoch; held ciphertext makes
+/// the route ask for keys again.
+fn opened(
+    opened: Result<Zeroizing<Vec<u8>>, channel_crypto::Error>,
+    branch_keys: bool,
+) -> Result<Option<Zeroizing<Vec<u8>>>, Unopened> {
+    match opened {
+        Ok(plaintext) => Ok(Some(plaintext)),
+        Err(channel_crypto::Error::MissingContentKey(_)) => Err(Unopened::Later),
+        Err(channel_crypto::Error::ContentCrypto(_)) if branch_keys => Err(Unopened::Later),
+        Err(_) => Err(Unopened::Never(Never::Undecryptable)),
     }
 }
 
@@ -555,6 +577,40 @@ mod tests {
                 .unwrap()
                 .as_slice(),
             b"mine"
+        );
+    }
+
+    #[test]
+    fn a_payload_sealed_under_another_branch_waits_for_its_key() {
+        let channel = ChannelId::new();
+        let (_mine, mine_keys) = keys(channel);
+        let (theirs, theirs_keys) = keys(channel);
+        let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
+        let (metadata, sealed) = theirs
+            .seal_content(artifact, ContentRetention::Delta, b"from their branch")
+            .unwrap();
+        let mut route = RouteKeys::requested();
+        route.update(Wire::Ready, 1, Some(&mine_keys));
+        let arrived = envelope(sealed, Some(metadata));
+        assert!(
+            matches!(
+                route.open(&arrived, OpAdmission::EncryptionRequired),
+                Err(Unopened::Later)
+            ),
+            "a branch key not handed over yet is waited for"
+        );
+        route.hold_inbound(held(arrived));
+        // The losing branch hands its key over; the op that waited opens.
+        route.update(Wire::Ready, 2, Some(&theirs_keys));
+        let held = route.take_held_inbound();
+        assert_eq!(held.len(), 1);
+        assert_eq!(
+            route
+                .open(&held[0].envelope, held[0].admission)
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            b"from their branch"
         );
     }
 

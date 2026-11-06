@@ -63,6 +63,7 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         | Ty::Principal
         | Ty::Date
         | Ty::Time
+        | Ty::Duration
         | Ty::Identifier
         | Ty::Repeat
         | Ty::Reminder
@@ -71,6 +72,7 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         | Ty::Length(_)
         | Ty::Choice(_)
         | Ty::Enum(_)
+        | Ty::Filter(_)
         | Ty::Result(..)
         | Ty::Error => {
             return Err("the field has no value yet and no default".to_owned());
@@ -232,21 +234,44 @@ fn inner_ty(ty: &Ty) -> Option<&Ty> {
 
 impl Core {
     /// The type of `ty`'s package, and of the type itself.
+    ///
+    /// # Errors
+    ///
+    /// A message when no loaded package declares it, and for a resource of another app the
+    /// want that loads that app's package ([`Core::missing_type`]).
     pub(crate) fn type_of_ref(
         &self,
         ty: &str,
     ) -> Result<(Rc<crate::registry::Package>, Rc<TypeInfo>), String> {
-        let registry = self.registry.borrow();
-        // A resource of an app this runtime does not run names its type `app#Type`: the app's
-        // description (`load_foreign`) declares it.
-        let id = match crate::foreign::foreign_type(ty) {
-            Some(key) => registry.type_for(&key),
-            None => Some(ty.to_owned()),
+        let found = {
+            let registry = self.registry.borrow();
+            // A resource of an app this runtime does not run names its type `app#Type`: the app's
+            // description (`load_foreign`) declares it.
+            let id = match crate::foreign::foreign_type(ty) {
+                Some(key) => registry.type_for(&key),
+                None => Some(ty.to_owned()),
+            };
+            id.and_then(|id| registry.type_info(&id))
         };
-        let id = id.ok_or_else(|| format!("type `{ty}` is not declared by any loaded package"))?;
-        registry
-            .type_info(&id)
-            .ok_or_else(|| format!("type `{ty}` is not declared by any loaded package"))
+        found.ok_or_else(|| self.missing_type(ty))
+    }
+
+    /// Why a read of a resource of `ty` failed — no loaded package declares it — and, for a
+    /// resource of an app whose package this runtime does not hold, the ask that loads that
+    /// app's package ([`crate::Runtime::take_wanted_packages`]): the view call renders its
+    /// waiting state and runs again when the package arrives ([`crate::foreign::packages_key`]).
+    /// A type no app declares (`app#Type` names one) is a read waiting on nothing: a fault.
+    pub(crate) fn missing_type(&self, ty: &str) -> String {
+        let why = format!("type `{ty}` is not declared by any loaded package");
+        // A type of an app whose package this runtime does not hold may come: ask for it, and
+        // the call waits rather than faults. One of an app loaded here is a mistake in the
+        // view, and stays a fault.
+        let may_come = crate::foreign::foreign_type(ty)
+            .is_some_and(|key| !self.registry.borrow().holds_app(&key.app));
+        if may_come && self.wanted_packages.borrow_mut().want(ty) {
+            self.foreign.borrow().remember_waiting(&why);
+        }
+        why
     }
 
     pub(crate) fn ref_arg(&self, h: i32) -> HResult<RefValue> {
@@ -345,7 +370,7 @@ impl Core {
         })
     }
 
-    fn item_type(&self, ty: &Ty) -> Result<Rc<TypeInfo>, String> {
+    pub(crate) fn item_type(&self, ty: &Ty) -> Result<Rc<TypeInfo>, String> {
         let Some(Ty::Record(key)) = inner_ty(ty) else {
             return Err("the field's element type is not a record".to_owned());
         };

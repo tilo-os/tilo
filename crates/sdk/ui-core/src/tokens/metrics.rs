@@ -65,6 +65,10 @@ pub struct Metrics {
     pub drawer_width: f32,
     /// The overview column of an overview + detail pair (HIG §1b).
     pub overview_width: f32,
+    /// The widest the overview column grows to fit what it lists: a row's
+    /// title beside its facts, whole. Past it the title elides, and the
+    /// detail keeps the room.
+    pub overview_max_width: f32,
     /// A generic "wide window" width for painted apps that pick a compact
     /// chrome by width: `sidebar_width` plus [`Metrics::content_min_width`].
     /// `NavShell` and `SidebarDrawer` dock by the content's real minimum
@@ -119,6 +123,11 @@ pub struct Metrics {
     pub page_min_width: f32,
     /// The narrowest a grid of media tiles still works at: two tiles.
     pub grid_min_width: f32,
+    /// A board lane's reading width: a card and its facts on one comfortable
+    /// measure, the same on every board at every window width. Lanes stand
+    /// left-aligned, as wide as this; the room a wider pane leaves stands
+    /// open beside them instead of stretching every card across it.
+    pub board_lane_width: f32,
     /// How much wider than its threshold a window must grow before a
     /// layout that switched away switches back, so a window resized near a
     /// threshold does not flicker between two layouts.
@@ -237,6 +246,7 @@ impl Metrics {
         sidebar_width: 280.0,
         drawer_width: 320.0,
         overview_width: 340.0,
+        overview_max_width: 460.0,
         compact_breakpoint: 840.0,
         nav_row_height: 32.0,
         header_height: 56.0,
@@ -253,6 +263,7 @@ impl Metrics {
         reading_min_width: 360.0,
         page_min_width: 360.0,
         grid_min_width: 280.0,
+        board_lane_width: 320.0,
         layout_hysteresis: 24.0,
         readable_width: 720.0,
         reading_measure: 640.0,
@@ -363,6 +374,7 @@ impl Metrics {
             sidebar_width: self.sidebar_width * factor,
             drawer_width: self.drawer_width * factor,
             overview_width: self.overview_width * factor,
+            overview_max_width: self.overview_max_width * factor,
             compact_breakpoint: self.compact_breakpoint * factor,
             nav_row_height: self.nav_row_height * factor,
             header_height: self.header_height * factor,
@@ -379,6 +391,7 @@ impl Metrics {
             reading_min_width: self.reading_min_width * factor,
             page_min_width: self.page_min_width * factor,
             grid_min_width: self.grid_min_width * factor,
+            board_lane_width: self.board_lane_width * factor,
             layout_hysteresis: self.layout_hysteresis * factor,
             readable_width: self.readable_width * factor,
             reading_measure: self.reading_measure * factor,

@@ -13,7 +13,7 @@
 "apps/ebook/src/app.rs" = 9000
 "apps/ebook/src/app/interaction_tests.rs" = 5500
 "apps/file-explorer/src/files_app.rs" = 10500
-"apps/file-explorer/src/files_app/tests.rs" = 8000
+"apps/file-explorer/src/files_app/tests.rs" = 7000
 "apps/file-explorer/src/views/file_view.rs" = 3500
 "apps/imager/src/app.rs" = 6000
 "apps/imager/src/setup/destination/installer_app.rs" = 7000
@@ -88,7 +88,7 @@
 "crates/sdk/ui-core/src/widget/data_table.rs" = 6000
 "crates/sdk/ui-core/src/widget/file_picker.rs" = 4435
 "crates/sdk/ui-core/src/widget/group_row.rs" = 11500
-"crates/sdk/ui-core/src/widget/list_row.rs" = 4000
+"crates/sdk/ui-core/src/widget/list_row.rs" = 3500
 "crates/sdk/ui-core/src/widget/mod.rs" = 4000
 "crates/sdk/ui-core/src/widget/nav_shell.rs" = 5000
 "crates/sdk/ui-core/src/widget/tabs.rs" = 10500
@@ -100,7 +100,6 @@
 "crates/session/desktop-surface/src/activity/pane.rs" = 4000
 "crates/session/desktop-surface/src/activity/pane_tests.rs" = 3500
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
-"crates/session/desktop/src/workspace_settings.rs" = 6000
 "crates/session/device-fabric/src/lib.rs" = 5000
 "crates/session/network-actor/src/lib.rs" = 5000
 "crates/session/onboarding-host/src/view.rs" = 7000

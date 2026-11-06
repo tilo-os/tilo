@@ -63,7 +63,7 @@ impl RegistrationGate {
     #[cfg(target_os = "linux")]
     pub fn release_with_window_door(self, door: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
         use std::os::fd::AsFd as _;
-        crate::jobs::send(self.0.as_fd(), &[&[1]], &[door])
+        crate::door::send(self.0.as_fd(), &[&[1]], &[door])
     }
 }
 
@@ -155,7 +155,7 @@ fn read_release() -> io::Result<()> {
 #[cfg(target_os = "linux")]
 fn read_release_from(gate: std::os::fd::BorrowedFd<'_>) -> io::Result<Option<OwnedFd>> {
     let mut release = [0_u8; 1];
-    let Some((1, fds)) = crate::jobs::receive(gate, &mut release)? else {
+    let Some((1, fds)) = crate::door::receive(gate, &mut release)? else {
         return Err(io::ErrorKind::UnexpectedEof.into());
     };
     Ok(fds.into_iter().next())

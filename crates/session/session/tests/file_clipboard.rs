@@ -56,11 +56,6 @@ const NAME: &str = "notes.txt";
 /// Files' record in the workspace: the resource its folder actions name.
 const RESOURCE: &str = "files.folder";
 const BODY: &[u8] = b"the file the person copied";
-/// How long a paste on its own thread may take on a loaded machine before the
-/// test that waits on it fails: wall clock, not a count of turns a loaded
-/// machine would run through too fast.
-const WAIT: Duration = Duration::from_secs(120);
-
 /// This device's identity and the workspace it hosts, where the session reads
 /// them.
 struct Fixture {
@@ -131,6 +126,7 @@ fn hold_workspace(state: &Path, device: &ed25519_dalek::SigningKey, cert: &Devic
                 workspace,
                 TransportOrigin::RetainedRelayDelta(host),
                 postcard::from_bytes(&frame).expect("a publication is a message"),
+                None,
                 std::time::SystemTime::now(),
             )
             .expect("the host admits the workspace's people");
@@ -487,7 +483,7 @@ async fn paste(files: &Files, offer: &str, folder: &Path) -> (usize, Option<Stri
         {
             Reply::Running { .. } => {
                 assert!(
-                    started_at.elapsed() < WAIT,
+                    started_at.elapsed() < tilo_test_env::hang_bound(),
                     "the paste never reported what it did"
                 );
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -610,7 +606,7 @@ fn files_calls(
 /// Hold the app at `check` until the session has read the clipboard it wrote.
 fn wait_for_check(check: &std::sync::mpsc::Receiver<()>) {
     check
-        .recv_timeout(WAIT)
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("the session read the clipboard the app put on it");
 }
 
@@ -631,7 +627,7 @@ fn read_clipboard(session: &mut Session) -> ui::dnd::CopiedFiles {
             }
             tilo_compositor::clipboard_history::Pulled::Pending => {
                 assert!(
-                    started.elapsed() < WAIT,
+                    started.elapsed() < tilo_test_env::hang_bound(),
                     "the clipboard never answered another app"
                 );
                 session.step(Duration::from_millis(1)).expect("step");
@@ -652,7 +648,7 @@ fn until_the_app_is_done(
 ) -> Proof {
     use std::sync::mpsc::TryRecvError;
     let started = Instant::now();
-    while started.elapsed() < WAIT {
+    while started.elapsed() < tilo_test_env::hang_bound() {
         session.settle_services();
         session.step(Duration::from_millis(1)).expect("step");
         match notes.try_recv() {
@@ -682,7 +678,10 @@ fn until_the_app_is_done(
             Err(TryRecvError::Empty) => {}
         }
     }
-    panic!("the app's calls were never answered within {WAIT:?}");
+    panic!(
+        "the app's calls were never answered within {:?}",
+        tilo_test_env::hang_bound()
+    );
 }
 
 #[test]

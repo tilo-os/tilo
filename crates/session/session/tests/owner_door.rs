@@ -12,6 +12,8 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
+mod common;
+
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -65,13 +67,7 @@ fn private_home() -> tempfile::TempDir {
 
 /// Run frames until `done` holds; `false` when it never did.
 fn reached(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) -> bool {
-    for _ in 0..600 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return true;
-        }
-    }
-    false
+    common::reached(session, |session| done(session))
 }
 
 /// Send `request` on the socket at `socket` as `tilo-control` does, running the session until
@@ -93,13 +89,9 @@ fn ask(session: &mut Session, socket: &Path, request: &Value) -> Value {
             .send(serde_json::from_str::<Value>(&line).expect("a JSON answer"))
             .unwrap();
     });
-    for _ in 0..30_000 {
-        if let Ok(answer) = answered.try_recv() {
-            return answer;
-        }
-        session.step(Duration::from_millis(1)).expect("step");
-    }
-    panic!("the control socket never answered");
+    common::wait_for(session, "the control socket's answer", |_| {
+        answered.try_recv().ok()
+    })
 }
 
 /// The desk the session starts on: one workspace with one window in front.
@@ -113,6 +105,8 @@ fn desk_tree() -> DesktopTree {
             note: String::new(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }];
     let group = WindowGroup {
         id: 3,

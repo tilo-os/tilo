@@ -460,10 +460,11 @@ fn reached(
         Some("menu" | "note_menu") => observed(driver, |node| {
             node.role == ui::a11y::Role::Menu && !node.state.hidden
         }),
+        // A page row's "more" control, the list row's second action.
         Some("sidebar_hover") => observed(driver, |node| {
-            node.action_target
-                .as_deref()
-                .is_some_and(|target| target.starts_with("row-action:1:"))
+            node.action_target.as_deref().is_some_and(|target| {
+                target.starts_with("note-") && target.ends_with("/action/1")
+            }) && node.bounds.is_some()
         }),
         Some("rename") => observed(driver, |node| {
             node.role == ui::a11y::Role::TextInput

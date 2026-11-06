@@ -4,9 +4,8 @@ Documentation=file:///usr/share/doc/tilo/recovery.md
 # After a deployment spends its tries, sd-boot starts the previous one, but
 # bootc still queues the failed one as the default. This makes the running
 # deployment bootc's default again and writes what the failed tries left
-# behind to /var/lib/tilo/boot-fallback, where the session's
-# tilo-boot-fallback-notice tells the person. On every other boot it reads
-# bootc's status and exits.
+# behind to /var/lib/tilo/boot-fallback, where the session reads it and tells
+# the person. On every other boot it reads bootc's status and exits.
 RequiresMountsFor=/boot /boot/efi /var/lib/tilo
 After=local-fs.target systemd-pstore.service
 # The running deployment is made the default only once it proved itself. On a

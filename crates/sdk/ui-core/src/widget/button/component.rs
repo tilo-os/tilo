@@ -46,6 +46,10 @@ pub struct ButtonProps {
     pub size: ControlSize,
     /// Whether it can be pressed now. A button with nothing to do never can.
     pub enabled: bool,
+    /// Why it cannot be pressed now, where the label does not say: the requirement an action
+    /// does not meet. Its tooltip, and the description assistive technology reads beside the
+    /// name it announces.
+    pub description: Option<String>,
     /// The plain key that presses it while its window has the keyboard (and, on a row's action,
     /// while that row is selected), as the app declared it (`key: "e"`): the host answers it
     /// beside the pressed control's own event. Never drawn here; the header shows it at the
@@ -64,6 +68,9 @@ pub struct ButtonProps {
     /// It belongs in its header's menu rather than in the row
     /// ([`crate::widget::Button::in_menu`]).
     pub in_menu: bool,
+    /// The run of its owner's actions it stands in (`group: "Due"`), as the app names it: the
+    /// header's menu shows rows of one run together, under the run's own row.
+    pub group: Option<String>,
     /// It was pressed (a click, Enter or Space, an assistive technology).
     #[component(event)]
     pub press: Event,
@@ -81,11 +88,13 @@ impl Default for ButtonProps {
             toggled: None,
             size: ControlSize::default(),
             enabled: true,
+            description: None,
             key: None,
             count: None,
             dot: false,
             alert: false,
             in_menu: false,
+            group: None,
             press: Event::None,
         }
     }
@@ -105,11 +114,13 @@ impl Described for Button {
             toggled,
             size,
             enabled,
+            description,
             key: _,
             count,
             dot,
             alert,
             in_menu,
+            group,
             press,
         } = props;
         let enabled = enabled && !press.is_none();
@@ -143,7 +154,13 @@ impl Described for Button {
             button = button.with_count(content, style);
         }
         let button = if in_menu { button.in_menu() } else { button };
-        let button = button.with_enabled(enabled);
+        let mut button = button.with_enabled(enabled);
+        if let Some(why) = description.filter(|why| !why.trim().is_empty()) {
+            button = button.with_description(&why).tooltip(why);
+        }
+        if let Some(group) = group {
+            button = button.with_menu_group(group);
+        }
         match press {
             Event::None => button,
             Event::Action(binding) => button.on_action(binding),
@@ -180,6 +197,8 @@ impl Described for Button {
             && props.toggled.is_some() == self.toggled.is_some()
             && self.shows_count(count_content(props.count, props.dot).as_ref(), props.alert)
             && props.in_menu == self.is_menu_only()
+            && props.group == self.menu_group
+            && props.description == self.description
             && props.press.is_none() == (self.action.is_none() && self.on_click.is_none());
         if !same_face || matches!(props.press, Event::Action(_)) {
             return false;

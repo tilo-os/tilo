@@ -234,7 +234,8 @@ pub struct Segment {
     /// What the segment shows when its full label does not fit its share
     /// of the strip ("Mon" for "Monday").
     pub short: Option<String>,
-    /// A glyph shown instead of the label ([`Segment::icon`]).
+    /// A glyph shown before the label on a tab, and instead of it on any
+    /// other strip ([`Segment::icon`]).
     pub icon: Option<Icon>,
     /// The segment's keyboard shortcut, named after the label in its
     /// tooltip.
@@ -255,8 +256,8 @@ impl Segment {
         }
     }
 
-    /// A segment that shows `icon` (a list or grid view), named `name` for
-    /// assistive technology.
+    /// A segment that shows `icon` (a list or grid view), before its name on
+    /// a tab and instead of it on any other strip; `name` is its label.
     pub fn icon(icon: Icon, name: impl Into<String>) -> Self {
         Self {
             label: name.into(),
@@ -430,6 +431,12 @@ pub struct ToggleGroup {
     menu: crate::widget::ContextMenu,
     /// The host viewport from the latest paint, for the menu to stay in.
     viewport: Option<Rect>,
+    /// How the window is used: a strip a finger chooses from stands as tall as the finger's
+    /// target, as a button's face does.
+    interaction: crate::interaction::InteractionEnvironment,
+    /// It stands in a window bar: its segments keep the bar's control height whatever
+    /// the pointer, with a finger's target in the strip's hit rect.
+    in_window_bar: bool,
 }
 
 impl ToggleGroup {
@@ -498,6 +505,8 @@ impl ToggleGroup {
             last_thumb: None,
             folded: false,
             menu: Self::fold_menu(),
+            interaction: crate::interaction::InteractionEnvironment::default(),
+            in_window_bar: false,
             viewport: None,
         }
     }
@@ -938,7 +947,7 @@ impl ToggleGroup {
                 vec![false; self.segments.len()],
             )
         } else if self.chosen.is_some() && measured {
-            let (rects, rows) = flow(rect, &self.naturals, self.metrics.height, self.metrics.gap);
+            let (rects, rows) = flow(rect, &self.naturals, self.face_height(), self.metrics.gap);
             self.rows = rows;
             (rects, vec![false; self.segments.len()])
         } else if self.style == SegmentedStyle::Tabs && measured {
@@ -1031,10 +1040,37 @@ impl ToggleGroup {
     fn strip_height(&self) -> f64 {
         if self.chosen.is_some() {
             let rows = f64_of_usize(self.rows.max(1));
-            rows * self.metrics.height + (rows - 1.0) * self.metrics.gap
+            rows * self.face_height() + (rows - 1.0) * self.metrics.gap
         } else {
-            self.metrics.height
+            self.face_height()
         }
+    }
+
+    /// One segment's height: its size's, and a finger's target where the window is used by one,
+    /// as a button's face grows to its target — except in a window bar, which keeps its
+    /// control height and leaves the grown target to the hit rect.
+    fn face_height(&self) -> f64 {
+        if self.in_window_bar || self.interaction.supports_hover() {
+            self.metrics.height
+        } else {
+            self.metrics
+                .height
+                .max(f64::from(self.interaction.minimum_target()))
+        }
+    }
+
+    /// The target a press reaches for `rect`, a segment or the strip: as wide as it draws,
+    /// and at least as high as the pointer needs — a strip in a window bar keeps its control
+    /// height and reaches the finger's target beyond it, as a bar's button does.
+    fn target_rect(&self, rect: Rect) -> Rect {
+        let side = f64::from(self.interaction.minimum_target());
+        let h = rect.height().max(side);
+        Rect::new(
+            rect.x0,
+            rect.center().y - h / 2.0,
+            rect.x1,
+            rect.center().y + h / 2.0,
+        )
     }
 }
 
@@ -1076,6 +1112,8 @@ struct StripMetrics {
     gap: f64,
     /// The edge of a segment's icon: the label's line.
     icon: f64,
+    /// Between a segment's icon and its label.
+    icon_gap: f64,
     track_radius: f64,
     thumb_radius: f64,
     label: TextStyle,
@@ -1094,6 +1132,7 @@ impl StripMetrics {
             pad_x: f64::from(theme.tokens.spacing.s3),
             gap: f64::from(theme.tokens.spacing.s2),
             icon: f64::from(label.line_height_px()).round(),
+            icon_gap: f64::from(theme.tokens.spacing.s1),
             track_radius: f64::from(radii.control),
             thumb_radius: f64::from(radii.concentric(radii.control, inset)),
             label,
@@ -1135,13 +1174,15 @@ impl StripMetrics {
     }
 
     /// A tab's natural width: its label and the padding either side of it,
-    /// inside the lift that marks the chosen tab.
-    fn tab_natural(&self, label: &str, text: &mut TextRenderer) -> f64 {
+    /// inside the lift that marks the chosen tab, after its icon when it
+    /// has one.
+    fn tab_natural(&self, label: &str, icon: bool, text: &mut TextRenderer) -> f64 {
         let w = f64::from(
             text.measure_style(label, None, &self.label.clone().strong())
                 .0,
         );
-        (w + 2.0 * self.pad_x).ceil()
+        let lead = if icon { self.icon + self.icon_gap } else { 0.0 };
+        (lead + w + 2.0 * self.pad_x).ceil()
     }
 
     /// Each segment's `(full, short)` natural widths in `style`.
@@ -1154,12 +1195,13 @@ impl StripMetrics {
         segments
             .iter()
             .map(|segment| {
-                if style == SegmentedStyle::Tabs && segment.icon.is_none() {
-                    let full = self.tab_natural(&segment.label, text);
+                if style == SegmentedStyle::Tabs {
+                    let icon = segment.icon.is_some();
+                    let full = self.tab_natural(&segment.label, icon, text);
                     let short = segment
                         .short
                         .as_deref()
-                        .map_or(full, |short| self.tab_natural(short, text));
+                        .map_or(full, |short| self.tab_natural(short, icon, text));
                     return (full, short);
                 }
                 let icon = segment.icon.is_some();
@@ -1395,7 +1437,8 @@ impl<'a> SegmentedFace<'a> {
     }
 
     /// A strip of [`Segment`]s: a segment whose label does not fit its rect
-    /// shows its short form, an icon segment its icon.
+    /// shows its short form, a tab its icon before its label, and any other
+    /// strip's icon segment its icon alone.
     pub fn of_segments(segments: &'a [Rect], items: &'a [Segment], selected: usize) -> Self {
         let mut face = Self::new(segments, &[], selected);
         face.items = items
@@ -1733,17 +1776,35 @@ impl ToggleGroup {
                 text_renderer.draw_style(scene, &shown, ink, label_transform, None, &label_style);
                 continue;
             }
+            let tabs = face.style == SegmentedStyle::Tabs;
+            let pad = metrics.pad_x.min(seg.width() / 4.0);
+            // A tab with an icon sets its icon before its label; any other
+            // strip's icon segment is its glyph alone.
+            let mut lead = pad;
             if let Some(icon) = item.icon {
                 let edge = metrics.icon.min(seg.height());
+                let at = if tabs {
+                    Rect::new(
+                        seg.x0 + pad,
+                        seg.center().y - edge / 2.0,
+                        seg.x0 + pad + edge,
+                        seg.center().y + edge / 2.0,
+                    )
+                } else {
+                    Rect::from_center_size(seg.center(), (edge, edge))
+                };
                 crate::icons::draw_icon(
                     scene,
                     transform,
-                    Rect::from_center_size(seg.center(), (edge, edge)),
+                    at,
                     icon,
                     ink,
                     crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
-                continue;
+                if !tabs {
+                    continue;
+                }
+                lead = pad + metrics.icon + metrics.icon_gap;
             }
             if item.label.is_empty() {
                 continue;
@@ -1753,9 +1814,6 @@ impl ToggleGroup {
             } else {
                 &metrics.label
             };
-            let tabs = face.style == SegmentedStyle::Tabs;
-            let pad = metrics.pad_x.min(seg.width() / 4.0);
-            let lead = pad;
             let room = (seg.width() - lead - pad).max(1.0);
             let full_w = f64::from(text_renderer.measure_style(item.label, None, style).0);
             let label = match item.short {
@@ -2010,7 +2068,7 @@ impl ToggleGroup {
                 touch.location.x / scale_factor,
                 touch.location.y / scale_factor,
             );
-            if self.rect.contains(at) {
+            if self.target_rect(self.rect).contains(at) {
                 *handled = true;
                 if touch.phase == winit::event::TouchPhase::Ended {
                     self.pressed_into_focus |= !self.is_focused;
@@ -2020,7 +2078,14 @@ impl ToggleGroup {
             }
             return;
         }
-        let group = SegmentedTouchGroup::new(0, &self.segment_rects, self.selected);
+        // A press reaches each segment across the target its pointer needs, which may stand
+        // beyond the height the strip draws at.
+        let targets: Vec<Rect> = self
+            .segment_rects
+            .iter()
+            .map(|rect| self.target_rect(*rect))
+            .collect();
+        let group = SegmentedTouchGroup::new(0, &targets, self.selected);
         let group = if self.orientation == Orientation::Horizontal && self.chosen.is_none() {
             group
         } else {
@@ -2191,6 +2256,26 @@ impl Widget for ToggleGroup {
         }
     }
 
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        if self.interaction != environment {
+            self.interaction = environment;
+            // Speaking of a finger instead of a mouse changes the strip's height.
+            self.layout_dirty = true;
+            self.cache_dirty = true;
+        }
+    }
+
+    fn set_window_bar_control(&mut self, in_bar: bool) {
+        if self.in_window_bar != in_bar {
+            self.in_window_bar = in_bar;
+            self.layout_dirty = true;
+            self.cache_dirty = true;
+        }
+    }
+
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
         // An icon segment shows no label, so its label is its tooltip.
         let index = self
@@ -2215,8 +2300,7 @@ impl Widget for ToggleGroup {
         if self.orientation == Orientation::Vertical {
             // Square segments a pointer target high, one tight step apart.
             let side = self
-                .metrics
-                .height
+                .face_height()
                 .max(f64::from(theme.tokens.metrics.min_pointer_target));
             let gap = f64::from(theme.tokens.spacing.s1);
             self.stacked = (side, gap);
@@ -2291,9 +2375,9 @@ impl Widget for ToggleGroup {
                 _ => intrinsic,
             });
             let (_, rows) = flow(
-                Rect::new(0.0, 0.0, f64::from(width), self.metrics.height),
+                Rect::new(0.0, 0.0, f64::from(width), self.face_height()),
                 &self.naturals,
-                self.metrics.height,
+                self.face_height(),
                 self.metrics.gap,
             );
             self.rows = rows;
@@ -2558,7 +2642,7 @@ impl Widget for ToggleGroup {
     }
 
     fn claims_raw_touch(&self, point: Point) -> bool {
-        self.rect.contains(point)
+        self.target_rect(self.rect).contains(point)
     }
 
     fn get_rect(&self) -> Rect {
@@ -2633,9 +2717,10 @@ impl Widget for ToggleGroup {
                             .disabled(!self.is_enabled() || s.disabled),
                     )
                     .with_position(i.saturating_add(1), count);
-                // Where the segment is drawn, so pointing at it lands on it.
+                // Where the segment is drawn, so pointing at it lands on it: grown to the
+                // target the person's pointer needs.
                 match self.segment_rects.get(i) {
-                    Some(rect) => node.with_bounds(*rect),
+                    Some(rect) => node.with_bounds(self.target_rect(*rect)),
                     None => node,
                 }
             })

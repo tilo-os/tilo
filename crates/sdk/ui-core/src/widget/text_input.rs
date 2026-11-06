@@ -390,6 +390,9 @@ pub struct TextInput {
     /// frame is due. Cleared by [`Widget::mark_drawn`]: a field that has not
     /// changed shows what the screen already holds.
     repaint: bool,
+    /// The field was made for the person to type in right away (an entry a command just
+    /// opened): it asks for the keyboard once ([`Self::wants_focus`]).
+    focus_wanted: bool,
     /// App-local notification hook. The comparison value prevents cursor,
     /// selection, and IME-preedit events from repeating the last edit.
     on_change: Option<TextChangeCallback>,
@@ -558,6 +561,9 @@ pub struct TextInput {
     /// `Shift+Enter` for a real newline (chat-composer pattern).
     enter_submits: bool,
     submit_requested: bool,
+    /// A list's inline add: what is typed makes an item when Enter or leaving the field commits
+    /// it, and the field clears; nothing typed leaves nothing (Escape, or leaving it empty).
+    entry: bool,
     /// Trailing show/hide control of a single-line secret field; it owns
     /// the reveal state. The plaintext still never reaches the a11y tree or
     /// `text_review`.
@@ -853,6 +859,7 @@ impl TextInput {
             compact_multiline: false,
             dirty: false,
             repaint: true,
+            focus_wanted: false,
             on_change: None,
             action: None,
             last_notified_text: String::new(),
@@ -913,6 +920,7 @@ impl TextInput {
             reduce_motion: false,
             enter_submits: false,
             submit_requested: false,
+            entry: false,
             reveal: RevealToggle::new(),
             reveal_node: None,
             lines: Vec::new(),
@@ -1819,26 +1827,6 @@ impl TextInput {
     /// the host too, or it keeps painting the selection it used to show.
     pub fn selection_anchor_focus_or_caret(&self) -> (usize, usize) {
         (self.core.anchor(), self.core.caret())
-    }
-
-    /// Capture only private editor state for an authenticated ephemeral handoff.
-    /// The caller must never publish this value as an action argument.
-    pub fn private_draft_editor(&self) -> crate::private_draft::Editor {
-        crate::private_draft::Editor {
-            text: self.text.clone(),
-            anchor: self.core.anchor(),
-            caret: self.core.caret(),
-            preedit: self.core.preedit().to_owned(),
-            preedit_cursor: self.core.preedit_cursor(),
-        }
-    }
-
-    /// Restore display-only composition after moving a private retained editor.
-    /// This does not insert text or write a document/history entry.
-    pub fn restore_private_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
-        self.repaint = true;
-        self.core.set_preedit(text, cursor);
-        self.layout_dirty = true;
     }
 
     /// `len()` is `text.len() + 1`; empty until the first draw lands.
@@ -3817,6 +3805,16 @@ impl TextInput {
         self
     }
 
+    /// The entry at the end of a list: Enter or leaving the field with text commits what was
+    /// typed (its submit) and clears it; Escape, or leaving it with nothing typed, leaves
+    /// nothing. The field is its own draft: nothing it holds exists until it is committed.
+    #[must_use]
+    pub fn with_entry(mut self, on: bool) -> Self {
+        self.entry = on;
+        self.enter_submits = self.enter_submits || on;
+        self
+    }
+
     /// `true` once per submitting `Enter`; clears on read.
     pub fn take_submit(&mut self) -> bool {
         std::mem::take(&mut self.submit_requested)
@@ -3846,6 +3844,15 @@ impl TextInput {
     #[must_use]
     pub fn with_placeholder(mut self, hint: impl Into<crate::i18n::LabelKey>) -> Self {
         self.placeholder = hint.into().into();
+        self
+    }
+
+    /// Ask for the keyboard as soon as this field is in the tree: the entry a command just
+    /// opened is where the person types next, and they should not have to point at it. Asked
+    /// once, when the window next lays out.
+    #[must_use]
+    pub fn wants_focus(mut self) -> Self {
+        self.focus_wanted = true;
         self
     }
 
@@ -4391,18 +4398,26 @@ impl TextInput {
     /// A submitting Enter: tell whoever listens.
     fn fire_submit(&mut self) {
         self.submit_requested = true;
+        // A list's entry commits what it holds and lets go of it: what is typed next is a new
+        // item, and an entry left empty is no item at all.
+        let text = if self.entry {
+            self.text.trim().to_owned()
+        } else {
+            self.text.clone()
+        };
         if let Some(action) = &mut self.submit_action {
-            let _ = action.emit(self.text.clone());
+            let _ = action.emit(text.clone());
         }
         let control = self.test_id().unwrap_or("text_input").to_owned();
         if let Some((action, _)) = &mut self.submit_view {
             if let Err(error) = action.emit(()) {
                 tracing::warn!(%error, %control, "a field refused its submit");
             }
-            return;
+        } else if let Some(callback) = self.on_submit.as_mut() {
+            callback(&text);
         }
-        if let Some(callback) = self.on_submit.as_mut() {
-            callback(&self.text);
+        if self.entry {
+            self.set_text("");
         }
     }
 
@@ -5932,6 +5947,13 @@ impl Widget for TextInput {
         Some(self)
     }
 
+    /// A field made for the person to type in right away takes the keyboard in the tree it
+    /// stands in, once. It names itself as the runner finds it ([`Self::test_id`]).
+    fn take_focus_request(&mut self) -> Option<String> {
+        std::mem::take(&mut self.focus_wanted)
+            .then(|| self.test_id().unwrap_or_default().to_owned())
+    }
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::presence::capability::PublishesPresence,
@@ -6665,6 +6687,7 @@ impl Widget for TextInput {
         self.invalid = invalid;
     }
     fn set_focus(&mut self, focused: bool) {
+        let left = !focused && self.is_focused;
         if focused != self.is_focused {
             self.hand_scrolled = false;
         }
@@ -6676,6 +6699,11 @@ impl Widget for TextInput {
             self.pending_paste = None;
             self.core.clear_preedit();
             self.completion.close();
+            // A list's entry commits what it holds when the person leaves it: what they typed
+            // is an item, and an entry left empty leaves none.
+            if left && self.entry && !self.text.trim().is_empty() {
+                self.fire_submit();
+            }
         }
     }
     fn is_focused(&self) -> bool {

@@ -73,16 +73,6 @@ RUN --mount=type=bind,source=tools/ci/shstk-mark.py,target=/tmp/shstk-mark.py,ro
       && rm -f /tmp/probe /tmp/probe.rs; \
     fi
 
-# The X11 bridge the shell's X11 clipboard tests drive: xwayland-satellite
-# built from pinned source with Tilo's patch
-# (os/external-assets/xwayland-satellite/README.md).
-RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
-    --mount=type=bind,source=tools/ci/install-xwayland-satellite.sh,target=/tmp/install-xwayland-satellite.sh,ro \
-    --mount=type=bind,source=os/external-assets/xwayland-satellite,target=/tmp/xwayland-satellite,ro \
-    --mount=type=bind,source=os/external-assets/github-assets.tsv,target=/tmp/tilo-assets.tsv,ro \
-    --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    bash /tmp/install-xwayland-satellite.sh /tilo-assets /usr /tmp/tilo-assets.tsv /tmp/xwayland-satellite
-
 # CI-only workflow tooling. nodejs: actions/checkout. ripgrep, time, yt-dlp:
 # workflow and measurement tools (tools/ci/measure.sh needs GNU time). Qt
 # examples and LibreOffice are installed by the path-gated legacy-app E2E.
@@ -221,6 +211,19 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
       && chmod 0755 /usr/local/bin/jsign \
       && jsign --help >/dev/null; \
     fi
+
+# cargo 1.97.1 with rust-lang/cargo#17412 (https://github.com/rust-lang/cargo/pull/17412):
+# 1.97.1 builds and holds every unit's SBOM even when build.sbom is unset, about
+# 1.2 GB of the test family's 1.6 GB cargo driver while t's wrapper queues its
+# compiles. Only bin/cargo changes; rustc and the rest stay the toolchain's
+# (os/external-assets/cargo/README.md). Delete when rust-toolchain.toml moves to
+# >= 1.100.
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    --mount=type=bind,source=tools/ci/install-cargo.sh,target=/tmp/install-cargo.sh,ro \
+    --mount=type=bind,source=os/external-assets/cargo,target=/tmp/cargo-patches,ro \
+    --mount=type=bind,source=os/external-assets/github-assets.tsv,target=/tmp/tilo-assets.tsv,ro \
+    --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    bash /tmp/install-cargo.sh /tilo-assets /tmp/tilo-assets.tsv /tmp/cargo-patches
 
 # Match the workspace's own check so a stale image fails loudly rather than
 # compiling against the wrong libraries.

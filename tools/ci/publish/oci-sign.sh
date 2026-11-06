@@ -17,7 +17,8 @@
 #
 # With TILO_PUBLISH_DRY_RUN set, a throwaway key made here signs instead of the one in KMS, with
 # no identity token and no transparency log, and its public half is kept as OUT/dry-run.pub for
-# oci-publish.sh's dry run to verify against. T_REF says what the run pretends to sign for.
+# oci-publish.sh's dry run to verify against. T_REF says what the run pretends to sign for. A
+# signature with the key in KMS leaves OUT/dry-run.pub empty.
 #
 # usage: oci-sign.sh REPOSITORY OUT
 set -euo pipefail
@@ -60,6 +61,10 @@ if [[ -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
   printf 'signed %s@%s with a throwaway key (dry run)\n' "$repository" "$expected"
   exit 0
 fi
+# Signed with the key in KMS: an empty OUT/dry-run.pub marks "no dry-run key". The signing
+# checks declare it among their outputs for the dry run, and t fails a check whose declared
+# output matches no file; oci-publish.sh uses it only when it is non-empty.
+: > "$out/dry-run.pub"
 . "$repo_root/os/dev/configure-cosign-kms.sh"
 if [[ ${TILO_SIGN_TLOG:-} == 1 ]]; then
   cosign sign-blob --yes --key "$COSIGN_KEY_REF" --bundle "$out/bundle.json" \

@@ -20,11 +20,16 @@ WebCrypto-wrapped IndexedDB on the web). Windows accounts retain their DPAPI
 custody. Existing accounts vault paths, key names and encrypted entries are
 preserved. An unavailable or damaged existing key never authorizes replacement.
 
-New default accounts vaults refuse unavailable protected storage rather than
-silently creating a local key. Existing owner-only local keys remain readable and
-migrate through the shared vault layer when protected custody becomes available.
-`SecretVault::open_in` explicitly selects recovery/test custody (local keys on
-Unix, DPAPI on Windows); callers must surface that weaker Unix custody honestly.
+The person's accounts vault and the handoff credentials beside it have one
+custody on every host Tilo runs on: the platform's secret store (the Secret
+Service on Linux, the Keychain on macOS) where it answers, otherwise an
+owner-only `vault.key` beside the ciphertext, and
+`SecretVault::custody()` reports which so the UI never calls a key file a
+keyring. An owner-only key left by that fallback migrates into the secret store,
+after a verified round trip, once it answers. `SecretVault::open_in` opens a
+store of someone else's root (a capture, an imported copy, a test's) under its
+own private key, so it never reads or replays the person's.
+
 The Passwords app has no network access and does not sync secrets through CRDT state.
 
 ## Native, browser and hosted callers

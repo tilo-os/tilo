@@ -453,6 +453,8 @@ mod tests {
                     label: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             }],
             active_tab: tab,
             width: WindowWidth::Normal,

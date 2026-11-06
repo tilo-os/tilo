@@ -21,23 +21,35 @@ use crate::Session;
 /// A display's rectangle, in logical pixels: the display a sheet covers.
 pub(crate) type Place = (i32, i32, u32, u32);
 
+/// What a sheet is to the session besides a card that is up or down: a sheet
+/// is one of these, never two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    /// Up while its presentation says so, and serving then.
+    Presented,
+    /// A command surface: it answers its actions and draws while it is down
+    /// too, so its key works with nothing of it shown.
+    ServingWhileDown,
+    /// The sheet asks the person something about what they are typing into
+    /// and leaves the keyboard where it was: it takes Enter and Escape, and
+    /// every other key reaches the field under it.
+    AskingAboutTyping,
+    /// The lock view: drawn and serving over the session's lock, as the lock
+    /// screen's own process would.
+    OverLock,
+}
+
 /// One sheet's app on its layer.
 pub(crate) struct Sheet<S: Seat> {
     host: AppHost,
     seat: S,
     /// The displays as the compositor last said they are.
-    outputs: Vec<(i32, i32, i32, i32)>,
-    /// The app answers its actions and draws while the sheet is down too: a
-    /// command surface, whose key takes a screenshot without the bar up.
-    always_serving: bool,
-    /// The sheet asks the person something about what they are typing into
-    /// and leaves the keyboard where it was: it takes Enter and Escape, and
-    /// every other key reaches the field under it.
-    typing_through: bool,
-    /// The sheet stands over the session's lock: it is drawn and takes the
-    /// keyboard and the pointer while the session is locked, as the lock
-    /// screen's own process would. Only the session's lock view is.
-    over_lock: bool,
+    outputs: Vec<tilo_compositor::HostedOutput>,
+    role: Role,
+    /// The card this sheet presents was closed by the shell and is still
+    /// being drawn on its way out: the host watches it go rather than say it
+    /// is gone at once.
+    modal_left: bool,
 }
 
 impl<S: Seat> Sheet<S> {
@@ -64,16 +76,15 @@ impl<S: Seat> Sheet<S> {
             host: AppHost::new(app, placement).named(definition.title()),
             seat,
             outputs: Vec::new(),
-            always_serving: false,
-            typing_through: false,
-            over_lock: false,
+            role: Role::Presented,
+            modal_left: false,
         })
     }
 
     /// The app keeps running while the sheet is down, and its actions stay
     /// offered: what it takes is the whole point of the key that asks it.
     pub(crate) const fn always_serving(mut self) -> Self {
-        self.always_serving = true;
+        self.role = Role::ServingWhileDown;
         self
     }
 
@@ -82,7 +93,7 @@ impl<S: Seat> Sheet<S> {
     /// other key. A prompt that asks whether to listen has to leave the
     /// person's typing where it was.
     pub(crate) const fn typing_through(mut self) -> Self {
-        self.typing_through = true;
+        self.role = Role::AskingAboutTyping;
         self
     }
 
@@ -90,7 +101,7 @@ impl<S: Seat> Sheet<S> {
     /// locked it is the one thing drawn and the one that takes the
     /// keyboard and the pointer. The lock view is.
     pub(crate) const fn standing_over_lock(mut self) -> Self {
-        self.over_lock = true;
+        self.role = Role::OverLock;
         self
     }
 
@@ -131,14 +142,15 @@ impl<S: Seat> Sheet<S> {
             let displays = self
                 .outputs
                 .iter()
+                .map(|output| output.rect)
                 .filter(|(_, _, w, h)| *w > 0 && *h > 0)
                 .map(|(dx, dy, dw, dh)| {
                     let (dx, dy) = (dx.saturating_sub(x), dy.saturating_sub(y));
                     Rect::new(
                         f64::from(dx),
                         f64::from(dy),
-                        f64::from(dx.saturating_add(*dw)),
-                        f64::from(dy.saturating_add(*dh)),
+                        f64::from(dx.saturating_add(dw)),
+                        f64::from(dy.saturating_add(dh)),
                     )
                 })
                 .collect();
@@ -155,13 +167,13 @@ impl<S: Seat> Sheet<S> {
 /// `every` display at once covers the rectangle all of them make.
 fn covering(
     named: Option<Place>,
-    outputs: &[(i32, i32, i32, i32)],
+    outputs: &[tilo_compositor::HostedOutput],
     every: bool,
 ) -> Option<(i32, i32, i32, i32)> {
     let shown = || {
         outputs
             .iter()
-            .copied()
+            .map(|output| output.rect)
             .filter(|(_, _, w, h)| *w > 0 && *h > 0)
     };
     if every {
@@ -186,7 +198,7 @@ fn covering(
         Some((x, y, w, h))
     });
     named
-        .filter(|place| outputs.contains(place))
+        .filter(|place| outputs.iter().any(|output| output.rect == *place))
         .or_else(|| shown().min_by_key(|(x, y, _, _)| (*x, *y)))
 }
 
@@ -203,8 +215,9 @@ impl<S: Seat> Published for Sheet<S> {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
-        self.host.invoke(address, arguments)
+        self.host.invoke(address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
@@ -217,7 +230,7 @@ impl<S: Seat> Published for Sheet<S> {
     }
 
     fn offered(&self) -> bool {
-        self.always_serving || self.open()
+        self.role == Role::ServingWhileDown || self.open()
     }
 
     fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
@@ -245,7 +258,7 @@ impl<S: Seat> Published for Sheet<S> {
     /// locked, so its actions (and what assistive technology reads of it)
     /// are offered then, as the lock screen's own process offers none.
     fn serves_while_locked(&self) -> bool {
-        self.over_lock && self.drawn()
+        self.role == Role::OverLock && self.drawn()
     }
 }
 
@@ -266,8 +279,9 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
         // A sheet is modal: a press beside its card is still the sheet's,
-        // which takes it as one outside.
-        self.open() && {
+        // which takes it as one outside. One on its way out absorbs presses
+        // too: a press made while it leaves is not the window's behind it.
+        self.drawn() && {
             let placement = self.host.placement();
             let (ox, oy) = placement.origin;
             let (w, h) = placement.size;
@@ -295,12 +309,16 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
     }
 
     fn wants_keyboard(&self) -> bool {
-        self.open() && !self.typing_through
+        // A sheet takes the keys while it is drawn, whatever window has the
+        // focus behind it: a presented modal claims input by construction.
+        // One that asks about typing leaves all but its own two keys to the
+        // field under it ([`Self::typing_through`]).
+        self.drawn() && self.role != Role::AskingAboutTyping
     }
 
     /// The lock view shows over the session's lock while it is up.
     fn above_lock(&self) -> bool {
-        self.over_lock && self.drawn()
+        self.role == Role::OverLock && self.drawn()
     }
 
     /// What shows the lock is this view while the lock screen's app cannot.
@@ -311,7 +329,7 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
     fn claim_key(&mut self, key: &HostKey, _locked: bool, _inhibited: bool) -> KeyClaim {
         // The card's own two keys: the primary answer on Enter, the way out
         // on Escape. Ordinary typing is the field's.
-        let answers = self.typing_through
+        let answers = self.role == Role::AskingAboutTyping
             && self.open()
             && matches!(
                 key.unmodified_keysym,
@@ -330,14 +348,36 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
 
     fn prepare_frame(&mut self) -> bool {
         self.follow_place();
+        // A sheet the shell closed (a chosen action, its own way out) may
+        // still have its card on screen. The host closes it as the sheet's
+        // own way out would, and its leaving draws until nothing is left;
+        // only then does the presentation say nothing of it is drawn, so it
+        // never stands drawn taking no input. A sheet that draws its own
+        // leave (the power menu) presents no modal and keeps its way out.
+        let presentation = self.seat.presentation();
+        if presentation.phase() == tilo_sheets::Phase::Leaving {
+            if !self.modal_left {
+                self.modal_left = self.host.app_mut().dismiss_presented_modal();
+            }
+            if self.modal_left && !self.host.app_mut().presents_modal() {
+                self.modal_left = false;
+                presentation.gone();
+            }
+        } else if presentation.is_open() {
+            self.modal_left = false;
+        }
         // A command surface answers the actions it is offered even with
         // nothing of it drawn.
-        (self.drawn() || self.always_serving) && self.host.prepare_frame()
+        (self.drawn() || self.role == Role::ServingWhileDown) && self.host.prepare_frame()
     }
 
     /// A sheet nobody can see asks for no frames.
     fn next_deadline(&self) -> Option<std::time::Instant> {
         self.drawn().then(|| self.host.next_deadline()).flatten()
+    }
+
+    fn set_frame_interval(&mut self, interval: std::time::Duration) {
+        self.host.set_frame_interval(interval);
     }
 
     fn cursor(&self) -> tilo_compositor::CursorIcon {
@@ -352,7 +392,7 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
         self.host.set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
         self.outputs = outputs.to_vec();
         self.follow_place();
     }
@@ -433,14 +473,22 @@ mod tests {
     use super::{Place, covering};
 
     const RIGHT: Place = (1000, 0, 1000, 700);
-    const LEFT_SHOWN: (i32, i32, i32, i32) = (0, 0, 1000, 700);
-    const RIGHT_SHOWN: (i32, i32, i32, i32) = (1000, 0, 1000, 700);
+    const LEFT_SHOWN: tilo_compositor::HostedOutput = tilo_compositor::HostedOutput {
+        rect: (0, 0, 1000, 700),
+        scale: 1.0,
+    };
+    const RIGHT_SHOWN: tilo_compositor::HostedOutput = tilo_compositor::HostedOutput {
+        rect: (1000, 0, 1000, 700),
+        scale: 1.0,
+    };
+    const LEFT: (i32, i32, i32, i32) = (0, 0, 1000, 700);
+    const RIGHT_RECT: (i32, i32, i32, i32) = (1000, 0, 1000, 700);
 
     #[test]
     fn a_sheet_covers_the_display_it_was_given() {
         assert_eq!(
             covering(Some(RIGHT), &[LEFT_SHOWN, RIGHT_SHOWN], false),
-            Some(RIGHT_SHOWN)
+            Some(RIGHT_RECT)
         );
     }
 
@@ -452,7 +500,7 @@ mod tests {
         let unplugged: Place = (2000, 0, 1000, 700);
         assert_eq!(
             covering(Some(unplugged), &[RIGHT_SHOWN, LEFT_SHOWN], false),
-            Some(LEFT_SHOWN)
+            Some(LEFT)
         );
     }
 
@@ -460,7 +508,7 @@ mod tests {
     fn a_sheet_covers_the_first_display_in_reading_order_when_none_was_given() {
         assert_eq!(
             covering(None, &[RIGHT_SHOWN, LEFT_SHOWN], false),
-            Some(LEFT_SHOWN)
+            Some(LEFT)
         );
         assert_eq!(covering(None, &[], false), None);
     }
@@ -472,9 +520,16 @@ mod tests {
             Some((0, 0, 2000, 700))
         );
         // One display above the other, and one that shows nothing at all.
-        let above = (0, -800, 1000, 800);
+        let above = tilo_compositor::HostedOutput {
+            rect: (0, -800, 1000, 800),
+            scale: 2.0,
+        };
+        let blank = tilo_compositor::HostedOutput {
+            rect: (0, 0, 0, 0),
+            scale: 1.0,
+        };
         assert_eq!(
-            covering(None, &[LEFT_SHOWN, above, (0, 0, 0, 0)], true),
+            covering(None, &[LEFT_SHOWN, above, blank], true),
             Some((0, -800, 1000, 1500))
         );
         assert_eq!(covering(None, &[], true), None);

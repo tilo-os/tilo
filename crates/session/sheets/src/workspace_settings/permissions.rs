@@ -15,7 +15,7 @@ use ui::widget::{
 };
 
 use super::agents::{Intro, column, intro};
-use super::general::{button, buttons, caption};
+use super::general::{buttons, caption};
 use super::{Confirm, Parts, Settings, WorkspaceSettingsEffect};
 
 /// One thing a list offers to choose, by what it is asked for by.
@@ -71,8 +71,6 @@ pub struct Holders {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Permissions {
     pub intro: Intro,
-    /// The saved roles' button, which opens their actions.
-    pub saved_roles: String,
     /// Whether the person may give and revoke permissions.
     pub manage: bool,
     pub composer: Composer,
@@ -123,15 +121,6 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
     let permissions = &settings.permissions;
     let mut groups: Vec<Element> = vec![
         intro(&permissions.intro, Icon::Shield),
-        buttons(vec![
-            button(
-                parts,
-                "ws-permissions-roles",
-                &permissions.saved_roles,
-                || WorkspaceSettingsEffect::SavedRoles,
-            )
-            .with_enabled(permissions.manage),
-        ]),
         composer(permissions, parts),
     ];
     if permissions.sections.is_empty() {
@@ -344,7 +333,6 @@ pub(super) fn sample() -> Permissions {
             help: "What people, agents and apps may do here beyond their roles.".to_owned(),
             authority: "2 active".to_owned(),
         },
-        saved_roles: "Saved roles (1)".to_owned(),
         manage: true,
         composer: Composer {
             header: "Give a permission".to_owned(),

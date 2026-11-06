@@ -78,18 +78,50 @@ fn say(message: &str) {
 
 struct BootScreen;
 
+/// Show `message` on the boot screen, where plymouth is up.
+fn screen(message: &str) {
+    let _ = std::process::Command::new("plymouth")
+        .args(["display-message", &format!("--text={message}")])
+        .status();
+}
+
+/// How the boot screen names the device that answered.
+fn device_name(sibling: &Sibling) -> &str {
+    if sibling.label.is_empty() {
+        "your other device"
+    } else {
+        &sibling.label
+    }
+}
+
+/// What the boot screen shows once the person's device answered: its answer,
+/// word for word, so a boot that hears it is not left thinking no device
+/// answered.
+fn decided_message(name: &str, allowed: bool) -> String {
+    if allowed {
+        format!("{name} released the key for this disk")
+    } else {
+        format!(
+            "{}; enter the passphrase to unlock",
+            unlock::Refusal::Denied
+        )
+    }
+}
+
 impl Progress for BootScreen {
     fn pending(&self, sibling: &Sibling, approval_code: &str) {
-        let name = if sibling.label.is_empty() {
-            "your other device"
-        } else {
-            &sibling.label
-        };
-        let message = format!("Approve unlocking on {name}: code {approval_code}");
+        let message = format!(
+            "Approve unlocking on {}: code {approval_code}",
+            device_name(sibling)
+        );
         say(&message);
-        let _ = std::process::Command::new("plymouth")
-            .args(["display-message", &format!("--text={message}")])
-            .status();
+        screen(&message);
+    }
+
+    fn decided(&self, sibling: &Sibling, allowed: bool) {
+        let message = decided_message(device_name(sibling), allowed);
+        say(&message);
+        screen(&message);
     }
 }
 
@@ -194,5 +226,27 @@ fn main() -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_denial_is_shown_as_the_person_denying_it() {
+        let denied = decided_message("The phone", false);
+        assert_eq!(
+            denied,
+            "the owner denied the unlock; enter the passphrase to unlock"
+        );
+        assert!(
+            !denied.contains("no device answered"),
+            "a boot that heard the answer is not left thinking nobody answered"
+        );
+        assert_eq!(
+            decided_message("The phone", true),
+            "The phone released the key for this disk"
+        );
     }
 }

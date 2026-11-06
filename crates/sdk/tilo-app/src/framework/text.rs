@@ -233,7 +233,7 @@ impl<W: EditsText, R: Resource> TextControl<W, R> {
         match applied {
             Ok(()) => self.stored = edited,
             Err(error) => {
-                tracing::debug!(%error, "text edit refused");
+                tracing::warn!(%error, "text edit refused");
                 let stored = self.stored.clone();
                 self.control.reset_text(&stored);
             }

@@ -2533,10 +2533,11 @@ async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
             .next_request(&sent, "the plan again for the news")
             .await,
     );
+    // The peers here reach no live plane, so no member's view of itself
+    // arrives and the arrival is named by the post the app shows: what the
+    // news says of Ben is his post alone.
     assert!(
-        told.contains(
-            "new messages arrived (chat).\n- chat, changed by Ben: Standing by for LR-2042\n"
-        ),
+        told.contains("new messages arrived (chat).\n- chat: Ben: Standing by for LR-2042\n"),
         "the news is Ben's post alone, by name: {told}"
     );
     assert!(told.contains("1. wait for a message"), "{told}");

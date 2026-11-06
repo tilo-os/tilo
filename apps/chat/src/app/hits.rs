@@ -15,7 +15,6 @@ use super::{ChatApp, MenuAction};
 pub(crate) enum Hit {
     HostModel(String),
     Channel(Id),
-    DirectPerson(String),
     AgentWindow,
     AgentDragHandle,
     /// Make a channel in a category.
@@ -148,7 +147,6 @@ impl Hit {
     pub(crate) fn semantic_id(&self) -> String {
         match self {
             Self::Channel(id) => format!("chat.channel:{id}"),
-            Self::DirectPerson(key) => format!("chat.person:{key}"),
             Self::AgentWindow => "chat.agent-window".into(),
             Self::AgentDragHandle => "chat.agent-drag".into(),
             Self::AddChannel { category } => format!("chat.add-channel:{category}"),

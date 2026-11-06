@@ -36,12 +36,12 @@ impl ChatApp {
         self.composer_top = None;
         // With no channel open a draft would have nowhere to go, so there is
         // no composer to type into.
-        if self.direct_person.is_none() && self.channel(&self.active_channel).is_none() {
+        if self.direct_person().is_none() && self.channel(&self.active_channel).is_none() {
             self.composer_main.set_focus(false);
             return;
         }
         self.composer_top = Some(rect.y0);
-        if !self.can_participate() && self.direct_person.is_none() {
+        if !self.can_participate() && self.direct_person().is_none() {
             self.composer_main.set_focus(false);
             Self::draw_read_only_composer(scene, tf, tr, theme, rect);
             return;
@@ -60,7 +60,7 @@ impl ChatApp {
             PaintCtx::new(scene, tf, tr, theme),
             rect,
             &draft,
-            (send_enabled, self.direct_person.is_none(), interactive),
+            (send_enabled, self.direct_person().is_none(), interactive),
             Hit::FocusMain,
             hits,
         );
@@ -104,7 +104,7 @@ impl ChatApp {
                 None,
                 &style,
             );
-        } else if self.direct_person.is_none() {
+        } else if self.direct_person().is_none() {
             Self::draw_draft_presence(&self.composer_main, &key, scene, tf, tr, theme, presence);
         }
     }

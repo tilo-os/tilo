@@ -19,12 +19,10 @@ pub mod colorimetry;
 pub mod hdr_metadata;
 /// Work one device offers another: the question, and what each answers.
 pub mod offer;
-pub mod presence_slot;
 pub mod record_sync;
 pub mod retention;
 pub mod unit_chain;
 
-pub use presence_slot::PresenceSlot;
 pub use record_sync::{RecordSync, on_demand_record, record_part, record_sync};
 pub use retention::{Retention, app_document_channel, audience, retention, standalone};
 
@@ -41,7 +39,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 30;
+pub const PEER_PROTOCOL_VERSION: u32 = 31;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -125,6 +123,214 @@ pub type PresenceKey = String;
 /// receiver then derives one from the sender's handle. A name the receiver
 /// does not know is treated as unsaid.
 pub type PresenceColour = Option<String>;
+
+/// Why a device refused one of another device's writes: the classes the
+/// person is shown, as the store and the workspace decide them.
+///
+/// Closed, so a refusing device of a later build never makes an older one
+/// show a class it does not know as something it is not: the reason travels
+/// as this enum and the device's own words travel beside it
+/// ([`WriteRefusal::detail`]), shown only where they are the person's own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum RefusalReason {
+    /// The person revoked the writing device, so nothing it writes is kept.
+    Revoked,
+    /// The writing device's certificate has run out.
+    Expired,
+    /// The receiving device holds no certificate for the writer: it was
+    /// never enrolled, or the enrolment did not reach this device.
+    NotCertified,
+    /// The writer may not change this: the workspace's governance and the
+    /// writer's role withhold it.
+    Forbidden,
+    /// The write is not the shape the store admits.
+    Malformed,
+    /// A write it depends on has not arrived; the same write is admitted
+    /// once it has.
+    MissingDependency,
+    /// Another write already holds its place.
+    Conflict,
+    /// The receiving device is over what it keeps of the writer's.
+    Full,
+    /// The receiving device said something else it has no class for.
+    Other,
+}
+
+impl RefusalReason {
+    /// Whether a write refused for this reason is refused for good: no later
+    /// attempt of the same write is admitted, so its author is told once
+    /// rather than left waiting.
+    #[must_use]
+    pub const fn permanent(self) -> bool {
+        match self {
+            Self::Revoked
+            | Self::Expired
+            | Self::NotCertified
+            | Self::Forbidden
+            | Self::Malformed => true,
+            Self::MissingDependency | Self::Conflict | Self::Full | Self::Other => false,
+        }
+    }
+
+    /// How a person reads this reason, as the write's author is told it.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Revoked => "the person revoked the device",
+            Self::Expired => "the device's certificate expired",
+            Self::NotCertified => "the device is not a member here",
+            Self::Forbidden => "no permission",
+            Self::Malformed => "the write is malformed",
+            Self::MissingDependency => "it waits for earlier writes",
+            Self::Conflict => "another write holds its place",
+            Self::Full => "the device is full",
+            Self::Other => "refused",
+        }
+    }
+
+    /// The class of a receiver's own words about why it refused a write:
+    /// what the write's author is shown, the words themselves staying in
+    /// [`WriteRefusal::detail`].
+    #[must_use]
+    pub fn of(reason: &str) -> Self {
+        let reason = reason.to_ascii_lowercase();
+        if reason.contains("revoked") {
+            Self::Revoked
+        } else if reason.contains("expired")
+            || reason.contains("not current")
+            || reason.contains("date")
+        {
+            Self::Expired
+        } else if reason.contains("certificate")
+            || reason.contains("not certified")
+            || reason.contains("roster")
+        {
+            Self::NotCertified
+        } else if reason.contains("earlier writes")
+            || reason.contains("before the document")
+            || reason.contains("not here")
+            || reason.contains("missing")
+            || reason.contains("held")
+        {
+            Self::MissingDependency
+        } else if reason.contains("already")
+            || reason.contains("conflict")
+            || reason.contains("immutable")
+            || reason.contains("rewinds")
+        {
+            Self::Conflict
+        } else if reason.contains("exhausted")
+            || reason.contains("limit")
+            || reason.contains("quota")
+            || reason.contains("capacity")
+            || reason.contains("too many")
+            || reason.contains("too much")
+        {
+            Self::Full
+        } else if reason.contains("admits")
+            || reason.contains("permission")
+            || reason.contains("forbidden")
+            || reason.contains("mismatch")
+            || reason.contains("signs its own")
+            || reason.contains("not a member")
+            || reason.contains("no membership")
+            || reason.contains("may not")
+            || reason.contains("cannot")
+            || reason.contains("layout")
+            || reason.contains("publishes no")
+            || reason.contains("not granted")
+        {
+            Self::Forbidden
+        } else {
+            Self::Malformed
+        }
+    }
+}
+
+/// One device's verdict on one write of another's: a signed fact the
+/// refusing device keeps in its own synced state (beside the revocations of a
+/// personal store, in its own slice of a workspace document), so it reaches
+/// the write's author live and on catch-up, survives restarts, and can be
+/// shown with the history.
+///
+/// Signed by the refusing device's own key over
+/// [`Self::signed_bytes`]; a receiver keeps it only when that signature
+/// verifies against a certificate it already holds. Never a global verdict:
+/// a refusal is one device's, and another may hold the write.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WriteRefusal {
+    /// The store or workspace key the refused write was routed in.
+    pub workspace: String,
+    /// The app of the refused write's record, empty for a workspace change.
+    pub app: String,
+    /// The record, empty for a workspace change.
+    pub record: String,
+    /// The device that wrote the refused write.
+    pub author: [u8; 32],
+    /// The sequence number the refused write carried, `0` where it has none.
+    pub seq: u64,
+    /// The refused write's operation id, as the receiving device decided it.
+    pub operation: String,
+    /// The automerge changes the refused write carried, as their hashes: what
+    /// the author's history joins it to. Empty when the write carried none.
+    pub changes: Vec<[u8; 32]>,
+    pub reason: RefusalReason,
+    /// What the refusing device said in its own words, for the person's own
+    /// devices; never shown for another person's.
+    pub detail: String,
+    /// The refusing device's key, whose signature this fact carries.
+    pub by: [u8; 32],
+    /// When it refused, in nanoseconds since the Unix epoch.
+    pub at_ns: u64,
+    /// The refusing device's signature over [`Self::signed_bytes`].
+    pub signature: Vec<u8>,
+}
+
+impl WriteRefusal {
+    /// The bytes `by`'s signature covers: the fact without its signature.
+    ///
+    /// # Errors
+    /// The fact does not encode.
+    pub fn signed_bytes(&self) -> Result<Vec<u8>, String> {
+        let mut unsigned = self.clone();
+        unsigned.signature = Vec::new();
+        postcard::to_allocvec(&unsigned).map_err(|error| error.to_string())
+    }
+
+    /// Sign this fact with the refusing device's key, as the device that made
+    /// the verdict does.
+    ///
+    /// # Errors
+    /// The fact does not encode.
+    pub fn sign(&mut self, key: &ed25519_dalek::SigningKey) -> Result<(), String> {
+        use ed25519_dalek::Signer as _;
+        self.by = key.verifying_key().to_bytes();
+        let signature = key.sign(&self.signed_bytes()?);
+        self.signature = signature.to_bytes().to_vec();
+        Ok(())
+    }
+
+    /// Whether this fact carries `device`'s signature over exactly its
+    /// contents.
+    #[must_use]
+    pub fn signed_by(&self, device: &[u8; 32]) -> bool {
+        use ed25519_dalek::Verifier as _;
+        if &self.by != device {
+            return false;
+        }
+        let Ok(key) = ed25519_dalek::VerifyingKey::from_bytes(device) else {
+            return false;
+        };
+        let Ok(bytes): Result<[u8; 64], _> = self.signature.as_slice().try_into() else {
+            return false;
+        };
+        let signature = ed25519_dalek::Signature::from_bytes(&bytes);
+        let Ok(signed) = self.signed_bytes() else {
+            return false;
+        };
+        key.verify(&signed, &signature).is_ok()
+    }
+}
 
 /// Tagged envelope for everything that crosses the neighbour boundary.
 ///
@@ -532,6 +738,36 @@ pub enum NeighbourMsg {
         cluster_id: String,
         hash: String,
     },
+    /// Every write `refusals[..].by` refused, as that device keeps them: sent
+    /// as its whole set when one is filed, and as part of its catch-up, so a
+    /// refusal reaches its author live and after an absence, and a set that
+    /// no longer names a write is how one is cleared. One refusal is one
+    /// device's verdict ([`WriteRefusal`]), never the store's or the
+    /// workspace's. Appended to preserve every existing Postcard
+    /// discriminant.
+    WriteRefusals { refusals: Vec<WriteRefusal> },
+    /// Where the workspaces one of the person's devices holds are hosted:
+    /// each workspace by id, with its host's own signed
+    /// hint (`tilo_workspace_join::TransportHint`, postcard) as the device
+    /// reaching it dials it. Travels only on the session between two of the
+    /// person's devices, so a device that holds none of the person's
+    /// workspaces yet learns where each lives. Appended to preserve every
+    /// existing Postcard discriminant.
+    PersonalHosts {
+        user_public_key: [u8; 32],
+        hosts: Vec<PersonalHost>,
+    },
+}
+
+/// Where one of the person's workspaces is hosted, as their other devices
+/// dial it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonalHost {
+    /// The workspace's id, a canonical lowercase UUID.
+    pub workspace: String,
+    /// The host's signed hint, postcard encoded.
+    #[serde(with = "serde_bytes")]
+    pub hint: Vec<u8>,
 }
 
 impl NeighbourMsg {
@@ -593,7 +829,9 @@ impl NeighbourMsg {
             | Self::RecordContentLacks { .. }
             | Self::SurfaceKeyframeRequest { .. }
             | Self::LivePresence { .. }
-            | Self::SurfaceViewRequest { .. } => false,
+            | Self::SurfaceViewRequest { .. }
+            | Self::WriteRefusals { .. }
+            | Self::PersonalHosts { .. } => false,
         }
     }
 
@@ -631,6 +869,8 @@ impl NeighbourMsg {
             Self::LivePresence { .. } => "LivePresence",
             Self::SurfaceViewRequest { .. } => "SurfaceViewRequest",
             Self::RecordContentLacks { .. } => "RecordContentLacks",
+            Self::WriteRefusals { .. } => "WriteRefusals",
+            Self::PersonalHosts { .. } => "PersonalHosts",
         }
     }
 }
@@ -660,6 +900,44 @@ mod tests {
     #[test]
     fn peer_handle_is_fnv1a_of_the_device_key() {
         assert_eq!(peer_handle(&[7; 32]), 0xf160_fd08_b6d9_aac5);
+    }
+
+    /// A receiving device's own words about why it refused a write read as the
+    /// class the person is shown, for the wordings the store and the workspace
+    /// actually refuse with.
+    #[test]
+    fn a_receivers_words_read_as_the_class_it_is() {
+        for (words, class) in [
+            ("device revoked", RefusalReason::Revoked),
+            ("certificate expired", RefusalReason::Expired),
+            ("certificate not current", RefusalReason::Expired),
+            (
+                "identity is absent from admitted roster",
+                RefusalReason::NotCertified,
+            ),
+            (
+                "document change held: its app surface is not here yet",
+                RefusalReason::MissingDependency,
+            ),
+            (
+                "signed operation conflicts with exact admitted sequence",
+                RefusalReason::Conflict,
+            ),
+            ("exact admission index quota exceeded", RefusalReason::Full),
+            ("too many changes; slow down", RefusalReason::Full),
+            (
+                "record read forbidden: notes/main",
+                RefusalReason::Forbidden,
+            ),
+            (
+                "the workspace's layout is personal, as a public workspace's is: \
+                 it takes no member's windows or layout",
+                RefusalReason::Forbidden,
+            ),
+            ("something else entirely", RefusalReason::Malformed),
+        ] {
+            assert_eq!(RefusalReason::of(words), class, "{words}");
+        }
     }
 
     /// Workspace id shared by every fixture that names one.
@@ -725,6 +1003,25 @@ mod tests {
                 app_id: "so.tilo.slides".into(),
                 cluster_id: "workspace".into(),
                 hash: "ab".into(),
+            },
+        ));
+        all.push((
+            "write refusals",
+            NeighbourMsg::WriteRefusals {
+                refusals: vec![WriteRefusal {
+                    workspace: "workspace".into(),
+                    app: "so.tilo.notes".into(),
+                    record: "daily".into(),
+                    author: [0x11; 32],
+                    seq: 7,
+                    operation: "op-7".into(),
+                    changes: vec![[0x22; 32]],
+                    reason: RefusalReason::Forbidden,
+                    detail: "no permission".into(),
+                    by: [0x33; 32],
+                    at_ns: 9,
+                    signature: vec![0x44; 4],
+                }],
             },
         ));
         all
@@ -1144,7 +1441,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 30;
+    const VARIANT_COUNT: usize = 31;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1205,7 +1502,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b1e",
+                "0b1f",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
@@ -1346,7 +1643,42 @@ mod tests {
             "record content lacks",
             "1d03040e736f2e74696c6f2e736c6964657309776f726b7370616365026162",
         ),
+        (
+            "write refusals",
+            "1e0109776f726b73706163650d736f2e74696c6f2e6e6f746573056461696c79111111111111111111111111111111111111111111111111111111111111111107046f702d37012222222222222222222222222222222222222222222222222222222222222222030d6e6f207065726d697373696f6e3333333333333333333333333333333333333333333333333333333333333333090444444444",
+        ),
     ];
+
+    /// A refusal is only kept by a receiver that can check it: the signature
+    /// covers every field, so a changed reason or device is no refusal.
+    #[test]
+    fn a_refusal_is_signed_over_its_contents() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
+        let other = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
+        let mut refusal = WriteRefusal {
+            workspace: "workspace".into(),
+            app: "so.tilo.notes".into(),
+            record: "daily".into(),
+            author: [0x11; 32],
+            seq: 7,
+            operation: "op-7".into(),
+            changes: vec![[0x22; 32]],
+            reason: RefusalReason::Forbidden,
+            detail: "no permission".into(),
+            by: [0; 32],
+            at_ns: 9,
+            signature: Vec::new(),
+        };
+        refusal.sign(&key).expect("a refusal signs");
+        assert!(refusal.signed_by(&key.verifying_key().to_bytes()));
+        assert!(!refusal.signed_by(&other.verifying_key().to_bytes()));
+        let mut changed = refusal.clone();
+        changed.reason = RefusalReason::Revoked;
+        assert!(!changed.signed_by(&key.verifying_key().to_bytes()));
+        let mut moved = refusal.clone();
+        moved.at_ns = 10;
+        assert!(!moved.signed_by(&key.verifying_key().to_bytes()));
+    }
 
     fn every_variant_encodes_to_its_pinned_bytes() {
         let fixtures = fixtures();

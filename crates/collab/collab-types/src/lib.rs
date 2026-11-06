@@ -61,7 +61,6 @@ pub mod identity;
 pub mod inbound;
 pub mod mls_governance;
 pub mod op;
-pub mod ownership_transfer;
 pub mod peer;
 pub mod personal;
 pub mod presence;
@@ -110,7 +109,7 @@ pub use crypto::{
     Ed25519PublicKey, Signature, VerifyError, generate_keypair, sign_event, sign_op, verify_event,
     verify_op,
 };
-pub use direct::{canonical_pair, direct_pair, direct_pair_id, direct_record};
+pub use direct::{canonical_pair, direct_pair_id, direct_record};
 pub use document_transfer::{
     DocumentFrame, DocumentMutationKind, DocumentReassembler, DocumentSegment,
     MAX_DOCUMENT_TRANSFER_BYTES, ReassembledDocument, ReassemblyError,
@@ -128,10 +127,6 @@ pub use op::{
     SignedOp, WholeDocumentPayload, document_artifact_id, document_attestation_id,
     document_channel_id, live_artifact_id, next_unordered_document_sequence,
     validate_document_payload_route, validate_whole_document_payload_route,
-};
-pub use ownership_transfer::{
-    OWNERSHIP_TRANSFER_VERSION, OwnershipTransferAcceptanceV1, OwnershipTransferAuditV1,
-    OwnershipTransferCancellationV1, OwnershipTransferError, OwnershipTransferProposalV1,
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use personal::{

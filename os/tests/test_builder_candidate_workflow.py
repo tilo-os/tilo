@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import tomllib
 import unittest
 
 
@@ -81,7 +82,7 @@ class BuilderCandidates(unittest.TestCase):
                     self.assertEqual(result.stdout.strip(), expected)
 
     def test_browser_regressions_gate_publication(self):
-        script = canary_arm('browser')
+        script = canary_arm('browser-tests')
         self.assertNotIn('|| true', script)
         for binary in ('end_to_end', 'passkey_root', 'node_workspace', 'voice_browsers'):
             self.assertIn(f'binary({binary})', script)
@@ -126,6 +127,36 @@ class BuilderCandidates(unittest.TestCase):
                                              'CHROME': '/usr/bin/chromium'},
                                         text=True, capture_output=True)
                 self.assertNotEqual(result.returncode, 0)
+
+    def test_the_candidates_chromium_gates_every_publication_and_its_regressions_a_release(self):
+        smoke = canary_arm('browser')
+        # The smoke reads the image and a few files, so its verdict is kept until the image
+        # changes; it compiles nothing.
+        self.assertNotIn('cargo', smoke)
+        self.assertNotIn('nextest', smoke)
+        checks = {check['name']: check
+                  for check in tomllib.loads((ROOT / 't.toml').read_text())['check']}
+        smoke_check = 'canary-ci-builder-browser-x86_64'
+        tests_check = 'canary-ci-builder-browser-tests-x86_64'
+        self.assertEqual(checks['canary-ci-builder-browser-{arch}']['run'],
+                         'bash tools/ci/publish/ci-builder-canary.sh browser')
+        tests = checks['canary-ci-builder-browser-tests-{arch}']
+        self.assertEqual(tests['run'], 'bash tools/ci/publish/ci-builder-canary.sh browser-tests')
+        self.assertEqual(tests['image'], checks['canary-ci-builder-browser-{arch}']['image'])
+        # t has no aarch64 node, so only x86_64's runs anywhere by itself.
+        self.assertNotIn('on', tests)
+        [x86_64] = [s for s in tests['matrix']['set'] if s['when'] == {'arch': 'x86_64'}]
+        self.assertEqual(x86_64['on'], ['stable', 'dispatch', 'idle'])
+        # Every signature and publication waits for the candidate's Chromium; a release
+        # candidate's also for its browser regressions, and a dispatched one where it runs.
+        for name in ('sign-ci-builder', 'sign-dev-ci-builder', 'publish-ci-builder'):
+            self.assertIn(smoke_check, checks[name]['needs'], name)
+        self.assertIn(tests_check, checks['sign-ci-builder']['needs'])
+        self.assertEqual(checks['sign-ci-builder']['on'], ['stable'])
+        for name in ('sign-dev-ci-builder', 'publish-ci-builder'):
+            self.assertIn(tests_check, checks[name]['optional_needs'], name)
+            self.assertNotIn(tests_check, checks[name]['needs'], name)
+        self.assertIn('stable', checks['publish-ci-builder']['on'])
 
     def test_windows_recipe_preserves_tooling_without_the_crypto_cli(self):
         builder = (ROOT / 'os/Containerfile.builder').read_text()

@@ -36,10 +36,14 @@ fn a_window_connecting_on_an_idle_desk_is_taken_at_once() {
     let mut environment = ScopedEnv::new();
     environment.set("XDG_RUNTIME_DIR", runtime.path());
     let mut session = session();
-    settle(&mut session, 60);
 
     // Nothing of the desk's own is due for a second at least, so a connection
-    // that waited for the loop's next look would wait that long.
+    // that waited for the loop's next look would wait that long. The desk gets
+    // there as its own timer passes, which a loaded machine takes longer over:
+    // the test waits for that rather than counting the frames it takes.
+    pump(&mut session, &mut [], |session, _| {
+        wait_for(session).is_none_or(|idle| idle >= Duration::from_secs(1))
+    });
     let idle = wait_for(&mut session);
     assert!(
         idle.is_none_or(|idle| idle >= Duration::from_secs(1)),
@@ -74,19 +78,31 @@ fn a_window_connecting_on_an_idle_desk_is_taken_at_once() {
             break taken;
         }
         assert!(
-            waited < Duration::from_secs(5),
-            "the session never took the window's connection"
+            waited < tilo_test_env::hang_bound(),
+            "the session never took the window's connection after {waited:?}"
         );
-        let wait = wait_for(&mut session);
+        let wait = wait_for(&mut session).expect("an idle desk has a wait to give");
         let started = Instant::now();
         session.step(wait).expect("step");
-        waited += started.elapsed();
+        let step = started.elapsed();
+        waited += step;
+        if let Ok(taken) = takes.try_recv() {
+            // The connection ended the step it arrived in: a loop that looked
+            // only at the end of its wait would have run the whole wait, and
+            // that is the poll this rules out. Only a wait long enough to tell
+            // a wake from a frame is probed: a display's own frame rate is not
+            // what this test is about, and how long the asking thread waited is
+            // the machine's answer, not the session's.
+            if wait >= Duration::from_millis(100) {
+                assert!(
+                    step < wait,
+                    "the session ran its whole {wait:?} wait and took the connection after it: {step:?}"
+                );
+            }
+            break taken;
+        }
     };
     asking.join().expect("the asking thread");
-    assert!(
-        latency < Duration::from_millis(50),
-        "a window's first ask waited {} ms on an idle desk",
-        latency.as_millis()
-    );
+    assert!(takes.try_recv().is_err(), "one ask, one taking");
     eprintln!("a window's first ask on an idle desk: {latency:?}");
 }

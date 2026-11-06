@@ -306,3 +306,190 @@ fn every_screen_shows_the_same_six_digits() {
     assert_eq!(code, pairing_code([1; 32], [2; 32]));
     assert_ne!(code, pairing_code([1; 32], [3; 32]));
 }
+
+/// A member certificate of `person` for `device_key`, issued `ago_ns` before
+/// `NOW`, expiring a day later, as a joined device holds one.
+fn member_cert(
+    person: [u8; 32],
+    device_key: &ed25519_dalek::SigningKey,
+    issued: u64,
+) -> DeviceCert {
+    DeviceCert {
+        user_public_key: person,
+        device_public_key: device_key.verifying_key().to_bytes(),
+        device_label: "tilo-yoga".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: issued,
+        expires_at_ns: Some(issued.saturating_add(24 * 60 * 60 * 1_000_000_000)),
+        signature: [0; 64],
+    }
+}
+
+/// The certificate a joined device asks to have renewed: the same device and
+/// root, issued now, expiring as the held one did.
+fn renewal_of(held: &DeviceCert, now: u64) -> DeviceCert {
+    let mut cert = held.clone();
+    cert.issued_at_ns = now;
+    cert.expires_at_ns = held
+        .expires_at_ns
+        .map(|expires| now.saturating_add(expires.saturating_sub(held.issued_at_ns)));
+    cert.signature = [0; 64];
+    cert
+}
+
+#[test]
+fn a_key_holder_renews_a_joined_devices_lapsed_certificate_without_asking_anyone() {
+    let holder = whole(1);
+    let person = holder.group_public_key();
+    let joined = ed25519_dalek::SigningKey::from_bytes(&[77; 32]);
+    // The certificate it holds ran out: issued two days before NOW, a day
+    // long. A renewal keeps it expiring.
+    let held = member_cert(person, &joined, NOW - 48 * 60 * 60 * 1_000_000_000);
+    let renewed = renewal_of(&held, NOW);
+
+    let mut gathering = Gathering::renewal([2; 16], renewed, held.clone(), SERVICE, 1, 1);
+    let ask = gathering.ask().clone();
+    check_renewal(&ask, &held, Some(&held), person, &|_| false).unwrap();
+
+    // Nobody is asked: the device is already the person's, and its renewal
+    // grants nothing new. The key holder signs it at once.
+    let reply = Signer::default().renew(&holder, &ask, NOW);
+    let Progress::Certified(cert) = gathering.answer(device(1), answer(&ask, reply)) else {
+        panic!("the person's key holder renews the certificate");
+    };
+    verify_device_cert(&cert).unwrap();
+    assert_eq!(cert.device_public_key, held.device_public_key);
+    assert_eq!(cert.user_public_key, person);
+    assert_eq!(cert.issued_at_ns, NOW);
+    assert!(
+        cert.expires_at_ns.is_some_and(|expires| expires > NOW),
+        "the renewal is valid now and still expires"
+    );
+    assert!(cert.renews(&held));
+}
+
+#[test]
+fn a_renewal_that_widens_or_comes_from_another_root_is_refused() {
+    let holder = whole(1);
+    let person = holder.group_public_key();
+    let joined = ed25519_dalek::SigningKey::from_bytes(&[78; 32]);
+    let held = member_cert(person, &joined, NOW - 48 * 60 * 60 * 1_000_000_000);
+    let ask_of = |cert: DeviceCert, held: DeviceCert| Ask {
+        session: [3; 16],
+        cert,
+        service: SERVICE,
+        step: Step::Renew { held },
+    };
+
+    // Wider than the certificate it replaces.
+    let mut wider = renewal_of(&held, NOW);
+    wider.capabilities = DeviceCapabilities {
+        can_read_all_workspaces: true,
+        ..held.capabilities
+    };
+    let reason = check_renewal(
+        &ask_of(wider, held.clone()),
+        &held,
+        Some(&held),
+        person,
+        &|_| false,
+    )
+    .expect_err("a renewal may not widen what a device may do");
+    assert!(reason.contains("granting no more"), "{reason}");
+
+    // Not later than the certificate it replaces.
+    let mut older = renewal_of(&held, NOW);
+    older.issued_at_ns = held.issued_at_ns;
+    assert!(
+        check_renewal(
+            &ask_of(older, held.clone()),
+            &held,
+            Some(&held),
+            person,
+            &|_| false
+        )
+        .is_err()
+    );
+
+    // Another person's root.
+    let mut foreign = renewal_of(&held, NOW);
+    foreign.user_public_key = [0xee; 32];
+    assert!(
+        check_renewal(
+            &ask_of(foreign, held.clone()),
+            &held,
+            Some(&held),
+            person,
+            &|_| false
+        )
+        .is_err()
+    );
+
+    // The device was removed from the person.
+    let renewed = renewal_of(&held, NOW);
+    let reason = check_renewal(
+        &ask_of(renewed, held.clone()),
+        &held,
+        Some(&held),
+        person,
+        &|_| true,
+    )
+    .expect_err("a removed device is not renewed");
+    assert!(reason.contains("removed"), "{reason}");
+
+    // The fleet already holds a newer certificate: the renewal replaces
+    // that one or nothing, never the lapsed certificate the asker names.
+    let newer = renewal_of(&held, NOW + 1);
+    let stale = renewal_of(&held, NOW);
+    let reason = check_renewal(
+        &ask_of(stale, held.clone()),
+        &held,
+        Some(&newer),
+        person,
+        &|_| false,
+    )
+    .expect_err("a renewal older than the one this identity holds replaces nothing");
+    assert!(reason.contains("does not replace"), "{reason}");
+}
+
+#[test]
+fn a_share_renews_through_the_same_commitment_round_as_a_certification() {
+    let devices = two_of_three();
+    let person = devices[0].group_public_key();
+    let joined = ed25519_dalek::SigningKey::from_bytes(&[79; 32]);
+    let held = member_cert(person, &joined, NOW - 48 * 60 * 60 * 1_000_000_000);
+    let renewed = renewal_of(&held, NOW);
+
+    let mut gathering = Gathering::renewal([4; 16], renewed, held.clone(), SERVICE, 2, 3);
+    let ask = gathering.ask().clone();
+    // Each share is on a device of its own, with its own signer state, and
+    // commits without anyone being asked.
+    let mut first_signer = Signer::default();
+    let mut second_signer = Signer::default();
+    let first = first_signer.renew(&devices[0], &ask, NOW);
+    let second = second_signer.renew(&devices[1], &ask, NOW);
+    let progress = gathering.answer(device(1), answer(&ask, first));
+    assert!(
+        matches!(progress, Progress::Waiting),
+        "one share is not enough"
+    );
+    let progress = gathering.answer(device(2), answer(&ask, second));
+    let Progress::Send(rounds) = progress else {
+        panic!("two shares of three begin the signing round");
+    };
+    assert_eq!(rounds.len(), 2);
+    let mut progress = Progress::Waiting;
+    for (to, signing) in rounds {
+        let reply = if to == device(1) {
+            first_signer.sign(&devices[0], &signing, NOW)
+        } else {
+            second_signer.sign(&devices[1], &signing, NOW)
+        };
+        progress = gathering.answer(to, answer(&signing, reply));
+    }
+    let Progress::Certified(cert) = progress else {
+        panic!("the shares combine into a renewal");
+    };
+    verify_device_cert(&cert).unwrap();
+    assert!(cert.renews(&held));
+}

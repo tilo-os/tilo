@@ -1,6 +1,6 @@
 //! [`NavList`] and its items as described components.
 
-use crate::component::{Component, Described, Event, Person, ResourceId, Value};
+use crate::component::{Component, Described, Event, OfferedAction, Person, ResourceId, Value};
 use crate::icons::Icon;
 
 use super::{NavItem, NavList, NavSection};
@@ -14,6 +14,7 @@ pub struct NavListProps {
     pub title: Option<String>,
     /// The key of the place shown now.
     #[component(data)]
+    #[component(identity)]
     pub selected: Option<String>,
     /// A compact rail of icons that fits beside the content at every width.
     pub rail: bool,
@@ -35,6 +36,9 @@ pub struct NavSectionProps {
     pub title: String,
     /// Whether its heading folds it away.
     pub collapsible: bool,
+    /// The action that makes another of the places in the group ("New project"), drawn at the
+    /// end of the heading and run when the person presses it.
+    pub add: Option<OfferedAction>,
     /// The places, in order.
     #[component(slot(default))]
     pub items: Vec<NavItemProps>,
@@ -64,6 +68,7 @@ pub struct NavItemProps {
     /// What names the place across changes: what selection reports.
     #[component(required, positional)]
     #[component(data)]
+    #[component(identity)]
     pub key: String,
     /// What the place is called.
     #[component(required, positional)]
@@ -142,8 +147,9 @@ impl Described for NavList {
             .map(|item| (item.key.clone(), item.select.clone()))
             .collect();
         // Places outside a section run together under the list's title; each section is its
-        // own, in order.
+        // own, in order. A section's add is the heading's trailing action, which runs it.
         let mut sections: Vec<NavSection> = Vec::new();
+        let mut adds: std::collections::HashMap<String, Event> = std::collections::HashMap::new();
         let mut loose: Vec<NavItem> = Vec::new();
         let mut title = title;
         let mut flush = |loose: &mut Vec<NavItem>, sections: &mut Vec<NavSection>| {
@@ -164,9 +170,15 @@ impl Described for NavList {
                     flush(&mut loose, &mut sections);
                     let id = format!("{key}/{}", sections.len());
                     let places = section.items.into_iter().map(NavItem::from).collect();
-                    let mut built = NavSection::new(id, section.title, places);
+                    let mut built = NavSection::new(id.clone(), section.title, places);
                     if section.collapsible {
                         built = built.collapsible();
+                    }
+                    if let Some(add) = section.add {
+                        let icon = add.icon.unwrap_or(crate::icons::Icon::Plus);
+                        built = built
+                            .trailing_action(crate::widget::NavAction::new("add", icon, add.label));
+                        adds.insert(id, add.run);
                     }
                     sections.push(built);
                 }
@@ -185,6 +197,19 @@ impl Described for NavList {
         }
         if rail {
             list = list.rail();
+        }
+        if !adds.is_empty() {
+            let mut runs: std::collections::HashMap<String, Box<dyn FnMut()>> = adds
+                .into_iter()
+                .filter_map(|(id, event)| Some((id, event.handler()?)))
+                .collect();
+            list = list.on_section_action(move |section, action| {
+                if action == "add"
+                    && let Some(run) = runs.get_mut(section)
+                {
+                    run();
+                }
+            });
         }
         if select.is_none() && chosen.is_empty() {
             return list;

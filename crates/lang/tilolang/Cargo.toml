@@ -25,6 +25,9 @@ path = "src/main.rs"
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+# A text counts, cuts and matches in graphemes: one reading for the runtime's `Text` methods,
+# the index's length of a text column and search's identifier patterns.
+unicode-segmentation = "1.12"
 # The toolkit's component descriptions, read as the package `ui`.
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
 wasm-encoder = "0.252"

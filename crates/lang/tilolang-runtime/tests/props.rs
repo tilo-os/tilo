@@ -1,5 +1,5 @@
-//! Typed inputs of components: a map field handed whole, and the actions offered on a
-//! resource, each shown by the component and run by an event of its node.
+//! Typed inputs of components: a map field handed whole, and the actions the host fills a menu
+//! with, run by the events of the nodes it makes.
 
 #[cfg(test)]
 #[path = "common/mod.rs"]
@@ -28,7 +28,7 @@ action pin(m: Message) (label: "Pin", icon: .pin) {
 
 view message(m: Message) {
     ui.Reactions(reactions: m.reactions)
-    ui.MenuButton("More", actions: actions(m))
+    ui.MenuButton("More", subject: m)
 }
 "#;
 
@@ -60,24 +60,17 @@ view message(m: Message) {
             "{entries:?}"
         );
 
-        let menu = of_kind(view.tree(), "ui.MenuButton")[0].clone();
-        let Some(Value::List(offered)) = menu.props.get("actions") else {
-            panic!("offered actions: {}", dump(view.tree()));
-        };
-        let pin = offered
-            .iter()
-            .find_map(|a| match a {
-                Value::Offered(o) if o.label == "Pin" => Some(o.clone()),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("pin is offered: {offered:?}"));
-        assert_eq!(pin.icon.as_deref(), Some("pin"));
+        let menu = of_kind(view.tree(), "ui.MenuButton")[0];
+        let pin = of_kind(menu, "ui.MenuItem")
+            .into_iter()
+            .find(|item| item.props.get("label") == Some(&Value::text("Pin")))
+            .unwrap_or_else(|| panic!("pin is offered: {}", dump(view.tree())));
+        assert_eq!(pin.props.get("icon"), Some(&Value::text("pin")));
         assert!(
-            menu.events.contains_key(&pin.event),
-            "the node runs it by its event {}",
-            pin.event
+            pin.events.contains_key("choose"),
+            "the node runs it by its event: {pin:?}"
         );
-        view.fire(&menu.key, &pin.event).unwrap();
+        view.fire(&pin.key, "choose").unwrap();
         view.poll_patches().unwrap();
         assert_eq!(
             rt.read(&m, "pinned").unwrap(),

@@ -323,6 +323,8 @@ impl TileSource for RecordWindows {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         })
     }
 
@@ -483,6 +485,8 @@ impl TileSource for ContentWindows {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         })
     }
 }

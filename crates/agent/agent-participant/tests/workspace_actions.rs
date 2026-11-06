@@ -79,7 +79,7 @@ use tilo_agent_participant::{AgentHost, ModelChoice, Replica, Seed, record_provi
 use tilo_browser_peer::{Host, PeerEvent, PeerEvents, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
+use tilo_relay::web::{LiveConfig, TlsSource, WebConfig, WebHandle};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use support::{Device, WORKSPACE, enrol, ready, start_peer};
@@ -568,6 +568,7 @@ async fn start_lending(
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
+            live: LiveConfig::default(),
         })
         .await
         .unwrap();

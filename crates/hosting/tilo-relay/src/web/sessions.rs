@@ -465,8 +465,8 @@ impl Sessions {
     }
 
     /// Open sessions per person (user root). A public host counts people
-    /// from it (its seats, faces and counts), and tells its one spectator
-    /// person's sessions apart. A background session counts nobody: a page
+    /// from it (its faces and counts), and tells its one visitor person's
+    /// sessions apart. A background session counts nobody: a page
     /// keeps it here while its person is in a workspace elsewhere.
     pub(crate) fn online_users(&self) -> std::collections::BTreeMap<[u8; 32], usize> {
         let mut online = std::collections::BTreeMap::new();

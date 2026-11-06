@@ -48,7 +48,14 @@ impl crate::Session {
     /// running: nothing here closes, pauses or restarts it.
     pub(crate) fn feed_capabilities(&self) {
         let revision = self.shared.handle.revision();
-        if self.shared.capabilities_fed.get() == Some(revision) {
+        // A list the daemon did not take stands for nothing: until one does,
+        // the desk hands the same revision over again.
+        let unpublished = self
+            .shared
+            .fs_authority
+            .as_ref()
+            .is_some_and(crate::fs_authority::Publisher::unpublished);
+        if self.shared.capabilities_fed.get() == Some(revision) && !unpublished {
             return;
         }
         self.shared.capabilities_fed.set(Some(revision));

@@ -41,6 +41,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::icons::Icon;
+use crate::interaction::InteractionEnvironment;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::{ParagraphAlign, TextRenderer, TextStyle, TextWrapMode};
@@ -862,6 +863,8 @@ pub struct EmptyState {
     action_fired: bool,
     rect: Rect,
     action_rect: Rect,
+    /// What the action's target must reach to be pressed.
+    input: InteractionEnvironment,
     last_cursor: Point,
     /// The action is immediate-mode, but still participates in the normal
     /// Tab / Enter contract through this owning widget.
@@ -931,6 +934,7 @@ impl EmptyState {
             action_fired: false,
             rect: Rect::ZERO,
             action_rect: Rect::ZERO,
+            input: InteractionEnvironment::POINTER,
             last_cursor: Point::ZERO,
             action_focused: false,
             layout_style: StackStyle::layout(&Theme::default(), false),
@@ -1008,6 +1012,11 @@ impl EmptyState {
     /// The disclosure's control id: the action's, with `:details`.
     fn details_control_id(&self) -> String {
         format!("{}:details", self.action_control_id())
+    }
+
+    /// The action's target: its face, reaching the smallest target the input needs.
+    fn action_target(&self) -> Rect {
+        self.input.minimum_target_rect(self.action_rect)
     }
 
     /// Paint the "Details" disclosure under a stack that ends at `bottom`,
@@ -1558,7 +1567,7 @@ impl Widget for EmptyState {
                 ..
             } if self.is_enabled()
                 && self.action_label.is_some()
-                && self.action_rect.contains(self.last_cursor) =>
+                && self.action_target().contains(self.last_cursor) =>
             {
                 self.fire_action(&mut ctx.state, ctx.path);
                 *ctx.handled = true;
@@ -1576,7 +1585,7 @@ impl Widget for EmptyState {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if (self.action_label.is_some() && self.action_rect.contains(point))
+        if (self.action_label.is_some() && self.action_target().contains(point))
             || (self.details.is_some() && self.details_rect.contains(point))
         {
             Some(winit::window::CursorIcon::Pointer)
@@ -1663,6 +1672,13 @@ impl Widget for EmptyState {
         "EmptyState"
     }
 
+    fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
+        if self.input != environment {
+            self.input = environment;
+            self.drawn = None;
+        }
+    }
+
     /// The action's id, when it has one: the empty state is addressed by
     /// the control it holds.
     fn test_id(&self) -> Option<&str> {
@@ -1726,7 +1742,7 @@ impl Widget for EmptyState {
             children.push(
                 AccessNode::new(Role::Button)
                     .with_name(action.clone())
-                    .with_bounds(self.action_rect)
+                    .with_bounds(self.action_target())
                     .with_state(
                         AccessState::new()
                             .focusable(true)

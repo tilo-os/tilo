@@ -19,7 +19,7 @@
 
 # The image every check runs in unless it says otherwise: pinned by digest, so a moving tag can't
 # change what a check runs in without a commit saying so. Move it by changing this line.
-image = "registry.tilo.so/tilo/tilo-builder@sha256:a660798f8d18ef28ca738292c5a5520bbc8ad3c64ca45de2ced317dd9c2476ae"
+image = "registry.tilo.so/tilo/tilo-builder@sha256:5a72b2a985be655cb2cd95ca9b3c7af30faaf8bd589258790ce8594b01a7eacc"
 
 [env]
 XDG_RUNTIME_DIR = "/tmp/tilo-xdg-runtime"
@@ -27,6 +27,14 @@ XDG_RUNTIME_DIR = "/tmp/tilo-xdg-runtime"
 # what the profiles in Cargo.toml ask for anyway.
 CARGO_PROFILE_DEV_DEBUG = "0"
 CARGO_PROFILE_TEST_DEBUG = "0"
+# Test executables without their symbol table: symbol names are about half of each one, and
+# stripping them makes a test binary 56-58% smaller (tilo-fs's lib tests 268 MB to 118 MB) to
+# link, store, move and load. What it costs: a backtrace no longer names its functions; a panic's
+# or an assert's message still says file:line. Cargo applies it to the `test` profile only, which
+# `cargo test` and nextest build every test executable with. The packages whose tests read the
+# symbol table keep it (`[profile.test.package.*] strip = false` in Cargo.toml).
+# To keep symbols in every test binary again, delete this line.
+CARGO_PROFILE_TEST_STRIP = "symbols"
 # A warning in any crate of a target the CI builds is an error, in every check that compiles.
 CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-D warnings"
 CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-D warnings"
@@ -69,6 +77,14 @@ exclude = [
 # not give them.
 isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle"] }
 env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
+# The apps the session's tests start (`tilo_test_env::sibling_binary`), as the session-siblings
+# setup in .config/nextest.toml names them for both packages, and for the session the three the
+# chat-siblings setup names (Chat, the launcher that starts it beside the session, the runtime it
+# runs on, for `chat_2x2`): built once by this family's build and kept with its test binaries,
+# each shard is handed them (NEXTEST_BIN_EXE_<bin>) and the setups build nothing. The app host's
+# trust test installs with the installer it finds beside its own build (`tilo-install`), which
+# tools/ci/nextest.sh built only where it was named the package: a shard names none.
+starts = { tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings"], app-host = ["install:tilo-install"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 [[cargo]]
@@ -86,6 +102,11 @@ packages = [
 ]
 isolation = { nested = ["launcher", "runtime-bundle", "tilo-sandbox-core", "tilo-vmd", "ush"] }
 env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
+# The programs of other packages these tests find beside their own build: the installer the app
+# CLI's install tests run, and the render helper an agent's host renders video in. Each shard is
+# handed them as the test family's are; tools/ci/nextest.sh built them only where it was named
+# the package, and a shard names none.
+starts = { app-cli = ["install:tilo-install"], tilo-agent-participant = ["tilo-video-render:tilo-video-render"] }
 matrix = { arch = ["x86_64", "aarch64"] }
 
 # The packages whose tests cost main a lot for what they catch: on main's newest head when t has
@@ -212,7 +233,6 @@ on = ["idle"]
 [[check]]
 name = "policy/{step}"
 run = "{step.run}"
-group = "policy"
 [check.matrix]
 step = { from_toml = "tools/policy/steps.toml", key = "step" }
 exclude = [{ step = "unit" }]
@@ -278,7 +298,6 @@ git = true
 [[check]]
 name = "policy/unit/{test}"
 run = "python3 tools/policy/run_unit_tests.py tools/tests/test_{test}.py"
-group = "policy-unit"
 [check.matrix]
 test = { from = "tools/tests/test_*.py" }
 
@@ -494,10 +513,6 @@ on = ["stable", "dispatch", "idle"]
 heavy = true
 [check.matrix]
 arch = ["x86_64", "aarch64"]
-
-[[check]]
-name = "relay-agents"
-run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail -p tilo-relay --features agents --lib -E 'test(reseal::) | test(rooms::sealed_records::) | test(compaction::)'\n"
 
 [[check]]
 name = "session-binaries-{arch}"
@@ -816,7 +831,7 @@ heavy = true
 name = "imager-root"
 run = "set -eu\nif [ \"$(id -u)\" != \"0\" ]; then\n  echo \"imager-root: expected euid 0 in the micro-VM, got $(id -u)\" >&2\n  exit 1\nfi\nmkdir -p \"$TMPDIR\"\n# A filter that matches fewer tests still exits 0, so compare the reported count.\nrun_tests() {\n  expected=$1\n  shift\n  output=$(\"$@\" 2>&1) || { status=$?; printf '%s\\n' \"$output\"; return \"$status\"; }\n  printf '%s\\n' \"$output\"\n  case \"$output\" in\n    *\"skipping test\"*) echo \"selected fixture skipped: $*\" >&2; return 1 ;;\n  esac\n  actual=$(printf '%s\\n' \"$output\" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed.*/\\1/p' | tail -n 1)\n  if [ \"${actual:-}\" != \"$expected\" ]; then\n    echo \"expected $expected passing tests, got ${actual:-none}: $*\" >&2\n    return 1\n  fi\n}\ncd crates/platform/imager-backend\nrun_tests 11 /target/vm/imager-backend-lib --exact --test-threads=1 capture::original_caller::tests::original_credentials_come_from_actual_kernel_admitted_peer_and_expire_on_exit setup::home_capture::store::tests::original_output_prepared_retry_rebinds_fresh_claim_and_refuses_dirty_or_launched_stage setup::home_capture::store::tests::original_output_namespace_checkpoint_refuses_unlaunched_foreign_and_duplicate_intent setup::home_capture::store::tests::original_applications_output_prepared_retry_is_exact_and_cannot_adopt_home_intent setup::home_capture::store::tests::uncommitted_original_review_preserves_prepared_state_and_refuses_started_or_corrupt_attempts setup::home_capture::worker::original::tests::writable_original_projection_refuses_before_inventory_and_preserves_source setup::media_setup::protected_output::tests::protected_pending_area_actual_private_provisioning_and_replacement_refusal setup::migration_handoff::linux::tests::unrelated_cgroup_namespace_root_preserves_storage_capture_and_cannot_be_selected setup::prepared_setup::tests::authenticated_geometry_keeps_home_only_shape_and_refuses_unadmitted_inventory_marker setup::prepared_setup::tests::offline_home_crypto_reopen_preserves_exact_selection_and_refuses_split_declaration setup::prepared_setup::tests::pending_home_without_account_consent_refuses_selected_service_sessions\ncd ../../../apps/imager\nrun_tests 1 /target/vm/imager-lib --exact --test-threads=1 setup::journey::prepared_media_native::tests::awaiting_offline_export_public_state_never_becomes_completed_delivery\n"
 needs = ["imager-root-build"]
-env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_USERNS = "1", TMPDIR = "/var/tmp/tilo-test" }
+env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_USERNS = "1", TMPDIR = "/var/tmp/tilo-test", TILO_IMAGER_TEST_CACHE_ROOT = "/var/tmp/tilo-test-imager" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 on = ["stable", "dispatch", "idle"]
@@ -1797,41 +1812,47 @@ default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
+# The builder is published from x86_64 alone. t has no aarch64 node, so `image-ci-builder-aarch64`
+# and its canaries are never planned, and a check needing them would never run either. The index
+# lists x86_64's image only; it is what `dev-{commit}` names and what the pins take. When an
+# aarch64 node joins, add its image here, and its image and canaries to the needs (and its lines
+# to the runs and outputs) of the signing and publishing checks below.
 [[check]]
 name = "image-ci-builder"
-run = "python3 tools/ci/publish/oci-index.py /target/publish/ci-builder/index /target/publish/ci-builder/x86_64/image.oci.tar /target/publish/ci-builder/aarch64/image.oci.tar"
-needs = ["image-ci-builder-x86_64", "image-ci-builder-aarch64"]
+run = "python3 tools/ci/publish/oci-index.py /target/publish/ci-builder/index /target/publish/ci-builder/x86_64/image.oci.tar"
+needs = ["image-ci-builder-x86_64"]
 outputs = ["/target/publish/ci-builder/index/image.oci.tar", "/target/publish/ci-builder/index/digest"]
 default = false
 
 [[check]]
 name = "sign-ci-builder"
-run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/x86_64\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/aarch64\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index\n"
-needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-browser-aarch64", "canary-ci-builder-x11-bridge-x86_64", "signing-tools"]
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/x86_64\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index\n"
+needs = ["image-ci-builder", "image-ci-builder-x86_64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-browser-tests-x86_64", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
-outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/x86_64/bundle.json", "/target/publish/ci-builder/aarch64/payload.json", "/target/publish/ci-builder/aarch64/signature", "/target/publish/ci-builder/aarch64/dry-run.pub", "/target/publish/ci-builder/aarch64/bundle.json", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub", "/target/publish/ci-builder/index/bundle.json"]
+outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/x86_64/bundle.json", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub", "/target/publish/ci-builder/index/bundle.json"]
 on = ["stable"]
 id_token = ["sts.amazonaws.com"]
 
 [[check]]
 name = "sign-dev-ci-builder"
-run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/x86_64\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/aarch64\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index\n"
-needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-browser-aarch64", "canary-ci-builder-x11-bridge-x86_64", "signing-tools"]
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/x86_64\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index\n"
+needs = ["image-ci-builder", "image-ci-builder-x86_64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-browser-x86_64", "signing-tools"]
+optional_needs = ["canary-ci-builder-browser-tests-x86_64"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
-outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/aarch64/payload.json", "/target/publish/ci-builder/aarch64/signature", "/target/publish/ci-builder/aarch64/dry-run.pub", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub"]
+outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub"]
 on = ["main", "dispatch"]
 id_token = ["tilo-dev-signing"]
 
 [[check]]
 name = "publish-ci-builder"
-run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/x86_64 'dev:dev-{commit}-x86_64' 'release:{commit}-x86_64'\nbash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/aarch64 'dev:dev-{commit}-aarch64' 'release:{commit}-aarch64'\nbash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index 'dev:dev-{commit}' 'release:{commit}' 'release:{rust}'\n"
-needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-browser-aarch64", "canary-ci-builder-x11-bridge-x86_64", "signing-tools"]
-optional_needs = ["sign-ci-builder", "sign-dev-ci-builder"]
+run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/x86_64 'dev:dev-{commit}-x86_64' 'release:{commit}-x86_64'\nbash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index 'dev:dev-{commit}' 'release:{commit}' 'release:{rust}'\n"
+needs = ["image-ci-builder", "image-ci-builder-x86_64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-browser-x86_64", "signing-tools"]
+optional_needs = ["sign-ci-builder", "sign-dev-ci-builder", "canary-ci-builder-browser-tests-x86_64"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-requires = ["arch=arm64"]
-outputs = ["/target/publish/ci-builder/x86_64/receipt.json", "/target/publish/ci-builder/aarch64/receipt.json", "/target/publish/ci-builder/index/receipt.json"]
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/ci-builder/x86_64/receipt.json", "/target/publish/ci-builder/index/receipt.json"]
 on = ["main", "dispatch", "stable"]
 id_token = ["registry.tilo.so"]
 
@@ -1855,6 +1876,8 @@ default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
+# The candidate's own Chromium, as the browser tests start it: it reads the image and a few
+# files, so its verdict holds until the image changes, and every publication waits for it.
 [[check]]
 name = "canary-ci-builder-browser-{arch}"
 run = "bash tools/ci/publish/ci-builder-canary.sh browser"
@@ -1864,14 +1887,25 @@ default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
+# The browser regressions that once broke on a builder, run in the candidate. They compile the
+# browser peer and the agent participant, which read nearly every source file, so in every
+# head's publication they ran again for each commit while the image stayed the same. Each commit
+# runs the same tests in the pinned builder (`test/tilo-browser-peer`,
+# `test-x86_64/tilo-agent-participant`), so what this adds is the candidate: it gates a release
+# candidate's signature and publication, runs when dispatched and on main's newest head when t
+# has room (bisected to the commit that broke it), and main's development tags go without it.
 [[check]]
-name = "canary-ci-builder-x11-bridge-{arch}"
-run = "bash tools/ci/publish/ci-builder-canary.sh x11-bridge"
+name = "canary-ci-builder-browser-tests-{arch}"
+run = "bash tools/ci/publish/ci-builder-canary.sh browser-tests"
 image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
 requires = ["arch={arch}"]
 default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
+
+[[check.matrix.set]]
+when = { arch = "x86_64" }
+on = ["stable", "dispatch", "idle"]
 
 [[check]]
 name = "image-ci-fast-smoke"

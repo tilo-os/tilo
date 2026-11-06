@@ -6,7 +6,7 @@
 use taffy::style_helpers::length;
 use taffy::{Size, Style};
 
-use super::arranged::{Arranged, Layout, Resolved, Slot, wrapper_style};
+use super::arranged::{Arranged, Layout, Resolved, Slot, lead_container, wrapper_style};
 use super::units::{Arrangement, Axis, Direction, Length, arrangement_for};
 use crate::tokens::Rhythm;
 
@@ -165,29 +165,33 @@ impl Layout for SplitLayout {
         "Split"
     }
 
-    fn container(&self, resolved: &Resolved) -> Style {
+    fn container(&self, resolved: &Resolved, lead: f32) -> Style {
         let gap = length(resolved.gap(self.gap));
-        Style {
-            display: taffy::Display::Flex,
-            flex_direction: match self.arrangement {
-                Arrangement::SideBySide => self.row(),
-                Arrangement::Collapsed => taffy::FlexDirection::Column,
+        lead_container(
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: match self.arrangement {
+                    Arrangement::SideBySide => self.row(),
+                    Arrangement::Collapsed => taffy::FlexDirection::Column,
+                },
+                align_items: Some(taffy::AlignItems::Stretch),
+                gap: Size {
+                    width: gap,
+                    height: gap,
+                },
+                min_size: Size {
+                    width: length(0.0_f32),
+                    height: taffy::Dimension::auto(),
+                },
+                size: Size {
+                    width: taffy::style_helpers::percent(1.0_f32),
+                    height: taffy::Dimension::auto(),
+                },
+                ..Style::default()
             },
-            align_items: Some(taffy::AlignItems::Stretch),
-            gap: Size {
-                width: gap,
-                height: gap,
-            },
-            min_size: Size {
-                width: length(0.0_f32),
-                height: taffy::Dimension::auto(),
-            },
-            size: Size {
-                width: taffy::style_helpers::percent(1.0_f32),
-                height: taffy::Dimension::auto(),
-            },
-            ..Style::default()
-        }
+            lead,
+            self.leading(),
+        )
     }
 
     fn slot(&self, index: usize, _slot: &Slot, resolved: &Resolved) -> Style {

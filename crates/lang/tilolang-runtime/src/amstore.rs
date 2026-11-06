@@ -29,14 +29,16 @@ use automerge::{
 use serde_json::Value as Json;
 use tilo_automerge::ApplyIncoming;
 
+use crate::derived::{Computed, Facts};
 use crate::flow::Journal;
 use crate::ids::{DocId, FieldId, RunId, TypeId};
 use crate::meta::FieldKind;
 use crate::place::{self, AT_KEY, ITEMS_KEY, Place, Placement, Resolved};
+use crate::registry::{FieldInfo, TypeInfo};
 use crate::store::{
-    Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, ListingChange, Mutation,
-    NewRecord, OutboxEntry, OutboxState, Scalar, Settled, Splice, Store, StoreError, SubId, Txn,
-    Version,
+    Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Link, LinkHow,
+    ListingChange, Mutation, NewRecord, OutboxEntry, OutboxState, Scalar, Settled, Splice, Store,
+    StoreError, SubId, Txn, Version,
 };
 use crate::textdiff;
 use crate::value::ResourceRef;
@@ -79,6 +81,9 @@ struct Inner {
     journals: BTreeMap<RunId, String>,
     /// Each document's items resolved into their collections, as the document is now.
     resolved: RefCell<HashMap<DocId, Rc<Resolved>>>,
+    /// The types the runtime loaded, by id: what a derived key and its parent field are found
+    /// by ([`crate::derived`]).
+    types: BTreeMap<TypeId, Rc<TypeInfo>>,
 }
 
 /// The Automerge-backed reference store.
@@ -107,6 +112,7 @@ impl AmStore {
                 next_sub: 1,
                 journals: BTreeMap::new(),
                 resolved: RefCell::new(HashMap::new()),
+                types: BTreeMap::new(),
             })),
         }
     }
@@ -246,6 +252,69 @@ impl Inner {
         item_obj(doc, item).ok_or_else(|| not_found(format!("item `{item}`")))
     }
 
+    /// The type of the resource at `at`, when the runtime loaded the package declaring it.
+    fn type_at(&self, at: &ResourceRef) -> Option<Rc<TypeInfo>> {
+        let doc = self.doc(&at.doc).ok()?;
+        let obj = self.locate(at).ok()?;
+        let ty = str_at(doc, &obj, TYPE_KEY)?;
+        self.types.get(&ty).cloned()
+    }
+
+    /// The resources of the document `doc`: the record, and every item placed in it.
+    fn resources(&self, doc: &str) -> Result<Vec<ResourceRef>, StoreError> {
+        let held = self.doc(doc)?;
+        let ty = |obj: &ObjId| str_at(held, obj, TYPE_KEY).unwrap_or_default();
+        let mut out = vec![ResourceRef::root(doc, ty(&ROOT))];
+        for id in self.resolved(doc)?.places.keys() {
+            if let Some(obj) = item_obj(held, id) {
+                let ty = ty(&obj);
+                out.push(ResourceRef::root(doc, ty.clone()).item(id, ty));
+            }
+        }
+        Ok(out)
+    }
+
+    /// How the fields of `of` link to `target`: a reference field naming it (`field`) and rich
+    /// text mentioning it (`mention`), each once.
+    fn names(&self, of: &ResourceRef, target: &str) -> Result<Vec<LinkHow>, StoreError> {
+        let Some(info) = self.types.get(&of.ty).cloned() else {
+            return Ok(Vec::new());
+        };
+        let doc = self.doc(&of.doc)?;
+        let Some(obj) = self.locate(of).ok() else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for field in &info.fields {
+            let spec = spec(field);
+            match field.kind {
+                FieldKind::RichText => {
+                    if let Ok(FieldValue::Rich(rich)) = read_field(doc, &obj, &spec)
+                        && rich
+                            .references()
+                            .iter()
+                            .any(|reference| crate::rich::resource_id(reference) == Some(target))
+                    {
+                        out.push(LinkHow::Mention);
+                    }
+                }
+                FieldKind::Register if names_a_resource(&field.ty) => {
+                    if let Ok(FieldValue::Scalar(Scalar::Json(json))) = read_field(doc, &obj, &spec)
+                        && crate::value::from_json(&json).is_ok_and(|value| {
+                            crate::value::references_in(&value)
+                                .iter()
+                                .any(|named| named == target)
+                        })
+                    {
+                        out.push(LinkHow::Field);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
     /// The items of the collection `field` of `at`, with their order keys.
     fn members(&self, at: &ResourceRef, field: &str) -> Result<Vec<(String, String)>, StoreError> {
         Ok(self
@@ -383,6 +452,123 @@ fn read_field(doc: &AutoCommit, obj: &ObjId, field: &FieldSpec) -> Result<FieldV
             }
             None => Ok(FieldValue::Entries(Vec::new())),
         },
+    }
+}
+
+/// The fields of a type, as the store reads one of them.
+fn spec(field: &FieldInfo) -> FieldSpec {
+    FieldSpec {
+        id: field.id.clone(),
+        kind: field.kind,
+    }
+}
+
+/// What a derived key among the type's fields reads, worked out over the documents: `None` for
+/// a field the record holds itself ([`crate::derived`]).
+fn derived_value(
+    inner: &Inner,
+    at: &ResourceRef,
+    field: &FieldSpec,
+) -> Result<Option<FieldValue>, StoreError> {
+    let Some(ty) = inner.type_at(at) else {
+        return Ok(None);
+    };
+    let Some(info) = ty.field(&field.id) else {
+        return Ok(None);
+    };
+    let Some(expr) = &info.derived else {
+        return Ok(None);
+    };
+    let now = crate::derived::eval(&mut FactsOf { inner }, &at.id_string(), expr)?;
+    Ok(Some(now.value()))
+}
+
+/// The resource a derived key's expression names: a document, then `/item` for an item.
+fn facts_at(path: &str) -> Result<ResourceRef, StoreError> {
+    ResourceRef::parse_id(path, String::new())
+        .ok_or_else(|| not_found(format!("resource `{path}`")))
+}
+
+/// The documents as the one evaluator of derived keys reads them: an item's fields, the items
+/// standing under it through the type's parent field, and the item it stands under.
+struct FactsOf<'a> {
+    inner: &'a Inner,
+}
+
+impl Facts for FactsOf<'_> {
+    type Error = StoreError;
+
+    fn field(&mut self, path: &str, field: &str) -> Result<Computed, StoreError> {
+        let at = facts_at(path)?;
+        let Some(ty) = self.inner.type_at(&at) else {
+            return Ok(Computed::Bool(false));
+        };
+        let Some(info) = ty.field(field) else {
+            return Ok(Computed::Bool(false));
+        };
+        if let Some(expr) = &info.derived {
+            return crate::derived::eval(self, path, expr);
+        }
+        let doc = self.inner.doc(&at.doc)?;
+        let obj = self.inner.locate(&at)?;
+        let none = Json::Null;
+        let default = info.default.as_ref().unwrap_or(&none);
+        let now = read_field(doc, &obj, &spec(info))?;
+        Ok(Computed::held(Some(&now), default))
+    }
+
+    fn children(&mut self, path: &str) -> Result<Vec<String>, StoreError> {
+        let at = facts_at(path)?;
+        let Some(ty) = self.inner.type_at(&at) else {
+            return Ok(Vec::new());
+        };
+        let Some(parent) = ty.parent.as_deref() else {
+            return Ok(Vec::new());
+        };
+        let doc = self.inner.doc(&at.doc)?;
+        let resolved = self.inner.resolved(&at.doc)?;
+        let mut out = Vec::new();
+        for id in resolved.places.keys() {
+            let Some(obj) = item_obj(doc, id) else {
+                continue;
+            };
+            let Some(child) =
+                str_at(doc, &obj, TYPE_KEY).and_then(|ty| self.inner.types.get(&ty).cloned())
+            else {
+                continue;
+            };
+            if child.parent.as_deref() != Some(parent) {
+                continue;
+            }
+            let Some(info) = child.field(parent) else {
+                continue;
+            };
+            let now = read_field(doc, &obj, &spec(info))?;
+            if crate::derived::parent_in(&now).as_deref() == Some(path) {
+                out.push(id.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    fn above(&mut self, path: &str) -> Result<Option<String>, StoreError> {
+        let at = facts_at(path)?;
+        let Some(ty) = self.inner.type_at(&at) else {
+            return Ok(None);
+        };
+        let Some(parent) = ty.parent.as_deref() else {
+            return Ok(None);
+        };
+        let Some(info) = ty.field(parent) else {
+            return Ok(None);
+        };
+        let doc = self.inner.doc(&at.doc)?;
+        let obj = self.inner.locate(&at)?;
+        Ok(crate::derived::parent_in(&read_field(
+            doc,
+            &obj,
+            &spec(info),
+        )?))
     }
 }
 
@@ -673,6 +859,16 @@ impl Inner {
     }
 }
 
+/// Whether a value of the type `ty` is a reference to a resource: a record, a union of records,
+/// or one inside an option.
+fn names_a_resource(ty: &crate::meta::Ty) -> bool {
+    match ty {
+        crate::meta::Ty::Record(_) | crate::meta::Ty::Union(_) => true,
+        crate::meta::Ty::Option(inner) => names_a_resource(inner),
+        _ => false,
+    }
+}
+
 fn commit_with_note(doc: &mut AutoCommit, note: &ChangeNote) -> Result<(), StoreError> {
     let message = serde_json::to_string(note).map_err(backend)?;
     let _hash = doc.commit_with(CommitOptions::default().with_message(message));
@@ -714,6 +910,7 @@ impl Store for AmStore {
                 chain: Vec::new(),
                 module: String::new(),
                 approved_by: None,
+                suggested_by: None,
                 touched: vec![id.clone()],
                 ..ChangeNote::default()
             },
@@ -844,6 +1041,7 @@ impl Store for AmStore {
                 doc: id,
                 fields: fields.into_iter().collect(),
                 listings,
+                by: Some(note.invoker.clone()),
             });
         }
         Ok(())
@@ -862,8 +1060,21 @@ impl Store for AmStore {
         }
     }
 
+    fn loaded_types(&mut self, types: &[Rc<TypeInfo>]) {
+        let mut inner = self.inner.borrow_mut();
+        // Every loaded package's types, as they are now: a reload that changes a key replaces
+        // the one it was.
+        inner.types.clear();
+        for ty in types {
+            inner.types.insert(ty.id.clone(), Rc::clone(ty));
+        }
+    }
+
     fn read(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError> {
         let inner = self.inner.borrow();
+        if let Some(now) = derived_value(&inner, at, field)? {
+            return Ok(now);
+        }
         let obj = inner.locate(at)?;
         if field.kind == FieldKind::Collection {
             return Ok(FieldValue::Items(
@@ -1005,6 +1216,42 @@ impl Store for AmStore {
             .filter_map(|c| c.message().and_then(|m| serde_json::from_str(m).ok()))
             .collect();
         Ok(crate::store::recent_authors_in(notes.iter(), at, limit))
+    }
+
+    /// What links to `at`, read from the documents: this store keeps no index of it, so it
+    /// reads every resource's fields ([`Store::linked`]). Tests only.
+    fn linked(&self, at: &ResourceRef) -> Result<Vec<Link>, StoreError> {
+        let target = at.id_string();
+        let inner = self.inner.borrow();
+        let mut out: Vec<Link> = Vec::new();
+        for doc in inner.docs.keys() {
+            let notes = self.history(doc).unwrap_or_default();
+            for of in inner.resources(doc)? {
+                let id = of.id_string();
+                if id == target {
+                    continue;
+                }
+                let made = crate::store::versions_in(&notes, &of)
+                    .first()
+                    .and_then(|version| version.from.as_ref())
+                    .is_some_and(|from| from.id_string() == target);
+                if made {
+                    out.push(Link {
+                        of: of.clone(),
+                        how: LinkHow::CreatedFrom,
+                    });
+                }
+                for how in inner.names(&of, &target)? {
+                    out.push(Link {
+                        of: of.clone(),
+                        how,
+                    });
+                }
+            }
+        }
+        out.sort_by_key(Link::order);
+        out.dedup_by(|a, b| a.of.id_string() == b.of.id_string() && a.how == b.how);
+        Ok(out)
     }
 
     fn subscribe(&mut self, doc: &DocId, f: Box<dyn FnMut(&ChangeSummary)>) -> SubId {

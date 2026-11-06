@@ -367,33 +367,6 @@ async fn invitations_run_through_the_rooms_own_methods() {
     .await;
     assert_eq!(refused, Err(ActionHostError::UnknownAction));
 
-    // Granted invite, Ada invites up to her own role and no further: the
-    // workspace's own decision, refused with its reason.
-    grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
-    invoke(
-        &host,
-        workspace_id,
-        &caller(&ada),
-        request(&workspace, governance::INVITE, json!({ "role": "editor" })),
-    )
-    .await
-    .unwrap();
-    let above = invoke(
-        &host,
-        workspace_id,
-        &caller(&ada),
-        request(
-            &workspace,
-            governance::INVITE,
-            json!({ "role": "moderator" }),
-        ),
-    )
-    .await;
-    assert!(
-        matches!(&above, Err(ActionHostError::Refused { reason }) if reason.contains("Moderator")),
-        "{above:?}"
-    );
-
     // Cancelling takes it off the pending list.
     let mut cancel = Map::new();
     cancel.insert("invite".into(), invite_id.clone().into());
@@ -427,6 +400,44 @@ async fn invitations_run_through_the_rooms_own_methods() {
     )
     .await;
     assert_eq!(elsewhere, Err(ActionHostError::UnknownAction));
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_editor_invites_up_to_her_own_role_and_no_further() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+
+    // Granted invite, Ada invites up to her own role and no further: the
+    // workspace's own decision, refused with its reason.
+    grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
+    invoke(
+        &host,
+        workspace_id,
+        &caller(&ada),
+        request(&workspace, governance::INVITE, json!({ "role": "editor" })),
+    )
+    .await
+    .unwrap();
+    let above = invoke(
+        &host,
+        workspace_id,
+        &caller(&ada),
+        request(
+            &workspace,
+            governance::INVITE,
+            json!({ "role": "moderator" }),
+        ),
+    )
+    .await;
+    assert!(
+        matches!(&above, Err(ActionHostError::Refused { reason }) if reason.contains("Moderator")),
+        "{above:?}"
+    );
     relay.shutdown().await;
 }
 
@@ -707,6 +718,124 @@ fn connector_secrets_are_the_known_ones_and_request_inputs_are_text() {
     assert!(args(json!({})).text_map("inputs").unwrap().is_empty());
 }
 
+/// A dev release of `so.tilo.notes` that `publisher` (its public key in hex)
+/// built and signed.
+fn dev_release(publisher: &str, version: &str, surface: u8) -> Value {
+    json!({
+        "app": "so.tilo.notes",
+        "version": version,
+        "surface": hex::encode([surface; 32]),
+        "package": hex::encode([surface ^ 0xff; 32]),
+        "publisher": publisher,
+        "dev": true,
+    })
+}
+
+/// An Editor by role alone is offered no install verb, and asks for an action
+/// the workspace does not carry: no version is recorded.
+async fn an_editor_installs_nothing(
+    workspaces: &Workspaces,
+    host: &HostWorkspaceActions,
+    workspace_id: u64,
+    workspace: &str,
+    editor: &DeviceCert,
+    publisher: &str,
+) {
+    assert!(
+        !offered(host, workspace_id, &caller(editor))
+            .await
+            .iter()
+            .any(|verb| verb == governance::INSTALL_APP)
+    );
+    assert!(matches!(
+        invoke(
+            host,
+            workspace_id,
+            &caller(editor),
+            request(
+                workspace,
+                governance::INSTALL_APP,
+                dev_release(publisher, "1.5.0-dev.1", 1)
+            ),
+        )
+        .await,
+        Err(ActionHostError::UnknownAction)
+    ));
+    assert!(workspaces.app_versions(workspace).await.unwrap().is_empty());
+}
+
+/// Once the owner lets `developer` install apps, its own build runs, recorded
+/// with who signed and installed it; the next push replaces it, so one version
+/// runs at a time; and a release that does not name its hashes in full is
+/// refused.
+async fn a_developer_installs_its_own_build(
+    workspaces: &Workspaces,
+    host: &HostWorkspaceActions,
+    workspace_id: u64,
+    workspace: &str,
+    owner: &DeviceCert,
+    developer: &DeviceCert,
+    publisher: &str,
+) {
+    grant(
+        workspaces,
+        workspace,
+        owner,
+        developer,
+        governance::INSTALL_APP,
+    )
+    .await;
+    let answer = invoke(
+        host,
+        workspace_id,
+        &caller(developer),
+        request(
+            workspace,
+            governance::INSTALL_APP,
+            dev_release(publisher, "1.5.0-dev.1", 1),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(answer["running"]["release"]["version"], "1.5.0-dev.1");
+    assert_eq!(answer["running"]["release"]["dev"], true);
+    assert_eq!(answer["running"]["installed_by"], publisher);
+
+    // The next push replaces it: one version runs at a time.
+    invoke(
+        host,
+        workspace_id,
+        &caller(developer),
+        request(
+            workspace,
+            governance::INSTALL_APP,
+            dev_release(publisher, "1.5.0-dev.2", 2),
+        ),
+    )
+    .await
+    .unwrap();
+    let running = workspaces.app_versions(workspace).await.unwrap();
+    assert_eq!(running.len(), 1, "{running:?}");
+    assert_eq!(running[0].release.version, "1.5.0-dev.2");
+    assert_eq!(running[0].release.surface, hex::encode([2; 32]));
+
+    // A release names its hashes in full.
+    assert!(matches!(
+        invoke(
+            host,
+            workspace_id,
+            &caller(developer),
+            request(
+                workspace,
+                governance::INSTALL_APP,
+                json!({ "app": "so.tilo.notes", "version": "1", "surface": "ab", "package": "cd", "publisher": "ef" }),
+            ),
+        )
+        .await,
+        Err(ActionHostError::InvalidRequest { .. })
+    ));
+}
+
 /// The workspace chooses the version of an app every member runs. An Editor by
 /// role alone may not; a member the owner lets install apps (a developer)
 /// installs their own build, which the workspace records with who signed and
@@ -719,105 +848,27 @@ async fn a_developer_chooses_the_version_of_an_app_the_whole_room_runs() {
     let workspaces = relay.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
-    let release = |version: &str, surface: u8| {
-        json!({
-            "app": "so.tilo.notes",
-            "version": version,
-            "surface": hex::encode([surface; 32]),
-            "package": hex::encode([surface ^ 0xff; 32]),
-            "publisher": hex::encode(ada.user_public_key),
-            "dev": true,
-        })
-    };
+    let publisher = hex::encode(ada.user_public_key);
 
-    assert!(
-        !offered(&host, workspace_id, &caller(&ada))
-            .await
-            .iter()
-            .any(|verb| verb == governance::INSTALL_APP)
-    );
-    assert!(matches!(
-        invoke(
-            &host,
-            workspace_id,
-            &caller(&ada),
-            request(
-                &workspace,
-                governance::INSTALL_APP,
-                release("1.5.0-dev.1", 1)
-            ),
-        )
-        .await,
-        Err(ActionHostError::UnknownAction)
-    ));
-    assert!(
-        workspaces
-            .app_versions(&workspace)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-
-    grant(
+    an_editor_installs_nothing(
         workspaces,
+        &host,
+        workspace_id,
+        &workspace,
+        &ada,
+        &publisher,
+    )
+    .await;
+    a_developer_installs_its_own_build(
+        workspaces,
+        &host,
+        workspace_id,
         &workspace,
         &owner,
         &ada,
-        governance::INSTALL_APP,
+        &publisher,
     )
     .await;
-    let answer = invoke(
-        &host,
-        workspace_id,
-        &caller(&ada),
-        request(
-            &workspace,
-            governance::INSTALL_APP,
-            release("1.5.0-dev.1", 1),
-        ),
-    )
-    .await
-    .unwrap();
-    assert_eq!(answer["running"]["release"]["version"], "1.5.0-dev.1");
-    assert_eq!(answer["running"]["release"]["dev"], true);
-    assert_eq!(
-        answer["running"]["installed_by"],
-        hex::encode(ada.user_public_key)
-    );
-
-    // The next push replaces it: one version runs at a time.
-    invoke(
-        &host,
-        workspace_id,
-        &caller(&ada),
-        request(
-            &workspace,
-            governance::INSTALL_APP,
-            release("1.5.0-dev.2", 2),
-        ),
-    )
-    .await
-    .unwrap();
-    let running = workspaces.app_versions(&workspace).await.unwrap();
-    assert_eq!(running.len(), 1, "{running:?}");
-    assert_eq!(running[0].release.version, "1.5.0-dev.2");
-    assert_eq!(running[0].release.surface, hex::encode([2; 32]));
-
-    // A release names its hashes in full.
-    assert!(matches!(
-        invoke(
-            &host,
-            workspace_id,
-            &caller(&ada),
-            request(
-                &workspace,
-                governance::INSTALL_APP,
-                json!({ "app": "so.tilo.notes", "version": "1", "surface": "ab", "package": "cd", "publisher": "ef" }),
-            ),
-        )
-        .await,
-        Err(ActionHostError::InvalidRequest { .. })
-    ));
 
     invoke(
         &host,

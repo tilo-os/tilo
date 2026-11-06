@@ -137,11 +137,16 @@ fn pop(ctx: &mut RenderContext, pushed: Pushed) {
     }
 }
 
-/// Record every draw touching `region` (device pixels). Returns how many
-/// draws were recorded.
+/// Record the draws `ops` (indices into `list`, in draw order) into `ctx` for
+/// `region` (device pixels): the draws a [`Plan`] listed for that region, so
+/// what is recorded is only what the region paints. Returns how many draws
+/// were recorded.
+///
+/// [`Plan`]: crate::plan::Plan
 pub(crate) fn record(
     ctx: &mut RenderContext,
     list: &DisplayList,
+    ops: &[u32],
     region: Rect,
     base: AlphaColor<Srgb>,
     scratch: &mut Scratch,
@@ -155,20 +160,18 @@ pub(crate) fn record(
         ctx.set_paint(base);
         ctx.fill_rect(&Rect::new(0.0, 0.0, region.width(), region.height()));
     }
-    let mut i = 0;
-    while let Some(op) = list.ops.get(i) {
-        i += 1;
+    for &index in ops {
+        let Some(op) = list.ops.get(index as usize) else {
+            continue;
+        };
         match op {
             Op::Draw {
                 path,
                 transform,
                 style,
                 brush,
-                bbox,
+                ..
             } => {
-                if !overlaps(*bbox, region) {
-                    continue;
-                }
                 ctx.set_transform(offset * *transform);
                 if set_brush(ctx, brush, *transform) {
                     paint_path(ctx, list.path(*path), style);
@@ -179,11 +182,8 @@ pub(crate) fn record(
                 glyphs,
                 style,
                 brush,
-                bbox,
+                ..
             } => {
-                if !overlaps(*bbox, region) {
-                    continue;
-                }
                 let instances = list.glyphs.get(glyphs.clone()).unwrap_or_default();
                 match style {
                     Style::Fill(fill) => {
@@ -238,24 +238,18 @@ pub(crate) fn record(
                 recorded += 1;
             }
             Op::Begin {
-                path,
+                path: Some(path),
                 transform,
                 fill,
                 mode,
-                bbox,
-                end,
                 nested_blend,
-            } => {
-                let visible = path.is_some()
-                    && overlaps(*bbox, region)
-                    && !matches!(mode, LayerMode::LuminanceMask);
-                if !visible {
-                    // Nothing inside can show: skip to after the matching end.
-                    i = end.saturating_add(1);
-                    continue;
-                }
-                let Some(path) = *path else { continue };
-                let how = how_to_push(list, path, *transform, *mode, *nested_blend, region);
+                ..
+            } if !matches!(mode, LayerMode::LuminanceMask) => {
+                // A plan lists a layer, and its end with it, only for regions
+                // its clip shows in, so every one here is pushed: a layer
+                // that cannot affect the region leaves no mark, and the end
+                // that follows still pops its own.
+                let how = how_to_push(list, *path, *transform, *mode, *nested_blend, region);
                 scratch.pushed.push(how);
                 if how == Pushed::Nothing {
                     continue;
@@ -263,15 +257,21 @@ pub(crate) fn record(
                 ctx.set_transform(offset * *transform);
                 ctx.set_fill_rule(*fill);
                 if how == Pushed::Clip {
-                    ctx.push_clip_path(list.path(path));
+                    ctx.push_clip_path(list.path(*path));
                 } else {
                     let (blend, alpha) = match mode {
                         LayerMode::Blend(blend, alpha) => (Some(*blend), Some(*alpha)),
                         _ => (None, None),
                     };
-                    ctx.push_layer(Some(list.path(path)), blend, alpha, None, None);
+                    ctx.push_layer(Some(list.path(*path)), blend, alpha, None, None);
                 }
                 recorded += 1;
+            }
+            Op::Begin { .. } => {
+                // A layer with no geometry, or a luminance mask this
+                // rasterizer does not draw, shows nothing: its end still pops
+                // the mark it leaves.
+                scratch.pushed.push(Pushed::Nothing);
             }
             Op::End => {
                 if let Some(pushed) = scratch.pushed.pop() {

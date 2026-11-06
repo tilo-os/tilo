@@ -32,6 +32,31 @@ pub const WALLPAPER: Key<Option<String>> = Key::new(SECTION, "wallpaper", || Non
 /// system locale.
 pub const LANGUAGE: Key<Option<String>> = Key::new(SECTION, "language", || None);
 
+/// The interface language: the one the person chose ([`LANGUAGE`]), else the
+/// locale the device runs in (`LC_ALL`, `LC_MESSAGES`, `LANGUAGE`, `LANG`, read
+/// as POSIX).
+///
+/// Every surface resolves its language — and the language of the dates it
+/// formats — from this one answer, so a person who chose English on a German
+/// machine reads English throughout: the system locale is only the default,
+/// never a second source.
+#[must_use]
+pub fn preferred_language() -> Option<String> {
+    let chosen = LANGUAGE.get();
+    let system = tilo_process::environment::environment().locale.clone();
+    preferred_language_from(chosen.as_deref(), system.as_deref())
+}
+
+/// [`preferred_language`] over an explicit choice and system locale. A value
+/// that names no language (`C`, `POSIX`, malformed) falls back to the next
+/// source; `None` means neither named one.
+#[must_use]
+pub fn preferred_language_from(chosen: Option<&str>, system: Option<&str>) -> Option<String> {
+    [chosen, system].into_iter().flatten().find_map(|value| {
+        tilo_process::environment::parse_posix_locale(value).map(|locale| locale.to_string())
+    })
+}
+
 /// The interface face the person chose, by any family name a theme's type
 /// role may name (`Default`, `Hyperlegible`, `Noto Sans`). Unset follows the
 /// theme's own face.
@@ -98,5 +123,33 @@ mod tests {
         assert_eq!(UI_FACE.from_document(&empty), None);
         assert_eq!(ACCENT.from_document(&empty), None);
         assert_eq!(TRANSLUCENCY.from_document(&empty), None);
+    }
+
+    /// The person's choice is the interface language, in one form whichever
+    /// way it was written; the system locale is the default behind it, and a
+    /// value that names no language (`C`) leaves the next source to decide.
+    #[test]
+    fn the_chosen_language_wins_and_the_system_locale_is_only_the_default() {
+        assert_eq!(
+            preferred_language_from(Some("en-US"), Some("de_DE.UTF-8")).as_deref(),
+            Some("en-US")
+        );
+        assert_eq!(
+            preferred_language_from(Some("de_DE.UTF-8"), None).as_deref(),
+            Some("de-DE")
+        );
+        assert_eq!(
+            preferred_language_from(None, Some("de_DE.UTF-8")).as_deref(),
+            Some("de-DE"),
+            "with no choice the device's locale is the default"
+        );
+        assert_eq!(
+            preferred_language_from(Some("C"), Some("fr_FR.UTF-8")).as_deref(),
+            Some("fr-FR"),
+            "an explicit C names no language, so the default decides"
+        );
+        assert_eq!(preferred_language_from(Some("C"), Some("C.UTF-8")), None);
+        assert_eq!(preferred_language_from(Some("not a locale!"), None), None);
+        assert_eq!(preferred_language_from(None, None), None);
     }
 }

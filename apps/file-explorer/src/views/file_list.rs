@@ -417,7 +417,7 @@ impl ListSlot {
 
     /// What an assistive technology asked of a row since the last read: the
     /// row it asked to open, and the row and point it asked a menu for.
-    pub(super) fn take_row_requests(&self) -> (Option<usize>, Option<(usize, Point)>) {
+    pub(crate) fn take_row_requests(&self) -> (Option<usize>, Option<(usize, Point)>) {
         self.0.borrow_mut().take_row_requests()
     }
 
@@ -479,5 +479,19 @@ impl ListSlot {
     /// The table's accessibility node.
     pub(super) fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         self.0.borrow().accessibility()
+    }
+
+    /// Run an assistive technology's `action` on the row the semantic target
+    /// `target` names, which the table's forwarded access node addresses.
+    pub(super) fn perform_semantic_action(
+        &self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ui::widget::ModelPath,
+    ) -> bool {
+        self.0
+            .borrow_mut()
+            .perform_semantic_action(target, action, state, path)
     }
 }

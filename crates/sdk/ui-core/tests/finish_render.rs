@@ -78,9 +78,9 @@ fn desk() -> Scene {
     }
     // Dark text-like bars, which a blur softens and cells quantise.
     for row in 0..4 {
-        let y = 140.0 + row as f64 * 32.0;
+        let y = 140.0 + f64::from(row) * 32.0;
         for column in 0..5 {
-            let x = 26.0 + column as f64 * 78.0;
+            let x = 26.0 + f64::from(column) * 78.0;
             scene.fill(
                 Fill::NonZero,
                 Affine::IDENTITY,
@@ -130,8 +130,8 @@ fn dump(name: &str, rgba: &[u8]) {
 }
 
 fn pixel(rgba: &[u8], x: u32, y: u32) -> [u8; 3] {
-    let (r, g, b, _) = OffscreenRenderer::sample(rgba, W, x, y);
-    [r, g, b]
+    let (red, green, blue, _) = OffscreenRenderer::sample(rgba, W, x, y);
+    [red, green, blue]
 }
 
 /// Luminance, for "is this lighter than that".
@@ -209,7 +209,7 @@ fn glass_lets_the_blurred_desk_through_and_lights_its_rim() {
     // the colour from one end of the panel to the other.
     let row: Vec<f32> = (118..322).map(|x| luma(body(&rgba, x, 100))).collect();
     let spread =
-        row.iter().cloned().fold(f32::MIN, f32::max) - row.iter().cloned().fold(f32::MAX, f32::min);
+        row.iter().copied().fold(f32::MIN, f32::max) - row.iter().copied().fold(f32::MAX, f32::min);
     assert!(
         spread >= 4.0,
         "Glass shows the blurred desk through it: spread {spread:.1}"
@@ -217,7 +217,7 @@ fn glass_lets_the_blurred_desk_through_and_lights_its_rim() {
     // And it is not the desk itself: the blur softened it.
     let bare_spread = {
         let row: Vec<f32> = (118..322).map(|x| luma(pixel(&bare, x, 100))).collect();
-        row.iter().cloned().fold(f32::MIN, f32::max) - row.iter().cloned().fold(f32::MAX, f32::min)
+        row.iter().copied().fold(f32::MIN, f32::max) - row.iter().copied().fold(f32::MAX, f32::min)
     };
     assert!(
         spread < bare_spread,
@@ -245,12 +245,12 @@ fn liquid_glass_shows_the_desk_in_its_middle_and_bends_it_at_the_rim() {
     let bare_at = |x: u32, y: u32| luma(pixel(&bare, x, y));
     let middle_spread = {
         let row: Vec<f32> = (118..322).map(|x| at(x, 100)).collect();
-        row.iter().cloned().fold(f32::MIN, f32::max) - row.iter().cloned().fold(f32::MAX, f32::min)
+        row.iter().copied().fold(f32::MIN, f32::max) - row.iter().copied().fold(f32::MAX, f32::min)
     };
     let block = render(&Theme::preset(Preset::Block), "liquid-block-reference");
     let block_spread = {
         let row: Vec<f32> = (118..322).map(|x| luma(body(&block, x, 100))).collect();
-        row.iter().cloned().fold(f32::MIN, f32::max) - row.iter().cloned().fold(f32::MAX, f32::min)
+        row.iter().copied().fold(f32::MIN, f32::max) - row.iter().copied().fold(f32::MAX, f32::min)
     };
     assert!(
         block_spread < 1.0,

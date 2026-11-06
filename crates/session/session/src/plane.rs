@@ -26,11 +26,11 @@ use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutStat
 use tilo_action_broker::collab_outbound::PeerPublisher;
 use tilo_action_broker::services::TrackerRuns;
 use tilo_action_broker::services::{
-    ApplicationServices, Caller, ContentStoreServices, DisplayControlServices, DriveServices,
-    Granted, HostServices, HostStepServices, PublishedResources, Reading, ResourceWatch,
-    SearchIndexServices, ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore,
-    SpeakerChange, SpeakerServices, WifiContinuityServices, WorkspaceAuthority,
-    WorkspaceAuthorityHandle, WorkspaceMemberships,
+    ApplicationServices, BrowserServiceSessionServices, Caller, ContentStoreServices,
+    DisplayControlServices, DriveServices, Granted, HostServices, HostStepServices,
+    PublishedResources, Reading, ResourceWatch, SearchIndexServices, ShortcutLibraryRequest,
+    ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices, WifiContinuityServices,
+    WorkspaceAuthority, WorkspaceAuthorityHandle, WorkspaceMemberships,
 };
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
@@ -362,6 +362,14 @@ pub struct Hosted {
     /// Files' clipboard: what a person copied or cut there, pasted into a
     /// folder of this desktop's, and what it put on the desktop's clipboard.
     pub file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
+    /// The person's own store, which the broker keeps their own records in as
+    /// well as in this desktop: what their other devices' records reach this
+    /// session's apps through. `None` on a session that keeps none.
+    pub personal: Option<tilo_peer_state::PersonalSync>,
+    /// What the broker hands the apps that have a record open: shared with
+    /// the person's store, so a write of theirs reaches an app here on the
+    /// same route this device's own writes do.
+    pub fanout: std::sync::Arc<FanoutState>,
 }
 
 /// Where a session keeping its state at `state` keeps what its broker admits.
@@ -394,6 +402,7 @@ pub fn serve(
 ) -> std::io::Result<BrokerHandle> {
     let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.desk) as _;
     let channels = std::sync::Arc::clone(&hosted.sealed.broker);
+    let fanout = std::sync::Arc::clone(&hosted.fanout);
     // The identity store's device-certificate checks, on this session's one
     // policy origin: the broker decides a join and a retained action against
     // them, and the services answer an app's question about a device with them.
@@ -436,7 +445,7 @@ pub fn serve(
         config.as_ref(),
         services,
         channels,
-        std::sync::Arc::new(FanoutState::new()),
+        fanout,
     )
 }
 
@@ -634,6 +643,28 @@ impl WorkspaceMemberships for SessionMemberships {
         false
     }
 
+    /// An app opening in `workspace` is let author there when this device's
+    /// person administers the workspace and it does not let that app author
+    /// yet: the same decision the launch before it makes
+    /// ([`crate::membership::authorship`]). A member whose role only lets them
+    /// write asks nothing of the workspace's people.
+    fn app_opens_by_granting(
+        &self,
+        workspace: &str,
+        app: &str,
+        _certificate: &tilo_user_identity::DeviceCert,
+    ) -> bool {
+        if !self.engine.administers(workspace) {
+            return false;
+        }
+        self.engine.policy(workspace).is_ok_and(|policy| {
+            !policy.app_authors(
+                app,
+                &tilo_action_policy::Context::at_time(std::time::SystemTime::now()),
+            )
+        })
+    }
+
     fn health(&self) -> Result<(), String> {
         self.engine.owner().health()
     }
@@ -711,8 +742,13 @@ fn seams(
         task_programs,
         nearby,
         file_clipboard,
+        personal,
+        fanout: _,
     } = hosted;
     let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
+    // What each window this session runs shows, kept with its launches: read
+    // by the seam a window's app speaks on, and by the session's own passes.
+    let window_notes = launches.notes();
     // The desk decides who may administer a workspace's identity, and the
     // fabric is where pairing reaches the person's other devices.
     let desk_authority = std::sync::Arc::clone(&desk);
@@ -743,6 +779,15 @@ fn seams(
             .parent()
             .map(|state| state.join("actions").join("launchable.json"))
     });
+    // The person's account custody: the vault stays on this device, under
+    // their own config root, and a session with no workspace of its own has
+    // no route to decide a call on.
+    let service_sessions: Option<std::sync::Arc<dyn BrowserServiceSessionServices>> =
+        engine.as_ref().map(|engine| {
+            std::sync::Arc::new(crate::service_sessions::ServiceSessions::new(
+                std::sync::Arc::clone(engine),
+            )) as std::sync::Arc<dyn BrowserServiceSessionServices>
+        });
     Seams {
         // No approved-check runner is installed with this session: a check a
         // project's app asks for has nothing to run it.
@@ -776,14 +821,6 @@ fn seams(
         // What people ask this session's agents to do: a run is the broker's
         // to deliver, and its reports come back to the run.
         tracker_runs: Seam::when(agent_runs.map(|runs| runs as std::sync::Arc<dyn TrackerRuns>)),
-        // A person's private conversations are kept in their workspaces'
-        // private person state, beside the owner's own record: Chat reads and
-        // writes them through the owner this session opened, where this
-        // device is the workspace's host, and follows them by its watch.
-        person_chat: Seam::when(engine.map(|engine| {
-            std::sync::Arc::new(crate::person_chat::PersonChat::new(engine))
-                as tilo_action_broker::services::person_chat::PersonChatService
-        })),
         // Which devices this person's identity certifies now: what the broker
         // admits a join with, and what it decides a retained action against.
         native_certificates: Seam::served(certificates),
@@ -824,12 +861,11 @@ fn seams(
         // Settings read it: the broker hands over the keymap, and only this
         // machine's callers are offered it.
         keyboard_shortcuts: Seam::served(crate::keyboard_shortcuts::servable()),
-        // What an app had open is its window's on the desk, restored where
-        // the desk shows it; the door keeps no continuation of its own.
-        continuations: Seam::unserved(
-            "an app's unfinished work stays with its window on the desk, and this session \
-             records no continuation for another app to pick up",
-        ),
+        // The continuation channel a window's app speaks on: its checkpoint
+        // and handoff reports are taken by the session that runs it rather
+        // than refused. What a window shows is read from the broker's record
+        // subscriptions instead ([`crate::continuations`]).
+        continuations: Seam::served(window_notes),
         // What an app publishes of its own content is found whether or not
         // it runs, once it is closed and after a restart.
         search_index: Seam::when(content.map(|content| {
@@ -875,11 +911,12 @@ fn seams(
             std::sync::Arc::new(crate::wifi_continuity::WifiContinuity::new(fabric))
                 as std::sync::Arc<dyn WifiContinuityServices>
         })),
-        // The Browser app resolves and keeps its own service sessions in its
-        // record, beside its windows.
-        browser_service_sessions: Seam::unserved(
-            "the Browser app keeps its service sessions itself, in its own record",
-        ),
+        // The session is the custodian of the person's account secrets: Browser
+        // resolves, lists and forgets its website sessions here, Settings seals
+        // an account's secret, and Mail is released the one it keeps. Every
+        // call is decided on the certificate the broker attested for the app's
+        // connection in its workspace, and the vault stays on this device.
+        browser_service_sessions: Seam::when(service_sessions),
         // Files offers a file to the person's other devices over the same
         // device fabric this session already runs: one Nearby Send stages a
         // screenshot and a file alike, and the receiving device's person
@@ -915,10 +952,10 @@ fn seams(
         workspace_nodes: Seam::unserved(
             "a node's workspace is reached through the desk's own sharing, not by an app",
         ),
-        personal: Seam::unserved(
-            "this session keeps no personal-scope store: the person's records travel with \
-             their workspaces",
-        ),
+        // The person's own records, kept in their store as well as in this
+        // desktop: what an app writes of its own scope reaches their other
+        // devices, and what those wrote reaches the app here.
+        personal: Seam::when(personal),
         // The steps only this session may take for the person: the
         // workspace's activity the Activity app reads, pairing a nearby
         // device, and administering their identities and the devices trusted
@@ -1007,6 +1044,9 @@ pub(crate) struct Plane {
     /// Files' clipboard, whose copies the loop puts on the desktop's
     /// clipboard: what the person pastes into any other app.
     pub(crate) file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
+    /// The person's own store open to their other devices, held so its links
+    /// and the writes it keeps end with the session.
+    pub(crate) _personal: Option<tilo_action_broker::personal::Door>,
 }
 
 impl Plane {
@@ -1048,6 +1088,12 @@ impl Plane {
         &self,
     ) -> Option<std::sync::Arc<tilo_action_broker::collab_broker::AppActionBroker>> {
         self.broker.app_action_broker().map(std::sync::Arc::new)
+    }
+
+    /// The route to one window's app, for the step of a move it is asked for:
+    /// what answers on the window's continuation channel.
+    pub(crate) fn handoff(&self) -> tilo_action_broker::collab_broker::SessionFollowDispatcher {
+        self.broker.follow_dispatcher()
     }
 
     /// The broker a program the person admitted as an agent is served
@@ -1215,6 +1261,8 @@ mod tests {
             file_clipboard: std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
                 std::sync::Arc::new(|| ()),
             )),
+            personal: None,
+            fanout: std::sync::Arc::new(FanoutState::new()),
         }
     }
 
@@ -1461,7 +1509,7 @@ mod tests {
             None,
         );
         let decisions = decided.decisions();
-        assert_eq!(decisions.len(), 42, "the broker's seams, each decided");
+        assert_eq!(decisions.len(), 41, "the broker's seams, each decided");
         let mut names = std::collections::BTreeSet::new();
         for (name, why) in &decisions {
             assert!(names.insert(*name), "`{name}` is decided once");

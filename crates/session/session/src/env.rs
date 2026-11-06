@@ -9,12 +9,9 @@
 //! session exports them with `dbus-update-activation-environment --systemd`,
 //! which updates both environments in one call; the login wrapper clears
 //! them on logout.
-
-use std::path::PathBuf;
-
-/// `XDG_CURRENT_DESKTOP` as a colon list: Tilo plus GNOME, so
-/// `OnlyShowIn=GNOME` entries remain visible without claiming to *be* GNOME.
-pub const CURRENT_DESKTOP_VALUE: &str = "tilo:GNOME";
+//!
+//! An X11 display is not exported: every workspace has its own, and only the
+//! launch that belongs to a workspace is told that workspace's display.
 
 const UPDATE_PROGRAM: &str = "/usr/bin/dbus-update-activation-environment";
 
@@ -23,28 +20,17 @@ const UPDATE_PROGRAM: &str = "/usr/bin/dbus-update-activation-environment";
 pub struct SessionEnvironment {
     /// The compositor's socket in `XDG_RUNTIME_DIR`, e.g. `wayland-1`.
     pub wayland_display: String,
-    /// The X11 display, once Xwayland is up.
-    pub x11_display: Option<String>,
-    /// Authority file for [`Self::x11_display`].
-    pub x11_authority: Option<PathBuf>,
 }
 
 impl SessionEnvironment {
     /// The exact `KEY=value` assignments, in a stable order.
     #[must_use]
     pub fn assignments(&self) -> Vec<String> {
-        let mut assignments = vec![
-            format!("WAYLAND_DISPLAY={}", self.wayland_display),
-            format!("XDG_CURRENT_DESKTOP={CURRENT_DESKTOP_VALUE}"),
-            format!("XDG_SESSION_DESKTOP={}", tilo_paths::login::TILO_DESKTOP),
-            "XDG_SESSION_TYPE=wayland".to_string(),
-        ];
-        if let Some(display) = &self.x11_display {
-            assignments.push(format!("DISPLAY={display}"));
-        }
-        if let Some(authority) = &self.x11_authority {
-            assignments.push(format!("XAUTHORITY={}", authority.display()));
-        }
+        let mut assignments = vec![format!("WAYLAND_DISPLAY={}", self.wayland_display)];
+        assignments.extend(
+            tilo_app_launch::env::desktop_variables()
+                .map(|(name, value)| format!("{name}={value}")),
+        );
         assignments
     }
 
@@ -66,7 +52,7 @@ impl SessionEnvironment {
         if !tilo_paths::login::names_tilo(std::env::var_os("XDG_CURRENT_DESKTOP").as_deref()) {
             return;
         }
-        let _ = std::thread::Builder::new()
+        let exported = std::thread::Builder::new()
             .name("tilo-session-env".to_string())
             .spawn(move || match self.command().status() {
                 Ok(status) if status.success() => tracing::info!(
@@ -78,6 +64,9 @@ impl SessionEnvironment {
                     tracing::warn!(%error, "dbus-update-activation-environment could not run");
                 }
             });
+        if let Err(error) = exported {
+            tracing::warn!(%error, "the display could not be exported in the background");
+        }
     }
 }
 
@@ -89,10 +78,6 @@ mod tests {
     fn the_wayland_socket_and_desktop_are_exported_with_systemd() {
         let environment = SessionEnvironment {
             wayland_display: "wayland-1".into(),
-            x11_display: Some(":1042".into()),
-            x11_authority: Some(PathBuf::from(
-                "/run/user/1000/tilo-session/xwayland/Xauthority-1042",
-            )),
         };
         let command = environment.command();
         assert_eq!(command.get_program(), UPDATE_PROGRAM);
@@ -108,8 +93,6 @@ mod tests {
                 "XDG_CURRENT_DESKTOP=tilo:GNOME",
                 "XDG_SESSION_DESKTOP=tilo",
                 "XDG_SESSION_TYPE=wayland",
-                "DISPLAY=:1042",
-                "XAUTHORITY=/run/user/1000/tilo-session/xwayland/Xauthority-1042",
             ]
         );
     }

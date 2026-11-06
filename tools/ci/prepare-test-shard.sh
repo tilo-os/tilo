@@ -60,12 +60,6 @@ if tests tilo-secret-service; then
     bash tools/ci/ensure-session-bus-tools.sh
 fi
 
-# The X11 bridge (xwayland-satellite and Xwayland) the shell's X11 clipboard
-# and focus tests drive; the pinned builder predates it.
-if tests shell; then
-    bash tools/ci/ensure-x11-bridge-tools.sh
-fi
-
 # Pinned/older builders may predate native PDF capture coverage. Stage only
 # the verified runtime; leave Mesa, fonts and OS packages unchanged. Where the
 # runner's kernel can enforce Landlock, the PDF helper's sandbox is also

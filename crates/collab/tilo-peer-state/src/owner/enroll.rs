@@ -363,6 +363,39 @@ async fn prove_membership(
     }
 }
 
+/// Take `workspace` in as one of this person's further devices: the workspace
+/// admits a device certified by a member's root as that member's device, so
+/// this device proves its membership at the host `hint` names, without an
+/// invitation, and holds what the host answers.
+///
+/// # Errors
+/// Custody changes during the exchange, the host refuses, or the answer does
+/// not install.
+pub async fn admit_as_member(
+    client: WorkspaceJoinClient,
+    identity: HostIdentity,
+    owner: NativeWorkspaceOwner,
+    workspace: crate::owner::WorkspaceId,
+    workspace_id: u64,
+    hint: join::TransportHint,
+    now: SystemTime,
+) -> Result<(), String> {
+    let (host, _) =
+        IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
+    let (device, _) = identity.current_native_material(workspace_id)?;
+    let bootstrap = prove_membership(
+        &client,
+        &host.endpoint_addr,
+        (workspace.to_string(), workspace_id),
+        &device,
+        &identity,
+    )
+    .await?;
+    current(&identity, workspace_id, &device)?;
+    owner.install_member(workspace_id, &bootstrap, hint, &device, now)?;
+    Ok(())
+}
+
 /// Prove this device's membership of `workspace`, a workspace it joined, with the
 /// renewal of the certificate the workspace's record holds, when its custody
 /// holds one, and take the governor's answer in

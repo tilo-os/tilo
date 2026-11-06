@@ -53,7 +53,7 @@ use session::{finish_peer_outcome, run_peer_stream};
 pub use session::{run_peer, run_peer_until};
 use state::{
     FanoutStamp, LiveEnvelope, PreparedRecipients, SelectedPublication, SessionLease, SessionLives,
-    StateCommit, authorized_state_source, captured_live_current, desktop_refusal,
+    StateCommit, authorized_state_source, captured_live_current, desktop_refusal, file_refusal_of,
     gated_checkpoint_channel, governor_notice, handle_delta, handle_delta_prefix, live_audience,
     unpublished,
 };
@@ -73,8 +73,7 @@ use dispatch::handle_inbound_frame;
 use dispatch::{handle_envelope, unserved_private};
 use hello::handle_host_hello;
 use live::{
-    handle_content_want, handle_live, handle_live_join, handle_live_leave, handle_presence,
-    handle_voice, route_record_content,
+    handle_content_want, handle_live_join, handle_presence, handle_voice, route_record_content,
 };
 use records::handle_open_record;
 pub use subscribe::get_or_autobind_workspace;

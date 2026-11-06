@@ -3,6 +3,7 @@
 use taffy::style_helpers::length;
 use taffy::{Size, Style};
 
+use super::Side;
 use super::arranged::{Arranged, Layout, Resolved, Slot, wrapper_style};
 use super::units::{Align, Axis, Direction, Distribute};
 use crate::tokens::Rhythm;
@@ -11,6 +12,7 @@ use crate::tokens::Rhythm;
 pub struct FlexLayout {
     axis: Axis,
     gap: Rhythm,
+    padding: Rhythm,
     align: Align,
     distribute: Distribute,
     wrap: bool,
@@ -27,8 +29,17 @@ impl Layout for FlexLayout {
         }
     }
 
-    fn container(&self, resolved: &Resolved) -> Style {
+    fn container(&self, resolved: &Resolved, lead: f32) -> Style {
         let gap = length(resolved.gap(self.gap));
+        // The room the container keeps between its own edge and what it holds is the same on
+        // every side; a `lead` stands what it holds further in from the side it leads on, over
+        // that room.
+        let pad = resolved.gap(self.padding);
+        let lead = if lead > 0.0 { lead } else { 0.0 };
+        let (left, right) = match self.leading() {
+            Side::Leading => (pad + lead, pad),
+            Side::Trailing => (pad, pad + lead),
+        };
         Style {
             display: taffy::Display::Flex,
             flex_direction: match self.axis {
@@ -45,6 +56,12 @@ impl Layout for FlexLayout {
             gap: Size {
                 width: gap,
                 height: gap,
+            },
+            padding: taffy::Rect {
+                left: length(left),
+                right: length(right),
+                top: length(pad),
+                bottom: length(pad),
             },
             min_size: Size {
                 width: length(0.0_f32),
@@ -63,6 +80,14 @@ impl Layout for FlexLayout {
                 },
             },
             ..Style::default()
+        }
+    }
+
+    /// A row written right to left leads on the right.
+    fn leading(&self) -> Side {
+        match self.direction {
+            Direction::Rtl => Side::Trailing,
+            Direction::Ltr => Side::Leading,
         }
     }
 
@@ -112,6 +137,7 @@ impl Arranged<FlexLayout> {
         Self::with_layout(FlexLayout {
             axis: Axis::Block,
             gap: Rhythm::Sibling,
+            padding: Rhythm::None,
             align: Align::Stretch,
             distribute: Distribute::Start,
             wrap: false,
@@ -127,6 +153,7 @@ impl Arranged<FlexLayout> {
         Self::with_layout(FlexLayout {
             axis: Axis::Inline,
             gap: Rhythm::Related,
+            padding: Rhythm::None,
             align: Align::Center,
             distribute: Distribute::Start,
             wrap: false,
@@ -139,6 +166,14 @@ impl Arranged<FlexLayout> {
     #[must_use]
     pub const fn gap(mut self, gap: Rhythm) -> Self {
         self.layout.gap = gap;
+        self
+    }
+
+    /// The room the container keeps between its edge and what it holds, on every side: a
+    /// panel's body asking to be inset from its own surface.
+    #[must_use]
+    pub const fn padding(mut self, padding: Rhythm) -> Self {
+        self.layout.padding = padding;
         self
     }
 

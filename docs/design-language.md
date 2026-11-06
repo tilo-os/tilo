@@ -134,7 +134,10 @@ and stats are not cards.
 
 **Elevation.** A window tile casts one soft shadow onto the ground; a
 floating thing casts two (a tight contact layer and a wide one) and draws a
-1 px inner hairline. Bars, cards and selected controls cast none.
+1 px inner hairline. Bars, cards and selected controls cast none. A surface
+flush with the display — a bar at the `full` fit — casts nothing on the
+sides that are the screen's own edges either: no rule, rim or highlight a
+pixel in from the bezel, so its ground reaches the edge in one colour.
 
 ## Material and transparency
 
@@ -234,28 +237,19 @@ rail it hides, as the sidebar toggle hides it. The width is remembered per
 app on this device. Rail tiles never stand in a wide sidebar, and list rows
 never in a rail.
 
-Which form a sidebar starts in follows the destinations it can hold, not
-the app and not what has loaded so far: a sidebar whose places come under
-headings (a contact book's groups, a mail account's folders) declares so
-and starts as a list even before any heading arrives. The rule runs once,
-when a window first shows its sidebar; places that load afterwards never
-change its form or width in that window's life. Only the person's drag
-does.
+A sidebar starts as a list, wide enough for its labels, and only the window
+narrows it: the room the content needs comes first, and the sidebar gives its
+width back until its rail, then hides. Which form it is in is a function of
+the width it has, so a wide window never shows rail tiles over the room for
+the labels, and nothing is settled about the form before the places arrive.
+Where the list begins is where every label stands whole beside its icon,
+never past the sidebar's minimum, so a label too long for the sidebar is cut
+short rather than wrapped onto a second line.
 
-| Starts as | When |
-|---|---|
-| Rail | One flat set of at most seven destinations, each with an icon and a label that stands whole in a tile (two caption lines, broken only at spaces), with no headings, folding, "New" action or filter, no actions in the sidebar's header, and no row that says more than its label (a second line, a figure, a check, a status, a colour, people) or nests or renames |
-| List | Anything else: headings, many or growing sets of places, nesting, long labels, rows with more to say |
-
-Today that makes these sidebars rails: Tube (six places), Clocks (four
-screens), and Containers (four places; their counts show once widened); and these
-lists: Settings, Mail, Files, Contacts (its groups), Feeds (its header adds a subscription), Passwords,
-Snippets, Shortcuts, Backups, Themes, Database client, Disks (sizes and
-health), Firewall (no icons, the active zone's label). Remote's rail is
-always a rail (`NavMode::Docked`). A sidebar that is not a navigation list
-alone (API tester's environment picker over its lists, Notes' notebook
-column) keeps its list width. Apps that paint their own sidebar (Photos,
-Music, Chat, Calendar) do not have the rail yet.
+Remote's rail is always a rail (`NavMode::Docked`). A sidebar that is not a
+navigation list alone (API tester's environment picker over its lists, Notes'
+notebook column) keeps its list width. Apps that paint their own sidebar
+(Photos, Music, Chat, Calendar) do not have the rail yet.
 
 ## Space and density
 
@@ -269,6 +263,10 @@ Music, Chat, Calendar) do not have the rail yet.
   sheets, Quick Settings tiles' minimum).
 - Rows are 36 (one line), 52 (title and secondary line) and 64 (led by a
   40 px avatar or icon); icon-to-text is `sibling`.
+- A dense row is a reference that stands among content (what a message was
+  made from): one line at the caption's size with the small glyph, as tall as
+  that line and its inset rather than the list's row height, and a press on
+  it still grows it to the input's target.
 - The top bar is 32 high; the window bar follows `window bar`; 4 px separate
   them.
 - **Density** is a token mode (`tokens::Density`, `Theme::with_density`) set
@@ -332,6 +330,12 @@ content, never geometry or colour (`ui::widget::primitives`).
 | `Button(role)` | primary, secondary, quiet, destructive |
 | `IconButton` | square, small or default; its constructor requires the accessible name, which is its tooltip |
 | `BarControlFace` | the top bar's and window bars' control: plain at rest, lifts on hover and while open, 28 high |
+| `BarChip` | a bar control holding a face stack, a label and a press: the bar's people, invite, sharing and strip-name pills |
+| `StatusCluster` | the bar's status cluster: square slots for the bell, volume, link and battery, a count badge and the critical-battery wash |
+| `AgendaPopoverFace` | the clock's overlay: a title, a reading, a drag handle and its pause, add and close controls, on the floating material |
+| `NotificationListView` | retained notifications under group headings, with paging, per-row controls and the cleared band |
+| `TextLineFace`, `TextBlockFace` | one line of words, or wrapped running text, in a role: the shared way to paint text on a surface a host owns |
+| `paint_control_row` | a Control's fill, edge and focus ring: the list language Quick Settings and the notification centre share |
 | `Chip` | people, tags and filters only |
 | `Toggle`, `Checkbox`, `Checkbox::radio` | the on-state green, keyboard-only focus ring |
 | `ToggleGroup` (segmented) | raised track, item-radius thumb |

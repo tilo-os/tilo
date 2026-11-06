@@ -17,6 +17,9 @@
     reason = "test fixtures shared by the session's test binaries: a helper a binary does not use is not an error, and a failed step is the assertion"
 )]
 
+pub mod people;
+pub mod window;
+
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -31,6 +34,19 @@ use tilolang_tilo::host::Host;
 use tilolang_tilo::records_service::RecordService;
 use tilolang_tilo::runtime::Principal;
 
+/// The canvas's entry, as assistive technology names it: a field bound to a view's state takes
+/// the name the view gives it for a person to read, its own words, rather than the state's name
+/// in the code (`typed`).
+pub const CANVAS_ENTRY: &str = "Find something, or ask";
+/// The launcher's field, announced the same way: the view's own words for it, not the state's
+/// name in the code (`query`).
+pub const LAUNCHER_SEARCH: &str = "Search apps, windows, actions and files";
+/// The overview's field, announced the same way rather than by the state's name in the code
+/// (`query`).
+pub const OVERVIEW_SEARCH: &str = "Search windows across your workspaces";
+/// The workspaces surface's field, announced the same way rather than by the state's name in
+/// the code (`name`).
+pub const WORKSPACE_NAME: &str = "Name a new workspace";
 /// The display every headless session here draws on.
 pub const WIDTH: i32 = 1280;
 /// See [`WIDTH`].
@@ -74,13 +90,98 @@ pub fn private_home() -> tempfile::TempDir {
 
 /// Run frames until `done` holds; `false` when it never did.
 pub fn reached(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) -> bool {
-    for _ in 0..600 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return true;
+    steps_until(session, |session| done(session).then_some(())).is_some()
+}
+
+/// Step the session's loop until `probe` answers, or the suite's hang bound
+/// runs out: one wait, whose only bound is the bound every other test helper
+/// uses.
+fn steps_until<T>(
+    session: &mut Session,
+    probe: impl FnMut(&mut Session) -> Option<T>,
+) -> Option<T> {
+    steps_within(session, tilo_test_env::hang_bound(), probe)
+}
+
+/// Step the session's loop until `probe` answers, or `within` runs out.
+///
+/// One slice of a wait a test drives itself: a signal the product carries as
+/// live frames rather than as state it keeps may be shed, so the test asks
+/// again between slices and keeps its own deadline, instead of sampling once.
+pub fn steps_within<T>(
+    session: &mut Session,
+    within: std::time::Duration,
+    mut probe: impl FnMut(&mut Session) -> Option<T>,
+) -> Option<T> {
+    let deadline = std::time::Instant::now()
+        .checked_add(within)
+        .expect("the wait's bound fits in an Instant");
+    loop {
+        if let Some(answer) = probe(session) {
+            return Some(answer);
         }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        session.step(Duration::from_millis(1)).expect("step");
+        std::thread::yield_now();
     }
-    false
+}
+
+/// Step the session's loop until `probe` answers, and return its answer.
+///
+/// The wait ends the moment the condition holds; its only bound is the suite's
+/// hang bound (`TILO_TEST_HANG_BOUND_SECS`, two minutes by default), so a busy
+/// machine makes the wait longer instead of failing it. A condition that never
+/// holds fails naming `what`, with the shell's refusals and what it shows as the
+/// report: every wait in the session's tests goes through here or
+/// [`tilo_test_env::wait_for`], never a frame count or a guessed deadline.
+#[track_caller]
+pub fn wait_for<T>(
+    session: &mut Session,
+    what: impl std::fmt::Display,
+    mut probe: impl FnMut(&mut Session) -> Option<T>,
+) -> T {
+    match steps_until(session, &mut probe) {
+        Some(answer) => answer,
+        None => panic!(
+            "gave up waiting for {what} after {:?}; it looks hung (set TILO_TEST_HANG_BOUND_SECS to wait longer).\n\
+             the shell's refusals: {:?}\nthe session says: {:?}",
+            tilo_test_env::hang_bound(),
+            session.shell_refusals(),
+            session.accessible_labels()
+        ),
+    }
+}
+
+/// [`wait_for`] without failing: whatever `probe` answers before the suite's
+/// hang bound runs out, for a test that asserts on its own observation (and
+/// says what it saw) rather than taking the helper's message.
+#[track_caller]
+pub fn wait_maybe<T>(
+    session: &mut Session,
+    mut probe: impl FnMut(&mut Session) -> Option<T>,
+) -> Option<T> {
+    steps_until(session, |session| probe(session))
+}
+
+/// [`wait_maybe`] for a wait that spans a step the product itself times out:
+/// `patience` is how long the product allows that step, and the suite's hang
+/// bound is added after it, so a host that takes longer than the suite's bound
+/// but less than the product's patience is not reported as hung — the wait
+/// ends when the product says what became of the step, and its own message is
+/// what the test reports when the wait runs out.
+#[track_caller]
+pub fn wait_maybe_past<T>(
+    session: &mut Session,
+    patience: Duration,
+    mut probe: impl FnMut(&mut Session) -> Option<T>,
+) -> Option<T> {
+    steps_within(
+        session,
+        patience.saturating_add(tilo_test_env::hang_bound()),
+        |session| probe(session),
+    )
 }
 
 /// Run frames until `done` holds.
@@ -88,10 +189,48 @@ pub fn reached(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool
 pub fn until(session: &mut Session, what: &str, done: impl FnMut(&mut Session) -> bool) {
     assert!(
         reached(session, done),
-        "{what}: not reached; the shell's refusals: {:?}; the session says: {:?}",
+        "{what}: not reached in {:?}; the shell's refusals: {:?}; the session says: {:?}",
+        tilo_test_env::hang_bound(),
         session.shell_refusals(),
         session.accessible_labels()
     );
+}
+
+/// The standard display's screen now, kept as `name.png` where `TL_SHELL_SHOTS` names.
+pub fn shot(session: &mut Session, name: &str) -> tilo_compositor::Screenshot {
+    let shot = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("a screenshot of the display");
+    if let Some(dir) = std::env::var_os("TL_SHELL_SHOTS") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).expect("the captures' directory");
+        image::save_buffer(
+            dir.join(format!("{name}.png")),
+            &shot.rgba,
+            shot.width,
+            shot.height,
+            image::ColorType::Rgba8,
+        )
+        .expect("the capture written");
+    }
+    shot
+}
+
+/// How many pixels differ between two frames of the display: how much of the screen moved.
+#[track_caller]
+pub fn changed(before: &tilo_compositor::Screenshot, after: &tilo_compositor::Screenshot) -> usize {
+    assert_eq!(
+        (before.width, before.height),
+        (after.width, after.height),
+        "the two frames are of one screen"
+    );
+    before
+        .rgba
+        .chunks_exact(4)
+        .zip(after.rgba.chunks_exact(4))
+        .filter(|(a, b)| a != b)
+        .count()
 }
 
 /// Where the shell's control or region named `name` stands on the standard display, when it
@@ -127,8 +266,26 @@ pub fn press(session: &mut Session, name: &str) {
 /// Press the shell's control named `name` on a display `width` by `height` with the pointer, as
 /// the person does.
 pub fn press_at(session: &mut Session, name: &str, width: i32, height: i32) {
-    let (x, y, w, h) = on_screen_at(session, name, width, height)
-        .unwrap_or_else(|| panic!("the shell shows {name}: {:?}", session.accessible_labels()));
+    // The press lands where the control is drawn once it stood still across
+    // two frames. A surface still arriving moves its controls from one frame
+    // to the next, and a press aimed at a place a control has left misses it:
+    // the person waits for the menu to be there, and so does the test.
+    let (x, y, w, h) = wait_for(
+        session,
+        format!("the shell's {name} to stand still"),
+        |session| {
+            let mut place = on_screen_at(session, name, width, height)?;
+            for _ in 0..2 {
+                session.step(Duration::from_millis(16)).expect("step");
+                let next = on_screen_at(session, name, width, height)?;
+                if next != place {
+                    return None;
+                }
+                place = next;
+            }
+            Some(place)
+        },
+    );
     let (x, y) = (x + w / 2.0, y + h / 2.0);
     session
         .compositor()
@@ -158,9 +315,8 @@ pub fn type_text(session: &mut Session, text: &str) {
         } else {
             ROWS.iter()
                 .find_map(|(row, first)| {
-                    row.chars()
-                        .position(|c| c == letter)
-                        .map(|at| first + u32::try_from(at).unwrap())
+                    let at = u32::try_from(row.chars().position(|c| c == letter)?).ok()?;
+                    first.checked_add(at)
                 })
                 .unwrap_or_else(|| panic!("no key types {letter:?}"))
         };
@@ -172,6 +328,52 @@ pub fn type_text(session: &mut Session, text: &str) {
             session.step(Duration::from_millis(1)).unwrap();
         }
     }
+}
+
+/// The desk's preset switch on screen: the bar's menu, named by the preset the desk shows
+/// ("Showing Strips", "Showing Frames", …). Which one it names depends on the desk a test
+/// starts from, so a test asks for the menu rather than for a name.
+pub fn preset_menu(session: &Session) -> Option<String> {
+    session
+        .accessible_labels()
+        .into_iter()
+        .find(|label| label.starts_with("Showing ") && on_screen(session, label).is_some())
+}
+
+/// Show `preset` ("Strips", "Frames", "Spaces", "Desktop") from the desk's own bar: open the
+/// preset menu the bar carries and press the preset it offers.
+///
+/// A press that arrives before the menu stands where the desk lays it out dismisses the menu
+/// instead of choosing from it, as it does for a person who presses again to get the row they
+/// aimed at. So the wait presses again — asking the bar for the menu when a press closed it —
+/// until the desk shows the preset, and a desk that never does is reported with what the bar
+/// said instead.
+pub fn show_preset(session: &mut Session, preset: &str) {
+    let shown = format!("Showing {preset}");
+    // Turns since the last press: the menu opens on the turn after its own button's press, and
+    // closes on the turn after a row's, so the wait reads the desk's answer before it presses
+    // again.
+    let mut since = usize::MAX;
+    wait_for(
+        session,
+        format!("the desk to show the {preset} preset"),
+        |session| {
+            if preset_menu(session).as_deref() == Some(shown.as_str()) {
+                return Some(());
+            }
+            if since < 4 {
+                since = since.saturating_add(1);
+                return None;
+            }
+            if on_screen(session, preset).is_some() {
+                press(session, preset);
+            } else if let Some(menu) = preset_menu(session) {
+                press(session, &menu);
+            }
+            since = 0;
+            None
+        },
+    );
 }
 
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
@@ -277,12 +479,9 @@ pub fn seeded_session_with(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    until(&mut session, "the preset switch", |session| {
-        on_screen(session, "Frames").is_some()
-    });
-    press(&mut session, "Frames");
+    show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, "Typed").is_some()
+        on_screen(session, CANVAS_ENTRY).is_some()
     });
     session
 }
@@ -314,13 +513,52 @@ pub fn repl_session(
     .expect("session")
 }
 
+/// The person's arrangement as a shell reads it: the desk as it stands now,
+/// every workspace, row, strip and place by key.
+pub fn arrangement(session: &Session) -> tilo_session::arrangement::Reading {
+    session.arrangement().borrow().reading()
+}
+
+/// An id as the arrangement reads it out: its whole number.
+pub fn number(key: &str) -> u64 {
+    key.parse().expect("an id reads as its number")
+}
+
+/// The places of the arrangement, by key.
+pub fn places(session: &Session) -> Vec<tilo_session::arrangement::PlaceReading> {
+    arrangement(session).places
+}
+
+/// The rows of the arrangement, by key.
+pub fn rows(session: &Session) -> Vec<tilo_session::arrangement::RowReading> {
+    arrangement(session).rows
+}
+
+/// The place of the arrangement `key` names.
+pub fn place(session: &Session, key: u64) -> Option<tilo_session::arrangement::PlaceReading> {
+    let key = key.to_string();
+    places(session).into_iter().find(|place| place.key == key)
+}
+
+/// The strip of the arrangement `key` names.
+pub fn strip(session: &Session, key: u64) -> Option<tilo_session::arrangement::StripReading> {
+    let key = key.to_string();
+    arrangement(session)
+        .strips
+        .into_iter()
+        .find(|strip| strip.key == key)
+}
+
+/// The strip the place `key` stands in, as the arrangement reads it.
+pub fn strip_of(session: &Session, key: u64) -> Option<tilo_session::arrangement::StripReading> {
+    let place = place(session, key)?;
+    strip(session, number(&place.strip))
+}
+
 /// The places of the arrangement that show `resource`.
 pub fn placed(session: &Session, resource: &str) -> usize {
-    session
-        .arrangement()
-        .borrow()
-        .strips()
-        .places()
+    places(session)
+        .iter()
         .filter(|place| place.record == resource)
         .count()
 }
@@ -329,11 +567,8 @@ pub fn placed(session: &Session, resource: &str) -> usize {
 /// resolves to: what the shell draws there.
 pub fn placed_resources(session: &Session) -> Vec<(String, String)> {
     let resources = session.resources();
-    session
-        .arrangement()
-        .borrow()
-        .strips()
-        .places()
+    places(session)
+        .iter()
         .filter_map(|place| {
             tilo_actions::door::locate(
                 &resources,
@@ -413,13 +648,9 @@ impl Repl {
 
     /// The answer to the last request, running the session until it is in.
     pub fn answer(&self, session: &mut Session) -> Value {
-        for _ in 0..30_000 {
-            if let Ok(answer) = self.answers.try_recv() {
-                return answer;
-            }
-            session.step(Duration::from_millis(1)).expect("step");
-        }
-        panic!("the door never answered");
+        wait_for(session, "the door's answer", |_| {
+            self.answers.try_recv().ok()
+        })
     }
 
     /// Send `method` with `params` and wait for its answer.
@@ -519,13 +750,9 @@ pub fn control(session: &mut Session, socket: &Path, request: &Value) -> Value {
             .send(serde_json::from_str::<Value>(&line).expect("a JSON answer"))
             .unwrap();
     });
-    for _ in 0..30_000 {
-        if let Ok(answer) = answered.try_recv() {
-            return answer;
-        }
-        session.step(Duration::from_millis(1)).expect("step");
-    }
-    panic!("the test-control socket never answered");
+    wait_for(session, "the test-control socket's answer", |_| {
+        answered.try_recv().ok()
+    })
 }
 
 /// Place what "Inbox" finds on the canvas through the door, as the REPL's program does, and

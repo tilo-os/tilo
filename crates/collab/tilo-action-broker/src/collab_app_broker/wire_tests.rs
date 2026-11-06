@@ -89,7 +89,6 @@ impl Workspace {
         let hold = self.state.next_peer_id();
         let channel = connection.open(ChannelSession::new(Rc::new(JoinedChannel {
             as_app: None,
-            person_chat_views: RefCell::default(),
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
             state: self.state.clone(),
             directories: self.directories.clone(),
@@ -519,7 +518,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
             for service in [
                 Service::AudioOutput,
                 Service::NativeMedia,
-                Service::PersonChat,
+                Service::RetiredPersonChat,
                 Service::Speaker,
                 Service::Realtime,
                 Service::NearbyTransfer,
@@ -544,7 +543,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
                 endpoint
                     .call(Operation::Command {
                         channel: Handle(77),
-                        service: Service::PersonChat,
+                        service: Service::RetiredPersonChat,
                         body: Vec::new(),
                         on_behalf_of: Vec::new(),
                     })
@@ -694,19 +693,6 @@ async fn an_app_takes_its_invocations_and_the_catalogue_and_answers_only_its_own
                     "{call:?}: an invocation the app was never handed"
                 );
             }
-            assert!(
-                endpoint
-                    .call(Operation::Subscribe {
-                        channel,
-                        topic: Topic::PersonChat {
-                            peer: "ed25519:nobody".into(),
-                            on_behalf_of: vec![1; 3],
-                        },
-                    })
-                    .await
-                    .is_err(),
-                "a conversation for an invocation the app holds no view for"
-            );
             assert!(
                 endpoint
                     .call(Operation::Launch {

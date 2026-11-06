@@ -78,14 +78,6 @@ impl Custody {
         &self.device
     }
 
-    pub(crate) fn host(&self) -> &HostIdentity {
-        &self.host
-    }
-
-    pub(crate) fn workspace(&self) -> u64 {
-        self.workspace
-    }
-
     /// The compositor reports the session usable or not; a new generation
     /// retires every enrollment admitted under an earlier one.
     pub(crate) fn session(&self, active: bool, generation: u64) {
@@ -175,10 +167,6 @@ impl Identity {
             generation: None,
             ..self.clone()
         }
-    }
-
-    pub(crate) fn custody(&self) -> &Arc<Custody> {
-        &self.custody
     }
 }
 

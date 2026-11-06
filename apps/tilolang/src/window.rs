@@ -20,17 +20,21 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone as _, Utc};
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::{self, Config, Instance, Mode, Outgoing, Platform, queue_commits};
+use tilolang_tilo::personal::{Keep, Personal, PersonalState};
 use tilolang_tilo::runtime::{OutsideSink, ResourceRef};
 use tilolang_tilo::{HostEffect, OpenEffect};
-use ui::framework::{ResourceSurface, RunMode};
+use ui::framework::{ResourceSurface, RunMode, WorkspaceRecord};
 use ui::tilo_actions::{ActionAddress, ControlInvocation, InvocationId};
+use ui::tilo_resource::Invoke;
 use ui::widget::controls::ControlResult;
 use ui::widget::{AppModel, Element, ModelPath, Widget};
 
 use crate::names::Names;
+use crate::reminders::{Asked, Ringer};
 use crate::resource::{Live, Workspace, WorkspaceState, caller_of};
 use ui::tilo_resource::profiling::Phase;
 
@@ -147,6 +151,16 @@ impl Platform for InProcess {
         i64::from(ui::clock::local_now().offset().local_minus_utc())
     }
 
+    /// The day the person's region starts its week on, as the toolkit's dates start it.
+    fn week_start(&self) -> i64 {
+        i64::from(
+            ui::format::region::current()
+                .first_day
+                .weekday()
+                .num_days_from_monday(),
+        )
+    }
+
     fn waker(&self) -> tilolang_tilo::background::Waker {
         let wake = ui::wake::WakeHandle::new();
         Arc::new(move || wake.wake())
@@ -203,6 +217,21 @@ pub struct Window {
     undo: ui::undo::UndoAccess,
     /// A later build this window took and has not drawn yet: its first frame says so.
     undrawn: Option<Undrawn>,
+    /// The workspace's record of each person's own state, when the window has it: the window and
+    /// lens state they set and what they have seen, so the place they picked is still theirs
+    /// after a restart and on their other devices ([`Personal`]).
+    personal: Option<WorkspaceRecord<Personal>>,
+
+    /// The reminders of the workspace, shown as the platform's notifications: what has come due
+    /// for this person, and what they asked of the notifications shown before. A live window of
+    /// a package whose types remind has one; a past or captured one shows nothing.
+    ringing: Option<Ringer>,
+    /// The record's heads as the window last synced, which is what a reminder's walk reads
+    /// against.
+    heads: Option<Vec<ui::automerge::ChangeHash>>,
+    /// The heads and the instant the reminders were last read at: a frame with neither a new
+    /// record nor a reminder come reads nothing.
+    remembered: Option<(Vec<ui::automerge::ChangeHash>, DateTime<Utc>)>,
 
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
@@ -256,6 +285,10 @@ impl Window {
             history: VecDeque::new(),
             undo: ui::undo::UndoAccess::new(),
             undrawn: None,
+            personal: None,
+            ringing: None,
+            heads: None,
+            remembered: None,
         }
     }
 
@@ -298,6 +331,117 @@ impl Window {
         self.record = Some(record.to_owned());
         self.place_indexes();
         self
+    }
+
+    /// This window keeping the person's own state of the workspace in `record`: the window and
+    /// lens state they set in their views, and what they have seen. What their entries hold is
+    /// given to the views when the window shows ([`Self::bring_personal`]), and what they change
+    /// is kept back into them ([`Self::keep_personal`]).
+    #[must_use]
+    pub fn keeping_personal(mut self, record: Option<WorkspaceRecord<Personal>>) -> Self {
+        self.personal = record;
+        self
+    }
+
+    /// This window showing the reminders the workspace's records hold as the platform's
+    /// notifications ([`Ringer`]): what is due for this person when its instant comes, once
+    /// across their devices, and the actions the item's type offers on each notification.
+    #[must_use]
+    pub fn ringing(
+        mut self,
+        notifier: Arc<dyn ui::notify::Notifier>,
+        wake: ui::WakeHandle,
+    ) -> Self {
+        self.ringing = Some(Ringer::new(&self.app, notifier, wake));
+        self
+    }
+
+    /// Give the views what the record keeps of this person: how their window shows its resource,
+    /// where they are in it, and what they have seen. A slot already holding its value is left
+    /// alone, so this runs every frame.
+    fn bring_personal(&mut self, record: &WorkspaceRecord<Personal>) {
+        let state = record.get();
+        let kept = state.of(&self.me);
+        self.instance.set_view_states(
+            kept.slots
+                .iter()
+                .map(|slot| (slot.key(), slot.value.clone())),
+        );
+        self.instance.set_seen(
+            kept.seen
+                .iter()
+                .map(|seen| (seen.resource.clone(), Some(seen.mark.clone()))),
+            &kept
+                .runs
+                .iter()
+                .map(|reviewed| reviewed.run.clone())
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    /// Keep what this person changed of their own state since the last frame in the record: the
+    /// window and lens state they set, and what they marked seen. A change the record cannot take
+    /// stays on this device, told once, rather than stopping the window.
+    fn keep_personal(&mut self, record: &WorkspaceRecord<Personal>) {
+        let keep_it = |keep: &Keep, what: &str| {
+            let invoke = match Invoke::<Personal>::apply(keep) {
+                Ok(invoke) => invoke,
+                Err(why) => {
+                    tracing::debug!(%why, "the change does not encode");
+                    return;
+                }
+            };
+            if let Err(error) = record.invoke(&invoke) {
+                tracing::warn!(%error, "personal: {what} stays on this device");
+            }
+        };
+        let writes = self.instance.take_view_writes();
+        let seen = self.instance.take_seen();
+        for (key, value) in writes {
+            let keep = match Keep::view(&key, &value) {
+                Ok(keep) => keep,
+                Err(why) => {
+                    tracing::debug!(%why, "the slot is no person's state");
+                    continue;
+                }
+            };
+            keep_it(&keep, "a view's state");
+        }
+        for write in seen {
+            // Someone else's mark is not this person's to keep.
+            let keep = match write {
+                tilolang_tilo::runtime::seen::SeenWrite::Resource {
+                    person,
+                    resource,
+                    mark,
+                } if person.eq_ignore_ascii_case(&self.me) => Keep::Seen {
+                    person: self.me.clone(),
+                    resource,
+                    mark: Some(mark),
+                },
+                tilolang_tilo::runtime::seen::SeenWrite::Run { person, run }
+                    if person.eq_ignore_ascii_case(&self.me) =>
+                {
+                    let mut runs: Vec<String> = record
+                        .get()
+                        .of(&self.me)
+                        .runs
+                        .into_iter()
+                        .map(|reviewed| reviewed.run)
+                        .collect();
+                    if !runs.contains(&run) {
+                        runs.push(run);
+                        runs.sort();
+                    }
+                    Keep::Runs {
+                        person: self.me.clone(),
+                        runs,
+                    }
+                }
+                _ => continue,
+            };
+            keep_it(&keep, "what the person saw");
+        }
     }
 
     /// Where the indexes of this window's workspace are kept, when they are kept on disk: a past
@@ -378,6 +522,75 @@ impl Window {
         let own = self.instance.answered(address, error);
         self.show_sent();
         own
+    }
+
+    /// Show what has come due of this person's reminders, and take what they asked of the
+    /// notifications shown before: a click opens the item in this window, and a button runs the
+    /// action the item's type offers, through the same door as any action the window runs.
+    ///
+    /// A walk runs only when the record moved or a reminder's instant came, which is what
+    /// [`Self::next_wake_deadline`] wakes the window for: nothing polls.
+    fn ring(&mut self) -> bool {
+        let Some(host) = self.instance.host() else {
+            return false;
+        };
+        let Some(ringer) = self.ringing.as_mut() else {
+            return false;
+        };
+        // What the person clicked or pressed comes whether or not a reminder is due: a
+        // notification stays up long after the walk that showed it.
+        let asked = ringer.take();
+        let now = now();
+        let heads = self.heads.clone().unwrap_or_default();
+        let settled = self
+            .remembered
+            .as_ref()
+            .is_some_and(|(was, _)| *was == heads)
+            && ringer.next().is_none_or(|next| now < next);
+        if settled && asked.is_empty() {
+            return false;
+        }
+        let rung = if settled {
+            Vec::new()
+        } else {
+            let told = self
+                .personal
+                .as_ref()
+                .map_or_else(PersonalState::default, |record| (*record.get()).clone());
+            let rung = ringer.ring(
+                &tilolang_tilo::reminders::look(&host, &self.me, now, &zone(), &told),
+                now,
+            );
+            self.remembered = Some((heads, now));
+            rung
+        };
+        let rang_something = !rung.is_empty() || !asked.is_empty();
+        if let Some(record) = &self.personal {
+            for alarm in &rung {
+                keep_told(record, &self.me, &alarm.key);
+            }
+        }
+        for asked in asked {
+            match asked {
+                Asked::Open { resource, .. } => self
+                    .instance
+                    .open_requests()
+                    .borrow_mut()
+                    .push(tilolang_tilo::OpenEffect::Open { anchor: resource }),
+                Asked::Run {
+                    resource, action, ..
+                } => {
+                    if let Some(invocation) =
+                        ControlInvocation::from_parts(&resource, &action, serde_json::Map::new())
+                    {
+                        self.history.push_back(invocation);
+                    } else {
+                        tracing::warn!(%resource, %action, "a reminder's action has no address");
+                    }
+                }
+            }
+        }
+        rang_something
     }
 
     // ----- for tests -----------------------------------------------------------------------
@@ -576,6 +789,40 @@ fn history_invocation(app: &str, asked: &instance::HistoryAsk) -> Option<Control
     ControlInvocation::from_parts(app, verb, arguments)
 }
 
+/// The platform's wall clock, which a test pins.
+fn now() -> DateTime<Utc> {
+    DateTime::from(ui::time::to_std(ui::time::wall()))
+}
+
+/// A day, and a time of day on it, as the instants the person's own zone reads them at: what a
+/// reminder's day is read in.
+fn zone() -> impl Fn(NaiveDate, Option<NaiveTime>) -> Option<DateTime<Utc>> {
+    |day, time| {
+        let wall = day.and_time(time.unwrap_or(NaiveTime::MIN));
+        Local
+            .from_local_datetime(&wall)
+            .earliest()
+            .map(|at| at.with_timezone(&Utc))
+    }
+}
+
+/// Keep the reminder `key` as one `person` was told of, so none of their devices tells them
+/// again. A mark the record cannot take stays on this device, told once, rather than stopping the
+/// window.
+fn keep_told(record: &WorkspaceRecord<Personal>, person: &str, key: &str) {
+    let keep = Keep::Reminded {
+        person: person.to_owned(),
+        reminder: key.to_owned(),
+    };
+    let Ok(invoke) = Invoke::<Personal>::apply(&keep) else {
+        tracing::debug!(%key, "the mark does not encode");
+        return;
+    };
+    if let Err(error) = record.invoke(&invoke) {
+        tracing::warn!(%error, "reminders: a delivered mark stays on this device");
+    }
+}
+
 /// The in-process window's undo and redo are the record's history verbs, exactly as the room
 /// path runs them: what a view asks (`undo(v)`, `undo(run)`) and what the person's Undo asks are
 /// both applied to the record as a step of their own, through the one verb
@@ -658,6 +905,7 @@ impl Widget for Window {
             .opening
             .is_none()
             .then(|| ui::doc::document_ref(state, path).0);
+        self.heads = doc.map(|doc| doc.committed_document().get_heads());
         {
             let _views = Phase::start("tl.views");
             self.instance.sync(doc);
@@ -678,6 +926,10 @@ impl Widget for Window {
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let _phase = Phase::start("tl.update");
         self.view.flush();
+        let personal = self.personal.clone();
+        if let Some(record) = &personal {
+            self.bring_personal(record);
+        }
         let changed = {
             let _handled = Phase::start("tl.events");
             self.instance.update()
@@ -694,7 +946,11 @@ impl Widget for Window {
             }
         }
         let child = self.view.update(state, path);
-        changed || received || child
+        if let Some(record) = &personal {
+            self.keep_personal(record);
+        }
+        let rang = self.ring();
+        changed || received || child || rang
     }
 
     /// The body's deadlines, and when the time a view read (`today`) next reads differently:
@@ -703,10 +959,14 @@ impl Widget for Window {
         let views = self.instance.wakes_in().and_then(|wait| {
             ui::time::now().checked_add(ui::time::Duration::from_secs(wait.as_secs()))
         });
-        match (views, self.view.next_wake_deadline()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let reminders = self.ringing.as_ref().and_then(|ringer| {
+            let wait = ringer.wakes_in(now())?;
+            ui::time::now().checked_add(wait)
+        });
+        [views, self.view.next_wake_deadline(), reminders]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     fn handle_event(

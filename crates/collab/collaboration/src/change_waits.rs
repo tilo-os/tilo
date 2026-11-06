@@ -49,6 +49,7 @@ fn follow_nearby_transfer(channel: runtime_collab::ChannelHandle, inbound_tx: In
                     return;
                 }
                 Err(error) => {
+                    // ignored-failure: a route that does not follow Nearby Send changes nothing for it
                     tracing::debug!(%error, "collab: this route does not follow Nearby Send");
                     return;
                 }
@@ -84,6 +85,7 @@ fn follow_speakers(channel: runtime_collab::ChannelHandle, inbound_tx: InboundBr
                     return;
                 }
                 Err(error) => {
+                    // ignored-failure: a route that does not follow speaker groups changes nothing for it
                     tracing::debug!(%error, "collab: this route does not follow speaker groups");
                     return;
                 }
@@ -122,6 +124,7 @@ fn follow_applications(channel: runtime_collab::ChannelHandle, inbound_tx: Inbou
                     return;
                 }
                 Err(error) => {
+                    // ignored-failure: a route that does not follow the app list changes nothing for it
                     tracing::debug!(%error, "collab: this route does not follow the app list");
                     return;
                 }
@@ -152,6 +155,7 @@ fn follow_drives(channel: runtime_collab::ChannelHandle, inbound_tx: InboundBrid
                     return;
                 }
                 Err(error) => {
+                    // ignored-failure: a route that does not follow drives changes nothing for it
                     tracing::debug!(%error, "collab: this route does not follow drives");
                     return;
                 }

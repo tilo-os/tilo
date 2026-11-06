@@ -51,16 +51,21 @@ terse views make agent answers cheaper and more reliable.
    actions and views.
 5. **`let` in view bodies,** so a row doesn't need helper functions for derived values; the
    type is written where a branch has nothing to say what it is
-   (`let heading: Option<Date> = if let g = group { g(x) } else { .none }`).
+   (`let heading: Option<K> = if let g = group { g(x) } else { .none }`).
 6. **Date and time literals:** `2026-06-29`, `2026-06-29T07:02Z`, `2026-08`, matching search's
    literals. Duration literals (`15m`) already exist.
 7. **Lambdas take the values a parameter takes:** `(moved, parent, before) -> move_to(tasks,
    moved, parent, before)` for a parameter typed `(T, Option<T>, Option<T>) -> Action`. One
-   value stays `x -> ...`, and a key path stays `.field`.
+   value stays `x -> ...`, and a key path stays `.field`. What the lambda makes binds a type
+   parameter its parameter's result names, so `group: .due` gives a list a heading of days and
+   `group: x -> .some(x.t)` one of words.
 8. **A template's item block fills a described component's part:** `std.outline(...) { x ->
    task_row(x) }` gives the `row: (T) -> View` parameter a block that the tree draws once per
    node it shows, so a view written in `std` names the item's parts without the caller
    repeating them.
+9. **An item block names the values it draws with:** `std.rows(...) { (x, parent) -> row(x,
+   parent) }` for a parameter typed `(T, Option<T>) -> View`. The item and the item it stands
+   under reach the row, so a child leaves out the fact its parent already states.
 
 Values present themselves: a `Time`, a person or an amount passed to a component renders in the
 platform's format (relative times, avatar and name, localized money), never formatted by hand.

@@ -595,7 +595,10 @@ mod tests {
             1,
             "no desktop agent: no row to ask"
         );
-        assert!(area.menu().takes_typing(), "typing still filters");
+        assert!(
+            !area.menu().takes_typing(),
+            "one row and no agent to ask: nothing typing could do"
+        );
         set_agent_host_available(true);
         crate::widget::context_menu::note_input(&left_press());
         assert!(area.open_at(vec2_point(), false));

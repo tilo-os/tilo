@@ -159,23 +159,19 @@ fn list_rows_in_a_section_are_one_list() {
     let footer = rect(&root.children[4]);
     let sibling = f64::from(Theme::dark().tokens.spacing.rhythm.sibling);
     assert!((footer.y0 - rows[2].y1 - sibling).abs() < 0.5);
-    // Separators: under Ada hidden (Grace below is selected), under
-    // Grace hidden (selected), none under Linus (no row follows).
+    // No rule between rows: they sit edge to edge and spacing does the work.
     let mut section = Section::new(vec![
         Box::new(ListRow::new("a", "Ada")),
         Box::new(ListRow::new("b", "Grace").selected(true)),
         Box::new(ListRow::new("c", "Linus")),
         Box::new(ListRow::new("d", "Mary")),
     ]);
-    section.sync_row_separators();
+    section.sync_row_join();
     let flags: Vec<(bool, bool)> = rows_of(&mut section)
         .into_iter()
         .map(|row| row.separator_state())
         .collect();
-    assert_eq!(
-        flags,
-        [(true, true), (true, false), (true, false), (false, false)]
-    );
+    assert_eq!(flags, [(false, false); 4]);
 }
 
 #[test]
@@ -186,7 +182,7 @@ fn adjacent_selected_rows_join_into_one_lift() {
         Box::new(ListRow::new("c", "Linus").selected(true)),
         Box::new(ListRow::new("d", "Mary")),
     ]);
-    section.sync_row_separators();
+    section.sync_row_join();
     let joins: Vec<RowJoin> = rows_of(&mut section)
         .into_iter()
         .map(|row| row.join())

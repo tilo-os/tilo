@@ -228,7 +228,17 @@ pub fn armed(
         let mut triggered = workspace
             .shortcuts
             .iter()
-            .filter_map(|saved| saved.decode().ok())
+            .filter_map(|saved| {
+                saved
+                    .decode()
+                    .inspect_err(|error| {
+                        tracing::warn!(
+                            %error,
+                            "a saved shortcut does not read back; it arms no trigger"
+                        );
+                    })
+                    .ok()
+            })
             .filter(|shortcut| !shortcut.triggers.is_empty())
             .peekable();
         if triggered.peek().is_none() {
@@ -472,6 +482,7 @@ impl TriggerSource for KeyboardTriggers {
                     let TriggerSpec::Keyboard { chord } = trigger else {
                         return None;
                     };
+                    // ignored-failure: a chord that does not parse matches no key
                     (KeyChord::parse(chord).ok().as_ref() == Some(pressed)).then(|| Firing {
                         workspace: armed.workspace.clone(),
                         shortcut: armed.shortcut.id.clone(),
@@ -762,8 +773,25 @@ impl ScheduleTriggers {
     ) -> Self {
         let ledger = path
             .as_ref()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .and_then(|path| match std::fs::read(path) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        path = %path.display(),
+                        "the ledger of fired triggers could not be read"
+                    );
+                    None
+                }
+            })
+            .and_then(|bytes| {
+                serde_json::from_slice(&bytes)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "the ledger of fired triggers does not read back");
+                    })
+                    .ok()
+            })
             .unwrap_or_default();
         Self {
             ledger,

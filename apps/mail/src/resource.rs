@@ -1679,6 +1679,14 @@ impl ResourceApp for MailShell {
     const TITLE: &'static str = "Mail";
     const ICON: Option<&'static str> = Some("mail");
 
+    /// The person's accounts, kept by Settings, and the directory of their
+    /// identities, kept by Contacts: both theirs, read here for the
+    /// mailboxes and the recipients they name.
+    const PERSON_RECORDS: &'static [ui::framework::PersonKind] = &[
+        ui::framework::PersonKind::shared::<accounts::person::PersonAccounts>(),
+        ui::framework::PersonKind::shared::<tilo_contact_directory::ContactDirectory>(),
+    ];
+
     fn commands() -> &'static [ui::framework::Command] {
         COMMANDS
     }

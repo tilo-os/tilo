@@ -111,6 +111,11 @@ The set of authorised devices is a replicated CRDT set from day one, never a sca
 distinguished "owner" field. A system that special-cases the first device needs a rewrite to
 support the second.
 
+A certificate that carries an expiry is renewed before it runs out — by a device holding the
+account key, or, for a device that holds none, through the person's other devices that do. How
+that works, and what it is allowed to grant, is in
+[device-certificate-renewal.md](device-certificate-renewal.md).
+
 ### 3.3 What this replaces
 
 Every identity in the system derives from the device certificate. There is exactly one

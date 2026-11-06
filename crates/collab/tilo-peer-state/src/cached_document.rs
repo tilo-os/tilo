@@ -29,6 +29,9 @@ pub(crate) struct PolicyData {
     pub joined: std::collections::BTreeMap<String, u64>,
     pub grants: Vec<tilo_action_policy::Grant>,
     pub identities: std::collections::BTreeMap<String, Vec<u8>>,
+    /// The rows that did not decode, so the grants and roles above are missing
+    /// from them and a person shut out by that is told so.
+    pub damaged: crate::workspace::policy::Damaged,
 }
 impl PolicyData {
     /// The workspace's authority as recorded: owner, members and the grants on

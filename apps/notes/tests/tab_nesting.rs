@@ -49,7 +49,11 @@ fn tab_nests_the_line_under_the_one_above() {
         .harness()
         .a11y_nodes()
         .into_iter()
-        .find(|(_, node)| node.label() == Some("Paragraph block 2"))
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::ListItem
+                && node.label() == Some("two")
+                && node.description() == Some("Level 2")
+        })
         .and_then(|(_, node)| node.description().map(str::to_owned));
     assert_eq!(described.as_deref(), Some("Level 2"));
     app.harness().set_modifiers(&["shift".into()]);

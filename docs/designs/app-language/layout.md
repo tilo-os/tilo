@@ -21,8 +21,8 @@ aspect ratio and text size. Getting it wrong should take effort. The engine unde
 ## 2. Units and sizes
 
 - Units: `rem` (body text size, after the person's setting), `dp` (a logical pixel, rarely
-  needed), rhythm tokens (`tight`, `related`, `sibling`, `section`, `group`) for every gap, `fr`
-  for shares of space.
+  needed), rhythm tokens (`tight`, `related`, `sibling`, `section`, `group`, `none`) for every
+  gap and every padding, `fr` for shares of space.
 - Per axis: `hug` (default), `fill` or `fill(2)`, `min:` and `max:`, and `aspect:` (e.g. `16/9`).
   No absolute positions; overlays use `layers`.
 
@@ -39,8 +39,9 @@ aspect ratio and text size. Getting it wrong should take effort. The engine unde
 | `scroll` | scrolls on its axis |
 | `spacer` | takes leftover space |
 
-Widgets own their padding and size, as the design system says. Text wraps by default; `lines: n`
-clamps it.
+Widgets own their padding and size, as the design system says. A container that holds what it did
+not draw — a desk's surfaces, a panel's body — keeps a padding of its own (`padding: .section`):
+the room it holds back on every side. Text wraps by default; `lines: n` clamps it.
 
 ## 4. Responding to space
 
@@ -75,6 +76,12 @@ and ultrawide; hit targets never shrink; leading and trailing instead of left an
 display scales 1, 1.5 and 2 and text scales 1 and 1.5. It reports overflow, clipped text, overlaps,
 hit targets that are too small, pages that scroll sideways and edges between device pixels, each at
 a view path. Agents run it like the type checker.
+
+It also reads what a screen says and how its rows line up: every row at one depth starts its title
+at one x, nesting indents by one gutter, a box's rows end at one right edge, one choice is drawn
+selected once, a list offers one add entry, a name a screen reader announces is words rather than a
+code identifier, a destructive control says "Delete", a surface holds no surface of its own kind,
+and a narrow window keeps a 16 px gutter.
 
 `--key Tab`, `--key Down`, `--key Space` press keys into a window before it is read, in the order
 given and at the `--dump` size, so a check and a shot show the layout a person reaches by keyboard

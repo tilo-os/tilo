@@ -1094,39 +1094,39 @@ fn a_conversation_says_who_is_typing_from_presence() {
 }
 
 /// With no channels yet, the workspace offers one way to make the first: the empty state's
-/// "New channel" button. The header drops its own primary button then, so the same action is
-/// not offered twice on one page; once a channel exists the empty state is gone and the
-/// header keeps the button.
+/// "New channel" button. The window's bar names the same action, and steps aside for the call
+/// to action the page draws itself (the host's header rules), so the person is offered one
+/// button; once a channel exists the empty state is gone and the bar keeps its primary.
 #[test]
 fn an_empty_workspace_offers_one_new_channel_button() {
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
     ada.commit();
 
-    // A header's primary is a `ui.Button`; the empty state draws its one action itself, so a
-    // "New channel" button in the tree is the header's. No channels yet: the header's is
-    // gone, leaving the empty state's action the one place to make the first.
-    let header_button = |view: &ViewInstance| {
+    let labelled = |view: &ViewInstance, label: &str| {
         let mut buttons = Vec::new();
         find_all(view.tree(), "ui.Button", &mut buttons);
         buttons
             .iter()
-            .any(|b| b.props.get("label") == Some(&Value::text("New channel")))
+            .filter(|b| b.props.get("label") == Some(&Value::text(label)))
+            .count()
     };
     let sidebar = ada.view(APP);
-    assert!(
-        !header_button(&sidebar),
-        "the header drops its primary while the empty state offers it"
-    );
     let empty = find(sidebar.tree(), "ui.EmptyState").expect("the empty state");
     assert_eq!(
         empty.props.get("action"),
         Some(&Value::text("New channel")),
         "the empty state is where the first channel is made"
     );
+    // The bar's primary comes from the declaration the view no longer reads back; the empty
+    // state's action is the page's own. The host drops the bar's while both would stand
+    // (`tilo_ui_host::shell::header_rules`, its own test), leaving one button on the page.
+    assert!(
+        labelled(&sidebar, "New channel") >= 1,
+        "the action is offered: the empty state's, and the bar's until the host composes it"
+    );
 
-    // A channel made, the sidebar's "no channels" empty state goes and the header is the
-    // place to make another: its primary button stands again, so exactly one affordance
-    // exists at either time.
+    // A channel made, the sidebar's "no channels" empty state goes and the bar is the place
+    // to make another.
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     let _ = call(&ada, "new_channel", vec![all, Value::text("design")]);
     ada.commit();
@@ -1136,9 +1136,10 @@ fn an_empty_workspace_offers_one_new_channel_button() {
             .is_none_or(|state| state.props.get("action") != Some(&Value::text("New channel"))),
         "no empty state offering New channel once a channel exists"
     );
-    assert!(
-        header_button(&sidebar),
-        "the header offers New channel once a channel exists"
+    assert_eq!(
+        labelled(&sidebar, "New channel"),
+        1,
+        "the bar keeps its primary once the empty state is gone"
     );
 }
 

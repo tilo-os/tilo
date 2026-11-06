@@ -3,13 +3,12 @@
 //! file) and is kept in this host's secret store, never in a record, the
 //! environment or a log. This is the documented exception to "the host
 //! never holds a workspace's root": nobody is present to approve guests, and
-//! the workspace is public anyway. Each guest is pre-admitted as their own
-//! person; the operator decides who may join.
+//! the workspace is public anyway.
 //!
-//! Visitors who only watch (a page embedding the workspace) are not members one
-//! by one: they all act as the workspace's one spectator person, a Viewer whose
-//! root this host also keeps, with short-lived device certificates that
-//! carry no capabilities.
+//! Anyone who joins is their own person, with the role the workspace's
+//! listing gives them, through the same door as any public workspace
+//! ([`Workspaces::publish`] and [`Workspaces::admit_listed`]); an unlisted
+//! one takes people by invitation.
 
 #![allow(
     clippy::similar_names,
@@ -22,38 +21,31 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail, ensure};
-use base64::Engine as _;
-use ed25519_dalek::{Signer as _, SigningKey};
+use ed25519_dalek::SigningKey;
 use tilo_relay::daemon::RelayIdentity;
 use tilo_relay::web::WebHandle;
-use tilo_relay::workspaces::{PreAdmitRequest, WaitListed, Workspaces};
+use tilo_relay::workspaces::{WaitListed, Workspaces};
+use tilo_relay_protocol::directory::Listing;
 use tilo_relay_protocol::operator::{self, OperatorCommand, OperatorEvent, hex32};
-use tilo_relay_protocol::workspaces::{
-    JoinReply, JoinStep, PreAdmission, WorkspaceRole, join_proof_digest,
-};
+use tilo_relay_protocol::workspaces::WorkspaceRole;
 use tilo_relay_session::workspaces::SetMemberRoleRequest;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_relay_lending, web_config};
 
 mod bots;
-use bots::{hand_to_discord, offer_sign_in, start_bots};
+mod discord_sign_in;
+mod http;
+use bots::{offer_sign_in, start_bots};
 
 /// The secret store this host keeps workspace roots in.
 pub(crate) const SECRET_APP: &str = "so.tilo.relay";
-/// How long a pre-admitted invitation stays redeemable: a visitor who
-/// closes the tab leaves nothing redeemable behind for long.
-pub(crate) const PRE_ADMISSION_SECS: u64 = 600;
-/// How long a spectator's device certificate is valid. The embedding page
-/// asks again on its next load; nothing about a spectator is kept.
-pub(crate) const SPECTATOR_CERT_SECS: u64 = 3600;
-/// The member-list name of the spectator person.
-pub(crate) const SPECTATOR_NAME: &str = "Watching visitors";
 const MINUTE_MS: u64 = 60 * 1000;
 /// Guests pruned in one governance change: the workspace is held while it
 /// commits, and each removal costs time in proportion to its members.
 const PRUNE_BATCH: usize = 100;
-const NS_PER_SEC: u64 = 1_000_000_000;
+/// `--author-app none`: the workspace authors nothing and is read-only.
+const NO_AUTHORED_APPS: &str = "none";
 
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PersistentArgs {
@@ -118,11 +110,24 @@ pub struct PersistentArgs {
     /// Apply per-person change and content budgets to members.
     #[arg(long = "member-limits")]
     pub member_limits: bool,
-    /// Visitors watching the workspace at once. Each watching page reads the
-    /// workspace as its spectator person and writes nothing; past this many the
-    /// relay refuses the next one's subscription.
-    #[arg(long = "max-spectators", default_value_t = 1000)]
-    pub max_spectators: usize,
+    /// List the workspace in the public directory with this description, so
+    /// anyone may join it through its door at `--default-role`. Settled at
+    /// every start; without it the workspace is not listed.
+    #[arg(
+        long = "listing-description",
+        value_name = "TEXT",
+        requires = "persistent"
+    )]
+    pub listing_description: Option<String>,
+    /// The role everyone who joins through the directory gets while the
+    /// workspace is listed: `viewer` unless the host says otherwise.
+    #[arg(
+        long = "default-role",
+        value_name = "ROLE",
+        requires = "listing_description",
+        value_parser = parse_role
+    )]
+    pub default_role: Option<WorkspaceRole>,
     /// A person (user public key, hex) made an Owner of the workspace once they
     /// joined; repeatable. A key removed from the list loses the role.
     #[arg(long = "owner", value_name = "HEX")]
@@ -130,12 +135,23 @@ pub struct PersistentArgs {
     /// A person made a Moderator once they joined; repeatable.
     #[arg(long = "moderator", value_name = "HEX")]
     pub moderators: Vec<String>,
-    /// Take people by invitation: the door pre-admits only the workspace's
-    /// members (another tab of theirs is another device), and members may
-    /// invite someone with an invitation of their own, which they let in.
-    /// Settled at every start.
-    #[arg(long = "members-only")]
+    /// Take people by invitation: an unlisted workspace's door lets nobody new
+    /// in, and members may invite someone with an invitation of their own,
+    /// which they let in. Settled at every start. A listed workspace lets anyone
+    /// in through its door, so this goes with no `--listing-description`.
+    #[arg(long = "members-only", conflicts_with = "listing_description")]
     pub members_only: bool,
+    /// List the workspace, its door admitting only people invited or
+    /// pre-admitted: a member's invitation, or the one this door issued a
+    /// person it let in. Anyone else is told the workspace is joined by
+    /// invitation instead of being handed one. Settled at every start; goes
+    /// with --listing-description, which --members-only cannot.
+    #[arg(
+        long = "invitation-only",
+        requires = "listing_description",
+        conflicts_with = "members_only"
+    )]
+    pub invitation_only: bool,
     /// How many requests left at the door the workspace keeps while it takes
     /// people by invitation: each is an address (an email) someone who asked
     /// without an invitation leaves, on the workspace's wait list for whoever
@@ -179,6 +195,9 @@ pub struct PersistentArgs {
     /// content, so a member whose role lets them change the workspace (a guest
     /// is an Editor) can talk in its Chat; repeatable. Settled at every
     /// start: an app named here no longer stops authoring the workspace.
+    /// Naming none authors every first-party app and every seeded one, since a
+    /// workspace's app list is its policy and a public workspace offers its
+    /// members every app; `none` authors none, and the workspace is read-only.
     #[arg(long = "author-app", value_name = "APP_ID")]
     pub author_apps: Vec<String>,
     /// A member with no session for this many days stops being one; they
@@ -202,14 +221,28 @@ pub struct PersistentArgs {
     /// account (OAuth 2, `identify`); with the redirect and consent page
     /// below, the workspace offers "Connect Discord". The workspace's host keeps the
     /// client secret and trades the code itself.
-    #[arg(long = "discord-client-id", value_name = "ID", requires_all = ["discord_redirect_url", "discord_authorize_url"])]
+    #[arg(long = "discord-client-id", value_name = "ID", requires_all = ["discord_redirect_url", "discord_authorize_url", "discord_client_secret_file"])]
     pub discord_client_id: Option<String>,
-    /// Where Discord sends the browser back: the workspace host's callback.
+    /// Where Discord sends the browser back: the workspace host's callback,
+    /// which `--http` serves.
     #[arg(long = "discord-redirect-url", value_name = "URL")]
     pub discord_redirect_url: Option<String>,
     /// Discord's consent page.
     #[arg(long = "discord-authorize-url", value_name = "URL")]
     pub discord_authorize_url: Option<String>,
+    /// The application's client secret, mounted from the operator's encrypted
+    /// secrets. The callback trades the code for the account with it, and it
+    /// never leaves this host.
+    #[arg(
+        long = "discord-client-secret-file",
+        value_name = "PATH",
+        requires = "discord_client_id"
+    )]
+    pub discord_client_secret_file: Option<PathBuf>,
+    /// Where Discord's API is (`/api/v10` is appended): Discord's own host
+    /// unless set.
+    #[arg(long = "discord-api-base", value_name = "URL")]
+    pub discord_api_base: Option<String>,
     /// The worker binary of a connector (`APP=PATH`), where it is not
     /// `<name>-worker` beside this binary; repeatable.
     #[arg(long = "connector-worker", value_name = "APP=PATH")]
@@ -239,6 +272,11 @@ pub struct PersistentArgs {
     /// The public URL `--public-avatars` is served at.
     #[arg(long = "public-avatars-url", value_name = "URL")]
     pub public_avatars_url: Option<String>,
+    /// Serve the deployment's plain-HTTP routes at this address: the health
+    /// page (`/mode`), the published avatars (`/avatars/<name>`) and Discord's
+    /// sign-in callback (`/discord/callback`), as an ingress publishes them.
+    #[arg(long = "http", value_name = "ADDR", requires = "persistent")]
+    pub http: Option<std::net::SocketAddr>,
     /// The largest file a member posts in the workspace's Chat that the workspace
     /// keeps once they left, in MiB; a larger one stays with its poster.
     #[arg(long = "attachment-max-mib", default_value_t = 25, value_parser = clap::value_parser!(u64).range(0..=64))]
@@ -258,13 +296,8 @@ pub struct PersistentArgs {
 pub(crate) struct PersistentRoom {
     pub workspaces: Workspaces,
     pub workspace: String,
-    pub root: SigningKey,
-    pub spectator: SigningKey,
     pub host_cert: DeviceCert,
     pub web: WebHandle,
-    /// The Discord connector a bridge runs on, which a sign-in with Discord
-    /// that came back to the service is handed to.
-    pub discord: Option<Arc<tilo_connector::ConnectorProcess>>,
 }
 
 /// The workspace name people see for the persistent workspace `name` (a lowercase
@@ -318,77 +351,6 @@ pub(crate) fn check_stored_root(
     Ok(())
 }
 
-/// The spectator person's root: generated at the workspace's first start and
-/// kept beside the owner root, so every restart serves the same person.
-pub(crate) fn spectator_root(
-    store: &tilo_secrets::SecretStore,
-    workspace: &str,
-) -> anyhow::Result<SigningKey> {
-    let item = store.item("spectator-root", workspace);
-    if let Some(stored) = item
-        .get_blocking()
-        .context("read the spectator root from the host's secret store")?
-    {
-        let seed = <[u8; 32]>::try_from(stored.expose())
-            .map_err(|_| anyhow::anyhow!("the stored spectator root is corrupt"))?;
-        return Ok(SigningKey::from_bytes(&seed));
-    }
-    let root = SigningKey::from_bytes(&rand::random());
-    item.put_blocking(&root.to_bytes())
-        .context("keep the spectator root in the host's secret store")?;
-    Ok(root)
-}
-
-/// A certificate for one watching browser's in-memory device key: the
-/// spectator person, valid for [`SPECTATOR_CERT_SECS`], no capabilities.
-pub(crate) fn spectator_cert(
-    spectator: &SigningKey,
-    device_public_key: [u8; 32],
-    now_ns: u64,
-) -> anyhow::Result<DeviceCert> {
-    let mut cert = DeviceCert {
-        user_public_key: spectator.verifying_key().to_bytes(),
-        device_public_key,
-        device_label: "Watching visitor".into(),
-        capabilities: DeviceCapabilities {
-            can_own_workspaces: false,
-            can_admit_devices: false,
-            can_act_as_host: false,
-            can_read_all_workspaces: false,
-            foreign: false,
-            can_administer_devices: false,
-        },
-        issued_at_ns: now_ns,
-        expires_at_ns: Some(now_ns.saturating_add(SPECTATOR_CERT_SECS * NS_PER_SEC)),
-        signature: [0; 64],
-    };
-    sign_device_cert(&mut cert, spectator).context("sign a spectator certificate")?;
-    Ok(cert)
-}
-
-pub(crate) fn pre_admission(
-    root: &SigningKey,
-    workspace: &str,
-    token_sha256: [u8; 32],
-    label: &str,
-    role: WorkspaceRole,
-    now_ns: u64,
-) -> anyhow::Result<PreAdmission> {
-    let mut grant = PreAdmission {
-        workspace: workspace.to_owned(),
-        role,
-        token_sha256,
-        label: label.to_owned(),
-        expires_at_ns: now_ns.saturating_add(PRE_ADMISSION_SECS * NS_PER_SEC),
-        owner_user_public_key: root.verifying_key().to_bytes(),
-        signature: [0; 64],
-    };
-    grant.signature = root
-        .sign(&grant.digest().map_err(anyhow::Error::msg)?)
-        .to_bytes();
-    Ok(grant)
-}
-
 pub(crate) fn newly_removed(
     seen: &mut BTreeSet<[u8; 32]>,
     members: &[tilo_peer_state::GovernedMember],
@@ -414,16 +376,22 @@ pub(crate) enum RoleChange {
 /// What makes the member list match the declared lists: promote declared
 /// people who joined and do not hold their role, demote people declared
 /// before and no longer listed. People not yet in the workspace wait until they
-/// join; the governance change of their join triggers this again.
+/// join; the governance change of their join triggers this again. The owner
+/// root is the workspace's own person, not one the lists declare: its role is
+/// the workspace's, so no list takes it.
 pub(crate) fn role_changes(
     members: &[tilo_peer_state::GovernedMember],
     owners: &BTreeSet<[u8; 32]>,
     moderators: &BTreeSet<[u8; 32]>,
     previously_declared: &BTreeSet<[u8; 32]>,
+    owner: [u8; 32],
 ) -> Vec<RoleChange> {
     let mut changes = Vec::new();
     for member in members.iter().filter(|member| !member.removed) {
         let key = member.user_public_key;
+        if key == owner {
+            continue;
+        }
         if owners.contains(&key) {
             if !member.administrator {
                 changes.push(RoleChange::Administrator(key));
@@ -445,8 +413,8 @@ fn is_moderator(member: &tilo_peer_state::GovernedMember) -> bool {
     member.role == tilo_peer_state::join::MemberRole::Moderator
 }
 
-/// Guests (not declared, not an administrator, not the spectator person)
-/// whose last session is older than `days`. A member with no record yet is
+/// Guests (not declared, not an administrator) whose last session is older
+/// than `days`. A member with no record yet is
 /// recorded as seen now by the caller and never pruned on the same pass.
 pub(crate) fn idle_guests(
     members: &[tilo_peer_state::GovernedMember],
@@ -506,9 +474,17 @@ fn input_value(text: &str) -> serde_json::Value {
         .unwrap_or_else(|| serde_json::Value::String(text.to_owned()))
 }
 
-fn token_digest(token: &[u8]) -> [u8; 32] {
-    use sha2::Digest as _;
-    sha2::Sha256::digest(token).into()
+/// `--default-role`: `viewer`, `commenter` or `editor`. A moderator is chosen,
+/// never handed out at the door.
+fn parse_role(role: &str) -> Result<WorkspaceRole, String> {
+    match role {
+        "viewer" => Ok(WorkspaceRole::Viewer),
+        "commenter" => Ok(WorkspaceRole::Commenter),
+        "editor" => Ok(WorkspaceRole::Editor),
+        other => Err(format!(
+            "{other:?} is not a role people who join on their own may hold: say viewer, commenter or editor"
+        )),
+    }
 }
 
 /// `--layout`: `shared` or `personal`.
@@ -606,76 +582,12 @@ async fn governed_room(
     Ok(workspace)
 }
 
-async fn issue_pre_admission(
-    workspaces: &Workspaces,
-    host_cert: &DeviceCert,
-    root: &SigningKey,
-    workspace: &str,
-    user: [u8; 32],
-    digest: [u8; 32],
-    label: &str,
-    role: WorkspaceRole,
-) -> anyhow::Result<tilo_relay_session::workspaces::IssuedInvitation> {
-    let grant = pre_admission(
-        root,
-        workspace,
-        digest,
-        label,
-        role,
-        tilo_clock::unix_now_ns(),
-    )?;
-    let request = PreAdmitRequest {
-        // One token, one invitation: a repeated command is a retry.
-        request_id: *blake3::hash(&digest).as_bytes(),
-        grant,
-        recipient_user_public_key: Some(user),
-        inviter_name: Some("Tilo".into()),
-    };
-    workspaces
-        .pre_admit(host_cert, request)
-        .await
-        .map_err(|error| anyhow::anyhow!("{error}"))
-}
-
-/// What answering one pre-admission needs, owned, so the workspace answers a
-/// crowd's side by side rather than one after another.
-#[derive(Clone)]
-struct Admitter {
-    workspaces: Workspaces,
-    host_cert: DeviceCert,
-    root: SigningKey,
-    workspace: String,
-    spectator: [u8; 32],
-    removals: Removals,
-    /// The door lets in only the workspace's members (`--members-only`).
-    members_only: bool,
-}
-
-impl Admitter {
-    fn of(context: &PersistentRoom, removals: Removals, members_only: bool) -> Self {
-        Self {
-            workspaces: context.workspaces.clone(),
-            host_cert: context.host_cert.clone(),
-            root: context.root.clone(),
-            workspace: context.workspace.clone(),
-            spectator: context.spectator.verifying_key().to_bytes(),
-            removals,
-            members_only,
-        }
-    }
-}
-
-/// How long a person moderation removed is refused pre-admission: the day
-/// the workspace service's door also turns away the address they joined from.
-const REMOVED_FOR_MS: u64 = 24 * 3600 * 1000;
-
-/// Whom the workspace has taken in as removed, and when moderation removed each
-/// person, kept in the workspace's state so a restart lets nobody back early.
-/// Shared by the operator loop, which takes removals in, and every
-/// pre-admission, which may run before the loop has.
+/// Whom the workspace has taken in as removed, so each removal is reported
+/// once. Shared by the operator loop, which takes removals in, and the
+/// pruning, which accounts for the guests it prunes itself. Whom the door
+/// keeps out is the workspace's own ([`Workspaces::removed_within_the_day`]).
 #[derive(Clone)]
 struct Removals {
-    file: PathBuf,
     state: Arc<std::sync::Mutex<RemovalState>>,
 }
 
@@ -683,34 +595,20 @@ struct RemovalState {
     /// Every person accounted for as removed, by moderation or pruned after
     /// an absence, so each removal is reported once.
     seen: BTreeSet<[u8; 32]>,
-    /// When moderation removed each person, in Unix milliseconds.
-    at: BTreeMap<[u8; 32], u64>,
 }
 
 impl Removals {
     /// The removals of a workspace whose members are `members` now: everyone
-    /// listed as removed is accounted for, and the removal times kept in
-    /// `file` that are still within the day hold.
-    fn load(
-        file: PathBuf,
-        members: &[tilo_peer_state::GovernedMember],
-        now_ms: u64,
-    ) -> anyhow::Result<Self> {
-        let stored: BTreeMap<String, u64> = read_json(&file)?;
-        let at = stored
-            .iter()
-            .filter(|(_, at)| now_ms.saturating_sub(**at) < REMOVED_FOR_MS)
-            .filter_map(|(key, at)| hex32(key).map(|key| (key, *at)))
-            .collect();
+    /// listed as removed is accounted for.
+    fn load(members: &[tilo_peer_state::GovernedMember]) -> Self {
         let seen = members
             .iter()
             .filter(|member| member.removed)
             .map(|member| member.user_public_key)
             .collect();
-        Ok(Self {
-            file,
-            state: Arc::new(std::sync::Mutex::new(RemovalState { seen, at })),
-        })
+        Self {
+            state: Arc::new(std::sync::Mutex::new(RemovalState { seen })),
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, RemovalState> {
@@ -733,131 +631,9 @@ impl Removals {
     }
 
     /// The people moderation removed since the last call, noted as removed
-    /// now and written down.
-    fn taken_in(
-        &self,
-        members: &[tilo_peer_state::GovernedMember],
-        now_ms: u64,
-    ) -> anyhow::Result<Vec<[u8; 32]>> {
-        let mut state = self.lock();
-        let fresh = newly_removed(&mut state.seen, members);
-        if fresh.is_empty() {
-            return Ok(fresh);
-        }
-        state
-            .at
-            .retain(|_, at| now_ms.saturating_sub(*at) < REMOVED_FOR_MS);
-        for person in &fresh {
-            state.at.insert(*person, now_ms);
-        }
-        let stored: BTreeMap<String, u64> = state
-            .at
-            .iter()
-            .map(|(key, at)| (hex::encode(key), *at))
-            .collect();
-        drop(state);
-        write_json(&self.file, &stored)?;
-        Ok(fresh)
-    }
-
-    /// Whether `person` is kept out: moderation removed them within the
-    /// day, or the workspace lists them as removed and the loop has not taken
-    /// that in yet (a removed guest's page asks again the moment the workspace
-    /// drops it, which may be before the loop hears of the change).
-    fn refuses(
-        &self,
-        person: [u8; 32],
-        members: &[tilo_peer_state::GovernedMember],
-        now_ms: u64,
-    ) -> bool {
-        let state = self.lock();
-        if state
-            .at
-            .get(&person)
-            .is_some_and(|at| now_ms.saturating_sub(*at) < REMOVED_FOR_MS)
-        {
-            return true;
-        }
-        !state.seen.contains(&person)
-            && members
-                .iter()
-                .any(|member| member.user_public_key == person && member.removed)
-    }
-}
-
-/// Pre-admissions the workspace answers at once. The workspace service waits a few
-/// seconds for each answer before it turns the visitor into a spectator;
-/// answered one at a time, a launch's crowd queued behind each other's
-/// writes, while side by side the relay writes everything staged meanwhile
-/// in one go. Past this many, the next commands wait their turn.
-const PRE_ADMITTING_AT_ONCE: usize = 64;
-
-async fn answer_pre_admit(
-    context: Admitter,
-    user_public_key: String,
-    token_sha256: String,
-    label: String,
-    role: WorkspaceRole,
-) -> OperatorEvent {
-    let refused = |reason: String| OperatorEvent::PreAdmitRefused {
-        token_sha256: token_sha256.clone(),
-        reason,
-        removed: false,
-        invite_only: false,
-    };
-    let (Some(user), Some(digest)) = (hex32(&user_public_key), hex32(&token_sha256)) else {
-        return refused("the guest key and token digest must be 64 hex characters".into());
-    };
-    if user == context.spectator {
-        return refused("the spectator person joins no other way".into());
-    }
-    let members = match context.workspaces.summary(&context.workspace).await {
-        Ok(summary) => summary.members,
-        Err(error) => return refused(format!("{error}")),
-    };
-    if context
-        .removals
-        .refuses(user, &members, tilo_clock::unix_now_ms())
-    {
-        return OperatorEvent::PreAdmitRefused {
-            token_sha256,
-            reason: "the person was removed from the workspace within the day".into(),
-            removed: true,
-            invite_only: false,
-        };
-    }
-    // Taking people by invitation, the door still lets a member in again
-    // (another tab of theirs is another device), and nobody else.
-    if context.members_only
-        && !members
-            .iter()
-            .any(|member| member.user_public_key == user && !member.removed)
-    {
-        return OperatorEvent::PreAdmitRefused {
-            token_sha256,
-            reason: "the workspace takes people by invitation only".into(),
-            removed: false,
-            invite_only: true,
-        };
-    }
-    match issue_pre_admission(
-        &context.workspaces,
-        &context.host_cert,
-        &context.root,
-        &context.workspace,
-        user,
-        digest,
-        &label,
-        role,
-    )
-    .await
-    {
-        Ok(issued) => OperatorEvent::PreAdmitted {
-            token_sha256,
-            invitation: base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .encode(issued.signed_invitation),
-        },
-        Err(error) => refused(format!("{error:#}")),
+    /// now.
+    fn taken_in(&self, members: &[tilo_peer_state::GovernedMember]) -> Vec<[u8; 32]> {
+        newly_removed(&mut self.lock().seen, members)
     }
 }
 
@@ -1092,92 +868,6 @@ fn publish_invite_mail(asked: tilo_relay::workspaces::WaitListMail, mail_acks: &
     }
 }
 
-fn answer_spectate(context: &PersistentRoom, device_public_key: String) -> OperatorEvent {
-    let Some(device) = hex32(&device_public_key) else {
-        return OperatorEvent::SpectateRefused {
-            device_public_key,
-            reason: "the device key must be 64 hex characters".into(),
-        };
-    };
-    match spectator_cert(&context.spectator, device, tilo_clock::unix_now_ns()) {
-        Ok(certificate) => OperatorEvent::SpectatorCertified {
-            device_public_key,
-            certificate,
-        },
-        Err(error) => OperatorEvent::SpectateRefused {
-            device_public_key,
-            reason: format!("{error:#}"),
-        },
-    }
-}
-
-/// Make the spectator person a Viewer member, through the same
-/// pre-admission and join steps a guest's browser takes, so it is an
-/// ordinary member of the workspace's list.
-async fn ensure_spectator_member(
-    workspaces: &Workspaces,
-    host_cert: &DeviceCert,
-    root: &SigningKey,
-    workspace: &str,
-    spectator: &SigningKey,
-) -> anyhow::Result<()> {
-    let person = spectator.verifying_key().to_bytes();
-    let summary = workspaces
-        .summary(workspace)
-        .await
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    if summary
-        .members
-        .iter()
-        .any(|member| member.user_public_key == person && !member.removed)
-    {
-        return Ok(());
-    }
-    let token: [u8; 32] = rand::random();
-    let issued = issue_pre_admission(
-        workspaces,
-        host_cert,
-        root,
-        workspace,
-        person,
-        token_digest(&token),
-        SPECTATOR_NAME,
-        WorkspaceRole::Viewer,
-    )
-    .await
-    .context("pre-admit the spectator person")?;
-    let device = SigningKey::from_bytes(&rand::random());
-    let cert = spectator_cert(
-        spectator,
-        device.verifying_key().to_bytes(),
-        tilo_clock::unix_now_ns(),
-    )?;
-    let challenge = match workspaces
-        .page_join(JoinStep::Ask {
-            invitation: issued.signed_invitation,
-            device_cert: cert,
-            request_id: rand::random(),
-        })
-        .await
-    {
-        JoinReply::Challenge { challenge } => challenge,
-        other => bail!("the spectator person's join was answered {other:?}"),
-    };
-    let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
-    match workspaces
-        .page_join(JoinStep::ProvePreAdmitted {
-            challenge,
-            signature,
-            name: SPECTATOR_NAME.into(),
-            token: token.to_vec(),
-        })
-        .await
-    {
-        JoinReply::Admitted { .. } => Ok(()),
-        other => bail!("the spectator person was not admitted: {other:?}"),
-    }
-}
-
 async fn apply_role_changes(
     context: &PersistentRoom,
     changes: Vec<RoleChange>,
@@ -1352,6 +1042,35 @@ pub(crate) async fn settle_strips(
         .map_err(|error| anyhow::anyhow!("give the shared desktop its strips: {error}"))
 }
 
+/// The apps the workspace's members write through: the ones `--author-app`
+/// names, or, naming none, every first-party app, every seeded one, and the
+/// workspace's own shared desktop.
+fn authored_apps(args: &PersistentArgs) -> Vec<String> {
+    if args.author_apps.is_empty() {
+        let mut apps: Vec<String> = tilo_desktop_model::first_party::FIRST_PARTY_APPS
+            .iter()
+            .map(|app| (*app).to_owned())
+            .collect();
+        // The shared desktop is the workspace's own record rather than some
+        // package's: every member writes the desk its windows are on, so the
+        // workspace's host lets it author, as it lets the first-party apps
+        // author the records their windows show.
+        apps.push(tilo_desktop_model::ownership::DESKTOP_APP.to_owned());
+        for app in &args.seed_apps {
+            if !apps.contains(app) {
+                apps.push(app.clone());
+            }
+        }
+        return apps;
+    }
+    // No app's id is `none`: the flag says the workspace is read-only.
+    args.author_apps
+        .iter()
+        .filter(|app| app.as_str() != NO_AUTHORED_APPS)
+        .cloned()
+        .collect()
+}
+
 /// Make exactly the operator's `apps` authors of the workspace, so its members
 /// write through them, and take authorship back from an app this host made
 /// an author at an earlier start and no longer names (kept in `authored`).
@@ -1449,6 +1168,40 @@ pub(crate) async fn settle_member_invites(
     Ok(())
 }
 
+/// List the workspace in the public directory as the host configured it, or
+/// take it out when the host asks for no listing. Settled at every start: the
+/// listing is the host's word, and a person who joined yesterday stays a
+/// member either way.
+async fn settle_listing(
+    workspaces: &Workspaces,
+    workspace: &str,
+    host_cert: &DeviceCert,
+    persistent: &PersistentArgs,
+) -> anyhow::Result<()> {
+    match &persistent.listing_description {
+        Some(description) => {
+            workspaces
+                .publish(
+                    workspace,
+                    host_cert,
+                    Listing {
+                        description: description.clone(),
+                        default_role: persistent.default_role.unwrap_or(WorkspaceRole::Viewer),
+                    },
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!("list the workspace in the directory: {error}"))?;
+        }
+        None => {
+            workspaces
+                .unpublish(workspace, host_cert)
+                .await
+                .map_err(|error| anyhow::anyhow!("unlist the workspace: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
 #[expect(
     clippy::too_many_lines,
     clippy::significant_drop_tightening,
@@ -1487,6 +1240,7 @@ pub(crate) async fn run(
     let listen = args.web.web.context("a workspace needs --web")?;
     let mut operator = operator_lines()?;
     let store = tilo_secrets::SecretStore::for_app(SECRET_APP);
+    let sign_in = discord_sign_in::SignIn::from_args(&persistent)?;
     let moderation = persistent
         .moderation_key_file
         .as_deref()
@@ -1552,34 +1306,31 @@ pub(crate) async fn run(
         .clone()
         .unwrap_or_else(|| workspace_name(&name));
     let workspace = governed_room(&workspaces, &shown, &id_file, &store, &root).await?;
-    // Every visitor comes in through the site's door: unless the host says
-    // otherwise, the workspace shares its apps' records, never what anyone has
-    // open. Settled at every start, as the host configured it.
+    // The certificate this host serves the workspace with: a build renamed
+    // the host's own after a workspace was made with it, and the host took
+    // the record's back (`Workspaces::serving_certificate`). Every governed
+    // operation below names it, so a renamed certificate is no refusal.
+    let host_cert = workspaces.serving_certificate().clone();
+    // The removals moderation made before the door had them, taken over once
+    // and kept out for the rest of their day.
+    let adopted = workspaces
+        .adopt_legacy_removals(&workspace, &state.join("removals.json"))
+        .await
+        .context("take over the removals the room kept before the door")?;
+    if adopted > 0 {
+        tracing::info!(%workspace, adopted, "removals taken over from the room's removals file");
+    }
+    settle_listing(&workspaces, &workspace, &host_cert, &persistent).await?;
+    workspaces
+        .list_invitation_only(&workspace, &host_cert, persistent.invitation_only)
+        .await
+        .map_err(|error| anyhow::anyhow!("settle the workspace's door: {error}"))?;
+    // Whether the workspace shares its members' windows and strips, as the
+    // host configured it. Settled at every start.
     workspaces
         .set_layout(&workspace, persistent.layout)
         .await
         .map_err(|error| anyhow::anyhow!("settle the workspace's layout scope: {error}"))?;
-    let spectator = spectator_root(&store, &workspace)?;
-    ensure_spectator_member(&workspaces, &host_cert, &root, &workspace, &spectator).await?;
-    let workspace_id = workspaces
-        .summary(&workspace)
-        .await
-        .map_err(|error| anyhow::anyhow!("{error}"))?
-        .workspace_id;
-    hosted
-        .relay
-        .admit_spectators(
-            workspace_id,
-            tilo_relay::Spectators {
-                root: spectator.verifying_key().to_bytes(),
-                seats: persistent.max_spectators,
-                // Every visitor may join this workspace as a guest, and so read
-                // its channels: one who only watches may read them too.
-                public: true,
-            },
-        )
-        .await
-        .context("let visitors watch the workspace")?;
     seed_apps(
         &workspaces,
         &workspace,
@@ -1613,7 +1364,7 @@ pub(crate) async fn run(
         &workspaces,
         &workspace,
         &host_cert,
-        &persistent.author_apps,
+        &authored_apps(&persistent),
         &state.join("authored-apps.json"),
     )
     .await?;
@@ -1710,11 +1461,24 @@ pub(crate) async fn run(
     let context = PersistentRoom {
         workspaces,
         workspace,
-        root,
-        spectator,
         host_cert,
         web,
-        discord,
+    };
+    // The deployment's own routes: its health check and the addresses other
+    // services are configured with. Started once the room serves, so a health
+    // check that answers means people can get in.
+    let _management = match persistent.http {
+        Some(listen) => Some(
+            http::serve(http::Config {
+                listen,
+                avatars: persistent.public_avatars.clone(),
+                sign_in,
+                web_entry: args.web.web_entry.clone(),
+                discord: discord.clone(),
+            })
+            .await?,
+        ),
+        None => None,
     };
     let governance = Governance {
         owners,
@@ -1768,10 +1532,6 @@ struct DeclaredRoles {
 impl Governance {
     fn declared_file(&self) -> PathBuf {
         self.state.join("declared-roles.json")
-    }
-
-    fn removals_file(&self) -> PathBuf {
-        self.state.join("removals.json")
     }
 
     fn last_seen_file(&self) -> PathBuf {
@@ -1860,7 +1620,13 @@ async fn reconcile_roles(
 ) -> anyhow::Result<()> {
     let members = summary(context).await?.members;
     let current = governance.current();
-    let changes = role_changes(&members, &current.0, &current.1, previously_declared);
+    let changes = role_changes(
+        &members,
+        &current.0,
+        &current.1,
+        previously_declared,
+        context.host_cert.user_public_key,
+    );
     apply_role_changes(context, changes).await?;
     governance.remember_declared(&current)?;
     *previously_declared = current.0.union(&current.1).copied().collect();
@@ -1872,7 +1638,6 @@ async fn reconcile_roles(
 async fn prune_idle(
     context: &PersistentRoom,
     governance: &Governance,
-    spectator: [u8; 32],
     removals: &Removals,
     last_seen: &mut BTreeMap<[u8; 32], u64>,
 ) -> anyhow::Result<()> {
@@ -1882,8 +1647,7 @@ async fn prune_idle(
         last_seen.entry(member.user_public_key).or_insert(now);
     }
     let (owners, moderators) = governance.current();
-    let mut keep: BTreeSet<[u8; 32]> = owners.union(&moderators).copied().collect();
-    keep.insert(spectator);
+    let keep: BTreeSet<[u8; 32]> = owners.union(&moderators).copied().collect();
     let idle = idle_guests(
         &members,
         last_seen,
@@ -1908,9 +1672,9 @@ async fn prune_idle(
             .await
         {
             // They keep their seats until the next tick tries again, and
-            // the workspace goes on serving: ending here dropped every visitor's
-            // session and turned each new one away while the workspace service
-            // restarted it.
+            // the workspace goes on serving: ending here dropped every session
+            // and turned each new one away while the workspace service restarted
+            // it.
             removals.not_pruned(&batch);
             tracing::warn!("pruning {} idle guests failed: {error}", batch.len());
             break;
@@ -1949,24 +1713,12 @@ impl OnlineWatch {
         &mut self,
         context: &PersistentRoom,
         governance: &Governance,
-        spectator: [u8; 32],
         last_seen: &mut BTreeMap<[u8; 32], u64>,
     ) -> anyhow::Result<()> {
         let sessions = context.web.online_users();
-        let people = sessions.keys().filter(|user| **user != spectator).count();
-        // Seated ones only: a page refused for want of a seat keeps
-        // its web session open while it waits, but watches nothing.
-        let spectators = context
-            .workspaces
-            .seated_spectators(&context.workspace)
-            .await
-            .unwrap_or(0);
+        let people = sessions.len();
         // Who of the members is here, for the site's directory.
-        let here: std::collections::BTreeSet<[u8; 32]> = sessions
-            .keys()
-            .filter(|user| **user != spectator)
-            .copied()
-            .collect();
+        let here: std::collections::BTreeSet<[u8; 32]> = sessions.keys().copied().collect();
         let (faces, _, members) = context
             .workspaces
             .presence(&context.workspace, &here)
@@ -1974,10 +1726,8 @@ impl OnlineWatch {
             .unwrap_or_default();
         let online = OperatorEvent::Online {
             people: u32::try_from(people).unwrap_or(u32::MAX),
-            spectators: u32::try_from(spectators).unwrap_or(u32::MAX),
             here: faces,
-            // The spectator person is a member nobody counts.
-            members: members.saturating_sub(1),
+            members,
             online: here.iter().map(hex::encode).collect(),
         };
         if self.last_online.as_ref() != Some(&online) {
@@ -2021,12 +1771,7 @@ async fn serve_operator(
     operator: &mut tokio::sync::mpsc::Receiver<Result<OperatorCommand, String>>,
 ) -> anyhow::Result<()> {
     let mut changes = context.workspaces.governance_changes();
-    let spectator = context.spectator.verifying_key().to_bytes();
-    let removals = Removals::load(
-        governance.removals_file(),
-        &summary(context).await?.members,
-        tilo_clock::unix_now_ms(),
-    )?;
+    let removals = Removals::load(&summary(context).await?.members);
     let mut previously_declared = governance.previously_declared()?;
     reconcile_roles(context, governance, &mut previously_declared).await?;
     let mut last_seen = governance.read_last_seen()?;
@@ -2040,13 +1785,14 @@ async fn serve_operator(
     // grants or takes back reaches the workspace without a restart.
     let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
     let mut roles_seen = governance.roles_changed_at();
-    let admitter = Admitter::of(context, removals.clone(), governance.members_only);
-    let mut admitting = tokio::task::JoinSet::<OperatorEvent>::new();
     let mut mail_acks = MailAcks::new();
     let mut mail = governance
         .wait_list_mail
         .as_ref()
         .and_then(|door| context.workspaces.mail_wait_list(door));
+    // A deployment that runs the room without an operator leaves its input at
+    // its end: the room then keeps serving, and only a command ends it.
+    let mut operator_open = true;
     loop {
         tokio::select! {
             Some(asked) = async {
@@ -2055,11 +1801,6 @@ async fn serve_operator(
                     None => std::future::pending().await,
                 }
             } => publish_invite_mail(asked, &mut mail_acks),
-            Some(answered) = admitting.join_next(), if !admitting.is_empty() => match answered {
-                Ok(event) => println!("{}", event.to_line()),
-                // Its waiter hears nothing and gives up, as on any lost answer.
-                Err(error) => eprintln!("tilo-relay: a pre-admission did not finish: {error}"),
-            },
             _ = roles_tick.tick(), if governance.roles_file.is_some() => {
                 let changed_at = governance.roles_changed_at();
                 if changed_at != roles_seen {
@@ -2068,9 +1809,9 @@ async fn serve_operator(
                 }
             }
             _ = online_tick.tick() => {
-                presence.observe(context, governance, spectator, &mut last_seen).await?;
+                presence.observe(context, governance, &mut last_seen).await?;
             }
-            _ = prune_tick.tick() => prune_idle(context, governance, spectator, &removals, &mut last_seen).await?,
+            _ = prune_tick.tick() => prune_idle(context, governance, &removals, &mut last_seen).await?,
             changed = changes.recv() => {
                 match changed {
                     Ok(workspace) if workspace != context.workspace => continue,
@@ -2078,19 +1819,19 @@ async fn serve_operator(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => bail!("the relay stopped governing"),
                 }
                 let members = summary(context).await?.members;
-                for user in removals.taken_in(&members, tilo_clock::unix_now_ms())? {
+                for user in removals.taken_in(&members) {
                     // Bans exist once workspace moderation lands; until then every
                     // removal is a plain removal. The service treats both alike.
                     println!("{}", OperatorEvent::MemberRemoved { user_public_key: hex::encode(user), banned: false }.to_line());
                 }
                 reconcile_roles(context, governance, &mut previously_declared).await?;
             }
-            line = operator.recv(), if admitting.len() < PRE_ADMITTING_AT_ONCE => match line {
-                Some(Ok(OperatorCommand::PreAdmit { user_public_key, token_sha256, label, role })) => {
-                    admitting.spawn(answer_pre_admit(admitter.clone(), user_public_key, token_sha256, label, role));
-                }
-                Some(Ok(OperatorCommand::Spectate { device_public_key })) => {
-                    println!("{}", answer_spectate(context, device_public_key).to_line());
+            line = operator.recv(), if operator_open => match line {
+                None => {
+                    operator_open = false;
+                    tracing::info!(
+                        "the operator closed its input; the workspace keeps serving"
+                    );
                 }
                 Some(Ok(command @ (OperatorCommand::WaitList { .. }
                 | OperatorCommand::Unlist { .. }
@@ -2103,19 +1844,8 @@ async fn serve_operator(
                         let _ = sender.send(queued);
                     }
                 }
-                Some(Ok(OperatorCommand::DiscordAuthorized { user_id, user_name, display_name, avatar, state_sha256, link_check })) => {
-                    hand_to_discord(context, user_id, user_name, display_name, avatar, state_sha256, link_check).await;
-                }
-                Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent workspace admits guests by pre-admission only"),
-                Some(Ok(OperatorCommand::Shutdown {})) | None => {
-                    // Whoever is being let in hears the answer before the workspace stops.
-                    while let Some(answered) = admitting.join_next().await {
-                        if let Ok(event) = answered {
-                            println!("{}", event.to_line());
-                        }
-                    }
-                    return Ok(());
-                }
+                Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent workspace admits guests through its door"),
+                Some(Ok(OperatorCommand::Shutdown {})) => return Ok(()),
                 Some(Err(error)) => bail!("unreadable workspace operator line: {error}"),
             },
         }
@@ -2130,13 +1860,40 @@ async fn serve_operator(
 )]
 mod tests {
     use super::*;
-    use tilo_relay_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
+    use ed25519_dalek::Signer as _;
+    use tilo_relay_protocol::workspaces::{
+        JoinReply, JoinStep, WorkspacesReply, WorkspacesRequest, join_proof_digest,
+    };
+    use tilo_user_identity::DeviceCapabilities;
     const DAY_MS: u64 = 24 * 3600 * 1000;
+    const NS_PER_SEC: u64 = 1_000_000_000;
 
     #[test]
     fn the_workspace_is_named_after_the_room_capitalized() {
         assert_eq!(workspace_name("plaza"), "Plaza");
         assert_eq!(workspace_name(""), "");
+    }
+
+    #[test]
+    fn the_workspace_authors_every_first_party_app_unless_it_names_apps() {
+        let mut args = PersistentArgs {
+            seed_apps: vec!["so.tilo.chat".into()],
+            ..PersistentArgs::default()
+        };
+        let every = authored_apps(&args);
+        for app in tilo_desktop_model::first_party::FIRST_PARTY_APPS {
+            assert!(every.iter().any(|named| named.as_str() == *app), "{app}");
+        }
+        assert!(every.iter().any(|app| app == "so.tilo.chat"));
+        assert_eq!(
+            every.len(),
+            every.iter().collect::<BTreeSet<_>>().len(),
+            "an app is named once"
+        );
+        args.author_apps = vec!["so.tilo.chat".into()];
+        assert_eq!(authored_apps(&args), ["so.tilo.chat"]);
+        args.author_apps = vec![NO_AUTHORED_APPS.into()];
+        assert!(authored_apps(&args).is_empty(), "a read-only workspace");
     }
 
     fn store() -> tilo_secrets::SecretStore {
@@ -2186,65 +1943,6 @@ mod tests {
     }
 
     #[test]
-    fn the_spectator_root_is_made_once_and_kept() {
-        let store = store();
-        let first = spectator_root(&store, "workspace-a").unwrap();
-        assert_eq!(
-            spectator_root(&store, "workspace-a").unwrap().to_bytes(),
-            first.to_bytes()
-        );
-        assert_ne!(
-            spectator_root(&store, "workspace-b").unwrap().to_bytes(),
-            first.to_bytes()
-        );
-    }
-
-    #[test]
-    fn a_spectator_certificate_lasts_an_hour_and_carries_no_capabilities() {
-        let spectator = SigningKey::from_bytes(&[0x33; 32]);
-        let cert = spectator_cert(&spectator, [4; 32], 1_000).unwrap();
-        tilo_user_identity::verify_device_cert_at(&cert, 1_000).unwrap();
-        assert_eq!(cert.user_public_key, spectator.verifying_key().to_bytes());
-        assert_eq!(cert.device_public_key, [4; 32]);
-        assert_eq!(
-            cert.expires_at_ns,
-            Some(1_000 + SPECTATOR_CERT_SECS * NS_PER_SEC)
-        );
-        let caps = &cert.capabilities;
-        assert!(
-            !(caps.can_own_workspaces
-                || caps.can_admit_devices
-                || caps.can_act_as_host
-                || caps.can_read_all_workspaces
-                || caps.can_administer_devices)
-        );
-        assert!(
-            tilo_user_identity::verify_device_cert_at(
-                &cert,
-                1_000 + SPECTATOR_CERT_SECS * NS_PER_SEC + 1
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn a_pre_admission_is_signed_by_the_room_root_for_ten_minutes() {
-        let root = SigningKey::from_bytes(&[0x11; 32]);
-        let grant = pre_admission(
-            &root,
-            "workspace-a",
-            [5; 32],
-            "Ada",
-            WorkspaceRole::Editor,
-            1_000,
-        )
-        .unwrap();
-        grant.verify().unwrap();
-        assert_eq!(grant.owner_user_public_key, root.verifying_key().to_bytes());
-        assert_eq!(grant.expires_at_ns, 1_000 + PRE_ADMISSION_SECS * NS_PER_SEC);
-    }
-
-    #[test]
     fn removals_are_reported_once_and_only_for_newly_removed_people() {
         let removed = |key: u8, removed: bool| tilo_peer_state::GovernedMember {
             removed,
@@ -2271,40 +1969,9 @@ mod tests {
         assert_eq!(newly_removed(&mut seen, &[listed(true)]), vec![[4; 32]]);
     }
 
-    /// A guest pruned after an absence comes back through the door as
-    /// anyone does; only moderation's removals keep a person out.
-    #[test]
-    fn a_pruned_guest_is_not_kept_out_and_a_removal_lapses_after_the_day() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("removals.json");
-        let gone = |key: u8| tilo_peer_state::GovernedMember {
-            removed: true,
-            ..member(key, false)
-        };
-        let removals = Removals::load(file.clone(), &[], 1_000).unwrap();
-        removals.pruning(&BTreeSet::from([[5; 32]]));
-        assert!(!removals.refuses([5; 32], &[gone(5)], 1_000));
-        assert!(removals.taken_in(&[gone(5)], 1_000).unwrap().is_empty());
-        assert!(
-            removals.refuses([6; 32], &[gone(6)], 1_000),
-            "removed, not yet taken in"
-        );
-        assert_eq!(removals.taken_in(&[gone(6)], 1_000).unwrap(), vec![[6; 32]]);
-        let members = [gone(5), gone(6)];
-        // Kept across a restart, for the day and no longer.
-        let reloaded = Removals::load(file, &members, 2_000).unwrap();
-        assert!(reloaded.refuses([6; 32], &members, 2_000));
-        assert!(!reloaded.refuses([6; 32], &members, 1_000 + REMOVED_FOR_MS));
-        assert!(!reloaded.refuses([5; 32], &members, 2_000));
-    }
-
-    /// A relay governing one workspace `Plaza`, and what answers its
-    /// pre-admissions, removals kept in `dir`.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspaces handle moves into what answers pre-admissions"
-    )]
-    async fn plaza(dir: &Path) -> (tilo_relay::daemon::Relay, Admitter) {
+    /// A relay governing one workspace `Plaza`, its workspaces and the host's
+    /// device certificate.
+    async fn plaza(dir: &Path) -> (tilo_relay::daemon::Relay, Workspaces, DeviceCert, String) {
         let root = SigningKey::from_bytes(&[1; 32]);
         let host = SigningKey::from_bytes(&[2; 32]);
         let host_cert = enrol(&root, &host, "host", DeviceCapabilities::host()).unwrap();
@@ -2325,123 +1992,7 @@ mod tests {
         .unwrap();
         let workspaces = relay.workspaces().unwrap().clone();
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
-        let removals =
-            Removals::load(dir.join("removals.json"), &[], tilo_clock::unix_now_ms()).unwrap();
-        let admitter = Admitter {
-            workspaces,
-            host_cert,
-            root,
-            workspace,
-            spectator: [9; 32],
-            removals,
-            members_only: false,
-        };
-        (relay, admitter)
-    }
-
-    /// Whether the guest `device` joins with the pre-admission `answer`
-    /// and its `token`, as their page does.
-    async fn joins(
-        workspaces: &Workspaces,
-        (device, device_cert): &(SigningKey, DeviceCert),
-        answer: OperatorEvent,
-        token: &[u8],
-    ) -> bool {
-        let OperatorEvent::PreAdmitted { invitation, .. } = answer else {
-            panic!("not pre-admitted: {answer:?}");
-        };
-        let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(invitation)
-            .unwrap();
-        let JoinReply::Challenge { challenge } = workspaces
-            .page_join(JoinStep::Ask {
-                invitation,
-                device_cert: device_cert.clone(),
-                request_id: rand::random(),
-            })
-            .await
-        else {
-            return false;
-        };
-        let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
-        let proved = workspaces
-            .page_join(JoinStep::ProvePreAdmitted {
-                challenge,
-                signature,
-                name: "Guest".into(),
-                token: token.to_vec(),
-            })
-            .await;
-        matches!(proved, JoinReply::Admitted { .. })
-    }
-
-    fn listed_removed(members: &[tilo_peer_state::GovernedMember], person: [u8; 32]) -> bool {
-        members
-            .iter()
-            .any(|member| member.user_public_key == person && member.removed)
-    }
-
-    /// A guest moderation removed asks the door again at once, as their
-    /// page does the moment the workspace drops it: the workspace refuses that
-    /// person, whether or not its operator loop has taken the removal in
-    /// yet, and an invitation it issued them before the removal is no way
-    /// back in either.
-    #[tokio::test]
-    async fn a_removed_guest_is_refused_pre_admission_and_kept_out() {
-        let dir = tempfile::tempdir().unwrap();
-        let (relay, admitter) = plaza(dir.path()).await;
-        let (workspaces, workspace) = (admitter.workspaces.clone(), admitter.workspace.clone());
-        let device = SigningKey::from_bytes(&[4; 32]);
-        let guest_root = SigningKey::from_bytes(&[3; 32]);
-        let guest = (
-            device.clone(),
-            enrol(&guest_root, &device, "guest", DeviceCapabilities::member()).unwrap(),
-        );
-        let person = guest.1.user_public_key;
-        let pre_admit = |token: &'static [u8]| {
-            answer_pre_admit(
-                admitter.clone(),
-                hex::encode(person),
-                hex::encode(token_digest(token)),
-                "Guest".into(),
-                WorkspaceRole::Editor,
-            )
-        };
-        let removed = |event: &OperatorEvent| {
-            matches!(event, OperatorEvent::PreAdmitRefused { removed: true, .. })
-        };
-
-        assert!(joins(&workspaces, &guest, pre_admit(b"first").await, b"first").await);
-        let earlier = pre_admit(b"earlier").await;
-        let removal = tilo_relay_session::workspaces::RemoveMemberRequest {
-            request_id: [8; 32],
-            user_public_key: person,
-        };
-        workspaces
-            .remove_member(&workspace, &admitter.host_cert, removal)
-            .await
-            .unwrap();
-        let members = workspaces.summary(&workspace).await.unwrap().members;
-        assert!(
-            listed_removed(&members, person),
-            "the removal takes their membership"
-        );
-        // Before the operator loop has heard of the removal.
-        let asked = pre_admit(b"second").await;
-        assert!(removed(&asked), "{asked:?}");
-        // Taken in: reported once, and still refused.
-        let now = tilo_clock::unix_now_ms();
-        let taken = admitter.removals.taken_in(&members, now).unwrap();
-        assert_eq!(taken, vec![person]);
-        let asked = pre_admit(b"third").await;
-        assert!(removed(&asked), "{asked:?}");
-        assert!(
-            !joins(&workspaces, &guest, earlier, b"earlier").await,
-            "an earlier invitation lets them back in"
-        );
-        let members = workspaces.summary(&workspace).await.unwrap().members;
-        assert!(listed_removed(&members, person), "still removed");
-        relay.shutdown().await;
+        (relay, workspaces, host_cert, workspace)
     }
 
     /// Ask for an invitation to `workspace` as `device`, as a member's page does.
@@ -2465,105 +2016,107 @@ mod tests {
             .await
     }
 
-    /// A workspace taking people by invitation lets nobody new in through its
-    /// door, and still lets a member in again: another tab of theirs is
-    /// another device of the same person. A member invites someone with an
-    /// invitation of their own and lets them in; once the workspace lets anyone
-    /// in again, members no longer invite.
+    /// A fresh person with one device: their signing key and its certificate.
+    fn guest(seed: u8) -> (SigningKey, DeviceCert) {
+        let device = SigningKey::from_bytes(&[seed; 32]);
+        let root = SigningKey::from_bytes(&[seed.wrapping_add(100); 32]);
+        let cert = enrol(&root, &device, "guest", DeviceCapabilities::member()).unwrap();
+        (device, cert)
+    }
+
+    /// Whether `person`'s device redeems the door's `invitation` and `token`,
+    /// as their page does.
+    async fn walk_in(
+        workspaces: &Workspaces,
+        (key, cert): &(SigningKey, DeviceCert),
+        invitation: Vec<u8>,
+        token: &str,
+    ) -> bool {
+        let JoinReply::Challenge { challenge } = workspaces
+            .page_join(JoinStep::Ask {
+                invitation,
+                device_cert: cert.clone(),
+                request_id: rand::random(),
+            })
+            .await
+        else {
+            return false;
+        };
+        let signature = key.sign(&join_proof_digest(&challenge)).to_bytes();
+        matches!(
+            workspaces
+                .page_join(JoinStep::ProvePreAdmitted {
+                    challenge,
+                    signature,
+                    name: "Guest".into(),
+                    token: token.as_bytes().to_vec(),
+                })
+                .await,
+            JoinReply::Admitted { .. }
+        )
+    }
+
+    /// Someone the listed workspace's door lets in is a member; once the
+    /// workspace takes people by invitation, a member invites someone with an
+    /// invitation of their own and lets them in, while the workspace's link is
+    /// no invitation at all. Once it lets anyone in again, members no longer
+    /// invite.
     #[tokio::test]
     #[expect(
         clippy::too_many_lines,
-        reason = "one story: the door, a member's other tab, an invitation and taking it back"
+        reason = "one story: the door, an invitation, admitting it and taking it back"
     )]
-    #[cfg_attr(
-        feature = "agents",
-        expect(
-            clippy::significant_drop_tightening,
-            reason = "Relay::shutdown consumes the relay, and so its workspaces, after the assertions"
-        )
-    )]
-    async fn taking_people_by_invitation_members_invite_whom_the_door_turns_away() {
+    async fn taking_people_by_invitation_members_invite_whose_join_they_admit() {
         let dir = tempfile::tempdir().unwrap();
-        let (relay, open) = plaza(dir.path()).await;
-        let workspaces = open.workspaces.clone();
-        let workspace = open.workspace.clone();
-        ensure_guest_policy(&workspaces, &workspace, &open.host_cert)
+        let (relay, workspaces, host_cert, workspace) = plaza(dir.path()).await;
+        ensure_guest_policy(&workspaces, &workspace, &host_cert)
             .await
             .unwrap();
         // An open workspace settles as one at every start, holding no such grant.
-        settle_member_invites(&workspaces, &workspace, &open.host_cert, false)
+        settle_member_invites(&workspaces, &workspace, &host_cert, false)
             .await
             .unwrap();
-        let by_invitation = Admitter {
-            members_only: true,
-            ..open.clone()
-        };
-        let guest = |seed: u8| {
-            let device = SigningKey::from_bytes(&[seed; 32]);
-            let root = SigningKey::from_bytes(&[seed.wrapping_add(100); 32]);
-            let cert = enrol(&root, &device, "guest", DeviceCapabilities::member()).unwrap();
-            (device, cert)
-        };
-        let pre_admit = |admitter: &Admitter, person: [u8; 32], token: &'static [u8]| {
-            answer_pre_admit(
-                admitter.clone(),
-                hex::encode(person),
-                hex::encode(token_digest(token)),
-                "Guest".into(),
-                WorkspaceRole::Editor,
-            )
-        };
 
-        // Someone who joined while the door was open is a member. An open
-        // workspace's link is its invitation: members invite nobody themselves.
-        let member = guest(12);
-        let person = member.1.user_public_key;
-        assert!(
-            joins(
-                &workspaces,
-                &member,
-                pre_admit(&open, person, b"open").await,
-                b"open"
+        // Someone who joined through the door while the workspace was listed
+        // is a member. A listed workspace's link is its invitation: members
+        // invite nobody themselves.
+        workspaces
+            .publish(
+                &workspace,
+                &host_cert,
+                Listing {
+                    description: "A plaza".into(),
+                    default_role: WorkspaceRole::Editor,
+                },
             )
             .await
+            .unwrap();
+        let member = guest(12);
+        let (issued, token) = workspaces
+            .admit_listed(
+                &workspace,
+                &tilo_relay_protocol::directory::DoorJoin {
+                    user_public_key: hex::encode(member.1.user_public_key),
+                    display_name: "Ada".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            walk_in(&workspaces, &member, issued.signed_invitation, &token).await,
+            "the door lets the first person in"
         );
         let asked = invite(&workspaces, &workspace, &member.1).await;
         assert!(matches!(asked, WorkspacesReply::Refused(_)), "{asked:?}");
 
-        settle_member_invites(&workspaces, &workspace, &open.host_cert, true)
+        workspaces.unpublish(&workspace, &host_cert).await.unwrap();
+        settle_member_invites(&workspaces, &workspace, &host_cert, true)
             .await
             .unwrap();
-        let stranger = guest(11);
-        let asked = pre_admit(&by_invitation, stranger.1.user_public_key, b"stranger").await;
-        assert!(
-            matches!(
-                asked,
-                OperatorEvent::PreAdmitRefused {
-                    invite_only: true,
-                    ..
-                }
-            ),
-            "{asked:?}"
-        );
-        let another_tab = (
-            SigningKey::from_bytes(&[13; 32]),
-            enrol(
-                &SigningKey::from_bytes(&[112; 32]),
-                &SigningKey::from_bytes(&[13; 32]),
-                "guest",
-                DeviceCapabilities::member(),
-            )
-            .unwrap(),
-        );
-        assert_eq!(another_tab.1.user_public_key, person, "the same person");
-        let asked = pre_admit(&by_invitation, person, b"again").await;
-        assert!(
-            joins(&workspaces, &another_tab, asked, b"again").await,
-            "a member gets in again"
-        );
 
         // The member invites the stranger, who asks to join with it and
         // waits until the member lets them in.
+        let stranger = guest(11);
         let issued = invite(&workspaces, &workspace, &member.1).await;
         let WorkspacesReply::Invitation {
             signed_invitation, ..
@@ -2626,7 +2179,7 @@ mod tests {
             "the invited stranger is a member"
         );
 
-        settle_member_invites(&workspaces, &workspace, &open.host_cert, false)
+        settle_member_invites(&workspaces, &workspace, &host_cert, false)
             .await
             .unwrap();
         let asked = invite(&workspaces, &workspace, &member.1).await;
@@ -2643,6 +2196,7 @@ mod tests {
             &owners,
             &BTreeSet::new(),
             &BTreeSet::from([[2; 32]]),
+            [0x77; 32],
         );
         assert_eq!(
             changes,
@@ -2656,9 +2210,29 @@ mod tests {
                 &[member(1, true)],
                 &owners,
                 &BTreeSet::new(),
-                &BTreeSet::new()
+                &BTreeSet::new(),
+                [0x77; 32]
             )
             .is_empty()
+        );
+    }
+
+    /// The workspace's owner holds its seat by being its owner, not by a list:
+    /// no declared list takes it away.
+    #[test]
+    fn the_owner_root_keeps_its_seat_whatever_the_declared_lists_say() {
+        let mut dropped = member(1, false);
+        dropped.administrator = true;
+        assert!(
+            role_changes(
+                std::slice::from_ref(&dropped),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &BTreeSet::from([[1; 32]]),
+                [1; 32]
+            )
+            .is_empty(),
+            "dropping the owner from a list does not demote it"
         );
     }
 
@@ -2670,7 +2244,8 @@ mod tests {
                 &[member(1, false)],
                 &BTreeSet::new(),
                 &moderators,
-                &BTreeSet::new()
+                &BTreeSet::new(),
+                [0x77; 32]
             ),
             vec![RoleChange::Moderator([1; 32])]
         );
@@ -2683,7 +2258,8 @@ mod tests {
                 std::slice::from_ref(&moderator),
                 &BTreeSet::new(),
                 &moderators,
-                &BTreeSet::new()
+                &BTreeSet::new(),
+                [0x77; 32]
             )
             .is_empty()
         );
@@ -2692,7 +2268,8 @@ mod tests {
                 &[moderator],
                 &BTreeSet::new(),
                 &BTreeSet::new(),
-                &moderators
+                &moderators,
+                [0x77; 32]
             ),
             vec![RoleChange::Editor([1; 32])]
         );

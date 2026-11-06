@@ -863,12 +863,59 @@ impl std::error::Error for ArgError {}
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ActionArgs {
     values: BTreeMap<String, ArgValue>,
+    from: Option<MadeFrom>,
+}
+
+/// The argument key a caller names the resource it makes the invocation from with: what the
+/// resources the action makes were made from (`created(r)?.from`, `linked(r)`). It is no
+/// parameter of any action, and every builder may read it, the ones that record provenance and
+/// the ones that ignore it alike.
+pub const FROM_ARGUMENT: &str = "$from";
+
+/// The resource an invocation is made from: its address, as the caller names it, and the
+/// type it points at.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct MadeFrom {
+    pub resource: String,
+    pub kind: String,
+}
+
+impl MadeFrom {
+    /// The address and type of a reference argument (`{"ref": "…", "ty": "…"}`): the shape a
+    /// reference travels in, and the one [`Self::to_json`] writes.
+    #[must_use]
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        let object = value.as_object()?;
+        Some(Self {
+            resource: object.get("ref")?.as_str()?.to_owned(),
+            kind: object.get("ty")?.as_str()?.to_owned(),
+        })
+    }
+
+    /// This as a reference argument.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({"ref": self.resource, "ty": self.kind})
+    }
 }
 
 impl ActionArgs {
     /// The empty argument set — what a nullary action is invoked with.
     pub fn none() -> Self {
         Self::default()
+    }
+
+    /// The resource this invocation is made from, when it is made from one.
+    #[must_use]
+    pub fn from(&self) -> Option<&MadeFrom> {
+        self.from.as_ref()
+    }
+
+    /// This invocation as one made from `from`.
+    #[must_use]
+    pub fn with_from(mut self, from: Option<MadeFrom>) -> Self {
+        self.from = from;
+        self
     }
 
     /// Check `supplied` against `params` and bind it.
@@ -983,7 +1030,7 @@ impl ActionArgs {
                 });
             }
         }
-        Ok(Self { values })
+        Ok(Self { values, from: None })
     }
 
     /// Bind arguments that arrived as a JSON object — the shape a control
@@ -994,6 +1041,10 @@ impl ActionArgs {
     ) -> Result<Self, ArgError> {
         let mut pairs = Vec::with_capacity(supplied.len());
         for (name, value) in supplied {
+            // What the invocation is made from is no parameter of the action.
+            if name == FROM_ARGUMENT {
+                continue;
+            }
             let Some(param) = params.iter().find(|param| param.name.as_ref() == name) else {
                 return Err(ArgError::Unknown { name: name.clone() });
             };
@@ -1014,7 +1065,8 @@ impl ActionArgs {
             };
             pairs.push((name.clone(), v));
         }
-        Self::bind(params, pairs)
+        let from = supplied.get(FROM_ARGUMENT).and_then(MadeFrom::from_json);
+        Self::bind(params, pairs).map(|args| args.with_from(from))
     }
 
     pub fn text(&self, name: &str) -> Option<&str> {

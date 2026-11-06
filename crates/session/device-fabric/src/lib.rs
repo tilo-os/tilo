@@ -45,7 +45,7 @@ pub struct PhysicalGamepadBinding {
     pub session_id: String,
 }
 
-pub const FABRIC_SCHEMA_VERSION: u16 = 7;
+pub const FABRIC_SCHEMA_VERSION: u16 = 8;
 pub const MAX_DEVICES: usize = 64;
 /// More network interfaces than any one device wakes through.
 pub const MAX_WAKE_ROUTES: usize = 8;
@@ -3108,7 +3108,7 @@ mod tests {
         };
         // Fixed schema-6 Postcard bytes: owner, aggregate rect, scale, stamp.
         let previous = hex::decode("0470656572800f00800ad005e807010470656572").unwrap();
-        assert_eq!(FABRIC_SCHEMA_VERSION, 7);
+        assert_eq!(FABRIC_SCHEMA_VERSION, 8);
         assert_eq!(postcard::to_allocvec(&display).unwrap(), previous);
         let decoded: DisplayPlacement = postcard::from_bytes(&previous).unwrap();
         assert!(

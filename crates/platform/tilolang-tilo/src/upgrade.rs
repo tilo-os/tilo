@@ -1,10 +1,11 @@
 //! Whether a new build of a package can take over a running one in place.
 //!
 //! A running app keeps its state outside its module: resources in the workspace record, by
-//! declaration id; `window` and `lens` state in the runtime, by window and declaration id;
-//! scroll, selection and the open detail in the window. A new module can take over all of it
-//! when it reads that state as the old one wrote it. [`compare`] says whether it does, and when
-//! it does not, names the first declaration that stands in the way, in one line.
+//! declaration id; `window` and `lens` state in the runtime, by window, the person looking and
+//! declaration id; scroll, selection and the open detail in the window. A new module can take
+//! over all of it when it reads that state as the old one wrote it. [`compare`] says whether
+//! it does, and when it does not, names the first declaration that stands in the way, in one
+//! line.
 //!
 //! Declarations are matched by id (the ids lock keeps an id across a rename), so renaming a type,
 //! a field or a variant keeps state. A declaration the new build no longer has keeps its stored

@@ -16,7 +16,7 @@ use crate::types::Ty;
 
 /// The named arguments a list row takes, for messages.
 const ROW_ARGS_TEXT: &str =
-    "secondary:, meta:, mark:, icon:, avatar:, badge:, value:, checkbox: and check:";
+    "secondary:, note:, meta:, mark:, icon:, avatar:, badge:, value:, checkbox: and check:";
 
 fn host(imp: Imp, args: Vec<Ex>) -> Stmt {
     Stmt::Eval(Ex::host(imp, args, Ty::Unit))
@@ -45,6 +45,10 @@ impl Checker<'_> {
             // `field(label, bind: t.assignee)`: the form's labelled row, its control the
             // toolkit's field for the bound value's type. A person is picked with `PersonField`.
             "field" if args.iter().any(is_bind) => Some(self.bound_field(p, c, args)),
+            // A resource's page, from what its type declares: what it opens with, and its facts
+            // as one row of chips.
+            "opening" => Some(self.opening(c, args)),
+            "facts" => Some(self.facts(c, args)),
             _ => None,
         }
     }
@@ -168,9 +172,9 @@ impl Checker<'_> {
                 ],
             ));
         }
-        let has_rows = match (&c.block, &c.item) {
-            (Some(_), Some(_)) => true,
-            (Some(_), None) => {
+        let has_rows = match (&c.block, c.params.as_slice()) {
+            (Some(_), [_]) => true,
+            (Some(_), _) => {
                 self.err(
                     "E097",
                     c.call.span,
@@ -232,8 +236,8 @@ impl Checker<'_> {
             vec![it_ex.clone(), Ex::str("item"), item.clone()],
         ));
         self.st.keys.push(key_local);
-        match (&c.block, &c.item, row_view) {
-            (Some(block), Some(var), _) => {
+        match (&c.block, c.params.as_slice(), row_view) {
+            (Some(block), [var], _) => {
                 self.bind_local(&var.name, fl.item_local);
                 let saved = self.st.ui;
                 self.st.ui.parent = "item";
@@ -374,7 +378,8 @@ impl Checker<'_> {
                     self.err("E022", value.span, format!("a list row takes one positional argument, its title; name the others: {ROW_ARGS_TEXT}"));
                     let _ = self.expr(value, None);
                 }
-                Some(name @ ("secondary" | "meta" | "badge")) => {
+                Some("meta") => self.meta_arg(&node, value),
+                Some(name @ ("secondary" | "badge" | "note")) => {
                     self.text_arg(&node, name, value);
                 }
                 Some("value") => {
@@ -390,15 +395,17 @@ impl Checker<'_> {
                         );
                     }
                 }
-                Some(name @ ("mark" | "icon")) => {
-                    if name == "icon" {
-                        icon = Some(value);
-                    }
-                    self.icon_value(n, name, value);
+                Some("icon") => {
+                    icon = Some(value);
+                    self.icon_value(n, "icon", value);
                 }
+                Some("mark") => self.mark_arg(n, value),
                 Some("avatar") => avatar = Some(value),
                 Some("checkbox") => {
-                    if self.bind_typed(&node, value, &[Ty::Bool], false).is_some() {
+                    if self
+                        .bind_typed(&node, value, &[Ty::Bool], false, false)
+                        .is_some()
+                    {
                         self.emit(host(
                             Imp::UiPropH,
                             vec![node.clone(), Ex::str("bind"), Ex::str("checkbox")],
@@ -434,9 +441,7 @@ impl Checker<'_> {
     /// A row's `avatar:`: a Principal, or an Option of one, as the row's `avatar` slot holding a
     /// `ui.Avatar`. At `.none` (the last message's author of a conversation that has none yet) a
     /// row that names an `icon:` shows the item itself as its avatar, that glyph on a neutral
-    /// square (a group); one that names none keeps the room an avatar takes (`avatar_space`),
-    /// in line with the rows of its list that show one; its list drops the room when no row
-    /// shows one.
+    /// square (a group); one that names none shows no avatar, and its facts run on without one.
     fn avatar_arg(
         &mut self,
         n: LocalId,
@@ -500,35 +505,28 @@ impl Checker<'_> {
             }
             return;
         }
-        // No participant this time.
+        // No participant this time: a row that names an icon shows the item itself; one that
+        // names none shows no avatar, and its other facts run on without an empty slot.
         self.push_sink();
-        match icon {
-            Some(icon) => {
-                let glyph_key = concat(Ex::local(row_key, Ty::Text), Ex::str("#avatar/glyph"));
-                let glyph = self.new_node(&avatar_kind, glyph_key);
-                if let Some(title) = title {
-                    self.emit(host(
-                        Imp::UiPropH,
-                        vec![
-                            Ex::local(glyph, Ty::View),
-                            Ex::str("name"),
-                            Ex::local(title, Ty::Text),
-                        ],
-                    ));
-                }
-                self.icon_value(glyph, "glyph", icon);
+        if let Some(icon) = icon {
+            let glyph_key = concat(Ex::local(row_key, Ty::Text), Ex::str("#avatar/glyph"));
+            let glyph = self.new_node(&avatar_kind, glyph_key);
+            if let Some(title) = title {
                 self.emit(host(
-                    Imp::UiChild,
-                    vec![slot_ex.clone(), Ex::local(glyph, Ty::View)],
-                ));
-                self.emit(host(Imp::UiChild, vec![row, slot_ex]));
-            }
-            None => {
-                self.emit(host(
-                    Imp::UiPropI,
-                    vec![row, Ex::str("avatar_space"), Ex::int(1)],
+                    Imp::UiPropH,
+                    vec![
+                        Ex::local(glyph, Ty::View),
+                        Ex::str("name"),
+                        Ex::local(title, Ty::Text),
+                    ],
                 ));
             }
+            self.icon_value(glyph, "glyph", icon);
+            self.emit(host(
+                Imp::UiChild,
+                vec![slot_ex.clone(), Ex::local(glyph, Ty::View)],
+            ));
+            self.emit(host(Imp::UiChild, vec![row, slot_ex]));
         }
         let none = self.pop_sink();
         let test = Ex::host(Imp::IsSome, vec![Ex::local(tmp, ty)], Ty::Bool);
@@ -589,6 +587,76 @@ impl Checker<'_> {
         )
     }
 
+    /// A row's `meta:`: when it happened, or the day an item is due. A day whose type pairs a
+    /// time of day with it (`at: Option<Time> (time of: due)`) reads with it as one fact
+    /// (`Today 09:00`): the row is given the day, and beside it the time of day it is due at,
+    /// which the UI host joins as the one fact the presenter gives. The day carries its time of
+    /// day wherever the value flows, so a local or a branch of an `if` loses nothing
+    /// ([`super::Checker::day_time`]).
+    fn meta_arg(&mut self, node: &Ex, value: &ast::Expr) {
+        let v = self.expr(value, None);
+        if let Some(time) = self.day_time(&v, value.span) {
+            self.set_time_when_some(node, "meta:time", time);
+        }
+        self.text_prop(node, "meta", v, value.span);
+    }
+
+    /// A row's `mark:`: an icon (`mark: .pin`), the name of one (`mark: a.icon`), or an enum
+    /// value whose case names one (`mark: t.priority`), which also gives the row the tone the
+    /// case reads in: its mark and its checkbox ring show the item's priority. A case that
+    /// reads in no tone says the item has no importance to show, and draws no mark.
+    fn mark_arg(&mut self, n: LocalId, e: &ast::Expr) {
+        let node = Ex::local(n, Ty::View);
+        if !matches!(e.kind, ExprKind::Ident(_) | ExprKind::Field { .. }) {
+            self.icon_value(n, "mark", e);
+            return;
+        }
+        let v = self.expr(e, None);
+        match v.ty.clone() {
+            Ty::Enum(key) => {
+                if self.env.enum_info(&key).is_some() {
+                    let opt = Ty::Option(Box::new(Ty::Text));
+                    let mark = self.per_variant(v.clone(), &key, opt.clone(), |case| {
+                        match (&case.icon, &case.tone) {
+                            (Some(icon), Some(_)) => {
+                                Ex::host(Imp::SomeH, vec![Ex::str(icon)], opt.clone())
+                            }
+                            _ => Ex::host(Imp::NoneV, Vec::new(), opt.clone()),
+                        }
+                    });
+                    self.set_when_some(&node, "mark", mark, &Ty::Text, e.span);
+                }
+                self.enum_tone(&node, "tone", v, e.span);
+            }
+            Ty::Text => self.prop(node, "mark", v, e.span),
+            Ty::Option(inner) if *inner == Ty::Text => {
+                self.set_when_some(&node, "mark", v, &Ty::Text, e.span);
+            }
+            Ty::Error => {}
+            _ => {
+                let t = self.show(&v.ty);
+                self.err(
+                    "E097",
+                    e.span,
+                    format!("`mark:` takes an icon (`mark: .pin`), the name of one (`mark: a.icon`, `mark: c.icon()`) or an enum value whose cases name them and the tone they read in (`mark: t.priority`); found {t}"),
+                );
+            }
+        }
+    }
+
+    /// The tone the case `value` holds, as the prop `prop` of `node`: a case reads in the tone
+    /// its declaration gives it (`high (icon: .flag, tone: .warning)`), and in no tone when it
+    /// names none. `false` when `value` is not an enum value, so the caller says what it takes.
+    pub(super) fn enum_tone(&mut self, node: &Ex, prop: &str, value: Ex, span: Span) -> bool {
+        let Ty::Enum(key) = value.ty.clone() else {
+            return false;
+        };
+        if let Some(tone) = self.enum_method(value, &key, "tone") {
+            self.prop(node.clone(), prop, tone, span);
+        }
+        true
+    }
+
     fn text_arg(&mut self, node: &Ex, name: &str, value: &ast::Expr) {
         let v = self.expr(value, Some(&Ty::Text));
         self.text_prop(node, name, v, value.span);
@@ -631,6 +699,13 @@ impl Checker<'_> {
                 let b = self.expr(base, None);
                 match b.ty.clone() {
                     Ty::Record(key) if crate::host::is_value(&key) => {
+                        self.value_field(b, &key, name)
+                    }
+                    // A filter's icon is a name the platform knows, as a host value's is.
+                    Ty::Filter(_) => {
+                        let Ty::Record(key) = super::platform::host_ty("Filter") else {
+                            return None;
+                        };
                         self.value_field(b, &key, name)
                     }
                     // A resource's own `icon` field names the glyph it shows, as a
@@ -771,9 +846,9 @@ impl Checker<'_> {
             return holder;
         };
         let key = concat(self.node_key(c), Ex::str("#person"));
-        let n = self.new_node(&crate::toolkit::kind(&d.name), key);
+        let n = self.new_node(&crate::toolkit::kind(&d.name), key.clone());
         for a in args.iter().filter(|a| is_bind(a)) {
-            self.binding_prop(n, d, &a.value, &d.bindings);
+            self.binding_prop(n, d, &a.value, &d.bindings, &key);
         }
         // Who may be picked, and which of them is "Me": the workspace's, never a copy the app
         // keeps.
@@ -1026,7 +1101,6 @@ impl Checker<'_> {
         &mut self,
         view: &Callable,
         opts: &[ast::ActionOpt],
-        requires: &[ast::Require],
         params: &[crate::resolve::ParamInfo],
     ) -> crate::ir::Func {
         self.begin(super::Ctx::View, &view.params, Ty::View, &view.id);
@@ -1086,27 +1160,6 @@ impl Checker<'_> {
                 }
             }
         }
-        // Why it is unavailable on the subject now: the reason of its first requirement on the
-        // subject alone that does not hold, which is set last. A requirement that reads what a
-        // caller gives (`to` in `move_to(t, to)`) cannot be decided before it is given: it is
-        // checked when the action runs with it, and a form shows its reason as the refusal.
-        for r in requires.iter().rev() {
-            if mentions(&r.cond, others)
-                .or_else(|| mentions(&r.reason, others))
-                .is_some()
-            {
-                continue;
-            }
-            // A requirement may read `invoker`: here, the person looking.
-            self.st.invoker = super::Invoker::Viewer;
-            let cond = self.expr_as(&r.cond, &Ty::Bool);
-            let reason = self.expr_as(&r.reason, &Ty::Text);
-            self.st.invoker = super::Invoker::None;
-            self.push_sink();
-            self.prop(node.clone(), "unavailable", reason, r.span);
-            let unmet = self.pop_sink();
-            self.emit(Stmt::If(cond, Vec::new(), unmet));
-        }
         self.emit(Stmt::Return(Some(node)));
         let mut f = self.end(
             crate::ir::FuncKind::View,
@@ -1117,55 +1170,519 @@ impl Checker<'_> {
         f
     }
 
-    // ---- facts ----------------------------------------------------------------------------
-
-    /// `"Due": d.due` in `facts { }`: a `fact` node with its `label` and `value`.
-    pub(super) fn fact(
+    /// The guard of the action `c` (or its `applies` conditions): the requirements its subject
+    /// and the place it is offered in alone decide, as one function answering the first reason
+    /// the action cannot run on the subject now, or the empty text while it can
+    /// ([`crate::ir::FuncKind::Guard`], [`crate::ir::FuncKind::Applies`]). A requirement that
+    /// reads what a caller gives (`to` in `move_to(t, to)`) cannot be decided before it is
+    /// given: it is checked when the action runs with it, and a form shows its reason as the
+    /// refusal.
+    pub(super) fn run_guard(
         &mut self,
-        node: ast::NodeId,
-        label: &ast::Expr,
-        value: &ast::Expr,
-        parent: LocalId,
+        c: &Callable,
+        requires: &[ast::Require],
+        params: &[crate::resolve::ParamInfo],
+        kind: crate::ir::FuncKind,
+        export: fn(&str) -> String,
+    ) -> crate::ir::Func {
+        // The subject, then the places a view supplies: everything an offer knows before it is
+        // made.
+        let decided = 1 + params.iter().skip(1).take_while(|p| p.place).count();
+        let subject = params.get(..decided).unwrap_or_default();
+        self.begin(super::Ctx::View, subject, Ty::Text, &c.id);
+        for r in requires.iter().filter(|r| offer_decided(r, params)) {
+            // A requirement may read `invoker`: here, the person looking, who would run it.
+            self.st.invoker = super::Invoker::Viewer;
+            let cond = self.expr_as(&r.cond, &Ty::Bool);
+            let reason = self.expr_as(&r.reason, &Ty::Text);
+            self.st.invoker = super::Invoker::None;
+            self.emit(Stmt::If(cond, Vec::new(), vec![Stmt::Return(Some(reason))]));
+        }
+        self.emit(Stmt::Return(Some(Ex::str(""))));
+        let mut f = self.end(kind, &c.name, &export(&c.id));
+        f.nparams = subject.len();
+        f
+    }
+
+    // ---- a resource's page ----------------------------------------------------------------
+
+    /// The record a page part is about: `of` as the record it names, with its type.
+    fn page_of(
+        &mut self,
+        prim: &str,
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Option<(Ex, crate::resolve::TypeInfo)> {
+        let mut of = None;
+        for a in args {
+            if a.name.is_none() && self.is_flag(None, &a.value) {
+                continue;
+            }
+            if a.name.is_none() && of.is_none() {
+                of = Some(&a.value);
+                continue;
+            }
+            let name = a.name.as_ref().map_or_else(String::new, |n| n.name.clone());
+            self.err(
+                "E063",
+                a.value.span,
+                if name.is_empty() {
+                    format!("`{prim}` takes one resource, the one whose page it is part of")
+                } else {
+                    format!("`{prim}` has no argument `{name}`: it takes the resource alone")
+                },
+            );
+            let _ = self.expr(&a.value, None);
+        }
+        let Some(of) = of else {
+            self.err(
+                "E022",
+                span,
+                format!("`{prim}` takes the resource whose page it is part of: `{prim}(t)`"),
+            );
+            return None;
+        };
+        let b = self.expr(of, None);
+        let Ty::Record(key) = b.ty.clone() else {
+            if !b.ty.is_error() {
+                let t = self.show(&b.ty);
+                self.err(
+                    "E063",
+                    of.span,
+                    format!("`{prim}` takes a resource, whose page it is part of; this is {t}"),
+                );
+            }
+            return None;
+        };
+        let info = self.env.type_info(&key)?.clone();
+        Some((b, info))
+    }
+
+    /// The field of `info` with the role `wanted`, when the type declares one.
+    fn role_field(
+        info: &crate::resolve::TypeInfo,
+        wanted: impl Fn(&crate::types::FieldRole) -> bool,
+    ) -> Option<&crate::resolve::FieldInfo> {
+        info.fields.iter().find(|field| {
+            // A derived field is no stored value: nothing binds it.
+            field.derived.is_none() && field.role.as_ref().is_some_and(&wanted)
+        })
+    }
+
+    /// Bind `node` to the field `field` of the record `b`, as `bind: b.field` does: the
+    /// component's binding, and the field the host merges it into.
+    fn bind_part(
+        &mut self,
+        node: &Ex,
+        d: &crate::toolkit::Description,
+        b: &Ex,
+        field: &crate::resolve::FieldInfo,
         span: Span,
     ) {
-        if self.st.ui.parent != "facts" {
+        let Some(binding) = d.bindings.first() else {
+            return;
+        };
+        if !super::component::binding_types(&binding.ty).contains(&field.ty) {
+            let t = self.show(&field.ty);
             self.err(
-                "E098",
+                "E062",
                 span,
-                "a fact `\"Label\": value` stands in `facts { }`",
+                format!(
+                    "`{}` is a field of type {t}, which no control binds",
+                    field.name
+                ),
             );
             return;
         }
-        let key = self.stmt_key(node);
-        let n = self.new_node(&crate::toolkit::kind("Property"), key);
-        let l = self.expr_as(label, &Ty::Text);
-        self.prop(Ex::local(n, Ty::View), "label", l, label.span);
-        let v = self.expr(value, None);
-        let shown = match &v.ty {
-            Ty::Text
-            | Ty::Int
-            | Ty::Float
-            | Ty::Bool
-            | Ty::Principal
-            | Ty::Date
-            | Ty::Time
-            | Ty::Identifier
-            | Ty::Error => true,
-            Ty::Option(inner) => matches!(**inner, Ty::Date | Ty::Time),
-            _ => false,
-        };
-        if shown {
-            // A Date or a Time also sets `value:as` (see `prop`).
-            self.prop(Ex::local(n, Ty::View), "value", v, value.span);
-        } else {
-            let t = self.show(&v.ty);
-            self.err("E098", value.span, format!("a fact's value is Text, a number, a Bool, a Principal, a Date or a Time, and this is {t}; show it as text with `\"{{...}}\"`"));
-        }
         self.emit(host(
-            Imp::UiChild,
-            vec![Ex::local(parent, Ty::View), Ex::local(n, Ty::View)],
+            Imp::UiBind,
+            vec![node.clone(), b.clone(), Ex::str(&field.id)],
+        ));
+        self.emit(host(
+            Imp::UiPropH,
+            vec![node.clone(), Ex::str("bind"), Ex::str(&binding.name)],
         ));
     }
+
+    /// `opening(of) { ... }`: what the resource's page opens with — the item as its name,
+    /// whether it is done, and what is written about it. The field marked `(title)` is drawn as
+    /// the page's title, with the control that says the item is done beside it, level with the
+    /// first line of a title of several; what the block draws stands under the title and over
+    /// the notes; the field marked `(body)` is the item's notes, its placeholder the field's own
+    /// name. A type that marks neither opens with what the block draws.
+    fn opening(&mut self, c: &UiCall, args: &[ast::Arg]) -> LocalId {
+        let key = self.node_key(c);
+        let stack = self.new_node("stack", key.clone());
+        let node = Ex::local(stack, Ty::View);
+        self.prop_text(node.clone(), "gap", Ex::str("related"));
+        let Some((b, info)) = self.page_of("opening", args, c.call.span) else {
+            return stack;
+        };
+        let done = Self::role_field(&info, crate::types::FieldRole::is_done)
+            .filter(|field| field.ty == Ty::Bool)
+            .cloned();
+        let title = Self::role_field(&info, crate::types::FieldRole::is_title)
+            .filter(|field| field.ty == Ty::Text)
+            .cloned();
+        let body = Self::role_field(&info, crate::types::FieldRole::is_body).cloned();
+        // The block draws under the title and over what is written about the item: a line
+        // saying where it came from, a banner, whatever the page opens with. Its one event is
+        // `on check`, which asks what checking the item off does.
+        let mut content = Vec::new();
+        for s in c.block.iter().flatten() {
+            match &s.kind {
+                UiKind::On { event, .. } if event.name != "check" => {
+                    self.err(
+                        "E063",
+                        s.span,
+                        format!(
+                            "`opening` takes `on check: action(...)`; `on {}` belongs to a control in what it draws",
+                            event.name
+                        ),
+                    );
+                }
+                UiKind::On { .. } => {}
+                _ => content.push(s.clone()),
+            }
+        }
+        // Whether the heading opens with the box that says the item is done: what is written
+        // about it then stands one row lead in, under the text the title leads to, the box in
+        // the gutter to its left.
+        let led = done.is_some()
+            && self
+                .env
+                .toolkit
+                .is_some_and(|toolkit| toolkit.get("Checkbox").is_some());
+        if done.is_some() || title.is_some() {
+            let row = self.new_node("row", concat(key.clone(), Ex::str("#heading")));
+            let line = Ex::local(row, Ty::View);
+            self.prop_text(line.clone(), "gap", Ex::str("related"));
+            self.prop_text(line.clone(), "align", Ex::str("start"));
+            // The checkbox says the item is done; what its press does is the view's, as a
+            // checkbox of its own takes it.
+            if let Some(done) = done {
+                let env = self.env;
+                if let Some(d) = env.toolkit.and_then(|toolkit| toolkit.get("Checkbox")) {
+                    let n = self.new_node(
+                        &crate::toolkit::kind(&d.name),
+                        concat(key.clone(), Ex::str("#done")),
+                    );
+                    let view = Ex::local(n, Ty::View);
+                    self.bind_part(&view, d, &b, &done, c.call.span);
+                    for s in c.block.iter().flatten() {
+                        if let UiKind::On {
+                            event,
+                            param,
+                            at,
+                            action,
+                        } = &s.kind
+                            && event.name == "check"
+                        {
+                            self.component_event(
+                                n,
+                                d,
+                                event,
+                                (param.as_ref(), at.as_ref()),
+                                action,
+                            );
+                        }
+                    }
+                    self.emit(host(Imp::UiChild, vec![line.clone(), view]));
+                }
+            }
+            if let Some(title) = title {
+                let env = self.env;
+                if let Some(d) = env.toolkit.and_then(|toolkit| toolkit.get("TextInput")) {
+                    let n = self.new_node(
+                        &crate::toolkit::kind(&d.name),
+                        concat(key.clone(), Ex::str("#title")),
+                    );
+                    let view = Ex::local(n, Ty::View);
+                    self.bind_part(&view, d, &b, &title, c.call.span);
+                    let label = Ex::str(&crate::resolve::variant_label(&title.name, &title.doc));
+                    self.emit(host(
+                        Imp::UiPropH,
+                        vec![view.clone(), Ex::str("placeholder"), label],
+                    ));
+                    // The item's title is the document's, in place and in its large type, so
+                    // the page opens on what the item is rather than on a field of a form.
+                    self.emit(host(
+                        Imp::UiPropI,
+                        vec![view.clone(), Ex::str("title"), Ex::int(1)],
+                    ));
+                    // It takes the width the checkbox leaves, so a long title wraps there.
+                    self.emit(host(
+                        Imp::UiPropF,
+                        vec![
+                            view.clone(),
+                            Ex::str("fill"),
+                            Ex::new(Ek::Float(1.0), Ty::Float),
+                        ],
+                    ));
+                    self.emit(host(Imp::UiChild, vec![line.clone(), view]));
+                }
+            }
+            self.emit(host(Imp::UiChild, vec![node.clone(), line]));
+        } else {
+            for s in c.block.iter().flatten() {
+                if let UiKind::On { event, .. } = &s.kind
+                    && event.name == "check"
+                {
+                    self.err(
+                        "E063",
+                        s.span,
+                        "`opening` takes `on check: action(...)` for a type with a `(done)` field",
+                    );
+                }
+            }
+        }
+        if !content.is_empty() {
+            self.ui_stmts(&content, stack);
+        }
+        if let Some(body) = body {
+            let env = self.env;
+            let wanted = match body.ty {
+                Ty::RichText => Some("BlockEditor"),
+                Ty::Text => Some("TextInput"),
+                _ => None,
+            };
+            if let Some(d) =
+                wanted.and_then(|name| env.toolkit.and_then(|toolkit| toolkit.get(name)))
+            {
+                let n = self.new_node(
+                    &crate::toolkit::kind(&d.name),
+                    concat(key.clone(), Ex::str("#body")),
+                );
+                let view = Ex::local(n, Ty::View);
+                self.bind_part(&view, d, &b, &body, c.call.span);
+                if body.ty == Ty::Text {
+                    self.emit(host(
+                        Imp::UiPropI,
+                        vec![view.clone(), Ex::str("lines"), Ex::int(6)],
+                    ));
+                }
+                let label = Ex::str(&crate::resolve::variant_label(&body.name, &body.doc));
+                self.emit(host(
+                    Imp::UiPropH,
+                    vec![view.clone(), Ex::str("placeholder"), label],
+                ));
+                if led {
+                    let wrap = self.new_node("stack", concat(key, Ex::str("#body-lead")));
+                    let holder = Ex::local(wrap, Ty::View);
+                    self.emit(host(
+                        Imp::UiPropI,
+                        vec![holder.clone(), Ex::str("lead"), Ex::int(1)],
+                    ));
+                    self.emit(host(Imp::UiChild, vec![holder.clone(), view]));
+                    self.emit(host(Imp::UiChild, vec![node, holder]));
+                } else {
+                    self.emit(host(Imp::UiChild, vec![node, view]));
+                }
+            } else {
+                let t = self.show(&body.ty);
+                self.err(
+                    "E098",
+                    c.call.span,
+                    format!(
+                        "a `(body)` field is rich text or text, and `{}` is {t}",
+                        body.name
+                    ),
+                );
+            }
+        }
+        stack
+    }
+
+    /// `facts(of) { ... }`: the facts of the resource as one row of chips — the same height,
+    /// the same chevron, no labels, wrapping — each derived from what the field is: the day a
+    /// date field names, with the time of day its type pairs with it, the person a principal
+    /// field names, and the case an enum field holds, in the case's glyph and tone, opening the
+    /// cases to pick another. The block adds the chips only the view can offer (the project's),
+    /// in the same row.
+    fn facts(&mut self, c: &UiCall, args: &[ast::Arg]) -> LocalId {
+        let key = self.node_key(c);
+        let row = self.new_node("row", key.clone());
+        let node = Ex::local(row, Ty::View);
+        self.prop_text(node.clone(), "gap", Ex::str("tight"));
+        self.prop_text(node.clone(), "align", Ex::str("center"));
+        self.emit(host(
+            Imp::UiPropI,
+            vec![node.clone(), Ex::str("wrap"), Ex::int(1)],
+        ));
+        if let Some((b, info)) = self.page_of("facts", args, c.call.span) {
+            for field in info.fields.iter().filter(|field| field.derived.is_none()) {
+                let chip = match &field.ty {
+                    Ty::Date => self.date_chip(&key, &b, field, &info, c.call.span),
+                    Ty::Option(inner) if **inner == Ty::Date => {
+                        self.date_chip(&key, &b, field, &info, c.call.span)
+                    }
+                    Ty::Principal => self.person_chip(&key, &b, field, c.call.span),
+                    Ty::Option(inner) if **inner == Ty::Principal => {
+                        self.person_chip(&key, &b, field, c.call.span)
+                    }
+                    Ty::Enum(enum_key) => self.enum_chip(&key, &b, field, enum_key),
+                    _ => None,
+                };
+                if let Some(chip) = chip {
+                    self.emit(host(Imp::UiChild, vec![node.clone(), chip]));
+                }
+            }
+        }
+        if let Some(block) = &c.block {
+            self.child_block("facts", block, row);
+        }
+        row
+    }
+
+    /// The chip that shows the day `field` names, with the time of day its type pairs with it:
+    /// the day, and inside its calendar, the time it is due at ([`super::component::Checker::date_control`]).
+    fn date_chip(
+        &mut self,
+        key: &Ex,
+        b: &Ex,
+        field: &crate::resolve::FieldInfo,
+        info: &crate::resolve::TypeInfo,
+        span: Span,
+    ) -> Option<Ex> {
+        let env = self.env;
+        let d = env.toolkit.and_then(|toolkit| toolkit.get("DateField"))?;
+        // One chip per field: a type with two days puts two chips in the row, each keyed by
+        // the field it shows.
+        let n = self.new_node(
+            &crate::toolkit::kind(&d.name),
+            concat(key.clone(), Ex::str(&format!("#date-{}", field.name))),
+        );
+        let view = Ex::local(n, Ty::View);
+        self.bind_part(&view, d, b, field, span);
+        // A date that may be empty can be cleared.
+        if matches!(field.ty, Ty::Option(_)) {
+            self.emit(host(
+                Imp::UiPropI,
+                vec![view.clone(), Ex::str("optional"), Ex::int(1)],
+            ));
+        }
+        self.date_control(&view, key, b, field, info, span);
+        Some(view)
+    }
+
+    /// The chip that shows the person `field` names: the toolkit's person field, which offers
+    /// the workspace's people and the person looking, never a copy an app keeps.
+    fn person_chip(
+        &mut self,
+        key: &Ex,
+        b: &Ex,
+        field: &crate::resolve::FieldInfo,
+        span: Span,
+    ) -> Option<Ex> {
+        let env = self.env;
+        let d = env.toolkit.and_then(|toolkit| toolkit.get("PersonField"))?;
+        let n = self.new_node(
+            &crate::toolkit::kind(&d.name),
+            concat(key.clone(), Ex::str(&format!("#person-{}", field.name))),
+        );
+        let view = Ex::local(n, Ty::View);
+        self.bind_part(&view, d, b, field, span);
+        let people = Ty::List(Box::new(Ty::Principal));
+        self.prop(
+            view.clone(),
+            "people",
+            Ex::host(Imp::WorkspaceMembers, Vec::new(), people),
+            span,
+        );
+        self.prop(
+            view.clone(),
+            "me",
+            Ex::host(Imp::Viewer, Vec::new(), Ty::Principal),
+            span,
+        );
+        Some(view)
+    }
+
+    /// The chip that shows the case `field` holds: the toolkit's enum field, showing the
+    /// case's own glyph, label and tone, and opening the enum's cases to pick another — one
+    /// per case, each opening with the case's glyph and reading in its tone. A case is picked
+    /// by its name, which the field takes as that case, so an edit goes through the field
+    /// itself, never through a text the case would have to be read out of.
+    ///
+    /// A field whose cases carry values has no chip: a case is then a value with fields, and
+    /// one name does not say which.
+    fn enum_chip(
+        &mut self,
+        key: &Ex,
+        b: &Ex,
+        field: &crate::resolve::FieldInfo,
+        enum_key: &crate::types::TypeKey,
+    ) -> Option<Ex> {
+        let info = self.env.enum_info(enum_key)?.clone();
+        if info.variants.iter().any(|case| !case.fields.is_empty()) {
+            return None;
+        }
+        let env = self.env;
+        let d = env.toolkit.and_then(|toolkit| toolkit.get("EnumField"))?;
+        let binding = d.bindings.first()?;
+        let n = self.new_node(
+            &crate::toolkit::kind(&d.name),
+            concat(key.clone(), Ex::str(&format!("#enum-{}", field.name))),
+        );
+        let view = Ex::local(n, Ty::View);
+        // The chip names what it chooses from, for whoever reads it without seeing it.
+        self.emit(host(
+            Imp::UiPropH,
+            vec![
+                view.clone(),
+                Ex::str("label"),
+                Ex::str(&crate::resolve::variant_label(&field.name, &field.doc)),
+            ],
+        ));
+        self.emit(host(
+            Imp::UiBind,
+            vec![view.clone(), b.clone(), Ex::str(&field.id)],
+        ));
+        self.emit(host(
+            Imp::UiPropH,
+            vec![view.clone(), Ex::str("bind"), Ex::str(&binding.name)],
+        ));
+        for case in &info.variants {
+            let n = self.new_node(
+                &crate::toolkit::kind("EnumOption"),
+                concat(
+                    key.clone(),
+                    Ex::str(&format!("#enum-{}-{}", field.name, case.id)),
+                ),
+            );
+            let option = Ex::local(n, Ty::View);
+            let prop = |name: &str, value: &str| {
+                host(
+                    Imp::UiPropH,
+                    vec![option.clone(), Ex::str(name), Ex::str(value)],
+                )
+            };
+            self.emit(prop("name", &case.id));
+            self.emit(prop("label", &case.label));
+            if let Some(icon) = &case.icon {
+                self.emit(prop("icon", icon));
+            }
+            if let Some(tone) = &case.tone {
+                self.emit(prop("tone", tone));
+            }
+            self.emit(host(Imp::UiChild, vec![view.clone(), option]));
+        }
+        Some(view)
+    }
+}
+
+/// Whether the requirement `r` reads nothing a caller gives beyond the subject: what the subject
+/// alone decides, so a surface offering the action can say whether it can run before anyone gives
+/// the rest. One that reads another argument (`to` in `move_to(t, to)`) is checked when the action
+/// runs with it.
+pub(crate) fn offer_decided(r: &ast::Require, params: &[crate::resolve::ParamInfo]) -> bool {
+    let others: Vec<&str> = params
+        .iter()
+        .skip(1)
+        .filter(|p| !p.place)
+        .map(|p| p.name.as_str())
+        .collect();
+    mentions(&r.cond, &others).is_none() && mentions(&r.reason, &others).is_none()
 }
 
 /// The first of `names` an expression reads as a variable, ignoring the inside of lambdas.
@@ -1174,7 +1691,9 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
         b.stmts.iter().find_map(|s| match &s.kind {
             StmtKind::Expr(x) | StmtKind::Let { value: x, .. } => mentions(x, names),
             StmtKind::Return(x) => x.as_ref().and_then(|x| mentions(x, names)),
-            StmtKind::Assign { value, .. } => mentions(value, names),
+            StmtKind::Assign { value, .. } | StmtKind::SeedState { value, .. } => {
+                mentions(value, names)
+            }
             StmtKind::For { iter, .. } | StmtKind::As { who: iter, .. } => mentions(iter, names),
         })
     };
@@ -1191,7 +1710,9 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
             .find_map(|b| mentions(&b.value, names))
             .or_else(|| block(then))
             .or_else(|| els.as_deref().and_then(|x| mentions(x, names))),
-        ExprKind::Unary { operand, .. } | ExprKind::Try(operand) => mentions(operand, names),
+        ExprKind::Unary { operand, .. } | ExprKind::Try(operand) | ExprKind::Suggest(operand) => {
+            mentions(operand, names)
+        }
         ExprKind::Binary { lhs, rhs, .. } => mentions(lhs, names).or_else(|| mentions(rhs, names)),
         ExprKind::Call { callee, args } => {
             mentions(callee, names).or_else(|| args.iter().find_map(|a| mentions(&a.value, names)))
@@ -1206,6 +1727,7 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
             .or_else(|| block(then))
             .or_else(|| els.as_deref().and_then(|x| mentions(x, names))),
         ExprKind::Block(b) => block(b),
+        ExprKind::MadeFrom { of, body } => mentions(of, names).or_else(|| block(body)),
         ExprKind::Match { scrutinee, arms } => mentions(scrutinee, names)
             .or_else(|| arms.iter().find_map(|a| mentions(&a.body, names))),
         ExprKind::Str(parts) => parts.iter().find_map(|p| match p {

@@ -50,7 +50,7 @@ use tilo_resource::{Model, Segment};
 use tilolang_runtime::Journal;
 use tilolang_runtime::ids::{AppId, DocId, FieldId, RunId, TypeId};
 use tilolang_runtime::store::{
-    ANY_FIELD, Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Listing,
+    ANY_FIELD, Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Link, Listing,
     ListingChange, Mutation, NewRecord, OutboxEntry, Pred, Scalar, Splice, Store, StoreError,
     SubId, Txn, Version, doc_of,
 };
@@ -60,8 +60,9 @@ use crate::action::{
     Authorship, DynAction, DynEdit, RECORDS_KEY, apply_edits, outbox_entries, read_resource,
 };
 use crate::background::Waker;
-use crate::index::derive::{Derive, DocReads, Reached};
-use crate::index::overlay::{Overlay, OverlaySink};
+use crate::index::derive::{Derive, DocReads, Reached, linked_list, split_link};
+use crate::index::lists::Entry;
+use crate::index::overlay::{ListState, Overlay, OverlaySink};
 use crate::index::view::{self, View};
 use crate::index::{self as idx, Index, IndexError, IndexReads};
 use crate::items::Nested;
@@ -868,7 +869,7 @@ impl TiloStore {
                 placed: changed.placed.clone(),
             }
         };
-        let (moved, wholes) = inner.derive_all(&reached, Some((&from, &ends)));
+        let (moved, wholes, derived) = inner.derive_all(&reached, Some((&from, &ends)));
         // The overlay was the old transaction's, and what an origin derives was written onto
         // the mirror again: derive it over the indexes as the record's changes left them, so a
         // later write into one of its collections sees the items it holds, at their places.
@@ -891,6 +892,11 @@ impl TiloStore {
         for doc in wholes {
             docs.insert(doc, Vec::new());
         }
+        // A value the index derives may have moved on an item the change did not name: a
+        // branch that folds because its last task was checked elsewhere.
+        for (doc, keys) in derived {
+            docs.entry(doc).or_default().extend(keys);
+        }
         for fields in docs.values_mut() {
             fields.sort();
             fields.dedup();
@@ -910,6 +916,8 @@ impl TiloStore {
                     doc,
                     fields,
                     listings,
+                    // The record's change: who made it is read per resource, not here.
+                    by: None,
                 });
             }
         }
@@ -1592,11 +1600,12 @@ impl Inner {
         &mut self,
         reached: &Reached,
         since: Since<'_>,
-    ) -> (ItemTouches, BTreeSet<DocId>) {
+    ) -> (ItemTouches, BTreeSet<DocId>, BTreeMap<DocId, Vec<FieldKey>>) {
         let mut moved = ItemTouches::new();
         let mut wholes = BTreeSet::new();
+        let mut derived: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
         let Some(mirror) = self.mirror.clone() else {
-            return (moved, wholes);
+            return (moved, wholes, derived);
         };
         let apps: Vec<AppId> = self
             .apps
@@ -1632,14 +1641,22 @@ impl Inner {
                 derive.changes(writer, &app, reached)?;
                 derive.versions(writer, &app, ends)?;
                 writer.set_heads(&seen)?;
-                Ok((derive.reads, derive.moved, derive.wholes))
+                Ok((
+                    derive.reads,
+                    derive.moved,
+                    derive.wholes,
+                    derive.derived_keys,
+                ))
             });
             match written {
-                Ok((reads, app_moved, app_wholes)) => {
+                Ok((reads, app_moved, app_wholes, app_derived)) => {
                     for (key, ids) in app_moved {
                         moved.entry(key).or_default().extend(ids);
                     }
                     wholes.extend(app_wholes);
+                    for (doc, keys) in app_derived {
+                        derived.entry(doc).or_default().extend(keys);
+                    }
                     self.count(reads);
                     if let Some(held) = self.apps.get_mut(&app) {
                         held.heads = seen;
@@ -1654,7 +1671,7 @@ impl Inner {
                 Err(_) => self.rebuild(&app),
             }
         }
-        (moved, wholes)
+        (moved, wholes, derived)
     }
 
     /// The steps each listed collection took from the indexes `before` (with the overlay
@@ -1731,6 +1748,7 @@ impl Inner {
                 at,
                 action: note.action.clone(),
                 task: note.group.clone(),
+                from: note.from.clone(),
                 ..Version::default()
             },
             // No change yet: the action was invoked on top of every change this device
@@ -1793,7 +1811,7 @@ impl Inner {
                 .ok_or_else(|| StoreError::Backend("the workspace record is not loaded".into()))?;
             apply_edits(mirror, app, std::slice::from_ref(&edit), &seed)
         };
-        let write = LocalWrite {
+        let mut write = LocalWrite {
             app: app.to_owned(),
             edit,
             seed,
@@ -1805,7 +1823,7 @@ impl Inner {
         };
         let before = (!write.items.is_empty()).then(|| Arc::clone(&self.overlay));
         // Derived either way: a failed edit may have written part of itself.
-        self.derive_write(&write);
+        self.derive_write(&mut write);
         self.touch(&write);
         let mut listings: BTreeMap<DocId, Vec<ListingChange>> = BTreeMap::new();
         if let (Some(before), Some(held)) = (before, self.apps.get(app).filter(|h| h.ready())) {
@@ -2062,6 +2080,53 @@ impl Store for TiloStore {
             .unwrap_or_else(|| located.schema.id.clone()))
     }
 
+    /// What links to `at`, read from each package's index: the one list its links are kept in
+    /// ([`linked_list`]), as the store's open writes leave it. A resource gone from its index
+    /// links to nothing.
+    fn linked(&self, at: &ResourceRef) -> Result<Vec<Link>, StoreError> {
+        let inner = self.held();
+        let target = at.id_string();
+        let list = linked_list(&target);
+        let mut out: Vec<Link> = Vec::new();
+        for held in inner.apps.values().filter(|held| held.ready()) {
+            let snapshot = &held.snapshot;
+            let pages = snapshot.pages(&list).map_err(backend)?;
+            let mut entries: Vec<Entry> = (0..pages.len())
+                .filter_map(|at| pages.entry(at))
+                .map(|(key, id)| (key, id.to_string()))
+                .collect();
+            match inner.overlay.list(&target, &list) {
+                None => {}
+                Some(ListState::Whole(written)) => entries = written,
+                Some(ListState::Delta { added, removed }) => {
+                    entries.retain(|entry| !removed.contains(entry));
+                    entries.extend(added);
+                }
+            }
+            for (key, source) in entries {
+                let Some((how, _)) = split_link(&key) else {
+                    continue;
+                };
+                let ty = match inner.overlay.text(&source, idx::TYPE) {
+                    Some(ty) => ty,
+                    None => snapshot.text(&source, idx::TYPE).map_err(backend)?,
+                };
+                // A resource the open writes removed, or that its index no longer holds, links
+                // to nothing.
+                let Some(ty) = ty else {
+                    continue;
+                };
+                let Some(of) = ResourceRef::parse_id(&source, ty) else {
+                    continue;
+                };
+                out.push(Link { of, how });
+            }
+        }
+        out.sort_by_key(Link::order);
+        out.dedup_by(|a, b| a.of.id_string() == b.of.id_string() && a.how == b.how);
+        Ok(out)
+    }
+
     fn begin(&mut self) -> Result<Txn, StoreError> {
         self.load_record()?;
         let mut inner = self.mutate();
@@ -2142,7 +2207,7 @@ impl Store for TiloStore {
         // sent or versioned. It stays there until the record moves on, which leaves it in the
         // mirror ([`Inner::drop_committed_local`]). An action writes one kind or the other;
         // one that tried both is a fault, and its derived writes still stay unsaved.
-        if unsaved::commit_derived(&mut inner, &mut state) {
+        if unsaved::commit_derived(&mut inner, &mut state, &note.invoker) {
             return Ok(());
         }
         if state.derived > 0 {
@@ -2174,6 +2239,8 @@ impl Store for TiloStore {
                 chain: note.chain.clone(),
                 module: note.module.clone(),
                 at: note.at.clone(),
+                from: note.from.clone(),
+                suggested_by: note.suggested_by.clone(),
             },
             edits: state.edits,
         };
@@ -2202,6 +2269,7 @@ impl Store for TiloStore {
                 doc,
                 fields: fields.into_iter().collect(),
                 listings: own,
+                by: Some(note.invoker.clone()),
             });
         }
         Ok(())

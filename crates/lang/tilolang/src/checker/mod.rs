@@ -24,6 +24,7 @@ mod component;
 mod enums;
 mod expr;
 mod holder;
+mod methods;
 mod native;
 mod optional;
 mod order;
@@ -31,14 +32,17 @@ mod outcomes;
 mod platform;
 mod pred;
 mod program;
+mod props;
 mod query;
 mod template;
 #[cfg(test)]
 mod tests;
+mod text_math;
 mod ui;
 mod union;
 mod words;
 
+pub(crate) use native::offer_decided;
 pub use program::{RESOURCE_TYPE_NAME, check_program, resource_key};
 pub use template::is_template;
 
@@ -113,11 +117,26 @@ struct FnState {
     keys: Vec<LocalId>,
     /// Set while checking the operand of `try`: the next `invoke` reports failure.
     try_invoke: bool,
+    /// Set while checking the operand of `suggest`: `Some(true)` when the call is the value an
+    /// agent block proposes, `Some(false)` when it is a statement recording a proposal.
+    suggest: Option<bool>,
+    /// Where a `suggest` stood in the code being checked: a block proposes only as its whole
+    /// expression, and says so where it stood elsewhere.
+    suggested_at: Option<crate::diag::Span>,
+    /// Whether the code being checked is an agent's block of expressions, whose own value its
+    /// proposal may be. A block of view body builds a view, which proposes nothing.
+    proposes: bool,
     /// The view state the view declares, by name.
     states: HashMap<String, StateRef>,
     /// What the code being checked was written as: a scenario or an agent's program
     /// allows what declared code does not.
     written: Written,
+    /// The fields the code being checked writes from a parameter: a value it asks for, written
+    /// where the type keeps it. What two actions offered on one kind of item must not both do.
+    writes: Vec<(String, String, Ty)>,
+    /// The locals bound to the parameters of what is being checked: a write is recorded only
+    /// when the value written is one of them, never a literal or a local of its own.
+    params: Vec<LocalId>,
     /// Whether the callable takes a resource: an outside effect is queued on the first one,
     /// so an action without one cannot hand any over.
     takes_resource: bool,
@@ -137,6 +156,11 @@ struct FnState {
     row_views: usize,
     /// What the locals bound by `let` hold, in terms of places (see [`outcomes::Sym`]).
     syms: HashMap<LocalId, outcomes::Sym>,
+    /// The locals a day value travels with: for a local holding a day whose type pairs a time
+    /// of day with it (`at: Option<Time> (time of: due)`), the local holding that time of day
+    /// as `Option<Time>`. The declaration pairs them, so they travel together wherever the
+    /// value flows — a local, a branch of an `if` — and a row shows one fact (`Today 09:00`).
+    day_times: HashMap<LocalId, LocalId>,
     /// The parameters of the templates being expanded that are not values: view state,
     /// lambdas and blocks of the caller ([`template::Macro`]).
     macros: HashMap<String, template::Macro>,
@@ -203,12 +227,30 @@ pub(crate) struct Checker<'a> {
     at_event: Vec<(ir::Func, ir::AtEventFn)>,
     /// The words the views show as written, each once per view and key.
     words: Vec<crate::meta::WordMeta>,
+    /// What each offered action of the module writes, with where it is declared: read once the
+    /// bodies are checked, to find one command written twice.
+    offers: Vec<Offer>,
+    /// What the body checked last writes: `end` takes the state it was checked in, so the
+    /// fields are kept here for the module to read.
+    last_writes: Vec<FieldWritten>,
 }
+
+/// A field an offered action writes from a value it asks for: the action, the field, its type.
+type FieldWritten = (String, String, Ty);
+
+/// What one offered action of the module writes, with the name and span it is declared at.
+type Offer = (String, Span, Vec<FieldWritten>);
+
+/// A condition an action keeps: which kind it is, the export that publishes it, and the lines
+/// that make it.
+type Condition<'a> = (FuncKind, fn(&str) -> String, &'a [ast::Require]);
 
 /// What a checked agent block evaluates to.
 pub struct BlockResult {
     pub module: ir::Module,
     pub ty: Ty,
+    /// Whether the block's value is a proposal the host records instead of applying it.
+    pub suggested: bool,
 }
 
 /// Checks every body of the module and lowers it. Errors go to `diags`.
@@ -231,6 +273,8 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         states: Vec::new(),
         at_event: Vec::new(),
         words: Vec::new(),
+        offers: Vec::new(),
+        last_writes: Vec::new(),
     };
     let mut funcs = Vec::new();
     for item in &module.items {
@@ -239,7 +283,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             continue;
         };
         let f = match item {
-            Item::Action(a) => c.run_action(&callable, &a.requires, &a.body),
+            Item::Action(a) => c.run_action(&callable, &a.requires, &a.applies, &a.body),
             Item::Flow(f) => c.run_body(&callable, FuncKind::Flow, Ctx::Flow, &f.body),
             Item::Fn(f) => c.run_body(&callable, FuncKind::Fn, Ctx::Fn, &f.body),
             Item::Scenario(s) => c.run_body(&callable, FuncKind::Action, Ctx::Action, &s.body),
@@ -251,11 +295,22 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             | Item::Enum(_)
             | Item::Root(_)
             | Item::DefaultView(_)
-            | Item::RowView(_) => {
+            | Item::RowView(_)
+            | Item::Views(_) => {
                 continue;
             }
         };
         funcs.push(f);
+        if let Item::Action(a) = item
+            && !matches!(
+                a.role.as_ref().map(|(role, _)| *role),
+                Some(ast::ActionRole::Internal | ast::ActionRole::Migration)
+            )
+            && !c.last_writes.is_empty()
+        {
+            let writes = std::mem::take(&mut c.last_writes);
+            c.offers.push((a.name.name.clone(), a.name.span, writes));
+        }
     }
     // The presentation views of actions, in the order the resolver numbered them.
     for item in &module.items {
@@ -270,7 +325,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         let Some(action) = env.own_callable(&a.name.name) else {
             continue;
         };
-        funcs.push(c.run_present(&view, &a.opts, &a.requires, &action.params));
+        funcs.push(c.run_present(&view, &a.opts, &action.params));
     }
     // The defaults of action parameters, in the order the resolver numbered them.
     for d in &env.defaults {
@@ -287,6 +342,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         funcs.push(c.run_default(action, d.param, written));
     }
     c.check_proposals(module);
+    c.check_one_command();
     let mut views = Vec::new();
     let mut at_event = Vec::new();
     if funcs.len() == c.synth_base {
@@ -306,13 +362,43 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             "internal: the declared functions and their indexes disagree",
         );
     }
-    ir::Module {
+    // The guard and the `applies` conditions of each action that keeps one its subject and the
+    // place it is offered in alone decide: what a surface offering it reads whether it can run
+    // there, and whether it applies at all, from.
+    for item in &module.items {
+        let Item::Action(a) = item else { continue };
+        let Some(action) = env.own_callable(&a.name.name) else {
+            continue;
+        };
+        let decides = |lines: &[ast::Require]| {
+            lines
+                .iter()
+                .any(|r| native::offer_decided(r, &action.params))
+        };
+        let conditions: [Condition; 2] = [
+            (FuncKind::Guard, ir::guard_export, &a.requires),
+            (FuncKind::Applies, ir::applies_export, &a.applies),
+        ];
+        for (kind, export, lines) in conditions {
+            if !decides(lines) {
+                continue;
+            }
+            funcs.push(c.run_guard(action, lines, &action.params, kind, export));
+        }
+    }
+    let module = ir::Module {
         funcs,
         views,
         states: c.states,
         at_event,
         words: c.words,
+    };
+    // Every prop a view gives a described component is one that component declares: a name the
+    // catalogue does not know is refused by the window, so the compiler says it first.
+    if diags.is_empty() {
+        props::undeclared(&module, diags);
     }
+    module
 }
 
 /// Checks a block that is one expression.
@@ -326,9 +412,20 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         states: Vec::new(),
         at_event: Vec::new(),
         words: Vec::new(),
+        offers: Vec::new(),
+        last_writes: Vec::new(),
     };
     c.begin(Ctx::Block, &[], Ty::Unit, "b_main");
+    c.st.proposes = true;
+    let proposal = matches!(e.kind, ast::ExprKind::Suggest(_));
     let ex = c.expr(e, None);
+    if let Some(at) = c.st.suggested_at.filter(|_| !proposal) {
+        c.err(
+            "E044",
+            at,
+            "`suggest` must be the whole expression of a block, or stand where an action or a flow runs",
+        );
+    }
     let ty = ex.ty.clone();
     if ty == Ty::Unit {
         c.err("E072", e.span, "a block must produce a value (a view, an action application or data), but this expression has none");
@@ -345,6 +442,9 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
             words: Vec::new(),
         },
         ty,
+        // A block that is a `suggest` of an action is the proposal; the host records it where
+        // it runs the block.
+        suggested: proposal,
     }
 }
 
@@ -359,6 +459,8 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         states: Vec::new(),
         at_event: Vec::new(),
         words: Vec::new(),
+        offers: Vec::new(),
+        last_writes: Vec::new(),
     };
     c.begin(Ctx::Block, &[], Ty::View, "block");
     c.view_body(body);
@@ -372,6 +474,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
             words: Vec::new(),
         },
         ty: Ty::View,
+        suggested: false,
     }
 }
 
@@ -386,7 +489,8 @@ fn always_returns(stmts: &[Stmt]) -> bool {
 /// How a typed list element is read back from a host list, and converted.
 pub(crate) fn load_op(ty: &Ty, i: Imp, f: Imp, h: Imp) -> (Imp, Option<Conv>) {
     match ty {
-        Ty::Int => (i, None),
+        // A length of time is its seconds, as an Int is its number.
+        Ty::Int | Ty::Duration => (i, None),
         Ty::Float => (f, None),
         Ty::Bool => (i, Some(Conv::IntToBool)),
         _ => (h, None),
@@ -396,7 +500,7 @@ pub(crate) fn load_op(ty: &Ty, i: Imp, f: Imp, h: Imp) -> (Imp, Option<Conv>) {
 /// How a typed value is passed to a host store, and converted.
 pub(crate) fn store_op(ty: &Ty, i: Imp, f: Imp, h: Imp) -> (Imp, Option<Conv>) {
     match ty {
-        Ty::Int => (i, None),
+        Ty::Int | Ty::Duration => (i, None),
         Ty::Float => (f, None),
         Ty::Bool => (i, Some(Conv::BoolToInt)),
         _ => (h, None),
@@ -436,7 +540,8 @@ impl Checker<'_> {
             _ => false,
         });
         for p in params {
-            self.declare(&p.name, p.ty.clone());
+            let local = self.declare(&p.name, p.ty.clone());
+            self.st.params.push(local);
         }
     }
 
@@ -462,9 +567,13 @@ impl Checker<'_> {
         &mut self,
         c: &Callable,
         requires: &[ast::Require],
+        applies: &[ast::Require],
         body: &ast::Block,
     ) -> ir::Func {
-        self.run_guarded(c, FuncKind::Action, Ctx::Action, requires, body)
+        // What it applies to comes before what it can do: an invocation where it does not apply
+        // is refused with the condition's reason, like one that does not meet a requirement.
+        let guards: Vec<&ast::Require> = applies.iter().chain(requires).collect();
+        self.run_guarded(c, FuncKind::Action, Ctx::Action, &guards, body)
     }
 
     fn run_body(&mut self, c: &Callable, kind: FuncKind, ctx: Ctx, body: &ast::Block) -> ir::Func {
@@ -476,11 +585,11 @@ impl Checker<'_> {
         c: &Callable,
         kind: FuncKind,
         ctx: Ctx,
-        requires: &[ast::Require],
+        guards: &[&ast::Require],
         body: &ast::Block,
     ) -> ir::Func {
         self.begin(ctx, &c.params, c.result.clone(), &c.id);
-        for r in requires {
+        for r in guards {
             let cond = self.expr_as(&r.cond, &Ty::Bool);
             let reason = self.expr_as(&r.reason, &Ty::Text);
             let refuse = Stmt::Eval(Ex::host(Imp::Abort, vec![reason], Ty::Unit));
@@ -527,7 +636,11 @@ impl Checker<'_> {
             FuncKind::Fn => "n_",
             FuncKind::View => "v_",
             FuncKind::Block => "b_",
+            FuncKind::Guard => "q_",
+            FuncKind::Applies => "p_",
         };
+        // The fields it writes, kept for the module's own reading after `end` takes the rest.
+        self.last_writes = std::mem::take(&mut self.st.writes);
         let mut f = self.end(kind, &c.name, &format!("{prefix}{}", c.id));
         f.nparams = c.params.len();
         f
@@ -655,6 +768,12 @@ impl Checker<'_> {
             }
             StmtKind::Return(value) => self.return_stmt(value.as_ref(), s.span),
             StmtKind::As { who, at, body } => self.act_as(who, at.as_ref(), body, s.span),
+            StmtKind::SeedState {
+                layer,
+                view,
+                name,
+                value,
+            } => self.seed_state(*layer, view.as_ref(), name, value, s.span),
             StmtKind::Expr(e) => self.expr_stmt(e),
         }
     }
@@ -687,6 +806,140 @@ impl Checker<'_> {
             self.emit(s);
         }
         self.emit(Stmt::Eval(Ex::host(Imp::InvokerPop, vec![], Ty::Unit)));
+    }
+
+    /// `made from r { ... }` in a scenario: the block's changes are recorded as made from `r`, as
+    /// an action invoked from it is (`created(r)?.from`, `std.origin(r)`); the value is the
+    /// block's. Each block is a change of its own, as `as who { ... }` is, so the resources it
+    /// makes record what they were made from.
+    fn made_from(&mut self, of: &ast::Expr, body: &ast::Block, span: Span, exp: Option<&Ty>) -> Ex {
+        if self.st.written != Written::Scenario {
+            self.err("E094", span, "`made from r { ... }` seeds resources made from another, which only a scenario does; a resource a person makes is made by the action its menu offers, and records what it was opened on");
+            let _ = self.expr(of, None);
+            let _ = self.block_value(body, exp);
+            return Ex::error();
+        }
+        let source = self.expr(of, None);
+        match &source.ty {
+            Ty::Record(_) => {}
+            Ty::Error => return Ex::error(),
+            other => {
+                let t = self.show(other);
+                self.err(
+                    "E020",
+                    of.span,
+                    format!("`made from` takes the resource the block makes its resources from, a value of a record type; this is {t}"),
+                );
+                return Ex::error();
+            }
+        }
+        let value = self.block_value(body, exp);
+        let ty = value.ty.clone();
+        let Ek::Seq(inner, last) = value.kind else {
+            return Ex::error();
+        };
+        let made = self.fresh(ty.clone());
+        let mut stmts = Vec::with_capacity(inner.len().saturating_add(3));
+        stmts.push(Stmt::Eval(Ex::host(Imp::FromPush, vec![source], Ty::Unit)));
+        stmts.extend(inner);
+        stmts.push(Stmt::Set(made, *last));
+        stmts.push(Stmt::Eval(Ex::host(Imp::FromPop, vec![], Ty::Unit)));
+        Ex::new(Ek::Seq(stmts, Box::new(Ex::local(made, ty.clone()))), ty)
+    }
+
+    /// `window place = Task.done` (or `lens place = x`) in a scenario: the value the window
+    /// state `place` starts from, as a person picking it in the window leaves it. The state is
+    /// a `window` or `lens` declaration of a view of this package, named with its view when
+    /// more than one view declares it; the value is checked against the type it declares.
+    fn seed_state(
+        &mut self,
+        layer: ast::StateLayer,
+        view: Option<&ast::Ident>,
+        name: &ast::Ident,
+        value: &ast::Expr,
+        span: Span,
+    ) {
+        let word = layer.word();
+        if self.st.written != Written::Scenario {
+            self.err(
+                "E094",
+                span,
+                format!("`{word} {} = ...` stages the value a window state starts from, which only a scenario does; a person sets a window's state in the window, and a declaration gives its default", name.name),
+            );
+            let _ = self.expr(value, None);
+            return;
+        }
+        let names_it = |s: &crate::resolve::StateInfo| {
+            s.name == name.name && view.is_none_or(|v| s.view == v.name)
+        };
+        let same: Vec<crate::resolve::StateInfo> = self
+            .env
+            .states
+            .iter()
+            .filter(|s| names_it(s) && s.layer == layer)
+            .cloned()
+            .collect();
+        let state = match same.as_slice() {
+            [one] => one.clone(),
+            [] => {
+                match self.env.states.iter().find(|s| names_it(s)) {
+                    Some(other) => {
+                        let is = other.layer.word();
+                        self.err(
+                            "E094",
+                            span,
+                            format!("`{}` is a `{is}` state, of the view `{}`: write `{is} {} = ...`, as it is declared", name.name, other.view, name.name),
+                        );
+                    }
+                    None if view.is_some() => {
+                        let named = view.map(|v| v.name.clone()).unwrap_or_default();
+                        let declared = self.declared_states(&named);
+                        let what = if declared.is_empty() {
+                            "no state".to_owned()
+                        } else {
+                            format!("only {}", declared.join(", "))
+                        };
+                        self.err(
+                            "E094",
+                            span,
+                            format!("the view `{named}` declares {what}: a scenario stages a state a view declares with a `window` or `lens` line at the top of its body"),
+                        );
+                    }
+                    None => self.err(
+                        "E094",
+                        span,
+                        format!("no view declares the state `{}`: a scenario stages a state a view declares with a `window` or `lens` line at the top of its body, naming the view (`home.{}`) where more than one does", name.name, name.name),
+                    ),
+                }
+                let _ = self.expr(value, None);
+                return;
+            }
+            many => {
+                let views: Vec<String> = many.iter().map(|s| s.view.clone()).collect();
+                let first = views.first().cloned().unwrap_or_default();
+                self.err(
+                    "E094",
+                    span,
+                    format!("`{}` is a {word} state of {}: say which view's, as `{word} {first}.{} = ...`", name.name, views.join(", "), name.name),
+                );
+                let _ = self.expr(value, None);
+                return;
+            }
+        };
+        let seeded = self.expr_as(value, &state.ty);
+        let layer_arg = Ex::new(Ek::I32(state.layer.code()), Ty::Bool);
+        let args = vec![layer_arg, Ex::str(&state.id), Self::handle_of(seeded)];
+        self.emit(Stmt::Eval(Ex::host(Imp::SeedState, args, Ty::Unit)));
+    }
+
+    /// The names of the states the view `view` declares, in the order it declares them.
+    fn declared_states(&self, view: &str) -> Vec<String> {
+        self.env
+            .states
+            .iter()
+            .filter(|s| s.view == view)
+            .map(|s| format!("`{}`", s.name))
+            .collect()
     }
 
     /// An expression whose value is not used: an `if`, `match` or block runs its branches as
@@ -806,11 +1059,20 @@ impl Checker<'_> {
             );
             ty = Ty::Error;
         }
-        let id = self.declare(name, ty);
+        let id = self.bind_let(name, ty, ex, value.span);
         if let Some(sym) = sym {
             self.st.syms.insert(id, sym);
         }
+    }
+
+    /// Bind the checked value `ex` to the new local `name`, of type `ty`: what a `let` holds,
+    /// and — for a day — the time of day it is due at, which travels with it.
+    fn bind_let(&mut self, name: &str, ty: Ty, ex: Ex, span: Span) -> LocalId {
+        let id = self.declare(name, ty);
+        let time = self.day_time(&ex, span);
         self.emit(Stmt::Set(id, ex));
+        self.set_day_time(id, time);
+        id
     }
 
     fn return_stmt(&mut self, value: Option<&ast::Expr>, span: Span) {
@@ -960,7 +1222,9 @@ impl Checker<'_> {
                 }
             }
         };
+        let time = self.day_time(&new, name.span);
         self.emit(Stmt::Set(id, new));
+        self.set_day_time(id, time);
     }
 
     fn assign_field(
@@ -1002,8 +1266,17 @@ impl Checker<'_> {
             let _ = self.expr(value, None);
             return;
         };
-        if f.role.as_deref() == Some("previously") && self.st.role.as_deref() != Some("migration") {
+        if f.role
+            .as_ref()
+            .is_some_and(crate::types::FieldRole::is_previously)
+            && self.st.role.as_deref() != Some("migration")
+        {
             self.err("E115", field.span, format!("`{}` is what `{}` held previously: nothing writes it any more, and only a `migration action` reads it; write where the type keeps it now", f.name, key.name));
+            let _ = self.expr(value, None);
+            return;
+        }
+        if f.derived.is_some() {
+            self.err("E119", field.span, format!("`{}` is a derived key: the store works it out from the collection, and nothing writes it. Leave it out of what changes", f.name));
             let _ = self.expr(value, None);
             return;
         }
@@ -1047,6 +1320,19 @@ impl Checker<'_> {
             self.err("E033", span, format!("`{}` is a {} field and cannot be assigned; change it with its methods (`.insert`, `.remove`, `.move`, `.add`, `.put`)", f.name, f.ty.display(&self.env.app)));
             let _ = self.expr(value, None);
             return;
+        }
+        // A field set from a value the action asks for is what a second action asking the same
+        // value of the same type cannot also be for; a literal or a local of its own is not.
+        let from_a_parameter = match &value.kind {
+            ast::ExprKind::Ident(read) => self
+                .lookup(read)
+                .is_some_and(|(local, ty)| self.st.params.contains(&local) && ty.same(&f.ty)),
+            _ => false,
+        };
+        if from_a_parameter {
+            self.st
+                .writes
+                .push((info.id.clone(), f.name.clone(), f.ty.clone()));
         }
         let fid = Ex::str(&f.id);
         match (op, f.merge) {
@@ -1148,5 +1434,56 @@ impl Checker<'_> {
                 self.err("E020", p.view.span, format!("the proposal view must take the action's arguments; `{}` is {}, the action passes ({})", p.view.name, view.signature(&env.app), args.join(", ")));
             }
         }
+    }
+
+    /// Two actions offered on one kind of item that both ask for a value of the same type and
+    /// write it to the same field are one command under two names: the item's menu offers both,
+    /// and a person cannot tell which to pick. One goes, or the pair is one action with a
+    /// choice of its own.
+    fn check_one_command(&mut self) {
+        let offers = std::mem::take(&mut self.offers);
+        let mut found: Vec<(Span, String)> = Vec::new();
+        for (index, (name, span, writes)) in offers.iter().enumerate() {
+            for (other, _, theirs) in offers.iter().take(index) {
+                for (kind, field, ty) in writes {
+                    let both_write = theirs.iter().any(|(theirs_kind, theirs_field, theirs_ty)| {
+                        theirs_kind == kind && theirs_field == field && theirs_ty.same(ty)
+                    });
+                    if !both_write {
+                        continue;
+                    }
+                    let (Some(subject), Some(theirs_subject)) =
+                        (self.takes(name, ty), self.takes(other, ty))
+                    else {
+                        continue;
+                    };
+                    if !subject.same(theirs_subject) {
+                        continue;
+                    }
+                    let shown = ty.display(&self.env.app);
+                    found.push((
+                        *span,
+                        format!(
+                            "`{name}` and `{other}` both ask for a {shown} and write it to `{field}`: \
+                             one command under two names. Keep one, or make them one action that \
+                             asks for it once"
+                        ),
+                    ));
+                }
+            }
+        }
+        for (span, said) in found {
+            self.err("E120", span, said);
+        }
+    }
+
+    /// What the action `name` is offered on, when it also takes a value of `ty` to write: a
+    /// parameter of that type that is not a place a view supplies.
+    fn takes(&self, name: &str, ty: &Ty) -> Option<&Ty> {
+        let c = self.env.own_callable(name)?;
+        if !c.params.iter().any(|p| !p.place && p.ty.same(ty)) {
+            return None;
+        }
+        c.params.first().map(|p| &p.ty)
     }
 }

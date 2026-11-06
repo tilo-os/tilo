@@ -29,8 +29,8 @@ pub use selector::{
 };
 pub use shell::{
     ChromeRole, GLOW_ALPHA, HAIRLINE_ALPHA, PANEL_BORDER_ALPHA, RowJoin, SELECTION_MIN_STEP,
-    SelectionState, SelectionTier, chrome_hairline, column_gutter, fill_scrim, lightness_step,
-    paint_alignment_guide, paint_row_selection, paint_row_selection_joined, panel_border,
-    panel_ground, panel_shadow, row_bleed, scrim_channel, scrim_maps, selection_floor,
-    selection_floor_ramp, selection_tier, selection_tier_on,
+    SelectionState, SelectionTier, chrome_hairline, column_gutter, disclosure_gutter, fill_scrim,
+    lightness_step, paint_alignment_guide, paint_row_selection, paint_row_selection_joined,
+    panel_border, panel_ground, panel_shadow, row_bleed, scrim_channel, scrim_maps,
+    selection_floor, selection_floor_ramp, selection_tier, selection_tier_on,
 };

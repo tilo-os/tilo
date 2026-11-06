@@ -29,9 +29,9 @@ use tilo_sheets::portal::PortalEffect;
 use tilolang_tilo::records_service::RecordService;
 
 use common::{
-    HEIGHT, MAIL, NOTE_TITLE, NOTES, PERSON, Repl, SUBJECT, WIDTH, control, on_screen,
-    place_the_inbox, placed, placed_resources, press, press_sheet, private_home, repl_session,
-    seeded_session, until,
+    CANVAS_ENTRY, HEIGHT, MAIL, NOTE_TITLE, NOTES, PERSON, Repl, SUBJECT, WIDTH, control,
+    on_screen, place_the_inbox, placed, placed_resources, press_sheet, private_home, repl_session,
+    seeded_session, show_preset, until,
 };
 
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
@@ -144,12 +144,9 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     reading_an_action_says_how_it_is_called(session, repl);
 
     // The framed canvas, as the person shows it.
-    until(session, "the preset switch", |session| {
-        on_screen(session, "Frames").is_some()
-    });
-    press(session, "Frames");
+    show_preset(session, "Frames");
     until(session, "the canvas", |session| {
-        on_screen(session, "Typed").is_some()
+        on_screen(session, CANVAS_ENTRY).is_some()
     });
 
     // A `tilo` program places the note on the arrangement, as the person.
@@ -422,11 +419,8 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
         &mut session,
         "the notebook placed by its German name",
         |session| {
-            session
-                .arrangement()
-                .borrow()
-                .strips()
-                .places()
+            common::places(session)
+                .iter()
                 .any(|place| place.record.contains(NOTES))
         },
     );
@@ -448,8 +442,9 @@ fn noted(session: &Session) -> usize {
     session
         .arrangement()
         .borrow()
-        .strips()
-        .places()
+        .reading()
+        .places
+        .iter()
         .filter(|place| place.record.contains(NOTES))
         .count()
 }
@@ -557,12 +552,9 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    until(&mut session, "the preset switch", |session| {
-        on_screen(session, "Frames").is_some()
-    });
-    press(&mut session, "Frames");
+    show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, "Typed").is_some()
+        on_screen(session, CANVAS_ENTRY).is_some()
     });
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
@@ -592,8 +584,9 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
         session
             .arrangement()
             .borrow()
-            .strips()
-            .places()
+            .reading()
+            .places
+            .iter()
             .filter_map(|place| {
                 tilo_actions::door::locate(
                     &resources,
@@ -639,12 +632,9 @@ fn my_mails_on_the_canvas_places_mails_root() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    until(&mut session, "the preset switch", |session| {
-        on_screen(session, "Frames").is_some()
-    });
-    press(&mut session, "Frames");
+    show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, "Typed").is_some()
+        on_screen(session, CANVAS_ENTRY).is_some()
     });
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
@@ -660,8 +650,9 @@ fn my_mails_on_the_canvas_places_mails_root() {
         session
             .arrangement()
             .borrow()
-            .strips()
-            .places()
+            .reading()
+            .places
+            .iter()
             .filter_map(|place| {
                 tilo_actions::door::locate(
                     &resources,
@@ -765,12 +756,9 @@ fn an_app_no_place_shows_is_unloaded() {
     let mut session = seeded_session(root.path());
     place_the_inbox(&mut session, root.path());
     assert_eq!(session.shell_apps(), vec![MAIL.to_owned()]);
-    let places: Vec<u64> = session
-        .arrangement()
-        .borrow()
-        .strips()
-        .places()
-        .map(|place| place.id)
+    let places: Vec<u64> = common::places(&session)
+        .iter()
+        .map(|place| common::number(&place.key))
         .collect();
     for place in places {
         session
@@ -1043,12 +1031,9 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    until(&mut session, "the preset switch", |session| {
-        on_screen(session, "Frames").is_some()
-    });
-    press(&mut session, "Frames");
+    show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, "Typed").is_some()
+        on_screen(session, CANVAS_ENTRY).is_some()
     });
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
@@ -1136,12 +1121,9 @@ fn the_repl_finds_what_place_found_places() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    until(&mut session, "the preset switch", |session| {
-        on_screen(session, "Frames").is_some()
-    });
-    press(&mut session, "Frames");
+    show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, "Typed").is_some()
+        on_screen(session, CANVAS_ENTRY).is_some()
     });
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
@@ -1175,18 +1157,44 @@ fn the_repl_finds_what_place_found_places() {
             "{text:?} places a {placed_kind}, not a {wanted}: {shown:?}"
         );
 
-        // And `find` leads with the same thing: the first row names a
-        // resource of that kind, from the one search.
+        // And `find` names the same rows the one search ranks, each by a
+        // path `tilo_ls` reads: the row of the place the desk just made leads
+        // where the search puts it, and a row of the kind the search sought
+        // stands among them. `find` walks the containers it can read, so a
+        // record placed out of a notebook is reached through its notebook.
         let (found, failed) = repl.call(&mut session, "tilo_find", &json!({"query": text}));
         assert!(!failed, "{text:?} answers: {found}");
-        let first = found
+        let rows: Vec<&str> = found
             .lines()
-            .next()
+            .filter(|line| !line.starts_with('…'))
+            .collect();
+        let first = rows
+            .first()
             .unwrap_or_else(|| panic!("{text:?} finds nothing: {found}"));
-        assert_eq!(
-            first.split("  ").nth(1),
-            Some(placed_kind.as_str()),
-            "{text:?}: find leads with {first}, and the canvas places {shown:?}"
+        let path = first
+            .split("  ")
+            .next()
+            .unwrap_or_default()
+            .split('#')
+            .next()
+            .unwrap_or_default();
+        let (parent, row) = path.rsplit_once('/').unwrap_or_default();
+        assert!(
+            !parent.is_empty() && !row.is_empty(),
+            "{text:?}: find leads with a row of a directory: {first}"
+        );
+        let (listed, failed) = repl.call(&mut session, "tilo_ls", &json!({"path": parent}));
+        assert!(!failed, "{text:?}: {parent} lists: {listed}");
+        assert!(
+            listed.contains(row),
+            "{text:?}: find leads with {first}, and {parent} lists no row {row}: {listed}"
+        );
+        assert!(
+            rows.iter().any(|row| row
+                .split("  ")
+                .nth(1)
+                .is_some_and(|label| label.contains(wanted))),
+            "{text:?}: find names a row of a {wanted}, {shown:?}: {found}"
         );
 
         // Each `place_found` is a step of the person's: take it back, so the

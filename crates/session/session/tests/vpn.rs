@@ -27,7 +27,7 @@ use std::os::unix::net::{UnixDatagram, UnixListener};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use device_vpn::fdpass;
 use device_vpn::net::Ipv4Net;
@@ -55,7 +55,7 @@ use tilo_device_fabric::{
 };
 use tilo_nm::{ActiveState, ActiveVpn, VpnReading, VpnWatch};
 use tilo_session::fabric::Continuity;
-use tilo_session::sync::{Client, OwnPresence};
+use tilo_session::sync::{Client, Entry, OwnPresence};
 use tilo_session::{Options, Session, Vpn};
 use tilo_settings_service::SettingsService;
 
@@ -64,8 +64,6 @@ const PROFILE: &str = "9b1c6f42-7c0a-4b0f-9a1c-2d3e4f5a6b7c";
 const HOME: &str = "192.168.1.0/24";
 const WIDTH: i32 = 1024;
 const HEIGHT: i32 = 700;
-/// How long a step of the test waits for what it waits for.
-const DEADLINE: Duration = Duration::from_secs(40);
 
 /// The helper as a test knows it: the requests it was asked, in order, and
 /// this device's end of each tunnel it opened.
@@ -211,7 +209,8 @@ impl Helper {
     /// The next packet the stack the helper opened received through it.
     fn received(&self) -> Vec<u8> {
         let tun = self.tun();
-        tun.set_read_timeout(Some(DEADLINE)).expect("a timeout");
+        tun.set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .expect("a timeout");
         let mut packet = vec![0_u8; 4096];
         let length = tun.recv(&mut packet).expect("the packet reaches the stack");
         packet.truncate(length);
@@ -235,13 +234,7 @@ fn reading(state: Option<ActiveState>) -> VpnReading {
 
 /// Wait for `condition`, or fail saying what was waited for.
 fn wait_for(what: &str, condition: impl Fn() -> bool) {
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(20))
-        .expect("a deadline");
-    while !condition() {
-        assert!(Instant::now() < deadline, "waited for {what}");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    tilo_test_env::wait_until(what, condition);
 }
 
 /// What Settings reads: the status a running session published, read as the
@@ -397,15 +390,19 @@ impl ExitFixture {
     fn delivered(&mut self, rt: &tokio::runtime::Runtime) -> Vec<u8> {
         if self.stack.is_none() {
             self.stack = Some(
-                rt.block_on(async { tokio::time::timeout(DEADLINE, self.stacks.recv()).await })
-                    .expect("the other device opens its tunnel")
-                    .expect("the other device opened its tunnel"),
+                rt.block_on(async {
+                    tokio::time::timeout(tilo_test_env::hang_bound(), self.stacks.recv()).await
+                })
+                .expect("the other device opens its tunnel")
+                .expect("the other device opened its tunnel"),
             );
         }
         let stack = self.stack.as_mut().expect("the other device's stack");
-        rt.block_on(async { tokio::time::timeout(DEADLINE, stack.delivered()).await })
-            .expect("the packet reaches the other device")
-            .expect("the other device keeps its stack")
+        rt.block_on(async {
+            tokio::time::timeout(tilo_test_env::hang_bound(), stack.delivered()).await
+        })
+        .expect("the packet reaches the other device")
+        .expect("the other device keeps its stack")
     }
 }
 
@@ -526,11 +523,10 @@ impl FabricLink for KnownDevices {
 
 /// Step the session until `done` holds, or fail saying what was waited for.
 fn step_until(session: &mut Session, what: &str, done: impl Fn() -> bool) {
-    let deadline = Instant::now().checked_add(DEADLINE).expect("a deadline");
-    while !done() {
-        assert!(Instant::now() < deadline, "waited for {what}");
+    tilo_test_env::wait_for(what, || {
         session.step(Duration::from_millis(10)).expect("a frame");
-    }
+        done().then_some(())
+    });
 }
 
 /// The person chooses to route their home network through their other
@@ -564,14 +560,17 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
 
     // This session's own endpoint, told where the other device is.
     let sync = Client::start(
+        Entry {
+            identity: None,
+            own: OwnPresence::default(),
+            hosts: Vec::new(),
+            continuity: Continuity::default(),
+            wake: Arc::new(|| {}),
+        },
         None,
         None,
-        OwnPresence::default(),
         Vec::new(),
-        Continuity::default(),
-        Arc::new(|| {}),
         None,
-        Vec::new(),
     )
     .expect("a loopback endpoint binds");
     sync.connect(exit.addr.clone());
@@ -686,22 +685,11 @@ const PHONE: &str = "Phone";
 /// Step both sessions until `done` holds, or fail saying what was waited
 /// for: two of the person's devices, each with its own pass.
 fn step_both_until(one: &mut Session, other: &mut Session, what: &str, done: impl Fn() -> bool) {
-    let deadline = Instant::now().checked_add(DEADLINE).expect("a deadline");
-    loop {
-        if done() {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "waited for {what}: the status says {:?}",
-            published_status()
-        );
+    tilo_test_env::wait_for(what, || {
         one.step(Duration::from_millis(10)).expect("a frame");
-        if done() {
-            return;
-        }
         other.step(Duration::from_millis(10)).expect("a frame");
-    }
+        done().then_some(())
+    });
 }
 
 /// This device is an exit while the person turns it on, and only for their
@@ -734,28 +722,34 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         vpns: Vpns::Fed(VpnWatch::following(desk_vpns)),
     });
     let desk_sync = Client::start(
+        Entry {
+            identity: None,
+            own: OwnPresence::default(),
+            hosts: Vec::new(),
+            continuity: Continuity::default(),
+            wake: Arc::new(|| {}),
+        },
         None,
-        None,
-        OwnPresence::default(),
-        Vec::new(),
-        Continuity::default(),
-        Arc::new(|| {}),
         None,
         desk_vpn.served(),
+        None,
     )
     .expect("this device's endpoint binds");
     // The laptop's endpoint, serving nothing but its own planes: the route
     // it carries is not one of them.
     let (_laptop_reading, laptop_vpns) = tokio::sync::watch::channel(reading(None));
     let laptop_sync = Client::start(
+        Entry {
+            identity: None,
+            own: OwnPresence::default(),
+            hosts: Vec::new(),
+            continuity: Continuity::default(),
+            wake: Arc::new(|| {}),
+        },
         None,
         None,
-        OwnPresence::default(),
         Vec::new(),
-        Continuity::default(),
-        Arc::new(|| {}),
         None,
-        Vec::new(),
     )
     .expect("the laptop's endpoint binds");
     // The person's phone: an endpoint that proves which of their devices it
@@ -982,7 +976,13 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         })
     });
     let ended = rt
-        .block_on(async { tokio::time::timeout(DEADLINE, phone_tunnel.connection.closed()).await })
+        .block_on(async {
+            tokio::time::timeout(
+                tilo_test_env::hang_bound(),
+                phone_tunnel.connection.closed(),
+            )
+            .await
+        })
         .expect("the phone's tunnel ends");
     assert_eq!(
         Ended::of(&ended),

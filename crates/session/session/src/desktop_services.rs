@@ -303,7 +303,7 @@ impl DesktopServices {
                 if let Err(error) =
                     tilo_portal::background::Background::running_changed(&connection).await
                 {
-                    tracing::debug!(%error, "running apps not announced");
+                    tracing::warn!(%error, "running apps not announced");
                 }
             });
         }

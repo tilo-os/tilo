@@ -516,19 +516,19 @@ impl<R: Resource> RecordEnv<R> {
         self.storage.shared_workspace::<P>(owner)
     }
 
-    /// The record the two people of `pair` ([`collab_types::direct_pair_id`])
-    /// share, of `P` that `owner` keeps: a conversation's own record, which
-    /// only their devices read and change. Held the way
-    /// [`Self::shared_workspace`] is, on its route, live as it changes; the
-    /// workspace's grants decide nothing there. `None` where the host keeps
-    /// no records in a workspace (a view of a past version), for a key that
-    /// names no pair, or where it cannot be opened.
-    pub fn shared_direct<P: Resource>(
+    /// The record `id` of `P` that `owner` keeps in the window's workspace,
+    /// named otherwise than [`Self::shared_workspace`]'s: a conversation's,
+    /// which the two people it is between name. Held and decided like any
+    /// record of the owner's: the workspace's grants on `owner` decide every
+    /// change. `None` where the host keeps no records in a workspace (a view
+    /// of a past version), for an id that names no record, or where it
+    /// cannot be opened.
+    pub fn shared_record<P: Resource>(
         &self,
         owner: &'static str,
-        pair: &str,
+        id: &str,
     ) -> Option<super::WorkspaceRecord<P>> {
-        self.storage.shared_direct::<P>(owner, pair)
+        self.storage.shared_record::<P>(owner, id)
     }
 
     /// The person's record `P` that one app keeps for all of theirs — their

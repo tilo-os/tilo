@@ -537,6 +537,12 @@ impl Widget for TimePicker {
         self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
+    /// The spinning cells keep one width and height, set by the style it builds: no frame
+    /// marks it for another measure, so a window showing a time stays still.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,

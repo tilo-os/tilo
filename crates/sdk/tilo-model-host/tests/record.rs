@@ -169,7 +169,7 @@ fn an_existing_record_opens_unchanged() {
     )
     .expect("opens");
     assert!(!opened.created, "the record was already there");
-    let mut record = opened.record;
+    let record = opened.record;
     assert_eq!(titled_ids(&record), ids, "ids are unchanged");
     let opened_doc = record.document().committed_document();
     let after: Vec<String> = opened_doc

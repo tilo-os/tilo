@@ -96,6 +96,8 @@ fn fixture() -> (
                 label: "display-only".into(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         });
     }
     let mut ws = Workspace::new(WorkspaceSlot(1), "Work");

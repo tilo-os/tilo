@@ -435,11 +435,7 @@ impl Core {
     }
 
     /// [`Core::coll_len`] or [`Core::coll_count`], as an import asks for one or the other.
-    pub(crate) fn coll_len_or_count(
-        &self,
-        coll: &Rc<CollRef>,
-        count: bool,
-    ) -> HResult<usize> {
+    pub(crate) fn coll_len_or_count(&self, coll: &Rc<CollRef>, count: bool) -> HResult<usize> {
         if count {
             self.coll_count(coll)
         } else {

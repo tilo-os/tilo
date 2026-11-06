@@ -306,9 +306,6 @@ impl RelayCollabTransport {
                 }
                 PeerEvent::Live { from, frame, .. } => self.remote_presence(from, &frame),
                 PeerEvent::RecordContent { frame, .. } => self.content_piece(&frame),
-                PeerEvent::LiveMember { device, active, .. } => {
-                    self.live.member(device, active);
-                }
                 // One member's frame on the workspace's live plane: the app
                 // presence track is where an editor's cursors arrive, and a
                 // record's preview frames were opened into [`PeerEvent::Live`]
@@ -330,12 +327,14 @@ impl RelayCollabTransport {
                 | PeerEvent::CommitRefused { .. }
                 | PeerEvent::RemoteAction { .. }
                 | PeerEvent::RemoteActionUndeliverable { .. }
-                | PeerEvent::Presence { .. }
                 | PeerEvent::LivePlane { .. }
                 | PeerEvent::CompactionRequested { .. }
                 | PeerEvent::RecordOpened { .. }
                 | PeerEvent::ContentWanted { .. }
                 | PeerEvent::Voice(_)
+                | PeerEvent::CallAudio { .. }
+                | PeerEvent::CallPicture { .. }
+                | PeerEvent::CallDemand { .. }
                 | PeerEvent::WorkspaceLayout { .. } => {}
             }
         }
@@ -420,6 +419,7 @@ fn editor_presence(
         | PeerPresencePayload::Reaction { .. }
         | PeerPresencePayload::Wave { .. }
         | PeerPresencePayload::Composing { .. }
+        | PeerPresencePayload::Person { .. }
         | PeerPresencePayload::Shell(_) => None,
     }
 }

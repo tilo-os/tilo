@@ -38,6 +38,8 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
+mod common;
+
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
@@ -154,13 +156,7 @@ fn step(session: &mut Session, frames: usize) {
 
 /// Run frames until `done` holds; `false` when it never did.
 fn reached(session: &mut Session, mut done: impl FnMut(&Session) -> bool) -> bool {
-    for _ in 0..2000 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return true;
-        }
-    }
-    false
+    common::reached(session, |session| done(session))
 }
 
 /// Set the field `field` of the appearance section to `value` through the

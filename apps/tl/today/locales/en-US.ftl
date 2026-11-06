@@ -9,15 +9,3 @@ d-2lehvjd6 = Today
     }
 
 d-a5wukhyd = Today
-
-d-a5wukhyd-row0 = Today for item
-
-d-a5wukhyd-row1 = Today for n
-
-d-a5wukhyd-row2 = Today for x
-
-d-a5wukhyd-row3 = Today for item
-
-d-a5wukhyd-row4 = Today for n
-
-d-a5wukhyd-row5 = Today for x

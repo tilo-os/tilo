@@ -783,7 +783,6 @@ impl Default for InstallerPreview {
             (bytes.len() <= 10 * 1024 * 1024).then_some(bytes)
         });
         Self {
-            dirty: true,
             capabilities: capabilities::GuidedCapabilities::native(),
             avatar: None,
             avatar_picker: None,

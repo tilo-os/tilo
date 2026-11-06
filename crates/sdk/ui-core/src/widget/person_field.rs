@@ -13,6 +13,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::component::Person;
+use crate::icons::Icon;
 use crate::widget::arrange::Stack;
 use crate::widget::binding::{BoxedBinding, Pulled, derived};
 use crate::widget::{AppModel, Button, ButtonRole, Decorator, ModelPath, PopoverButton, Widget};
@@ -228,17 +229,23 @@ fn field(
     } else {
         name
     };
-    let chip = Button::new(id, &label);
     let chip = match who {
-        Some(identity) => chip.with_avatar(
-            people
-                .iter()
-                .chain(me)
-                .find(|person| person.identity == identity)
-                .map_or(identity, |person| person.name.as_str()),
-            identity,
-        ),
-        None => chip.with_placeholder(),
+        Some(identity) => Button::new(id, &label)
+            .with_avatar(
+                people
+                    .iter()
+                    .chain(me)
+                    .find(|person| person.identity == identity)
+                    .map_or(identity, |person| person.name.as_str()),
+                identity,
+            )
+            .showing_choice(),
+        // Nobody yet: the person icon stands where the avatar would, so the chip is as tall as
+        // one that holds someone and reads as a person either way.
+        None => Button::new(id, &label)
+            .with_icon(Icon::User)
+            .with_placeholder()
+            .showing_choice(),
     };
     chip.with_popover(content)
 }

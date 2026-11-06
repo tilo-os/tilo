@@ -78,6 +78,7 @@ fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result
         joined: workspace_policy.joined.clone(),
         grants: workspace_policy.grants.clone(),
         identities,
+        damaged: crate::workspace::policy::Damaged::default(),
     };
     // A root-signed certificate must also be the certificate admitted by workspace governance.
     let identity: GovernedIdentity = serde_json::from_slice(
@@ -707,4 +708,39 @@ fn a_members_own_channel_admits_no_one_until_its_record_is_named() {
             .unwrap()
             .contains(&source)
     );
+}
+
+/// A person shut out by a row of their own that did not read back is told
+/// their access could not be read, not that they are a stranger here.
+#[test]
+fn a_damaged_row_says_the_access_could_not_be_read() {
+    use super::absence;
+    use crate::state::MembershipError;
+    use crate::workspace::policy::Damaged;
+
+    let damaged = Damaged {
+        grants: 1,
+        ..Damaged::default()
+    };
+    assert!(
+        matches!(absence(&damaged, "them"), MembershipError::UnreadableAccess),
+        "an unreadable grant could have been theirs"
+    );
+    let mut damaged = Damaged::default();
+    damaged.members.insert("them".to_owned());
+    assert!(
+        matches!(absence(&damaged, "them"), MembershipError::UnreadableAccess),
+        "their own member row did not read back"
+    );
+    assert!(
+        matches!(
+            absence(&damaged, "someone else"),
+            MembershipError::NoMembership
+        ),
+        "someone else's rows read back, so they hold no role"
+    );
+    assert!(matches!(
+        absence(&Damaged::default(), "them"),
+        MembershipError::NoMembership
+    ));
 }

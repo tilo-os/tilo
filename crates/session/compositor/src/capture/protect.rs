@@ -20,6 +20,11 @@
 //! of the windows behind it is captured either; the lock screen itself asks
 //! for the password the whole time it is up, so a capture of it is the
 //! placeholder.
+//!
+//! The session's own look at its displays is no copy: a check driving the
+//! session through its development socket reads them as they are drawn, the
+//! lock screen included, so what the person in front of the display sees can
+//! be checked too ([`Held`]).
 
 use std::collections::BTreeSet;
 
@@ -41,6 +46,18 @@ const SECRET_HOLDING_APP_IDS: &[&str] = &[
 /// The colour a protected window is drawn in where its pixels leave the
 /// display: the desktop's own quiet grey, opaque, carrying no text.
 pub(crate) const PLACEHOLDER: [f32; 4] = [0.16, 0.17, 0.21, 1.0];
+
+/// Whether a copy of a scene holds back what the session keeps private.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Held {
+    /// A copy that leaves the display — a screenshot, a recording, the
+    /// replay buffer, a share stream, a remote viewer, the portal's picture:
+    /// the lock screen and every protected window are the placeholder.
+    Back,
+    /// The session's own look at its displays, for a check of what the
+    /// person in front of them sees: they are drawn as they are.
+    Nothing,
+}
 
 /// Whether windows of `app_id` are protected for what the app is, before it
 /// asks.

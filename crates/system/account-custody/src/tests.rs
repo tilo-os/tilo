@@ -1118,3 +1118,46 @@ fn a_model_grant_is_its_own_and_leaves_mail_alone() {
             .all(|request| !request.target.starts_with("/revoke"))
     );
 }
+
+/// The person's handoff credentials are keyed by the person's one custody:
+/// a custodian over their own root writes them where a fresh custodian over
+/// that root reads them, never under a key file beside the ciphertext.
+#[cfg(unix)]
+#[test]
+fn the_persons_handoff_store_opens_under_the_persons_custody() {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config");
+    let person = config.join("tilo");
+    std::fs::create_dir_all(&person).unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", &config)
+        .set("HOME", home.path())
+        .set(tilo_secrets::SECRETS_DIR_ENV, home.path().join("secrets"));
+
+    let id = AccountId::from("music.spotify.streaming");
+    let credential = HandoffCredential::Bearer {
+        token: Zeroizing::new("handoff-bearer-token".into()),
+        expires_unix: None,
+    };
+    Custodian::for_root(Some(person.clone()))
+        .handoff()
+        .expect("the person's handoff store")
+        .publish(&id, &credential)
+        .expect("publishing under the person's custody");
+    assert!(
+        !accounts::handoff::handoff_dir_in(&person)
+            .join("vault.key")
+            .exists(),
+        "the keyring keeps the handoff key, not a file beside it"
+    );
+
+    let read = Custodian::for_root(Some(person))
+        .handoff()
+        .expect("the person's handoff store")
+        .read(&id)
+        .expect("reading under the person's custody");
+    let Some(HandoffCredential::Bearer { token, .. }) = read else {
+        panic!("the published bearer credential is the one that reads back");
+    };
+    assert_eq!(*token, "handoff-bearer-token");
+}

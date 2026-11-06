@@ -142,9 +142,10 @@ case $group in
     # What a person notices: how long the desk takes to draw its first frame,
     # what a frame costs while it animates and while a document is typed
     # into, and what frames offered at rest cost. session_perf measures the
-    # shared desktop surface on the frame path both hosts draw with, per tile
+    # shared desktop surface on the frame path both hosts draw with, per
     # profile: `arriving` is the native session's chrome, `apps` the page's
-    # chrome and app paint. Its budgets are [devices.x86.session.*] in
+    # chrome and app paint, `activities` the floating layer's cards over a
+    # desk. Its budgets are [devices.x86.session.*] in
     # tools/perf/kpi-budgets.toml, so a phase over budget fails this check.
     # Around it: the toolkit's own 4K redraw (ui-perf), the framework's
     # scaling with item counts, and a document's keystroke-to-frame latency.
@@ -156,7 +157,7 @@ case $group in
     examples=$target/release/examples
     env_json release lavapipe kvm > "$out/env.json"
     status=0
-    for profile in arriving apps; do
+    for profile in arriving apps activities; do
       TILO_PERF_DEVICE=x86 "$examples/session_perf" --profile "$profile" \
         --json "$out/session-$profile.json" || status=$?
     done

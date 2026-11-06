@@ -6,9 +6,9 @@
 //! directory's API, a calendar subscription) through the workspace host it
 //! is admitted to. Only a member's or guest's device with an open session
 //! may: the session token arrives in [`SESSION_HEADER`], as on every other
-//! route, and its person must be admitted to a workspace here. A workspace's
-//! spectators only watch, so they may not. The proxy itself enforces
-//! destinations, bounds, rates and budgets (see `tilo_net::proxy::host`);
+//! route, and its person must be admitted to a workspace here. The proxy
+//! itself enforces destinations, bounds, rates and budgets (see
+//! `tilo_net::proxy::host`);
 //! this module adds who may call it, which workspaces' budgets a request counts
 //! against (every workspace here its person is admitted to), and the CORS
 //! headers a page on the web entry's origin needs to read the answer.
@@ -160,8 +160,7 @@ async fn caller(
 }
 
 /// The workspaces here `user` is admitted to as a person of its own: a
-/// member or a guest. None for the spectator person every watching page of
-/// a public workspace shares.
+/// member or a guest.
 async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Room> {
     let workspaces: Vec<_> = web
         .sessions
@@ -177,12 +176,6 @@ async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Room> {
     let own_user = web.sessions.context().relay.identity.user_public_key;
     for (id, workspace) in workspaces {
         let workspace = workspace.lock().await;
-        if workspace
-            .spectators
-            .is_some_and(|spectators| spectators.root == user)
-        {
-            return Vec::new();
-        }
         if workspace.admits_person(&user, &own_user) {
             admitted.push(Room(id));
         }

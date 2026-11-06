@@ -8,6 +8,7 @@ use std::rc::Rc as SharedRc;
 mod adaptive;
 mod band;
 mod capabilities;
+mod counts;
 mod hosted;
 mod inspector_sheet;
 mod listed_actions;
@@ -1112,8 +1113,12 @@ fn history_is_one_glyph_in_the_window_top_trailing_corner() {
             .set_history_control(Some(HistoryControl::Closed));
         settle(&mut h, 1280, 800);
         let g = geometry(&h);
+        let m = Metrics::resolve(&Theme::dark());
         assert!(g.history.width() > 0.0);
-        assert!(g.history.x1 > 1280.0 - 24.0 && g.history.x1 <= 1280.0);
+        assert!(
+            (g.history.x1 - (1280.0 - m.row.gutter)).abs() < 1e-9,
+            "the history chip keeps the gutter the title starts at"
+        );
         assert!(g.history.y1 <= g.header_height);
         let button = h
             .root::<NavShell>()
@@ -1168,8 +1173,9 @@ fn history_is_one_glyph_in_the_window_top_trailing_corner() {
             .set_history_control(Some(HistoryControl::Closed));
         settle(&mut h, 1024, 700);
         let g = geometry(&h);
+        let m = Metrics::resolve(&Theme::dark());
         assert!(g.header_height > 0.0);
-        assert!(g.history.x1 > 1024.0 - 24.0);
+        assert!((g.history.x1 - (1024.0 - m.row.gutter)).abs() < 1e-9);
     }
 
     // Case `a_narrow_push_stack_keeps_it_on_the_front_screen`.
@@ -1891,7 +1897,10 @@ fn the_window_bar_merges_into_the_header_row() {
     settle(&mut h, 1280, 800);
     let g = geometry(&h);
     assert_eq!(g.window_controls, Rect::ZERO);
-    assert!(g.history.x1 > 1280.0 - 24.0);
+    assert!(
+        (g.history.x1 - (1280.0 - m.row.gutter)).abs() < 1e-9,
+        "the history chip keeps the gutter the title starts at"
+    );
     assert!(h.root::<NavShell>().window_bar_slot().is_none());
 }
 
@@ -2775,4 +2784,42 @@ fn a_part_changed_in_place_off_screen_keeps_the_tree_and_settles() {
         if laid_out { 3 } else { 0 },
         "remounted where it is laid out, and only there"
     );
+}
+
+/// The overview column follows what it lists, up to its cap: the room the
+/// detail has past the measure it reads at is the list's, so a long row fits
+/// whole while the page beside it still reads as a page.
+#[test]
+fn the_overview_grows_to_fit_its_rows_while_the_page_keeps_its_measure() {
+    let tokens = Theme::dark().tokens.metrics;
+    let at = |w: u32| {
+        let shell = NavShell::new()
+            .sidebar(Probe::boxed("sidebar").0)
+            .overview(Probe::boxed("overview").0)
+            .content(Probe::boxed("content").0);
+        let mut h = harness(shell, w, 800, Theme::dark());
+        settle(&mut h, w, 800);
+        geometry(&h)
+    };
+    let list = f64::from(tokens.overview_width);
+    let cap = f64::from(tokens.overview_max_width);
+    let reading = f64::from(tokens.reading_measure);
+    let g = at(1280);
+    assert_eq!(g.overview, OverviewPlacement::List);
+    assert!(
+        g.overview_column.width() > list && g.overview_column.width() <= cap,
+        "the list takes the room past the page's measure: {:?}",
+        g.overview_column
+    );
+    assert!(
+        g.content_column.width() >= reading,
+        "the page beside it still reads at its measure: {:?}",
+        g.content_column
+    );
+    let g = at(1800);
+    assert_eq!(g.overview_column.width(), cap, "the cap bounds the list");
+    assert!(g.content_column.width() >= reading);
+    // Beside a page that has only its minimum, the list keeps its own width.
+    let g = at(1000);
+    assert!(g.overview_column.width() <= list + 1.0);
 }

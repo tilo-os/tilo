@@ -175,7 +175,7 @@ view drawing(c: Canvas) {
     }
 
     #[test]
-    fn a_bound_lens_is_the_persons_and_a_bound_window_value_is_everyones() {
+    fn a_bound_window_value_is_the_persons_own_like_a_lens() {
         let store = AmStore::new();
         let (rt, app, canvas) = setup(&store);
         let (ada, bo) = (Principal::new("person:ada"), Principal::new("person:bo"));
@@ -221,10 +221,15 @@ view drawing(c: Canvas) {
         assert_eq!(texts(&va).last().unwrap(), "red at 3");
         assert_eq!(
             texts(&vb).last().unwrap(),
-            " at 3",
-            "Bo shares the window, not the lens"
+            " at 1",
+            "Bo's window shows his own zoom, and his own lens"
         );
         assert_eq!(vb.bound_value(&inputs(&vb)[0]), Some(Value::text("")));
+        assert_eq!(
+            vb.bound_value(&numbers(&vb)[0]),
+            Some(Value::Float(1.0)),
+            "Bo reads the window value's default, not Ada's"
+        );
         assert_eq!(
             rt.history(&canvas.doc).unwrap().len(),
             before,

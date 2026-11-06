@@ -12,27 +12,56 @@ tilolang-ask-by = Angefragt von { $invoker }
 tilolang-ask-action = { $action }
 tilolang-ask-confirm = Erlauben
 tilolang-ask-decline = Ablehnen
+tilolang-suggestion-accept = Übernehmen
+tilolang-suggestion-dismiss = Verwerfen
+tilolang-suggested = Vorgeschlagen
+tilolang-suggested-by = vorgeschlagen von { $name }
 tilolang-ask-always = Immer erlauben
 tilolang-ask-denied = Diese Änderung ist hier nicht erlaubt.
 tilolang-ask-needs-approval = Diese Änderung muss zuerst bestätigt werden.
 tilolang-embed-source = Block
-tilolang-history-edit = Ein Feld bearbeitet
-tilolang-history-edit-field = Bearbeitet: { $field }
-tilolang-history-set-field = Geändert: { $field }
-tilolang-history-set = Ein Feld geändert
+tilolang-did-renamed = hat dies umbenannt in
+tilolang-did-edited = hat { $field } bearbeitet
+tilolang-did-changed = hat { $field } geändert
+tilolang-did-completed = hat dies erledigt
+tilolang-did-reopened = hat dies wieder geöffnet
+tilolang-did-created = hat dies erstellt
+tilolang-did-removed = hat dies entfernt
+tilolang-did-moved = hat dies verschoben nach
+tilolang-did-moved-under = hat dies untergeordnet
+tilolang-did-moved-top = hat dies auf die oberste Ebene verschoben
+tilolang-did-taken-out = hat dies entfernt aus
+tilolang-did-assigned = hat dies zugewiesen an
+tilolang-did-unassigned = hat die Zuweisung aufgehoben
+tilolang-did-set = hat { $field } gesetzt auf
+tilolang-did-cleared = hat { $field } geleert
+tilolang-did-set-date = hat das Datum { $field } gesetzt auf
+tilolang-did-cleared-date = hat das Datum { $field } geleert
+tilolang-did-set-time = hat die Uhrzeit { $field } gesetzt auf
+tilolang-did-cleared-time = hat die Uhrzeit { $field } geleert
+tilolang-did-and = und
+
 tilolang-invocation-pending = Wartet
 tilolang-invocation-done = Erledigt
 tilolang-invocation-suggested = Wartet auf Bestätigung
+tilolang-invocation-proposed = Vorgeschlagen
 tilolang-invocation-declined = Abgelehnt
 tilolang-invocation-failed = Fehlgeschlagen
 tilolang-invocation-denied = Nicht erlaubt
 tilolang-embed-error = Dieser Block konnte nicht ausgeführt werden
 tilolang-all = Alle { $kind }
+# Wer eine Zeile des Verlaufs geschrieben hat: die Person selbst.
+tilolang-you = Du
 tilolang-empty = Noch nichts hier
+# What a list's entry at its end says while it is empty.
+tilolang-add = Etwas hinzufügen
+
 # The title over the items of a list that are done with, folded away after the rest.
 tilolang-done = Erledigt
 # The heading over the items of a list that name no group of their own.
 tilolang-no-date = Kein Datum
+# Said over the items of a list done with, where every one of them is: the list is not empty, it is finished.
+tilolang-all-done = Alles erledigt
 rich-text-reference-unreadable = Nicht mit dir geteilt
 tilolang-none-selected = Nichts ausgewählt
 tilolang-sort = Sortieren
@@ -44,6 +73,9 @@ tilolang-thread-replies = { $count ->
     [one] 1 Antwort
    *[other] { $count } Antworten
 }
+tilolang-make = Erstellen
+tilolang-from = Aus
+tilolang-linked = Daraus entstanden
 
 app-activate-window = Dieses Fenster anzeigen
 app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.
@@ -132,3 +164,6 @@ tilolang-remind-weeks-after = { $count ->
     [one] 1 Woche nachher
    *[other] { $count } Wochen nachher
 }
+
+tilolang-reminder-late = Verspätet
+tilolang-reminder-open = Öffnen

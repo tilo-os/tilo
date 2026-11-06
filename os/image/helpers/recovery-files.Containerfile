@@ -7,7 +7,6 @@ COPY --chmod=0755 \
     os/usr/libexec/tilo-system-extension-activate \
     os/usr/libexec/tilo-system-extension-dispatch \
     os/usr/libexec/tilo-boot-health \
-    os/usr/libexec/tilo-boot-fallback-notice \
     os/usr/libexec/tilo-esp-mount \
     os/usr/libexec/tilo-repair \
     os/usr/libexec/tilo-recovery \

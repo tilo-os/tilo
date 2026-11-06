@@ -307,7 +307,7 @@ impl crate::Session {
     pub(crate) fn lock_status(&self) -> tilo_sheets::lock::Status {
         let readings = self.shared.readings.borrow();
         tilo_sheets::lock::Status {
-            network: readings.network_name(),
+            link: readings.link(),
             battery: readings
                 .charge()
                 .map(|(percent, charging)| tilo_sheets::lock::Battery {

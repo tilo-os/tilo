@@ -8,7 +8,9 @@
 //! the task's program connection, and this door does it as the task, with the gate, attribution
 //! and grants of every other call:
 //!
-//! - a read is the app's `read-values`, a read of the resource as the task;
+//! - a read is the app's own `read`, as the task, in the app; a resource that does not read
+//!   itself is read by the resource the app's directory lists it under, which takes it as its
+//!   `item` — the read a window and `tilo_read` take too;
 //! - a change is an invocation of the action's own app: a method its type's declared action, an
 //!   assignment the resource's field edit. Each is decided at that action's node, asked about or
 //!   refused as the workspace's policy says, never done silently. A program never writes a record.
@@ -34,6 +36,11 @@ use tilo_actions::ActionDescriptor;
 use tilo_lock::MutexRecover as _;
 
 use super::{ActionHost, Addressed, McpServer, OneCall, Reply, app_names};
+
+/// How long a program waits for an action it invoked to settle before it gives up on the
+/// action's outcome: as long as any caller of an invoke may ask. A program cannot poll and a trap
+/// loses the step it was taking, so it holds on to the action's own answer instead.
+const PROGRAM_WAIT_MS: u64 = super::super::MAX_WAIT_MS;
 
 /// Where a door starts the tilolang host of a task: the session, which launches it as every
 /// tilolang host is launched, its author the task.
@@ -988,10 +995,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
             let reply = if let Some(record) = message.get("record") {
                 self.task_record(record).await
+            } else if let Some(listing) = message.get("children") {
+                Box::pin(self.task_children(listing, &mut providers)).await
+            } else if let Some(reads) = message.get("reads") {
+                Box::pin(self.task_reads(reads, &mut providers)).await
             } else if let Some(call) = message.get("invoke") {
                 Box::pin(self.task_invoke(call, &mut providers)).await
             } else {
-                json!({"err": "the door answers record reads and invocations"})
+                json!({"err": "the door answers record reads, listings, reads and invocations"})
             };
             task.send(&reply).await?;
         }
@@ -1039,24 +1050,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         TaskLink::new(fd).map_err(|error| error.to_string())
     }
 
-    /// The running instance of the app `app` (an id), to ask.
+    /// The provider of the app `app` (an id) a task's invocation goes to, starting the app in
+    /// the workspace when none of it runs yet: the task invokes the app's own door, and the
+    /// workspace opens it.
     async fn provider_of(&self, app: &str, known: &mut Providers) -> Result<Addressed, String> {
         if let Some(found) = known.get(app) {
             return Ok(found.clone());
         }
-        let (_, running) = self.providers().await?;
-        let found = running
-            .iter()
-            .rev()
-            .find(|(_, instance)| instance["app_id"].as_str() == Some(app))
-            .map(|(peer, _)| Addressed {
-                provider: peer.clone(),
-                app_id: Some(app.to_owned()),
-            })
-            .ok_or_else(|| {
-                let name = app_names(&[app.to_owned()]).join("");
-                format!("{name} is not open; open it with tilo_do {{path: \"{name}#open\"}}")
-            })?;
+        let found = Addressed {
+            provider: self.opened_provider(app, Some(PROGRAM_WAIT_MS)).await?,
+            app_id: Some(app.to_owned()),
+        };
         known.insert(app.to_owned(), found.clone());
         Ok(found)
     }
@@ -1090,6 +1094,44 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 json!({"err": format!("{name}: {error}")})
             }
             Err(error) => json!({"err": format!("the record read ended: {error}")}),
+        }
+    }
+
+    /// What the app `app` lists under `resource` (`{app, resource}`): its directory there, as
+    /// an agent reads it, `{"ok": {"rows": [{id, kind, key, name}]}}` or `{"err": why}`. A
+    /// program enumerates a native app's resources through this, and reads each by the `key` its
+    /// own listing gave ([`tilolang_tilo::native`]).
+    async fn task_children(&self, listing: &Value, providers: &mut Providers) -> Value {
+        let (Some(app), Some(resource)) = (listing["app"].as_str(), listing["resource"].as_str())
+        else {
+            return json!({"err": "a listing names its app and the resource it lists"});
+        };
+        let provider = match self.provider_of(app, providers).await {
+            Ok(provider) => provider,
+            Err(why) => return json!({"err": why}),
+        };
+        match self.children_rows(&provider, resource).await {
+            Ok(rows) => json!({"ok": {"rows": rows}}),
+            Err(why) => json!({"err": why}),
+        }
+    }
+
+    /// Whether the resource `resource` a provider publishes (`{app, resource}`) answers a read of
+    /// itself: `{"ok": {"reads": bool}}` or `{"err": why}`. A resource that does not is read by
+    /// the resource the app's directory lists it under, which takes it as its `item`
+    /// ([`tilolang_tilo::native`]).
+    async fn task_reads(&self, reads: &Value, providers: &mut Providers) -> Value {
+        let (Some(app), Some(resource)) = (reads["app"].as_str(), reads["resource"].as_str())
+        else {
+            return json!({"err": "a read question names its app and resource"});
+        };
+        let provider = match self.provider_of(app, providers).await {
+            Ok(provider) => provider,
+            Err(why) => return json!({"err": why}),
+        };
+        match self.level_reads(&provider, resource).await {
+            Ok(reads) => json!({"ok": {"reads": reads}}),
+            Err(why) => json!({"err": why}),
         }
     }
 
@@ -1145,7 +1187,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             action: action.to_owned(),
             arguments,
             invocation_id: None,
-            wait_ms: None,
+            wait_ms: Some(PROGRAM_WAIT_MS),
         }))
         .await;
         match value {
@@ -1403,7 +1445,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 action: "undo".to_owned(),
                 arguments,
                 invocation_id: None,
-                wait_ms: None,
+                wait_ms: Some(PROGRAM_WAIT_MS),
             }))
             .await
             .map_err(|why| format!("in {name}: {why}"))?;
@@ -1483,6 +1525,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_actions::remote::{
+        ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+        CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest,
+        Pending,
+    };
+    use tilo_actions::{InvocationId, InvocationUpdate};
 
     #[test]
     fn references_name_what_answers_showed_and_nothing_else() {
@@ -1591,5 +1639,263 @@ mod tests {
         assert!(refusal("refused: asks the person first"));
         assert!(refusal("no such action is offered"));
         assert!(!refusal("the action failed: no such note"));
+    }
+
+    /// One invocation the workspace was sent: the provider it went to, and its resource, action
+    /// and arguments.
+    type Sent = (String, String, String, Value);
+
+    /// A workspace installing two native apps, which it starts on `open` and whose records it
+    /// takes a step back on. Every invocation it was sent is kept, in order.
+    #[derive(Clone)]
+    struct Native {
+        running: std::sync::Arc<std::sync::Mutex<Vec<(u64, String)>>>,
+        invoked: std::sync::Arc<std::sync::Mutex<Vec<Sent>>>,
+        /// Each app the workspace opened, in order.
+        opened: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        /// The instance each `open` started, by the invocation that started it.
+        started: std::sync::Arc<std::sync::Mutex<Vec<(InvocationId, u64)>>>,
+        peers: std::sync::Arc<std::sync::Mutex<u64>>,
+    }
+
+    impl Native {
+        fn new() -> Self {
+            Self {
+                running: std::sync::Arc::default(),
+                invoked: std::sync::Arc::default(),
+                opened: std::sync::Arc::default(),
+                started: std::sync::Arc::default(),
+                peers: std::sync::Arc::new(std::sync::Mutex::new(10)),
+            }
+        }
+
+        fn opened(&self) -> Vec<String> {
+            std::mem::take(&mut *self.opened.lock_recover())
+        }
+
+        fn invoked(&self) -> Vec<Sent> {
+            std::mem::take(&mut *self.invoked.lock_recover())
+        }
+    }
+
+    /// A row of a workspace's installable apps, offering to open it.
+    fn offers(app: &str) -> CatalogueRow {
+        let id = format!("{}{app}", tilo_actions::remote::APPLICATION_RESOURCE_PREFIX);
+        CatalogueRow {
+            provider: String::new(),
+            app_id: String::new(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: id.clone(),
+                kind: tilo_actions::remote::APPLICATION_RESOURCE_KIND.to_owned(),
+                label: app.to_owned(),
+                presentation: None,
+            },
+            action: Some(tilo_actions::ActionDescriptor {
+                state: tilo_actions::ActionState::default(),
+                semantic_identity: None,
+                address: tilo_actions::ActionAddress::new(
+                    &id,
+                    tilo_actions::remote::APPLICATION_OPEN_ACTION,
+                ),
+                resource_kind: tilo_actions::remote::APPLICATION_RESOURCE_KIND.to_owned(),
+                resource_label: app.to_owned(),
+                action_label: "open".to_owned(),
+                keywords: Vec::new(),
+                icon: None,
+                description: None,
+                locus: tilo_actions::ExecutionLocus::ClientLocal,
+                kind: tilo_actions::OperationKind::Document,
+                contract: tilo_actions::ActionContract::default(),
+                input: tilo_actions::InputSpec::None,
+                params: Vec::new(),
+                view: None,
+            }),
+            has_children: false,
+            visibility: None,
+        }
+    }
+
+    impl ActionHost for Native {
+        fn query(
+            &self,
+            _caller: &Caller,
+            query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionHostError>> {
+            let Some(provider) = query.provider else {
+                return Pending::ready(Ok(CataloguePage {
+                    revision: "v1".into(),
+                    providers: self
+                        .running
+                        .lock_recover()
+                        .iter()
+                        .map(|(peer, app)| CatalogueProvider {
+                            provider: peer.to_string(),
+                            app_id: app.clone(),
+                            workspace: "workspace".into(),
+                            record_id: String::new(),
+                            browsable: true,
+                        })
+                        .collect(),
+                    ..CataloguePage::default()
+                }));
+            };
+            let offering = provider == tilo_actions::remote::workspace_provider("workspace");
+            Pending::ready(Ok(CataloguePage {
+                revision: "v1".into(),
+                rows: if offering {
+                    vec![offers("so.tilo.tasks"), offers("so.tilo.chat")]
+                } else {
+                    Vec::new()
+                },
+                exhausted: true,
+                ..CataloguePage::default()
+            }))
+        }
+
+        fn invoke(
+            &self,
+            _caller: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+            let arguments = match &request.argument {
+                tilo_actions::remote::InvokeArgument::Json(arguments) => {
+                    Value::Object(arguments.clone())
+                }
+                _ => Value::Null,
+            };
+            if request.target.provider == tilo_actions::remote::workspace_provider("workspace") {
+                let app = request
+                    .target
+                    .address
+                    .resource
+                    .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
+                    .unwrap_or_default()
+                    .to_owned();
+                let peer = {
+                    let mut peers = self.peers.lock_recover();
+                    *peers = peers.saturating_add(1);
+                    *peers
+                };
+                self.opened.lock_recover().push(app.clone());
+                self.running.lock_recover().push((peer, app));
+                self.started.lock_recover().push((request.invocation, peer));
+            }
+            self.invoked.lock_recover().push((
+                request.target.provider.clone(),
+                request.target.address.resource.clone(),
+                request.target.address.action.clone(),
+                arguments,
+            ));
+            let invocation = request.invocation;
+            Pending::ready(Ok(InvocationState::new(
+                invocation,
+                InvocationUpdate::Accepted { invocation },
+            )
+            .receipt()))
+        }
+
+        fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+            let peer = self
+                .started
+                .lock_recover()
+                .iter()
+                .find(|(started, _)| started == id)
+                .map(|(_, peer)| *peer);
+            let value = peer.map(|peer| json!({"peer_id": peer}));
+            Some(InvocationState::new(
+                *id,
+                InvocationUpdate::Succeeded {
+                    invocation: *id,
+                    output: tilo_actions::ActionOutput {
+                        value,
+                        ..tilo_actions::ActionOutput::default()
+                    },
+                },
+            ))
+        }
+
+        fn cancel(
+            &self,
+            _caller: &Caller,
+            _id: &InvocationId,
+        ) -> Pending<Result<(), ActionHostError>> {
+            Pending::ready(Ok(()))
+        }
+    }
+
+    fn run<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime")
+            .block_on(future)
+    }
+
+    #[test]
+    fn undoing_a_task_step_starts_the_native_apps_and_takes_their_steps_back() {
+        let host = Native::new();
+        let server = McpServer::new(host.clone(), "workspace".to_owned(), "owner".to_owned());
+        server.programs.lock_recover().steps.push(Step {
+            number: 1,
+            apps: vec!["so.tilo.tasks".to_owned(), "so.tilo.chat".to_owned()],
+            history: vec![
+                History {
+                    app: "so.tilo.tasks".to_owned(),
+                    resource: "tasks.tracker".to_owned(),
+                    published: false,
+                },
+                History {
+                    app: "so.tilo.chat".to_owned(),
+                    resource: "chat.workspace".to_owned(),
+                    published: false,
+                },
+            ],
+            program: "tasks.create(tasks.tracker, \"Ship it\")".to_owned(),
+            changed: 2,
+            undone: false,
+            kept: false,
+        });
+        let reply = run(server.undo_steps(false)).expect("the step is taken back");
+        assert!(!reply.failed, "{}", reply.text);
+        // Neither app ran: the workspace started each, and its undo went to the instance it
+        // started, on the record the app keeps its steps in.
+        assert_eq!(host.opened(), ["so.tilo.chat", "so.tilo.tasks"]);
+        assert_eq!(
+            host.invoked(),
+            [
+                (
+                    tilo_actions::remote::workspace_provider("workspace"),
+                    format!(
+                        "{}so.tilo.chat",
+                        tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
+                    ),
+                    tilo_actions::remote::APPLICATION_OPEN_ACTION.to_owned(),
+                    json!({}),
+                ),
+                (
+                    "11".to_owned(),
+                    "chat.workspace".to_owned(),
+                    "undo".to_owned(),
+                    json!({"steps": 1}),
+                ),
+                (
+                    tilo_actions::remote::workspace_provider("workspace"),
+                    format!(
+                        "{}so.tilo.tasks",
+                        tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
+                    ),
+                    tilo_actions::remote::APPLICATION_OPEN_ACTION.to_owned(),
+                    json!({}),
+                ),
+                (
+                    "12".to_owned(),
+                    "tasks.tracker".to_owned(),
+                    "undo".to_owned(),
+                    json!({"steps": 1}),
+                ),
+            ]
+        );
+        assert!(server.programs.lock_recover().steps[0].undone);
     }
 }

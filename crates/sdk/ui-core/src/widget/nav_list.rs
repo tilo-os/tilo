@@ -6,8 +6,8 @@
 //! the list decides how they look. There is no colour, size, padding or
 //! radius to pass.
 //!
-//! The list is the [`TreeView`] engine in its navigation presentation: arrow
-//! keys move the selection, Left/Right collapse and expand, Enter activates,
+//! The list scrolls its rows on the [`VirtualList`] engine: arrow keys move
+//! the selection, Left/Right collapse and expand, Enter activates,
 //! F2 renames an editable label, Delete reports [`NavList::on_delete`], the
 //! Menu key, a right click and a long press ask for the row's menu
 //! ([`NavList::on_context_menu`]), rows publish their semantics, and
@@ -28,14 +28,17 @@ use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 
 use crate::LocalState;
-use crate::chrome::NavCount;
+use crate::chrome::{NavCount, nav_row_height};
 use crate::icons::Icon;
 use crate::local_state::LocalBinding;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
-use crate::widget::tree_view::{
-    NavItemSpec, NavPresentation, NavRowSpec, NavStatus, NodeId, TreeImpl, TreeModel,
+use crate::widget::{
+    AppModel, FilterCount, Filterable, ListModel, ModelPath, RowStatus, Theme, Tone, VirtualList,
 };
-use crate::widget::{AppModel, FilterCount, Filterable, ModelPath, RowStatus, Tone, TreeRowAction};
+use model::{NavModel, NavRowData, NavRowKind, NavState, NavStatus};
+use row::{NavPaint, NavRow};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 /// A group of destinations under a sentence-case title.
 #[derive(Clone, Debug, PartialEq)]
@@ -394,10 +397,11 @@ impl NavItem {
         self
     }
 
-    /// A quiet count (items in a folder).
+    /// A quiet count (items in a folder). Zero shows nothing: a count means
+    /// something wants attention, and nothing does.
     #[must_use]
     pub fn count(mut self, count: u32) -> Self {
-        self.count = Some(NavCount::Neutral(count));
+        self.count = (count > 0).then_some(NavCount::Neutral(count));
         self
     }
 
@@ -595,475 +599,11 @@ pub enum NavDrop {
     After(String),
 }
 
-#[derive(Clone, Debug, PartialEq)]
-enum NavNodeKind {
-    Root,
-    Section {
-        collapsible: bool,
-        action: Option<(Icon, String)>,
-        first: bool,
-        editable: bool,
-        menu: bool,
-    },
-    Item {
-        spec: Box<NavItemSpec>,
-        actions: bool,
-        drop_target: bool,
-        editable: bool,
-        semantic_key: Option<String>,
-    },
-    /// An empty section's caption.
-    Caption,
-    /// A row standing in for an item still being read.
-    Pending,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct NavNode {
-    key: String,
-    label: String,
-    kind: NavNodeKind,
-    parent: Option<NodeId>,
-    children: Vec<NodeId>,
-}
-
-/// The flattened sections and items a [`NavList`]'s tree reads. Node ids
-/// are allocated per key once and reused across rebuilds, so the tree keeps
-/// selection, expansion and focus when the app hands it new sections.
-#[derive(Clone, Debug, Default)]
-pub struct NavModel {
-    nodes: HashMap<NodeId, NavNode>,
-}
-
-/// Stable node ids per key, kept across rebuilds.
-#[derive(Debug, Default)]
-struct NavKeys {
-    by_key: HashMap<String, NodeId>,
-    next: NodeId,
-}
-
-impl NavKeys {
-    fn id(&mut self, key: &str) -> NodeId {
-        if let Some(id) = self.by_key.get(key) {
-            return *id;
-        }
-        self.next = self.next.saturating_add(1);
-        self.by_key.insert(key.to_owned(), self.next);
-        self.next
-    }
-
-    fn section(&self, id: &str) -> Option<NodeId> {
-        self.by_key.get(&format!("section:{id}")).copied()
-    }
-}
-
-const ROOT: NodeId = 0;
-
-/// What a build of the model asks the tree to open.
-#[derive(Default)]
-struct Openings {
-    /// Open as the app asked, unless the person folded it since.
-    expanded: Vec<NodeId>,
-    /// Open whatever the person did.
-    ensured: Vec<NodeId>,
-}
-
-/// Whether `label` matches a filter `query` the way search matches.
-fn matches_query(label: &str, query: &str) -> bool {
-    crate::search::normalize_search_text(label).contains(query)
-}
-
-/// `items` narrowed to what matches `query` (folded), keeping the parents
-/// of matching children, open. A row found only by one of its
-/// [`NavItem::search_terms`] shows that term under its label.
-fn narrow(items: &[NavItem], query: &str) -> Vec<NavItem> {
-    items
-        .iter()
-        .filter_map(|item| {
-            let children = narrow(&item.children, query);
-            let by_label = matches_query(&item.label, query);
-            let by_term = if by_label {
-                None
-            } else {
-                item.search_terms.iter().find(|term| term.matches(query))
-            };
-            if children.is_empty() && !by_label && by_term.is_none() {
-                return None;
-            }
-            let mut kept = item.clone();
-            if let Some(name) = by_term.and_then(|term| term.name.clone())
-                && kept.secondary.is_none()
-            {
-                kept.secondary = Some(name);
-            }
-            if !children.is_empty() {
-                kept.ensure_expanded = true;
-                kept.expanded = true;
-            }
-            kept.children = children;
-            Some(kept)
-        })
-        .collect()
-}
-
 fn count_items(items: &[NavItem]) -> usize {
     items
         .iter()
         .map(|item| 1usize.saturating_add(count_items(&item.children)))
         .sum()
-}
-
-/// `sections` as the filter `query` shows them: filterable sections
-/// narrowed, the others whole.
-fn filtered(sections: &[NavSection], query: &str) -> Vec<NavSection> {
-    let query = crate::search::normalize_search_text(query.trim());
-    if query.is_empty() {
-        return sections.to_vec();
-    }
-    sections
-        .iter()
-        .map(|section| {
-            if !section.filterable {
-                return section.clone();
-            }
-            let mut narrowed = section.clone();
-            narrowed.items = narrow(&section.items, &query);
-            narrowed.collapsed = false;
-            narrowed
-        })
-        .collect()
-}
-
-impl NavModel {
-    fn build(sections: &[NavSection], keys: &mut NavKeys) -> (Self, Openings) {
-        let mut model = Self::default();
-        let mut openings = Openings::default();
-        model.nodes.insert(
-            ROOT,
-            NavNode {
-                key: String::new(),
-                label: String::new(),
-                kind: NavNodeKind::Root,
-                parent: None,
-                children: Vec::new(),
-            },
-        );
-        let mut first_row = true;
-        for section in sections {
-            let parent = if section.title.trim().is_empty() {
-                ROOT
-            } else {
-                let id = keys.id(&format!("section:{}", section.id));
-                model.attach(
-                    ROOT,
-                    id,
-                    NavNode {
-                        key: section.id.clone(),
-                        label: section.title.clone(),
-                        kind: NavNodeKind::Section {
-                            collapsible: section.collapsible,
-                            action: section
-                                .trailing_action
-                                .as_ref()
-                                .map(|action| (action.icon, action.label.clone())),
-                            first: first_row,
-                            editable: section.editable_title,
-                            menu: section.menu,
-                        },
-                        parent: Some(ROOT),
-                        children: Vec::new(),
-                    },
-                );
-                if !section.collapsed {
-                    openings.expanded.push(id);
-                }
-                id
-            };
-            first_row = false;
-            if section.items.is_empty() {
-                for row in 0..section.pending {
-                    let key = format!("pending:{}:{row}", section.id);
-                    let id = keys.id(&key);
-                    model.attach(
-                        parent,
-                        id,
-                        NavNode {
-                            key,
-                            label: "Loading".to_owned(),
-                            kind: NavNodeKind::Pending,
-                            parent: Some(parent),
-                            children: Vec::new(),
-                        },
-                    );
-                }
-            }
-            if section.items.is_empty()
-                && section.pending == 0
-                && let Some(caption) = &section.empty_caption
-            {
-                let id = keys.id(&format!("caption:{}", section.id));
-                model.attach(
-                    parent,
-                    id,
-                    NavNode {
-                        key: format!("caption:{}", section.id),
-                        label: caption.clone(),
-                        kind: NavNodeKind::Caption,
-                        parent: Some(parent),
-                        children: Vec::new(),
-                    },
-                );
-            }
-            let badges: Rc<Vec<String>> = Rc::new(
-                section
-                    .items
-                    .iter()
-                    .filter_map(|item| item.badge.clone())
-                    .collect(),
-            );
-            for item in &section.items {
-                model.add_item(parent, item, 0, &badges, keys, &mut openings);
-            }
-        }
-        (model, openings)
-    }
-
-    fn add_item(
-        &mut self,
-        parent: NodeId,
-        item: &NavItem,
-        depth: usize,
-        badges: &Rc<Vec<String>>,
-        keys: &mut NavKeys,
-        openings: &mut Openings,
-    ) {
-        let id = keys.id(&format!("item:{}", item.id));
-        let under_section = self
-            .nodes
-            .get(&parent)
-            .is_some_and(|node| match &node.kind {
-                NavNodeKind::Section { .. } => true,
-                NavNodeKind::Item { spec, .. } => spec.under_section,
-                _ => false,
-            });
-        let spec = NavItemSpec {
-            under_section,
-            icon: item.icon,
-            count: item.count,
-            depth,
-            secondary: item.secondary.clone(),
-            meta: item.meta.clone(),
-            status: item.status.as_ref().map(|status| status.0.clone()),
-            status_label: item.status_label.clone(),
-            badge: item.badge.clone(),
-            section_badges: Rc::clone(badges),
-            swatch: item.swatch,
-            art: item.art.clone(),
-            checked: item.checked,
-            level: item.level,
-            presence: item.presence.clone(),
-            person: item.person.clone(),
-            unread: item.unread,
-        };
-        self.attach(
-            parent,
-            id,
-            NavNode {
-                key: item.id.clone(),
-                label: item.label.clone(),
-                kind: NavNodeKind::Item {
-                    spec: Box::new(spec),
-                    actions: item.actions,
-                    drop_target: item.drop_target,
-                    editable: item.editable_label,
-                    semantic_key: item.semantic_key.clone(),
-                },
-                parent: Some(parent),
-                children: Vec::new(),
-            },
-        );
-        if item.expanded {
-            openings.expanded.push(id);
-        }
-        if item.ensure_expanded {
-            openings.ensured.push(id);
-        }
-        // Nested codes line up among their siblings.
-        let child_badges: Rc<Vec<String>> = Rc::new(
-            item.children
-                .iter()
-                .filter_map(|child| child.badge.clone())
-                .collect(),
-        );
-        for child in &item.children {
-            self.add_item(
-                id,
-                child,
-                depth.saturating_add(1),
-                &child_badges,
-                keys,
-                openings,
-            );
-        }
-    }
-
-    fn attach(&mut self, parent: NodeId, id: NodeId, node: NavNode) {
-        self.nodes.insert(id, node);
-        if let Some(parent) = self.nodes.get_mut(&parent) {
-            parent.children.push(id);
-        }
-    }
-
-    fn key(&self, id: NodeId) -> Option<&str> {
-        self.nodes.get(&id).map(|node| node.key.as_str())
-    }
-
-    fn item_id(&self, key: &str) -> Option<NodeId> {
-        self.nodes.iter().find_map(|(id, node)| {
-            (node.key == key && matches!(node.kind, NavNodeKind::Item { .. })).then_some(*id)
-        })
-    }
-
-    fn section_id(&self, key: &str) -> Option<NodeId> {
-        self.nodes.iter().find_map(|(id, node)| {
-            (node.key == key && matches!(node.kind, NavNodeKind::Section { .. })).then_some(*id)
-        })
-    }
-
-    fn is_item(&self, id: NodeId) -> bool {
-        self.nodes
-            .get(&id)
-            .is_some_and(|node| matches!(node.kind, NavNodeKind::Item { .. }))
-    }
-
-    fn is_checkable(&self, id: NodeId) -> bool {
-        self.nodes.get(&id).is_some_and(
-            |node| matches!(&node.kind, NavNodeKind::Item { spec, .. } if spec.checked.is_some()),
-        )
-    }
-
-    fn spec(&self, id: NodeId) -> Option<NavRowSpec> {
-        let node = self.nodes.get(&id)?;
-        match &node.kind {
-            NavNodeKind::Root => None,
-            NavNodeKind::Section {
-                collapsible,
-                action,
-                first,
-                menu,
-                ..
-            } => Some(NavRowSpec::Section {
-                title: node.label.clone(),
-                collapsible: *collapsible,
-                action: action.as_ref().map(|(icon, _)| *icon),
-                action_label: action.as_ref().map(|(_, label)| label.clone()),
-                first: *first,
-                menu: *menu,
-            }),
-            NavNodeKind::Item { spec, .. } => Some(NavRowSpec::Item(spec.clone())),
-            NavNodeKind::Caption => Some(NavRowSpec::Caption),
-            NavNodeKind::Pending => Some(NavRowSpec::Pending),
-        }
-    }
-}
-
-impl TreeModel for NavModel {
-    fn root_id(&self) -> NodeId {
-        ROOT
-    }
-
-    fn contains(&self, id: NodeId) -> bool {
-        self.nodes.contains_key(&id)
-    }
-
-    fn label(&self, id: NodeId) -> Option<&str> {
-        self.nodes.get(&id).map(|node| node.label.as_str())
-    }
-
-    fn is_branch(&self, id: NodeId) -> bool {
-        self.nodes.get(&id).is_some_and(|node| match node.kind {
-            NavNodeKind::Root | NavNodeKind::Section { .. } => true,
-            NavNodeKind::Item { .. } => !node.children.is_empty(),
-            NavNodeKind::Caption | NavNodeKind::Pending => false,
-        })
-    }
-
-    fn accepts_children(&self, id: NodeId) -> bool {
-        self.nodes.get(&id).is_some_and(|node| {
-            matches!(
-                node.kind,
-                NavNodeKind::Item {
-                    drop_target: true,
-                    ..
-                }
-            )
-        })
-    }
-
-    fn semantic_key(&self, id: NodeId) -> Option<String> {
-        let node = self.nodes.get(&id)?;
-        match &node.kind {
-            NavNodeKind::Root | NavNodeKind::Caption | NavNodeKind::Pending => None,
-            NavNodeKind::Section { .. } => Some(format!("nav:section:{}", node.key)),
-            NavNodeKind::Item { semantic_key, .. } => Some(
-                semantic_key
-                    .clone()
-                    .unwrap_or_else(|| format!("nav:item:{}", node.key)),
-            ),
-        }
-    }
-
-    fn parent_id(&self, id: NodeId) -> Option<NodeId> {
-        self.nodes.get(&id).and_then(|node| node.parent)
-    }
-
-    fn child_index(&self, parent: NodeId, child: NodeId) -> Option<usize> {
-        self.nodes
-            .get(&parent)?
-            .children
-            .iter()
-            .position(|id| *id == child)
-    }
-
-    fn child_count(&self, parent: NodeId) -> usize {
-        self.nodes
-            .get(&parent)
-            .map_or(0, |node| node.children.len())
-    }
-
-    fn can_collapse(&self, id: NodeId) -> bool {
-        // A section folds only when it says it does.
-        self.nodes.get(&id).is_some_and(|node| match node.kind {
-            NavNodeKind::Root | NavNodeKind::Caption | NavNodeKind::Pending => false,
-            NavNodeKind::Section { collapsible, .. } => collapsible,
-            NavNodeKind::Item { .. } => true,
-        })
-    }
-
-    fn child_id(&self, parent: NodeId, index: usize) -> Option<NodeId> {
-        self.nodes.get(&parent)?.children.get(index).copied()
-    }
-
-    fn is_selectable(&self, id: NodeId) -> bool {
-        // A checkable row toggles; it is not a destination.
-        self.is_item(id) && !self.is_checkable(id)
-    }
-
-    fn is_renamable(&self, id: NodeId) -> bool {
-        self.nodes.get(&id).is_some_and(|node| {
-            matches!(
-                node.kind,
-                NavNodeKind::Item { editable: true, .. }
-                    | NavNodeKind::Section { editable: true, .. }
-            )
-        })
-    }
-
-    fn shows_row_actions(&self, id: NodeId) -> bool {
-        self.nodes
-            .get(&id)
-            .is_some_and(|node| matches!(node.kind, NavNodeKind::Item { actions: true, .. }))
-    }
 }
 
 type Callback<A> = Option<Box<dyn FnMut(A)>>;
@@ -1077,29 +617,43 @@ struct NavView {
 
 /// Every destination of `sections`, nested ones included: (id, label).
 fn destinations(sections: &[NavSection]) -> Vec<(String, String)> {
-    fn walk(items: &[NavItem], out: &mut Vec<(String, String)>) {
-        for item in items {
-            out.push((item.id.clone(), item.label.clone()));
-            walk(&item.children, out);
-        }
-    }
-    let mut out = Vec::new();
-    for section in sections {
-        walk(&section.items, &mut out);
-    }
-    out
+    all_items(sections)
+        .into_iter()
+        .map(|item| (item.id.clone(), item.label.clone()))
+        .collect()
 }
 
-/// What the tree's callbacks report into, shared with the closures the
-/// tree holds.
+/// The id the app gave the item or section a row key names
+/// (`item:{id}` → `id`).
+fn app_id(key: &str) -> &str {
+    key.strip_prefix("item:")
+        .or_else(|| key.strip_prefix("section:"))
+        .unwrap_or(key)
+}
+
+/// The row key a row control's semantic target names: `section-action:{key}`,
+/// `row-action:{index}:{key}`, `check:{key}`.
+fn control_row(target: &str) -> Option<&str> {
+    target
+        .strip_prefix("section-action:")
+        .or_else(|| target.strip_prefix("check:"))
+        .or_else(|| {
+            target
+                .strip_prefix("row-action:")
+                .and_then(|rest| rest.split_once(':'))
+                .map(|(_, key)| key)
+        })
+}
+
+/// What the list's callbacks report into, shared with the closures the
+/// list engine holds.
 #[derive(Default)]
 struct NavShared {
-    /// Node id → item or section id, refreshed on every rebuild.
-    keys: HashMap<NodeId, String>,
-    /// Item ids whose rows are checkable, with their state.
-    checks: HashMap<NodeId, bool>,
+    /// Row keys of the checkable rows.
+    checkable: HashSet<String>,
     item_actions: Vec<String>,
-    section_actions: HashMap<NodeId, String>,
+    /// Section row key → the id its trailing action runs.
+    section_actions: HashMap<String, String>,
     view: Option<NavView>,
     selection_actions: HashMap<String, crate::widget::ActionEmitter<()>>,
     selection_emitted: bool,
@@ -1115,27 +669,125 @@ struct NavShared {
     on_expand: Option<Box<dyn FnMut(&str, bool)>>,
     on_delete: Callback<String>,
     on_menu: Option<Box<dyn FnMut(&str, Rect, Point)>>,
+    /// A row's menu the list engine was asked for: the row's key, its box
+    /// and where the menu opens. The list answers it with the row's lift.
+    asked_menu: Option<(String, Rect, Point)>,
     binding: Option<LocalBinding<Option<String>>>,
-    /// The chosen key, including quiet app-driven reconciliation.
+    /// The chosen destination, including quiet app-driven reconciliation.
     selected: Option<String>,
     /// The person chose a destination since the shell last asked.
     navigated: bool,
 }
 
+impl NavShared {
+    /// Whether choosing destination `id` runs an action that is unavailable now.
+    fn blocked(&self, id: &str) -> bool {
+        self.selection_actions
+            .get(id)
+            .is_some_and(|action| !action.is_available())
+    }
+
+    /// The person chose the row of `key`: a click, or the keyboard moving
+    /// the selection.
+    fn choose(&mut self, key: &str) {
+        let Some(id) = key.strip_prefix("item:").map(str::to_owned) else {
+            return;
+        };
+        if self.blocked(&id) {
+            return;
+        }
+        self.navigated = true;
+        if self.selected.as_deref() == Some(id.as_str()) {
+            // Choosing the chosen destination again still navigates to it.
+            if let Some(action) = self.selection_actions.get_mut(&id) {
+                let _ = action.emit(());
+            }
+            self.selection_emitted = false;
+            return;
+        }
+        self.selection_emitted = false;
+        self.selected = Some(id.clone());
+        if let Some(binding) = self.binding.as_mut() {
+            binding.publish(&Some(id.clone()));
+        }
+        if let Some(action) = self.selection_actions.get_mut(&id) {
+            let _ = action.emit(());
+            self.selection_emitted = true;
+        } else if let Some(view) = self.view.as_mut() {
+            // The person's choice is the published view action's own run:
+            // no host decides a view or records it, and the list may be off
+            // screen once it is made.
+            (view.handler)(id);
+        }
+    }
+
+    /// The person activated the row of `key` (Enter): the chosen
+    /// destination's screen opens again.
+    fn activate(&mut self, key: &str) {
+        let Some(id) = key.strip_prefix("item:") else {
+            return;
+        };
+        if self.blocked(id) {
+            return;
+        }
+        self.navigated = true;
+        if !std::mem::take(&mut self.selection_emitted)
+            && let Some(action) = self.selection_actions.get_mut(id)
+        {
+            let _ = action.emit(());
+        }
+    }
+
+    /// Run item action `index` on the row of `key`.
+    fn run_item_action(&mut self, key: &str, index: usize) {
+        let Some(action) = self.item_actions.get(index).cloned() else {
+            return;
+        };
+        let id = app_id(key).to_owned();
+        if let Some(emitter) = self.bound.items.get_mut(&action) {
+            bound::emit(emitter, id);
+        } else if let Some(callback) = self.on_action.as_mut() {
+            callback(&id, &action);
+        }
+    }
+
+    /// Run the trailing action of the section header `key`.
+    fn run_section_action(&mut self, key: &str) -> bool {
+        let Some(action) = self.section_actions.get(key).cloned() else {
+            return false;
+        };
+        let section = app_id(key).to_owned();
+        if let Some(emitter) = self.bound.sections.get_mut(&action) {
+            bound::emit(emitter, section);
+        } else if let Some(callback) = self.on_section_action.as_mut() {
+            callback(&section, &action);
+        }
+        true
+    }
+
+    /// Ask the host for the menu of the row of `key`, the row marked by
+    /// `lift`, at `at`.
+    fn report_menu(&mut self, key: &str, lift: Rect, at: Point) {
+        if let Some(callback) = self.on_menu.as_mut() {
+            callback(app_id(key), lift, at);
+        }
+    }
+}
+
 /// The navigation list. See the module docs.
 pub struct NavList {
-    tree: Box<TreeImpl<(), NavModel>>,
+    list: Box<VirtualList<NavModel>>,
     shared: Rc<RefCell<NavShared>>,
-    keys: NavKeys,
+    /// What every row paints from beyond its own data.
+    paint: Rc<RefCell<NavPaint>>,
+    /// The folds and checks the person made.
+    state: NavState,
     /// The sections as the app handed them, before any filter.
     sections: Vec<NavSection>,
     /// The filter the window's field applies to filterable sections.
     filter: String,
     /// The state the filter is kept in ([`Self::bind_filter`]).
     filter_binding: Option<LocalBinding<String>>,
-    /// What was open before a filter opened every match, restored when the
-    /// filter clears.
-    unfiltered_open: Option<Vec<NodeId>>,
     /// The app state the list follows, read at every sync and update.
     source: Option<NavSource>,
     /// The app declared its places come under headings, even while none
@@ -1146,6 +798,9 @@ pub struct NavList {
     feed: Option<NavFeed>,
     /// The actions at the trailing edge of every item that offers them.
     row_actions: Vec<NavAction>,
+    /// A drag staged for a capture, shown once the rows stand placed
+    /// ([`Self::stage_drag`]).
+    staged_drag: Option<(String, String)>,
 }
 
 /// What a followed list reads: the sections and the chosen destination, or
@@ -1153,7 +808,7 @@ pub struct NavList {
 type NavSource = Box<dyn FnMut() -> Option<(Vec<NavSection>, Option<String>)>>;
 
 impl NavList {
-    /// Erase the widget type in the SDK, keeping the navigation tree's widget
+    /// Erase the widget type in the SDK, keeping the navigation list's widget
     /// implementation in the shared runtime rather than in each thin app.
     /// The boxed widget still downcasts to `NavList`.
     #[must_use]
@@ -1163,225 +818,90 @@ impl NavList {
 
     #[must_use]
     pub fn new(sections: Vec<NavSection>) -> Self {
-        let mut keys = NavKeys::default();
-        let (model, openings) = NavModel::build(&sections, &mut keys);
+        let state = NavState::default();
+        let model = model::build(&sections, "", &state);
         let shared = Rc::new(RefCell::new(NavShared::default()));
-        let select_shared = Rc::clone(&shared);
-        let activate_shared = Rc::clone(&shared);
-        let action_shared = Rc::clone(&shared);
-        let rename_shared = Rc::clone(&shared);
-        let expand_shared = Rc::clone(&shared);
-        let tree = TreeImpl::from_model(model)
-            .hide_root()
-            .fill()
-            .with_expanded(openings.expanded)
-            .selection_follows_focus(true)
-            .click_activation(crate::widget::TreeClickActivation::SingleClick)
-            .on_select(move |id| {
-                let mut shared = select_shared.borrow_mut();
-                let Some(key) = shared.keys.get(&id).cloned() else {
-                    return;
-                };
-                if shared
-                    .selection_actions
-                    .get(&key)
-                    .is_some_and(|action| !action.is_available())
-                {
-                    return;
-                }
-                shared.navigated = true;
-                shared.selection_emitted = false;
-                if shared.selected.as_deref() == Some(key.as_str()) {
-                    return;
-                }
-                shared.selected = Some(key.clone());
-                if let Some(binding) = shared.binding.as_mut() {
-                    binding.publish(&Some(key.clone()));
-                }
-                if let Some(action) = shared.selection_actions.get_mut(&key) {
-                    let _ = action.emit(());
-                    shared.selection_emitted = true;
-                } else if let Some(view) = shared.view.as_mut() {
-                    // The person's choice is the published view action's
-                    // own run: no host decides a view or records it, and the
-                    // list may be off screen once it is made.
-                    (view.handler)(key);
-                }
-            })
-            .on_activate_view("nav-list-activate", move |id| {
-                // Activating the selected destination still navigates to its
-                // screen; selection callbacks remain change-only.
-                let mut shared = activate_shared.borrow_mut();
-                let Some(key) = shared.keys.get(&id).cloned() else {
-                    return;
-                };
-                if shared
-                    .selection_actions
-                    .get(&key)
-                    .is_some_and(|action| !action.is_available())
-                {
-                    return;
-                }
-                shared.navigated = true;
-                if !std::mem::take(&mut shared.selection_emitted)
-                    && let Some(action) = shared.selection_actions.get_mut(&key)
-                {
-                    let _ = action.emit(());
-                }
-            })
-            .on_row_action(move |id, index| {
-                let mut shared = action_shared.borrow_mut();
-                let (Some(key), Some(action)) = (
-                    shared.keys.get(&id).cloned(),
-                    shared.item_actions.get(index).cloned(),
-                ) else {
-                    return;
-                };
-                if let Some(emitter) = shared.bound.items.get_mut(&action) {
-                    bound::emit(emitter, key);
-                } else if let Some(callback) = shared.on_action.as_mut() {
-                    callback(&key, &action);
-                }
-            })
-            .on_rename(move |id, title| {
-                let mut shared = rename_shared.borrow_mut();
-                let Some(key) = shared.keys.get(&id).cloned() else {
-                    return;
-                };
-                if let Some(emitter) = shared.bound.rename.as_mut() {
-                    bound::emit(emitter, (key, title));
-                } else if let Some(callback) = shared.on_rename.as_mut() {
-                    callback(&key, title);
-                }
-            })
-            .on_expand(move |id, open| {
-                let mut shared = expand_shared.borrow_mut();
-                let Some(key) = shared.keys.get(&id).cloned() else {
-                    return;
-                };
-                if let Some(callback) = shared.on_expand.as_mut() {
-                    callback(&key, open);
-                }
-            });
-        let mut list = Self {
-            tree: Box::new(tree),
+        let paint = Rc::new(RefCell::new(NavPaint::default()));
+        let row_paint = Rc::clone(&paint);
+        let (select_shared, activate_shared, rename_shared, delete_shared) = (
+            Rc::clone(&shared),
+            Rc::clone(&shared),
+            Rc::clone(&shared),
+            Rc::clone(&shared),
+        );
+        let list = VirtualList::with_selection_delegate(
+            model,
+            crate::num::f32_of_f64(nav_row_height(&Theme::dark())),
+            move |model: &NavModel, index, _key, selection| {
+                let row = model.row(index).cloned().unwrap_or(NavRowData {
+                    key: String::new(),
+                    kind: NavRowKind::Pending { id: String::new() },
+                });
+                Box::new(NavRow::new(row, Rc::clone(&row_paint), selection))
+            },
+        )
+        .filling()
+        // A navigation row lays out its own insets and paints its own lift.
+        .flush()
+        .overlay_scrollbar()
+        .selection_follows_focus()
+        .with_semantic_key(Clone::clone)
+        .on_select(move |key, _| select_shared.borrow_mut().choose(&key))
+        .on_activate(move |key| activate_shared.borrow_mut().activate(&key))
+        .on_rename(move |key, title| {
+            let mut shared = rename_shared.borrow_mut();
+            let id = app_id(&key).to_owned();
+            if let Some(emitter) = shared.bound.rename.as_mut() {
+                bound::emit(emitter, (id, title));
+            } else if let Some(callback) = shared.on_rename.as_mut() {
+                callback(&id, title);
+            }
+        })
+        .on_delete(move |key| {
+            let mut shared = delete_shared.borrow_mut();
+            let Some(id) = key.strip_prefix("item:").map(str::to_owned) else {
+                return;
+            };
+            if let Some(emitter) = shared.bound.delete.as_mut() {
+                bound::emit(emitter, id);
+            } else if let Some(callback) = shared.on_delete.as_mut() {
+                callback(id);
+            }
+        });
+        let list = Self {
+            list: Box::new(list),
             shared,
-            keys,
+            paint,
+            state,
             sections,
             filter: String::new(),
             filter_binding: None,
-            unfiltered_open: None,
             source: None,
             headings: false,
             feed: None,
             row_actions: Vec::new(),
+            staged_drag: None,
         };
-        list.install_presentation(false);
-        list.refresh_keys();
+        list.refresh_shared();
         list
     }
 
-    /// Paint the tree as this list's rows (a rail's tiles when `rail`),
-    /// reporting header actions, checks and menus into the list.
-    fn install_presentation(&mut self, rail: bool) {
-        // A toggled check shows at once, before the app's next sections
-        // confirm it.
-        let spec_shared = Rc::clone(&self.shared);
-        let spec = move |model: &NavModel, id: NodeId| {
-            let mut spec = model.spec(id)?;
-            if let NavRowSpec::Item(item) = &mut spec
-                && item.checked.is_some()
-                && let Ok(shared) = spec_shared.try_borrow()
-                && let Some(checked) = shared.checks.get(&id)
-            {
-                item.checked = Some(*checked);
-            }
-            Some(spec)
-        };
-        let mut nav = NavPresentation::new(rail, Box::new(spec));
-        let section_shared = Rc::clone(&self.shared);
-        nav.on_section_action = Some(Box::new(move |id| {
-            let mut shared = section_shared.borrow_mut();
-            let (Some(section), Some(action)) = (
-                shared.keys.get(&id).cloned(),
-                shared.section_actions.get(&id).cloned(),
-            ) else {
-                return;
-            };
-            if let Some(emitter) = shared.bound.sections.get_mut(&action) {
-                bound::emit(emitter, section);
-            } else if let Some(callback) = shared.on_section_action.as_mut() {
-                callback(&section, &action);
-            }
-        }));
-        let check_shared = Rc::clone(&self.shared);
-        nav.on_check = Some(Box::new(move |id| {
-            let mut shared = check_shared.borrow_mut();
-            let (Some(key), Some(checked)) = (
-                shared.keys.get(&id).cloned(),
-                shared.checks.get(&id).copied(),
-            ) else {
-                return;
-            };
-            // The row shows the new state at once; the app's next sections
-            // confirm it.
-            if shared
-                .bound
-                .check
-                .as_ref()
-                .is_some_and(|emitter| !emitter.is_available())
-            {
-                return;
-            }
-            shared.checks.insert(id, !checked);
-            if let Some(emitter) = shared.bound.check.as_mut() {
-                bound::emit(emitter, (key, !checked));
-            } else if let Some(callback) = shared.on_check.as_mut() {
-                callback(&key, !checked);
-            }
-        }));
-        if self.shared.borrow().on_menu.is_some() {
-            nav.on_menu = Some(self.menu_reporter());
-        }
-        self.tree.set_nav_presentation(nav);
-    }
-
-    fn menu_reporter(&self) -> Box<dyn FnMut(NodeId, Rect, Point)> {
-        let shared = Rc::clone(&self.shared);
-        Box::new(move |id, lift, at| {
-            let mut shared = shared.borrow_mut();
-            let Some(key) = shared.keys.get(&id).cloned() else {
-                return;
-            };
-            if let Some(callback) = shared.on_menu.as_mut() {
-                callback(&key, lift, at);
-            }
-        })
-    }
-
-    fn refresh_keys(&self) {
+    /// Refresh what the callbacks read of the rows: which check, which
+    /// header runs which action.
+    fn refresh_shared(&self) {
+        let model = self.list.model();
         let mut shared = self.shared.borrow_mut();
-        let model = self.tree.model();
-        shared.keys = model
-            .nodes
-            .iter()
-            .map(|(id, node)| (*id, node.key.clone()))
-            .collect();
-        shared.checks = model
-            .nodes
-            .iter()
-            .filter_map(|(id, node)| match &node.kind {
-                NavNodeKind::Item { spec, .. } => spec.checked.map(|checked| (*id, checked)),
-                _ => None,
-            })
+        shared.checkable = (0..model.len())
+            .filter_map(|index| model.row(index))
+            .filter(|row| model.is_checkable(&row.key))
+            .map(|row| row.key.clone())
             .collect();
         shared.section_actions = self
             .sections
             .iter()
             .filter_map(|section| {
-                let action = section.trailing_action.as_ref()?;
-                let id = self.keys.section(&section.id)?;
-                Some((id, action.id.clone()))
+                let action = section.action_id()?;
+                Some((format!("section:{}", section.id), action.to_owned()))
             })
             .collect();
     }
@@ -1389,23 +909,21 @@ impl NavList {
     /// Give the list a stable id for tests and inspection.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        self.tree = Box::new(self.tree.with_id(id));
+        self.list = Box::new(self.list.with_id(id));
         self
     }
 
     /// The name the list is announced by ("Mailboxes", "Settings").
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
-        self.tree = Box::new(self.tree.with_accessible_name(name));
+        self.list = Box::new(self.list.with_accessible_name(name));
         self
     }
 
-    /// The list's stable identity for assistive technology
-    /// (`TreeView::with_semantic_key`).
+    /// The list's stable identity for assistive technology.
     #[must_use]
-    pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
-        self.tree = Box::new(self.tree.with_semantic_key(key));
-        self
+    pub fn with_semantic_key(self, key: impl Into<String>) -> Self {
+        self.with_id(key)
     }
 
     /// Choose `id` and bring its row into view. Does not report through
@@ -1554,26 +1072,18 @@ impl NavList {
         self.with_installed_row_actions()
     }
 
-    /// Hand the tree the row actions as they stand.
-    fn with_installed_row_actions(mut self) -> Self {
-        let row_actions = self
+    /// Hand the rows the item actions as they stand.
+    fn with_installed_row_actions(self) -> Self {
+        self.paint.borrow_mut().actions = self
             .row_actions
             .iter()
-            .map(|action| {
-                let row = TreeRowAction::new(action.icon, action.label.clone());
-                if action.opens_menu {
-                    row.opens_context_menu()
-                } else {
-                    row
-                }
-            })
+            .map(|action| (action.icon, action.label.clone()))
             .collect();
         self.shared.borrow_mut().item_actions = self
             .row_actions
             .iter()
             .map(|action| action.id.clone())
             .collect();
-        self.tree = Box::new(self.tree.with_row_actions(row_actions));
         self
     }
 
@@ -1588,7 +1098,7 @@ impl NavList {
     /// Report renames to `f`: how a [`NavFeed`] hears of them.
     fn on_rename(mut self, f: impl FnMut(&str, String) + 'static) -> Self {
         self.shared.borrow_mut().on_rename = Some(Box::new(f));
-        self.tree = Box::new(self.tree.rename_on_double_click());
+        self.list = Box::new(self.list.rename_on_double_click());
         self
     }
 
@@ -1612,23 +1122,6 @@ impl NavList {
     #[must_use]
     pub fn on_delete(self, f: impl FnMut(String) + 'static) -> Self {
         self.shared.borrow_mut().on_delete = Some(Box::new(f));
-        self.with_delete_key()
-    }
-
-    /// Report Delete on a row to the bound action or the callback.
-    fn with_delete_key(mut self) -> Self {
-        let shared = Rc::clone(&self.shared);
-        self.tree = Box::new(self.tree.on_delete(move |id| {
-            let mut shared = shared.borrow_mut();
-            let Some(key) = shared.keys.get(&id).cloned() else {
-                return;
-            };
-            if let Some(emitter) = shared.bound.delete.as_mut() {
-                bound::emit(emitter, key);
-            } else if let Some(callback) = shared.on_delete.as_mut() {
-                callback(key);
-            }
-        }));
         self
     }
 
@@ -1642,10 +1135,10 @@ impl NavList {
     #[must_use]
     pub fn on_context_menu(mut self, f: impl FnMut(&str, Rect, Point) + 'static) -> Self {
         self.shared.borrow_mut().on_menu = Some(Box::new(f));
-        let reporter = self.menu_reporter();
-        if let Some(nav) = self.tree.nav_mut() {
-            nav.on_menu = Some(reporter);
-        }
+        let shared = Rc::clone(&self.shared);
+        self.list = Box::new(self.list.with_row_menu_reporter(move |key, row, at| {
+            shared.borrow_mut().asked_menu = Some((key, row, at));
+        }));
         self
     }
 
@@ -1663,23 +1156,19 @@ impl NavList {
     /// callback.
     fn with_reordering(mut self) -> Self {
         let shared = Rc::clone(&self.shared);
-        self.tree = Box::new(self.tree.with_reorder(
-            |model: &NavModel, source: NodeId, target: &DropTarget<NodeId>| {
-                if !model.is_item(source) || !model.is_item(target.key) {
+        self.list = Box::new(self.list.with_reorder(
+            |model: &NavModel, source: &String, target: &DropTarget<String>| {
+                if !model.is_item(source) || !model.is_item(&target.key) {
                     return false;
                 }
                 match target.placement {
-                    DropPlacement::Inside => model.accepts_children(target.key),
+                    DropPlacement::Inside => model.takes_children(&target.key),
                     DropPlacement::Before | DropPlacement::After => true,
                 }
             },
-            move |model: &mut NavModel, dropped: ReorderDrop<NodeId>| {
-                let (Some(source), Some(target)) = (
-                    model.key(dropped.source).map(str::to_owned),
-                    model.key(dropped.target.key).map(str::to_owned),
-                ) else {
-                    return false;
-                };
+            move |_model: &mut NavModel, dropped: ReorderDrop<String>| {
+                let source = app_id(&dropped.source).to_owned();
+                let target = app_id(&dropped.target.key).to_owned();
                 let drop = match dropped.target.placement {
                     DropPlacement::Inside => NavDrop::Into(target),
                     DropPlacement::Before => NavDrop::Before(target),
@@ -1714,8 +1203,20 @@ impl NavList {
     /// captions wrap to a second line before they elide.
     #[must_use]
     pub fn rail(mut self) -> Self {
-        self.install_presentation(true);
+        self.set_rail_rows(true);
         self
+    }
+
+    /// Paint the rows as a rail's tiles or as list rows; whether that
+    /// changed. The rows change shape in place, keeping the selection,
+    /// focus and scroll.
+    fn set_rail_rows(&mut self, rail: bool) -> bool {
+        if self.paint.borrow().rail == rail {
+            return false;
+        }
+        self.paint.borrow_mut().rail = rail;
+        self.list.update_model(|_| ());
+        true
     }
 
     /// Replace the destinations, keeping the selection, expansion and focus
@@ -1728,34 +1229,26 @@ impl NavList {
         self.rebuild();
     }
 
-    /// Build the tree's model from the sections as the filter shows them.
+    /// Build the rows from the sections as the filter and the person's
+    /// folds show them.
     fn rebuild(&mut self) {
         let selected = self.selected_id();
-        let shown = filtered(&self.sections, &self.filter);
-        let (model, openings) = NavModel::build(&shown, &mut self.keys);
-        let kept: Vec<NodeId> = self.tree.expanded_ids().collect();
-        let ensured: HashSet<NodeId> = openings.ensured.iter().copied().collect();
-        // What the person folded stays folded; what is new opens as the app
-        // asked (a row that could not fold before, as its first children
-        // arrive, too), a section that does not fold is always open, and
-        // what the app ensures opens whatever the person did.
-        let was_foldable = |id: NodeId| {
-            let before = self.tree.model();
-            self.keys_seen(id) && before.can_collapse(id) && before.child_count(id) > 0
+        let model = model::build(&self.sections, &self.filter, &self.state);
+        // Only the rows whose content changed are built anew; the rest keep
+        // their widgets, wherever they now stand.
+        let changed: Vec<String> = {
+            let current = self.list.model();
+            (0..model.len())
+                .filter_map(|index| model.row(index))
+                .filter(|row| current.row_of(&row.key) != Some(*row))
+                .map(|row| row.key.clone())
+                .collect()
         };
-        let open: Vec<NodeId> = openings
-            .expanded
-            .into_iter()
-            .filter(|id| !was_foldable(*id) || !model.can_collapse(*id) || ensured.contains(id))
-            .chain(kept)
-            .chain(openings.ensured)
-            .collect();
-        self.tree
-            .update_source(&[crate::widget::TreeModelChange::Reset], move |current| {
-                *current = model;
-            });
-        self.tree.restore_expanded(open);
-        self.refresh_keys();
+        self.list.update_model_changes(
+            &[crate::widget::virtual_list::ListModelChange::RowsChanged { keys: changed }],
+            move |current| *current = model,
+        );
+        self.refresh_shared();
         self.select_quietly(selected.as_deref());
     }
 
@@ -1773,106 +1266,165 @@ impl NavList {
                 changed = true;
             }
         }
-        let Some(key) = feed.take_rename_request() else {
+        let Some(id) = feed.take_rename_request() else {
             return changed;
         };
-        let model = self.tree.model();
-        let Some(node) = model.item_id(&key).or_else(|| model.section_id(&key)) else {
+        let Some(key) = self.row_key(&id) else {
             return changed;
         };
-        self.tree.reveal(node);
-        self.tree.begin_rename(node) || changed
+        self.list.reveal(&key);
+        self.list.begin_rename(&key) || changed
     }
 
-    fn keys_seen(&self, id: NodeId) -> bool {
-        self.shared.borrow().keys.contains_key(&id)
+    /// The key of the row showing item or section `id`, when it shows.
+    fn row_key(&self, id: &str) -> Option<String> {
+        let model = self.list.model();
+        model.row_id(id).and_then(|index| model.key_at(index))
     }
 
     /// Choose `id` (or nothing) without reporting it, and bring its row
     /// into view (once the list has a viewport, if it has none yet).
     pub fn set_selected(&mut self, id: Option<&str>) {
-        let node = self.select_quietly(id);
-        if let Some(node) = node {
-            self.tree.reveal(node);
+        if let Some(key) = self.select_quietly(id) {
+            self.list.reveal(&key);
         }
     }
 
-    fn select_quietly(&mut self, id: Option<&str>) -> Option<NodeId> {
-        let node = id.and_then(|key| self.tree.model().item_id(key));
-        match node {
-            Some(node) => self.tree.selection_mut().select_only(node),
-            None => self.tree.selection_mut().clear(),
+    /// Choose the place that names the resource `id`, without reporting it, when the list has
+    /// one: the place follows the content the window shows. Answers whether it chose one, and
+    /// leaves the selection as it was when no place names `id`.
+    pub fn select_naming(&mut self, id: &str) -> bool {
+        let Some(item) = self.list.model().item_naming(id).map(str::to_owned) else {
+            return false;
+        };
+        self.set_selected(Some(&item));
+        true
+    }
+
+    fn select_quietly(&mut self, id: Option<&str>) -> Option<String> {
+        let key = id
+            .map(|id| format!("item:{id}"))
+            .filter(|key| self.list.model().is_item(key));
+        match &key {
+            Some(key) => {
+                self.list.selection_mut().select_only(key.clone());
+                self.list.focus_row(key.clone());
+            }
+            None => self.list.selection_mut().clear(),
         }
-        if let Some(node) = node {
-            self.tree.set_focused(Some(node));
-        }
-        self.shared.borrow_mut().selected = node
-            .and_then(|node| self.tree.model().key(node))
-            .map(str::to_owned);
-        node
+        self.shared.borrow_mut().selected = key.as_deref().map(app_id).map(str::to_owned);
+        key
     }
 
     /// The chosen destination.
     #[must_use]
     pub fn selected_id(&self) -> Option<String> {
-        let id = self.tree.selected()?;
-        self.tree.model().key(id).map(str::to_owned)
+        let model = self.list.model();
+        self.list
+            .selection()
+            .stored_keys()
+            .find(|key| model.is_item(key))
+            .map(|key| app_id(key).to_owned())
+    }
+
+    /// How many things the chosen destination holds, where the list draws that count beside
+    /// it: the number a column header of the same list would otherwise draw a second time.
+    #[must_use]
+    pub fn selected_count(&self) -> Option<NavCount> {
+        let key = self.selected_id()?;
+        all_items(&self.sections)
+            .into_iter()
+            .find(|item| item.id == key)
+            .and_then(|item| item.count)
+    }
+
+    /// Whether the list is a compact rail of icons, where a count draws as a mark rather than
+    /// as its number.
+    #[must_use]
+    pub fn is_rail(&self) -> bool {
+        self.paint.borrow().rail
+    }
+
+    /// The person's or the app's fold of item or section `id`, whether or
+    /// not its row shows now.
+    fn fold_key(&self, id: &str) -> Option<String> {
+        if all_items(&self.sections).iter().any(|item| item.id == id) {
+            return Some(format!("item:{id}"));
+        }
+        self.sections
+            .iter()
+            .any(|section| section.id == id)
+            .then(|| format!("section:{id}"))
     }
 
     /// Open or fold item or section `id` without reporting it.
     pub fn set_expanded(&mut self, id: &str, open: bool) {
-        let model = self.tree.model();
-        let Some(node) = model.item_id(id).or_else(|| model.section_id(id)) else {
+        let Some(key) = self.fold_key(id) else {
             return;
         };
-        let mut expanded: Vec<NodeId> = self.tree.expanded_ids().collect();
-        if open {
-            expanded.push(node);
-        } else {
-            expanded.retain(|kept| *kept != node);
+        self.state.set_open(&key, open);
+        self.rebuild();
+    }
+
+    /// Open or fold the row of `key` as the person asked, and report it.
+    fn fold(&mut self, key: &str, open: bool) {
+        self.state.set_open(key, open);
+        self.rebuild();
+        if let Some(callback) = self.shared.borrow_mut().on_expand.as_mut() {
+            callback(app_id(key), open);
         }
-        self.tree.restore_expanded(expanded);
     }
 
     /// Whether item or section `id` is open.
     #[must_use]
     pub fn is_expanded(&self, id: &str) -> bool {
-        let model = self.tree.model();
-        model
-            .item_id(id)
-            .or_else(|| model.section_id(id))
-            .is_some_and(|node| self.tree.is_expanded(node))
+        if let Some(section) = self.sections.iter().find(|section| section.id == id) {
+            return !section.collapsible
+                || self
+                    .state
+                    .open(&format!("section:{id}"), !section.collapsed, false);
+        }
+        all_items(&self.sections)
+            .into_iter()
+            .find(|item| item.id == id)
+            .is_some_and(|item| {
+                // A row with nothing under it yet has nothing to open.
+                !item.children.is_empty()
+                    && self
+                        .state
+                        .open(&format!("item:{id}"), item.expanded, item.ensure_expanded)
+            })
     }
 
     /// The painted rect of item or section `id`'s row, edge to edge of the
     /// list, when it is in view.
     #[must_use]
     pub fn row_rect(&self, id: &str) -> Option<Rect> {
-        let model = self.tree.model();
-        let node = model.item_id(id).or_else(|| model.section_id(id))?;
-        self.tree.row_rect(node)
+        self.list.row_rect(&self.row_key(id)?)
     }
 
     /// The lift of item `id`'s row: where its hover and selection paint.
     /// Hand it to `ContextMenu::anchor_row` so a menu marks the row.
     #[must_use]
     pub fn row_lift_rect(&self, id: &str) -> Option<Rect> {
-        let node = self.tree.model().item_id(id)?;
-        self.tree.nav_lift_rect(node)
+        let key = format!("item:{id}");
+        let row = self.list.model().row_of(&key)?;
+        self.paint
+            .borrow()
+            .lift_rect(row, self.list.row_rect(&key)?)
     }
 
     /// Where item action `action` sits on item `id`'s row (whether or not
     /// the row is hovered), to open a menu at it with `open_anchored`.
     #[must_use]
     pub fn item_action_rect(&self, id: &str, action: &str) -> Option<Rect> {
-        let node = self.tree.model().item_id(id)?;
         let index = self
             .shared
             .borrow()
             .item_actions
             .iter()
             .position(|known| known == action)?;
-        self.tree.row_action_rect(node, index)
+        self.list.row_action_rect(&format!("item:{id}"), index)
     }
 
     /// Show item `id` being dragged to just before item `before`, for a
@@ -1880,29 +1432,27 @@ impl NavList {
     /// shows. Nothing moves unless the person releases it. Needs
     /// [`Self::on_move`].
     pub fn stage_drag(&mut self, id: &str, before: &str) {
-        let model = self.tree.model();
-        if let (Some(source), Some(target)) = (model.item_id(id), model.item_id(before)) {
-            self.tree.stage_reorder(source, target);
+        self.staged_drag = Some((format!("item:{id}"), format!("item:{before}")));
+        self.apply_staged_drag();
+    }
+
+    fn apply_staged_drag(&mut self) {
+        if let Some((source, before)) = self.staged_drag.take()
+            && !self.list.stage_reorder(&source, &before)
+        {
+            self.staged_drag = Some((source, before));
         }
     }
 
     /// Narrow the filterable sections to `query` (an empty query shows
     /// everything). The shell's filter field calls this; an app with its own
-    /// field may too.
+    /// field may too. The person's folds come back as the filter clears.
     pub fn set_filter(&mut self, query: &str) {
         if query == self.filter {
             return;
         }
-        let was_filtering = !self.filter.trim().is_empty();
-        let filtering = !query.trim().is_empty();
-        if filtering && !was_filtering {
-            self.unfiltered_open = Some(self.tree.expanded_ids().collect());
-        }
         query.clone_into(&mut self.filter);
         self.rebuild();
-        if !filtering && let Some(open) = self.unfiltered_open.take() {
-            self.tree.restore_expanded(open);
-        }
         if let Some(binding) = self.filter_binding.as_mut() {
             binding.publish(&self.filter);
         }
@@ -1915,18 +1465,15 @@ impl NavList {
     }
 
     /// Stable item ids in the current expanded and filtered row order.
-    /// Section headers are omitted. Inspection reads the same rows that the
-    /// retained navigation tree renders and exposes to accessibility.
+    /// Section headers are omitted.
     #[must_use]
     pub fn visible_item_ids(&self) -> Vec<String> {
-        let model = self.tree.model();
-        let shared = self.shared.borrow();
-        self.tree
-            .visible_rows()
-            .into_iter()
-            .filter_map(|(node, _, _)| {
-                let key = shared.keys.get(&node)?;
-                (model.item_id(key) == Some(node)).then(|| key.clone())
+        let model = self.list.model();
+        (0..model.len())
+            .filter_map(|index| model.row(index))
+            .filter_map(|row| match &row.kind {
+                NavRowKind::Item { id, .. } => Some(id.clone()),
+                _ => None,
             })
             .collect()
     }
@@ -1934,13 +1481,368 @@ impl NavList {
     /// Place the list at `rect` for a host that paints its own layout and
     /// positions its children by hand rather than through the layout tree.
     pub fn place_at(&mut self, rect: Rect) {
-        self.tree.place_at(rect);
+        let theme = self.paint.borrow().theme.clone();
+        // The rows lay out in a tree of the list's own, as the host's would.
+        let _ = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            crate::widget::layout::lay_out_detached(self, rect, &theme, text)
+        });
     }
 
-    /// The list's tree, for tests reading its engine state.
+    /// The list's rows engine, for tests reading its state.
     #[cfg(test)]
-    pub(crate) fn tree(&self) -> &TreeImpl<(), NavModel> {
-        &self.tree
+    pub(crate) fn list(&self) -> &VirtualList<NavModel> {
+        &self.list
+    }
+}
+
+/// The person's hand and keys on the rows' own controls: the list engine
+/// selects, opens, renames, drags and asks for menus; the list answers the
+/// navigation rows' headers, disclosures, checks and actions.
+impl NavList {
+    /// Hand the rows what they show of the list's own state: the row
+    /// renamed, the row holding the keyboard, a drag.
+    fn sync_paint(&self) {
+        let mut paint = self.paint.borrow_mut();
+        paint.renaming = self.list.renaming().cloned();
+        paint.focused = crate::widget::Widget::is_focused(&*self.list)
+            .then(|| self.list.focused_key().cloned())
+            .flatten();
+        paint.dragging = self.list.is_dragging();
+    }
+
+    /// The row of `key` and where it stands.
+    fn placed(&self, key: &str) -> Option<(NavRowData, Rect)> {
+        let key = key.to_owned();
+        let row = self.list.model().row_of(&key)?.clone();
+        Some((row, self.list.row_rect(&key)?))
+    }
+
+    /// Follow the pointer to `point` (or off the list): the row under it
+    /// shows its hover and its actions.
+    fn hover(&self, point: Option<Point>) {
+        let key = point.and_then(|point| self.list.key_at_point(point));
+        self.paint.borrow_mut().hovered = key.zip(point);
+    }
+
+    /// A press at `point` on one of a row's own controls. Whether it was
+    /// one, so the list engine does not select the row.
+    fn press_control(&mut self, point: Point) -> bool {
+        let Some(key) = self.list.key_at_point(point) else {
+            return false;
+        };
+        let Some((row, rect)) = self.placed(&key) else {
+            return false;
+        };
+        // The keyboard follows the hand to the row it pressed.
+        self.list.focus_row(key.clone());
+        let (actions, disclosure, section_action) = {
+            let paint = self.paint.borrow();
+            (
+                paint.action_rects(&row, rect),
+                paint.disclosure_rect(&row, rect),
+                paint.section_action_rect(&row, rect),
+            )
+        };
+        match &row.kind {
+            NavRowKind::Section { open, .. } => {
+                if section_action.is_some_and(|action| action.contains(point)) {
+                    self.shared.borrow_mut().run_section_action(&key);
+                } else if disclosure.is_some_and(|band| band.contains(point)) {
+                    self.fold(&key, !open);
+                }
+                // A header is no destination: a press elsewhere on it chooses nothing.
+                true
+            }
+            NavRowKind::Caption { .. } | NavRowKind::Pending { .. } => true,
+            NavRowKind::Item { open, spec, .. } => {
+                if let Some(index) = actions.iter().position(|action| action.contains(point)) {
+                    self.press_item_action(&key, index, actions[index]);
+                    return true;
+                }
+                if disclosure.is_some_and(|chevron| chevron.contains(point)) {
+                    self.fold(&key, !open);
+                    return true;
+                }
+                if spec.checked.is_some() {
+                    // The whole row is the checkbox's target.
+                    self.toggle_check(&key);
+                    return true;
+                }
+                false
+            }
+        }
+    }
+
+    /// Run item action `index` on the row of `key`, standing at `rect`: an
+    /// action that opens the menu asks for the row's menu at its corner.
+    fn press_item_action(&self, key: &str, index: usize, rect: Rect) {
+        if self
+            .row_actions
+            .get(index)
+            .is_some_and(|action| action.opens_menu)
+        {
+            if let Some((row, placed)) = self.placed(key) {
+                let lift = self.paint.borrow().lift_rect(&row, placed);
+                if let Some(lift) = lift {
+                    self.shared
+                        .borrow_mut()
+                        .report_menu(key, lift, Point::new(rect.x0, rect.y1));
+                }
+            }
+            return;
+        }
+        self.shared.borrow_mut().run_item_action(key, index);
+    }
+
+    /// Toggle the checkable row of `key`: the row shows the new state at
+    /// once, and the app's next sections confirm it.
+    fn toggle_check(&mut self, key: &str) -> bool {
+        let checked = match self.list.model().row_of(key).map(|row| &row.kind) {
+            Some(NavRowKind::Item { spec, .. }) => match spec.checked {
+                Some(checked) => checked,
+                None => return false,
+            },
+            _ => return false,
+        };
+        if self
+            .shared
+            .borrow()
+            .bound
+            .check
+            .as_ref()
+            .is_some_and(|emitter| !emitter.is_available())
+        {
+            return true;
+        }
+        self.state.set_checked(key, !checked);
+        self.rebuild();
+        let mut shared = self.shared.borrow_mut();
+        let id = app_id(key).to_owned();
+        if let Some(emitter) = shared.bound.check.as_mut() {
+            bound::emit(emitter, (id, !checked));
+        } else if let Some(callback) = shared.on_check.as_mut() {
+            callback(&id, !checked);
+        }
+        true
+    }
+
+    /// Hand the keyboard to the row at `index`: a destination is chosen as
+    /// it is reached, a header that folds only takes the keyboard.
+    fn focus_stop(&mut self, index: usize) {
+        let Some(key) = self.list.model().key_at(index) else {
+            return;
+        };
+        self.list.reveal(&key);
+        if self.list.model().is_item(&key) {
+            self.list.selection_mut().select_only(key.clone());
+            self.shared.borrow_mut().choose(&key);
+        }
+    }
+
+    /// The row a key on the row of `key` folds or leaves for: the item or
+    /// header it stands under.
+    fn parent_row(&self, index: usize) -> Option<usize> {
+        let model = self.list.model();
+        let depth = |row: &NavRowData| match &row.kind {
+            NavRowKind::Item { spec, .. } => Some(spec.depth),
+            _ => None,
+        };
+        let own = depth(model.row(index)?)?;
+        (0..index).rev().find(|above| {
+            model.row(*above).is_some_and(|row| match depth(row) {
+                Some(depth) => depth < own,
+                None => matches!(
+                    row.kind,
+                    NavRowKind::Section {
+                        collapsible: true,
+                        ..
+                    }
+                ),
+            })
+        })
+    }
+
+    /// A key on the focused row the navigation rows answer themselves:
+    /// the arrows pass over captions and headers that do not fold, Left and
+    /// Right fold, Space and Enter check a checkable row and fold a header.
+    fn key(&mut self, key: &Key, modifiers: winit::keyboard::ModifiersState) -> bool {
+        if modifiers.control_key() || modifiers.alt_key() || modifiers.super_key() {
+            return false;
+        }
+        let press = matches!(key, Key::Named(NamedKey::Space | NamedKey::Enter))
+            || matches!(key, Key::Character(text) if text.as_str() == " ");
+        let control = self.paint.borrow().focused_control.clone();
+        if let Some(control) = control {
+            if press
+                && self.perform_row_action(&control, &crate::a11y::Action::Activate) == Some(true)
+            {
+                return true;
+            }
+            // Any other key, or a control that is gone, leaves it for the row.
+            self.focus_control(None);
+        }
+        let focused = self.list.focused_key().cloned();
+        let index = focused
+            .as_ref()
+            .and_then(|key| self.list.model().index_of(key));
+        let model = self.list.model();
+        let stop = match key {
+            Key::Named(NamedKey::ArrowDown) => Some(match index {
+                Some(index) => model.stop_from(index, true),
+                None => model.first_stop(),
+            }),
+            Key::Named(NamedKey::ArrowUp) => Some(match index {
+                Some(index) => model.stop_from(index, false),
+                None => model.first_stop(),
+            }),
+            Key::Named(NamedKey::Home) => Some(model.first_stop()),
+            Key::Named(NamedKey::End) => Some(model.last_stop()),
+            _ => None,
+        };
+        if let Some(stop) = stop {
+            if let Some(stop) = stop {
+                self.focus_stop(stop);
+            }
+            return true;
+        }
+        let (Some(focused), Some(index)) = (focused, index) else {
+            return false;
+        };
+        let branch = model.is_branch(&focused);
+        let open = model.is_open(&focused);
+        let section = matches!(
+            model.row_of(&focused).map(|row| &row.kind),
+            Some(NavRowKind::Section { .. })
+        );
+        match key {
+            Key::Named(NamedKey::ArrowRight) if branch && !open => self.fold(&focused, true),
+            Key::Named(NamedKey::ArrowLeft) if branch && open => self.fold(&focused, false),
+            Key::Named(NamedKey::ArrowLeft) => {
+                if let Some(parent) = self.parent_row(index) {
+                    self.focus_stop(parent);
+                }
+            }
+            Key::Named(NamedKey::ArrowRight) => {}
+            _ if press && model.is_checkable(&focused) => {
+                self.toggle_check(&focused);
+            }
+            _ if press && section => {
+                if branch {
+                    self.fold(&focused, !open);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Hand the keyboard to a row's own control (its semantic target), or
+    /// back to the row: the rows involved announce it anew.
+    fn focus_control(&mut self, target: Option<&str>) {
+        let before = std::mem::replace(
+            &mut self.paint.borrow_mut().focused_control,
+            target.map(str::to_owned),
+        );
+        if before.as_deref() != target {
+            let rows = [before.as_deref(), target]
+                .into_iter()
+                .flatten()
+                .filter_map(control_row)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            self.list.invalidate_rows(rows);
+        }
+    }
+
+    /// Answer a row's menu the list engine was asked for, with the row's
+    /// lift: at the pointer when the pointer asked, otherwise (the keyboard,
+    /// assistive technology) at the bottom-leading corner of the row.
+    fn take_menu(&self, by_pointer: bool) {
+        let Some((key, row, at)) = self.shared.borrow_mut().asked_menu.take() else {
+            return;
+        };
+        let Some(data) = self.list.model().row_of(&key) else {
+            return;
+        };
+        if !matches!(
+            data.kind,
+            NavRowKind::Item { .. } | NavRowKind::Section { menu: true, .. }
+        ) {
+            return;
+        }
+        let Some(lift) = self.paint.borrow().lift_rect(data, row) else {
+            return;
+        };
+        let at = if by_pointer {
+            at
+        } else {
+            Point::new(lift.x0, lift.y1)
+        };
+        self.shared.borrow_mut().report_menu(&key, lift, at);
+    }
+
+    /// Answer what assistive technology asks of a row's own controls.
+    fn perform_row_action(&mut self, target: &str, action: &crate::a11y::Action) -> Option<bool> {
+        use crate::a11y::Action;
+        if matches!(action, Action::Focus) {
+            let Some(key) = control_row(target) else {
+                // The row itself takes the keyboard: the list answers.
+                self.focus_control(None);
+                return None;
+            };
+            if self.list.model().row_of(key).is_none() {
+                return Some(false);
+            }
+            self.list.focus_row(key.to_owned());
+            self.focus_control(Some(target));
+            return Some(true);
+        }
+        if let Some(key) = target.strip_prefix("section-action:") {
+            return Some(
+                matches!(action, Action::Activate)
+                    && self.shared.borrow_mut().run_section_action(key),
+            );
+        }
+        if let Some(rest) = target.strip_prefix("row-action:") {
+            let (index, key) = rest.split_once(':')?;
+            let index = index.parse::<usize>().ok()?;
+            if !matches!(action, Action::Activate) || !self.list.model().shows_row_actions(key) {
+                return Some(false);
+            }
+            let rect = self
+                .list
+                .row_action_rect(&key.to_owned(), index)
+                .unwrap_or_default();
+            self.press_item_action(key, index, rect);
+            return Some(true);
+        }
+        if let Some(key) = target.strip_prefix("check:") {
+            return Some(
+                matches!(action, Action::Activate | Action::ToggleCheck) && self.toggle_check(key),
+            );
+        }
+        let key = target.strip_prefix("key:")?.to_owned();
+        let model = self.list.model();
+        let (branch, open) = (model.is_branch(&key), model.is_open(&key));
+        let (checkable, item) = (model.is_checkable(&key), model.is_item(&key));
+        match action {
+            Action::Expand | Action::Collapse if branch => {
+                let expand = matches!(action, Action::Expand);
+                if open != expand {
+                    self.fold(&key, expand);
+                }
+                Some(true)
+            }
+            Action::ToggleCheck => Some(self.toggle_check(&key)),
+            Action::Activate if checkable => Some(self.toggle_check(&key)),
+            Action::Activate if !item => {
+                if branch {
+                    self.fold(&key, !open);
+                }
+                Some(branch)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -1962,7 +1864,7 @@ impl Filterable for NavList {
             .iter()
             .map(|section| count_items(&section.items))
             .sum();
-        let shown = filtered(&self.sections, &self.filter)
+        let shown = model::filtered(&self.sections, &self.filter)
             .iter()
             .filter(|section| section.filterable)
             .map(|section| count_items(&section.items))
@@ -1986,7 +1888,7 @@ pub(crate) trait RailExtent {
 
 impl RailExtent for NavList {
     fn fitted_rail_width(&self, theme: &crate::Theme) -> Option<f64> {
-        if !self.tree.is_rail() {
+        if !self.is_rail() {
             return None;
         }
         let items = all_items(&self.sections);
@@ -2003,15 +1905,11 @@ impl RailExtent for NavList {
     }
 }
 
-/// The most destinations a sidebar shows as a rail by default. Past it the
-/// tiles stop reading as one short set of places at a glance.
-const RAIL_DEFAULT_MAX_DESTINATIONS: usize = 7;
-
 /// A navigation sidebar whose width decides how it reads: narrow, a rail
 /// of tiles (icon over a short caption); wide, a list (icon beside the
 /// label). The shell hosting it as its sidebar asks how wide each form
-/// needs to be, which one it starts as, and switches it as its width
-/// crosses the threshold.
+/// needs to be, starts it at the list's width, and switches it as its width
+/// crosses the threshold: a window narrow enough for the rail shows one.
 pub(crate) trait AdaptiveNav {
     /// The width of the list as a rail: its longest word whole, up to the
     /// rail's cap ([`crate::chrome::sidebar_rail_width_fitting`]).
@@ -2020,10 +1918,6 @@ pub(crate) trait AdaptiveNav {
     /// ([`crate::chrome::nav_list_width_fitting`]): from here on it is a
     /// list.
     fn list_fit(&self, theme: &crate::Theme) -> f64;
-    /// Whether the sidebar starts as a rail: a short, flat set of places,
-    /// each with an icon and a label that stands whole in a tile. See
-    /// docs/design-language.md, "Windows and navigation".
-    fn rail_by_default(&self, theme: &crate::Theme) -> bool;
     /// Paint the rows as a rail's tiles or as list rows. Returns whether
     /// that changed.
     fn set_rail(&mut self, rail: bool) -> bool;
@@ -2067,52 +1961,8 @@ impl AdaptiveNav for NavList {
         })
     }
 
-    fn rail_by_default(&self, theme: &crate::Theme) -> bool {
-        // Headings, folding, a "New …" action and a filter are what a list
-        // of many or growing places needs; a rail shows none of them.
-        let flat_sections = !self.headings
-            && self.sections.iter().all(|section| {
-                section.title.is_empty()
-                    && !section.collapsible
-                    && section.trailing_action.is_none()
-                    && !section.filterable
-            });
-        let items = all_items(&self.sections);
-        // A tile is an icon over a caption: a row that says more than its
-        // label (a second line, a figure, a check, a status, a colour, the
-        // people in it) or that nests or renames needs the list.
-        let tile_shaped = items.iter().all(|item| {
-            item.icon.is_some()
-                && item.children.is_empty()
-                && !item.editable_label
-                && item.secondary.is_none()
-                && item.meta.is_none()
-                && item.status.is_none()
-                && item.status_label.is_none()
-                && item.badge.is_none()
-                && item.swatch.is_none()
-                && item.art.is_none()
-                && item.checked.is_none()
-                && item.level.is_none()
-                && item.presence.is_empty()
-        });
-        if !flat_sections
-            || !tile_shaped
-            || items.is_empty()
-            || items.len() > RAIL_DEFAULT_MAX_DESTINATIONS
-        {
-            return false;
-        }
-        let width = self.rail_fit(theme);
-        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
-            items
-                .iter()
-                .all(|item| crate::chrome::rail_caption_fits(theme, text, &item.label, width))
-        })
-    }
-
     fn set_rail(&mut self, rail: bool) -> bool {
-        self.tree.set_nav_rail(rail)
+        self.set_rail_rows(rail)
     }
 }
 
@@ -2170,18 +2020,18 @@ fn unavailable(node: &crate::a11y::AccessNode, shared: &NavShared) -> bool {
     let Some(target) = node.action_target.as_deref() else {
         return false;
     };
-    if let Some(id) = target
-        .strip_prefix("node:")
-        .and_then(|id| id.parse::<NodeId>().ok())
-    {
-        return shared
-            .keys
-            .get(&id)
-            .and_then(|key| shared.selection_actions.get(key))
-            .is_some_and(|action| !action.is_available())
+    if let Some(key) = target.strip_prefix("key:") {
+        return key
+            .strip_prefix("item:")
+            .is_some_and(|id| shared.blocked(id))
             || shared
                 .bound
-                .unavailable_check(shared.checks.contains_key(&id));
+                .unavailable_check(shared.checkable.contains(key));
+    }
+    if let Some(key) = target.strip_prefix("check:") {
+        return shared
+            .bound
+            .unavailable_check(shared.checkable.contains(key));
     }
     shared.bound.unavailable_button(target, shared)
 }
@@ -2195,15 +2045,6 @@ fn any_unavailable(shared: &NavShared) -> bool {
         || shared.bound.any_unavailable()
 }
 
-/// Publish every row under `node` whose selection action is unavailable as
-/// disabled.
-fn disable_unavailable(node: &mut crate::a11y::AccessNode, shared: &NavShared) {
-    node.state.disabled |= unavailable(node, shared);
-    for child in &mut node.children {
-        disable_unavailable(child, shared);
-    }
-}
-
 /// Whether [`disable_unavailable`] would change anything under `node`.
 fn has_unavailable(node: &crate::a11y::AccessNode, shared: &NavShared) -> bool {
     (!node.state.disabled && unavailable(node, shared))
@@ -2213,18 +2054,27 @@ fn has_unavailable(node: &crate::a11y::AccessNode, shared: &NavShared) -> bool {
             .any(|child| has_unavailable(child, shared))
 }
 
+/// Publish `node` and every control under it whose action is unavailable
+/// as disabled.
+fn disable_unavailable(node: &mut crate::a11y::AccessNode, shared: &NavShared) {
+    node.state.disabled |= unavailable(node, shared);
+    for child in &mut node.children {
+        disable_unavailable(child, shared);
+    }
+}
+
 // Not the blanket `Decorator`: apps box a navigation list, and its Widget
-// methods (with the tree view they forward to) are compiled once, here
+// methods (with the list engine they forward to) are compiled once, here
 // (`concrete_decorator_widget!` in decorator.rs).
 impl crate::widget::decorator::concrete::Decorator for NavList {
-    type Inner = TreeImpl<(), NavModel>;
+    type Inner = VirtualList<NavModel>;
 
     fn inner(&self) -> &Self::Inner {
-        &self.tree
+        &self.list
     }
 
     fn inner_mut(&mut self) -> &mut Self::Inner {
-        &mut self.tree
+        &mut self.list
     }
 
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
@@ -2248,7 +2098,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
             request.provide::<dyn AdaptiveNav>(self);
             return;
         }
-        crate::widget::Widget::provide(&*self.tree, request);
+        crate::widget::Widget::provide(&*self.list, request);
     }
 
     fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
@@ -2274,7 +2124,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
             request.provide::<dyn Filterable>(self);
             return;
         }
-        crate::widget::Widget::provide_mut(&mut *self.tree, request);
+        crate::widget::Widget::provide_mut(&mut *self.list, request);
     }
 
     fn build_layout(
@@ -2283,7 +2133,12 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         theme: &crate::Theme,
         node_map: &mut HashMap<crate::taffy::NodeId, *mut dyn crate::widget::Widget>,
     ) -> crate::taffy::NodeId {
-        let node = crate::widget::Widget::build_layout(&mut *self.tree, taffy, theme, node_map);
+        // The rows stand at the theme's heights: a new theme builds them anew.
+        if self.paint.borrow().theme != *theme {
+            self.paint.borrow_mut().theme = theme.clone();
+            self.list.update_model(|_| ());
+        }
+        let node = crate::widget::Widget::build_layout(&mut *self.list, taffy, theme, node_map);
         // The published owner is NavList, so host lookup and synthetic
         // accessibility routing must identify this same retained wrapper.
         node_map.insert(node, std::ptr::from_mut::<dyn crate::widget::Widget>(self));
@@ -2308,12 +2163,117 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         }
         self.pull();
         self.take_asks();
-        crate::widget::Widget::sync(&mut *self.tree, state, path);
+        crate::widget::Widget::sync(&mut *self.list, state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let pulled = self.pull() | self.take_asks();
-        crate::widget::Widget::update(&mut *self.tree, state, path) || pulled
+        crate::widget::Widget::update(&mut *self.list, state, path) || pulled
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.hover(Some(ctx.logical(position)));
+            }
+            WindowEvent::CursorLeft { .. } => self.hover(None),
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.list.renaming().is_none() => {
+                let point = self
+                    .paint
+                    .borrow()
+                    .hovered
+                    .as_ref()
+                    .map(|(_, point)| *point);
+                self.focus_control(None);
+                if let Some(point) = point
+                    && self.press_control(point)
+                {
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
+                    return;
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && self.list.renaming().is_none()
+                    && crate::widget::Widget::is_focused(&*self.list)
+                    && self.key(&event.logical_key, ctx.modifiers.state()) =>
+            {
+                *ctx.handled = true;
+                return;
+            }
+            _ => {}
+        }
+        crate::widget::Widget::handle_event(&mut *self.list, event, ctx);
+        self.take_menu(matches!(event, WindowEvent::MouseInput { .. }));
+    }
+
+    /// The list carries out its own structural changes in place: rows a
+    /// scroll or a new extent mounts, and rows it lets go of, are mounted
+    /// under the list's node. Pass its change on, so a mount settles the
+    /// frame instead of rebuilding the window's tree.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        crate::widget::Widget::take_structure_change(&mut *self.list)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        if let Some(done) = self.perform_row_action(target, action) {
+            self.take_menu(false);
+            return done;
+        }
+        let done = crate::widget::Widget::perform_semantic_action(
+            &mut *self.list,
+            target,
+            action,
+            state,
+            path,
+        );
+        self.take_menu(false);
+        done
+    }
+
+    fn apply_layout(
+        &mut self,
+        taffy: &crate::taffy::TaffyTree<()>,
+        node: crate::taffy::NodeId,
+        origin: Point,
+    ) {
+        crate::widget::Widget::apply_layout(&mut *self.list, taffy, node, origin);
+        // A drag staged before the rows stood placed shows once they do.
+        self.apply_staged_drag();
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.sync_paint();
+        crate::widget::Widget::needs_redraw(&*self.list)
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        if !focused {
+            self.focus_control(None);
+        }
+        crate::widget::Widget::set_focus(&mut *self.list, focused);
+    }
+
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        // A row names its elided label and its actions itself.
+        let mut found = None;
+        crate::widget::Widget::for_each_child(&*self.list, &mut |row| {
+            if found.is_none() {
+                found = row.tooltip_target_at(point);
+            }
+        });
+        found
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -2321,15 +2281,15 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
             .map(crate::a11y::SharedAccessNode::into_owned)
     }
 
-    /// The tree's rows as it keeps them between walks
-    /// (`TreeView::access_rows`), each the very node of the last walk
-    /// while nothing it is built from changed: a keystroke in the pane
-    /// beside the list builds none of them. A row whose destination's
-    /// selection action is unavailable is published disabled, as a copy of
-    /// the tree's row; availability changes without the tree changing, so
-    /// those few are copied on every walk.
+    /// The list's rows as the engine keeps them between walks, each the
+    /// very node of the last walk while nothing it is built from changed: a
+    /// keystroke in the pane beside the list builds none of them. A row
+    /// whose destination's selection action is unavailable is published
+    /// disabled, as a copy of the kept row; availability changes without the
+    /// rows changing, so those few are copied on every walk.
     fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
-        let mut access = crate::widget::Widget::accessibility_shared(&*self.tree)?;
+        let mut access = crate::widget::Widget::accessibility_shared(&*self.list)?;
+        access.node.role = crate::a11y::Role::Tree;
         let shared = self.shared.borrow();
         if any_unavailable(&shared) {
             disable_unavailable(&mut access.node, &shared);
@@ -2350,31 +2310,41 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         theme: &crate::Theme,
         presence: &crate::PresenceCtx,
     ) {
-        crate::widget::Widget::draw(&mut *self.tree, scene, transform, text, theme, presence);
+        let width = crate::widget::Widget::get_rect(&*self.list).width();
+        self.sync_paint();
+        let rail = {
+            let mut paint = self.paint.borrow_mut();
+            let resized = (paint.width - width).abs() > f64::EPSILON;
+            paint.width = width;
+            resized && paint.rail
+        };
+        if rail {
+            // A rail tile's caption wraps in the rail's width.
+            self.list.update_model(|_| ());
+        }
+        crate::widget::Widget::draw(&mut *self.list, scene, transform, text, theme, presence);
         if let Some(feed) = &self.feed {
-            let model = self.tree.model();
-            let rows = self
-                .tree
-                .visible_rows()
-                .into_iter()
-                .filter_map(|(node, _, _)| {
-                    let key = model.key(node)?;
-                    let rect = self.tree.row_rect(node)?;
-                    Some((key.to_owned(), rect))
+            let model = self.list.model();
+            let rows = (0..model.len())
+                .filter_map(|index| model.row(index))
+                .filter_map(|row| {
+                    let rect = self.list.row_rect(&row.key)?;
+                    Some((row.kind.id().to_owned(), rect))
                 })
                 .collect();
-            feed.publish_rows(crate::widget::Widget::get_rect(&*self.tree), rows);
+            feed.publish_rows(crate::widget::Widget::get_rect(&*self.list), rows);
         }
     }
 
     /// Never hidden: answered without building the rows.
     fn accessibility_hidden(&self) -> bool {
-        crate::widget::Widget::accessibility_hidden(&*self.tree)
+        crate::widget::Widget::accessibility_hidden(&*self.list)
     }
 
-    /// The tree's own node, without building its rows.
+    /// The list's own node, without building its rows.
     fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
-        let mut root = crate::widget::Widget::accessibility_root(&*self.tree)?;
+        let mut root = crate::widget::Widget::accessibility_root(&*self.list)?;
+        root.role = crate::a11y::Role::Tree;
         disable_unavailable(&mut root, &self.shared.borrow());
         Some(root)
     }
@@ -2386,6 +2356,8 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
 
 mod bound;
 mod feed;
+mod model;
+mod row;
 pub use feed::NavFeed;
 
 #[cfg(test)]
@@ -2406,7 +2378,7 @@ impl crate::widget::controls::ActionControls for NavList {
             view.choice.install_custody(domain, attachment);
         }
         drop(shared);
-        crate::widget::controls::install_control_custody(&mut *self.tree, domain, attachment);
+        crate::widget::controls::install_control_custody(&mut *self.list, domain, attachment);
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
@@ -2420,41 +2392,44 @@ impl crate::widget::controls::ActionControls for NavList {
                 .or_else(|| shared.bound.take())
                 .or_else(|| shared.view.as_mut().and_then(|view| view.choice.take()))
         };
-        taken.or_else(|| crate::widget::controls::take_control_invocation(&mut *self.tree))
+        taken.or_else(|| crate::widget::controls::take_control_invocation(&mut *self.list))
     }
 
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         let shared = self.shared.borrow();
-        let mut bindings = crate::widget::controls::control_action_bindings(&*self.tree);
-        // The tree exports only the current paint window. Keep its control
-        // inventory equally bounded, including after filtering or scrolling.
-        for (node, _, _) in self
-            .tree
-            .visible_row_range()
-            .filter_map(|index| self.tree.visible_row(index))
+        let model = self.list.model();
+        let mut bindings = crate::widget::controls::control_action_bindings(&*self.list);
+        // The list exports only the rows it builds. Keep its control
+        // inventory the same set, so a row a screen reader reaches is one a
+        // control search finds, including after filtering or scrolling.
+        for row in self
+            .list
+            .mounted_rows()
+            .filter_map(|index| model.row(index))
         {
-            let Some(key) = shared.keys.get(&node) else {
-                continue;
-            };
-            for bound in shared.bound.row_controls(node, &shared, self.tree.model()) {
+            let key = &row.key;
+            for bound in shared.bound.row_controls(key, &shared, model) {
                 bindings.retain(|binding| binding.control_id != bound.control_id);
                 bindings.push(bound);
             }
-            if shared.checks.contains_key(&node)
-                && let Some(check) = shared.bound.check_control(node)
+            if shared.checkable.contains(key)
+                && let Some(check) = shared.bound.check_control(key)
             {
                 bindings.retain(|binding| binding.control_id != check.control_id);
                 bindings.push(check);
                 continue;
             }
-            let action = shared.selection_actions.get(key).map_or_else(
+            let Some(id) = key.strip_prefix("item:") else {
+                continue;
+            };
+            let action = shared.selection_actions.get(id).map_or_else(
                 || {
                     shared
                         .view
                         .as_ref()
-                        .map(|view| view.choice.metadata(format!("node:{node}")))
+                        .map(|view| view.choice.metadata(format!("key:{key}")))
                 },
-                |action| Some(action.metadata(format!("node:{node}"))),
+                |action| Some(action.metadata(format!("key:{key}"))),
             );
             if let Some(action) = action {
                 bindings.retain(|binding| binding.control_id != action.control_id);
@@ -2466,36 +2441,36 @@ impl crate::widget::controls::ActionControls for NavList {
 
     /// Whether `Self::control_action_bindings` holds an action, answered
     /// without building the rows' semantics it also lists: the host asks it
-    /// on every frame. The actions are the visible destinations' selection
-    /// actions and whatever the tree's own children bind.
+    /// on every frame. The actions are the mounted destinations' selection
+    /// actions and whatever the list's own rows bind.
     fn has_action_control_bindings(&self) -> bool {
         let shared = self.shared.borrow();
+        let model = self.list.model();
         let rows = || {
-            self.tree
-                .visible_row_range()
-                .filter_map(|index| self.tree.visible_row(index))
-                .filter_map(|(node, _, _)| shared.keys.get(&node))
+            self.list
+                .mounted_rows()
+                .filter_map(|index| model.row(index))
         };
         let selection = if shared.view.is_some() {
-            rows().next().is_some()
+            rows().any(|row| model.is_item(&row.key))
         } else {
             !shared.selection_actions.is_empty()
-                && rows().any(|key| shared.selection_actions.contains_key(key))
+                && rows().any(|row| {
+                    row.key
+                        .strip_prefix("item:")
+                        .is_some_and(|id| shared.selection_actions.contains_key(id))
+                })
         };
         let bound = shared.bound.is_bound()
-            && self
-                .tree
-                .visible_row_range()
-                .filter_map(|index| self.tree.visible_row(index))
-                .any(|(node, _, _)| {
-                    (shared.checks.contains_key(&node)
-                        && shared.bound.check_control(node).is_some())
-                        || !shared
-                            .bound
-                            .row_controls(node, &shared, self.tree.model())
-                            .is_empty()
-                });
-        selection || bound || crate::widget::controls::has_action_control_bindings(&*self.tree)
+            && rows().any(|row| {
+                (shared.checkable.contains(&row.key)
+                    && shared.bound.check_control(&row.key).is_some())
+                    || !shared
+                        .bound
+                        .row_controls(&row.key, &shared, model)
+                        .is_empty()
+            });
+        selection || bound || crate::widget::controls::has_action_control_bindings(&*self.list)
     }
 
     fn refresh_control_action_availability(
@@ -2511,7 +2486,7 @@ impl crate::widget::controls::ActionControls for NavList {
             view.choice.refresh_availability(allowed);
         }
         drop(shared);
-        crate::widget::controls::refresh_control_action_availability(&mut *self.tree, allowed);
+        crate::widget::controls::refresh_control_action_availability(&mut *self.list, allowed);
     }
 }
 

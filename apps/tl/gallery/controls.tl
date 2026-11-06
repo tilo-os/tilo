@@ -1,3 +1,15 @@
+/// How soon a report is due, as a case the report holds.
+enum Urgency {
+    /// No hurry
+    none
+    /// Low
+    low
+    /// Medium
+    medium
+    /// High
+    high (icon: .flag, tone: .warning)
+}
+
 /// The controls a form is made of: boxes and switches, a number, a choice from a short list, a
 /// person, a strip of choices, tabs, a day and a time, a colour, a shortcut, a completion, a
 /// picture choice, a row of controls, and a link. Each is bound to a real field of the document,
@@ -14,6 +26,8 @@ type Controls {
     share: Float = 0.6
     /// The room it is in.
     room: Text = "Studio"
+    /// How soon the report is due.
+    urgency: Urgency = .none
     /// Who looks after the report.
     owner: Option<Principal> = .none
     /// Who reviews it, nobody picked yet.
@@ -87,6 +101,14 @@ view controls(c: Controls) {
                 ui.Segment("History")
             }
         }
+        ui.Section("Cases") {
+            ui.EnumField(value: c.urgency, label: .some("Urgency")) {
+                ui.EnumOption("No hurry", name: "none")
+                ui.EnumOption("Low", name: "low")
+                ui.EnumOption("Medium", name: "medium")
+                ui.EnumOption("High", name: "high", icon: .flag, tone: .warning)
+            }
+        }
         ui.Section("People") {
             ui.Text("Who looks after it", role: .caption, secondary: true)
             ui.PersonField(
@@ -110,6 +132,7 @@ view controls(c: Controls) {
             ui.DateField(value: c.starts, label: .some("Starts"), optional: false)
             ui.DateField(value: c.ends, label: .some("Ends"), optional: true)
             ui.DatePicker(value: c.starts)
+            ui.TimeField(value: c.clock)
             ui.TimePicker(value: c.clock, label: .some("At"))
         }
         ui.Section("Colours") {

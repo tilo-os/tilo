@@ -16,6 +16,7 @@ use super::{DesktopHandle, DesktopSurface, descriptor, route_of};
 use crate::navigation::Admitted;
 use ui::hosted_window::HostedWindow;
 use ui::widget::WindowGroup;
+use ui::window_targets::{TargetAction, WindowTarget};
 use ui::window_toolbar::{SearchOpening, ToolbarEvent, WindowOffer, WindowToolbar};
 
 /// What the apps in processes of their own asked of their windows' bars since
@@ -45,6 +46,15 @@ pub(super) struct Bars {
     /// window's name is what it shows, so it stands in front of the window's
     /// own title everywhere the tab is named.
     names: std::collections::BTreeMap<u64, String>,
+    /// The controls each window's app describes for its own content, by tab,
+    /// with the connection that declared them.
+    targets: std::collections::BTreeMap<u64, (u64, Vec<WindowTarget>)>,
+    /// What the apps in processes of their own declared of their windows'
+    /// content since the last update pass.
+    declared_targets: Vec<(u64, u64, Vec<WindowTarget>)>,
+    /// The controls the person pressed in the windows' content, by
+    /// connection, waiting for the session to write them to the app.
+    presses: Vec<(u64, String, String, TargetAction)>,
 }
 
 impl Bars {
@@ -75,38 +85,111 @@ impl DesktopHandle {
     /// the next pass on. The app is the one the session vouched for, so it
     /// only ever reaches a tab that shows it.
     pub fn declare_bar(&self, tab: u64, connection: u64, toolbar: Option<WindowToolbar>) {
-        self.shared
-            .borrow_mut()
-            .bars
-            .declared
-            .push((tab, connection, toolbar));
+        self.queue_bar_ask(|bars| bars.declared.push((tab, connection, toolbar)));
     }
 
     /// `connection`'s app said what `tab`'s window offers the bar's search
     /// and History control.
     pub fn offer_bar(&self, tab: u64, connection: u64, offer: WindowOffer) {
-        self.shared
-            .borrow_mut()
-            .bars
-            .offered
-            .push((tab, connection, offer));
+        self.queue_bar_ask(|bars| bars.offered.push((tab, connection, offer)));
     }
 
     /// `tab`'s app asked for its location in the bar to be edited, as its own
     /// Ctrl+L does.
     pub fn edit_bar_location(&self, tab: u64) {
-        self.shared.borrow_mut().bars.edits.push(tab);
+        self.queue_bar_ask(|bars| bars.edits.push(tab));
     }
 
     /// `tab`'s app asked for its window's search in the bar to open, as its
     /// own Ctrl+F (or Ctrl+H, for `opening`) does.
     pub fn open_bar_search(&self, tab: u64, opening: SearchOpening) {
-        self.shared.borrow_mut().bars.searches.push((tab, opening));
+        self.queue_bar_ask(|bars| bars.searches.push((tab, opening)));
+    }
+
+    /// Queue desk work an app handed over, and ask the desk for its next
+    /// pass: what an app asks reaches its window's bar in the pass that
+    /// follows, not whenever the desk next draws something of its own.
+    fn queue_bar_ask(&self, ask: impl FnOnce(&mut Bars)) {
+        let mut shared = self.shared.borrow_mut();
+        ask(&mut shared.bars);
+        shared.changed();
+    }
+
+    /// `connection`'s app described the controls of `tab`'s content
+    /// ([`ui::window_targets`]): what a session finds and presses there.
+    pub fn declare_targets(&self, tab: u64, connection: u64, targets: Vec<WindowTarget>) {
+        self.queue_bar_ask(|bars| bars.declared_targets.push((tab, connection, targets)));
+    }
+
+    /// The controls the windows the desk shows offer by name now, each with
+    /// where it stands on the desk: where a test, a tool or an agent finds
+    /// them. A window's controls are offered only while it is drawn, and its
+    /// app's coordinates are offset by the tab's content, so where a control
+    /// is and where the person sees it agree.
+    #[must_use]
+    pub fn window_controls(&self) -> Vec<(String, (f64, f64, f64, f64))> {
+        let shared = self.shared.borrow();
+        let mut shown = Vec::new();
+        for (tab, content) in shared.shown_tabs.content() {
+            let Some((_, targets)) = shared.bars.targets.get(&tab) else {
+                continue;
+            };
+            for target in targets {
+                shown.push((
+                    target.name.clone(),
+                    (
+                        content.x0 + target.rect[0],
+                        content.y0 + target.rect[1],
+                        target.rect[2] - target.rect[0],
+                        target.rect[3] - target.rect[1],
+                    ),
+                ));
+            }
+        }
+        shown
+    }
+
+    /// Press the control `name` of a window the desk shows, as an assistive
+    /// technology does: the app acts on it through its own accessibility
+    /// path and answers on the connection that declared it. The first window
+    /// of the strip that shows the name answers, and the press names its role
+    /// too, so the app finds the control it described and not another that
+    /// goes by the same name.
+    ///
+    /// # Errors
+    /// No window the desk draws shows a control by that name, or it answers
+    /// nothing of `action`.
+    pub fn press_window_control(&self, name: &str, action: TargetAction) -> Result<(), String> {
+        let mut shared = self.shared.borrow_mut();
+        for (tab, _) in shared.shown_tabs.content() {
+            let Some((connection, targets)) = shared.bars.targets.get(&tab) else {
+                continue;
+            };
+            let Some(target) = targets
+                .iter()
+                .find(|target| target.name == name && target.actions.contains(&action))
+            else {
+                continue;
+            };
+            let (name, role) = (target.name.clone(), target.role.clone());
+            let connection = *connection;
+            shared.bars.presses.push((connection, name, role, action));
+            shared.changed();
+            return Ok(());
+        }
+        Err(format!("no window shows a control named {name}"))
+    }
+
+    /// What the person, a tool or an agent pressed in the windows' content
+    /// since the last call, by connection: what the session writes to each
+    /// app.
+    pub fn take_target_presses(&self) -> Vec<(u64, String, String, TargetAction)> {
+        std::mem::take(&mut self.shared.borrow_mut().bars.presses)
     }
 
     /// `connection` closed: the slots and offers its app declared go with it.
     pub fn bar_connection_closed(&self, connection: u64) {
-        self.shared.borrow_mut().bars.gone.push(connection);
+        self.queue_bar_ask(|bars| bars.gone.push(connection));
     }
 
     /// What the person did in the bars for the apps in processes of their
@@ -231,23 +314,47 @@ impl DesktopSurface {
     /// bars: their slots, what their windows offer, and the connections that
     /// closed.
     fn take_bar_asks(&mut self) -> bool {
-        let (declared, offered, gone) = {
+        let (declared, offered, targets, gone) = {
             let mut shared = self.shared.borrow_mut();
             (
                 std::mem::take(&mut shared.bars.declared),
                 std::mem::take(&mut shared.bars.offered),
+                std::mem::take(&mut shared.bars.declared_targets),
                 std::mem::take(&mut shared.bars.gone),
             )
         };
         let mut changed = false;
         for connection in gone {
             changed |= self.window_slots.disconnected(connection);
+            // What its app described of a window's content goes with it.
+            let mut shared = self.shared.borrow_mut();
+            let before = shared.bars.targets.len();
+            shared
+                .bars
+                .targets
+                .retain(|_, (owner, _)| *owner != connection);
+            changed |= shared.bars.targets.len() != before;
         }
         for (tab, connection, toolbar) in declared {
             changed |= self.window_slots.declare(tab, connection, toolbar);
         }
         for (tab, connection, offer) in offered {
             changed |= self.window_slots.offer(tab, connection, offer);
+        }
+        for (tab, connection, described) in targets {
+            let mut shared = self.shared.borrow_mut();
+            if shared
+                .bars
+                .targets
+                .get(&tab)
+                .is_some_and(|(owner, targets)| *owner == connection && *targets == described)
+            {
+                continue;
+            }
+            shared.bars.targets.insert(tab, (connection, described));
+            // What a window offers by name is part of what the desk publishes.
+            shared.changed();
+            changed = true;
         }
         changed
     }

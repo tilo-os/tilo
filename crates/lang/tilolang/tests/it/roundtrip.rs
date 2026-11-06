@@ -96,6 +96,11 @@ view v(l: todo.TodoList) {
         list(l.items) { i -> text(i.title) }
     }
 }
+
+scenario "one line" {
+    window v.order = .line(len: 2)
+    lens v.picked = .some(1)
+}
 "#;
 
 fn print_of(src: &str) -> String {
@@ -126,8 +131,20 @@ fn fixtures_are_canonical() {
 }
 
 #[test]
+fn a_derived_key_prints_the_way_it_is_written() {
+    let src = "app t.x \"X\"\n\ntype Item {\n    title: Text (title)\n    done: Bool\n    parent: Option<Item> (parent) = .none\n    derive finished: Bool = children.all(finished) and (done or children.count > 0)\n    derive folded: Bool = finished and parent.all(folded)\n    derive subtasks: Int = children.count\n}\n\nroot Item\n";
+    assert_eq!(print_of(src), src);
+}
+
+#[test]
 fn precedence_and_parentheses_survive() {
     let src = "app t.x \"X\"\n\nfn f(a: Int, b: Int) -> Int {\n    return (a + b) * (a - b) / -(a % b)\n}\n";
+    assert_eq!(print_of(src), src);
+}
+
+#[test]
+fn an_entry_parameter_prints_as_it_is_written() {
+    let src = "app t.x \"X\"\n\ntype Item {\n    title: Text (title)\n}\n\naction add(i: Item, title: Text (entry) = \"\") {\n    i.title = title\n}\n";
     assert_eq!(print_of(src), src);
 }
 
@@ -218,6 +235,7 @@ view note_row(n: Note) {
 }
 
 view notebook(nb: Notebook) {
+    window shown: NoteFilter = NoteFilter.all
     std.list(nb, nb.notes, empty: "No notes yet") { n ->
         row(n.title, checkbox: n.pinned)
     }
@@ -226,10 +244,7 @@ view notebook(nb: Notebook) {
 view note(n: Note) {
     std.document(n) {
         section("About") {
-            facts {
-                "Title": n.title
-                "Pinned": n.pinned
-            }
+            facts(n)
         }
         button(pin(n))
     }
@@ -243,6 +258,7 @@ scenario "a week of notes" {
     as mia {
         new_note(nb)
     }
+    window notebook.shown = NoteFilter.pinned
 }
 "#;
 
@@ -257,8 +273,8 @@ fn the_native_vocabulary_is_canonical_and_round_trips() {
 
 #[test]
 fn facts_on_one_line_and_lists_in_braces_print_canonically() {
-    let src = "app t.x \"X\"\nview v(l: L) {\n    facts { \"a\": 1; \"b\": l.x }\n    list(l.items) { i -> text(i.t) }\n}\n";
-    let want = "app t.x \"X\"\n\nview v(l: L) {\n    facts {\n        \"a\": 1\n        \"b\": l.x\n    }\n    list(l.items) { i ->\n        text(i.t)\n    }\n}\n";
+    let src = "app t.x \"X\"\nview v(l: L) {\n    facts(l) { text(\"a\") }\n    list(l.items) { i -> text(i.t) }\n}\n";
+    let want = "app t.x \"X\"\n\nview v(l: L) {\n    facts(l) {\n        text(\"a\")\n    }\n    list(l.items) { i ->\n        text(i.t)\n    }\n}\n";
     assert_eq!(print_of(src), want);
 }
 

@@ -48,8 +48,8 @@ impl Checker<'_> {
         }
     }
 
-    /// `filters(T)`: the filters of `T` as a list's places and search's chips show them, each
-    /// a `host.Filter`.
+    /// `filters(T)`: the filters of `T` as a list's places and search's chips show them, each a
+    /// `Filter<T>`: a value code names (`T.today`), compares and queries with.
     pub(super) fn builtin_filters(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(key) = self.queried("filters", args, span) else {
             return Ex::error();
@@ -69,8 +69,160 @@ impl Checker<'_> {
         Ex::host(
             Imp::Filters,
             vec![Ex::str(&id)],
-            Ty::List(Box::new(super::platform::host_ty("Filter"))),
+            Ty::List(Box::new(Ty::Filter(key))),
         )
+    }
+
+    /// The filter `name` of the type `key`, with the value `args` give it, when `key` declares
+    /// one by that name: `Task.today`, `Task.project(p)`, `Task.done(false)`. `None` when `key`
+    /// is a type that declares no filters at all, so the name is something else.
+    pub(super) fn filter_value(
+        &mut self,
+        key: &TypeKey,
+        name: &ast::Ident,
+        args: Option<&[ast::Arg]>,
+        span: Span,
+    ) -> Option<Ex> {
+        let env = self.env;
+        let info = env.type_info(key)?;
+        if info.search.filters.is_empty() {
+            return None;
+        }
+        let filters = &info.search.filters;
+        let Some(f) = filters.iter().find(|f| f.key == name.name).cloned() else {
+            let keys: Vec<String> = filters
+                .iter()
+                .map(|f| format!("`{}.{}`", key.name, f.key))
+                .collect();
+            let hint = crate::diag::suggestion(&name.name, filters.iter().map(|f| f.key.as_str()));
+            self.err(
+                "E105",
+                name.span,
+                format!(
+                    "`{}` declares no filter `{}`{hint}; its filters: {}",
+                    key.name,
+                    name.name,
+                    keys.join(", ")
+                ),
+            );
+            return Some(Ex::error());
+        };
+        let id = info.id.clone();
+        let want = filter_value_ty(info, &f);
+        let value = match (want, args) {
+            (_, None) => Ex::host(Imp::NoneV, Vec::new(), Ty::Option(Box::new(Ty::Text))),
+            (Some(want), Some([one])) if one.name.is_none() => {
+                let v = self.expr_as(&one.value, &want);
+                if v.ty.is_error() {
+                    return Some(Ex::error());
+                }
+                Self::some(v, &Ty::Option(Box::new(want)))
+            }
+            (Some(want), Some(args)) => {
+                let t = self.show(&want);
+                self.err(
+                    "E022",
+                    span,
+                    format!(
+                        "`{}.{}` takes its value as one argument: `{}.{}({t})`",
+                        key.name, f.key, key.name, f.key
+                    ),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Some(Ex::error());
+            }
+            (None, Some(args)) => {
+                self.err(
+                    "E022",
+                    span,
+                    format!(
+                        "`{}.{}` is a toggle: name it without a value, `{}.{}`",
+                        key.name, f.key, key.name, f.key
+                    ),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Some(Ex::error());
+            }
+        };
+        Some(Ex::host(
+            Imp::FilterLit,
+            vec![Ex::str(&id), Ex::str(&f.key), value],
+            Ty::Filter(key.clone()),
+        ))
+    }
+
+    /// What choosing the filter value `v` asks, as search writes it: `is:today`,
+    /// `project:<id>` (`host.Filter`'s `query`).
+    pub(super) fn filter_query(v: Ex) -> Ex {
+        let at = crate::host::value_field("Filter", "query")
+            .map_or(3, |at| i32::try_from(at).unwrap_or(3));
+        Ex::host(
+            Imp::TupleGetH,
+            vec![v, Ex::new(Ek::I32(at), Ty::Bool)],
+            Ty::Text,
+        )
+    }
+
+    /// The query text the filter values in `args` give, joined with spaces: a query asks all of
+    /// them. With `text_too`, an argument may also be the query as people type it in search
+    /// (`is:done`), which a list takes beside its filters.
+    fn query_fragments(
+        &mut self,
+        what: &str,
+        key: &TypeKey,
+        args: &[ast::Arg],
+        text_too: bool,
+    ) -> Ex {
+        let mut parts: Vec<Ex> = Vec::new();
+        for a in args {
+            let v = self.expr(&a.value, None);
+            if v.ty.is_error() {
+                continue;
+            }
+            match v.ty.clone() {
+                Ty::Filter(of) if of == *key => parts.push(Self::filter_query(v)),
+                Ty::Filter(of) => {
+                    let (found, want) = (
+                        self.show(&Ty::Filter(of)),
+                        self.show(&Ty::Filter(key.clone())),
+                    );
+                    self.err(
+                        "E105",
+                        a.value.span,
+                        format!(
+                            "`{what}` takes the filters of {}; found {found}, a filter of {want}",
+                            key.name
+                        ),
+                    );
+                }
+                Ty::Text | Ty::Date | Ty::Time if text_too => parts.push(v.typed(Ty::Text)),
+                other => {
+                    let t = self.show(&other);
+                    let hint = if text_too {
+                        "a filter of the type, or the query written as people type it in search (`is:done`)"
+                    } else {
+                        "a filter of the type"
+                    };
+                    self.err(
+                        "E105",
+                        a.value.span,
+                        format!("`{what}` takes {hint}; found {t}"),
+                    );
+                }
+            }
+        }
+        let mut parts = parts.into_iter();
+        let Some(first) = parts.next() else {
+            return Ex::str("");
+        };
+        parts.fold(first, |acc, part| {
+            let joined = Ex::host(Imp::StrConcat, vec![acc, Ex::str(" ")], Ty::Text);
+            Ex::host(Imp::StrConcat, vec![joined, part], Ty::Text)
+        })
     }
 
     /// `query(T, in: x, filter: value, ..., sort: .field_order)`: the resources of `T` the
@@ -100,17 +252,11 @@ impl Checker<'_> {
         let list_ty = Ty::List(Box::new(Ty::Record(key.clone())));
         let mut scope: Option<Ex> = None;
         let mut terms: Vec<(String, Ex)> = Vec::new();
+        let mut held: Vec<ast::Arg> = Vec::new();
         for a in args.iter().skip(1) {
             let Some(name) = &a.name else {
-                self.err(
-                    "E105",
-                    a.value.span,
-                    format!(
-                        "a query's arguments name the filter they set: `query({}, {}: ...)`",
-                        key.name,
-                        info.search.filters.first().map_or("in", |f| f.key.as_str())
-                    ),
-                );
+                // A filter given as a value: `query(Task, in: tasks, Task.today)`.
+                held.push(a.clone());
                 continue;
             };
             match name.name.as_str() {
@@ -187,16 +333,18 @@ impl Checker<'_> {
         let scope = scope
             .unwrap_or_else(|| Ex::host(Imp::NoneV, Vec::new(), Ty::Option(Box::new(Ty::Text))));
         let pairs = self.text_pairs(terms);
+        let text = self.query_fragments("query", &key, &held, false);
         Ex::host(
             Imp::Query,
-            vec![Ex::str(&info.id), scope, pairs, Ex::str("")],
+            vec![Ex::str(&info.id), scope, pairs, text],
             list_ty,
         )
     }
 
-    /// `items.matching(q)`: the items of a list of resources that the query `q`, written as
-    /// people type it in search (`is:done due:-7d`), holds of; all of them, as they were, for
-    /// an empty query. A collection read in a view stays one, which the index answers.
+    /// `items.matching(q)`: the items of a list of resources that `q` holds of, each argument a
+    /// filter of their type (`Task.today`, `Task.project(p)`) or the query written as people
+    /// type it in search (`is:done due:-7d`), all of them asked together; all of them, as they
+    /// were, for none. A collection read in a view stays one, which the index answers.
     pub(super) fn matching(&mut self, list: Ex, elem: &Ty, args: &[ast::Arg], span: Span) -> Ex {
         let Ty::Record(key) = elem else {
             let t = self.show(elem);
@@ -207,15 +355,15 @@ impl Checker<'_> {
             );
             return Ex::error();
         };
-        let [q] = args else {
+        if args.is_empty() {
             self.err(
                 "E022",
                 span,
-                "`matching` takes the query: `items.matching(\"is:done\")`",
+                "`matching` takes the query: `items.matching(Task.today)`",
             );
             return Ex::error();
-        };
-        let text = self.expr_as(&q.value, &Ty::Text);
+        }
+        let text = self.query_fragments("matching", key, args, true);
         let id = self
             .env
             .type_info(key)
@@ -439,6 +587,16 @@ impl Checker<'_> {
             }
             FilterKind::Identifier => self.identifier_value(e),
             FilterKind::Text => Some(self.expr_as(e, &Ty::Text)),
+            // Who it names: `me` for the person looking, else a member by their id.
+            FilterKind::Person => {
+                if let ExprKind::Ident(name) = &e.kind
+                    && name == "me"
+                    && self.lookup(name).is_none()
+                {
+                    return Some(Ex::str("me"));
+                }
+                Some(self.expr_as(e, &Ty::Text))
+            }
         }
     }
 
@@ -734,4 +892,20 @@ fn concat(parts: Vec<Ex>) -> Ex {
     parts.fold(first, |acc, part| {
         Ex::host(Imp::StrConcat, vec![acc, part], Ty::Text)
     })
+}
+
+/// The type of the value a filter takes, when it takes one: its field's type without the
+/// `Option` or `Set` around it — `Task.project(p)` takes a `Project`, `Task.done(false)` a
+/// `Bool`, `Task.priority(.high)` a case of its enum. A named filter is on a field of its own
+/// and takes none.
+fn filter_value_ty(info: &TypeInfo, f: &FilterMeta) -> Option<Ty> {
+    let id = f.field.as_ref()?;
+    let field = info.fields.iter().find(|field| &field.id == id)?;
+    let mut ty = field.ty.clone();
+    loop {
+        match ty {
+            Ty::Option(inner) | Ty::Set(inner) => ty = *inner,
+            held => return Some(held),
+        }
+    }
 }

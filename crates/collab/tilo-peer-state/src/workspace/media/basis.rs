@@ -134,6 +134,16 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
                 work.tree_entry::<Vec<u8>, ()>()?;
                 admissions.insert(bytes);
             }
+            // A delegation a build before the owner-root layout wrote,
+            // hashed in the place it always held: the stored policy's
+            // authorization basis is a digest over this projection, and a
+            // workspace whose rows carry one still names it.
+            let mut delegations = BTreeSet::new();
+            for delegation in &row.workspace_delegations {
+                let bytes = work.encoded(delegation)?;
+                work.tree_entry::<Vec<u8>, ()>()?;
+                delegations.insert(bytes);
+            }
             for entry in &row.revocations {
                 if entry.user_public_key != row.device_cert.user_public_key {
                     return Err(policy(MediaPolicyError::Binding));
@@ -151,8 +161,8 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
                 expires_at_ns: row.device_cert.expires_at_ns,
                 signature: row.device_cert.signature,
             };
-            work.tree_entry::<[u8; 32], (DeviceCert, BTreeSet<Vec<u8>>)>()?;
-            rows.insert(device, (cert, admissions));
+            work.tree_entry::<[u8; 32], (DeviceCert, BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>)>()?;
+            rows.insert(device, (cert, admissions, delegations));
             Ok(())
         })
         .map_err(visit_error)?;

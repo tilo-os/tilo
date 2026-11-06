@@ -67,17 +67,16 @@ fn press(app: &mut HeadlessApp<WorkspaceSettingsApp>, id: &str) {
 #[test]
 fn the_general_tab_shows_the_workspace_and_what_the_person_may_change() {
     let mut owner = staged("general");
-    for text in ["Studio", "Owner", "Invite people", "Devices", "Old project"] {
+    for text in ["Studio", "Owner", "Invite people", "Devices"] {
         assert!(says(&mut owner, text), "{text:?} is shown");
     }
     assert!(enabled(&mut owner, "Create invitation"));
-    assert!(enabled(&mut owner, "Delete…"));
+    assert!(enabled(&mut owner, "Leave"));
     assert!(!enabled(&mut owner, "Move earlier"), "it is first already");
 
     let mut viewer = staged("general-viewer");
     assert!(says(&mut viewer, "Only admins can rename the workspace."));
     assert!(!enabled(&mut viewer, "Create invitation"));
-    assert!(!says(&mut viewer, "Old project"));
 }
 
 #[test]
@@ -85,8 +84,6 @@ fn general_controls_ask_the_shell_by_what_they_name() {
     let (mut app, seat) = seated("general");
     press(&mut app, "ws-general-device-tablet");
     press(&mut app, "ws-general-move-down");
-    press(&mut app, "ws-general-public");
-    press(&mut app, "ws-general-restore-old-project");
     press(&mut app, "ws-general-invite");
     assert_eq!(
         seat.take_asked(),
@@ -95,10 +92,6 @@ fn general_controls_ask_the_shell_by_what_they_name() {
                 device: "tablet".to_owned()
             },
             WorkspaceSettingsEffect::Move { step: 1 },
-            WorkspaceSettingsEffect::SetPublic { public: true },
-            WorkspaceSettingsEffect::Restore {
-                workspace: "old-project".to_owned()
-            },
             WorkspaceSettingsEffect::Invite,
         ]
     );
@@ -217,14 +210,11 @@ fn the_people_tab_lists_everyone_with_what_the_viewer_may_change() {
     ] {
         assert!(says(&mut owner, text), "{text:?} is shown");
     }
-    assert!(enabled(&mut owner, "Transfer ownership"));
-
     let mut member = staged("people-member");
     assert!(says(
         &mut member,
         "Only admins can change roles or remove people."
     ));
-    assert!(!says(&mut member, "Transfer ownership"));
 }
 
 #[test]
@@ -331,6 +321,27 @@ fn agent_and_bot_controls_name_what_they_act_on() {
             WorkspaceSettingsEffect::AddAgent,
             WorkspaceSettingsEffect::AddBot,
         ]
+    );
+}
+
+/// Remove takes back a bot a member asked for, and the tab offers no Remove
+/// for one the workspace's host runs from its own choice.
+#[test]
+fn a_requested_bot_is_removed_here_and_a_hosts_bot_is_not() {
+    let (mut app, seat) = seated("agents");
+    let removes = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .filter(|(_, node)| node.label() == Some("Remove"))
+        .count();
+    assert_eq!(removes, 1, "only the bot a member asked for has Remove");
+    press(&mut app, "ws-bots-remove-so.tilo.bots.standup");
+    assert_eq!(
+        seat.take_asked(),
+        [WorkspaceSettingsEffect::RemoveBot {
+            bot: "so.tilo.bots.standup".to_owned()
+        }]
     );
 }
 

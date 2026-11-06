@@ -43,6 +43,10 @@ impl tilolang_tilo::runtime::Words for PackageWords {
     fn revision(&self) -> u64 {
         tilo_ui_host::i18n::revision()
     }
+
+    fn language(&self) -> String {
+        ui::i18n::I18nManager::current_locale()
+    }
 }
 
 #[cfg(test)]

@@ -436,12 +436,12 @@ fn multiple_sender_accounts_each_route_and_preserve_provenance() {
 }
 
 #[test]
-fn same_person_can_map_to_tilo_and_external_services_without_combining_accounts() {
+fn same_person_can_map_to_external_services_without_combining_accounts() {
     let mut record = fixture().expect("fixture operation succeeds");
     for (service, scope, subject) in [
-        ("tilo", "tilo-users", "stable-user-id"),
         ("signal", "signal-main", "aci:alice"),
         ("whatsapp", "business-a", "US.alice"),
+        ("sms", "sms-carrier", "aci:alice"),
     ] {
         record
             .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
@@ -456,11 +456,11 @@ fn same_person_can_map_to_tilo_and_external_services_without_combining_accounts(
     }
     let state = record.state().expect("state loads");
     assert_eq!(
-        state.resolve_account("tilo", "tilo-users", "stable-user-id", "identity-1"),
+        state.resolve_account("signal", "signal-main", "aci:alice", "identity-1"),
         Ok(first())
     );
     assert_eq!(
-        state.resolve_account("signal", "signal-main", "aci:alice", "identity-1"),
+        state.resolve_account("sms", "sms-carrier", "aci:alice", "identity-1"),
         Ok(first())
     );
     assert_eq!(

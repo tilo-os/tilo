@@ -3,7 +3,8 @@
 use taffy::style_helpers::{fr, length, line, minmax, percent};
 use taffy::{Size, Style};
 
-use super::arranged::{Arranged, Layout, Resolved, Slot, wrapper_style};
+use super::Side;
+use super::arranged::{Arranged, Layout, Resolved, Slot, lead_container, wrapper_style};
 use super::units::{Axis, Direction};
 
 pub struct LayersLayout {
@@ -18,19 +19,31 @@ impl Layout for LayersLayout {
         "Layers"
     }
 
-    fn container(&self, _resolved: &Resolved) -> Style {
-        Style {
-            display: taffy::Display::Grid,
-            grid_template_columns: vec![minmax(length(0.0_f32), fr(1.0_f32))],
-            // As tall as the tallest layer where the layers' height is open (a card's image
-            // under its badge), and no taller than a height they are given (a window's desk):
-            // a layer longer than that scrolls or overflows inside it, never the cell.
-            grid_template_rows: vec![minmax(length(0.0_f32), fr(1.0_f32))],
-            min_size: Size {
-                width: length(0.0_f32),
-                height: taffy::Dimension::auto(),
+    fn container(&self, _resolved: &Resolved, lead: f32) -> Style {
+        lead_container(
+            Style {
+                display: taffy::Display::Grid,
+                grid_template_columns: vec![minmax(length(0.0_f32), fr(1.0_f32))],
+                // As tall as the tallest layer where the layers' height is open (a card's image
+                // under its badge), and no taller than a height they are given (a window's desk):
+                // a layer longer than that scrolls or overflows inside it, never the cell.
+                grid_template_rows: vec![minmax(length(0.0_f32), fr(1.0_f32))],
+                min_size: Size {
+                    width: length(0.0_f32),
+                    height: taffy::Dimension::auto(),
+                },
+                ..Style::default()
             },
-            ..Style::default()
+            lead,
+            self.leading(),
+        )
+    }
+
+    /// A layer arrangement written right to left leads on the right.
+    fn leading(&self) -> Side {
+        match self.direction {
+            Direction::Rtl => Side::Trailing,
+            Direction::Ltr => Side::Leading,
         }
     }
 

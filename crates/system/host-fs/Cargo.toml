@@ -4,19 +4,28 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Portable filesystem operations that only some hosts provide: permission bits, symbolic links, extended attributes, no-replace rename, trash"
+description = "Portable filesystem operations that only some hosts provide: permission bits, symbolic links, extended attributes, no-replace rename, private staging, transfers and trash"
 
 [dependencies]
+tracing.workspace = true
 trash = "5.2.6"
 tilo-paths.workspace = true
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["fs", "process"] }
 xattr = "1.6.1"
 
+# Transfers walk a source tree through retained directory descriptors, which
+# the web's filesystem does not offer.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cap-std = "3.4.6"
+cap-fs-ext = "3.4.6"
+uuid.workspace = true
+
 [dev-dependencies]
+tempfile.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 [lints]

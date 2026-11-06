@@ -32,6 +32,8 @@ fn tab(id: u64, title: &str) -> Tab {
             label: title.into(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 
@@ -58,6 +60,7 @@ fn write_as(doc: &mut AutoCommit, workspace: &Workspace, person: &str, salt: u16
             mine: &mine,
             retained: &|_| false,
             carried: tilo_desktop_model::shared_record::device::Writer::NOTHING_CARRIED,
+            records: tilo_desktop_model::shared_record::device::Writer::NOTHING_NOTED,
         },
     )
     .unwrap();

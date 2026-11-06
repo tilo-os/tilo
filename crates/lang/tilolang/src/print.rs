@@ -1,9 +1,9 @@
 //! The canonical printer: syntax tree to the one fixed text projection.
 
 use crate::ast::{
-    ActionOpt, AppHeader, Arg, BinOp, Block, Expr, ExprKind, FieldDecl, Ident, Item, Module, Param,
-    Pattern, SearchBlock, SearchEntryKind, Stmt, StmtKind, StrPart, TypeExpr, TypeExprKind, UiCall,
-    UiKind, UiStmt, UnOp,
+    ActionOpt, AppHeader, Arg, BinOp, Block, DerivedDecl, Expr, ExprKind, FieldDecl, Ident, Item,
+    Module, Param, Pattern, SearchBlock, SearchEntryKind, Stmt, StmtKind, StrPart, TypeExpr,
+    TypeExprKind, UiCall, UiKind, UiStmt, UnOp,
 };
 use crate::diag::Span;
 use crate::lexer::Comment;
@@ -282,7 +282,13 @@ fn arg_text(a: &Arg, col: usize, level: usize, ctx: &mut Ctx) -> String {
 
 fn param_text(p: &Param, col: usize, level: usize, ctx: &mut Ctx) -> String {
     let ty = print_type(&p.ty);
-    let head = format!("{}: {ty}", p.name.name);
+    let mut head = format!("{}: {ty}", p.name.name);
+    if let Some(place) = &p.place {
+        head = format!("{head} ({})", place.name);
+    }
+    if p.entry {
+        head = format!("{head} (entry)");
+    }
     match &p.default {
         Some(default) => {
             let value = expr_with(default, 0, col + head.len() + 3, level, ctx);
@@ -378,7 +384,7 @@ fn prec_of(e: &Expr) -> u8 {
         ExprKind::Lambda { .. } | ExprKind::Range { .. } => 0,
         ExprKind::Binary { op, .. } => op.prec(),
         ExprKind::Unary { op: UnOp::Not, .. } => 3,
-        ExprKind::Unary { op: UnOp::Neg, .. } | ExprKind::Try(_) => 7,
+        ExprKind::Unary { op: UnOp::Neg, .. } | ExprKind::Try(_) | ExprKind::Suggest(_) => 7,
         _ => 9,
     }
 }
@@ -423,9 +429,13 @@ fn bind_text(b: &crate::ast::LetBind, col: usize, level: usize, ctx: &mut Ctx) -
 
 /// A calendar literal as written: an instant without its seconds when they are zero.
 fn calendar_text(text: &str) -> String {
+    // The canonical text carries the seconds a time may be written without.
     match text.strip_suffix(":00Z") {
         Some(minutes) if text.len() == 20 => format!("{minutes}Z"),
-        _ => text.to_owned(),
+        _ => match text.strip_suffix(":00") {
+            Some(minutes) if text.len() == 19 => minutes.to_owned(),
+            _ => text.to_owned(),
+        },
     }
 }
 
@@ -634,6 +644,11 @@ fn expr_with(e: &Expr, min: u8, col: usize, level: usize, ctx: &mut Ctx) -> Stri
             )
         }
         ExprKind::Block(b) => block_text(b, col, level, ctx, true),
+        ExprKind::MadeFrom { of, body } => {
+            let head = format!("made from {}", expr_with(of, 0, col + 10, level, ctx));
+            let col = col + head.len() + 1;
+            format!("{head} {}", block_text(body, col, level, ctx, true))
+        }
         ExprKind::Match { scrutinee, arms } => {
             let mut out = format!(
                 "match {} {{\n",
@@ -749,6 +764,7 @@ fn expr_with(e: &Expr, min: u8, col: usize, level: usize, ctx: &mut Ctx) -> Stri
             postfix(e, col, level, ctx)
         }
         ExprKind::Try(x) => format!("try {}", expr_with(x, 7, col + 4, level, ctx)),
+        ExprKind::Suggest(x) => format!("suggest {}", expr_with(x, 7, col + 8, level, ctx)),
         ExprKind::Root(t) => format!("root {}", print_type(t)),
     };
     if prec_of(e) < min {
@@ -989,8 +1005,11 @@ impl Printer<'_> {
                 for f in &t.fields {
                     self.field(f);
                 }
+                for d in &t.derives {
+                    self.derived(d);
+                }
                 if let Some(search) = &t.search {
-                    if !t.fields.is_empty() {
+                    if !t.fields.is_empty() || !t.derives.is_empty() {
                         self.out.push('\n');
                     }
                     self.search(search);
@@ -1033,6 +1052,18 @@ impl Printer<'_> {
                 d.view.name,
                 print_type(&d.ty)
             )),
+            Item::Views(d) => {
+                let views = d
+                    .views
+                    .iter()
+                    .map(|view| {
+                        let opts = self.opts(&view.opts);
+                        format!("{}{}", view.view.name, opts_text(&opts))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.line(&format!("views {views} for {}", print_type(&d.ty)));
+            }
             Item::Scenario(sc) => {
                 let result = sc
                     .result
@@ -1063,12 +1094,14 @@ impl Printer<'_> {
                 let lead = format!("{role}action {}", a.name.name);
                 self.head(&lead, &a.params, &tail, &opts, " {", param_text);
                 self.level += 1;
-                for r in &a.requires {
-                    self.comments_before(r.span.start);
-                    let col = self.level * 4;
-                    let cond = self.ex_at(&r.cond, col + 8);
-                    let reason = self.ex_at(&r.reason, col + 8 + cond.len() + 1);
-                    self.line(&format!("require {cond} {reason}"));
+                for (word, lines) in [("require", &a.requires), ("applies", &a.applies)] {
+                    for r in lines {
+                        self.comments_before(r.span.start);
+                        let col = self.level * 4;
+                        let cond = self.ex_at(&r.cond, col + 8);
+                        let reason = self.ex_at(&r.reason, col + 8 + cond.len() + 1);
+                        self.line(&format!("{word} {cond} {reason}"));
+                    }
                 }
                 self.level -= 1;
                 self.block_body(&a.body);
@@ -1125,13 +1158,24 @@ impl Printer<'_> {
             text.push_str(&format!(" merge {}", m.kind.name()));
         }
         if let Some(m) = &f.marker {
-            text.push_str(&format!(" ({})", m.name));
+            text.push_str(&format!(" ({})", m.text()));
         }
         if let Some(d) = &f.default {
             let col = self.level * 4 + text.len() + 3;
             let value = self.ex_at(d, col);
             text.push_str(&format!(" = {value}"));
         }
+        self.line(&text);
+    }
+
+    /// `derive folded: Bool = done and ancestors.all(done)`.
+    fn derived(&mut self, d: &DerivedDecl) {
+        self.docs(&d.doc);
+        self.comments_before(d.span.start);
+        let mut text = format!("derive {}: {}", d.name.name, print_type(&d.ty));
+        let col = self.level * 4 + text.len() + 3;
+        let value = self.ex_at(&d.expr, col);
+        text.push_str(&format!(" = {value}"));
         self.line(&text);
     }
 
@@ -1233,6 +1277,21 @@ impl Printer<'_> {
                 let col = self.level * 4 + 7;
                 let v = self.ex_at(e, col);
                 self.line(&format!("return {v}"));
+            }
+            StmtKind::SeedState {
+                layer,
+                view,
+                name,
+                value,
+            } => {
+                let path = view.as_ref().map_or_else(
+                    || name.name.clone(),
+                    |v| format!("{}.{}", v.name, name.name),
+                );
+                let head = format!("{} {path} = ", layer.word());
+                let col = self.level * 4 + head.len();
+                let v = self.ex_at(value, col);
+                self.line(&format!("{head}{v}"));
             }
             StmtKind::Expr(e) => {
                 let v = self.ex(e);
@@ -1400,11 +1459,14 @@ impl Printer<'_> {
             .as_ref()
             .map(|a| format!(" as {}", a.name))
             .unwrap_or_default();
-        let item = c
-            .item
-            .as_ref()
-            .map(|i| format!(" {} ->", i.name))
-            .unwrap_or_default();
+        let item = match c.params.as_slice() {
+            [] => String::new(),
+            [one] => format!(" {} ->", one.name),
+            many => {
+                let names: Vec<&str> = many.iter().map(|p| p.name.as_str()).collect();
+                format!(" ({}) ->", names.join(", "))
+            }
+        };
         // What follows the call on its line: the block it opens, or the name it is anchored to.
         let after = match &c.block {
             None => anchor.clone(),

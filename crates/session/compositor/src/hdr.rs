@@ -202,6 +202,7 @@ impl HdrSurfaces {
     /// built from the buffer that commit attached.
     pub(crate) fn surface(
         &self,
+        id: u64,
         window: &Window,
         description: (Colorimetry, Option<Hdr10Metadata>),
     ) -> Option<Arc<HdrSurface>> {
@@ -212,7 +213,6 @@ impl HdrSurfaces {
         let tonemap = HdrTonemapConfig::from_metadata(metadata);
         // An SDR description is what the 8-bit desktop already shows.
         let signal = SurfaceSignal::for_colorimetry(colorimetry, tonemap)?;
-        let id = crate::state::window_id(window)?;
         let surface = window.wl_surface()?;
         let commit = with_states(&surface, |states| {
             let data = states.data_map.get::<RendererSurfaceStateUserData>()?;
@@ -488,7 +488,7 @@ fn from_dmabuf(
 /// window, which the caller draws as it always has.
 pub(crate) fn pieces<R>(
     renderer: &mut R,
-    hdr: &HdrSurfaces,
+    state: &crate::state::State,
     window: &Window,
     origin: Point<i32, Physical>,
     output_scale: f64,
@@ -500,8 +500,9 @@ where
 {
     let surface = window.wl_surface()?;
     let description = crate::color_management::colorimetry_of(&surface)?;
-    let id = crate::state::window_id(window)?;
-    let plane = hdr.surface(window, description)?;
+    let id = crate::state::window_id(state, window)?;
+    let hdr = &state.hdr;
+    let plane = hdr.surface(id, window, description)?;
     let scale = Scale::from(output_scale);
     let mut pieces = Vec::new();
     // A popup is a surface of its own: it is drawn as usual, in its place

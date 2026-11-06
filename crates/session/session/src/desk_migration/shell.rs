@@ -410,6 +410,8 @@ mod tests {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         }
     }
 
@@ -443,6 +445,8 @@ mod tests {
                         note: String::new(),
                     },
                     app_title: None,
+                    view: String::new(),
+                    pinned: false,
                 }],
                 width: WindowWidth::Normal,
                 maximized: false,
@@ -603,6 +607,8 @@ mod tests {
                     note: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             }],
             width: WindowWidth::Normal,
             maximized: false,

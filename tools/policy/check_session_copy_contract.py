@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PUBLIC_COPY_FILES = (
     "crates/session/desktop/src/collaborators.rs",
     "crates/session/desktop/src/workspace_settings.rs",
-    "crates/session/desktop/src/workspace_settings/overlay.rs",
+    "crates/session/desktop/src/workspace_settings/people.rs",
     "crates/session/desktop/src/topbar/sharing.rs",
     "crates/session/session/src/desk_resource.rs",
     "crates/session/session/src/people.rs",

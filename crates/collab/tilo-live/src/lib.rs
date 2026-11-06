@@ -4,7 +4,14 @@
 
 pub use collab_types::scope;
 
+/// A stream's frames: the track they are sealed under, the sealing and
+/// opening, and the scope a frame belongs to.
+pub mod frame;
+
 pub mod preface;
+
+/// The devices whose frames a scope opens.
+pub mod roster;
 pub mod video;
 pub mod voice;
 
@@ -45,9 +52,6 @@ pub mod relay;
 #[cfg(feature = "relay")]
 mod authority;
 
-#[cfg(feature = "relay")]
-pub mod client;
-
 /// One participant's sealed session in one scope, sealed under the scope's
 /// channel keys.
 #[cfg(feature = "plane")]
@@ -60,13 +64,6 @@ pub mod presence;
 
 /// Where a plane's readers and origin drivers run: the device's own executor
 /// on a desktop, the page's queue in a browser.
-/// `at + age`, or `at` when the clock cannot represent the sum: an
-/// immediately expired deadline fails closed instead of panicking.
-#[cfg(feature = "relay")]
-pub(crate) fn later(at: std::time::Instant, age: std::time::Duration) -> std::time::Instant {
-    at.checked_add(age).unwrap_or(at)
-}
-
 /// Work a plane or a relay started, aborted when the state that owns it is
 /// dropped, so no reader or pump outlives what it reads.
 ///

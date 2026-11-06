@@ -261,8 +261,12 @@ impl Hosting {
             .map_err(|error| error.to_string())?;
         // The owner device serving the workspace, whose own address the hint is.
         let authority = governor.host_device_certificate.clone();
-        if governor.room != request.workspace
-            || governor.workspace_id != request.workspace_id
+        // The hint names the workspace this host is asked to serve, by the same
+        // uuid and shard, from a device of this host's own person.
+        let asked = request.workspace.as_str();
+        let asked_shard = request.workspace_id;
+        if governor.room.as_str() != asked
+            || governor.workspace_id != asked_shard
             || authority.user_public_key != own.user_public_key
         {
             return Err("the workspace is not served by a device of this host's person".into());

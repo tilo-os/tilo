@@ -45,7 +45,7 @@ d-2lxgfocl = New column
     .doc = Adds a column at the right of the board.
 
 d-dw7khkq2 = New card
-    .doc = Adds a card at the foot of a column.
+    .doc = Adds a card at the foot of a column, under the title typed in the entry that adds there: a card is named where it is made, not left "Untitled".
 
 d-yp6qgach = Move to
     .doc = Moves a card to the foot of a column.
@@ -64,12 +64,8 @@ d-t5kjcxjq = Board
 d-ufycrk6s = Card tile
     .w-move-to = Move to { $title }
 
+d-aa76g3qb = Card row
+
 d-zzww2gmr = Card page
     .w-title = Title
     .w-notes = Notes
-
-d-t5kjcxjq-row0 = Board for col
-    .w-new-card = New card
-
-d-t5kjcxjq-row1 = Board for col
-    .w-new-card = New card

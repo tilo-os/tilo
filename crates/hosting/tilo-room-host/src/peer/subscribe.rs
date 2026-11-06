@@ -6,7 +6,7 @@ use super::{
     ReplayCatchup, ReplayHandle, ReplayTicket, ResumeLog, SessionCtx, SharedWorkspace,
     StateDelivery, StateSession, StateSource, Step, StoreError, Subscriber, WorkspaceAutobind,
     WorkspaceOperation, WorkspaceRegistry, current_session, lost_session, mpsc,
-    session_peer_authorized, unix_now_ns, workspace_access,
+    session_peer_authorized, unix_now_ns,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -364,12 +364,7 @@ async fn register_subscriber(
             (Some(expected), None) => !expected.same_channel(&source.tx),
             (None, Some(_)) => false,
         };
-    // The spectator seat is taken here, under the workspace's lock:
-    // of two spectators let in for the last seat, one ends here.
-    if !source.alive()
-        || !source.admits(&wr, &source.peer)
-        || !workspace_access::seated(&wr, &source.peer)
-    {
+    if !source.alive() || !source.admits(&wr, &source.peer) {
         return Err(crate::persistence::error(
             "replay subscriber authorization changed",
         ));

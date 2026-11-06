@@ -112,7 +112,6 @@ impl Checker<'_> {
             RowView {
                 id: &id,
                 owner: &owner,
-                var,
                 params: &params,
                 states: &states,
             },
@@ -180,7 +179,7 @@ impl Checker<'_> {
             return Some(list);
         }
         let block = c.block.as_deref().unwrap_or_default();
-        let var = c.item.as_ref().map_or(ROW_ITEM, |item| item.name.as_str());
+        let var = c.params.first().map_or(ROW_ITEM, |item| item.name.as_str());
         let mut names = BTreeSet::new();
         names_in_ui(block, &mut names);
         names.remove(var);
@@ -199,7 +198,6 @@ impl Checker<'_> {
             RowView {
                 id: &id,
                 owner: &owner,
-                var,
                 params: &params,
                 states: &states,
             },
@@ -271,16 +269,22 @@ impl Checker<'_> {
             name: var.to_owned(),
             ty: elem.clone(),
             default: None,
+            place: false,
+            entry: false,
         }];
         params.extend(captures.iter().map(|(name, _, ty)| ParamInfo {
             name: name.clone(),
             ty: ty.clone(),
             default: None,
+            place: false,
+            entry: false,
         }));
         params.push(ParamInfo {
             name: ROW_KEY.to_owned(),
             ty: Ty::Text,
             default: None,
+            place: false,
+            entry: false,
         });
         // View state the body uses is passed by value; `set(...)` and `bind:` still name the
         // slot, which is the view's, not the row's.
@@ -405,7 +409,6 @@ impl Checker<'_> {
         let RowView {
             id,
             owner,
-            var,
             params,
             states,
         } = row;
@@ -429,11 +432,7 @@ impl Checker<'_> {
             }
         }
         body(self);
-        let mut f = self.end(
-            FuncKind::View,
-            &format!("{owner} for {var}"),
-            &format!("v_{id}"),
-        );
+        let mut f = self.end(FuncKind::View, &format!("{owner} row"), &format!("v_{id}"));
         f.nparams = params.len();
         self.st = outer;
         let func = self.synth_base.saturating_add(self.synth.len());
@@ -444,7 +443,10 @@ impl Checker<'_> {
                 // A row view's id is the declared view's, then `~row<n>` per loop around it.
                 owner: id.split('~').next().unwrap_or(id).to_owned(),
                 id: id.to_owned(),
-                name: format!("{owner} for {var}"),
+                // A row the checker makes is a part of the view it stands in, not a declaration
+                // of its own: it is named after that view, and the words it shows are its
+                // item's fields' own. Its binding is no part of a name a person hears.
+                name: owner.to_owned(),
                 params: params.to_vec(),
             },
         ));
@@ -547,8 +549,8 @@ fn macro_reads(m: &Macro, out: &mut Vec<LocalId>) {
         Macro::Block(block) => {
             let mut names = BTreeSet::new();
             names_in_ui(&block.body, &mut names);
-            if let Some((item, _)) = &block.item {
-                names.remove(item);
+            for (param, _) in &block.params {
+                names.remove(param);
             }
             scope_reads(&block.scope, &names, out);
         }
@@ -586,7 +588,7 @@ fn remap_macro(m: &Macro, map: &HashMap<LocalId, LocalId>) -> Macro {
             scope: remap_scope(&closure.scope, map),
         })),
         Macro::Block(block) => Macro::Block(Rc::new(UiClosure {
-            item: block.item.clone(),
+            params: block.params.clone(),
             body: block.body.clone(),
             scope: remap_scope(&block.scope, map),
         })),
@@ -635,7 +637,6 @@ fn remap_scope(scope: &Scope, map: &HashMap<LocalId, LocalId>) -> Scope {
 struct RowView<'a> {
     id: &'a str,
     owner: &'a str,
-    var: &'a str,
     params: &'a [ParamInfo],
     states: &'a [(String, StateRef)],
 }
@@ -776,6 +777,10 @@ pub(super) fn names_in(e: &ast::Expr, out: &mut BTreeSet<String>) {
             }
         }
         ExprKind::Block(b) => names_in_block(b, out),
+        ExprKind::MadeFrom { of, body } => {
+            names_in(of, out);
+            names_in_block(body, out);
+        }
         ExprKind::Match { scrutinee, arms } => {
             names_in(scrutinee, out);
             for arm in arms {
@@ -800,14 +805,16 @@ pub(super) fn names_in(e: &ast::Expr, out: &mut BTreeSet<String>) {
                 names_in(&arg.value, out);
             }
         }
-        ExprKind::Try(inner) => names_in(inner, out),
+        ExprKind::Try(inner) | ExprKind::Suggest(inner) => names_in(inner, out),
     }
 }
 
 fn names_in_block(b: &ast::Block, out: &mut BTreeSet<String>) {
     for s in &b.stmts {
         match &s.kind {
-            StmtKind::Let { value, .. } => names_in(value, out),
+            StmtKind::Let { value, .. }
+            | StmtKind::Expr(value)
+            | StmtKind::SeedState { value, .. } => names_in(value, out),
             StmtKind::Assign { place, value, .. } => {
                 if let Some(first) = place.segs.first() {
                     out.insert(first.name.clone());
@@ -830,7 +837,6 @@ fn names_in_block(b: &ast::Block, out: &mut BTreeSet<String>) {
                     names_in(value, out);
                 }
             }
-            StmtKind::Expr(e) => names_in(e, out),
         }
     }
 }

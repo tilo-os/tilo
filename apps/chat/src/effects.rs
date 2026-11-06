@@ -91,16 +91,14 @@ pub enum ChatEffect {
     /// Open person
     #[effect(view, row, item = people)]
     OpenPerson { user: String },
-    /// Open a private conversation with a certified person public key.
-    #[effect(view, audience = "agents")]
+    /// Open the conversation with a certified person public key, as the read
+    /// of it is answered: it changes only whose view is showing what.
+    #[effect(view, returns, audience = "agents", participant)]
     OpenDirectConversation { public_key: String },
-    /// Expand an unsent private editor using its ephemeral native handoff token.
-    #[effect(view, returns, audience = "agents")]
-    AdoptPrivateDraft { token: String },
-    /// Send privately through the person-only host door.
+    /// Send to the direct conversation with a certified person public key.
     #[effect(job, returns, audience = "agents")]
     SendDirectMessage { public_key: String, text: String },
-    /// Read a private conversation on this device.
+    /// Read the direct conversation with a certified person public key.
     #[effect(job, returns, audience = "agents")]
     ReadDirectConversation { public_key: String },
     /// Read message
@@ -292,14 +290,13 @@ impl ChatApp {
                 unit,
             } => return self.reveal_message_range(&message, start, end, &unit),
             ChatEffect::OpenPerson { user } => self.open_person(&user)?,
-            ChatEffect::OpenDirectConversation { public_key } => {
-                self.open_person_conversation(&public_key)?;
-            }
-            ChatEffect::AdoptPrivateDraft { .. } => {
-                return Err("private draft adoption requires its original effect context".into());
-            }
-            ChatEffect::SendDirectMessage { .. } | ChatEffect::ReadDirectConversation { .. } => {
-                return Err("a private conversation answers in its original effect context".into());
+            // A direct conversation is read and written in the record and the
+            // parts, which the effect context holds: one invoked without it
+            // cannot answer.
+            ChatEffect::OpenDirectConversation { .. }
+            | ChatEffect::SendDirectMessage { .. }
+            | ChatEffect::ReadDirectConversation { .. } => {
+                return Err("a direct conversation answers where the chat is held".into());
             }
             ChatEffect::ReadMessage { message } => {
                 return self.read_message(&message).map(Effected::value);
@@ -598,7 +595,6 @@ impl ChatApp {
         if !self.channels.iter().any(|item| item.id == channel) {
             return Err("conversation no longer exists".into());
         }
-        self.close_person_conversation();
         channel.clone_into(&mut self.active_channel);
         self.thread_open = None;
         self.revealed_message = None;
@@ -950,7 +946,7 @@ impl ChatApp {
             .chain(messages)
             .chain(people)
             .chain(reports)
-            .chain(Self::person_conversation_rows())
+            .chain(self.direct_conversation_rows())
             .collect()
     }
 
@@ -981,6 +977,13 @@ impl ChatApp {
     }
 
     fn channel_row(&self, id: &str) -> Option<LiveRow> {
+        // Only a conversation the record holds is an item with effects on it:
+        // a conversation with a person neither has written in yet is derived
+        // from the workspace's people, and its row is
+        // [`Self::direct_conversation_rows`]'.
+        if !self.recorded_channels.contains(id) {
+            return None;
+        }
         let channel = self.channels.iter().find(|item| item.id == id)?;
         let channel_id = || id.to_owned();
         let row = LiveRow::new(

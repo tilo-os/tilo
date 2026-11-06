@@ -150,6 +150,8 @@ fn tab(minter: &mut IdMinter) -> Tab {
             note: String::new(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 #[test]

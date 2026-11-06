@@ -23,7 +23,7 @@ type Item {
     done: Bool = false
     due: Option<Date> = .none
     at: Option<Time> = .none
-    repeats: Option<std.Repeat> = .none
+    repeats: Option<std.Repeat> (repeats: due) = .none
     completed: Set<Date>
 }
 
@@ -34,8 +34,9 @@ type Probe {
 }
 
 type Every {
-    weekly: std.Repeat = std.Repeat("RRULE:FREQ=WEEKLY;INTERVAL=2")
-    lead: std.Reminder = std.Reminder("PT9H")
+    due: Option<Date> = .none
+    weekly: std.Repeat (repeats: due) = std.Repeat("RRULE:FREQ=WEEKLY;INTERVAL=2")
+    lead: std.Reminder (reminds: due) = std.Reminder("PT9H")
 }
 
 root Item

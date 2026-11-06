@@ -521,7 +521,7 @@ pub struct TabBar {
     /// and fades out over the fast duration
     /// ([`crate::motion::Feedback`]), so a pointer sweeping across the pill
     /// never leaves a trail.
-    control_lifts: [crate::motion::Feedback; 2],
+    control_lifts: [crate::motion::Feedback; 3],
     /// The window is maximized: its maximize control shows restore.
     maximized: bool,
     /// Whether the window showed several tabs at the last layout, and since
@@ -702,6 +702,7 @@ impl TabBar {
             history_action_hover: false,
             history_action_pressed: false,
             control_lifts: [
+                crate::motion::Feedback::default(),
                 crate::motion::Feedback::default(),
                 crate::motion::Feedback::default(),
             ],
@@ -3066,6 +3067,9 @@ impl TabBar {
                     super::window_controls::WindowControl::Maximize => {
                         self.pending_max = Some(active);
                     }
+                    // The group's bar lays out no minimize: the strip closes
+                    // and restores, the desktop's window menu minimizes.
+                    super::window_controls::WindowControl::Minimize => {}
                 }
             }
             *handled = true;
@@ -4364,6 +4368,9 @@ impl Widget for TabBar {
             ),
             super::window_controls::WindowControl::Close => {
                 (self.controls.close, "host-window-close")
+            }
+            super::window_controls::WindowControl::Minimize => {
+                (self.controls.minimize, "host-window-minimize")
             }
         };
         Some((rect, crate::i18n::I18nManager::lookup_plain(key)))

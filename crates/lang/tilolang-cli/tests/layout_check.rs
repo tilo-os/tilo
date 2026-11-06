@@ -63,8 +63,23 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             Kind::ClippedText | Kind::SmallHitTarget | Kind::LostContent => "",
             Kind::ScrollsSideways => "sideways",
             // Layout snaps every edge, broken or not; and a window gives a view that composes
-            // no shell its page, so no page anywhere is one bare row.
-            Kind::OffPixel | Kind::BareRow => "(no view)",
+            // no shell its page, so no page anywhere is one bare row. The fixtures write no
+            // rows, no cards and no field names: the rules read off a window's own composition
+            // hold nothing to find in them.
+            Kind::OffPixel
+            | Kind::BareRow
+            | Kind::RaggedColumns
+            | Kind::DoubleSelection
+            | Kind::CrampedGutter
+            | Kind::SeveralAdds
+            | Kind::CodedName
+            | Kind::UnsharedVerb
+            | Kind::NestedCard
+            | Kind::LoneDoor
+            | Kind::EmptyHeading
+            // No window in this fixture draws a count.
+            | Kind::ZeroCount
+            | Kind::RepeatedCount => "(no view)",
         };
         assert_eq!(
             finding.view,

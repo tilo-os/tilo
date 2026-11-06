@@ -43,6 +43,8 @@ pub struct CompiledBlock {
     pub value_type: String,
     pub kind: BlockKind,
     pub meta: PackageMeta,
+    /// Whether the block's action is a proposal to record, not an application to make.
+    pub suggested: bool,
 }
 
 /// Parses a module.
@@ -267,7 +269,8 @@ pub fn check_package(
 fn emit_package(a: Analysis) -> Compiled {
     let fx = effects::analyze(&a.ir, &a.env.app);
     let mut meta = build_meta(&a.module, &a.env, &fx, &a.ir.states);
-    meta.views.extend(row_views(&a.ir, &a.env.app, &fx));
+    meta.views
+        .extend(row_views(&a.ir, &a.env.app, &fx, &a.ir.states));
     meta.words.clone_from(&a.ir.words);
     meta.at_event = at_event_fns(&a.ir, &a.env.app);
     let bare = codegen::emit(&a.ir, None);
@@ -321,6 +324,8 @@ fn params_meta(params: &[ParamInfo], app: &str) -> Vec<ParamMeta> {
                 export: d.export.clone(),
                 text: d.text.clone(),
             }),
+            place: p.place,
+            entry: p.entry,
         })
         .collect()
 }
@@ -338,6 +343,7 @@ fn field_meta(f: &crate::resolve::FieldInfo, app: &str) -> FieldMeta {
         doc: f.doc.clone(),
         default: f.default.clone(),
         role: f.role.clone(),
+        derived: f.derived.clone(),
     }
 }
 
@@ -355,8 +361,30 @@ fn at_event_fns(ir: &crate::ir::Module, app: &str) -> Vec<FnMeta> {
         .collect()
 }
 
-/// The views the checker made of UI loop bodies: the host calls them like declared views.
-fn row_views(ir: &crate::ir::Module, app: &str, fx: &Effects) -> Vec<ViewMeta> {
+/// The `window` and `lens` declarations a view holds, as the host reads them to answer a
+/// `bind`.
+fn state_meta<'a>(
+    states: impl Iterator<Item = &'a crate::resolve::StateInfo>,
+    app: &str,
+) -> Vec<StateMeta> {
+    states
+        .map(|s| StateMeta {
+            id: s.id.clone(),
+            name: s.name.clone(),
+            layer: s.layer.word().to_string(),
+            ty: s.ty.meta_text(app),
+        })
+        .collect()
+}
+
+/// The views the checker made of UI loop bodies: the host calls them like declared views, with
+/// the state the templates their bodies expand declare (`<row view id>:<template>.<state>`).
+fn row_views(
+    ir: &crate::ir::Module,
+    app: &str,
+    fx: &Effects,
+    template_states: &[(String, crate::resolve::StateInfo)],
+) -> Vec<ViewMeta> {
     ir.views
         .iter()
         .map(|v| ViewMeta {
@@ -366,7 +394,13 @@ fn row_views(ir: &crate::ir::Module, app: &str, fx: &Effects) -> Vec<ViewMeta> {
             params: params_meta(&v.params, app),
             anchors: Vec::new(),
             reaches: fx.reaches.get(v.func).cloned().unwrap_or_default(),
-            state: Vec::new(),
+            state: state_meta(
+                template_states
+                    .iter()
+                    .filter(|(view, _)| *view == v.id)
+                    .map(|(_, s)| s),
+                app,
+            ),
             presents: None,
             row_of: Some(v.owner.clone()),
         })
@@ -429,6 +463,31 @@ fn build_meta(
     };
     meta.default_views = views_meta(&env.default_views);
     meta.row_views = views_meta(&env.row_views);
+    meta.views_of = env
+        .views_of
+        .iter()
+        .filter(|(key, _, _)| key.app == app)
+        .map(|(key, views, _)| crate::meta::ViewsMeta {
+            ty: type_id(key),
+            views: views
+                .iter()
+                .filter_map(|view| Some(env.own_callable(&view.name)?.id.clone()))
+                .collect(),
+            shown: views
+                .iter()
+                .filter_map(|view| {
+                    let id = env.own_callable(&view.name)?.id.clone();
+                    (view.label.is_some() || view.icon.is_some()).then(|| {
+                        crate::meta::ViewShownMeta {
+                            view: id,
+                            label: view.label.clone(),
+                            icon: view.icon.clone(),
+                        }
+                    })
+                })
+                .collect(),
+        })
+        .collect();
     let class_of = |idx: usize| {
         fx.class
             .get(idx)
@@ -437,7 +496,11 @@ fn build_meta(
     };
     for item in &module.items {
         match item {
-            Item::Use(_) | Item::Root(_) | Item::DefaultView(_) | Item::RowView(_) => {}
+            Item::Use(_)
+            | Item::Root(_)
+            | Item::DefaultView(_)
+            | Item::RowView(_)
+            | Item::Views(_) => {}
             Item::Alias(a) => {
                 let key = crate::types::TypeKey {
                     app: app.to_string(),
@@ -478,11 +541,14 @@ fn build_meta(
                     icon: None,
                     role: None,
                     scenario: true,
+                    did: None,
                     present: None,
                     toggles: None,
                     key: None,
                     group: None,
                     frequent: false,
+                    guard: false,
+                    applies: false,
                 });
                 meta.scenarios.push(ScenarioMeta {
                     id: c.id.clone(),
@@ -507,6 +573,7 @@ fn build_meta(
                             doc: v.doc.clone(),
                             label: v.label.clone(),
                             icon: v.icon.clone(),
+                            tone: v.tone.clone(),
                             fields: v.fields.iter().map(|f| field_meta(f, app)).collect(),
                         })
                         .collect(),
@@ -557,11 +624,20 @@ fn build_meta(
                     icon: c.present.icon.clone(),
                     role: c.present.role.clone(),
                     scenario: false,
+                    did: c.present.did.clone(),
                     present: c.present.view.clone(),
                     toggles: toggled_field(env, a, &c.params),
                     key: c.present.key.clone(),
                     group: c.present.group.clone(),
                     frequent: c.present.frequent,
+                    guard: a
+                        .requires
+                        .iter()
+                        .any(|r| crate::checker::offer_decided(r, &c.params)),
+                    applies: a
+                        .applies
+                        .iter()
+                        .any(|r| crate::checker::offer_decided(r, &c.params)),
                 });
                 if let Some(v) = env.callables.iter().find(|v| {
                     v.own && v.kind == CKind::View && Some(&v.id) == c.present.view.as_ref()
@@ -621,23 +697,15 @@ fn build_meta(
                     params: params_meta(&c.params, app),
                     anchors,
                     reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),
-                    state: env
-                        .states
-                        .iter()
-                        .filter(|s| s.view == v.name.name)
-                        .chain(
+                    state: state_meta(
+                        env.states.iter().filter(|s| s.view == v.name.name).chain(
                             template_states
                                 .iter()
                                 .filter(|(view, _)| *view == c.id)
                                 .map(|(_, s)| s),
-                        )
-                        .map(|s| StateMeta {
-                            id: s.id.clone(),
-                            name: s.name.clone(),
-                            layer: s.layer.word().to_string(),
-                            ty: s.ty.meta_text(app),
-                        })
-                        .collect(),
+                        ),
+                        app,
+                    ),
                     presents: None,
                     row_of: None,
                 });
@@ -715,6 +783,7 @@ pub fn compile_block_for(
         wasm,
         value_type: result.ty.meta_text(&app),
         kind,
+        suggested: result.suggested,
         meta,
     })
 }
@@ -820,6 +889,8 @@ pub fn compile_program_reading(
                 name: b.name.clone(),
                 ty,
                 default: None,
+                place: false,
+                entry: false,
             });
         }
     }

@@ -251,43 +251,57 @@ async fn bo_confirmed_beside_cy(
 
 #[tokio::test]
 async fn a_mailed_address_is_listed_once_confirmed_mailed_its_invitation_and_leaves_on_joining() {
-    use sha2::Digest as _;
-    let digest = |secret: &[u8; 32]| -> [u8; 32] { sha2::Sha256::digest(secret).into() };
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let bo = bo_confirmed_beside_cy(workspaces, &owner, &workspace).await;
-    let ask = |request| workspaces.page_rooms(&owner, request);
-    let listed = || read_wait_list(workspaces, &owner, &workspace);
-    let contacts = || async {
-        listed()
-            .await
-            .into_iter()
-            .map(|entry| entry.contact)
-            .collect::<Vec<_>>()
-    };
+    let invitation = the_address_is_invited_and_mailed(workspaces, &owner, &workspace, bo).await;
+    joining_takes_it_off_the_list(workspaces, &owner, &workspace, invitation).await;
+    relay.shutdown().await;
+}
 
-    let invite = |request_id: u8, wait_list_entry| WorkspacesRequest::Invite {
-        workspace: workspace.clone(),
-        request_id: [request_id; 32],
+/// The entry `workspace` holds for the address `entry` names.
+fn list_entry(workspace: &str, entry: [u8; 32]) -> WorkspacesRequest {
+    WorkspacesRequest::Invite {
+        workspace: workspace.to_owned(),
+        request_id: [41; 32],
         role: WorkspaceRole::Editor,
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
         inviter_name: None,
-        wait_list_entry,
-    };
-    let mail_invite = |wait_list_entry| WorkspacesRequest::MailInvite {
-        workspace: workspace.clone(),
-        wait_list_entry,
-        link: "https://door.example/?invite=AAEC".into(),
-    };
+        wait_list_entry: Some(entry),
+    }
+}
+
+/// The address `entry` names, mailed the invitation `link` carries.
+fn mailed_invitation(workspace: &str, entry: [u8; 32], link: &str) -> WorkspacesRequest {
+    WorkspacesRequest::MailInvite {
+        workspace: workspace.to_owned(),
+        wait_list_entry: entry,
+        link: link.to_owned(),
+    }
+}
+
+/// The owner invites the mailed address, which lists it with the day it was
+/// invited, mails it once on the operator's own door and is asked in. Returns
+/// the invitation the person joins with.
+async fn the_address_is_invited_and_mailed(
+    workspaces: &Workspaces,
+    owner: &DeviceCert,
+    workspace: &str,
+    entry: [u8; 32],
+) -> Vec<u8> {
+    use sha2::Digest as _;
+    let digest = |secret: &[u8; 32]| -> [u8; 32] { sha2::Sha256::digest(secret).into() };
+    let ask = |request| workspaces.page_rooms(owner, request);
+    let listed = || read_wait_list(workspaces, owner, workspace);
 
     // Invited: the entry says when, and is still on the list until someone
     // joins with the invitation.
     let WorkspacesReply::Invitation {
         signed_invitation, ..
-    } = ask(invite(41, Some(bo))).await
+    } = ask(list_entry(workspace, entry)).await
     else {
         panic!("the owner invites the address");
     };
@@ -299,36 +313,48 @@ async fn a_mailed_address_is_listed_once_confirmed_mailed_its_invitation_and_lea
             && now[1].invited_at_ns.is_none()
     );
     assert_eq!(
-        workspaces.wait_list_standing(&workspace, [0x0b; 32]).await,
+        workspaces.wait_list_standing(workspace, [0x0b; 32]).await,
         Ok(WaitListStanding::Invited)
     );
 
     // A relay whose operator sends no mail mails nothing.
     assert!(matches!(
-        ask(mail_invite(bo)).await,
+        ask(mailed_invitation(
+            workspace,
+            entry,
+            "https://door.example/?invite=AAEC"
+        ))
+        .await,
         WorkspacesReply::Refused(reason) if reason.contains("no mail")
     ));
     let mut mail = workspaces.mail_wait_list("https://door.example/").unwrap();
     // Only an invitation on the operator's door is mailed.
     assert!(matches!(
-        ask(WorkspacesRequest::MailInvite {
-            workspace: workspace.clone(),
-            wait_list_entry: bo,
-            link: "https://elsewhere.example/?invite=AAEC".into(),
-        })
+        ask(mailed_invitation(
+            workspace,
+            entry,
+            "https://elsewhere.example/?invite=AAEC"
+        ))
         .await,
         WorkspacesReply::Refused(_)
     ));
-    let (answer, (to, link, removal)) = tokio::join!(ask(mail_invite(bo)), async {
-        let WaitListMail {
-            queued,
-            to,
-            link,
-            removal,
-        } = mail.recv().await.unwrap();
-        queued.send(true).unwrap();
-        (to, link, removal)
-    });
+    let (answer, (to, link, removal)) = tokio::join!(
+        ask(mailed_invitation(
+            workspace,
+            entry,
+            "https://door.example/?invite=AAEC"
+        )),
+        async {
+            let WaitListMail {
+                queued,
+                to,
+                link,
+                removal,
+            } = mail.recv().await.unwrap();
+            queued.send(true).unwrap();
+            (to, link, removal)
+        }
+    );
     assert!(matches!(answer, WorkspacesReply::WaitList(_)));
     assert_eq!(
         (to.contact.as_str(), to.language.as_str()),
@@ -337,35 +363,57 @@ async fn a_mailed_address_is_listed_once_confirmed_mailed_its_invitation_and_lea
     assert_eq!(link, "https://door.example/?invite=AAEC");
     assert_eq!(
         workspaces
-            .wait_list_standing(&workspace, digest(&removal))
+            .wait_list_standing(workspace, digest(&removal))
             .await,
         Ok(WaitListStanding::Invited),
         "the mail's removal link names the entry"
     );
     // Not twice within minutes.
     assert!(matches!(
-        ask(mail_invite(bo)).await,
+        ask(mailed_invitation(
+            workspace,
+            entry,
+            "https://door.example/?invite=AAEC"
+        ))
+        .await,
         WorkspacesReply::Refused(_)
     ));
     assert!(mail.try_recv().is_err());
+    signed_invitation
+}
 
-    // Someone joins with it: asks, proves, and the owner lets them in.
-    let request_id = ask_to_join(workspaces, signed_invitation).await;
+/// Someone joins with the mailed invitation — asks, proves, and the owner lets
+/// them in — which takes the address off the list.
+async fn joining_takes_it_off_the_list(
+    workspaces: &Workspaces,
+    owner: &DeviceCert,
+    workspace: &str,
+    invitation: Vec<u8>,
+) {
+    let ask = |request| workspaces.page_rooms(owner, request);
+    let listed = || read_wait_list(workspaces, owner, workspace);
+    let request_id = ask_to_join(workspaces, invitation).await;
     assert_eq!(listed().await.len(), 2, "asking is not joining");
     assert!(matches!(
         ask(WorkspacesRequest::Admit {
-            workspace: workspace.clone(),
+            workspace: workspace.to_owned(),
             request_id,
         })
         .await,
         WorkspacesReply::Workspace(_)
     ));
-    assert_eq!(contacts().await, ["cy@example.org"]);
     assert_eq!(
-        workspaces.wait_list_standing(&workspace, [0x0b; 32]).await,
+        listed()
+            .await
+            .iter()
+            .map(|entry| entry.contact.clone())
+            .collect::<Vec<_>>(),
+        ["cy@example.org"]
+    );
+    assert_eq!(
+        workspaces.wait_list_standing(workspace, [0x0b; 32]).await,
         Ok(WaitListStanding::Gone)
     );
-    relay.shutdown().await;
 }
 
 #[tokio::test]
@@ -856,46 +904,67 @@ async fn an_administrator_governs_within_their_role_without_further_grants() {
         .set_member_administrator(&workspace, &owner, [50; 32], ada.user_public_key)
         .await
         .unwrap();
-    // The co-owner invites, up to their own role, with no grant beyond the
-    // owner making them an administrator.
+    an_administrator_invites_within_their_role(workspaces, &workspace, &ada).await;
+    an_administrator_rules_those_ranked_below(workspaces, &workspace, &ada, &bo, &cy).await;
+    an_administrator_runs_the_workspaces_calls(workspaces, &workspace, &ada).await;
+    unmaking_the_administrator_takes_it_all_back(workspaces, &workspace, &owner, &ada, &bo).await;
+    relay.shutdown().await;
+}
+
+/// The co-owner invites, up to their own role, with no grant beyond the owner
+/// making them an administrator, and reads the requests asked of the
+/// workspace.
+async fn an_administrator_invites_within_their_role(
+    workspaces: &Workspaces,
+    workspace: &str,
+    ada: &DeviceCert,
+) {
     let issued = workspaces
-        .issue(&workspace, &ada, invitation(51, MemberRole::Editor))
+        .issue(workspace, ada, invitation(51, MemberRole::Editor))
         .await
         .unwrap();
     assert!(
         workspaces
-            .pending(&workspace, &ada)
+            .pending(workspace, ada)
             .await
             .unwrap()
             .iter()
             .any(|pending| pending.invite_id == issued.invite_id)
     );
     let above = workspaces
-        .issue(&workspace, &ada, invitation(52, MemberRole::Moderator))
+        .issue(workspace, ada, invitation(52, MemberRole::Moderator))
         .await
         .unwrap_err();
     assert!(above.to_string().contains("Moderator"), "{above}");
     assert!(matches!(
         workspaces
             .page_rooms(
-                &ada,
+                ada,
                 WorkspacesRequest::Requests {
-                    workspace: workspace.clone()
+                    workspace: workspace.to_owned()
                 }
             )
             .await,
         WorkspacesReply::Requests(_)
     ));
+}
 
-    // They set roles up to their own and remove those ranked below them,
-    // never a fellow Editor.
-    set_role(workspaces, &workspace, &ada, &cy, MemberRole::Commenter).await;
+/// They set roles up to their own and remove those ranked below them, never a
+/// fellow Editor.
+async fn an_administrator_rules_those_ranked_below(
+    workspaces: &Workspaces,
+    workspace: &str,
+    ada: &DeviceCert,
+    bo: &DeviceCert,
+    cy: &DeviceCert,
+) {
+    set_role(workspaces, workspace, ada, cy, MemberRole::Commenter).await;
     assert!(
         workspaces
             .set_member_role(
-                &workspace,
-                &ada,
-                role_request(&bo, MemberRole::Moderator, [53; 32])
+                workspace,
+                ada,
+                role_request(bo, MemberRole::Moderator, [53; 32])
             )
             .await
             .is_err()
@@ -903,8 +972,8 @@ async fn an_administrator_governs_within_their_role_without_further_grants() {
     assert!(
         workspaces
             .remove_member(
-                &workspace,
-                &ada,
+                workspace,
+                ada,
                 RemoveMemberRequest {
                     request_id: [54; 32],
                     user_public_key: bo.user_public_key,
@@ -915,8 +984,8 @@ async fn an_administrator_governs_within_their_role_without_further_grants() {
     );
     workspaces
         .remove_member(
-            &workspace,
-            &ada,
+            workspace,
+            ada,
             RemoveMemberRequest {
                 request_id: [55; 32],
                 user_public_key: cy.user_public_key,
@@ -924,13 +993,19 @@ async fn an_administrator_governs_within_their_role_without_further_grants() {
         )
         .await
         .unwrap();
+}
 
-    // They run the workspace's calls.
+/// They run the workspace's calls.
+async fn an_administrator_runs_the_workspaces_calls(
+    workspaces: &Workspaces,
+    workspace: &str,
+    ada: &DeviceCert,
+) {
     let end = CallOperation::End {
         call: [9; 32],
         epoch: 1,
     };
-    let answer = workspaces.voice_call(&workspace, &peer(&ada), &end).await;
+    let answer = workspaces.voice_call(workspace, &peer(ada), &end).await;
     assert!(
         answer
             .as_ref()
@@ -938,23 +1013,30 @@ async fn an_administrator_governs_within_their_role_without_further_grants() {
             .is_some_and(|reason| reason.contains("unknown call")),
         "{answer:?}"
     );
+}
 
-    // An Editor by role alone still governs nothing, and the owner unmaking
-    // the administrator takes it all back.
+/// An Editor by role alone still governs nothing, and the owner unmaking the
+/// administrator takes it all back.
+async fn unmaking_the_administrator_takes_it_all_back(
+    workspaces: &Workspaces,
+    workspace: &str,
+    owner: &DeviceCert,
+    ada: &DeviceCert,
+    bo: &DeviceCert,
+) {
     assert!(
         workspaces
-            .issue(&workspace, &bo, invitation(56, MemberRole::Viewer))
+            .issue(workspace, bo, invitation(56, MemberRole::Viewer))
             .await
             .is_err()
     );
-    set_role(workspaces, &workspace, &owner, &ada, MemberRole::Editor).await;
+    set_role(workspaces, workspace, owner, ada, MemberRole::Editor).await;
     assert!(
         workspaces
-            .issue(&workspace, &ada, invitation(57, MemberRole::Viewer))
+            .issue(workspace, ada, invitation(57, MemberRole::Viewer))
             .await
             .is_err()
     );
-    relay.shutdown().await;
 }
 
 #[tokio::test]

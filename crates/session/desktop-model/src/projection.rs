@@ -39,6 +39,10 @@ pub const WORKSPACE_EFFECT_RECEIPTS_KEY: &str = "effect_receipts_v1";
 /// Key a workspace document anchors each member's archived effect receipts
 /// under: `{person → {device → history root}}`, each device's own.
 pub const WORKSPACE_EFFECT_HISTORY_KEY: &str = "effect_history_root_v1";
+/// Key a workspace document holds the writes a device refused under:
+/// `{person → {device → {route and author → postcard refusal}}}`, each
+/// device's own verdicts, kept until the write it refused lands.
+pub const WORKSPACE_WRITE_REFUSALS_KEY: &str = "write_refusals_v1";
 /// Key a workspace document stores its saved shortcuts under.
 pub const WORKSPACE_AUTOMATIONS_KEY: &str = "automations_v1";
 /// Key a workspace document stores its named grant sets under, by lowercase name.
@@ -1005,6 +1009,8 @@ mod tests {
                     label: name.into(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             }],
             active_tab: id,
             width: crate::width::WindowWidth::Normal,

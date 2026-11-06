@@ -15,17 +15,26 @@ app_opt    = ( "icon" | "category" ) ":" "." ident
 app_id     = ident { "." ident } ;
 
 item       = { doc } ( use | type_decl | alias | enum_decl | root | default_view | row_view
-                     | [ role ] action | flow | view | fn | scenario ) ;
+                     | views | [ role ] action | flow | view | fn | scenario ) ;
 use        = "use" app_id [ "as" ident ] ;
 root       = "root" [ ident ":" ] type ;                      (* `root notes: Notes` *)
 alias      = "type" Ident "=" type ;                          (* a container named so is a resource *)
 default_view = "default" "view" ident "for" ( type | ident ) ;   (* a type, or a root by name *)
 row_view   = "row" "view" ident "for" type ;
+views      = "views" ident { "," ident } "for" type ;   (* what a window of the type switches between *)
 role       = "primary" | "destructive" | "migration" | "internal" ;
 
-type_decl  = "type" Ident [ "(" "origin" ":" Ident { "." Ident } ")" ] "{" { field | search } "}" ;
-field      = { doc } ident ":" type [ "merge" merge_kind ] [ "(" ( "title" | "body" | "previously" ) ")" ]
-             [ "=" expr ] ;
+type_decl  = "type" Ident [ "(" "origin" ":" Ident { "." Ident } ")" ] "{" { field | derived | search } "}" ;
+field      = { doc } ident ":" type [ "merge" merge_kind ]
+             [ "(" ( "title" | "body" | "previously" | "parent" ) ")" ] [ "=" expr ] ;
+derived    = { doc } "derive" ident ":" ( "Bool" | "Int" ) "=" derived_expr ;
+derived_expr = derived_or [ ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) derived_or ] ;
+derived_or  = derived_and { "or" derived_and } ;
+derived_and = derived_operand { "and" derived_operand } ;
+derived_operand = "not" derived_operand | ident | number
+                | "children" "." "count" [ "(" derived_expr ")" ]
+                | "children" "." ( "all" | "any" ) "(" derived_expr ")"
+                | "parent" "." "all" "(" derived_expr ")" | "(" derived_expr ")" ;
 merge_kind = "register" | "counter" | "text" ;
 search     = "search" "{" { search_line NL } "}" ;
 search_line = "filter" ident [ string ] [ opts ]
@@ -49,7 +58,7 @@ view       = "view" ident [ "<" Ident { "," Ident } ">" ] params ui_block ;
 scenario   = "scenario" string [ "->" type ] block ;
 params     = "(" [ param { "," param } ] ")" ;
 param      = ident ":" type [ "=" expr ] ;                         (* defaults: action parameters only *)
-opts       = "(" ident ":" expr { "," ident ":" expr } ")" ;       (* icon:, label:, on:, key: *)
+opts       = "(" ident ":" expr { "," ident ":" expr } ")" ;       (* icon:, label:, on:, key:, did: *)
 
 block      = "{" { stmt NL } "}" ;
 stmt       = "let" ident [ ":" type ] "=" expr
@@ -103,7 +112,8 @@ Tokens:
 - `Ident` starts with an uppercase letter (types and enums), `ident` with a lowercase one.
   Keywords: `app use as type enum action flow view fn let if else match for in return and or not
   true false try merge proposal`. `window`, `lens`, `root`, `default`, `row`, `scenario`,
-  `primary`, `destructive` and `migration` are keywords only where the grammar above uses them.
+  `primary`, `destructive`, `migration` and `views` are keywords only where the grammar above uses
+  them.
 - `length` is a number with `rem`, `dp` or `fr` (`11rem`); `duration` an integer with `s`, `m`,
   `h`, `d` or `w` (`-7d`).
 - `calendar` is a day `2026-06-29` (a Date), an instant `2026-06-29T07:02Z` or

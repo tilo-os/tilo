@@ -320,16 +320,17 @@ pub enum Envelope {
         reason: String,
     },
 
-    /// Retired: join the workspace's live plane over the relay connection.
-    /// Nothing sends it — a device joins the plane itself, on its own carrier
-    /// — and it stays only so every later variant keeps its postcard
-    /// position.
+    /// Join the workspace's live plane: the host answers with the members
+    /// already present and tells them this device joined. The name keeps the
+    /// variant's place in the wire enum.
     RetiredLiveJoin {
         /// Workspace id.
         workspace_id: u64,
     },
 
-    /// Leave the workspace's live plane.
+    /// Leave the workspace's live plane. Nothing sends it — a device that
+    /// goes is dropped with its connection — and it stays only so every
+    /// later variant keeps its postcard position.
     LiveLeave {
         /// Workspace id.
         workspace_id: u64,
@@ -348,9 +349,9 @@ pub enum Envelope {
         frame: Vec<u8>,
     },
 
-    /// Retired: a device joined (`active`) or left the workspace's live
-    /// plane. Nothing sends it — membership is the plane's own — and it stays
-    /// only so every later variant keeps its postcard position.
+    /// A device joined (`active`) or left the workspace's live plane, sent
+    /// by the host to the plane's other members. The name keeps the
+    /// variant's place in the wire enum.
     RetiredLiveMember {
         workspace_id: u64,
         device_public_key: [u8; 32],

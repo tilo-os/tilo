@@ -136,7 +136,7 @@ fn fields_variants_and_the_app_carry_what_they_are() {
         note.fields
             .iter()
             .find(|x| x.name == f)
-            .and_then(|x| x.role.clone())
+            .and_then(|x| x.role.as_ref().map(tilolang::types::FieldRole::text))
     };
     assert_eq!(role("title").as_deref(), Some("title"));
     assert_eq!(role("body").as_deref(), Some("body"));
@@ -336,6 +336,161 @@ fn row_views_are_in_the_metadata() {
     let id = |n: &str| c.ids.get(n).expect("id").to_string();
     assert_eq!(c.meta.row_view(&id("Note")), Some(id("note_row").as_str()));
     assert_eq!(c.meta.row_view(&id("Notebook")), None);
+}
+
+/// A type whose window switches between views names them, in the order the bar shows them; a
+/// view it does not name is a helper its own views place and no window offers.
+#[test]
+fn the_views_a_window_switches_between_are_declared() {
+    let c = crate::common::compile_body(
+        r#"type Note {
+    title: Text (title)
+}
+
+root Notebook
+
+type Notebook {
+    notes: Collection<Note>
+}
+
+default view note_cards for Notebook
+
+view note_cards(nb: Notebook) {
+    std.list(nb, nb.notes, empty: "No notes yet") { n ->
+        row(n.title)
+    }
+}
+
+view note_board(nb: Notebook) {
+    std.page(nb) {
+        text("Board")
+    }
+}
+
+view notebook_helper(nb: Notebook) {
+    std.header()
+}
+
+views note_cards, note_board for Notebook"#,
+    );
+    let id = |n: &str| c.ids.get(n).expect("id").to_string();
+    assert_eq!(
+        c.meta.views_of(&id("Notebook")),
+        vec![id("note_cards"), id("note_board")],
+        "in the order declared, the default view first"
+    );
+    // Without the declaration, the type's views are all helpers and no bar switches them.
+    let plain = crate::common::compile_body(
+        r#"type Note {
+    title: Text (title)
+}
+
+root Notebook
+
+type Notebook {
+    notes: Collection<Note>
+}
+
+default view note_cards for Notebook
+
+view note_cards(nb: Notebook) {
+    std.list(nb, nb.notes, empty: "No notes yet") { n ->
+        row(n.title)
+    }
+}
+
+view note_board(nb: Notebook) {
+    std.page(nb) {
+        text("Board")
+    }
+}"#,
+    );
+    assert!(plain.meta.views_of.is_empty(), "no views are declared");
+}
+
+#[test]
+fn a_views_declaration_names_the_types_own_views_and_its_default_one() {
+    // A view of another type is no view of this one.
+    expect(
+        "E018",
+        r#"type Note {
+    title: Text (title)
+}
+
+root Notebook
+
+type Notebook {
+    notes: Collection<Note>
+}
+
+default view note_cards for Notebook
+
+view note_cards(nb: Notebook) {
+    std.list(nb, nb.notes, empty: "No notes yet")
+}
+
+view note_page(n: Note) {
+    std.document(n) {
+        text(n.title)
+    }
+}
+
+views note_cards, note_page for Notebook"#,
+    );
+    // The default view is the one a window opens on, so the switch names it.
+    expect(
+        "E018",
+        r#"type Note {
+    title: Text (title)
+}
+
+root Notebook
+
+type Notebook {
+    notes: Collection<Note>
+}
+
+default view note_cards for Notebook
+
+view note_cards(nb: Notebook) {
+    std.list(nb, nb.notes, empty: "No notes yet") { n ->
+        row(n.title)
+    }
+}
+
+view note_board(nb: Notebook) {
+    std.page(nb) {
+        text("Board")
+    }
+}
+
+views note_board for Notebook"#,
+    );
+    ok(r#"type Note {
+    title: Text (title)
+}
+
+root Notebook
+
+type Notebook {
+    notes: Collection<Note>
+}
+
+default view note_cards for Notebook
+
+view note_cards(nb: Notebook) {
+    std.list(nb, nb.notes, empty: "No notes yet") { n ->
+        row(n.title)
+    }
+}
+
+view note_board(nb: Notebook) {
+    std.page(nb) {
+        text("Board")
+    }
+}
+
+views note_cards, note_board for Notebook"#);
 }
 
 // USER REQUIREMENT (2026-10-20): "A package declares scenarios:
@@ -727,7 +882,7 @@ fn e097_lists_and_rows() {
     );
     expect(
         "E097",
-        &with_t("view v(x: T) {\n    list(x.items) { i ->\n        row(i.t, mark: i.t)\n    }\n}"),
+        &with_t("view v(x: T) {\n    list(x.items) { i ->\n        row(i.t, mark: i.n)\n    }\n}"),
     );
     ok(&with_t(
         "view v(x: T) {\n    list(x.items) { i ->\n        row(i.t, secondary: i.t, meta: \"m\", badge: \"b\", value: i.n, icon: .pin, checkbox: i.b, mark: if i.b { .pin } else { .check })\n    }\n}",
@@ -739,7 +894,7 @@ fn e098_controls_and_facts_misused() {
     expect("E098", &with_t("view v(x: T) {\n    choice(bind: x.b)\n}"));
     expect(
         "E098",
-        &with_t("view v(x: T) {\n    facts {\n        text(x.t)\n    }\n}"),
+        &with_t("view v(x: T) {\n    facts(x) {\n        \"Name\": x.t\n    }\n}"),
     );
     expect(
         "E098",
@@ -752,7 +907,7 @@ fn e098_controls_and_facts_misused() {
         ),
     );
     ok(&with_t(
-        "enum K {\n    a\n    b\n}\naction go(x: T) {\n    x.n = 1\n}\nview v(x: T) {\n    lens k: K = .a\n    stack {\n        choice(bind: k)\n        facts {\n            \"Name\": x.t; \"Count\": x.n\n        }\n        toggle(bind: x.b)\n        button(go(x), enabled: x.b)\n        button(\"Pick b\", on: set(k, .b))\n    }\n}",
+        "enum K {\n    a\n    b\n}\naction go(x: T) {\n    x.n = 1\n}\nview v(x: T) {\n    lens k: K = .a\n    stack {\n        choice(bind: k)\n        facts(x)\n        toggle(bind: x.b)\n        button(go(x), enabled: x.b)\n        button(\"Pick b\", on: set(k, .b))\n    }\n}",
     ));
 }
 
@@ -842,10 +997,10 @@ fn dates_and_times_are_checked() {
 #[test]
 fn dated_props_say_what_they_are() {
     let c = compile_body(&format!(
-        "{DATED}type L {{\n    tasks: Collection<Task>\n}}\nview v(l: L) {{\n    list(l.tasks) {{ t ->\n        row(t.title, meta: t.due, secondary: t.start)\n    }}\n}}\nview d(t: Task) {{\n    stack {{\n        text(t.start)\n        facts {{\n            \"Due\": t.due\n            \"Done\": t.done_at\n        }}\n    }}\n}}"
+        "{DATED}type L {{\n    tasks: Collection<Task>\n}}\nview v(l: L) {{\n    list(l.tasks) {{ t ->\n        row(t.title, meta: t.due, secondary: t.start)\n    }}\n}}\nview d(t: Task) {{\n    stack {{\n        text(t.start)\n        facts(t)\n    }}\n}}"
     ));
     let has = |name: &str| c.wasm.windows(name.len()).any(|w| w == name.as_bytes());
-    assert!(has("meta:as") && has("secondary:as") && has("value:as"));
+    assert!(has("meta:as") && has("secondary:as"));
     crate::common::validate(&c.wasm);
 }
 
@@ -857,7 +1012,7 @@ fn an_action_whose_on_is_its_subjects_field_says_which_state_it_toggles() {
     let src = "app so.tilo.todo \"Todo\"\n\
         type Todo {\n    title: Text (title)\n    done: Bool = false\n    starred: Bool = false\n}\n\
         action check(item: Todo, done: Bool = not item.done) (icon: .check, on: item.done) {\n    item.done = done\n}\n\
-        action flip(item: Todo, done: Bool = not item.done) (icon: .check, on: not item.done) {\n    item.done = done\n}\n\
+        action flip(item: Todo, starred: Bool = not item.starred) (icon: .check, on: not item.starred) {\n    item.starred = starred\n}\n\
         action star(item: Todo) (icon: .plus) {\n    item.starred = true\n}\n";
     let m = crate::common::compile(src).meta;
     let todo = m.types.iter().find(|t| t.name == "Todo").expect("Todo");

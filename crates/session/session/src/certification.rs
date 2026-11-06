@@ -44,6 +44,10 @@ pub(crate) trait Keys: Send + Sync {
     fn key(&self, person: [u8; 32]) -> Result<Box<dyn IdentityKey>, String>;
     /// Whether `device` was removed from `person`.
     fn revoked(&self, person: [u8; 32], device: &[u8; 32]) -> bool;
+    /// The certificate this device's fleet holds for `device` under
+    /// `person`, when it holds one: what a renewal replaces is checked
+    /// against it, never against the asker's word alone.
+    fn held(&self, person: [u8; 32], device: &[u8; 32]) -> Option<tilo_user_identity::DeviceCert>;
 }
 
 /// [`Keys`] from the session's identity store.
@@ -62,6 +66,18 @@ impl Keys for StoreKeys {
             .ok()
             .and_then(|store| store.load(&hex::encode(person)).ok())
             .is_some_and(|fleet| fleet.is_revoked(device))
+    }
+
+    fn held(&self, person: [u8; 32], device: &[u8; 32]) -> Option<tilo_user_identity::DeviceCert> {
+        crate::identity_admin::fleet_store()
+            .ok()
+            .and_then(|store| store.load(&hex::encode(person)).ok())
+            .and_then(|fleet| {
+                fleet
+                    .certificates
+                    .into_iter()
+                    .find(|cert| &cert.device_public_key == device)
+            })
     }
 }
 
@@ -266,6 +282,29 @@ fn receive(local: &DeviceId, person: [u8; 32], from: DeviceId, via: String, ask:
             }),
             Err(error) => Reply::Refused(error),
         },
+        // A renewal adds no device and grants nothing new, so the person is
+        // not asked: the device is already theirs. A key holder checks it is
+        // exactly that — the same device key, under the same root, issued
+        // later, wider in nothing, and not revoked — and that the certificate
+        // it replaces is the one the fleet holds for the device, then signs
+        // it.
+        Step::Renew { held } => match keys.key(person) {
+            Ok(key) if key.holds_key() => {
+                let current = keys.held(person, &ask.cert.device_public_key);
+                match ceremony::check_renewal(&ask, held, current.as_ref(), person, &|device| {
+                    keys.revoked(person, device)
+                }) {
+                    Ok(()) => with_state(local, |state| {
+                        state
+                            .signer
+                            .renew(key.as_ref(), &ask, tilo_clock::unix_now_ns())
+                    }),
+                    Err(reason) => Reply::Refused(reason),
+                }
+            }
+            Ok(_) => Reply::HoldsNoKey,
+            Err(error) => Reply::Refused(error),
+        },
     };
     with_state(local, |state| {
         state.outbox.push((
@@ -465,41 +504,114 @@ pub(crate) fn certify(
 ) -> Result<DeviceCert, String> {
     let mut session = [0; 16];
     getrandom::fill(&mut session).map_err(|error| error.to_string())?;
-    let mut gathering = Gathering::new(session, cert, service, threshold, total);
+    let gathering = Gathering::new(session, cert, service, threshold, total);
+    gather(
+        fabric,
+        gathering,
+        AskVerb::Approve,
+        |local_device, key, ask, now| {
+            with_state(local_device, |state| {
+                state.signer.approve(key, ask, true, now)
+            })
+        },
+    )
+}
+
+/// Renew this device's certificate `held` through the person's devices that
+/// hold their identity's key: `cert` (unsigned) replaces `held` for the same
+/// device, and `threshold` of the key's `total` devices sign it. Nobody is
+/// asked to approve: a renewal adds no device and grants nothing new. Blocks
+/// until it is signed or [`APPROVAL_WINDOW`] passes.
+///
+/// # Errors
+///
+/// What is still needed, plainly, when it was not signed.
+pub(crate) fn renew(
+    fabric: &SharedLink,
+    cert: DeviceCert,
+    held: DeviceCert,
+    service: [u8; 32],
+    threshold: u16,
+    total: u16,
+) -> Result<DeviceCert, String> {
+    let mut session = [0; 16];
+    getrandom::fill(&mut session).map_err(|error| error.to_string())?;
+    let gathering = Gathering::renewal(session, cert, held, service, threshold, total);
+    gather(
+        fabric,
+        gathering,
+        AskVerb::Renew,
+        |local_device, key, ask, now| {
+            with_state(local_device, |state| state.signer.renew(key, ask, now))
+        },
+    )
+}
+
+/// How a gather ends in a person's words: what a certification asks them to
+/// approve, or a renewal that needs no approval and only needs signing.
+#[derive(Clone, Copy)]
+enum AskVerb {
+    Approve,
+    Renew,
+}
+
+impl AskVerb {
+    /// The word for what the person waits on, as the refusal uses it.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Approve => "approve",
+            Self::Renew => "sign",
+        }
+    }
+}
+
+/// Drive `gathering` to a signed certificate over the person's fabric.
+/// `here` answers its own share, given this device's id: a certification the
+/// person just approved here, or a renewal checked here.
+fn gather(
+    fabric: &SharedLink,
+    mut gathering: Gathering,
+    verb: AskVerb,
+    here: impl Fn(&DeviceId, &dyn ceremony::IdentityKey, &Ask, u64) -> Reply,
+) -> Result<DeviceCert, String> {
     let person = gathering.ask().cert.user_public_key;
-    let here = local(fabric.as_ref())?;
-    let here_key = device_key(&here).ok_or("this device has a malformed key")?;
+    let session = gathering.ask().session;
+    let local_device = local(fabric.as_ref())?;
+    let here_key = device_key(&local_device).ok_or("this device has a malformed key")?;
     let (answers, arrived) = mpsc::channel();
-    with_state(&here, |state| {
+    with_state(&local_device, |state| {
         state.gatherings.insert(session, answers.clone())
     });
-    let _registered = Registered(here.clone(), session);
-    // A share held here joins in: the person confirmed the device here.
-    let share = keys(&here).key(person).ok().filter(|key| key.holds_key());
+    let _registered = Registered(local_device.clone(), session);
+    // A share held here joins in.
+    let share = keys(&local_device)
+        .key(person)
+        .ok()
+        .filter(|key| key.holds_key());
     let mut asked = 0_usize;
     for device in fabric.online_device_ids() {
-        if device == here {
+        if device == local_device {
             continue;
         }
         match send(fabric.as_ref(), &device, ask_action(gathering.ask())?) {
             Ok(()) => asked = asked.saturating_add(1),
-            Err(error) => tracing::debug!(%error, "a device of the person could not be asked"),
+            Err(error) => tracing::warn!(%error, "a device of the person could not be asked"),
         }
     }
     if let Some(key) = &share {
-        let now = tilo_clock::unix_now_ns();
-        let reply = with_state(&here, |state| {
-            state
-                .signer
-                .approve(key.as_ref(), gathering.ask(), true, now)
-        });
+        let reply = here(
+            &local_device,
+            key.as_ref(),
+            gathering.ask(),
+            tilo_clock::unix_now_ns(),
+        );
         let _ = answers.send((here_key, Answer { session, reply }));
     } else if asked == 0 {
-        return Err(
-            "none of your other devices is online to approve it: turn on the device you set \
-             up first, then pair again"
-                .into(),
-        );
+        return Err(format!(
+            "none of your other devices is online to {} it: turn on the device you set \
+             up first, then try again",
+            verb.as_str()
+        ));
     }
     let deadline = Instant::now()
         .checked_add(APPROVAL_WINDOW)
@@ -509,7 +621,8 @@ pub(crate) fn certify(
         let left = deadline.saturating_duration_since(Instant::now());
         let Ok((from, answer)) = arrived.recv_timeout(left) else {
             return Err(format!(
-                "It was not approved in time. {}",
+                "It was not {}d in time. {}",
+                verb.as_str(),
                 gathering.status()
             ));
         };
@@ -519,11 +632,11 @@ pub(crate) fn certify(
         match gathering.answer(from, answer) {
             Progress::Certified(cert) => return Ok(cert),
             Progress::Waiting if share.is_none() && without_key >= asked => {
-                return Err(
-                    "none of your devices online now can approve it: turn on the device you \
-                     set up first, then pair again"
-                        .into(),
-                );
+                return Err(format!(
+                    "none of your devices online now can {} it: turn on the device you \
+                     set up first, then try again",
+                    verb.as_str()
+                ));
             }
             Progress::Waiting => {}
             Progress::Failed(reason) => return Err(reason),
@@ -531,8 +644,9 @@ pub(crate) fn certify(
                 for (to, ask) in rounds {
                     if let Some(key) = share.as_ref().filter(|_| to == here_key) {
                         let now = tilo_clock::unix_now_ns();
-                        let reply =
-                            with_state(&here, |state| state.signer.sign(key.as_ref(), &ask, now));
+                        let reply = with_state(&local_device, |state| {
+                            state.signer.sign(key.as_ref(), &ask, now)
+                        });
                         let _ = answers.send((to, Answer { session, reply }));
                         continue;
                     }
@@ -664,6 +778,14 @@ mod tests {
         fn revoked(&self, _person: [u8; 32], _device: &[u8; 32]) -> bool {
             self.revoked
         }
+
+        fn held(
+            &self,
+            _person: [u8; 32],
+            _device: &[u8; 32],
+        ) -> Option<tilo_user_identity::DeviceCert> {
+            None
+        }
     }
 
     /// A device holding none of the person's key.
@@ -676,6 +798,14 @@ mod tests {
 
         fn revoked(&self, _person: [u8; 32], _device: &[u8; 32]) -> bool {
             false
+        }
+
+        fn held(
+            &self,
+            _person: [u8; 32],
+            _device: &[u8; 32],
+        ) -> Option<tilo_user_identity::DeviceCert> {
+            None
         }
     }
 
@@ -794,6 +924,27 @@ mod tests {
             tilo_clock::unix_now_ns(),
         )
         .expect("a proposal")
+    }
+
+    /// The certificate `laptop` gets from its peers for an unsigned renewal
+    /// of `held`, each peer's answers sent as the session's passes would.
+    fn renewed(
+        laptop: &SharedLink,
+        peer: &SharedLink,
+        cert: DeviceCert,
+        held: DeviceCert,
+        threshold: u16,
+        total: u16,
+    ) -> Result<DeviceCert, String> {
+        let (done, answers) = mpsc::channel();
+        let asking = Arc::clone(laptop);
+        std::thread::spawn(move || {
+            let _ = done.send(renew(&asking, cert, held, [0; 32], threshold, total));
+        });
+        tilo_test_env::wait_for("the renewal", || {
+            pump(peer.as_ref());
+            answers.try_recv().ok()
+        })
     }
 
     /// The certificate `laptop` gets for the proposed device, its peer's
@@ -948,5 +1099,204 @@ mod tests {
             !here.online_device_ids().contains(&device),
             "a revoked device has no session"
         );
+    }
+
+    /// A joined device of `person`, certified by their root and holding none
+    /// of it: the laptop's shape, whose certificate ran out.
+    struct Joined {
+        device_key: ed25519_dalek::SigningKey,
+        paths: tilo_user_identity::IdentityPaths,
+        held: DeviceCert,
+    }
+
+    impl Joined {
+        /// A certificate for this same device, issued `issued_at_ns`, as a
+        /// later one this device was given and the fleet already holds.
+        fn at(&self, issued_at_ns: u64) -> DeviceCert {
+            let mut cert = self.held.clone();
+            cert.issued_at_ns = issued_at_ns;
+            cert.expires_at_ns = Some(issued_at_ns.saturating_add(24 * 60 * 60 * 1_000_000_000));
+            cert.signature = [0; 64];
+            cert
+        }
+
+        /// An unsigned renewal of the certificate `held`, issued `at`,
+        /// expiring a day after it.
+        fn renewal(held: &DeviceCert, at: u64) -> DeviceCert {
+            let mut cert = held.clone();
+            cert.issued_at_ns = at;
+            cert.expires_at_ns = Some(at.saturating_add(24 * 60 * 60 * 1_000_000_000));
+            cert.signature = [0; 64];
+            cert
+        }
+
+        /// An unsigned renewal of the certificate it holds, issued now.
+        fn unsigned_renewal(&self) -> DeviceCert {
+            Self::renewal(&self.held, tilo_clock::unix_now_ns())
+        }
+    }
+
+    /// A joined device of `root`'s person, labelled `label`, whose
+    /// certificate ran out: the shape this laptop has, certified by the
+    /// person's root and holding no root of its own.
+    fn joined_device(root: &runtime_identity::SigningIdentity, label: &str) -> Joined {
+        let dir = tempfile::tempdir().expect("a directory for a joined device");
+        let paths = tilo_user_identity::IdentityPaths::under(dir.path().join("system"));
+        paths.ensure_directories().expect("the identity tree");
+        let device_key = ed25519_dalek::SigningKey::from_bytes(&[0x6d; 32]);
+        let now = tilo_clock::unix_now_ns();
+        // A day of validity, issued two days ago: it has run out.
+        let mut cert = DeviceCert {
+            user_public_key: root.person(),
+            device_public_key: device_key.verifying_key().to_bytes(),
+            device_label: label.into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: now.saturating_sub(48 * 60 * 60 * 1_000_000_000),
+            expires_at_ns: Some(now.saturating_sub(24 * 60 * 60 * 1_000_000_000)),
+            signature: [0; 64],
+        };
+        let digest = tilo_user_identity::device_cert_signing_digest(&cert).expect("a digest");
+        cert.signature = root.sign(&digest).expect("the person's key signs it");
+        tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert)
+            .expect("the lapsed certificate");
+        tilo_user_identity::persist::write_device_cert(
+            &paths.device_cert_for_user(&root.person()),
+            &cert,
+        )
+        .expect("the lapsed certificate where the identity keeps it");
+        tilo_user_identity::persist::write_public_key(&paths.user_pubkey, &root.person())
+            .expect("the person's key");
+        tilo_user_identity::persist::write_signing_key(&paths.device_privkey, &device_key)
+            .expect("the joined device's key");
+        std::mem::forget(dir);
+        Joined {
+            device_key,
+            paths,
+            held: cert,
+        }
+    }
+
+    /// A [`Keys`] holding `root`, and knowing `current` as the certificate the
+    /// fleet holds for a device.
+    fn held_by(
+        root: Arc<runtime_identity::SigningIdentity>,
+        current: Option<DeviceCert>,
+    ) -> HeldKeys {
+        HeldKeys { root, current }
+    }
+
+    struct HeldKeys {
+        root: Arc<runtime_identity::SigningIdentity>,
+        current: Option<DeviceCert>,
+    }
+
+    impl Keys for HeldKeys {
+        fn key(&self, _person: [u8; 32]) -> Result<Box<dyn ceremony::IdentityKey>, String> {
+            Ok(Box::new(Held {
+                key: Arc::clone(&self.root),
+                revoked: false,
+            }))
+        }
+
+        fn revoked(&self, _person: [u8; 32], _device: &[u8; 32]) -> bool {
+            false
+        }
+
+        fn held(&self, _person: [u8; 32], device: &[u8; 32]) -> Option<DeviceCert> {
+            self.current
+                .clone()
+                .filter(|cert| &cert.device_public_key == device)
+        }
+    }
+
+    /// Two devices on one fabric: the device under test at `own_key`, and
+    /// the person's other device at `peer_seed`.
+    fn pair_of(
+        own_key: &ed25519_dalek::SigningKey,
+        peer_seed: u8,
+    ) -> (SharedLink, SharedLink, DeviceId, DeviceId) {
+        pair(own_key.verifying_key().to_bytes(), [peer_seed; 32])
+    }
+
+    #[test]
+    fn a_joined_devices_lapsed_certificate_is_renewed_through_the_persons_devices() {
+        // The person's root on one of their devices, and a joined laptop that
+        // holds nothing of it and whose certificate ran out.
+        let (_root_dir, root) = identity();
+        let person = root.person();
+        let joined = joined_device(&root, "tilo-yoga");
+        assert!(
+            joined.held.is_expired_at(tilo_clock::unix_now_ns()),
+            "the laptop starts with a certificate that has run out"
+        );
+
+        let (laptop, other, laptop_id, other_id) = pair_of(&joined.device_key, 0x4a);
+        // The laptop holds no part of the person's key; the other device
+        // holds the whole of it and knows the laptop's certificate.
+        set_keys(&laptop_id, Arc::new(NoKey));
+        set_keys(
+            &other_id,
+            Arc::new(held_by(Arc::new(root), Some(joined.held.clone()))),
+        );
+
+        let renewed = renewed(
+            &laptop,
+            &other,
+            joined.unsigned_renewal(),
+            joined.held.clone(),
+            1,
+            1,
+        )
+        .expect("the person's device renews the certificate");
+
+        tilo_user_identity::verify_device_cert(&renewed).expect("the person's key signed it");
+        assert_eq!(renewed.device_public_key, joined.held.device_public_key);
+        assert_eq!(renewed.user_public_key, person);
+        assert!(renewed.renews(&joined.held));
+        let now = tilo_clock::unix_now_ns();
+        assert!(
+            !renewed.is_expired_at(now),
+            "the renewal is valid now, so a host admits it"
+        );
+    }
+
+    #[test]
+    fn a_renewal_of_a_certificate_the_fleet_replaced_is_refused() {
+        let (_root_dir, root) = identity();
+        let joined = joined_device(&root, "tilo-yoga");
+        // The fleet holds a certificate the laptop was given since the one it
+        // asks to replace: a renewal replaces the newest, or nothing. The
+        // laptop proposes one issued just after the certificate it still has,
+        // and the fleet already holds a later one.
+        let now = tilo_clock::unix_now_ns();
+        let newer = joined.at(now);
+        let stale = Joined::renewal(&joined.held, joined.held.issued_at_ns.saturating_add(1));
+
+        let (laptop, other, laptop_id, other_id) = pair_of(&joined.device_key, 0x4b);
+        set_keys(&laptop_id, Arc::new(NoKey));
+        set_keys(&other_id, Arc::new(held_by(Arc::new(root), Some(newer))));
+
+        let reason = renewed(&laptop, &other, stale, joined.held.clone(), 1, 1)
+            .expect_err("a stale renewal replaces nothing");
+        assert!(reason.contains("does not replace"), "{reason}");
+    }
+
+    #[test]
+    fn a_joined_device_renewal_is_due_once_the_certificate_lapses_and_never_twice() {
+        let (_root_dir, root) = identity();
+        let joined = joined_device(&root, "tilo-yoga");
+        let now = tilo_clock::unix_now_ns();
+        // Before it runs out, nothing is due.
+        assert!(
+            tilo_identity_host::provisioning::joined_device_renewal_due(
+                &joined.paths,
+                joined.held.issued_at_ns
+            )
+            .is_none()
+        );
+        // Once it has, the certificate it holds is what is renewed.
+        let due = tilo_identity_host::provisioning::joined_device_renewal_due(&joined.paths, now)
+            .expect("a lapsed joined certificate is due");
+        assert_eq!(due, joined.held);
     }
 }

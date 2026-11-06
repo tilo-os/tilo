@@ -16,12 +16,14 @@ use tilo_vm_protocol::{
 
 const FAKE_CARGO: &str = r#"#!/bin/sh
 case "$1" in
-  metadata) echo '{"packages":[{"name":"shell","features":{"dev-overrides":[]}}]}' ;;
+  metadata) echo '{"packages":[{"name":"tilo-session","features":{"dev-overrides":[]}}]}' ;;
   build)
-    echo "   Compiling shell v0.1.0 ($*)" >&2
+    echo "   Compiling tilo-session v0.1.0 ($*)" >&2
     mkdir -p target/release
-    printf '#!/bin/sh\necho built\n' > target/release/shell
-    chmod 755 target/release/shell ;;
+    for bin in tilo-session tilo-window-menu tilo-lock-screen tilo-quick-settings osk; do
+      printf '#!/bin/sh\necho built\n' > "target/release/$bin"
+      chmod 755 "target/release/$bin"
+    done ;;
 esac
 "#;
 
@@ -43,9 +45,9 @@ fn setup() -> (tempfile::TempDir, String) {
     let src = root.path().join("state/src/wt-1");
     std::fs::create_dir_all(&src).unwrap();
     std::fs::write(src.join("Cargo.toml"), "[workspace]\n").unwrap();
-    // The manifest, its installer, the checked-in inputs the shell
+    // The manifest, its installer, the checked-in inputs the session
     // component copies from beside the manifest (`@manifest/...`), and the
-    // font catalog a source shell swap stages its verified fonts from.
+    // font catalog a source session swap stages its verified fonts from.
     for file in [
         "os/components.toml",
         "os/scripts/install-components.py",
@@ -80,7 +82,7 @@ fn copy_tree(from: &Path, to: &Path) {
 }
 
 fn job(target: BuildTarget) -> BuildJob {
-    let mut provenance = Provenance::local("shell");
+    let mut provenance = Provenance::local("tilo-session");
     provenance.source_commit = Some("abc".into());
     BuildJob {
         worktree: "wt-1".into(),
@@ -141,7 +143,7 @@ fn in_vm_builds_import_layers_and_report_errors_with_hints() {
         );
         let error = line.error.unwrap();
         assert_eq!(error.code, code::NOT_FOUND);
-        assert!(error.hint.contains("shell"), "{}", error.hint);
+        assert!(error.hint.contains("tilo-session"), "{}", error.hint);
 
         let (line, _) = run(
             root.path(),
@@ -154,7 +156,7 @@ fn in_vm_builds_import_layers_and_report_errors_with_hints() {
         assert!(line.error.unwrap().message.contains("apps/missing-app"));
 
         let mut unsynced = job(BuildTarget::Component {
-            name: "shell".into(),
+            name: "tilo-session".into(),
             profile: None,
         });
         unsynced.worktree = "never-synced".into();
@@ -165,20 +167,20 @@ fn in_vm_builds_import_layers_and_report_errors_with_hints() {
     // Phase `in_vm_build_imports_a_layer_and_records_its_build_dir`.
     {
         let (root, path) = setup();
-        let shell = || {
+        let session = || {
             job(BuildTarget::Component {
-                name: "shell".into(),
+                name: "tilo-session".into(),
                 profile: None,
             })
         };
-        let (line, stderr) = run(root.path(), &path, &shell());
+        let (line, stderr) = run(root.path(), &path, &session());
         assert!(line.error.is_none(), "{:?}\n{stderr}", line.error);
         assert!(
-            stderr.contains("Compiling shell"),
+            stderr.contains("Compiling tilo-session"),
             "build output streams: {stderr}"
         );
         assert!(
-            stderr.contains("shell/dev-overrides"),
+            stderr.contains("tilo-session/dev-overrides"),
             "dev overrides are enabled: {stderr}"
         );
         let Some(JobOutput::Layer {
@@ -194,14 +196,14 @@ fn in_vm_builds_import_layers_and_report_errors_with_hints() {
         assert!(!existed);
         assert_eq!(provenance.builder.as_deref(), Some("vm"));
         assert_eq!(provenance.source_commit.as_deref(), Some("abc"));
-        assert_eq!(provenance.component, "shell");
+        assert_eq!(provenance.component, "tilo-session");
         assert!(phases.contains_key("build") && phases.contains_key("import"));
         let layer = root.path().join("state/layers").join(&hash);
-        assert!(layer.join("usr/bin/shell").is_file());
+        assert!(layer.join("usr/bin/tilo-session").is_file());
         assert_eq!(
             std::fs::read(layer.join("usr/libexec/tilo-session")).unwrap(),
             std::fs::read(repo().join("os/usr/libexec/tilo-session")).unwrap(),
-            "the imported shell layer carries this source checkout's startup wrapper"
+            "the imported session layer carries this source checkout's startup wrapper"
         );
 
         let record: serde_json::Value = serde_json::from_slice(
@@ -210,7 +212,7 @@ fn in_vm_builds_import_layers_and_report_errors_with_hints() {
         .unwrap();
         assert!(record["bytes"].as_u64().unwrap() > 0);
 
-        let (again, _) = run(root.path(), &path, &shell());
+        let (again, _) = run(root.path(), &path, &session());
         assert!(matches!(
             again.result,
             Some(JobOutput::Layer { existed: true, .. })

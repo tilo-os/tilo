@@ -13,6 +13,7 @@ mod component;
 pub use component::CheckboxProps;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::Color;
 
 /// The box itself: 18 px, centred in the interaction minimum target so the
 /// tap area stays 32/48 px while the mark sits with 16 px icons and body
@@ -49,6 +50,9 @@ pub struct CheckboxFace {
     /// Where its [`CheckMotion`] is this frame; at rest on the value when
     /// unset.
     pose: Option<CheckPose>,
+    /// The edge an unchecked box reads its bounds by, where the item it checks has a tone (a
+    /// task's priority): drawn instead of the ground's derived edge.
+    ring: Option<Color>,
 }
 
 /// The mark a checked box shows: a tick, or the mixed bar of a partly
@@ -208,7 +212,15 @@ impl CheckboxFace {
             interact: CheckboxInteract::default(),
             radio: false,
             pose: None,
+            ring: None,
         }
+    }
+
+    /// Draw the unchecked box's edge in `ring`: the item's tone, over its own ground.
+    #[must_use]
+    pub fn ring(mut self, ring: Color) -> Self {
+        self.ring = Some(ring);
+        self
     }
 
     /// Draw the box where its [`CheckMotion`] is this frame rather than at
@@ -565,6 +577,12 @@ impl Checkbox {
             Some((2.0, theme.tokens.colors.intent.accent_ink))
         } else if level >= 1.0 {
             None
+        } else if let Some(ring) = face.ring {
+            Some(if level <= 0.0 {
+                (1.5, ring)
+            } else {
+                (1.0, ring.multiply_alpha(1.0 - level))
+            })
         } else if level <= 0.0 {
             Some((1.0, unchecked_edge(theme, off_box)))
         } else {

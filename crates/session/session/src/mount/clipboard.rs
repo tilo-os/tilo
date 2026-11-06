@@ -136,7 +136,7 @@ impl Clipboard {
                 });
             }
             Err(error) => {
-                tracing::debug!(%error, "the selection could not be read");
+                tracing::warn!(%error, "the selection could not be read");
                 self.seen.set(change);
             }
         }
@@ -453,7 +453,7 @@ impl Clipboard {
         };
         let press = |compositor: &mut Compositor, keycode: u32, pressed: bool| {
             if let Err(error) = compositor.input(InputEvent::Key { keycode, pressed }) {
-                tracing::debug!(%error, keycode, pressed, "the paste chord was not sent");
+                tracing::warn!(%error, keycode, pressed, "the paste chord was not sent");
             }
         };
         if ctrl {
@@ -548,11 +548,15 @@ impl Service for Served {
             ClipboardAction::PasteFiles {
                 destination,
                 conflict,
-            } => self.clipboard.paste_files(
-                Path::new(&destination),
-                clipboard_files::Conflict::parse(conflict.as_deref())
-                    .unwrap_or(clipboard_files::Conflict::KeepBoth),
-            ),
+            } => {
+                let Some(chosen) = clipboard_files::Conflict::parse(conflict.as_deref()) else {
+                    return Err(DoorError::InvalidArguments(format!(
+                        "{:?} is not a paste conflict policy: keep-both, skip or replace",
+                        conflict.as_deref().unwrap_or_default()
+                    )));
+                };
+                self.clipboard.paste_files(Path::new(&destination), chosen);
+            }
         }
         Ok(Started::Done(ActionOutput::default()))
     }

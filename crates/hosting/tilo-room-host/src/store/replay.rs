@@ -432,7 +432,7 @@ fn v1_frame_charge(
 /// otherwise ordered by hash.
 pub(crate) fn lineage_rank(lineage: &str) -> &'static str {
     let identity = lineage.split_once('-').is_some_and(|(author, channel)| {
-        // optional-decode: only a sort rank; a lineage not named for an author ranks last
+        // ignored-failure: only a sort rank; a lineage not named for an author ranks last
         let Ok(author) = hex::decode(author) else {
             return false;
         };

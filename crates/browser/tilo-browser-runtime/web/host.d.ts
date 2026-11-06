@@ -99,6 +99,34 @@ export interface MountOptions {
    */
   hostActions?: HostAction[];
   onHostAction?: (id: string) => void;
+  /**
+   * What the desktop's "Join a workspace" needs from the page, which has no
+   * community or identity on disk: the site whose directory the sheet lists,
+   * the person a join is made as, and the workspaces this page holds (so each
+   * of them shows as already joined). Omit it and the sheet lists no
+   * directory.
+   */
+  directory?: {
+    /** The site whose directory the sheet lists: the page's own entry. */
+    site: string;
+    /** The person a join is made as; absent until the page has an identity. */
+    person?: {userPublicKey: string; name?: string};
+    /** The workspaces this page holds, each named by the host action id that opens it. */
+    held?: {workspace: string; key: string; name?: string}[];
+  };
+  /**
+   * A join the directory sheet asked for and the listed workspace's door
+   * granted: open it as this page's person, redeeming `invitation` and its
+   * one-time `admissionToken` at `origin` (`joinWorkspace`, then open it).
+   * Without this the join is dropped.
+   */
+  onJoinGranted?: (granted: {
+    origin: string;
+    invitation: string;
+    admissionToken: string;
+    workspace: string;
+    name?: string | null;
+  }) => void;
   /** The workspace name a desktop this mount seeds starts with. */
   workspaceName?: string;
   /**

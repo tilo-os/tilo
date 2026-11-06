@@ -38,7 +38,7 @@ fn fixture() -> Vec<PathBuf> {
 
 #[test]
 fn only_what_gnome_would_start_outside_its_own_session_starts() {
-    let scan = scan_autostart(&fixture(), &Laptop);
+    let scan = scan_autostart(&fixture(), &Laptop, &[]);
     let started: Vec<&str> = scan
         .start
         .iter()

@@ -442,8 +442,12 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             press(driver, rect.center(), MouseButton::Right);
         }
         Some("sidebar_hover") => {
-            let rect = semantic_target_rect(driver, |target| target.starts_with("row-action:1:"))
-                .ok_or("sidebar hover action missing")?;
+            reveal_sidebar(driver);
+            // A page row's "more" control: the second action of a `note-` row.
+            let rect = semantic_target_rect(driver, |target| {
+                target.starts_with("note-") && target.ends_with("/action/1")
+            })
+            .ok_or("sidebar hover action missing")?;
             move_pointer(driver, rect.center());
         }
         Some("note_menu") => {

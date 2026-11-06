@@ -69,6 +69,7 @@ use tilo_runtime::session_door::{Consent, Hello, SESSION_PROVIDER};
 use tilo_service::{Answer, Asked, Question, Questions, Wake};
 use tilo_sheets::{word, words};
 
+use crate::Shared;
 use crate::app_names::app_name;
 use crate::launches::Launches;
 use crate::plane::DeskAuthority;
@@ -213,6 +214,92 @@ struct StoredBinding {
     agent: String,
 }
 
+/// What this computer kept of the person's "Always allow" answers and this
+/// build could not read: each agent whose answer is asked again, and whether
+/// something was lost without the file saying whose answer it was. The person
+/// is told once, because an agent they let work here would otherwise simply be
+/// asked about again.
+#[derive(Default)]
+pub(crate) struct Lost {
+    agents: Vec<String>,
+    unnamed: bool,
+}
+
+impl Lost {
+    /// A file nothing could be read from: no answer of it is left, and none
+    /// of them can be named.
+    fn unreadable() -> Self {
+        Self {
+            agents: Vec::new(),
+            unnamed: true,
+        }
+    }
+
+    /// Each answer this build could not read: the agent it was for, or `None`
+    /// for a loss the file does not name.
+    pub(crate) fn answers(&self) -> impl Iterator<Item = Option<&str>> {
+        self.agents
+            .iter()
+            .map(|agent| Some(agent.as_str()))
+            .chain(self.unnamed.then_some(None))
+    }
+}
+
+/// The answers kept at `path`, and what in it this build could not read: a
+/// row it cannot read costs only that answer, so the person is asked about
+/// that agent again and keeps every other answer their file holds.
+fn read_bindings(path: &Path) -> (HashMap<BindingKey, String>, Lost) {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        // No bindings file yet: nobody chose "Always allow" on this device.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (HashMap::new(), Lost::default());
+        }
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "stored agent bindings could not be read");
+            return (HashMap::new(), Lost::unreadable());
+        }
+    };
+    let stored: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(stored) => stored,
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "stored agent bindings do not read back");
+            return (HashMap::new(), Lost::unreadable());
+        }
+    };
+    let Some(rows) = stored.get("bindings").and_then(serde_json::Value::as_array) else {
+        tracing::warn!(
+            path = %path.display(),
+            "stored agent bindings do not read back: no list of answers"
+        );
+        return (HashMap::new(), Lost::unreadable());
+    };
+    let mut answers = HashMap::new();
+    let mut lost = Lost::default();
+    for row in rows {
+        match serde_json::from_value::<StoredBinding>(row.clone()) {
+            Ok(binding) => {
+                answers.insert(binding.key, binding.agent);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    path = %path.display(),
+                    "a stored agent binding does not read back; that answer is asked again"
+                );
+                match row.get("agent").and_then(serde_json::Value::as_str) {
+                    Some(agent) if !lost.agents.iter().any(|lost| lost.as_str() == agent) => {
+                        lost.agents.push(agent.to_owned());
+                    }
+                    Some(_) => {}
+                    None => lost.unnamed = true,
+                }
+            }
+        }
+    }
+    (answers, lost)
+}
+
 /// The agents the person admitted at this door, as their desk seats them: one
 /// presence per agent, from the moment the person lets its first client in
 /// until the last of its connections ends. A shell shows each as its own
@@ -285,7 +372,15 @@ impl Seats {
 
     /// The connection `seat` names, which ending its seat closes.
     fn attached(&self, seat: u64, stream: &UnixStream) {
-        let copy = stream.try_clone().ok();
+        let copy = match stream.try_clone() {
+            Ok(copy) => Some(copy),
+            Err(error) => {
+                // Without its own handle the seat cannot end this connection;
+                // the client keeps it until it leaves by itself.
+                tracing::warn!(%error, "an agent seat's connection could not be duplicated");
+                None
+            }
+        };
         if let Some(connection) = self.inner.lock_recover().connections.get_mut(&seat) {
             connection.stream = copy;
         }
@@ -384,6 +479,9 @@ pub(crate) struct Loop {
     waiting: Vec<Waiting>,
     session: HashMap<BindingKey, String>,
     always: HashMap<BindingKey, String>,
+    /// The answers about agents this computer kept and this build could not
+    /// read, until the session's pass tells the person once.
+    lost: Vec<Option<String>>,
     /// Where "Always allow" is kept; `None` keeps it for this session.
     bindings_path: Option<PathBuf>,
     launches: Arc<Launches>,
@@ -499,18 +597,9 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
     let listener = bind_private(path)?;
     listener.set_nonblocking(true)?;
     let bindings_path = state.map(|directory| directory.join(BINDINGS_FILE));
-    let always = bindings_path
+    let (always, lost) = bindings_path
         .as_deref()
-        .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice::<StoredBindings>(&bytes).ok())
-        .map(|stored| {
-            stored
-                .bindings
-                .into_iter()
-                .map(|binding| (binding.key, binding.agent))
-                .collect()
-        })
-        .unwrap_or_default();
+        .map_or_else(|| (HashMap::new(), Lost::default()), read_bindings);
     let (requests, asked) = std::sync::mpsc::channel();
     // A program named by a path that does not resolve is admitted by none.
     let admits = admits
@@ -533,6 +622,10 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
         waiting: Vec::new(),
         session: HashMap::new(),
         always,
+        lost: lost
+            .answers()
+            .map(|agent| agent.map(str::to_owned))
+            .collect(),
         bindings_path,
         launches,
         wake,
@@ -549,6 +642,24 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
         seats,
     };
     Ok(Mounted { door })
+}
+
+impl Shared {
+    /// Tell the person once about the answers this computer kept and this
+    /// build could not read: an agent they let work here is asked about
+    /// again, and they are told why rather than losing the answer in
+    /// silence.
+    pub(crate) fn tell_agent_bindings_lost(&self) {
+        let mut door = self.agent_door.borrow_mut();
+        let Some(door) = door.as_mut() else {
+            return;
+        };
+        for agent in door.lost.drain(..) {
+            self.notifications
+                .borrow()
+                .tell(crate::notices::agent_bindings_notice(agent.as_deref()));
+        }
+    }
 }
 
 impl Loop {
@@ -972,6 +1083,9 @@ pub(crate) fn bind_private(path: &Path) -> io::Result<UnixListener> {
                 format!("{} already has a live listener", path.display()),
             ));
         }
+        // Nothing is there, or what is there is not a socket: bind it below,
+        // where a socket that answers proves itself live.
+        // ignored-failure: a path with no live listener is the path to bind
         Ok(_) | Err(_) => {}
     }
     // Short on purpose: a Unix socket path is capped near 108 bytes, and the
@@ -1128,13 +1242,20 @@ fn refuse(mut stream: UnixStream, refusal: &PeerRefusal) {
     let reply =
         tilo_runtime::session_door::error_reply(&serde_json::Value::Null, refusal.message());
     let _ = stream.set_nonblocking(false);
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-    let _ = stream.write_all(format!("{reply}\n").as_bytes());
+    if let Err(error) = stream.set_write_timeout(Some(Duration::from_secs(1))) {
+        tracing::warn!(%error, "a refused client's connection has no write timeout");
+    }
+    if let Err(error) = stream.write_all(format!("{reply}\n").as_bytes()) {
+        tracing::warn!(%error, "a refused agent was not told why");
+    }
 }
 
-/// What a control client outside an app this session started is told.
-const CONTROL_IN_APP_ONLY: &str = "The control protocol is served here to a program running inside \
-     an app this session started, as that app; this program runs in no such app.";
+/// What a control client that is not a program inside an app this session started is told:
+/// the pointer, the keys and the frames of the person's desk are theirs, and an agent acts
+/// through the actions a resource publishes.
+const CONTROL_IN_APP_ONLY: &str = "The control protocol is served here to a program running \
+     inside an app this session started, as that app, and to nothing else: this program is \
+     not one.";
 
 /// Tell a control client it is served nothing here, in the control
 /// protocol's own framing, then let it go.
@@ -1144,8 +1265,12 @@ fn refuse_control(mut stream: UnixStream, message: &str) {
         "code": "not_allowed",
         "message": message,
     }});
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-    let _ = stream.write_all(format!("{reply}\n").as_bytes());
+    if let Err(error) = stream.set_write_timeout(Some(Duration::from_secs(1))) {
+        tracing::warn!(%error, "a control client's connection has no write timeout");
+    }
+    if let Err(error) = stream.write_all(format!("{reply}\n").as_bytes()) {
+        tracing::warn!(%error, "a control client was not told why it is served nothing");
+    }
 }
 
 /// What a connection asks of the session's own doors: answered on the loop's
@@ -1178,10 +1303,10 @@ enum DoorAsk {
         app: String,
         done: tilo_actions::remote::Completer<Option<tilo_service::Record>>,
     },
-    /// The compiled modules of every package the session runs itself, which a task's host
-    /// loads to run its programs against: each its description embedded, and the packages it
-    /// uses first.
-    Modules(tilo_actions::remote::Completer<Vec<runtime_portal::tilolang_host::Module>>),
+    /// Every app a task's programs may name, which its host loads to run them against: the
+    /// compiled module of each package the session runs itself (its description embedded, the
+    /// packages it uses first), and the signed surface of each native app this device has.
+    Apps(tilo_actions::remote::Completer<Vec<runtime_portal::tilolang_host::App>>),
     /// Run the change `change` of a record a service keeps for a package the session runs
     /// itself, as `actor`, on the pass: its answer as the door gives it, or `None` when no
     /// service keeps that app's record.
@@ -1284,8 +1409,9 @@ impl SessionDoors {
     }
 
     /// Answer what the connections asked since the last pass, from `doors`,
-    /// the `services` the session runs, and the one `search`; `person` is
-    /// whose calls are their own, not someone's for them.
+    /// the `services` the session runs, and the one `search`; `shows` names
+    /// the resources a place can show, as the arrangement holds them, and
+    /// `person` is whose calls are their own, not someone's for them.
     ///
     /// The services are borrowed briefly, one ask at a time: a change they carry out is the
     /// published action's own, so a run never needs the services held across a turn of the
@@ -1295,14 +1421,20 @@ impl SessionDoors {
         doors: &tilo_surface_host::Doors,
         services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
         search: &crate::search::SessionSearch,
+        shows: &dyn Fn(&str) -> bool,
         person: &str,
+        look: &mut tilo_surface_host::Look<'_>,
     ) {
         let asked = std::mem::take(&mut *self.asks.lock_recover());
         for ask in asked {
             match ask {
                 DoorAsk::Resources(done) => done.complete(Offered::of(doors)),
                 DoorAsk::Find { needle, done } => {
-                    done.complete(crate::search::found_all(search.find(&needle)));
+                    done.complete(crate::search::found_all(
+                        &needle,
+                        search.find(&needle),
+                        shows,
+                    ));
                 }
                 DoorAsk::Invoke {
                     actor,
@@ -1323,31 +1455,17 @@ impl SessionDoors {
                             reason: word("agent-door-session-reads-only"),
                         })
                     } else if actor == person {
-                        doors.invoke(&address, &arguments)
+                        doors.invoke(&address, &arguments, look)
                     } else {
-                        doors.invoke_as(&actor, &address, &arguments)
+                        doors.invoke_as(&actor, &address, &arguments, look)
                     };
                     done.complete(ran);
                 }
                 DoorAsk::Record { app, done } => {
                     done.complete(services.borrow().record(&app));
                 }
-                DoorAsk::Modules(done) => {
-                    let modules: Vec<runtime_portal::tilolang_host::Module> = services
-                        .borrow()
-                        .records()
-                        .into_iter()
-                        .flat_map(|record| {
-                            record.packages.into_iter().map(|wasm| {
-                                runtime_portal::tilolang_host::Module {
-                                    wasm: wasm.to_vec(),
-                                    ids: String::new(),
-                                    imports: Vec::new(),
-                                }
-                            })
-                        })
-                        .collect();
-                    done.complete(modules);
+                DoorAsk::Apps(done) => {
+                    done.complete(catalogue(services));
                 }
                 DoorAsk::Change {
                     actor,
@@ -1537,35 +1655,17 @@ impl Host {
                       resources,
                       revision,
                   }| {
-                fn parents<'a>(
-                    resources: &'a [tilo_actions::ResourceSpec],
-                    parent: &'a str,
-                    out: &mut std::collections::HashMap<&'a str, &'a str>,
-                ) {
-                    for resource in resources {
-                        out.insert(resource.id.as_str(), parent);
-                        parents(&resource.children, resource.id.as_str(), out);
-                    }
-                }
-                let mut stands_under = std::collections::HashMap::new();
-                parents(&resources, "", &mut stands_under);
-                let rows: Vec<_> = tilo_actions::door::survey(&resources)
+                let rows: Vec<_> = tilo_actions::door::survey_placed(&resources)
                     .into_iter()
-                    .filter(|descriptor| {
-                        !reads_only || descriptor.kind == tilo_actions::OperationKind::View
+                    .filter(|placed| {
+                        !reads_only || placed.action.kind == tilo_actions::OperationKind::View
                     })
-                    .map(|descriptor| {
-                        let parent = stands_under
-                            .get(descriptor.address.resource.as_str())
-                            .map(|parent| (*parent).to_owned())
-                            .unwrap_or_default();
-                        let mut row = tilo_actions::remote::CatalogueRow::for_action(
+                    .map(|placed| {
+                        tilo_actions::remote::CatalogueRow::for_placed_action(
                             SESSION_PROVIDER,
                             SESSION_PROVIDER,
-                            descriptor,
-                        );
-                        row.parent_resource = parent;
-                        row
+                            placed,
+                        )
                     })
                     .collect();
                 CataloguePage::from_rows(revision, rows, &query)
@@ -1819,6 +1919,55 @@ impl tilo_actions::remote::RecordChanges for ServiceChanges {
     }
 }
 
+/// Every app a task's programs may name: the compiled module of each package the session runs
+/// itself, and the signed surface of each native app installed on this device.
+///
+/// One catalogue, whoever reads it: `tilolang check` reads the same surfaces from the apps'
+/// directories, and both compile a program against the packages they read from them.
+fn catalogue(
+    services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
+) -> Vec<runtime_portal::tilolang_host::App> {
+    use runtime_portal::tilolang_host::{App, Module};
+    let mut apps: Vec<App> = services
+        .borrow()
+        .records()
+        .into_iter()
+        .flat_map(|record| record.packages)
+        .map(|wasm| {
+            App::Module(Module {
+                wasm: wasm.to_vec(),
+                ids: String::new(),
+                imports: Vec::new(),
+            })
+        })
+        .collect();
+    let installed = match tilo_installed_apps::signed_surfaces_from_env() {
+        Ok(installed) => installed,
+        Err(error) => {
+            tracing::warn!(%error, "agent door: the installed apps' surfaces are not read");
+            Vec::new()
+        }
+    };
+    for (app, title, surface) in installed {
+        let Ok(surface) = String::from_utf8(surface) else {
+            tracing::warn!(%app, "agent door: an app's surface is not text");
+            continue;
+        };
+        if apps.iter().any(|known| match known {
+            App::Surface { app: named, .. } => *named == app,
+            App::Module(_) => false,
+        }) {
+            continue;
+        }
+        apps.push(App::Surface {
+            app,
+            title,
+            surface,
+        });
+    }
+    apps
+}
+
 /// Where the session's door starts a connection's task host: a thread of the
 /// session's own running the task's tilolang host (`tilolang_host::task`)
 /// over the program connection. The host holds no authority: it decides
@@ -1858,19 +2007,20 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
         // The person's own connection into the same session, for the lines they type in the
         // run's conversation: it runs there, where the `let`s the agent's programs bound are.
         let (person_ours, person_host) = UnixStream::pair()?;
-        // The modules the task's programs are compiled against: every package the session runs
-        // itself (the shell), whose records a program reads by the app, and the platform's own
-        // (the device and its arrangement, Settings).
+        // The apps the task's programs are compiled against: every package the session runs
+        // itself (the shell), whose records a program reads by the app, every native app this
+        // device has, from its signed surface, and the platform's own (the device and its
+        // arrangement, Settings).
         let (done, whole) = tilo_actions::remote::pending();
-        self.session.ask(DoorAsk::Modules(done));
-        let modules = whole.wait_timeout(WAIT).ok().flatten().unwrap_or_default();
-        let encoded = runtime_portal::tilolang_host::encode_modules(&modules);
-        let modules = tilo_render_protocol::shm::sealed_blob("tilolang-modules", &encoded)?;
+        self.session.ask(DoorAsk::Apps(done));
+        let apps = whole.wait_timeout(WAIT).ok().flatten().unwrap_or_default();
+        let encoded = runtime_portal::tilolang_host::encode_apps(&apps);
+        let apps = tilo_render_protocol::shm::sealed_blob("tilolang-apps", &encoded)?;
         let request = runtime_portal::tilolang_host::TaskRequest {
             task: task.to_owned(),
             room: workspace.to_owned(),
             person: self.person.lock_recover().clone(),
-            modules_len: encoded.len() as u64,
+            apps_len: encoded.len() as u64,
             records_under: std::collections::BTreeMap::new(),
         };
         self.runs
@@ -1880,7 +2030,7 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
             .spawn(move || {
                 let fds = runtime_portal::tilolang_host::TaskFds {
                     program: host_end.into(),
-                    modules,
+                    apps,
                 };
                 let opened =
                     tilolang_host::task::Task::open_with(&request, fds, Some(person_host));
@@ -1925,6 +2075,7 @@ fn serve_connection(
     let first = match tilo_runtime::session_door::read_first_line(&mut stream) {
         Ok(first) => first,
         Err(error) => {
+            // ignored-failure: a client that left before asking needs no answer
             tracing::debug!(%error, "agent door: the client left before its first request");
             return;
         }
@@ -1963,7 +2114,13 @@ fn serve_connection(
     ));
     let admitted = Arc::clone(&tasks);
     let seat = seats.joining();
-    let seat_stream = stream.try_clone().ok();
+    let seat_stream = match stream.try_clone() {
+        Ok(copy) => Some(copy),
+        Err(error) => {
+            tracing::warn!(%error, "an agent's seat has no handle on its connection");
+            None
+        }
+    };
     let ended = tilo_runtime::session_door::serve_after(
         stream,
         Some(first),
@@ -1984,6 +2141,7 @@ fn serve_connection(
     );
     seats.left(seat);
     if let Err(error) = ended {
+        // ignored-failure: a client that disconnected needs no answer
         tracing::debug!(%error, "agent door: the client disconnected");
     }
 }

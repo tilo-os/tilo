@@ -554,7 +554,6 @@ impl Fixture {
     ) -> JoinedChannel {
         JoinedChannel {
             as_app: None,
-            person_chat_views: std::cell::RefCell::default(),
             committed_read: Rc::new(std::cell::RefCell::new(committed_document::Slot::default())),
             state: self.state.clone(),
             directories: self.directories.clone(),
@@ -689,6 +688,7 @@ fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
                     f.native.key.verifying_key().to_bytes(),
                 ),
                 message,
+                Some(&f.native.key),
                 now,
             )
             .unwrap();

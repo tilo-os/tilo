@@ -18,7 +18,7 @@ fn commit(joined: &Enrolled, edit: impl FnOnce(&mut AutoCommit)) {
                 APP,
                 "",
                 chat.save_after(&before),
-                &member(),
+                &crate::owner::testing::member_key(),
                 joined.now,
             )?;
             let NeighbourMsg::AppDocument { envelope, .. } = message else {
@@ -189,6 +189,7 @@ fn a_changes_read_between_the_frames_of_one_checkpoint_is_left_to_the_whole_read
                 joined.workspace,
                 TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
                 frame,
+                Some(&crate::owner::testing::member_key()),
                 joined.now,
             )
             .unwrap();

@@ -84,17 +84,15 @@ mod editing;
 #[cfg(test)]
 mod editing_tests;
 mod erased;
-mod nav;
 mod reporting;
 #[cfg(test)]
 mod reporting_tests;
 #[cfg(test)]
 mod tests;
 
+pub use crate::widget::virtual_list::TreeMove;
 pub use affordances::{TreeHeadingAction, TreeRowAction};
-pub use editing::TreeMove;
 pub use erased::{AnyTreeModel, DynTreeModel, TreeView};
-pub(crate) use nav::{NavItemSpec, NavPresentation, NavRowSpec, NavStatus};
 
 pub type NodeId = u64;
 
@@ -923,6 +921,9 @@ pub struct TreeImpl<T, M = TreeNode<T>> {
     /// Where the checkboxes painted last frame are, by node: a press there
     /// asks [`Self::on_check`] instead of selecting the row.
     checkboxes: HashMap<NodeId, Rect>,
+    /// Whether each checkbox painted last frame is checked, by node: the rows'
+    /// semantics read the state a reader announces without painting them.
+    row_checks: HashMap<NodeId, bool>,
     /// A row's checkbox was pressed: the row it belongs to.
     on_check: Option<Box<dyn FnMut(NodeId)>>,
     reorder: ReorderController<NodeId>,
@@ -1040,12 +1041,6 @@ pub struct TreeImpl<T, M = TreeNode<T>> {
     shown: crate::scroll_copy::PaintedFrames,
     /// Where the rename field painted in the last draw.
     rename_paint: Option<Rect>,
-    /// Set by `NavList`: rows paint as navigation rows.
-    nav: Option<NavPresentation<M>>,
-    /// Counts the changes to what a navigation row is read from beyond its
-    /// own inputs: the model, the presentation and the checks it shows
-    /// ([`Self::changed_nav_presentation`]).
-    nav_revision: u64,
     /// The tree has been laid out at least once. Until then it has no rows
     /// on screen to move from, so model changes do not animate.
     laid_out: bool,
@@ -1214,6 +1209,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             hovered: None,
             row_descriptions: HashMap::new(),
             checkboxes: HashMap::new(),
+            row_checks: HashMap::new(),
             on_check: None,
             reorder: ReorderController::new(),
             reorder_validator: None,
@@ -1280,8 +1276,6 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             drawn_signature: None,
             shown: crate::scroll_copy::PaintedFrames::default(),
             rename_paint: None,
-            nav: None,
-            nav_revision: 0,
             laid_out: false,
             staged_drag: None,
             access_rows: std::cell::RefCell::default(),
@@ -1623,7 +1617,6 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
     /// What follows any edit of the model in place: everything shown is
     /// read again, keeping `anchor` in view.
     fn end_model_update(&mut self, anchor: Option<&SparseAnchor<TreeRowKey>>) {
-        self.changed_nav_presentation();
         self.invalidate_all_delegates();
         self.reconcile_model_state(anchor);
     }
@@ -1782,12 +1775,6 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         self.reorder.is_active()
     }
 
-    /// Whether rows are moving between geometries now.
-    #[cfg(test)]
-    pub(crate) fn transitions_active(&self) -> bool {
-        self.transitions.is_moving(crate::time::now())
-    }
-
     fn reconcile_model_state(&mut self, anchor: Option<&SparseAnchor<TreeRowKey>>) {
         self.affordance_focus_valid = false;
         let anchor = anchor.map(|anchor| self.normalize_anchor(anchor.clone()));
@@ -1862,7 +1849,6 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         changes: &[TreeModelChange],
         (reconcile, anchor): (bool, Option<SparseAnchor<TreeRowKey>>),
     ) {
-        self.changed_nav_presentation();
         self.affordance_focus_valid = false;
         self.paint_dirty = true;
         self.invalidate_changed_delegates(changes);
@@ -1878,7 +1864,6 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
     pub fn notify_model_changes(&mut self, changes: &[TreeModelChange]) {
         if !changes.is_empty() {
             self.affordance_focus_valid = false;
-            self.changed_nav_presentation();
         }
         self.paint_dirty = true;
         self.invalidate_changed_slots(changes);
@@ -2074,9 +2059,8 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             anchor,
         );
         self.index = next;
-        self.refresh_nav_heights();
         let new_snapshot = self.capture_transition_snapshot();
-        if self.laid_out && !self.is_nav() && !old_snapshot.is_empty() {
+        if self.laid_out && !old_snapshot.is_empty() {
             let motion = self.transition_motion;
             let tops = |rows: &[ShownTreeRow]| -> Vec<(TreeRowKey, f64)> {
                 rows.iter().map(|row| (row.key, row.top)).collect()
@@ -2281,7 +2265,6 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             (None, None) => 0.0,
         };
         self.refresh_row_estimate();
-        self.apply_nav_metrics(theme);
     }
 
     /// The one place the viewport's estimated row height is set, from the
@@ -2558,19 +2541,11 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         match key {
             TreeRowKey::Node(id) => {
                 let is_branch = self.model.is_branch(id);
-                let on_disclosure = match self
-                    .row_rect(id)
-                    .and_then(|row| self.nav_disclosure_rect(id, row))
-                {
-                    Some(nav) => nav.is_some_and(|rect| rect.contains(pt)),
-                    None => pt.x >= glyph_x0 && pt.x < glyph_x0 + self.disclosure_w,
-                };
+                let on_disclosure = pt.x >= glyph_x0 && pt.x < glyph_x0 + self.disclosure_w;
                 if is_branch && on_disclosure {
                     self.toggle_expand(id);
                 } else if self.press_check(id, pt) {
                     // The box a row painted takes the press; the row is not selected.
-                } else if self.toggle_nav_check(id) {
-                    // The whole row is the checkbox's target.
                 } else if self.rename_on_double_click
                     && !toggle
                     && !extend
@@ -2729,7 +2704,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         match logical_key {
             Key::Named(NamedKey::ArrowRight) => self.key_right(),
             Key::Named(NamedKey::ArrowLeft) => self.key_left(),
-            Key::Named(arrow @ (NamedKey::ArrowDown | NamedKey::ArrowUp)) => {
+            Key::Named(NamedKey::ArrowDown | NamedKey::ArrowUp) => {
                 let current = self
                     .focused
                     .and_then(|key| self.index.index_of_key(&self.model, key));
@@ -2738,7 +2713,6 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
                 else {
                     return false;
                 };
-                let index = self.skip_nav_captions(index, *arrow == NamedKey::ArrowDown);
                 let moved = self.focus_at(index);
                 if moved
                     && extend
@@ -2810,7 +2784,6 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             return false;
         };
         match key {
-            TreeRowKey::Node(id) if self.toggle_nav_check(id) => true,
             TreeRowKey::Node(id) if !self.model.is_selectable(id) => {
                 // A header row: Enter and Space open or close it.
                 if !self.model.is_branch(id) {
@@ -3191,10 +3164,6 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
             self.refresh_anchor();
         }
         self.laid_out = true;
-        // A rail's tiles wrap their captions to the width it was given.
-        if self.nav.as_ref().is_some_and(|nav| nav.rail) {
-            self.refresh_nav_heights();
-        }
         self.refresh_transition_snapshot();
         self.apply_staged_drag();
     }
@@ -3337,6 +3306,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
 
         self.row_descriptions.clear();
         self.checkboxes.clear();
+        self.row_checks.clear();
         let visible = self.visible_row_range();
         'rows: for i in visible {
             // Where this row paints, once it is known: its part's bounds.
@@ -3413,38 +3383,6 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
                         break 'row;
                     };
                     opacity *= incoming;
-                }
-                if let TreeRowKey::Node(id) = key
-                    && self.is_nav()
-                {
-                    let faded = opacity < 1.0;
-                    if faded {
-                        scene.push_layer(
-                            vello::peniko::Fill::NonZero,
-                            vello::peniko::BlendMode::default(),
-                            opacity,
-                            transform,
-                            &row_rect,
-                        );
-                    }
-                    // The pointer where the row paints: unscrolled with it.
-                    let pointer = self
-                        .last_cursor
-                        .map(|point| point + vello::kurbo::Vec2::new(0.0, shift + give));
-                    let painted = self.draw_nav_row(
-                        scene,
-                        transform,
-                        text_renderer,
-                        theme,
-                        id,
-                        (row_rect, pointer),
-                    );
-                    if faded {
-                        scene.pop_layer();
-                    }
-                    if painted {
-                        break 'row;
-                    }
                 }
                 // The list's s2 inset, one hairline off each neighbour, at the
                 // item radius: the same lift every list paints.
@@ -3557,6 +3495,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
                 if !delegated {
                     let actions_visible = self.row_actions_visible(key);
                     let mut text_color = text_color;
+                    let mut struck = false;
                     let mut label_max = self.rect.x1 - label_x - gap;
                     if let (TreeRowKey::Node(id), Some(description)) = (
                         key,
@@ -3568,6 +3507,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
                     }
                     if let Some(decoration) = &decoration {
                         if decoration.tone == TreeRowTone::Secondary {
+                            text_color = tokens.colors.text_dim;
+                        }
+                        // A row checked off as done reads done, as a list row does: its label
+                        // is struck through in the secondary ink, so what is left to do stands
+                        // out from what is not.
+                        struck = decoration.checkbox == Some(true);
+                        if struck {
                             text_color = tokens.colors.text_dim;
                         }
                         if let (TreeRowKey::Node(id), Some(checked)) = (key, decoration.checkbox) {
@@ -3593,6 +3539,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
                                 id,
                                 Rect::new(label_x, row_rect.y0, box_rect.x1 + gap, row_rect.y1),
                             );
+                            self.row_checks.insert(id, checked);
                             let used = box_rect.width() + gap;
                             label_x += used;
                             label_max -= used;
@@ -3684,6 +3631,20 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
                         None,
                         style,
                     );
+                    if struck && !label.is_empty() {
+                        let (label_w, _) = text_renderer.measure_style(&label, None, style);
+                        let through = text_y + f64::from(line_h) / 2.0;
+                        scene.stroke(
+                            &Stroke::new(1.0),
+                            transform,
+                            text_color.with_alpha_factor(opacity),
+                            None,
+                            &vello::kurbo::Line::new(
+                                (label_x, through),
+                                (label_x + f64::from(label_w), through),
+                            ),
+                        );
+                    }
                     if let Some(secondary) = &secondary {
                         let (label_w, _) = text_renderer.measure_style(&label, None, &text_style);
                         let x = label_x + f64::from(label_w) + gap;
@@ -3811,7 +3772,6 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
                 &text_style,
             );
         }
-        self.place_nav_rename_field(text_renderer);
         self.rename_paint = None;
         let outer = tracks_rows.then(|| std::mem::take(scene));
         if let Some(field) = self.rename.as_mut() {
@@ -4276,6 +4236,36 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
         if let Some(performed) = self.perform_affordance_action(target, action, state, path) {
             return performed;
         }
+        if let Some(raw) = target.strip_prefix("check:") {
+            let Ok(id) = raw.parse::<NodeId>() else {
+                return false;
+            };
+            if !self.model.contains(id) {
+                return false;
+            }
+            return match action {
+                // The checkbox a row paints is the row's own control: an
+                // assistive technology toggles it exactly as a press on it
+                // does, through the callback the app already answers.
+                Action::Activate | Action::ToggleCheck => {
+                    if let Some(callback) = self.on_check.as_mut() {
+                        callback(id);
+                        self.paint_dirty = true;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Action::Focus => {
+                    self.focused_affordance = None;
+                    let Some(index) = self.visible_index_of(id) else {
+                        return false;
+                    };
+                    self.focus_at(index)
+                }
+                _ => false,
+            };
+        }
         if let Some(raw) = target.strip_prefix("node:") {
             let Ok(id) = raw.parse::<NodeId>() else {
                 return false;
@@ -4538,7 +4528,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } if self.context_menu_items.is_some() || self.nav_offers_menu() => {
+            } if self.context_menu_items.is_some() => {
                 if let Some(cursor) = self.last_cursor
                     && self.rect.contains(cursor)
                 {
@@ -4618,8 +4608,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
                     && (self.reorder.cancel() || self.drag_scroll.cancel())
                 {
                     *handled = true;
-                } else if menu_key && (self.context_menu_items.is_some() || self.nav_offers_menu())
-                {
+                } else if menu_key && self.context_menu_items.is_some() {
                     *handled = self.open_menu_from_keyboard();
                 } else if *logical_key == Key::Named(NamedKey::F2) && self.renames() {
                     *handled = self.command_node().is_some_and(|id| self.begin_rename(id));

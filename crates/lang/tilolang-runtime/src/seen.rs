@@ -6,9 +6,10 @@
 //! the resource in a window of its own, by editing it (their own version is the newest they
 //! have seen of it), or by undoing what made it.
 //!
-//! The marks live in the person's own record, kept by the host: the runtime holds them as
-//! state slots ([`seen_key`]), which the host fills ([`crate::Runtime::set_seen`]) and which a
-//! view that read one runs again on; what the person marks here is queued for the host to keep
+//! The marks live under the person's entries of the workspace's record of them, kept by the
+//! host: the runtime holds them as state slots ([`seen_key`]), which the host fills
+//! ([`crate::Runtime::set_seen`]) and which a view that read one runs again on; what the person
+//! marks here is queued for the host to keep
 //! ([`crate::Runtime::take_seen`]).
 //!
 //! Which versions are marked at all: every version made in a task run or by an agent, and none
@@ -43,8 +44,8 @@ impl SeenMark {
     }
 }
 
-/// What the person marked seen, for the host to keep in their own record: the system's one
-/// `mark seen` action, of resources or of a whole run.
+/// What the person marked seen, for the host to keep under their entries of the workspace's
+/// record: the system's one `mark seen` action, of resources or of a whole run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SeenWrite {
     /// `person` has seen `resource` (as [`crate::value::ResourceRef::id_string`] writes it) up
@@ -61,11 +62,7 @@ pub enum SeenWrite {
 /// The slot holding `person`'s seen mark of `resource`.
 #[must_use]
 pub fn seen_key(person: &str, resource: &str) -> StateKey {
-    StateKey {
-        window: SEEN_WINDOW.to_owned(),
-        principal: Some(person.to_owned()),
-        state: resource.to_owned(),
-    }
+    StateKey::runtime(SEEN_WINDOW, Some(person.to_owned()), resource)
 }
 
 /// The slot holding the task runs `person` reviewed: the state no resource id names.
@@ -137,6 +134,8 @@ mod tests {
             change: change.to_owned(),
             left: None,
             placed: Vec::new(),
+            from: None,
+            suggested_by: None,
         }
     }
 

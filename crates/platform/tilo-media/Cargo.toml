@@ -95,6 +95,8 @@ tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = tru
 # playback timing needs.
 bounded-command = { version = "0.1.0", path = "../../system/bounded-command" }
 libc.workspace = true
+# Captured sound is a person's: buffers are wiped when they are dropped.
+zeroize.workspace = true
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 

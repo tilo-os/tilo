@@ -43,9 +43,9 @@ export {
   addPasskey, browserIdentity, browserPerson, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, installNode,
   installNodeCertificate, MAX_DISPLAY_NAME_BYTES, nodeInstallInfo, publishEnvelope, publishProfile, signInWithPasskey, storagePersisted, unlockIdentity,
 } from './root-identity.mjs';
-// The workspaces a page can open and guest admission, for hosts of this
-// module (Tilo Cloud) that import only the peer.
-export {joinViaHost, listedWorkspaces, spectate, workspaceAt} from './workspaces.mjs';
+// The workspaces a page can open, for hosts of this module (Tilo Cloud) that
+// import only the peer.
+export {joinViaHost, listedWorkspaces, workspaceAt} from './workspaces.mjs';
 
 const CERTIFICATE = 'certificate';
 /** Per record, how many unread preview ops a member's stream may leave: a
@@ -243,7 +243,7 @@ export const PRESENCE_SEND_INTERVAL_MS = 50;
  * session (`peer.publishPreview`).
  */
 export function createLiveLayer(peer, runtime, workspace, {
-  participant, ready = Promise.resolve(), watching = false,
+  participant, ready = Promise.resolve(),
   now = () => performance.now(), wallNow = () => Date.now(),
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
   clearTimer = handle => globalThis.clearTimeout(handle),
@@ -267,7 +267,7 @@ export function createLiveLayer(peer, runtime, workspace, {
   const publisher = createPresencePublisher({
     encode: value => encoder.encode(JSON.stringify(value)),
     send: (bytes, value) => {
-      if (stopped || watching) return false;
+      if (stopped) return false;
       try { peer.publishPresence(workspace, JSON.stringify(value)); } catch { return false; }
       return true;
     },
@@ -377,10 +377,6 @@ export function createLiveLayer(peer, runtime, workspace, {
   function start() {
     if (stopped) return;
     publisherId = peer.deviceKey?.() ?? publisherId;
-    if (watching) {
-      setState('live');
-      return;
-    }
     if (participant) publisher.update({participant: {kind: 'person', activity: null, ...participant}});
     try { peer.announcePresence(workspace, true); } catch {}
     publisher.start();
@@ -405,14 +401,14 @@ export function createLiveLayer(peer, runtime, workspace, {
         // The pointer left the workspace's tiles: the members take it off
         // their screens rather than wait for it to age out.
         publisher.update({pointer: null});
-        if (!watching && !stopped) { try { peer.pointerLeft(workspace); } catch {} }
+        if (!stopped) { try { peer.pointerLeft(workspace); } catch {} }
         return;
       }
       publisher.update(partial);
     },
     /** Ephemeral text preview operations for a record. */
     publishPreview(record, ops) {
-      if (stopped || watching) return false;
+      if (stopped) return false;
       const key = `${record.app}\u0000${record.record}`;
       const seq = (previewSeq.get(key) ?? 0) + 1;
       previewSeq.set(key, seq);
@@ -420,7 +416,7 @@ export function createLiveLayer(peer, runtime, workspace, {
       return true;
     },
     endPreview(record) {
-      if (stopped || watching) return;
+      if (stopped) return;
       previewSeq.delete(`${record.app}\u0000${record.record}`);
       peer.endPreview(workspace, JSON.stringify(record)).catch(() => {});
     },
@@ -470,7 +466,7 @@ export function createLiveLayer(peer, runtime, workspace, {
     stop() {
       stopped = true;
       publisher.stop();
-      if (!watching) { try { peer.announcePresence(workspace, false); } catch {} }
+      try { peer.announcePresence(workspace, false); } catch {}
       for (const publisher of [...members]) member(publisher, false);
       said.clear();
       setState('closed');
@@ -511,12 +507,6 @@ export function createLiveLayer(peer, runtime, workspace, {
  *                               device key, certified by an approver)
  * @param options.deviceCertificate  `{cert, hostCert}` JSON this device was
  *                               certified with elsewhere (`joinWorkspace`)
- * @param options.watching       `true`: the page only watches `workspace`, as a
- *                               public workspace's spectator (`spectate`). It
- *                               reads the workspace and what its members seal,
- *                               with keys the workspace's node hands it, and
- *                               writes nothing: no channel access request,
- *                               live join, presence, voice or `here`.
  * @param options.background     `true`: the page keeps this peer beside the
  *                               workspace in front, only to deliver for it
  *                               (problem reports to its home workspace).
@@ -564,9 +554,8 @@ async function connect({
   profile, device, displayName = '', vaultStorage,
   fetch: fetcher, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
-  watching = false, background = false, workspaceName,
+  background = false, workspaceName,
 }) {
-  if (watching) voiceOptions = false;
   userPublicKey ??= identity?.userPublicKey;
   // Only a peer in its profile's own namespace moves to a fresh one when the
   // host at its origin was set up again; a caller's store or namespace stays.
@@ -829,7 +818,7 @@ async function connect({
     }
     const record = storage ? undefined : await store.get(PEER_RECORD);
     peer = runtime.WasmPeer.start(
-      withStartFields(certified, {displayName, watching, background: background || undefined}),
+      withStartFields(certified, {displayName, background: background || undefined}),
       custodyForWasm,
       storage ? JSON.stringify({profile, device}) : undefined,
       storage ? undefined : (record ?? undefined),
@@ -843,7 +832,7 @@ async function connect({
       // there under the workspace's name.
       peer.joinWorkspace(workspace, workspaceName);
       if (liveEnabled) {
-        live = createLiveLayer(peer, runtime, workspace, {ready, watching, participant: {
+        live = createLiveLayer(peer, runtime, workspace, {ready, participant: {
           kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), activity,
         }});
       }
@@ -959,8 +948,8 @@ async function connect({
     },
     setDisplayName: name => rename(name),
     /** Issue an invitation to the workspace (`membership.mjs`): resolves to its
-     * text. A watching page has none to give: it is not in the workspace. */
-    ...(watching ? {} : {createInvitation: options => membership.createInvitation(options)}),
+     * text, when the person's role lets them invite. */
+    createInvitation: options => membership.createInvitation(options),
     /** The workspace's members, waiting people and invitations, for its owner
      * (`membership.mjs`): `list()`, `admit`, `decline`, `setRole`,
      * `remove`, `cancelInvitation`. */
@@ -1005,8 +994,7 @@ async function connect({
      * `[{device, user, label, window, status, recent, sources, generated,
      * updated_ms}]`. */
     async here(window, actions = []) {
-      // A watching page is not listed: it would only post for itself.
-      if (!workspace || !peer || watching) return [];
+      if (!workspace || !peer) return [];
       const lines = JSON.parse(await peer.here(workspace, (displayName || label).slice(0, 32), window ?? undefined, JSON.stringify(actions)));
       // Someone else here already goes by this person's drawn name: they
       // take another, so the workspace and what it is bridged with tell them apart.

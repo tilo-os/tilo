@@ -8,7 +8,6 @@
 //! screen, and the host queues what changed for the list to take. Rows given as components are
 //! held whole.
 
-use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -18,18 +17,17 @@ use crate::component::{
     Accepts, Component, Described, Event, Moment, Person, ResourceId, SharedRows, SlotType, Source,
     Value,
 };
-use crate::icons::Icon;
 use crate::selection::KeySelection;
 use crate::tokens::{Rhythm, TextRole};
 use crate::widget::arrange::{Align, Fit, Page, Row, Slot, Stack, TranscriptEdges};
 use crate::widget::conversation::list::RUN_WINDOW_SECS;
 use crate::widget::conversation::{ConversationClock, DayDivider};
 use crate::widget::{
-    Attachments, Avatar, ContextMenuArea, Decorator, Element, IconSize, IconWidget, ListRow,
-    ListRowProps, MenuEntry, MenuPart, Spacer, SwipeActionProps, Text, Widget,
+    Attachments, Avatar, ContextMenuArea, Decorator, Element, ListRow, ListRowProps, MenuEntry,
+    MenuPart, Spacer, SwipeActionProps, Text, Tone, Widget,
 };
 
-use super::{ListModel, ListModelChange, TREE_DISCLOSURE, TREE_INDENT, TreeMarks, VirtualList};
+use super::{ListModel, ListModelChange, TREE_INDENT, TreeMarks, VirtualList};
 use crate::widget::ChangeMarkProps;
 
 /// The height a row is reckoned at before it is laid out: a row with a secondary line.
@@ -81,9 +79,19 @@ pub struct ListItemProps {
     /// The group the row is in, as the platform reads it over the group's first row: a day
     /// for a date. Rows of one group stand together under its heading, in the order they come.
     pub group: Option<String>,
+    /// The group's day is the day the item was done on, not the day it is due: it reads as the
+    /// day it happened (`Yesterday`, `Sunday`, `Jun 21`), never as a day gone by, and in no
+    /// tone of its own.
+    pub group_done: bool,
+    /// How the group's heading and its count read: left to the platform, it reads the tone the
+    /// date the heading holds asks for (a day gone by is overdue), unless the view names one.
+    pub group_tone: Option<Tone>,
     /// The row is one of the items done with: they stand after every group, under the list's
     /// tail title, closed until the person opens them.
     pub tail: bool,
+    /// The item the view shows just over this one in its group: the place the actions offered
+    /// on the row take when one reads a place (`above`). None for the first of a group.
+    pub above: Option<ResourceId>,
     /// The item was removed and the person has not seen it go: the row stands in for it, its
     /// title struck through, at the row's own height. The UI host places such rows.
     pub removed: bool,
@@ -214,13 +222,6 @@ pub struct VirtualListProps {
 #[derive(Default)]
 pub struct DescribedRows {
     held: Held,
-    /// Whether a row the list built shows an avatar: the rows without one then keep its room.
-    /// Once on it stays on, so rows do not shift as others scroll in and out.
-    avatars: Cell<bool>,
-    /// The rows built keeping no room for an avatar, before one came in.
-    spaced: RefCell<Vec<String>>,
-    /// The rows to build again: the avatar column came in after they were built.
-    restyled: RefCell<Vec<String>>,
     /// Rows standing in for removed items, after the items ([`VirtualListProps::removed`]).
     removed: Rc<Vec<ListItemProps>>,
     /// The heading over the rows whose item names no group
@@ -326,7 +327,6 @@ impl DescribedRows {
             held: self.held.clone(),
             removed: Rc::clone(&self.removed),
             ungrouped: self.ungrouped.clone(),
-            ..Self::default()
         }
     }
 
@@ -377,21 +377,6 @@ impl DescribedRows {
         }
     }
 
-    /// The row of `key` to build: its props, with the room for an avatar kept while the list
-    /// shows avatars.
-    fn row_props(&self, row: &mut ListRowProps, key: &str) {
-        if row.avatar.is_some() {
-            if !self.avatars.replace(true) {
-                self.restyled
-                    .borrow_mut()
-                    .append(&mut self.spaced.borrow_mut());
-            }
-        } else if row.avatar_space && !self.avatars.get() {
-            row.avatar_space = false;
-            self.spaced.borrow_mut().push(key.to_owned());
-        }
-    }
-
     fn key_presenting(&self, id: &str) -> Option<String> {
         match &self.held {
             Held::Nothing => None,
@@ -439,7 +424,10 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
         },
         change: item.change.as_ref().map(ChangeMarkProps::again),
         group: item.group.clone(),
+        group_done: item.group_done,
+        group_tone: item.group_tone,
         tail: item.tail,
+        above: item.above.clone(),
         removed: item.removed,
         parent: item.parent.clone(),
         parent_title: item.parent_title.clone(),
@@ -490,26 +478,20 @@ impl ListModel for DescribedRows {
     }
 
     fn poll_changes(&mut self) -> Vec<ListModelChange<String>> {
-        let mut changes = match &self.held {
+        match &self.held {
             Held::Rendered(rows) => rows
                 .try_borrow_mut()
                 .map(|mut rows| rows.take_changes())
                 .unwrap_or_default(),
             _ => Vec::new(),
-        };
-        let restyled = std::mem::take(&mut *self.restyled.borrow_mut());
-        if !restyled.is_empty() {
-            changes.push(ListModelChange::RowsChanged { keys: restyled });
         }
-        changes
     }
 
     fn needs_poll(&self) -> bool {
-        let waiting = match &self.held {
+        match &self.held {
             Held::Rendered(rows) => rows.try_borrow().is_ok_and(|rows| rows.has_changes()),
             _ => false,
-        };
-        waiting || !self.restyled.borrow().is_empty()
+        }
     }
 
     /// What the row is grouped by: its item's heading, the list's tail for an item done
@@ -526,9 +508,18 @@ impl ListModel for DescribedRows {
             if item.tail {
                 return Some(super::RowGroup::Tail);
             }
+            let ungrouped = || {
+                self.ungrouped.clone().map(|text| super::RowGroup::Heading {
+                    text,
+                    tone: Tone::Neutral,
+                })
+            };
             match item.group.as_deref().filter(|heading| !heading.is_empty()) {
-                Some(heading) => Some(super::RowGroup::Heading(heading.to_owned())),
-                None => self.ungrouped.clone().map(super::RowGroup::Heading),
+                Some(heading) => Some(super::RowGroup::Heading {
+                    text: heading.to_owned(),
+                    tone: item.group_tone.unwrap_or(Tone::Neutral),
+                }),
+                None => ungrouped(),
             }
         })
         .flatten()
@@ -545,6 +536,18 @@ impl ListModel for DescribedRows {
                 .and_then(|parent| DescribedRows::key_presenting(self, &parent.0));
             super::TreeRow { parent }
         })
+    }
+
+    /// Whether any row stands under a heading, or was given a parent: the list keeps a
+    /// disclosure gutter for its headings' and parents' chevrons then.
+    fn discloses(&self) -> bool {
+        self.ungrouped.is_some()
+            || match &self.held {
+                Held::Given(items) => items.iter().any(|item| {
+                    item.tail || item.group.as_ref().is_some_and(|group| !group.is_empty())
+                }),
+                Held::Nothing | Held::Rendered(_) => false,
+            }
     }
 
     fn label(&self, index: usize) -> Option<String> {
@@ -704,49 +707,19 @@ fn row_of(
     }
 }
 
-/// The row of an item in a tree, indented by how deep it stands: the room its depth takes, a
-/// disclosure that folds its subtasks away while it has any, the row, and how many of those
-/// subtasks are still open.
-fn tree_row(
-    row: Element,
-    key: &str,
-    marks: &TreeMarks<String>,
-    progress: Option<String>,
-) -> Element {
-    let row_key = key.to_owned();
-    let depth = f64::from(marks.depth(&row_key));
+/// A row of a tree that is a view of the app's own: its content stands `depth` steps in, one
+/// disclosure gutter each, and how far its branch got follows it.
+fn indent_view(view: Element, depth: u32, progress: Option<String>) -> Element {
     let mut line = Row::row().fill_width().align(Align::Center);
-    // The room the depth takes and the disclosure standing at its end are one column, packed
-    // tight: the chevron then sits exactly where the list reads a fold press.
-    let mut lead = crate::widget::row::Row::new().with_gap(0.0);
-    if depth > 0.0 {
+    if depth > 0 {
         #[allow(
             clippy::cast_possible_truncation,
             reason = "logical pixels are bounded far below f32::MAX"
         )]
-        let indent = (depth * TREE_INDENT) as f32;
-        lead = lead.push(Box::new(Spacer::fixed(indent)));
+        let indent = (f64::from(depth) * TREE_INDENT) as f32;
+        line = line.push(Box::new(Spacer::fixed(indent)));
     }
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "logical pixels are bounded far below f32::MAX"
-    )]
-    let disclosure = TREE_DISCLOSURE as f32;
-    if marks.is_branch(&row_key) {
-        lead = lead.push(Box::new(
-            IconWidget::new(if marks.is_folded(&row_key) {
-                Icon::ChevronRight
-            } else {
-                Icon::ChevronDown
-            })
-            .sized(IconSize::Regular)
-            .dim(),
-        ));
-    } else {
-        lead = lead.push(Box::new(Spacer::fixed(disclosure)));
-    }
-    line = line.push(Box::new(lead));
-    let mut slot = Slot::new(row);
+    let mut slot = Slot::new(view);
     slot.fit = Fit::hug().width(crate::widget::arrange::Sizing::fill(1.0));
     line = line.push_slot(slot);
     if let Some(progress) = progress {
@@ -763,6 +736,16 @@ fn bare_row(
     feel: crate::motion::Feel,
     tree: Option<&TreeMarks<String>>,
 ) -> Option<(Element, Option<SwipeActionProps>, Attachments)> {
+    // What the row over it states, read before the row's own: a row that stands under its
+    // parent says only what the parent leaves unsaid, so the day fact it shares with the parent
+    // is the parent's, read once above it.
+    let parent_meta = nesting_parent(rows, key, tree).and_then(|parent| {
+        rows.with_item(&parent, |item| match item.row {
+            ItemRow::Row(row) => row.meta,
+            ItemRow::View(_) | ItemRow::None => None,
+        })
+        .flatten()
+    });
     rows.with_item(key, |item| {
         let ListItemProps {
             presence,
@@ -786,7 +769,6 @@ fn bare_row(
         // own view their face alone.
         let row = match row {
             ItemRow::Row(mut props) => {
-                rows.row_props(&mut props, key);
                 if props.secondary.is_none()
                     && let Some(title) = &breadcrumb
                 {
@@ -795,9 +777,18 @@ fn bare_row(
                 // The list paces the rows it builds unless a row says its own, so one option on
                 // the list covers its content.
                 props.motion = props.motion.or(Some(feel));
+                // The fact the parent's row already states is the parent's.
+                if let (Some(parent), Some(meta)) = (&parent_meta, &props.meta)
+                    && parent == meta
+                {
+                    props.meta = None;
+                    props.meta_tone = crate::widget::Tone::Neutral;
+                }
                 // The list activates its rows itself, by key: a row of it is not a target of
                 // its own.
                 props.activate = Event::None;
+                // The row's own figure stands unless the tree's count takes that column.
+                let value_free = props.value.is_none();
                 let mut row = ListRow::from_props(key, *props);
                 if let Some(person) = presence {
                     row = row.presence(person.identity);
@@ -809,22 +800,47 @@ fn bare_row(
                     row = row.change(mark.identity, mark.name, mark.spoken, mark.show);
                 }
                 row = row.shortcuts(shortcuts);
+                // A tree indents the row's content one disclosure gutter per depth, its lift
+                // still filling the row; how far its branch got is its trailing figure.
+                if let Some(marks) = tree {
+                    row = row.depth(marks.depth(&key.to_owned()));
+                    if value_free && let Some(progress) = progress.clone() {
+                        row = row.value(progress);
+                    }
+                }
                 Box::new(row) as Element
             }
-            ItemRow::View(view) => with_mark(
-                view,
-                change.and_then(|change| change.face(&format!("{key}~change"))),
-            ),
+            ItemRow::View(view) => {
+                let view = with_mark(
+                    view,
+                    change.and_then(|change| change.face(&format!("{key}~change"))),
+                );
+                match tree {
+                    Some(marks) => {
+                        indent_view(view, marks.depth(&key.to_owned()), progress.clone())
+                    }
+                    None => view,
+                }
+            }
             ItemRow::None => Box::new(ListRow::new(key.to_owned(), "")),
-        };
-        // A list that is a tree indents its rows by how deep they stand, and says what their
-        // subtasks come to.
-        let row = match tree {
-            Some(marks) => tree_row(row, key, marks, progress),
-            None => row,
         };
         (row, swipe, attached)
     })
+}
+
+/// The key of the row `key` stands under in its tree, when it stands nested under it: its
+/// parent's row is the one above, not the item its sort put it away from.
+fn nesting_parent(
+    rows: &DescribedRows,
+    key: &str,
+    tree: Option<&TreeMarks<String>>,
+) -> Option<String> {
+    let marks = tree?;
+    if !marks.is_nested(&key.to_owned()) {
+        return None;
+    }
+    let parent = rows.with_item(key, |item| item.parent.clone()).flatten()?;
+    rows.key_presenting(&parent.0)
 }
 
 /// `row` with a change mark after it, on its line, when it has one.
@@ -1009,7 +1025,7 @@ fn row_menu(list: &dyn Widget, at: Option<Point>, select: &Event) -> Vec<MenuEnt
     };
     let key = match at {
         Some(point) => list.key_at_point(point),
-        None => list.focused_key().cloned(),
+        None => list.focused_row_key(),
     };
     let Some(key) = key else {
         return Vec::new();

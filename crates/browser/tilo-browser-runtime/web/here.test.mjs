@@ -65,7 +65,7 @@ test('live members carry an agent\'s record and activity, everyone\'s focus and 
   assert.equal(liveMembers({available: false}, seen), null, 'no live layer: the host lines decide');
 });
 
-test('the page posts its window and steps, pushes everyone\'s lines and the spectator count', async () => {
+test('the page posts its window and steps, pushes everyone\'s lines and the watching count', async () => {
   const h = harness({actions: [{id: '01', action: 'Edited the text', resource: 'Welcome', app: 'Notes', at_ms: 1}]});
   const layer = fakeLayer(['bob']);
   const here = createHere({runtime: h.runtime, mountId: () => 7, active: () => true, layer: () => layer, peer: h.peer,
@@ -101,7 +101,7 @@ test('nothing new: no post until the refresh interval; a changed window posts at
   await h.runTimer();
   assert.equal(h.posts.length, 3, 'refreshed so the host keeps them listed');
   assert.ok(WATCHING_EVERY_MS > TICK_MS);
-  assert.equal(h.fetches.length, 0, 'no room service, no spectator count');
+  assert.equal(h.fetches.length, 0, 'no room service, no watching count');
 });
 
 test('a hidden page neither posts nor reads; a member\'s name reaches the runtime as it arrives', async () => {

@@ -1,12 +1,20 @@
 #!/bin/sh
 # Writes the entry configuration a bare visit reads (entry.json), then serves.
 # Without a home workspace a bare visit opens the person's own desktop; with
-# one, it opens that workspace, joined through its host's admission door:
+# one, it opens that workspace, joined through the door its host lists it at:
 #   TILO_WEB_HOME_HOST  host name of the home workspace's host (unset: no home)
 #   TILO_WEB_HOME_NAME  its name, required with a host
 #   TILO_WEB_HOME_APP   the app in front, optional (unset: its desktop)
 #   TILO_WEB_HOME_FEEDBACK  the id of its Chat channel members report
 #                       problems to, optional (unset: reports are not offered)
+#   TILO_WEB_HOME_DOOR  the door everyone joins it through: an https:// address
+#                       ending in /, which the door's own paths hang off
+#                       (`join` and `errors`; a host's `presence` and wait list
+#                       too, where it serves one). Unset: its people reconnect
+#                       and others need an invitation, as for a workspace its
+#                       host does not list. A workspace a relay lists has its
+#                       door at
+#                       https://<host>/peer/v1/directory/<workspace>/.
 # Tilo computers list the site's public workspaces from its directory: the
 # home host's own (https://<host>/directory) unless one is named:
 #   TILO_WEB_DIRECTORY  the directory's https:// address (unset: the home's)
@@ -22,21 +30,28 @@ host=${TILO_WEB_HOME_HOST:-}
 name=${TILO_WEB_HOME_NAME:-}
 app=${TILO_WEB_HOME_APP:-}
 feedback=${TILO_WEB_HOME_FEEDBACK:-}
+door=${TILO_WEB_HOME_DOOR:-}
 mkdir -p /tmp/tilo-web
 fields=
 if [ -z "$host" ]; then
-  [ -z "$name$app$feedback" ] || { echo "TILO_WEB_HOME_NAME, TILO_WEB_HOME_APP and TILO_WEB_HOME_FEEDBACK need TILO_WEB_HOME_HOST" >&2; exit 2; }
+  [ -z "$name$app$feedback$door" ] || { echo "TILO_WEB_HOME_NAME, TILO_WEB_HOME_APP, TILO_WEB_HOME_FEEDBACK and TILO_WEB_HOME_DOOR need TILO_WEB_HOME_HOST" >&2; exit 2; }
 else
   # Values land in JSON as they are: only characters that need no escaping.
   case "$host" in *[!a-z0-9.:-]*) echo "TILO_WEB_HOME_HOST must be a host name: $host" >&2; exit 2 ;; esac
   case "$name" in '' | *[!A-Za-z0-9\ ._-]*) echo "TILO_WEB_HOME_NAME is required with a host and may use letters, digits, space, . _ -" >&2; exit 2 ;; esac
   case "$app" in *[!a-z0-9._-]*) echo "TILO_WEB_HOME_APP must be an app id" >&2; exit 2 ;; esac
   case "$feedback" in *[!a-z0-9_]*) echo "TILO_WEB_HOME_FEEDBACK must be a channel id like c_feedback" >&2; exit 2 ;; esac
+  case "$door" in
+    '') ;;
+    https://*[!/]) echo "TILO_WEB_HOME_DOOR must end in /: $door" >&2; exit 2 ;;
+    https://*) case "$door" in *[!A-Za-z0-9._~:/?#@!\$\&\'\(\)*+,\;=%-]*) echo "TILO_WEB_HOME_DOOR must be a plain https:// address: $door" >&2; exit 2 ;; esac ;;
+    *) echo "TILO_WEB_HOME_DOOR must be an https:// address: $door" >&2; exit 2 ;;
+  esac
   front=
   [ -z "$app" ] || front=",\"app\":\"$app\""
   [ -z "$feedback" ] || front="$front,\"feedback\":{\"channel\":\"$feedback\"}"
-  fields=$(printf '"home":{"name":"%s","host":{"origin":"https://%s"},"admission":"https://%s/"%s}' \
-    "$name" "$host" "$host" "$front")
+  [ -z "$door" ] || front="$front,\"admission\":\"$door\""
+  fields=$(printf '"home":{"name":"%s","host":{"origin":"https://%s"}%s}' "$name" "$host" "$front")
 fi
 directory=${TILO_WEB_DIRECTORY:-}
 if [ -n "$directory" ]; then

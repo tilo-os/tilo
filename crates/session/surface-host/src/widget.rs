@@ -12,6 +12,7 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
 
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use tilo_compositor::HostKey;
 use winit::event::Modifiers;
@@ -19,10 +20,61 @@ use winit::keyboard::ModifiersState;
 
 use crate::frames::Frames;
 use crate::{Placement, ime_event, key_event, modifiers_state, mouse_input};
+use tilo_desktop_surface::DesktopSurface;
+use ui::widget::Widget;
 
 /// The colour a widget tree draws on: nothing, so the desktop shows through
 /// wherever it painted nothing.
 const TRANSPARENT: Color = Color::TRANSPARENT;
+
+/// The display's frame grid: when the next frame of what only moves is due,
+/// locked to the cadence the displays run at rather than to the loop's turns.
+#[derive(Clone, Copy, Debug)]
+struct Cadence {
+    /// How long the displays hold a frame; nil until one says, when every turn
+    /// is a frame, as a tree with no display under it drew before.
+    interval: Duration,
+    /// When the next frame is due, once one was drawn.
+    next: Option<Instant>,
+}
+
+impl Cadence {
+    /// Every turn is a frame until a display says how long it holds one.
+    const fn new() -> Self {
+        Self {
+            interval: Duration::ZERO,
+            next: None,
+        }
+    }
+
+    /// The displays hold each frame for `interval`.
+    fn set_interval(&mut self, interval: Duration) {
+        self.interval = interval;
+    }
+
+    /// Whether a turn at `now` comes before the grid: a frame it drew of what
+    /// only moves would show nothing the last one did not.
+    fn early(&self, now: Instant) -> bool {
+        self.next.is_some_and(|next| now < next)
+    }
+
+    /// When a frame of what only moves is next due: the grid while it holds,
+    /// and now once it has passed.
+    fn due(&self, now: Instant) -> Instant {
+        self.next.unwrap_or(now).max(now)
+    }
+
+    /// A frame was drawn at `now`: the grid moves on one display frame. A
+    /// frame drawn late skips the deadlines it missed instead of queueing
+    /// frames to catch up.
+    fn drawn(&mut self, now: Instant) {
+        let from = match self.next {
+            Some(next) if now < next => next,
+            _ => now,
+        };
+        self.next = Some(from.checked_add(self.interval).unwrap_or(from));
+    }
+}
 
 /// What a widget tree's next frame is for.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -85,6 +137,12 @@ pub struct WidgetHost {
     /// host to ask (a command queued on the desk's handle): the frame that
     /// answers it.
     asked: Rc<std::cell::Cell<bool>>,
+    /// The display's grid: what the tree moves through is drawn once per
+    /// display frame, so the screens show as many frames as they run at.
+    cadence: Cadence,
+    /// Fingers are carrying the desk's strips: the surface draws them
+    /// following the hand until it lets go.
+    hand_on_deck: bool,
 }
 
 impl WidgetHost {
@@ -130,6 +188,8 @@ impl WidgetHost {
             previews: None,
             name: None,
             asked: Rc::new(std::cell::Cell::new(false)),
+            cadence: Cadence::new(),
+            hand_on_deck: false,
         }
     }
 
@@ -213,6 +273,54 @@ impl WidgetHost {
         &self.host
     }
 
+    /// Whether the desk's fingers are already carrying its strips: the travel
+    /// that opened a gesture then moves the deck it landed on instead of
+    /// opening another.
+    #[must_use]
+    pub const fn wants_hand_on_deck(&self) -> bool {
+        self.hand_on_deck
+    }
+
+    /// Fingers landed on the deck, `travel` pixels into the gesture.
+    pub fn begin_strip_deck(&mut self, travel: f64) {
+        self.hand_on_deck = true;
+        self.deck_drag(travel, true);
+    }
+
+    /// The fingers have carried the deck `travel` pixels since they landed.
+    pub fn drag_strip_deck(&mut self, travel: f64) {
+        self.deck_drag(travel, false);
+    }
+
+    /// The fingers lifted after carrying the deck `travel` pixels.
+    pub fn end_strip_deck(&mut self, travel: f64) {
+        self.hand_on_deck = false;
+        self.deck_drag(travel, false);
+    }
+
+    /// Draw the desk's strips following the fingers.
+    fn deck_drag(&mut self, travel: f64, began: bool) {
+        self.with_reports(|host| {
+            let mut walk: Vec<&mut dyn Widget> = vec![host.root_widget_mut()];
+            while let Some(next) = walk.pop() {
+                if let Some(surface) = next
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<DesktopSurface>())
+                {
+                    let shown = surface.shown_strip_id();
+                    let slides = surface.slides_mut();
+                    if began {
+                        slides.begin_lift(shown);
+                    }
+                    slides.lift_to(travel);
+                    return;
+                }
+                walk.extend(next.children_mut());
+            }
+        });
+        self.owe();
+    }
+
     /// Where what the tree publishes stands: it may have changed only when
     /// this moved since it was last read.
     #[must_use]
@@ -230,12 +338,10 @@ impl WidgetHost {
         if self.owed != Owed::Nothing || self.asked.replace(false) {
             return true;
         }
-        let frame = self.host.frame_schedule();
-        frame.queued_work
-            || frame.needs_animation_frame
-            || frame
-                .next_wake_deadline
-                .is_some_and(|deadline| deadline <= ui::time::now())
+        self.host.frame_schedule().queued_work
+            || self
+                .next_deadline()
+                .is_some_and(|deadline| deadline <= Instant::now())
     }
 
     /// Where the tree is shown.
@@ -306,16 +412,18 @@ impl WidgetHost {
         true
     }
 
-    /// A rectangle of the tree's physical pixels, as the desktop's logical
-    /// `(x, y, w, h)`.
+    /// A rectangle of the tree's own logical pixels, as the desktop's
+    /// logical `(x, y, w, h)`: the tree lays itself out in logical pixels
+    /// whatever scale it is drawn at, so only where the surface stands is
+    /// added. Dividing by the display's scale as well would halve every
+    /// control on a 2 display, and a press at its centre would land past it.
     fn logical(&self, rect: vello::kurbo::Rect) -> (f64, f64, f64, f64) {
         let (ox, oy) = self.placement.origin;
-        let scale = self.placement.scale;
         (
-            f64::from(ox) + rect.x0 / scale,
-            f64::from(oy) + rect.y0 / scale,
-            rect.width() / scale,
-            rect.height() / scale,
+            f64::from(ox) + rect.x0,
+            f64::from(oy) + rect.y0,
+            rect.width(),
+            rect.height(),
         )
     }
 
@@ -355,6 +463,7 @@ impl crate::Published for WidgetHost {
         &mut self,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        _look: &mut crate::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
         let started = self
             .host
@@ -560,13 +669,16 @@ impl SurfaceHost for WidgetHost {
         });
     }
 
-    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
         if !self.covers {
             return;
         }
         let Some((x0, y0, x1, y1)) = outputs
             .iter()
-            .map(|&(x, y, w, h)| (x, y, x.saturating_add(w), y.saturating_add(h)))
+            .map(|output| {
+                let (x, y, w, h) = output.rect;
+                (x, y, x.saturating_add(w), y.saturating_add(h))
+            })
             .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
         else {
             return;
@@ -577,15 +689,30 @@ impl SurfaceHost for WidgetHost {
         ) else {
             return;
         };
+        // The scale of the output the surface stands on, so what it paints
+        // has the pixels that output shows rather than being stretched over
+        // them: a bar on a 2 display is drawn at 2.
+        let scale = tilo_compositor::HostedOutput::scale_at(
+            outputs,
+            (
+                f64::from(x0) + f64::from(width) / 2.0,
+                f64::from(y0) + f64::from(height) / 2.0,
+            ),
+        );
         self.set_placement(Placement {
             origin: (x0, y0),
             size: (width.max(1), height.max(1)),
-            scale: self.placement.scale,
+            scale,
         });
     }
 
     fn wants_keyboard(&self) -> bool {
-        self.keyboard.as_ref().is_some_and(|wants| wants())
+        // A palette the tree presents is over everything it draws, whatever
+        // the tree's own state says: the palette takes the keys a person
+        // types, not the window the tree stands under. Without this the
+        // session's keys went to the window behind `tilo.host:search`'s
+        // palette, and nothing reached its field.
+        self.host.palette_shown() || self.keyboard.as_ref().is_some_and(|wants| wants())
     }
 
     fn key(&mut self, key: &HostKey) {
@@ -623,19 +750,37 @@ impl SurfaceHost for WidgetHost {
         self.input(&WindowEvent::Ime(ime_event(event)));
     }
 
-    /// A frame is due now while the tree moves, and a change it owes the
-    /// compositor is one too; else the earliest deadline the tree sets.
+    /// A frame is due now for a change it owes the compositor; what only
+    /// moves is due on the display's grid, one frame per refresh; else the
+    /// earliest deadline the tree sets.
     fn next_deadline(&self) -> Option<std::time::Instant> {
         let schedule = self.host.frame_schedule();
-        if schedule.needs_animation_frame || self.owed != Owed::Nothing {
-            return Some(std::time::Instant::now());
+        if self.owed != Owed::Nothing {
+            return Some(Instant::now());
+        }
+        if schedule.needs_animation_frame {
+            return Some(self.cadence.due(Instant::now()));
         }
         schedule.next_wake_deadline
+    }
+
+    fn set_frame_interval(&mut self, interval: Duration) {
+        self.cadence.set_interval(interval);
     }
 
     fn prepare_frame(&mut self) -> bool {
         if self.asked.replace(false) {
             self.owe();
+        }
+        let now = Instant::now();
+        // What only moves draws on the display's grid: a turn that comes
+        // before the next display frame has nothing new to show, and drawing
+        // it would put more frames on the screen than it runs at.
+        if self.owed == Owed::Nothing
+            && self.cadence.early(now)
+            && self.host.frame_schedule().needs_animation_frame
+        {
+            return false;
         }
         // Translucent material records what lies below it; the compositor
         // blurs that and hands it back (`set_backdrops`). The images are
@@ -701,6 +846,70 @@ impl SurfaceHost for WidgetHost {
         };
         self.retained.presented(&self.scene, parts, key);
         self.frames.present(&self.scene, damage.as_deref());
+        self.cadence.drawn(now);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::arithmetic_side_effects,
+        reason = "test fixtures"
+    )]
+
+    use super::Cadence;
+    use std::time::{Duration, Instant};
+
+    const FRAME: Duration = Duration::from_micros(16_667);
+
+    #[test]
+    fn a_tree_with_no_display_under_it_draws_every_turn() {
+        let cadence = Cadence::new();
+        let now = Instant::now();
+        assert!(!cadence.early(now), "nothing paces a tree with no display");
+        assert_eq!(cadence.due(now), now, "the first frame is due at once");
+    }
+
+    #[test]
+    fn one_frame_is_due_per_display_frame() {
+        let mut cadence = Cadence::new();
+        cadence.set_interval(FRAME);
+        let drawn = Instant::now();
+        cadence.drawn(drawn);
+        assert!(
+            cadence.early(drawn + Duration::from_millis(1)),
+            "a turn before the grid shows nothing new"
+        );
+        assert!(
+            !cadence.early(drawn + FRAME),
+            "the frame is due at the grid"
+        );
+        assert_eq!(cadence.due(drawn), drawn + FRAME);
+    }
+
+    #[test]
+    fn a_frame_drawn_late_skips_the_deadlines_it_missed() {
+        let mut cadence = Cadence::new();
+        cadence.set_interval(FRAME);
+        let drawn = Instant::now();
+        cadence.drawn(drawn);
+        // Three display frames later: the grid moves on from now, it does not
+        // queue the two frames that went by.
+        let late = drawn + FRAME * 3;
+        cadence.drawn(late);
+        assert_eq!(cadence.due(late), late + FRAME);
+    }
+
+    #[test]
+    fn past_the_grid_a_frame_is_due_now() {
+        let mut cadence = Cadence::new();
+        cadence.set_interval(FRAME);
+        let drawn = Instant::now();
+        cadence.drawn(drawn);
+        let idle = drawn + Duration::from_secs(5);
+        assert!(!cadence.early(idle));
+        assert_eq!(cadence.due(idle), idle);
     }
 }

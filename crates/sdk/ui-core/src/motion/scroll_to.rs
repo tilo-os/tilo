@@ -25,7 +25,7 @@ use vello::kurbo::Vec2;
 
 use super::named::unit_opacity;
 use super::spec::{Direction, MotionSpec, Pace, Reduced, Shortcut};
-use super::value::MotionValue;
+use super::value::{MotionValue, Timing};
 use crate::time::Instant;
 use crate::tokens::{EffectiveMotion, MotionSource};
 
@@ -160,6 +160,39 @@ impl ScrollTo {
             self.offset.snap(drawn);
         }
         self.offset.set(target, timing, now);
+        self.gliding = true;
+        ScrollJump::Glide
+    }
+
+    /// Settle on `target`, the way a scroll view whose content offers
+    /// detents comes to rest on one ([`super::Snap`]): a gesture's release
+    /// hands its `velocity` to the settle, so a fling coasts on into the
+    /// detent without turning back; anything else takes the paged-strip
+    /// settle (`base`). Reduced motion lands on it.
+    #[track_caller]
+    pub fn settle(
+        &mut self,
+        drawn: Vec2,
+        target: Vec2,
+        velocity: Vec2,
+        motion: EffectiveMotion,
+        source: MotionSource,
+        now: Instant,
+    ) -> ScrollJump {
+        let thrown = matches!(source, MotionSource::Gesture) && velocity != Vec2::ZERO;
+        let spec = if thrown {
+            super::Snap::COAST
+        } else {
+            super::Snap::SPEC
+        };
+        let timing = spec.timing(Direction::Enter, motion, source);
+        let Timing::Spring(_) = timing else {
+            self.land(target);
+            return ScrollJump::Land;
+        };
+        self.fade.snap(1.0);
+        self.offset.snap(drawn);
+        self.offset.release(target, velocity, timing, now);
         self.gliding = true;
         ScrollJump::Glide
     }

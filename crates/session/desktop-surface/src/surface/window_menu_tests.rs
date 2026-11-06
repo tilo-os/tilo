@@ -41,6 +41,8 @@ impl TileSource for Apps {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         })
     }
 }
@@ -452,6 +454,121 @@ fn a_window_moves_to_another_workspace_by_its_name() {
             .collect()
     });
     assert_eq!(home, vec![WorkspaceSlot(91)], "the window is there now");
+}
+
+/// Renders every tab as a notice of its own, and records the windows the
+/// session is asked to carry, as the session's own source does.
+struct Carrying {
+    carried: std::rc::Rc<std::cell::RefCell<Vec<(TabId, WorkspaceSlot)>>>,
+}
+
+impl TileSource for Carrying {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> ui::widget::TileHost {
+        ui::widget::TileHost::new(ui::widget::TileContent::Notice {
+            title: tab.title.clone(),
+            detail: String::new(),
+        })
+    }
+
+    fn carry(&self, tab: TabId, to: WorkspaceSlot) -> bool {
+        self.carried.borrow_mut().push((tab, to));
+        true
+    }
+}
+
+/// The window of an app this device started runs in the workspace that started
+/// it, with its grants and its records: its tab does not cross by itself, and
+/// the desk hands the move to the session instead, leaving the tab where it is
+/// until the session carries it.
+#[test]
+fn a_running_apps_window_is_handed_to_the_session_instead_of_crossing_by_its_tab() {
+    let carried = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let (surface, handle) = desk_with(
+        1,
+        Box::new(Carrying {
+            carried: std::rc::Rc::clone(&carried),
+        }),
+    );
+    let mut frame = present(surface);
+    let route = first_route(&handle);
+    let mut tree = handle.read(Clone::clone);
+    let home = tree.workspaces[0].slot;
+    tree.workspaces
+        .push(Workspace::new(WorkspaceSlot(91), "Studio"));
+    // What the compositor mapped: a window of an app this device started.
+    tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::Foreign {
+        app_id: "so.tilo.notes".into(),
+        surface_id: 11,
+    };
+    handle.replace_tree(tree);
+    settle(&mut frame);
+
+    handle
+        .choose_window_menu(route.tab, &format!("{MOVE_TO_WORKSPACE}:91"), None)
+        .unwrap();
+    settle(&mut frame);
+
+    assert_eq!(
+        *carried.borrow(),
+        vec![(route.tab, WorkspaceSlot(91))],
+        "the session is asked to carry the window where the person put it"
+    );
+    let below: Vec<WorkspaceSlot> = handle.read(|tree| {
+        tree.workspaces
+            .iter()
+            .filter(|workspace| {
+                workspace.strips.iter().any(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .any(|group| group.tabs.iter().any(|tab| tab.id == route.tab))
+                })
+            })
+            .map(|workspace| workspace.slot)
+            .collect()
+    });
+    assert_eq!(
+        below,
+        vec![home],
+        "the tab stays where it was until the app runs in the other workspace"
+    );
+}
+
+/// A program of this machine runs with no workspace around it: no grants, no
+/// records. The session carries its window at once, as it does a Tilo app's
+/// after the app has started again — the surface only ever hands the move
+/// over, and the session decides what crosses.
+#[test]
+fn a_programs_window_is_handed_over_too_and_the_session_moves_it_at_once() {
+    let carried = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let (surface, handle) = desk_with(
+        1,
+        Box::new(Carrying {
+            carried: std::rc::Rc::clone(&carried),
+        }),
+    );
+    let mut frame = present(surface);
+    let route = first_route(&handle);
+    let mut tree = handle.read(Clone::clone);
+    tree.workspaces
+        .push(Workspace::new(WorkspaceSlot(91), "Studio"));
+    tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::Foreign {
+        app_id: "org.gnome.Nautilus".into(),
+        surface_id: 12,
+    };
+    handle.replace_tree(tree);
+    settle(&mut frame);
+
+    handle
+        .choose_window_menu(route.tab, &format!("{MOVE_TO_WORKSPACE}:91"), None)
+        .unwrap();
+    settle(&mut frame);
+
+    assert_eq!(
+        *carried.borrow(),
+        vec![(route.tab, WorkspaceSlot(91))],
+        "the window crosses only through the session"
+    );
 }
 
 /// A window shows on another display, by that display's name, as the

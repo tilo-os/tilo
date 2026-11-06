@@ -141,7 +141,8 @@ pub enum Refusal {
     NeedsApproval(String),
     /// The owner cannot be removed, demoted or made a member.
     Owner,
-    /// Ownership is not handed out through membership.
+    /// Ownership is structural: it is set when the workspace is made, and
+    /// membership neither hands it out nor takes it away.
     OwnerRole,
     /// An invite or membership above the actor's own role.
     AboveActorRole {
@@ -189,7 +190,9 @@ impl std::fmt::Display for Refusal {
         match self {
             Self::NotPermitted(why) | Self::NeedsApproval(why) => f.write_str(why),
             Self::Owner => f.write_str("the workspace's owner cannot be removed or demoted"),
-            Self::OwnerRole => f.write_str("ownership is transferred, not granted as a role"),
+            Self::OwnerRole => {
+                f.write_str("ownership is set when the workspace is made, not granted as a role")
+            }
             Self::AboveActorRole { actor, wanted } => match actor {
                 Some(actor) => write!(f, "a {actor} cannot hand out the {wanted} role"),
                 None => write!(f, "only members can hand out the {wanted} role"),

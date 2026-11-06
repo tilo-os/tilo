@@ -19,6 +19,12 @@ pub trait Words {
     fn revision(&self) -> u64 {
         0
     }
+    /// The language the reader types in (`en`, `de`), as their words resolve it: what a date
+    /// or a time typed in an entry is said in (`crate::natural::Language`). Empty when the
+    /// host names none, which reads as English.
+    fn language(&self) -> String {
+        String::new()
+    }
 }
 
 /// The source words: what a package's declarations say, untranslated.

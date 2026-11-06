@@ -574,7 +574,7 @@ fn block_reorder_emits_stable_id_moves_through_semantic_controls() {
         let first = node
             .children
             .iter()
-            .find(|child| child.name.as_deref() == Some("Paragraph block 1"))
+            .find(|child| child.role == crate::a11y::Role::ListItem && child.pos_in_set == Some(1))
             .expect("first block group");
         let first_group_key = first.key.expect("block group has durable AT identity");
         assert!(first.children[0].state.disabled, "top block cannot move up");

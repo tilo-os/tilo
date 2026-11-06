@@ -33,8 +33,11 @@ fn proof(
     .unwrap()
 }
 
+/// The owner's own device is answered as the workspace's owner, which a
+/// member's answer cannot say: it names the strongest collaborator role, and
+/// its authority stays governance's to decide.
 #[test]
-fn the_structural_owner_does_not_use_collaborator_refresh() {
+fn the_owner_s_own_device_is_answered_the_strongest_collaborator_role() {
     let (peer, _, key, cert, now) = crate::admission_tests::seeded();
     let membership = proof(&peer, &cert, &key, now);
     assert_eq!(
@@ -42,10 +45,8 @@ fn the_structural_owner_does_not_use_collaborator_refresh() {
         Role::Owner
     );
     assert_eq!(
-        peer.governance()
-            .verify_member_refresh(&membership, now)
-            .unwrap_err(),
-        "structural owner does not use collaborator refresh"
+        peer.governance().member_role(&membership, now).unwrap(),
+        crate::join::MemberRole::Moderator
     );
 }
 
@@ -111,21 +112,14 @@ fn all_collaborator_roles_remain_refreshable_until_removed() {
             .set_member_role(cert.user_public_key, role, &host_key, now)
             .unwrap();
         let verified = proof(&peer, &cert, &key, now);
-        assert_eq!(
-            peer.governance()
-                .verify_member_refresh(&verified, now)
-                .unwrap(),
-            role
-        );
+        assert_eq!(peer.governance().member_role(&verified, now).unwrap(), role);
     }
     let verified = proof(&peer, &cert, &key, now);
     peer.governance_mut()
         .remove_member(cert.user_public_key, &host_key, now)
         .unwrap();
     assert_eq!(
-        peer.governance()
-            .verify_member_refresh(&verified, now)
-            .unwrap_err(),
+        peer.governance().member_role(&verified, now).unwrap_err(),
         "member has been removed"
     );
 }

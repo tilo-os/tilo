@@ -36,14 +36,14 @@ pub struct PeerWorkspaceMut<'peer> {
 }
 
 /// A peer's own outbox, read side: whether what it published is retired, and
-/// the recovery reservations and projections it would republish.
+/// the signed frames it still owes the workspace.
 #[derive(Clone, Copy)]
 pub struct PeerOutbox<'peer> {
     pub(crate) peer: &'peer StatePeer,
 }
 
-/// A peer's own outbox, write side: reconciling, renewing and recovering what
-/// it published.
+/// A peer's own outbox, write side: renewing a sealed write that expired
+/// before the workspace retired it.
 pub struct PeerOutboxMut<'peer> {
     pub(crate) peer: &'peer mut StatePeer,
 }

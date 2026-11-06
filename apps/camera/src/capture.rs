@@ -1,5 +1,6 @@
 //! Live camera capture through `tilo-capture`: `GStreamer` (`v4l2src`,
-//! `avfvideosrc`) on the desktop, `getUserMedia` in the browser.
+//! `avfvideosrc`) on the desktop, whose backend is the `native-capture`
+//! feature's, and `getUserMedia` in the browser.
 //!
 //! This module is gated behind the `live-capture` feature so the `--shots`
 //! headless path never opens a device. Opening is asynchronous where the

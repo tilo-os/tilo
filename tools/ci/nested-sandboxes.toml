@@ -10,6 +10,7 @@ packages = [
   "tilo-fs",
   "tilo-runtime",
   "tilo-sandbox-core",
+  "tilo-session",
   "tilo-vmd",
   "ush",
 ]

@@ -183,7 +183,7 @@ fn pump_until(
         compositor
             .dispatch(Duration::from_millis(2))
             .expect("dispatch");
-        compositor.render().expect("render");
+        compositor.draw_frame().expect("a frame");
         tool.exchange();
         if done(&tool.seen) {
             return true;
@@ -599,7 +599,7 @@ fn a_private_window_is_a_flat_placeholder_in_copies_and_whole_on_its_display() {
             .any(|(_, app_id)| app_id == "org.example.shared")
     });
     // The window is centred on the 64 x 48 output: 22, 19 to 42, 29.
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     let display = compositor.screenshot("HEADLESS-1").expect("screenshot");
     assert_eq!(display.pixel(32, 24), Some([0, 255, 0, 255]));
 
@@ -623,7 +623,7 @@ fn a_private_window_is_a_flat_placeholder_in_copies_and_whole_on_its_display() {
     assert!(near(pixel(&memory, width, 8, 8), RED), "the square below");
     assert!(near(pixel(&memory, width, 60, 44), BACKGROUND));
     // The person's own display still shows it.
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     let display = compositor.screenshot("HEADLESS-1").expect("screenshot");
     assert_eq!(display.pixel(32, 24), Some([0, 255, 0, 255]));
 

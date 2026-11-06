@@ -7,8 +7,9 @@
 //! its address: the verbs are the desk's ([`DeskEffect`]) and the chrome's
 //! ([`ChromeEffect`]), published through [`offer`] as every service's are.
 
-use tilo_actions::{ActionSpec, ResourcePresentation, ResourceSpec};
+use tilo_actions::{ActionSpec, Audience, ResourcePresentation, ResourceSpec};
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect};
+use tilo_desktop_surface::window;
 use tilo_resource::{Effect, offer};
 
 use crate::i18n::{t, t_args};
@@ -42,7 +43,7 @@ pub fn search_row_id(row: usize) -> String {
 /// The address of tab `tab`'s resource.
 #[must_use]
 pub fn tab_resource_id(tab: u64) -> String {
-    format!("desktop:tab:{tab}")
+    window::resource(tab)
 }
 
 /// The address of display `display`'s resource.
@@ -85,14 +86,29 @@ pub struct OpenSearch<'a> {
     pub searching: bool,
 }
 
-/// The desk's resource: its own verbs, with each tab of `tabs`
-/// (`(tab, title)`) a resource of its own that can be focused and closed —
-/// and, for each tab of `not_responding`, waited for or force quit —
-/// across several displays each of `displays` (in reading order) one that
-/// can be focused, and the open search (its query and rows), when open.
+/// A window the desk shows: the tab it stands in, the name the person reads
+/// it by, and — for a window this session does not run (an X11 or Wayland
+/// window of another desktop) — the app that showed it, which the desk can
+/// picture and read of, and never act on.
+#[derive(Clone)]
+pub struct Shown {
+    /// Its tab.
+    pub tab: u64,
+    /// Its name in the bar, the strip and the catalogue.
+    pub title: String,
+    /// The app id of a window this session does not run, when it is one.
+    pub foreign: Option<String>,
+}
+
+/// The desk's resource: its own verbs, with each window of `windows` a
+/// resource of its own that can be focused and closed — and read, for a
+/// window this session does not run — and, for each tab of `not_responding`,
+/// waited for or force quit — across several displays each of `displays` (in
+/// reading order) one that can be focused, and the open search (its query and
+/// rows), when open.
 #[must_use]
 pub fn desk_resource(
-    tabs: &[(u64, String)],
+    windows: &[Shown],
     not_responding: &[u64],
     displays: &[u32],
     search: Option<OpenSearch<'_>>,
@@ -118,9 +134,10 @@ pub fn desk_resource(
     // Each window's verbs name the window they act on: an action row that
     // says "Focus a window" makes the person find the window again in the
     // next row.
-    let windows = tabs.iter().map(|(id, title)| {
-        let names_the_window = &[("window", title.as_str().into())];
-        let window = ResourceSpec::new(tab_resource_id(*id), WINDOW_KIND, title.clone())
+    let windows = windows.iter().map(|shown| {
+        let id = &shown.tab;
+        let names_the_window = &[("window", shown.title.as_str().into())];
+        let mut window = ResourceSpec::new(tab_resource_id(*id), WINDOW_KIND, shown.title.clone())
             .with_action(bound(
                 &DeskEffect::Focus {
                     tab: id.to_string(),
@@ -133,6 +150,14 @@ pub fn desk_resource(
                 },
                 Some(t_args("desk-close-window", names_the_window)),
             ));
+        // A window this session does not run has no surface of its own to
+        // ask what it shows: the desk answers both read actions for it, and
+        // neither acts on it (`tilo_desktop_surface::window`).
+        if shown.foreign.is_some() {
+            window = window
+                .with_action(window::look(t_args("desk-look-window", names_the_window)))
+                .with_action(window::read(t_args("desk-read-window", names_the_window)));
+        }
         // Only a window whose app stopped answering offers the two ways out
         // of it: quitting a healthy app is nobody's accident to make.
         if !not_responding.contains(id) {
@@ -163,6 +188,12 @@ pub fn desk_resource(
 
 /// The launchpad's resource: each card a resource of its own that offers
 /// the desk's launchpad verb, bound to the card it stands for.
+///
+/// A card is one declaration ([`crate::launchpad::LaunchpadAction`]): the
+/// host publishes it as a host action, which is how the palette and the
+/// catalogue of actions name it, and this lists the same verb to agents and
+/// scripts that invoke an action by the resource it is published on. Both
+/// reach the verb through the host's one door.
 #[must_use]
 pub fn launchpad_resource() -> ResourceSpec {
     let cards = crate::launchpad::LaunchpadAction::ALL
@@ -170,9 +201,12 @@ pub fn launchpad_resource() -> ResourceSpec {
         .map(|card| (card.slug(), card.label()))
         .chain([("apps", t("launchpad-open-app"))]);
     let rows = cards.map(|(slug, label)| {
-        ResourceSpec::new(launchpad_card_id(slug), LAUNCHPAD_CARD_KIND, label.clone()).with_action(
-            bound(&DeskEffect::Launchpad { card: slug.into() }, Some(label)),
-        )
+        let mut card = bound(
+            &DeskEffect::Launchpad { card: slug.into() },
+            Some(label.clone()),
+        );
+        card.type_mut().contract.set_audience(Audience::Agents);
+        ResourceSpec::new(launchpad_card_id(slug), LAUNCHPAD_CARD_KIND, label).with_action(card)
     });
     ResourceSpec::new(
         LAUNCHPAD_RESOURCE,

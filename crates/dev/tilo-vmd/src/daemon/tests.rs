@@ -1060,7 +1060,7 @@ fn restored_slot_views_preserve_global_layers_and_refuse_missing_layers() {
 }
 
 #[test]
-fn a_board_session_running_before_restore_restarts_onto_its_view() {
+fn a_board_session_running_before_restore_restarts_onto_its_merged_layers() {
     let root = tempfile::tempdir().unwrap();
     let slots = SlotStore::new(root.path());
     let layers = LayerStore::new(root.path());
@@ -1085,13 +1085,23 @@ fn a_board_session_running_before_restore_restarts_onto_its_view() {
     apply.start_unit(unit).unwrap();
     let issues = restore_slots(&slots, &layers, &locks, &mut apply);
     assert!(issues.is_empty(), "{issues:?}");
-    let after_reload = |call: &str| {
-        let reload = apply.calls.iter().position(|c| c == "reload").unwrap();
-        apply.calls.iter().skip(reload).any(|c| c == call)
-    };
-    assert!(after_reload(&format!("stop {unit}")));
-    assert!(after_reload("restart user@1000.service"));
-    assert!(after_reload(&format!("start {unit}")));
+    // The seat's transient compositor unit takes no drop-in: the layers merge
+    // into the host `/usr`, and the restart puts the session on them.
+    assert!(
+        apply.dropins.is_empty(),
+        "no view is bound for a board: {:?}",
+        apply.dropins
+    );
+    assert!(apply.sysext.contains(&layers.path(&hash)));
+    let merge = apply
+        .calls
+        .iter()
+        .position(|c| c == "sysext_refresh")
+        .unwrap();
+    let after = |call: &str| apply.calls.iter().skip(merge).any(|c| c == call);
+    assert!(after(&format!("stop {unit}")));
+    assert!(after("restart user@1000.service"));
+    assert!(after(&format!("start {unit}")));
 }
 
 /// gc deletes only what nobody holds: it never touches the device
@@ -1414,20 +1424,7 @@ fn onboarding_targets_are_read_from_a_list_targets_answer() {
 /// A session whose onboarding shows its pages one after another as its
 /// controls are pressed, then the desktop.
 fn onboarding_session() -> RecordingApply {
-    use tilo_vm_protocol::ControlResult;
-    let reply = |stdout: String| ControlResult {
-        exit_code: 0,
-        stdout,
-        stderr: String::new(),
-    };
-    let targets = |names: &[&str]| {
-        let targets: Vec<_> = names
-            .iter()
-            .map(|name| serde_json::json!({ "name": name }))
-            .collect();
-        reply(serde_json::json!({ "targets": targets }).to_string())
-    };
-    let pages: [&[&str]; 5] = [
+    let pages: [&[&str]; 7] = [
         &["onboarding.begin.card"],
         &["onboarding.understood.row", "onboarding.create.button"],
         &["onboarding.understood.row", "onboarding.create.button"],
@@ -1439,17 +1436,15 @@ fn onboarding_session() -> RecordingApply {
             "onboarding.backup.skip-acknowledged.row",
             "onboarding.backup.continue.button",
         ],
+        &["onboarding.finish.button"],
+        &["shell.search"],
     ];
     let mut apply = RecordingApply::default();
-    for page in pages {
-        apply.control_replies.push_back(targets(page));
-        apply.control_replies.push_back(reply("{}".into()));
-    }
-    apply
-        .control_replies
-        .push_back(targets(&["onboarding.finish.button"]));
-    apply.control_replies.push_back(reply("{}".into()));
-    apply.control_replies.push_back(targets(&["shell.search"]));
+    apply.pages.extend(
+        pages
+            .iter()
+            .map(|page| page.iter().map(|name| (*name).to_owned()).collect()),
+    );
     apply
 }
 

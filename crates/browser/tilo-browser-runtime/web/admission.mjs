@@ -53,6 +53,10 @@ async function viaHost({workspace, room, deps, onProgress}) {
   // again is offered to be joined again only from the bare entry, where the
   // door's workspace is the one the person asked for.
   const peer = await deps.enterViaHost(room ? {workspace, room} : {workspace});
+  // The door has nothing to admit yet: an embed shows its embedder's fallback
+  // until the visitor's first gesture (`entry-page.mjs`), and nothing mounts
+  // before it.
+  if (peer?.idle) return {peer: null, idle: true};
   if (room && peer?.workspace && peer.workspace !== room) {
     await peer.dispose?.();
     throw new AdmissionError('no-access', NO_ACCESS);
@@ -64,7 +68,7 @@ async function viaHost({workspace, room, deps, onProgress}) {
  * across their devices lives in workspaces, as everything shared does.
  * Where the home lets only some in (`deps.ownDesktopOpen`), a browser no
  * host let in is sent to the home's door instead, which says how to get
- * in; watching the home for want of a seat lets nobody in. */
+ * in; a seat in the workspace is not a desktop of their own. */
 async function ownDesktop({home, deps, onProgress}) {
   const gated = Boolean(home?.admission && deps.ownDesktopOpen) && !await deps.ownDesktopOpen(home);
   if (gated) {

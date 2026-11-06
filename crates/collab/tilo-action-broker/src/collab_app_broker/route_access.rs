@@ -36,15 +36,6 @@ pub(super) fn attested_route_access(
     if route.app_id.is_empty() || route.app_id == app {
         return Ok(RouteAccess::Own);
     }
-    // A pair record ([`collab_types::direct_pair`]) is the app's that keeps the
-    // conversation in it: no other app joins one, whatever it declares it
-    // reads, and the two people's own doors decide who of them reads it.
-    if collab_types::direct_pair(&route.record_id).is_some() {
-        return Err(format!(
-            "{app} joins no record of a pair of people; {} keeps it",
-            route.app_id
-        ));
-    }
     // A workspace record is changed from any app's window of its workspace; the
     // workspace's grants on its owner decide each change.
     if collab_types::workspace_record(&route.app_id, &route.record_id).is_some() {
@@ -131,7 +122,6 @@ mod tests {
         ui::app_surface::register_package("test.lang-chat", CHAT);
         workspace_routes_are_the_apps_own_or_declared_reads();
         person_records_are_read_never_written();
-        pair_records_belong_to_the_app_that_keeps_them();
     }
 
     /// Its own route, whatever it reads; another app's only to read, and only
@@ -227,34 +217,6 @@ mod tests {
             ),
             Ok(RouteAccess::ReadOnly),
             "another app's record of the person's is read, never written"
-        );
-    }
-
-    /// A pair's record is the app's that keeps the conversation in it: no
-    /// other app joins one, whatever it declares it reads.
-    fn pair_records_belong_to_the_app_that_keeps_them() {
-        let pair = collab_types::direct_pair_id(
-            "4f2c1a64-0d7e-4b8e-9b55-2a6f3c9d1e10",
-            &"11".repeat(32),
-            &"22".repeat(32),
-        )
-        .unwrap();
-        let conversation = CrdtRoute {
-            record_id: format!("derived:on-demand@{}", collab_types::direct_record(&pair)),
-            ..workspace_route("test.lang-chat")
-        };
-        assert_eq!(
-            attested_route_access("test.lang-chat", &conversation, false, || false),
-            Ok(RouteAccess::Own),
-            "the app that keeps a pair's conversation joins its record"
-        );
-        assert!(
-            attested_route_access("test.lang-notes", &conversation, false, || true).is_err(),
-            "no other app joins a pair's record, whatever it declares it reads"
-        );
-        assert!(
-            attested_route_access("test.lang-board", &conversation, false, || true).is_err(),
-            "an app that reads another's kinds joins no pair record of them either"
         );
     }
 }

@@ -42,7 +42,7 @@ use std::ops::ControlFlow;
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, Utc, Weekday};
 use rrule::{Frequency, NWeekday, RRule, RRuleSet, Tz};
 
-pub use zone::{Resolution, canonical_zone, normalize_wall, wall_to_utc};
+pub use zone::{Resolution, canonical_zone, normalize_wall, wall_instant, wall_to_utc};
 
 /// A rule this crate accepts produces a date within any 400-year span (the
 /// Gregorian leap cycle), so a search that walks further has run past the end

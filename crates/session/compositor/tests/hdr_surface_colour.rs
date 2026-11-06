@@ -190,7 +190,7 @@ fn an_hdr_window_keeps_its_own_colour_beside_an_sdr_one() {
         .expect("the described colour");
     assert_eq!(editor_colour.transfer, TransferCharacteristics::Srgb);
 
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
 
     // Linear light 0.5, 0.25, 0.75 is drawn as that light, not as the bytes
@@ -231,7 +231,7 @@ fn a_ten_bit_window_that_says_nothing_shows_the_bytes_it_holds() {
         None
     );
 
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let shown = frame.pixel(100, 150).expect("inside the window");
     let bytes = [128_u32, 64, 192];
@@ -257,7 +257,7 @@ fn a_film_is_tone_mapped_with_the_volume_it_was_mastered_for() {
     baseline.show_words(200, 100, wl_shm::Format::Xrgb2101010, word(768, 768, 768));
     map(&mut compositor, &mut baseline, "baseline");
 
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
 
     // Each window's rendition is the tone map of its own mastering volume.

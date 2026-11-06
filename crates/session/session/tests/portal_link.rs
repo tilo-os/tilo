@@ -14,6 +14,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::time::{Duration, Instant};
 
 use tilo_compositor::{InputEvent, OutputConfig, Selection};
@@ -51,18 +53,12 @@ fn serving(captures: Option<InputCaptures>) -> (Session, PortalSide) {
 /// Step `session` until `probe` finds what it looks for, however many
 /// passes that takes.
 #[track_caller]
-fn until<T>(session: &mut Session, mut probe: impl FnMut(&mut Session) -> Option<T>) -> T {
-    let started = Instant::now();
-    loop {
-        if let Some(found) = probe(session) {
-            return found;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "the session never got there"
-        );
-        session.step(SETTLE).unwrap();
-    }
+fn until<T>(session: &mut Session, probe: impl FnMut(&mut Session) -> Option<T>) -> T {
+    common::wait_for(
+        session,
+        "what the portal's test asked of the session",
+        probe,
+    )
 }
 
 /// Ask `ask` of the portal's side on a thread of its own, as the portal's
@@ -79,12 +75,9 @@ fn asked<T: Send + 'static>(
             .unwrap()
             .block_on(ask())
     });
-    let started = Instant::now();
+    let deadline = tilo_test_env::hang_deadline();
     while !asking.is_finished() {
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "the session never answered"
-        );
+        assert!(Instant::now() < deadline, "the session never answered");
         session.step(SETTLE).unwrap();
     }
     asking.join().unwrap()

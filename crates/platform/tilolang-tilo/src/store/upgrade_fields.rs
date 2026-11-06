@@ -173,7 +173,7 @@ fn plain_text_edit(plain: &str) -> tilo_resource::EditOp {
         .map(tilo_document::ClipBlock::from_view)
         .collect();
     let action = tilo_document::RichTextAction::SyncClips { blocks };
-    // optional-decode: a `RichTextAction` always serializes
+    // ignored-failure: a `RichTextAction` always serializes
     let rich = serde_json::to_value(&action).unwrap_or(Json::Null);
     tilo_resource::EditOp::Rich { rich }
 }

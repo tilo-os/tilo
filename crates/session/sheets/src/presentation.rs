@@ -131,15 +131,21 @@ impl Presentation {
     }
 
     /// The sheet dismissed itself (Escape, a press outside it, a choice).
+    /// Its app animates it out and calls [`Self::gone`] once nothing of it is
+    /// drawn.
     pub fn dismissed(&self) {
         if self.is_open() {
             self.0.phase.set(Phase::Leaving);
+            self.wake();
         }
     }
 
     /// Nothing of the sheet is drawn any more.
     pub fn gone(&self) {
-        self.0.phase.set(Phase::Closed);
+        if self.phase() != Phase::Closed {
+            self.0.phase.set(Phase::Closed);
+            self.wake();
+        }
     }
 
     /// Wake the sheet's app: something the shell lent it changed.

@@ -502,25 +502,7 @@ fn a_keyless_owner_keeps_custody_of_its_own_sealed_write_without_renewing_it() {
             .outbox()
             .retained_local_document_retired(&write, author)
             .unwrap(),
-        "only the governor's signed watermark retires it"
-    );
-    let later = now.checked_add(Duration::from_secs(600)).unwrap();
-    let projection = member
-        .outbox_mut()
-        .reconcile_local_recovery_projection(std::slice::from_ref(&write), None, &[], &b, later)
-        .unwrap();
-    assert!(
-        projection.is_empty(),
-        "a sealed write is never re-signed by a replica without its key"
-    );
-    assert!(
-        member
-            .outbox()
-            .reserve_local_recovery(std::slice::from_ref(&write), None, author)
-            .unwrap()
-            .entries()
-            == 0,
-        "no recovery is reserved for history nobody here can read"
+        "only a durable receipt naming it retires it"
     );
 }
 

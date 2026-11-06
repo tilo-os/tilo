@@ -25,6 +25,41 @@ fn an_action_application_is_an_action_block() {
 }
 
 #[test]
+fn a_block_that_suggests_an_action_proposes_it() {
+    let b = block("suggest todo.add(@todo.TodoList:01J8ZK4T, \"Milk\")").expect("compiles");
+    validate(&b.wasm);
+    assert_eq!(b.kind, BlockKind::Action);
+    assert!(b.suggested, "the block is a proposal");
+    assert_eq!(b.value_type, "Action");
+    assert!(exports(&b.wasm).contains(&"b_main".to_string()));
+}
+
+#[test]
+fn an_action_the_block_applies_is_no_proposal() {
+    let b = block("todo.add(@todo.TodoList:01J8ZK4T, \"Milk\")").expect("compiles");
+    assert!(!b.suggested);
+}
+
+#[test]
+fn suggest_is_refused_where_no_proposal_may_be_made() {
+    // A view runs as it is drawn: it cannot propose for the person looking.
+    let err = block(
+        "stack {\n    button(\"Add\", on: suggest todo.add(@todo.TodoList:01J8ZK4T, \"x\"))\n}",
+    )
+    .expect_err("fails");
+    assert_eq!(err[0].code, "E044", "{}", err[0].message);
+    // A block proposes its whole value, and only when the value is the proposal itself.
+    let err = block("if true { suggest todo.add(@todo.TodoList:01J8ZK4T, \"x\") } else { 1 }")
+        .expect_err("fails");
+    assert_eq!(err[0].code, "E044", "{}", err[0].message);
+    // Only an action is proposed.
+    let err = block("suggest 1").expect_err("fails");
+    assert_eq!(err[0].code, "E044", "{}", err[0].message);
+    let err = block("suggest todo.todo_list(@todo.TodoList:01J8ZK4T)").expect_err("fails");
+    assert_eq!(err[0].code, "E044", "{}", err[0].message);
+}
+
+#[test]
 fn view_code_is_a_view_block() {
     let b = block("stack {\n    text(\"Good morning\")\n    button(\"Add\", on: todo.add(@todo.TodoList:01J8ZK4T, \"x\"))\n}").expect("compiles");
     validate(&b.wasm);
