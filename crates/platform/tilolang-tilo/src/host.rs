@@ -588,13 +588,15 @@ impl HostInner {
         };
     }
 
-    /// Whether the action `action` can run on the published resource `resource` now: the
-    /// requirements its subject alone decides, as its app says them, in the person at the
-    /// window's eyes. `None` when the app keeps none, or when one of them cannot be read.
+    /// Whether the action `action` can run on the published resource `resource` now: whether it
+    /// can apply to it where a view offers it at all, and the requirements its subject alone
+    /// decides, as its app says them, in the person at the window's eyes. `None` when the app
+    /// keeps neither, or when one cannot be read.
     ///
     /// Asked of the one resource a caller names, when it names it: an action directory answers
-    /// the rows it is asked for, and an invocation is refused before it runs, so no surface
-    /// carries a requirement's answer for every item it holds.
+    /// the rows it is asked for, an invoked action is refused before it runs, and a window
+    /// published the answer for what it shows, so no surface carries a condition's answer for
+    /// every item it holds.
     fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
         let package = self
             .packages
@@ -603,7 +605,7 @@ impl HostInner {
             .find(|package| package.meta.actions.iter().any(|held| held.id == action))
             .cloned()?;
         let meta = package.meta.actions.iter().find(|held| held.id == action)?;
-        if !meta.guard {
+        if !meta.guard && !meta.applies {
             return None;
         }
         let declared = package.meta.subject_of(&meta.params)?;
@@ -611,14 +613,29 @@ impl HostInner {
             .strip_prefix(&crate::publish::resource_id(&package.meta.app, ""))
             .unwrap_or(resource);
         let target = ResourceRef::parse_id(id, declared.id.clone())?;
-        match self.runtime.refusal_reading(action, &target, &self.viewer) {
-            Ok((Some(reason), _)) => Some(tilo_actions::Availability::Unavailable {
+        // Where the action cannot apply at all, the offer leaves it out: that reason is the
+        // answer, before what it needs to run.
+        let decided = |reason: Option<String>| match reason {
+            Some(reason) => Some(tilo_actions::Availability::Unavailable {
                 code: "unmet".to_owned(),
                 reason,
             }),
-            Ok((None, _)) => Some(tilo_actions::Availability::Available),
-            // A requirement that cannot be read says nothing of the action: it is offered, and
-            // refuses with its reason when it runs.
+            None => Some(tilo_actions::Availability::Available),
+        };
+        if meta.applies {
+            match self.runtime.applies_reading(action, &target, &self.viewer) {
+                Ok((Some(reason), _)) => return decided(Some(reason)),
+                Ok((None, _)) => {}
+                // A condition that cannot be read says nothing of the action: it is offered,
+                // and refuses with its reason when it runs.
+                Err(_) => return None,
+            }
+        }
+        if !meta.guard {
+            return decided(None);
+        }
+        match self.runtime.refusal_reading(action, &target, &self.viewer) {
+            Ok((reason, _)) => decided(reason),
             Err(_) => None,
         }
     }

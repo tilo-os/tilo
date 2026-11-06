@@ -891,8 +891,8 @@ fn a_filter_case_from_the_sidebar_narrows_the_list_and_titles_it() {
 fn a_destructive_row_action_runs_through_the_menu_and_offers_undo() {
     // A thread's menu keeps Delete on the row itself, outside the runs of commands it groups.
     let mut workspace = Workspace::seeded("mail");
-    let before = workspace.rows().len();
-    let (key, _) = workspace.rows().remove(0);
+    let before = workspace.rows();
+    let (key, title) = before.first().cloned().expect("mail has threads");
     let list = workspace.list();
     assert!(list.list_mut().unwrap().reveal(&key));
     let area = list.menu_area_mut().expect("the rows share one menu");
@@ -917,10 +917,33 @@ fn a_destructive_row_action_runs_through_the_menu_and_offers_undo() {
         .unwrap();
     area.choose(delete);
     workspace.settle();
-    assert_eq!(workspace.rows().len(), before - 1);
     assert!(
         workspace.shell().toast_text().is_some(),
         "the shell offers undo"
+    );
+    // The thread went to the trash, and its row stands where it stood, drawn in its new state,
+    // until the person leaves the place the query chose them for.
+    let kept = workspace.rows();
+    assert_eq!(kept.len(), before.len(), "no row moves: {kept:?}");
+    assert_eq!(
+        kept.first(),
+        Some(&(key.clone(), title)),
+        "the row still presents the thread it presented"
+    );
+    // Leaving the place settles the list: the inbox does not hold the trashed thread.
+    let all = workspace.key_of("ui.NavItem", "label", "All mail");
+    workspace.fire(&all, "select", None);
+    let inbox = workspace.key_of("ui.NavItem", "label", "All inboxes");
+    workspace.fire(&inbox, "select", None);
+    let settled = workspace.rows();
+    assert_eq!(
+        settled.len(),
+        before.len() - 1,
+        "the thread left the inbox: {settled:?}"
+    );
+    assert!(
+        !settled.iter().any(|(row, _)| *row == key),
+        "and its row went with it"
     );
 }
 
