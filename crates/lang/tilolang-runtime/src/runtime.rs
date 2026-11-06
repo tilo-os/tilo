@@ -907,6 +907,12 @@ impl Runtime {
         *self.core.names.borrow_mut() = Some(Box::new(host));
     }
 
+    /// How a day or a time of day reads in a sentence (a row's line, a notice) rather than in a
+    /// view node. Until it is set, its stored text.
+    pub fn set_shown_host(&self, host: impl crate::core::ShownHost + 'static) {
+        *self.core.shown.borrow_mut() = Some(Box::new(host));
+    }
+
     /// What `now` reads: the current time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. The
     /// runtime reads it once per outermost invocation, so the actions one invocation runs see
     /// one time. Until it is set, `now` is `1970-01-01T00:00:00Z`.

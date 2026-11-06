@@ -163,6 +163,15 @@ impl NameHost for SharedNames {
     }
 }
 
+/// How the platform reads a day or a time of day in a sentence, as the runtime asks for it.
+struct PlatformShown(Rc<dyn Platform>);
+
+impl crate::runtime::ShownHost for PlatformShown {
+    fn shown(&self, kind: &str, value: &str) -> String {
+        self.0.shown(kind, value)
+    }
+}
+
 /// One of the window's two views: a resource shown through a view.
 struct Shown {
     target: ResourceRef,
@@ -733,6 +742,8 @@ impl Instance {
         }
         host.runtime()
             .set_name_host(SharedNames(Rc::clone(&self.names)));
+        host.runtime()
+            .set_shown_host(PlatformShown(Rc::clone(&self.platform)));
         let platform = Rc::clone(&self.platform);
         host.set_clock(move || platform.now());
         let platform = Rc::clone(&self.platform);

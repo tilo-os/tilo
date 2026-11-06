@@ -40,6 +40,15 @@ fn set_by_person(value: &crate::store::Scalar) -> bool {
     }
 }
 
+/// One line of what proposing an action with some arguments says: the words a change to the
+/// field reads with, and the value they speak of as its type shows it, when they speak of one.
+pub(crate) struct Says {
+    /// The words, without the value ("set the due date to").
+    pub(crate) words: String,
+    /// What the words speak of as its type shows it, when they speak of a value.
+    pub(crate) value: Option<Value>,
+}
+
 /// A shown day with the time of day it holds beside it (`value:time`): the two read as one
 /// fact ("Tomorrow 9:00 AM").
 fn with_time(shown: &Value, at: &str) -> Value {
@@ -282,6 +291,9 @@ impl Source {
 /// The longest run of a conversation's unread messages a mention count reads: one page of
 /// them, so a workspace nobody has read is not read message by message for a badge.
 const MENTION_SCAN: usize = 64;
+
+/// A suggestion's opening words when the host has no locale string for them.
+const SAYS_FALLBACK: &str = "{name} suggests:";
 
 impl Core {
     /// `delivery(r)` of the document `doc`: how its last outside effect stands, as the host
@@ -570,10 +582,10 @@ impl Core {
     }
 
     /// What proposing `action` with `args` would change, in the words history says a change
-    /// with ([`crate::did`]): one sentence per argument it names, over the field of its type
-    /// ("set the due date to Saturday", "assigned this to Bo"). A parameter that names no
-    /// value says nothing.
-    pub(crate) fn proposal_says(&self, action: &str, args: &[Value]) -> Vec<String> {
+    /// with ([`crate::did`]): one line per argument it names, over the field of its type
+    /// ("set the due date to Saturday", "assigned this to Bo"), holding the value the type
+    /// shows it as when the words speak of one. A parameter that names no value says nothing.
+    pub(crate) fn proposal_lines(&self, action: &str, args: &[Value]) -> Vec<Says> {
         let params = {
             let reg = self.registry.borrow();
             let pkg = reg.action_package(action);
@@ -625,21 +637,22 @@ impl Core {
                 None => verbs.source.to_owned(),
             };
             let voices = self.words.borrow().word(verbs.key, &fills, &source);
-            let line = match verbs.shows {
-                crate::did::Shows::After => match self.change_shown(&ty, arg) {
-                    Ok(shown) => format!("{voices} {}", said(&shown)),
-                    Err(_) => voices,
-                },
-                _ => voices,
+            let value = match verbs.shows {
+                crate::did::Shows::After => self.change_shown(&ty, arg).ok(),
+                _ => None,
             };
-            out.push(line);
+            out.push(Says {
+                words: voices,
+                value,
+            });
         }
         out
     }
 
-    /// `proposal_note(r)`: what waits to be proposed of `r`, as one line of text — each
-    /// proposal's arguments in the words a change to them reads with, or the action's name when
-    /// they say nothing; empty when nothing waits.
+    /// `proposal_note(r)`: what waits to be proposed of `r`, as one line of text — who
+    /// proposed it and each proposal's arguments in the words a change to them reads with,
+    /// their values as the person reads them, or the action's name when they say nothing; empty
+    /// when nothing waits.
     pub(crate) fn proposal_note(&self, r: i32) -> HResult<Value> {
         let target = self.ref_arg(r)?;
         let mut says: Vec<String> = Vec::new();
@@ -655,18 +668,29 @@ impl Core {
                     _ => None,
                 })
                 .unwrap_or_default();
-            let lines = self.proposal_says(&rec.action, &args);
+            let mut lines: Vec<String> = self
+                .proposal_lines(&rec.action, &args)
+                .into_iter()
+                .map(|line| match line.value {
+                    Some(value) => format!("{} {}", line.words, self.said(&value)),
+                    None => line.words,
+                })
+                .collect();
             if lines.is_empty() {
-                says.push(self.action_label(&rec.action));
-            } else {
-                says.extend(lines);
+                lines.push(self.action_label(&rec.action));
             }
+            let name = self.name_of(&rec.author);
+            let said = self.words.borrow().word(
+                "tilolang-suggestion-says",
+                &[("name".to_owned(), name)],
+                SAYS_FALLBACK,
+            );
+            says.push(format!("{said} {}", lines.join(", ")));
         }
         if says.is_empty() {
             return Ok(Value::text(""));
         }
-        let lead = self.word("tilolang-suggested", "Suggested");
-        Ok(Value::text(format!("{lead}: {}", says.join(", "))))
+        Ok(Value::text(says.join("; ")))
     }
 
     /// What the workspace calls `who`, as a sentence names them: the person looking as the
@@ -893,7 +917,7 @@ impl Core {
                     .map(|entry| match entry {
                         Value::Tuple(pair) => match pair.as_slice() {
                             [Value::Text(key), held] => {
-                                let shown = said(&self.change_shown(inner, held)?);
+                                let shown = self.said(&self.change_shown(inner, held)?);
                                 Ok(one("text", Value::Text(format!("{key} {shown}")), None))
                             }
                             _ => trap("a map entry is a key and its value"),
@@ -1515,7 +1539,7 @@ impl Core {
     }
 
     /// What an action is called where history names it: its label, or what the host did.
-    fn action_label(&self, id: &str) -> String {
+    pub(crate) fn action_label(&self, id: &str) -> String {
         if let Some(found) = self
             .registry
             .borrow()
@@ -2225,19 +2249,34 @@ fn same_step(last: &crate::store::Version, next: &crate::store::Version) -> bool
     }
 }
 
-/// What a value as `c.before` and `c.after` show it says as text, where it is part of a phrase
-/// (an entry of a map): a person by name, a case by its label, a list one item after another.
-pub(crate) fn said(shown: &Value) -> String {
-    match shown {
-        Value::List(items) => items.iter().map(said).collect::<Vec<_>>().join(", "),
-        Value::Tuple(parts) => match parts.as_slice() {
-            [Value::Text(kind), _, Value::Opt(Some(name))] if kind == "principal" => {
-                said_value(name)
-            }
-            [_, held, _] => said_value(held),
-            _ => String::new(),
-        },
-        other => said_value(other),
+impl Core {
+    /// What a value as `c.before` and `c.after` show it says as text, where it is part of a
+    /// phrase (an entry of a map, a row's line): a person by name, a case by its label, a day
+    /// or a time of day as the host writes it, a list one item after another.
+    pub(crate) fn said(&self, shown: &Value) -> String {
+        match shown {
+            Value::List(items) => items
+                .iter()
+                .map(|item| self.said(item))
+                .collect::<Vec<_>>()
+                .join(", "),
+            Value::Tuple(parts) => match parts.as_slice() {
+                [Value::Text(kind), _, Value::Opt(Some(name))] if kind == "principal" => {
+                    said_value(name)
+                }
+                [Value::Text(kind), held, _] if kind == "date" || kind == "time" => {
+                    let text = said_value(held);
+                    self.shown
+                        .borrow()
+                        .as_ref()
+                        .map_or_else(|| text.clone(), |host| host.shown(kind, &text))
+                }
+                [_, held, _] => said_value(held),
+                _ => String::new(),
+            },
+            Value::Principal(who) => self.name_of(who),
+            other => said_value(other),
+        }
     }
 }
 
