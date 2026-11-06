@@ -599,3 +599,149 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
         place_strip(session, placed).is_none()
     });
 }
+
+/// Two places in one strip: the strips preset shows a strip of several places as its tab strip
+/// (shell.md §2), and every way to make one — a place moved into another strip from the window's
+/// menu, a found resource opened into it — is an arranging action the person, the REPL and an
+/// agent call alike, attributed and undone as one step. Choosing a tab shows its place, and
+/// closing a tab takes that place off the strip and nothing else.
+#[test]
+fn two_places_in_one_strip_are_its_tabs_on_the_shells_screen() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, notes) = session_at(WIDTH, HEIGHT);
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let first = notes.first().expect("a note").clone();
+    let second = notes.get(1).expect("a second note").clone();
+
+    // Each note starts a window of its own: one place, one strip.
+    let one = place(&mut session, &first);
+    let two = place(&mut session, &second);
+    let strip_of_one = place_strip(&session, one).expect("the first place stands in a strip");
+    let strip_of_two = place_strip(&session, two).expect("the second place stands in a strip");
+    assert_ne!(
+        strip_of_one, strip_of_two,
+        "each place was made in a strip of its own"
+    );
+
+    // The person moves the first place into the second one's strip from the first window's
+    // menu: the arranging action's `strip`, which is what a drag onto another strip means. The
+    // window in front is the one the person is working in, so its menu is the one that stands.
+    let one_name = shown_as(&session, TITLES[0]);
+    let two_name = shown_as(&session, TITLES[1]);
+    until(&mut session, "the window's controls", |session| {
+        on_screen(session, "This window").is_some()
+    });
+    let menu = format!("Move into {two_name} as a tab");
+    press(&mut session, "This window");
+    until(&mut session, "the strips to move into", |session| {
+        on_screen(session, &menu).is_some()
+    });
+    keep(&mut session, "tabs-move-into-strip-menu");
+    press(&mut session, &menu);
+    until(&mut session, "both places in one strip", |session| {
+        place_strip(session, one) == Some(strip_of_two)
+            && place_strip(session, two) == Some(strip_of_two)
+    });
+    let strip = common::strip(&session, strip_of_two).expect("the strip reads");
+    let placed: Vec<u64> = common::places(&session)
+        .iter()
+        .filter(|place| place.strip == strip.key)
+        .map(|place| common::number(&place.key))
+        .collect();
+    assert_eq!(placed.len(), 2, "the strip holds both places: {placed:?}");
+
+    // The strip shows its tabs: both titles stand in its one bar, and the place moved in is the
+    // one in front.
+    until(&mut session, "both tab titles", |session| {
+        on_screen(session, &one_name).is_some() && on_screen(session, &two_name).is_some()
+    });
+    keep(&mut session, "tabs-two-in-one-strip");
+    assert_eq!(
+        strip.active,
+        one.to_string(),
+        "the place moved in stands in front"
+    );
+
+    // Choosing a tab shows its place: the second tab, and the strip's reading follows.
+    press(&mut session, &two_name);
+    until(&mut session, "the second tab in front", |session| {
+        common::strip(session, strip_of_two).is_some_and(|strip| strip.active == two.to_string())
+    });
+
+    // And the first one again.
+    press(&mut session, &one_name);
+    until(&mut session, "the first tab in front", |session| {
+        common::strip(session, strip_of_two).is_some_and(|strip| strip.active == one.to_string())
+    });
+
+    // Closing a tab takes that place off the strip, and the other stays.
+    press(&mut session, "Close");
+    until(&mut session, "the first place gone", |session| {
+        place_strip(session, one).is_none()
+    });
+    assert_eq!(
+        place_strip(&session, two),
+        Some(strip_of_two),
+        "the tab that stayed is the second place, in the strip it was in"
+    );
+    until(&mut session, "one title left in the strip", |session| {
+        on_screen(session, &two_name).is_some() && on_screen(session, &one_name).is_none()
+    });
+}
+
+/// A resource a text finds opens into the strip in front as its tab, through the arranging
+/// action the launcher's "Open as a tab" runs (`place-found` with the strip named): one step of
+/// the person's, the same an agent or the REPL makes.
+#[test]
+fn a_found_resource_opens_as_a_tab_of_the_strip_in_front() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, notes) = session_at(WIDTH, HEIGHT);
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let note = notes.first().expect("a note").clone();
+    let placed = place(&mut session, &note);
+    let strip = place_strip(&session, placed).expect("the place stands in a strip");
+    let before = common::places(&session).len();
+
+    // The launcher's "Open as a tab" runs the arranging action with the strip in front named.
+    session
+        .invoke(
+            "shell:arrangement",
+            "place-found",
+            json!({
+                "text": TITLES[1],
+                "strip": strip.to_string(),
+                "x": 80,
+                "y": 60,
+            })
+            .as_object()
+            .unwrap(),
+        )
+        .unwrap_or_else(|error| panic!("the found note opens as a tab: {error:?}"));
+    until(&mut session, "the found note in the strip", |session| {
+        common::places(session).len() > before
+            && common::places(session)
+                .iter()
+                .any(|place| place.strip == strip.to_string() && place.key != placed.to_string())
+    });
+    let found = common::places(&session)
+        .into_iter()
+        .find(|place| place.strip == strip.to_string() && place.key != placed.to_string())
+        .expect("the found note joined the strip");
+    assert_eq!(
+        found.key,
+        common::strip(&session, strip)
+            .expect("the strip reads")
+            .active,
+        "the found note stands in front, as a tab arrives"
+    );
+    let title = shown_as(&session, TITLES[1]);
+    until(&mut session, "both titles in the strip", |session| {
+        on_screen(session, &shown_as(session, TITLES[0])).is_some()
+            && on_screen(session, &title).is_some()
+    });
+    keep(&mut session, "tabs-found-opens-as-a-tab");
+}

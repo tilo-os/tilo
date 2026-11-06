@@ -7,10 +7,15 @@
 /// The results are the desk's windows and the desk's own doors; what apps, files and actions
 /// hold is the platform's search, which Enter hands `submit_search` to, so no list this view
 /// keeps can go stale.
+///
+/// "Open as a tab" is the other way out of a search, beside Enter's: what the text finds joins
+/// the strip in front as its tab (shell.md §2, §3), one arranging action of the person's, so
+/// the desk fills with the person's work rather than a second strip for every result.
 /// The launcher, with the person's last query in the field.
 view launcher(d: Desk) {
     lens query: Text = d.spotlight
     let typed = query != ""
+    let front = front_strip()
     let windows = if typed {
         d.windows.matching(query).sort_by(w -> w.recency).take(10)
     } else {
@@ -46,10 +51,21 @@ view launcher(d: Desk) {
         footer: {
             row(gap: .related, align: .center, wrap: true) {
                 if typed {
+                    if front != "" {
+                        ui.Button("Open as a tab", icon: .columns_2, role: .primary, size: .small) {
+                            on press: session.place_found(
+                                text: query,
+                                view: .none,
+                                strip: .some(front),
+                                x: .none,
+                                y: .none,
+                            )
+                        }
+                    }
                     ui.Button(
                         "Search everywhere for {query}",
                         icon: .search,
-                        role: .primary,
+                        role: if front == "" { .primary } else { .secondary },
                         size: .small,
                     ) {
                         on press: session.search(query: .some(query))
@@ -60,6 +76,21 @@ view launcher(d: Desk) {
             }
         }
     }
+}
+
+/// The key of the strip in front: the one the person brought forward, or else the desk's
+/// last, so a found resource joins the window they are working in. Empty while the desk has
+/// no strip.
+fn front_strip() -> Text {
+    let a = arrangement
+    let v = viewing
+    if v.focused != "" {
+        return v.focused
+    }
+    if let last = a.strips.last() {
+        return last.key
+    }
+    return ""
 }
 
 /// One window the search found: what it is, what it shows, and where it is.
