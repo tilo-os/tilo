@@ -111,13 +111,9 @@ scenario "a conversation" -> Channel {
     c.name = "design"
     let mia = person("Mia")
     let leo = person("Leo")
-    as mia {
-        post(c, "The new onboarding build is on the test machines.")
-        post(c, "First launch is down to a second and a half on the old ThinkPad.")
-    }
-    as leo {
-        post(c, "Can we move the account step to the end?")
-    }
+    invoke(post(c, "The new onboarding build is on the test machines."), by: mia)
+    invoke(post(c, "First launch is down to a second and a half on the old ThinkPad."), by: mia)
+    invoke(post(c, "Can we move the account step to the end?"), by: leo)
     post(c, "Agreed. I'll update the flow this afternoon.")
     c
 }

@@ -26,6 +26,15 @@ impl ChannelDirectory for LateReaders {
             .load(Ordering::SeqCst)
             .then(|| [public(21)].into_iter().collect())
     }
+    /// Each channel here is a reader set of its own.
+    fn unit_scope(
+        &self,
+        workspace: WorkspaceId,
+        route: &ChannelRoute,
+        _: u64,
+    ) -> Option<ChannelId> {
+        Some(route.channel(&workspace.to_string()))
+    }
     fn policy_epoch(&self) -> Option<u64> {
         Some(self.epoch.load(Ordering::SeqCst))
     }
@@ -188,6 +197,15 @@ impl ChannelDirectory for RoutedReaders {
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
         (self.named.load(Ordering::SeqCst) && route.is_some())
             .then(|| [public(21)].into_iter().collect())
+    }
+    /// Each channel here is a reader set of its own.
+    fn unit_scope(
+        &self,
+        workspace: WorkspaceId,
+        route: &ChannelRoute,
+        _: u64,
+    ) -> Option<ChannelId> {
+        Some(route.channel(&workspace.to_string()))
     }
     fn policy_epoch(&self) -> Option<u64> {
         self.epoch

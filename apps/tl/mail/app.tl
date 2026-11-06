@@ -380,18 +380,18 @@ action flag(t: Thread, flagged: Bool = not t.flagged) (
 /// Puts the conversation away until a moment: it leaves the inbox, and comes back once that
 /// moment has come, with no window open. The moment is a field, so it survives closing and
 /// reopening, and an agent snoozes the same way.
-action snooze(t: Thread, until: Time) (icon: .clock, label: "Snooze") {
+action snooze(t: Thread, until: Time) uses time (icon: .clock, label: "Snooze") {
     require until > now "Pick a moment still to come"
     t.snoozed_until = until
 }
 
 /// Puts the conversation away for an hour, the snooze people reach for most.
-action snooze_an_hour(t: Thread) (icon: .clock, label: "Snooze an hour") {
+action snooze_an_hour(t: Thread) uses time (icon: .clock, label: "Snooze an hour") {
     snooze(t, now + 1h)
 }
 
 /// Puts the conversation away until tomorrow morning, at nine, in the person's own zone.
-action snooze_until_tomorrow(t: Thread) (icon: .clock, label: "Snooze until tomorrow") {
+action snooze_until_tomorrow(t: Thread) uses time (icon: .clock, label: "Snooze until tomorrow") {
     snooze(t, Time.parse("tomorrow 9am", near: now) ?? now + 18h)
 }
 
@@ -447,7 +447,7 @@ action cancel_later(d: Draft) (icon: .undo_2, label: "Cancel scheduled send") {
 /// Sends the message at a moment instead of now: it waits in the outbox until then, as the
 /// person's hold makes a message wait, and goes with no window open. Until it goes it can be
 /// taken back, and bringing it back leaves it a draft.
-action send_later(d: Draft, at: Time) (icon: .clock, label: "Send later") {
+action send_later(d: Draft, at: Time) uses time (icon: .clock, label: "Send later") {
     require not d.sent or d.recalled "This message went already"
     require d.to != "" "It goes to nobody yet"
     require at > now "Pick a moment still to come"
@@ -463,7 +463,7 @@ action send_later(d: Draft, at: Time) (icon: .clock, label: "Send later") {
 
 /// Sends the message at nine tomorrow, the moment people reach for most when they write in the
 /// evening and do not want it to arrive then.
-action send_in_the_morning(d: Draft) (icon: .clock, label: "Send tomorrow morning") {
+action send_in_the_morning(d: Draft) uses time (icon: .clock, label: "Send tomorrow morning") {
     send_later(d, Time.parse("tomorrow 9am", near: now) ?? now + 18h)
 }
 
@@ -522,7 +522,7 @@ destructive action discard(m: Mail, d: Draft) (icon: .trash, label: "Delete draf
 /// outbox until the server took it; it is held back for the person's hold first, so they can
 /// take it back. The effect is an argument the action records, so the wait survives a window
 /// closing and an agent takes it back the same way.
-primary action send(d: Draft) proposal compose(d) (icon: .send) {
+primary action send(d: Draft) uses time proposal compose(d) (icon: .send) {
     require not d.sent or d.recalled "This message went already"
     require d.to != "" "It goes to nobody yet"
     let m = root Mail
@@ -549,7 +549,7 @@ action undo_send(d: Draft) (icon: .undo_2, label: "Undo send") {
 
 /// Answers the conversation with what was typed: the message goes to whoever wrote its newest,
 /// as a reply to it, quoted.
-action answer(t: Thread, body: Text) -> Draft (icon: .reply) {
+action answer(t: Thread, body: Text) -> Draft uses time (icon: .reply) {
     require body.len() > 0 "Say something first"
     let m = root Mail
     let last = t.messages.last()

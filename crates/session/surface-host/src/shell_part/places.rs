@@ -38,6 +38,11 @@ fn click(part: &mut ShellPart, name: &str) {
 fn notebook() -> (RecordService, tilolang_tilo::runtime::Meta) {
     let record = tilo_resource::Doc::new();
     let host = Host::new(&record, Principal::new("Pat"), || None).unwrap();
+    host.load_builtin(
+        include_str!("../../../../../apps/tl/discussion/app.tl"),
+        include_str!("../../../../../apps/tl/discussion/app.ids"),
+    )
+    .unwrap();
     let notes = host
         .load_builtin(
             include_str!("../../../../../apps/tl/notes/app.tl"),
@@ -420,6 +425,8 @@ fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
 
 const CHAT: &str = include_str!("../../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../../apps/tl/chat/app.ids");
+const DISCUSSION: &str = include_str!("../../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../../apps/tl/discussion/app.ids");
 const TASKS: &str = include_str!("../../../../../apps/tl/tasks/app.tl");
 const TASKS_IDS: &str = include_str!("../../../../../apps/tl/tasks/app.ids");
 const CHAT_APP: &str = "so.tilo.lang.chat";
@@ -476,6 +483,7 @@ fn room() -> Room {
     let record = tilo_resource::Doc::new();
     let host = Host::new(&record, Principal::new("ada"), || None).unwrap();
     let chat = host.load_builtin(CHAT, CHAT_IDS).unwrap();
+    host.load_builtin(DISCUSSION, DISCUSSION_IDS).unwrap();
     let tasks = host.load_builtin(TASKS, TASKS_IDS).unwrap();
     // Both roots exist, as they do once each app's window was opened in the workspace.
     let all = Value::resource(&host.root_of(CHAT_APP).unwrap());

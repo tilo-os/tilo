@@ -152,7 +152,7 @@ fn reply(parent: &Id, text: &str) -> Invoke<ChatPart> {
             text: text.into(),
             parent: Some(parent.clone()),
             body: None,
-            attachment: None,
+            attachments: Vec::new(),
             mentions: None,
             written: None,
         },
@@ -306,14 +306,12 @@ fn a_post_that_says_nothing_or_is_misplaced_is_refused() {
                 text: "look".into(),
                 parent: None,
                 body: None,
-                attachment: Some(AttachmentUpdate {
-                    kind: "image".into(),
+                attachments: vec![tilo_reference::Attached::Image {
                     name: "shot.png".into(),
                     blob: "not-a-hash".into(),
-                    width: 10,
-                    height: 10,
-                    size: 0,
-                }),
+                    w: 10,
+                    h: 10,
+                },],
                 mentions: None,
                 written: None,
             },
@@ -336,7 +334,7 @@ fn post_fields(channel: &str, text: &str) -> NewMessage {
         text: text.into(),
         parent: None,
         body: None,
-        attachment: None,
+        attachments: Vec::new(),
         mentions: None,
         written: None,
     }
@@ -374,14 +372,11 @@ fn an_attachment_is_posted_by_its_content_address() {
             text: String::new(),
             parent: None,
             body: None,
-            attachment: Some(AttachmentUpdate {
-                kind: "file".into(),
+            attachments: vec![tilo_reference::Attached::File {
                 name: "notes.md".into(),
                 blob: blob.clone(),
-                width: 0,
-                height: 0,
                 size: 1200,
-            }),
+            }],
             mentions: None,
             written: None,
         },
@@ -389,12 +384,12 @@ fn an_attachment_is_posted_by_its_content_address() {
     .unwrap();
     let rows = ada.rows("c_chat");
     assert_eq!(
-        rows[0].attachment,
-        Some(crate::model::Attachment::File {
+        rows[0].attachments,
+        [tilo_reference::Attached::File {
             name: "notes.md".into(),
             blob,
             size: 1200,
-        })
+        }]
     );
 }
 

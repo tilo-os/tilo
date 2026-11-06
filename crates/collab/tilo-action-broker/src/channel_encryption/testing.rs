@@ -143,6 +143,17 @@ impl ChannelDirectory for Directory {
         }
         Some(allowed)
     }
+    /// Each channel of these tests is a reader set of its own: the fixture
+    /// narrows every record, so its keys never leave the devices its policy
+    /// names for it.
+    fn unit_scope(
+        &self,
+        workspace: WorkspaceId,
+        route: &ChannelRoute,
+        _: u64,
+    ) -> Option<ChannelId> {
+        Some(route.channel(&workspace.to_string()))
+    }
     fn policy_epoch(&self) -> Option<u64> {
         match &*self.policy.announces.lock().unwrap() {
             None => None,

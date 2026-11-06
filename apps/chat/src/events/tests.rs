@@ -737,9 +737,9 @@ fn attachments_are_picked_imported_and_posted_as_real_portable_cards() {
         // path so a frame paints a decoded thumbnail (not a placeholder).
         let (app, _doc) = app_with_doc();
         assert!(
-            app.messages.iter().any(|m| matches!(
-                &m.attachment,
-                Some(crate::model::Attachment::Image { blob, .. }) if blob == crate::images::DEMO_CALL_GRID
+            app.messages.iter().flat_map(crate::model::Message::files).any(|file| matches!(
+                file,
+                tilo_reference::Attached::Image { blob, .. } if blob == crate::images::DEMO_CALL_GRID
             )),
             "seeded conversation has an image attachment"
         );
@@ -775,8 +775,8 @@ fn attachments_are_picked_imported_and_posted_as_real_portable_cards() {
         assert_eq!(msgs.len(), before + 1, "one real attachment posted");
         let last = msgs.last().unwrap();
         assert_eq!(last.text, "", "no invented caption");
-        match &last.attachment {
-            Some(model::Attachment::Image { blob, w, h, .. }) => {
+        match last.files().next() {
+            Some(tilo_reference::Attached::Image { blob, w, h, .. }) => {
                 assert_eq!(blob.len(), 64, "posts a content hash");
                 assert!(app.content.has(blob));
                 assert_eq!(
@@ -867,8 +867,8 @@ fn attachments_are_picked_imported_and_posted_as_real_portable_cards() {
         settle_attachment_until(&mut app, &mut doc, "c_crit", before + 1);
         let msgs = crate::testing::messages(&doc, "c_crit");
         assert_eq!(msgs.len(), before + 1, "the video posted as one message");
-        match &msgs.last().unwrap().attachment {
-            Some(model::Attachment::Video {
+        match msgs.last().unwrap().files().next() {
+            Some(tilo_reference::Attached::Video {
                 name, blob, size, ..
             }) => {
                 assert_eq!(name, "clip.mp4");
@@ -893,12 +893,13 @@ fn attachments_are_picked_imported_and_posted_as_real_portable_cards() {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         settle_attachment_until(&mut app, &mut doc, "c_crit", before + 1);
-        match &crate::testing::messages(&doc, "c_crit")
+        match crate::testing::messages(&doc, "c_crit")
             .last()
             .unwrap()
-            .attachment
+            .files()
+            .next()
         {
-            Some(model::Attachment::File { name, blob, size }) => {
+            Some(tilo_reference::Attached::File { name, blob, size }) => {
                 assert_eq!(name, "notes.md");
                 assert_eq!(*size, 30);
                 assert!(app.content.has(blob));
@@ -1600,7 +1601,7 @@ fn files_from_this_device_are_shared_from_their_bytes() {
         .iter()
         .rev()
         .take(2)
-        .filter_map(|message| message.attachment.as_ref().map(|a| a.name().to_owned()))
+        .filter_map(|message| message.files().next().map(|file| file.label().to_owned()))
         .collect();
     assert_eq!(names, ["second.txt", "first.txt"]);
 
@@ -1628,8 +1629,8 @@ fn files_from_this_device_are_shared_from_their_bytes() {
     let last = crate::testing::messages(&doc, "c_crit");
     assert_eq!(
         last.last()
-            .and_then(|message| message.attachment.as_ref())
-            .map(|attachment| attachment.name().to_owned())
+            .and_then(|message| message.files().next())
+            .map(|file| file.label().to_owned())
             .as_deref(),
         Some("dropped.txt")
     );
@@ -2870,18 +2871,19 @@ fn an_attachment_is_saved_where_a_pathless_host_keeps_it() {
     let bytes = b"%PDF-1.7 the plan".to_vec();
     let blob = app.content.put(&bytes).unwrap();
     let msg = app.messages[0].id.clone();
-    app.messages[0].attachment = Some(model::Attachment::File {
+    app.messages[0].attachments = vec![tilo_reference::Attached::File {
         name: "plan.pdf".into(),
         blob,
         size: u64::try_from(bytes.len()).unwrap(),
-    });
-    app.attachment_view = Some(crate::attachment_view::AttachmentView::new(msg.clone()));
+    }];
+    app.attachment_view = Some(crate::attachment_view::AttachmentView::new(msg.clone(), 0));
     let host = std::sync::Arc::new(PathlessHost::default());
     let services = ui::host::HostServices::null().with_files(host.clone());
     ui::host::scoped(&services, || {
         app.on_hit(
             Hit::Attachment {
                 msg,
+                attachment: 0,
                 action: ui::widget::conversation::AttachmentAction::Save,
             },
             &mut ui::widget::Edits::lend(&mut doc),

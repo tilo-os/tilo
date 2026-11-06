@@ -308,7 +308,7 @@ fn a_moment_reads_as_the_day_it_falls_on() {
     // `t.day()` is the day a moment falls on for the person, as `today` is the day it is: a day
     // a list groups its rows by, and a date a row shows.
     ok("fn f(c: C) -> Date {\n    let at = c.at ?? 2026-06-29T07:02Z\n    at.day()\n}");
-    ok("action a(c: C) {\n    c.due = now.day()\n    c.at = now\n}");
+    ok("action a(c: C) uses time {\n    c.due = now.day()\n    c.at = now\n}");
     ok(
         "view w(c: C) {\n    ui.VirtualList {\n        for x in c.items {\n            let heading: Option<Date> = if let at = x.at { .some(at.day()) } else { .none }\n            ui.ListItem(item: x, group: heading) {\n            }\n        }\n    }\n}",
     );

@@ -313,10 +313,14 @@ impl CollRef {
                 .as_deref()
                 .is_some_and(|pred| pred.fields().iter().any(|read| read.spec.id == field))
             || self.order.as_ref().is_some_and(|order| {
-                // Any change of an item is its last version.
                 order.field == field
-                    || crate::store::Reflected::of(&order.field)
-                        == Some(crate::store::Reflected::Updated)
+                    || match crate::store::Reflected::of(&order.field) {
+                        // Any change of an item is its last version.
+                        Some(crate::store::Reflected::Updated) => true,
+                        // In the order of when a field last changed: a change of the field moves it.
+                        Some(crate::store::Reflected::Changed(changed)) => changed == field,
+                        Some(crate::store::Reflected::Created) | None => false,
+                    }
             })
     }
 
@@ -392,6 +396,10 @@ pub enum Value {
         args: Vec<Value>,
         scalar: bool,
     },
+    /// A reply's body as the bytes it carried (`response.body`), read as text by `.text()`.
+    Bytes(Rc<Vec<u8>>),
+    /// What `web.get` and `web.post` answered (see [`crate::flow::WebResponse`]).
+    Response(Rc<crate::flow::WebResponse>),
 }
 
 impl Value {
@@ -455,6 +463,8 @@ impl Value {
             Self::Map(_) => "map",
             Self::Offered(_) => "offered action",
             Self::Picture(_) => "picture",
+            Self::Bytes(_) => "bytes",
+            Self::Response(_) => "web response",
             Self::AtEvent { .. } => "argument computed at the event",
         }
     }
@@ -541,7 +551,9 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         | Value::State { .. }
         | Value::AtEvent { .. }
         | Value::Map(_)
-        | Value::Offered(_) => {
+        | Value::Offered(_)
+        | Value::Bytes(_)
+        | Value::Response(_) => {
             return Err(format!("a {} cannot be stored", v.kind_name()));
         }
     })

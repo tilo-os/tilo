@@ -12,9 +12,6 @@ d-oidkt4g5 = Title
 
 d-fgvmlm5n = Done
 
-d-kvqrynzm = Done at
-    .doc = When it was last checked off: Done stands it under the day it was finished on.
-
 d-g6kykjp2 = Due
     .doc = The day it is due by, if any.
 
@@ -52,20 +49,6 @@ d-rc3gzwpo = Subtasks
 
 d-olnvvb3s = Subtasks done
 
-d-2ozuzhiq = Step
-    .doc = One step of a task's checklist, from before a task's steps were tasks of their own.
-    .noun = { $count ->
-        [one] step
-       *[other] steps
-    }
-
-d-3x2blhsz = Title
-
-d-qbfmff6k = Done
-
-d-idfd5vap = Task
-    .doc = The task it is a step of.
-
 d-bfqi332m = Project
     .doc = A project: tasks that work towards one outcome.
     .noun = { $count ->
@@ -102,9 +85,6 @@ d-lg5gedbh = Items
 
 d-mdhllpbo = Projects
 
-d-exy7sakn = Steps
-    .doc = The steps of every task, before a task's steps were tasks of their own.
-
 d-nk5542m7 = Sections
     .doc = The sections of every project, each naming its project, in the order its board shows them.
 
@@ -133,14 +113,11 @@ d-u4wzi4k4 = The day it is grouped under, as a list of a day is
 d-ifftrju4 = Its project, as a project's list is of one
     .doc = Its project, as a project's list is of one.
 
-d-ymvliuk3 = Adopt steps
-    .doc = Gives each step of a task from before steps were tasks a task of its own, under the task it was a step of, in the order it was in.
-
-d-u7a3fue4 = Add a task
-    .doc = Adds what was typed in the entry at the end of a list as a task, to the inbox or to `p`, in the lane `s` of its board.
-
 d-rs3ubifz = New task
-    .doc = Adds a task under the title a program or an agent gives it: no task stands without one.
+    .doc = Adds a task: under the title a program or an agent gives it, or the words typed in the entry at the end of a list, to the inbox or to `p`, in the lane `s` of its board.
+
+d-boggc6yt = Add a task
+    .doc = Adds a task that is due today: what the entry of the Today place runs, so a task typed there stands in Today.
 
 d-zjuy7y7f = New project
     .doc = Starts a project.

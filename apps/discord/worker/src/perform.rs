@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex};
 use base64::Engine as _;
 use discord_wire::op::{
     AnswerInteractionOp, ArrangeOp, ChannelKind, ChannelSpec, CreateWebhookOp, DeleteEmojiOp,
-    DeleteOp, DiscordOp, DiscordResult, EditOp, EmojiSpec, FetchAssetOp, InAttachment, MemberOp,
-    MemberRolesOp, OverwriteKind, OverwriteOp, ReactOp, RoleSpec, SendOp, StartThreadOp,
+    DeleteOp, DiscordOp, DiscordResult, EditOp, EmojiSpec, FetchAssetOp, MemberOp, MemberRolesOp,
+    OverwriteKind, OverwriteOp, ReactOp, RoleSpec, SendOp, StartThreadOp,
 };
 use serde_json::{Value, json};
 use tilo_connector::protocol::{Bytes, FromWorker, Outcome};
@@ -1104,11 +1104,9 @@ impl Performer {
         let _ = self.ctx.out.send(FromWorker::Blob {
             bytes: Bytes(bytes.to_vec()),
         });
-        let attachment = op.attachment.map(|attachment| InAttachment {
-            blob: blob.clone(),
-            size,
-            ..attachment
-        });
+        let attachment = op
+            .attachment
+            .map(|attachment| attachment.fetched(blob.clone(), size));
         Ok(DiscordResult::Asset {
             blob,
             size,

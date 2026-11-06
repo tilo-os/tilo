@@ -172,6 +172,3 @@ tilolang-remind-weeks-after = { $count ->
     [one] 1 week after
    *[other] { $count } weeks after
 }
-
-tilolang-reminder-late = Late
-tilolang-reminder-open = Open

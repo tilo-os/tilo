@@ -28,33 +28,49 @@ const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// screen, with workspace to scroll.
 const PREFETCHED: usize = 64;
 
+/// One resource a message carries: a message posts several things, and each
+/// keeps its own chip, its own link and its own outcome.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct Slot {
+    message: String,
+    attachment: usize,
+}
+
+impl Slot {
+    fn of(message: &str, attachment: usize) -> Self {
+        Self {
+            message: message.to_owned(),
+            attachment,
+        }
+    }
+}
+
 pub(crate) struct Navigation {
     remote: RemoteActions,
     pending: Option<Pending>,
     /// What the last request came to, shown on the control that asked.
     status: Option<Status>,
-    /// The last copied link and its message: the copy can fail after the
+    /// The last copied link and its slot: the copy can fail after the
     /// control said it was copied.
     copy: ui::CopyWatch,
-    copied_for: String,
-    /// Links asked for ahead of a click, by message.
-    prefetched: std::collections::HashMap<String, Asked>,
-    /// The resource being opened, and the message that shares it.
-    opening: Option<(String, InvocationCall)>,
-    /// The messages whose controls the last paint showed.
-    shown: std::cell::RefCell<Vec<String>>,
+    copied_for: Option<Slot>,
+    /// Links asked for ahead of a click, by slot.
+    prefetched: std::collections::HashMap<Slot, Asked>,
+    /// The resource being opened, and the slot that shares it.
+    opening: Option<(Slot, InvocationCall)>,
+    /// The slots whose controls the last paint showed.
+    shown: std::cell::RefCell<Vec<Slot>>,
 }
 
 /// A link asked for: of what, from where, and its answer.
 struct Asked {
-    reference: tilo_reference::ResourceRef,
-    provider: String,
+    at: tilo_reference::ResourceAt,
     started: ui::time::Instant,
     call: InvocationCall,
 }
 
 struct Status {
-    message: String,
+    slot: Slot,
     open: bool,
     /// The reason when it failed.
     outcome: Result<(), String>,
@@ -67,7 +83,7 @@ impl Default for Navigation {
             pending: None,
             status: None,
             copy: ui::CopyWatch::default(),
-            copied_for: String::new(),
+            copied_for: None,
             prefetched: std::collections::HashMap::new(),
             opening: None,
             shown: std::cell::RefCell::new(Vec::new()),
@@ -76,7 +92,7 @@ impl Default for Navigation {
 }
 
 struct Pending {
-    message: String,
+    slot: Slot,
     asked: Asked,
     /// The clipboard the click claimed when its link was not in yet.
     reserved: Option<ui::clipboard::ReservedCopy>,
@@ -117,6 +133,12 @@ fn opened(call: &InvocationCall) -> Option<Result<(), String>> {
     })
 }
 
+/// The `record:<app>:<record>` provider of the record `at` lives in, its
+/// record empty for the app's own.
+fn provider(at: &tilo_reference::ResourceAt) -> String {
+    format!("record:{}:{}", at.app, at.record.as_deref().unwrap_or(""))
+}
+
 impl Navigation {
     pub(crate) fn pending(&self) -> bool {
         self.pending.is_some() || self.opening.is_some()
@@ -126,28 +148,30 @@ impl Navigation {
         &mut self.remote
     }
 
-    /// Note that `message`'s controls are on screen, so its link is asked
-    /// for before anyone clicks them.
-    pub(crate) fn shown(&self, message: &str) {
+    /// Note that a message's attachment is on screen, so its link is asked
+    /// for before anyone clicks its controls.
+    pub(crate) fn shown(&self, message: &str, attachment: usize) {
+        let slot = Slot::of(message, attachment);
         let mut shown = self.shown.borrow_mut();
-        if !shown.iter().any(|known| known == message) {
-            shown.push(message.to_owned());
+        if !shown.contains(&slot) {
+            shown.push(slot);
         }
     }
 
-    /// What the last link request on `message` came to.
-    pub(crate) fn status(&self, message: &str) -> Option<&Result<(), String>> {
+    /// What the last link request on the slot came to.
+    pub(crate) fn status(&self, message: &str, attachment: usize) -> Option<&Result<(), String>> {
+        let slot = Slot::of(message, attachment);
         self.status
             .as_ref()
-            .filter(|status| status.message == message)
+            .filter(|status| status.slot == slot)
             .map(|status| &status.outcome)
     }
 
-    /// The caption of `message`'s copy control: what it does, or what it
+    /// The caption of the slot's copy control: what it does, or what it
     /// last came to. `reason` adds why a request failed, for assistive
     /// technology.
-    pub(crate) fn label(&self, message: &str, reason: bool) -> String {
-        match self.outcome(message, false) {
+    pub(crate) fn label(&self, message: &str, attachment: usize, reason: bool) -> String {
+        match self.outcome(message, attachment, false) {
             Some(Ok(())) => crate::i18n::t("chat-resource-link-copied"),
             Some(Err(why)) if reason => format!(
                 "{}: {why}",
@@ -162,7 +186,7 @@ impl Navigation {
     /// it does, or why the recorded app did not open it. `reason` adds why,
     /// for assistive technology.
     pub(crate) fn replay_label(&self, message: &str, reason: bool) -> String {
-        match self.outcome(message, true) {
+        match self.replay_outcome(message, true) {
             Some(Err(why)) if reason => {
                 format!("{}: {why}", crate::i18n::t("chat-feedback-replay-failed"))
             }
@@ -174,19 +198,19 @@ impl Navigation {
     /// Whether [`Self::replay_label`] is the catalogue's copy alone, without
     /// a failure's own words.
     pub(crate) fn replay_label_is_copy(&self, message: &str) -> bool {
-        !matches!(self.outcome(message, true), Some(Err(_)))
+        !matches!(self.replay_outcome(message, true), Some(Err(_)))
     }
 
     /// Whether [`Self::label`] is the catalogue's copy alone, without a
     /// failure's own words.
-    pub(crate) fn label_is_copy(&self, message: &str) -> bool {
-        !matches!(self.outcome(message, false), Some(Err(_)))
+    pub(crate) fn label_is_copy(&self, message: &str, attachment: usize) -> bool {
+        !matches!(self.outcome(message, attachment, false), Some(Err(_)))
     }
 
-    /// The name `message`'s reference chip, which reads `label`, is
-    /// announced by: what pressing it does, or why it did not open.
-    pub(crate) fn open_label(&self, message: &str, label: &str) -> String {
-        match self.outcome(message, true) {
+    /// The name the reference chip, which reads `label`, is announced by:
+    /// what pressing it does, or why it did not open.
+    pub(crate) fn open_label(&self, message: &str, attachment: usize, label: &str) -> String {
+        match self.outcome(message, attachment, true) {
             Some(Err(why)) => format!("{}: {why}", crate::i18n::t("chat-resource-not-opened")),
             Some(Ok(())) | None => ui::i18n::I18nManager::format(
                 "reference-open",
@@ -195,10 +219,20 @@ impl Navigation {
         }
     }
 
-    fn outcome(&self, message: &str, open: bool) -> Option<&Result<(), String>> {
+    fn outcome(&self, message: &str, attachment: usize, open: bool) -> Option<&Result<(), String>> {
+        let slot = Slot::of(message, attachment);
         self.status
             .as_ref()
-            .filter(|status| status.message == message && status.open == open)
+            .filter(|status| status.slot == slot && status.open == open)
+            .map(|status| &status.outcome)
+    }
+
+    /// The replay control's outcome, which belongs to the message rather
+    /// than to any one of its attachments.
+    fn replay_outcome(&self, message: &str, open: bool) -> Option<&Result<(), String>> {
+        self.status
+            .as_ref()
+            .filter(|status| status.slot.message == message && status.open == open)
             .map(|status| &status.outcome)
     }
 }
@@ -220,17 +254,17 @@ fn link_arguments(reference: &tilo_reference::ResourceRef) -> InvokeArgument {
 }
 
 impl ChatApp {
-    /// Ask the app behind `message`'s resource for its link, to copy it.
-    pub(crate) fn begin_resource_navigation(&mut self, message: &str) {
-        let started = self.request_resource_link(message);
-        self.finish_starting(message, false, started);
+    /// Ask the app behind a message's attachment for its link, to copy it.
+    pub(crate) fn begin_resource_navigation(&mut self, message: &str, attachment: usize) {
+        let started = self.request_resource_link(message, attachment);
+        self.finish_starting(message, attachment, false, started);
     }
 
-    /// Open the resource `message` shares where it lives: its own app
+    /// Open the resource a message shares where it lives: its own app
     /// opens at it, launched on its record when no window shows it.
-    pub(crate) fn open_shared_resource(&mut self, message: &str) {
-        let started = self.request_open(message);
-        self.finish_starting(message, true, started);
+    pub(crate) fn open_shared_resource(&mut self, message: &str, attachment: usize) {
+        let started = self.request_open(message, attachment);
+        self.finish_starting(message, attachment, true, started);
     }
 
     /// Replay the recording the report `message` shows carries: its app
@@ -238,7 +272,7 @@ impl ChatApp {
     /// (`docs/architecture/session-replay.md`).
     pub(crate) fn replay_recording(&mut self, message: &str) {
         let started = self.request_replay(message);
-        self.finish_starting(message, true, started);
+        self.finish_starting(message, 0, true, started);
     }
 
     fn request_replay(&mut self, message: &str) -> Result<(), String> {
@@ -256,14 +290,20 @@ impl ChatApp {
             None,
         );
         self.resource_navigation.status = None;
-        self.resource_navigation.opening = Some((message.to_owned(), call));
+        self.resource_navigation.opening = Some((Slot::of(message, 0), call));
         Ok(())
     }
 
-    fn finish_starting(&mut self, message: &str, open: bool, started: Result<(), String>) {
+    fn finish_starting(
+        &mut self,
+        message: &str,
+        attachment: usize,
+        open: bool,
+        started: Result<(), String>,
+    ) {
         if let Err(reason) = started {
             self.resource_navigation.status = Some(Status {
-                message: message.to_owned(),
+                slot: Slot::of(message, attachment),
                 open,
                 outcome: Err(reason),
             });
@@ -272,96 +312,86 @@ impl ChatApp {
         self.request_relayout();
     }
 
-    fn request_open(&mut self, message: &str) -> Result<(), String> {
+    fn request_open(&mut self, message: &str, attachment: usize) -> Result<(), String> {
         if self.resource_navigation.opening.is_some() {
             return Err("Something is already opening".into());
         }
-        let (reference, provider) = self.shared_resource(message)?;
-        let (app, record) = provider
-            .strip_prefix("record:")
-            .and_then(|rest| rest.split_once(':'))
-            .ok_or("This message does not say which app keeps its resource")?;
-        // The app's own record of the workspace is the one it opens on its
-        // own.
-        let record = match tilo_reference::link::RecordSegment::new(record) {
-            Ok(tilo_reference::link::RecordSegment::Primary) => None,
-            _ => Some(record),
-        };
-        let target = reference.open_target(&ui::framework::reference::workspace()?, app, record);
+        let at = self.shared_resource(message, attachment)?;
+        let workspace = ui::framework::reference::workspace()?;
+        let target = at
+            .reference
+            .open_target(&workspace, &at.app, at.record.as_deref());
         let call = self
             .resource_navigation
             .remote
             .invoke(target, InvokeArgument::None, None);
         self.resource_navigation.status = None;
-        self.resource_navigation.opening = Some((message.to_owned(), call));
+        self.resource_navigation.opening = Some((Slot::of(message, attachment), call));
         Ok(())
     }
 
-    fn request_resource_link(&mut self, message: &str) -> Result<(), String> {
+    fn request_resource_link(&mut self, message: &str, attachment: usize) -> Result<(), String> {
         if self.resource_navigation.pending.is_some() {
             return Err("A link is already being fetched".into());
         }
-        let (reference, provider) = self.shared_resource(message)?;
+        let slot = Slot::of(message, attachment);
+        let at = self.shared_resource(message, attachment)?;
         // A link asked for ahead answers within the click, where a browser
         // still lets it be copied; one that failed is asked for again.
-        let asked = match self.resource_navigation.prefetched.remove(message) {
-            Some(mut asked)
-                if asked.reference == reference
-                    && asked.provider == provider
-                    && !matches!(answer(&asked.call), Some(Err(_))) =>
-            {
+        let asked = match self.resource_navigation.prefetched.remove(&slot) {
+            Some(mut asked) if asked.at == at && !matches!(answer(&asked.call), Some(Err(_))) => {
                 // The person waits from their click on.
                 asked.started = ui::time::now();
                 asked
             }
-            _ => self.ask_resource_link(reference, provider),
+            _ => self.ask_resource_link(at),
         };
         let reserved = answer(&asked.call)
             .is_none()
             .then(ui::reserve_clipboard_copy);
         self.resource_navigation.status = None;
         self.resource_navigation.pending = Some(Pending {
-            message: message.to_owned(),
+            slot,
             asked,
             reserved,
         });
         Ok(())
     }
 
-    /// The resource `message` shares, and the provider of its record.
+    /// The resource a message's attachment names.
     fn shared_resource(
         &self,
         message: &str,
-    ) -> Result<(tilo_reference::ResourceRef, String), String> {
-        let row = self.message(message).ok_or("Message no longer exists")?;
-        let reference = row.reference.clone().ok_or("Message has no resource")?;
-        let provider = row
-            .source_provider
-            .clone()
-            .ok_or("This message does not say which record its resource is in")?;
-        Ok((reference, provider))
+        attachment: usize,
+    ) -> Result<tilo_reference::ResourceAt, String> {
+        self.message(message)
+            .ok_or("Message no longer exists")?
+            .attachments
+            .get(attachment)
+            .and_then(tilo_reference::Attached::at)
+            .cloned()
+            .ok_or_else(|| "This message does not share a resource here".to_owned())
     }
 
-    /// Ask the app behind `reference`, in `provider`'s record, for its link.
-    fn ask_resource_link(&self, reference: tilo_reference::ResourceRef, provider: String) -> Asked {
+    /// Ask the app behind `at`'s resource, in its own record, for its link.
+    fn ask_resource_link(&self, at: tilo_reference::ResourceAt) -> Asked {
         let call = self.resource_navigation.remote.invoke(
-            ui::tilo_resource::share::share_link_target(provider.clone(), reference.id.clone()),
-            link_arguments(&reference),
+            ui::tilo_resource::share::share_link_target(provider(&at), at.reference.id.clone()),
+            link_arguments(&at.reference),
             None,
         );
         Asked {
-            reference,
-            provider,
+            at,
             started: ui::time::now(),
             call,
         }
     }
 
-    /// Ask for the links of the messages whose controls were shown and
+    /// Ask for the links of the attachments whose controls were shown and
     /// have none asked for yet.
     fn prefetch_resource_links(&mut self) {
         let shown = std::mem::take(&mut *self.resource_navigation.shown.borrow_mut());
-        for message in shown {
+        for slot in shown {
             if self.resource_navigation.prefetched.len() >= PREFETCHED {
                 return;
             }
@@ -369,40 +399,42 @@ impl ChatApp {
                 .resource_navigation
                 .pending
                 .as_ref()
-                .is_some_and(|pending| pending.message == message);
-            let Ok((reference, provider)) = self.shared_resource(&message) else {
+                .is_some_and(|pending| pending.slot == slot);
+            let Ok(at) = self.shared_resource(&slot.message, slot.attachment) else {
                 continue;
             };
             let asked = self
                 .resource_navigation
                 .prefetched
-                .get(&message)
-                .is_some_and(|asked| asked.reference == reference && asked.provider == provider);
+                .get(&slot)
+                .is_some_and(|asked| asked.at == at);
             if pending || asked {
                 continue;
             }
-            let asked = self.ask_resource_link(reference, provider);
-            self.resource_navigation.prefetched.insert(message, asked);
+            let asked = self.ask_resource_link(at);
+            self.resource_navigation.prefetched.insert(slot, asked);
         }
     }
 
     /// Finish the running requests once their answers have arrived: copy
     /// the link, or show why there is none or why nothing opened.
     pub(crate) fn settle_resource_navigation(&mut self) {
-        if let Some((message, call)) = &self.resource_navigation.opening
+        if let Some((slot, call)) = &self.resource_navigation.opening
             && let Some(outcome) = opened(call)
         {
             self.resource_navigation.status = Some(Status {
-                message: message.clone(),
+                slot: slot.clone(),
                 open: true,
                 outcome,
             });
             self.resource_navigation.opening = None;
             self.request_relayout();
         }
-        if self.resource_navigation.copy.failed() {
+        if self.resource_navigation.copy.failed()
+            && let Some(slot) = self.resource_navigation.copied_for.take()
+        {
             self.resource_navigation.status = Some(Status {
-                message: std::mem::take(&mut self.resource_navigation.copied_for),
+                slot,
                 open: false,
                 outcome: Err(CLIPBOARD_REFUSED.to_owned()),
             });
@@ -425,9 +457,11 @@ impl ChatApp {
         let reserved = pending.reserved.take();
         // The message may have changed while its link was fetched; a link
         // to what it no longer shows is not what the person asked for.
-        let current = self.message(&pending.message).is_some_and(|row| {
-            row.reference.as_ref() == Some(&pending.asked.reference)
-                && row.source_provider.as_deref() == Some(pending.asked.provider.as_str())
+        let current = self.message(&pending.slot.message).is_some_and(|row| {
+            row.attachments
+                .get(pending.slot.attachment)
+                .and_then(tilo_reference::Attached::at)
+                == Some(&pending.asked.at)
         });
         let outcome = answer.and_then(|url| {
             if !current {
@@ -436,22 +470,20 @@ impl ChatApp {
                 Some(reserved) => reserved.fill(&url),
                 None => ui::try_clipboard_copy(&url),
             }) {
-                self.resource_navigation
-                    .copied_for
-                    .clone_from(&pending.message);
+                self.resource_navigation.copied_for = Some(pending.slot.clone());
                 Ok(())
             } else {
                 Err(CLIPBOARD_REFUSED.to_owned())
             }
         });
-        // The link stays known for the next click on the same message.
+        // The link stays known for the next click on the same slot.
         if current && outcome.is_ok() {
             self.resource_navigation
                 .prefetched
-                .insert(pending.message.clone(), pending.asked);
+                .insert(pending.slot.clone(), pending.asked);
         }
         self.resource_navigation.status = Some(Status {
-            message: pending.message,
+            slot: pending.slot,
             open: false,
             outcome,
         });
@@ -532,10 +564,15 @@ mod tests {
     }
 
     fn shared(app: &mut ui::framework::testing::TestApp<crate::resource::ChatShell>) -> String {
-        let reference = serde_json::json!({"kind":"notes.page", "id":"notes.page:1", "label":"Plan", "span":{"start":6,"end":9,"unit":"Chars"}});
-        app.call_on(&crate::testing::chain(), "share-resource", serde_json::json!({
-            "channel": "c_chat", "reference":reference, "source_provider":"record:so.tilo.notes:plan", "text":"Discuss resource"
-        })).unwrap();
+        let attached = serde_json::json!({"app":"so.tilo.notes", "record":"plan", "kind":"notes.page", "id":"notes.page:1", "label":"Plan", "span":{"start":6,"end":9,"unit":"Chars"}});
+        app.call_on(
+            &crate::testing::chain(),
+            "share-resource",
+            serde_json::json!({
+                "channel": "c_chat", "attached":attached, "text":"Discuss resource"
+            }),
+        )
+        .unwrap();
         app.settle();
         crate::testing::mounted_rows(app, "c_chat")
             .into_iter()
@@ -571,7 +608,8 @@ mod tests {
                 .filter(|(_, hit)| {
                     matches!(
                         hit,
-                        crate::app::Hit::CopyResourceLink(_) | crate::app::Hit::OpenResource(_)
+                        crate::app::Hit::CopyResourceLink { .. }
+                            | crate::app::Hit::OpenResource { .. }
                     )
                 })
                 .map(|(rect, _)| *rect)
@@ -597,11 +635,14 @@ mod tests {
         let id = shared(&mut app);
         assert_native_resource_controls(&mut app);
 
-        app.chat().begin_resource_navigation(&id);
+        app.chat().begin_resource_navigation(&id, 0);
         assert_eq!(ui::clipboard_paste().as_deref(), Some(URL));
         let surface = app.chat();
-        assert_eq!(surface.resource_navigation.status(&id), Some(&Ok(())));
-        assert_eq!(surface.resource_navigation.label(&id, false), "Link copied");
+        assert_eq!(surface.resource_navigation.status(&id, 0), Some(&Ok(())));
+        assert_eq!(
+            surface.resource_navigation.label(&id, 0, false),
+            "Link copied"
+        );
         assert!(!surface.resource_navigation.pending());
         let asked = door.asked();
         let request = asked.last().unwrap();
@@ -640,9 +681,9 @@ mod tests {
         assert_eq!(asked, 1, "asked once, however often the controls painted");
 
         let mut surface = app.chat();
-        surface.begin_resource_navigation(&id);
+        surface.begin_resource_navigation(&id, 0);
         assert_eq!(ui::clipboard_paste().as_deref(), Some(URL));
-        surface.begin_resource_navigation(&id);
+        surface.begin_resource_navigation(&id, 0);
         assert_eq!(door.asked().len(), asked);
     }
 
@@ -692,7 +733,7 @@ mod tests {
             ui::host::HostServices::null().with_clipboard(Arc::new(ClickClipboard::default()));
         let _scope = ui::host::enter(&services);
         let id = shared(&mut app);
-        app.chat().begin_resource_navigation(&id);
+        app.chat().begin_resource_navigation(&id, 0);
         assert!(app.chat().resource_navigation.pending());
         assert_eq!(ui::clipboard_paste(), None);
 
@@ -714,7 +755,7 @@ mod tests {
         app.chat().settle_resource_navigation();
         let surface = app.chat();
         assert_eq!(ui::clipboard_paste().as_deref(), Some(URL));
-        assert_eq!(surface.resource_navigation.status(&id), Some(&Ok(())));
+        assert_eq!(surface.resource_navigation.status(&id, 0), Some(&Ok(())));
         assert!(!surface.resource_navigation.pending());
     }
 
@@ -732,18 +773,21 @@ mod tests {
         ui::clipboard_copy("sentinel");
 
         let mut surface = app.chat();
-        surface.begin_resource_navigation(&id);
+        surface.begin_resource_navigation(&id, 0);
         assert_eq!(
-            surface.resource_navigation.status(&id),
+            surface.resource_navigation.status(&id, 0),
             Some(&Err("This workspace's host serves no web page".into()))
         );
-        assert_eq!(surface.resource_navigation.status("another message"), None);
         assert_eq!(
-            surface.resource_navigation.label(&id, true),
+            surface.resource_navigation.status("another message", 0),
+            None
+        );
+        assert_eq!(
+            surface.resource_navigation.label(&id, 0, true),
             "Link unavailable: This workspace's host serves no web page"
         );
         assert_eq!(
-            surface.resource_navigation.open_label(&id, "Plan"),
+            surface.resource_navigation.open_label(&id, 0, "Plan"),
             "Open Plan"
         );
         assert_eq!(ui::clipboard_paste().as_deref(), Some("sentinel"));
@@ -786,7 +830,7 @@ mod tests {
         );
         assert_eq!(asked.argument, InvokeArgument::None);
         let surface = app.chat();
-        assert_eq!(surface.resource_navigation.status(&id), Some(&Ok(())));
+        assert_eq!(surface.resource_navigation.status(&id, 0), Some(&Ok(())));
         assert!(!surface.resource_navigation.pending());
 
         let door = Arc::new(refusing("You may not open this"));
@@ -794,15 +838,61 @@ mod tests {
         let mut app = TestApp::<ChatShell>::new().unwrap();
         let id = shared(&mut app);
         let mut surface = app.chat();
-        surface.open_shared_resource(&id);
+        surface.open_shared_resource(&id, 0);
         assert_eq!(
-            surface.resource_navigation.open_label(&id, "Plan"),
+            surface.resource_navigation.open_label(&id, 0, "Plan"),
             "Could not open: You may not open this"
         );
         assert_eq!(
-            surface.resource_navigation.label(&id, false),
+            surface.resource_navigation.label(&id, 0, false),
             "Copy resource link",
             "the copy control says nothing of the open"
+        );
+    }
+
+    /// Words quoted from a record get the same controls as a whole resource:
+    /// the chip opens the record they came from.
+    #[test]
+    fn a_quoted_run_opens_the_record_it_came_from() {
+        use crate::resource::ChatShell;
+        use ui::framework::testing::TestApp;
+        const WORKSPACE_ID: &str = "0b7f3a52-4c1d-4e8f-9a6b-2d5e8c1f7a30";
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_WORKSPACE_ID", WORKSPACE_ID);
+        let door = Arc::new(door());
+        let _served = RemoteActions::enter(door.clone(), Caller::local_person("owner"));
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        let _scope = ui::host::enter(&ui::host::HostServices::null());
+        app.call_on(
+            &crate::testing::chain(),
+            "post",
+            serde_json::json!({
+                "channel": "c_chat",
+                "text": "About the plan",
+                "attachments": [{"kind": "text", "text": "ship on Friday",
+                    "from": {"app": "so.tilo.notes", "record": "plan", "kind": "notes.page",
+                             "id": "notes.page:1", "label": "Plan"}}],
+            }),
+        )
+        .unwrap();
+        app.settle();
+
+        let open = app
+            .harness()
+            .a11y_node_named("Open ship on Friday")
+            .expect("the quoted run has the controls a resource has");
+        app.harness()
+            .perform_a11y_action(open, &ui::a11y::Action::Activate)
+            .unwrap();
+        app.settle();
+        let page = tilo_reference::ResourceRef::whole("notes.page", "notes.page:1", "Plan");
+        assert_eq!(
+            door.asked()
+                .into_iter()
+                .find(|request| request.target.address.action == "open")
+                .expect("the chip asked the door to open the record")
+                .target,
+            page.open_target(WORKSPACE_ID, "so.tilo.notes", Some("plan"))
         );
     }
 }

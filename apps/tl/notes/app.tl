@@ -1,5 +1,7 @@
 app so.tilo.lang.notes "Notes" (icon: .file_text, category: .office)
 
+use so.tilo.lang.discussion as discussion
+
 /// A note: a title, a body and the tags people gave it.
 type Note {
     title: Text (title)
@@ -76,8 +78,8 @@ fn listed(notes: Notes, order: NoteOrder) -> List<Note> {
     }
 }
 
-/// The notebook's window: its notes, each opening in a window of its own. The order is the
-/// window's, so everyone looking at it sees the same list.
+/// The notebook's window: its notes, each opening in a window of its own, in the order the
+/// person looking chose.
 view notebook(notes: Notes) {
     window order: NoteOrder = .created
     std.list(notes, listed(notes, order), sort: order, empty: "No notes yet")
@@ -107,6 +109,7 @@ view note_editor(n: Note) {
             }
         }
         ui.BlockEditor(bind: n.body, placeholder: "Write something")
+        discussion.thread(n)
         std.history(n)
     }
 }
@@ -187,7 +190,7 @@ scenario "a week of notes" -> Note {
     notes.insert(
         Note(
             title: "Standup, Thursday",
-            body: RichText("Two blockers left. Chen is out on Friday."),
+            body: RichText("Two blockers left. Chen is out of office."),
         ),
     )
     notes.insert(

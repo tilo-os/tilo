@@ -2,9 +2,31 @@
 //! and installed as the launcher's payload would be. A process runs one package, so each test
 //! binary installs one.
 
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use ui::application::ApplicationDefinition;
+
+/// The packages `apps` and everything they import, in load order: a package comes after those
+/// it imports, so a package's own imports are no further work than its name.
+///
+/// # Panics
+/// A package's imports do not resolve.
+#[allow(dead_code, reason = "each test binary uses part of the support")]
+pub fn ordered(apps: &[&str]) -> Vec<PathBuf> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tl");
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for app in apps {
+        let resolved = tilolang::source::dependency_order(&root.join(app), &[])
+            .unwrap_or_else(|e| panic!("{app}'s packages resolve: {e}"));
+        for dir in resolved {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+    }
+    dirs
+}
 
 /// The definition of the package `apps/tl/<name>`, installed in this process.
 ///
@@ -45,15 +67,9 @@ pub fn installed(name: &str) -> &'static ApplicationDefinition {
 pub fn installed_beside(name: &str, beside: &[&str]) -> &'static ApplicationDefinition {
     static INSTALLED: OnceLock<String> = OnceLock::new();
     let installed = INSTALLED.get_or_init(|| {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tl");
-        let mut dirs = tilolang::source::dependency_order(&root.join(name), &[])
-            .expect("the packages resolve");
-        for other in beside {
-            let dir = root.join(other);
-            if !dirs.contains(&dir) {
-                dirs.insert(0, dir);
-            }
-        }
+        let mut apps: Vec<&str> = beside.to_vec();
+        apps.push(name);
+        let dirs = ordered(&apps);
         let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
             .expect("the packages compile");
         let (package, used) = built.split_last().expect("the package is built last");

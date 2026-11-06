@@ -10,10 +10,11 @@ include!("application_handoff_tests.rs");
 
 use super::*;
 use crate::a11y_tree::{SemanticActionKind, SemanticId};
+use crate::component::Described;
 use crate::state::State;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{AppModel, ModelPath};
-use crate::widget::{Button, Widget};
+use crate::widget::{Button, TreeViewNodeProps, TreeViewProps, Widget};
 use automerge::transaction::Transactable;
 use automerge::{ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
@@ -1629,24 +1630,36 @@ fn semantic_invocation_matches_the_affordance_dispatch() {
     }
 }
 
+/// A tree of a branch "Root" over a leaf "Child": the rows the semantic routes act on.
+fn items_tree(id: &str, open: bool) -> Box<dyn Widget> {
+    let node = |label: &str, item: &str, parent: Option<&str>, branch: bool| TreeViewNodeProps {
+        item: crate::component::ResourceId(item.into()),
+        label: label.into(),
+        parent: parent.map(|parent| crate::component::ResourceId(parent.into())),
+        branch,
+        ..TreeViewNodeProps::default()
+    };
+    let props = TreeViewProps {
+        hide_root: true,
+        nodes: vec![
+            node("Root", "1", None, true),
+            node("Child", "2", Some("1"), false),
+        ],
+        expanded: Some(if open {
+            vec![crate::component::ResourceId("1".into())]
+        } else {
+            Vec::new()
+        }),
+        ..TreeViewProps::default()
+    };
+    Box::new(crate::widget::DescribedTreeView::from_props(id, props))
+}
+
 #[test]
 fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
     // Case `virtual_tree_rows_dispatch_through_platform_and_semantic_routes`.
     {
-        let root = crate::widget::TreeNode::branch(
-            1,
-            "Root",
-            (),
-            vec![crate::widget::TreeNode::leaf(2, "Child", ())],
-        );
-        let mut app = App::new(
-            State::new(),
-            Box::new(
-                crate::widget::TreeView::new(root)
-                    .with_id("items-tree")
-                    .with_expanded([1]),
-            ),
-        );
+        let mut app = App::new(State::new(), items_tree("items-tree", true));
         app.init_layout();
 
         app.refresh_semantic_tree();
@@ -1698,7 +1711,7 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
             crate::accesskit_bridge::A11yTarget::Synthetic {
                 semantic_target: Some(ref target),
                 ..
-            } if target == "node:1"
+            } if target == "key:node:1"
         ));
         assert_eq!(
             app.dispatch_a11y_action(root_row, &crate::a11y::Action::Collapse),
@@ -1714,6 +1727,8 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
             .expect("root semantics after collapse");
         assert_eq!(root_semantics.state.expanded, Some(false));
 
+        // A folded branch's rows are gone before assistive technology is told of the tree.
+        app.init_layout();
         let collapsed = app.build_a11y_tree_update(1.0);
         let rows = collapsed
             .nodes
@@ -1770,88 +1785,6 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
                 .nodes
                 .iter()
                 .any(|(_, node)| node.label() == Some("Berlin"))
-        );
-    }
-
-    // Case `retained_tree_delegate_is_nested_once_and_keeps_its_own_action`.
-    {
-        let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
-        let captured = std::rc::Rc::clone(&presses);
-        let root = crate::widget::TreeNode::leaf(7, "Item", ());
-        let tree = crate::widget::TreeView::new(root).with_row_delegate(move |_, id, _| {
-            let button_id = format!("action-{id}");
-            let captured = std::rc::Rc::clone(&captured);
-            Box::new(
-                crate::widget::Button::new(&button_id, "Action").on_effect(move || {
-                    captured.set(captured.get().saturating_add(1));
-                }),
-            )
-        });
-        let mut app = App::new(State::new(), Box::new(tree));
-        app.init_layout();
-
-        let update = app.build_a11y_tree_update(1.0);
-        let row = update
-            .nodes
-            .iter()
-            .find(|(_, node)| node.role() == accesskit::Role::TreeItem)
-            .map(|(_, node)| node)
-            .expect("tree item");
-        // The row announces its delegate's button once. The button's own
-        // published action is offered beside the tree as a resource action
-        // of its own, a door for whoever invokes it, not a second row child.
-        let [button_id] = row.children() else {
-            panic!(
-                "delegate is not announced twice: {:?}",
-                row.children()
-                    .iter()
-                    .filter_map(|id| update
-                        .nodes
-                        .iter()
-                        .find(|(at, _)| at == id)
-                        .map(|(_, node)| (node.role(), node.label())))
-                    .collect::<Vec<_>>()
-            );
-        };
-        let button = &update
-            .nodes
-            .iter()
-            .find(|(id, _)| id == button_id)
-            .expect("the row's button is announced")
-            .1;
-        assert_eq!(button.role(), accesskit::Role::Button);
-        assert_eq!(button.label(), Some("Action"));
-        assert!(
-            row.bounds().is_some(),
-            "platform row keeps viewport geometry"
-        );
-        let button_id = *button_id;
-        assert_eq!(
-            app.dispatch_a11y_action(button_id, &crate::a11y::Action::Activate),
-            None
-        );
-        assert_eq!(presses.get(), 1);
-
-        app.refresh_semantic_tree();
-        let semantic_buttons = app
-            .semantic_tree()
-            .iter()
-            .filter(|node| node.role == crate::a11y::Role::Button)
-            .collect::<Vec<_>>();
-        assert_eq!(semantic_buttons.len(), 1);
-        let semantic_row = app
-            .semantic_tree()
-            .iter()
-            .find(|node| node.role == crate::a11y::Role::TreeItem)
-            .expect("semantic tree item");
-        assert!(semantic_row.children.contains(&semantic_buttons[0].id));
-        assert!(
-            semantic_row.bounds.is_some(),
-            "inspection row keeps viewport geometry"
-        );
-        assert!(
-            !semantic_row.state.selected,
-            "button activation does not select row"
         );
     }
 

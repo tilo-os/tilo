@@ -104,7 +104,7 @@ fn deliver_at(
                 collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
             };
             let encryption = document.envelope.encryption.as_ref();
-            if ch.document_encryption_allowed(channel, encryption) {
+            if ch.document_encryption_allowed(&document.cluster_id, channel, encryption) {
                 let state = ch.state_for(artifact);
                 state.room.clone_from(&document.cluster_id);
                 state.artifacts.insert(artifact, ArtifactKind::Note);

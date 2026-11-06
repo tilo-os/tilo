@@ -104,13 +104,27 @@ action note_titled(b: Board, title: Text) -> Option<Note> {
     return b.notes.find(n -> n.title == title)
 }
 
-/// A note made from another: the block the scenario opens on the one it was made from makes it,
-/// as the menu's Make does for a person, and answers the note it made.
+/// A note made from another: the scenario makes it from the one it opens on, as the menu's Make
+/// does for a person, and answers the note it made.
 scenario "a note made from another" -> Note {
     let b = root Board
     let a = add_note(b, "A")
-    made from a {
-        add_note(b, "B")
+    invoke(add_note(b, "B"), from: a)
+}
+
+/// Writes a note under the one the page shows.
+action write_under(n: Note, title: Text = "under") -> Note (label: "Write") {
+    let b = root Board
+    b.notes.insert(Note(title: title, body: RichText("")))
+}
+
+/// A note's page: what is written under it is written from it, so the button that writes says
+/// `.made_from(n)` and the change it makes records the note as what it was made from.
+view note_page(n: Note) {
+    lens draft: Text
+    stack {
+        input(bind: draft, placeholder: "Write")
+        button(write_under(n).made_from(n))
     }
 }
 

@@ -950,9 +950,18 @@ impl Device {
             .write_all(format!("{request}\n").as_bytes())
             .expect("the socket reads");
         let mut line = String::new();
-        BufReader::new(stream)
-            .read_line(&mut line)
-            .expect("an answer");
+        if let Err(error) = BufReader::new(stream).read_line(&mut line) {
+            let log = self.log();
+            let last = log
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or_default();
+            panic!(
+                "{} did not answer {request}: {error}; its session last said: {last}",
+                self.label,
+            );
+        }
         serde_json::from_str(&line).unwrap_or_else(|error| {
             panic!(
                 "{}'s answer {line:?}: {error}\n{}",

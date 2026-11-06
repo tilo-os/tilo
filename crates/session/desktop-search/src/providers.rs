@@ -2638,7 +2638,7 @@ mod tests {
     /// line a person types (`title` is the entry parameter).
     fn tasks() -> Vec<ResourceSpec> {
         let capture = tilo_actions::ActionSpec::prompted_param(
-            "quick_add",
+            "new_task",
             "New task",
             tilo_actions::ActionParam::required(
                 "title",
@@ -2702,7 +2702,7 @@ mod tests {
         };
         assert_eq!(
             invoke.address.action.as_str(),
-            "quick_add",
+            "new_task",
             "the action that takes an entry"
         );
         assert_eq!(

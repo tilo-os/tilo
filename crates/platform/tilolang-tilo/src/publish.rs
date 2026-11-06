@@ -306,12 +306,6 @@ impl ActionTypes {
             let kind = meta.kind_of(&declared.name);
             let actions = meta
                 .offered_actions()
-                // An action that takes an entry is how a person writes something down from
-                // wherever they are: the entry is its surface, so it is published even when
-                // the app lists it in no menu or toolbar of its own.
-                .chain(meta.callable_actions().filter(|action| {
-                    action.is_internal() && action.params.iter().any(|param| param.entry)
-                }))
                 .filter(|action| {
                     meta.subject_of(&action.params)
                         .is_some_and(|subject| subject.name == declared.name)
@@ -1864,22 +1858,6 @@ fn item_label(item: &crate::record::DynRecord) -> Option<String> {
         }
     }
     None
-}
-
-/// Set each action's availability on `resource` and the items under it, as its app says it now:
-/// whether the requirements its subject alone decides hold for the person at the window, or the
-/// first that does not and why. What a palette reads to leave an action out, and a toolbar to
-/// disable its control with the reason.
-pub fn publish_availability(host: &crate::host::Host, resource: &mut ResourceSpec) {
-    let id = resource.id.as_str().to_owned();
-    for action in &mut resource.actions {
-        if let Some(availability) = host.availability(&id, &action.id) {
-            action.type_mut().contract.availability = availability;
-        }
-    }
-    for child in &mut resource.children {
-        publish_availability(host, child);
-    }
 }
 
 /// The package's own resource, carrying the actions that take no record.

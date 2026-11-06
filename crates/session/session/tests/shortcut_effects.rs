@@ -1,0 +1,579 @@
+//! The shortcuts of the one table on a real session: the chords the session
+//! answers open the surface each names, and the chords the desk answers move
+//! its windows — pressed as a person presses them, through the keyboard the
+//! compositor gives the session.
+
+#![cfg(target_os = "linux")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::float_cmp,
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion, and the session \
+              outlives every call made into it"
+)]
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use tilo_compositor::{InputEvent, OutputConfig};
+/// The platform search the desk opens on its chord.
+const HOST_SEARCH: &str = "tilo.host:search";
+use tilo_desktop::desk_verbs::{CHROME_RESOURCE, SEARCH_RESOURCE};
+use tilo_desktop_model::{
+    AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+    WorkspaceSlot,
+};
+use tilo_session::mount::shell::WINDOW_MENU;
+use tilo_session::{Options, Session, SessionConfig, quick_settings};
+use tilo_sheets::Seat as _;
+use tilo_test_env::ScopedEnv;
+use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig, ShortcutHome};
+
+/// One display's refresh: how often the session asks its clients for their
+/// next frame.
+const REFRESH: Duration = Duration::from_millis(16);
+
+/// What a key sends, evdev codes.
+const KEY_ESCAPE: u32 = 1;
+const KEY_8: u32 = 9;
+const KEY_MINUS: u32 = 12;
+const KEY_EQUAL: u32 = 13;
+const KEY_E: u32 = 18;
+const KEY_TAB: u32 = 15;
+const KEY_ENTER: u32 = 28;
+const KEY_Q: u32 = 16;
+const KEY_R: u32 = 19;
+const KEY_A: u32 = 30;
+const KEY_D: u32 = 32;
+const KEY_F: u32 = 33;
+const KEY_L: u32 = 38;
+const KEY_C: u32 = 46;
+const KEY_V: u32 = 47;
+const KEY_SLASH: u32 = 53;
+const KEY_SPACE: u32 = 57;
+const KEY_F10: u32 = 68;
+const KEY_DELETE: u32 = 111;
+const KEY_LEFT_CTRL: u32 = 29;
+const KEY_LEFT_SHIFT: u32 = 42;
+const KEY_LEFT_ALT: u32 = 56;
+const KEY_LEFT_META: u32 = 125;
+
+fn window(id: u64, title: &str, app: &str) -> Tab {
+    Tab {
+        id,
+        title: title.into(),
+        tile: TileContent::LocalApp {
+            app_id: app.into(),
+            label: title.into(),
+            note: String::new(),
+        },
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    }
+}
+
+/// The desk the session starts on: one strip of two windows, the first with
+/// two tabs.
+fn desk_tree() -> DesktopTree {
+    let first = WindowGroup {
+        id: 3,
+        active_tab: 20,
+        tabs: vec![
+            window(20, "Notes", "so.tilo.notes"),
+            window(21, "Mail", "so.tilo.mail"),
+        ],
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    };
+    let second = WindowGroup {
+        id: 4,
+        active_tab: 30,
+        tabs: vec![window(30, "Chat", "so.tilo.chat")],
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    };
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Work");
+    workspace.strips = vec![Strip {
+        id: StripId(2),
+        name: "Main".into(),
+        window_groups: vec![first, second],
+    }];
+    let mut tree = DesktopTree {
+        active: workspace.slot,
+        workspaces: vec![workspace],
+        ..Default::default()
+    };
+    tree.active_strip.insert(WorkspaceSlot(1), StripId(2));
+    tree.active_group.insert(StripId(2), 3);
+    tree
+}
+
+/// The panel's app, as the session starts it: a stand-in that stays up while
+/// the stack has the panel open.
+fn panel_binary() -> PathBuf {
+    tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
+}
+
+/// What the stand-in panel reads so it stays up until the session stops it,
+/// held for the test's life.
+fn panel_environment() -> ScopedEnv {
+    let mut environment = ScopedEnv::new();
+    environment.set("SURFACE_PROBE_STAY", "1");
+    environment
+}
+
+fn session_with(tree: DesktopTree) -> Session {
+    session_with_config(tree, SessionConfig::default())
+}
+
+fn session_with_config(tree: DesktopTree, config: SessionConfig) -> Session {
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            surfaces: vec![quick_settings::surface_of(panel_binary())],
+            collab: false,
+            config,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
+    )
+    .expect("session");
+    session.handle().replace_tree(tree);
+    session.step(REFRESH).expect("a turn of the session");
+    session
+}
+
+fn key(session: &mut Session, keycode: u32, pressed: bool) {
+    session
+        .compositor()
+        .input(InputEvent::Key { keycode, pressed })
+        .expect("the key");
+    session.step(REFRESH).expect("step");
+}
+
+/// The keycode a default chord's key sends.
+fn keycode(name: &str) -> u32 {
+    match name {
+        "space" => KEY_SPACE,
+        "enter" => KEY_ENTER,
+        "e" => KEY_E,
+        "tab" => KEY_TAB,
+        "l" => KEY_L,
+        "q" => KEY_Q,
+        "r" => KEY_R,
+        "a" => KEY_A,
+        "c" => KEY_C,
+        "v" => KEY_V,
+        "f" => KEY_F,
+        "d" => KEY_D,
+        "/" => KEY_SLASH,
+        "-" => KEY_MINUS,
+        "=" => KEY_EQUAL,
+        "8" => KEY_8,
+        "f10" => KEY_F10,
+        "delete" => KEY_DELETE,
+        "escape" => KEY_ESCAPE,
+        other => panic!("no keycode for {other}"),
+    }
+}
+
+/// The modifier keycodes a chord names.
+fn modifier_keys(chord: &KeyChord) -> Vec<u32> {
+    chord
+        .modifiers
+        .iter()
+        .map(|name| match name.as_str() {
+            "Super" => KEY_LEFT_META,
+            "Ctrl" => KEY_LEFT_CTRL,
+            "Alt" => KEY_LEFT_ALT,
+            "Shift" => KEY_LEFT_SHIFT,
+            other => panic!("no keycode for {other}"),
+        })
+        .collect()
+}
+
+/// Press the chord the person's table binds `action` to, as a person does:
+/// the modifiers held, the key tapped, the modifiers let go.
+fn press(session: &mut Session, action: ShortcutAction) {
+    let chord = ShortcutConfig::default()
+        .bindings
+        .get(&action)
+        .unwrap_or_else(|| panic!("{action:?} is bound"))
+        .clone();
+    let held = modifier_keys(&chord);
+    for keycode in &held {
+        key(session, *keycode, true);
+    }
+    let pressed = keycode(&chord.key);
+    key(session, pressed, true);
+    key(session, pressed, false);
+    for keycode in held.iter().rev() {
+        key(session, *keycode, false);
+    }
+}
+
+/// Step the session until `done` holds.
+#[track_caller]
+fn until(session: &mut Session, what: &str, mut done: impl FnMut(&mut Session) -> bool) {
+    for _ in 0..120 {
+        if done(session) {
+            return;
+        }
+        session.step(REFRESH).expect("a turn of the session");
+    }
+    panic!("{what} never happened");
+}
+
+/// Whether the desk publishes the resource `id` now: the open search, say.
+fn published(session: &Session, id: &str) -> bool {
+    fn find(resources: &[tilo_actions::ResourceSpec], id: &str) -> bool {
+        resources
+            .iter()
+            .any(|resource| resource.id.as_str() == id || find(&resource.children, id))
+    }
+    find(&session.resources(), id)
+}
+
+/// What the session shows of the search it opened.
+fn searching(session: &Session) -> bool {
+    published(session, HOST_SEARCH)
+}
+
+/// The tab the window menu is up for, while it is.
+fn menu_tab(session: &Session) -> Option<String> {
+    session
+        .read(WINDOW_MENU)?
+        .get("tab")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// Write the screen as `<dir>/<name>.png` when the person running the test
+/// asks for captures: what the chord looks like where they read it.
+fn capture(session: &mut Session, name: &str) {
+    let Some(dir) = std::env::var_os("SHORTCUT_SHOTS").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).expect("the shots directory");
+    let shot = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("screenshot");
+    image::save_buffer(
+        dir.join(format!("{name}.png")),
+        &shot.rgba,
+        shot.width,
+        shot.height,
+        image::ColorType::Rgba8,
+    )
+    .expect("write the frame");
+}
+
+/// Type `text` as the keyboard attached to the seat types it.
+fn type_at_the_seat(session: &mut Session, text: &str) {
+    for ch in text.chars() {
+        assert!(
+            session.compositor().type_char(ch).expect("input"),
+            "the seat's layout types {ch:?}"
+        );
+        for _ in 0..2 {
+            session.step(Duration::from_millis(12)).expect("step");
+        }
+    }
+    for _ in 0..20 {
+        session.step(REFRESH).expect("a turn of the session");
+    }
+}
+
+fn guide_up(session: &Session) -> bool {
+    session
+        .shortcut_guide()
+        .is_some_and(|seat| seat.presentation().is_open())
+}
+
+/// Every app the desk shows a window of, or holds a window for while its app
+/// arrives.
+fn apps(session: &Session) -> Vec<String> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .filter_map(|tab| match &tab.tile {
+                TileContent::LocalApp { app_id, .. } => Some(app_id.clone()),
+                TileContent::AppPlaceholder {
+                    kind: AppKind::Other(app),
+                    ..
+                } => Some(app.clone()),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// Every shortcut of the session's side opens or starts what it names: the
+/// search, the window in front's menu, the guide, quick settings and its
+/// pages, a conversation, and the magnifier's zoom.
+#[test]
+fn the_session_answers_every_shortcut_of_its_side() {
+    let _panel = panel_environment();
+    for action in ShortcutAction::ALL
+        .into_iter()
+        .filter(|action| action.home() == ShortcutHome::Session)
+    {
+        // The ones the session carries out through a service or a surface
+        // this run has none of (the power menu needs the power service, the
+        // lock screen a lock surface, dictation a voice, the next input
+        // source a second keyboard layout) are those services' to prove;
+        // each was handed on whole, which the desk's own test does.
+        if matches!(
+            action,
+            ShortcutAction::PowerMenu
+                | ShortcutAction::Lock
+                | ShortcutAction::NextInputSource
+                | ShortcutAction::DictationToggle
+                | ShortcutAction::DictationFinish
+                | ShortcutAction::DictationCancel
+                // The browser desktop reports a problem to its host; this
+                // session carries no feedback transport yet.
+                | ShortcutAction::ReportProblem
+        ) {
+            continue;
+        }
+        let mut session = session_with(desk_tree());
+        // Zooming out from the magnifier's off has nothing to zoom out of:
+        // the chord that turned it on gives it something.
+        if action == ShortcutAction::MagnifierZoomOut {
+            press(&mut session, ShortcutAction::ToggleMagnifier);
+        }
+        let zoom = session.compositor().zoom();
+        press(&mut session, action);
+        match action {
+            ShortcutAction::Search => {
+                until(&mut session, "the search", |session| searching(session));
+            }
+            ShortcutAction::TabMenu => until(&mut session, "the window menu", |session| {
+                menu_tab(session).as_deref() == Some("20")
+            }),
+            ShortcutAction::ShortcutHelp => {
+                until(&mut session, "the guide", |session| guide_up(session));
+            }
+            ShortcutAction::QuickSettings
+            | ShortcutAction::Notifications
+            | ShortcutAction::ClipboardHistory => {
+                until(&mut session, "quick settings", |session| {
+                    session.quick_settings_open()
+                });
+            }
+            ShortcutAction::AskAgent | ShortcutAction::SaySomething => {
+                until(&mut session, "a conversation", |session| {
+                    apps(session).iter().any(|app| app == "so.tilo.chat")
+                });
+            }
+            ShortcutAction::ToggleMagnifier => {
+                until(&mut session, "the magnifier", |session| {
+                    session.compositor().zoom() != zoom
+                });
+            }
+            ShortcutAction::MagnifierZoomIn => {
+                until(&mut session, "the magnifier's zoom", |session| {
+                    session.compositor().zoom() > zoom
+                });
+            }
+            ShortcutAction::MagnifierZoomOut => {
+                until(&mut session, "the magnifier's zoom", |session| {
+                    session.compositor().zoom() < zoom
+                });
+            }
+            other => panic!("{other:?} is the session's and has no proof here"),
+        }
+    }
+}
+
+/// The chord a menu row shows, by the row's id.
+fn row_chord(session: &Session, row: &str) -> Option<String> {
+    let reading = session.read(WINDOW_MENU)?;
+    reading
+        .get("rows")?
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("id").and_then(serde_json::Value::as_str) == Some(row))?
+        .get("shortcut")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// The resource `id` the session publishes, children searched too.
+fn resource(session: &Session, id: &str) -> Option<tilo_actions::ResourceSpec> {
+    fn find(
+        resources: &[tilo_actions::ResourceSpec],
+        id: &str,
+    ) -> Option<tilo_actions::ResourceSpec> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                Some(resource.clone())
+            } else {
+                find(&resource.children, id)
+            }
+        })
+    }
+    find(&session.resources(), id)
+}
+
+/// The chord the desk's chrome publishes beside the action `verb`: the text
+/// the search paints at the row's end.
+fn search_chord(session: &Session, verb: &str) -> Option<String> {
+    resource(session, CHROME_RESOURCE)?
+        .actions
+        .iter()
+        .find(|action| action.id == verb)?
+        .state
+        .shortcut
+        .clone()
+}
+
+/// The labels of the rows the open search shows.
+fn search_rows(session: &Session) -> Vec<String> {
+    resource(session, SEARCH_RESOURCE)
+        .map(|search| search.children.into_iter().map(|row| row.label).collect())
+        .unwrap_or_default()
+}
+
+/// Step the session until the search shows a row called `title`.
+#[track_caller]
+fn until_a_row(session: &mut Session, title: &str) {
+    for _ in 0..120 {
+        if search_rows(session)
+            .iter()
+            .any(|row| row.starts_with(title))
+        {
+            return;
+        }
+        session.step(REFRESH).expect("a turn of the session");
+    }
+    panic!("no row {title:?} among {:?}", search_rows(session));
+}
+
+/// The window menu says, at every row a shortcut does the same thing as,
+/// the chord that does it — the one table's, so a chord the person rebound
+/// reads as they bound it.
+#[test]
+fn the_window_menu_shows_the_chord_the_table_binds() {
+    let _panel = panel_environment();
+    let mine = KeyChord::parse("Ctrl+Alt+F").expect("a chord");
+    let mut config = SessionConfig::default();
+    config
+        .shortcuts
+        .set(ShortcutAction::ToggleFullscreen, mine.clone())
+        .expect("no other shortcut holds it");
+    let mut session = session_with_config(desk_tree(), config);
+
+    press(&mut session, ShortcutAction::TabMenu);
+    until(&mut session, "the window menu", |session| {
+        menu_tab(session).as_deref() == Some("20")
+    });
+
+    // The reading spells the chord the way the table stores it (a key
+    // legend lowercases a bare letter); the menu paints it in the keyboard's
+    // own legends.
+    assert_eq!(
+        row_chord(&session, "window-fullscreen"),
+        Some(mine.display()),
+        "the row says the chord the person bound"
+    );
+    let maximized = ShortcutConfig::default()
+        .bindings
+        .get(&ShortcutAction::MaximizeWindow)
+        .expect("bound")
+        .display();
+    assert_eq!(
+        row_chord(&session, "window-maximize").as_deref(),
+        Some(maximized.as_str()),
+        "a row without one of its own takes the table's"
+    );
+    assert_eq!(
+        row_chord(&session, "window-close"),
+        None,
+        "no shortcut closes a tab, so the row promises no key"
+    );
+    assert_eq!(
+        row_chord(&session, "window-rename"),
+        None,
+        "a row no shortcut does says nothing"
+    );
+    capture(&mut session, "window-menu");
+}
+
+/// The search a person opens lists the actions a shortcut runs with the chord
+/// the one table binds it to, which the row paints in the keyboard's legends.
+///
+/// The desk publishes that chord beside each action it offers a search, and
+/// the context menu and the search paint the text it publishes: rebinding
+/// reaches it as it reaches the menus, which the desk's own test follows.
+#[test]
+fn the_search_shows_the_chord_beside_the_action() {
+    let _panel = panel_environment();
+    let mut session = session_with(desk_tree());
+    let chord = ShortcutConfig::default()
+        .bindings
+        .get(&ShortcutAction::ReopenClosedTab)
+        .expect("bound")
+        .display();
+    assert_eq!(
+        search_chord(&session, "reopen-closed").as_deref(),
+        Some(chord.as_str()),
+        "the action the search offers carries the chord the table binds"
+    );
+    press(&mut session, ShortcutAction::Search);
+    until(&mut session, "the search", |session| searching(session));
+    type_at_the_seat(&mut session, "reopen");
+    until_a_row(&mut session, "Reopen what was closed");
+    capture(&mut session, "search");
+}
+
+/// The chords of the desk's side reach the desk of a real session: the tab
+/// in front moves, a tab leaves its window for one of its own, and an app
+/// opens where the person is.
+#[test]
+fn the_desk_answers_its_shortcuts_inside_the_session() {
+    let mut session = session_with(desk_tree());
+    let in_front = |session: &Session| {
+        session
+            .handle()
+            .snapshot("session", vec![])
+            .active
+            .and_then(|route| route.tab.parse::<u64>().ok())
+    };
+    assert_eq!(in_front(&session), Some(20));
+
+    press(&mut session, ShortcutAction::NextTab);
+    until(&mut session, "the next tab", |session| {
+        in_front(session) == Some(21)
+    });
+    press(&mut session, ShortcutAction::PreviousTab);
+    until(&mut session, "the tab before", |session| {
+        in_front(session) == Some(20)
+    });
+
+    press(&mut session, ShortcutAction::DetachTab);
+    until(&mut session, "the split", |session| {
+        session
+            .handle()
+            .read(|tree| tree.workspaces[0].strips[0].window_groups.len() == 3)
+    });
+
+    press(&mut session, ShortcutAction::OpenFiles);
+    until(&mut session, "the files app", |session| {
+        apps(session)
+            .iter()
+            .any(|app| app == "so.tilo.file-explorer")
+    });
+}

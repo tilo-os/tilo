@@ -89,12 +89,29 @@ impl PeerGovernance<'_> {
         })
     }
 
-    /// The devices that may read `channel`, one of the workspace's record
-    /// channels, at `now`: the projection of the workspace's membership a
-    /// channel's MLS group follows. `route` is the channel's record when the
-    /// caller knows it ([`Self::withheld_record_readers`]). `None` when
-    /// neither `route` nor a grant names the record: who may read it is then
-    /// unknown, not no one.
+    /// Whether `key`'s device may issue an invitation into the workspace at
+    /// `now`: a current member whose part there grants inviting. What the
+    /// surfaces that offer inviting show; an invitation's write path asks it
+    /// again, with the part its link hands out.
+    pub fn may_invite(self, key: &SigningKey, now: SystemTime) -> bool {
+        self.peer.require_inviter(key, now).is_ok()
+    }
+
+    /// Whether `key`'s device may hand out `role` in an invitation into the
+    /// workspace at `now`: what the surfaces offering a part to grant list.
+    pub fn may_invite_role(self, key: &SigningKey, role: Role, now: SystemTime) -> bool {
+        self.peer
+            .require_invitation_authority(key, role, now)
+            .is_ok()
+    }
+
+    /// The devices that may read `channel` at `now`: the projection of the
+    /// workspace's membership a channel's MLS group follows. `channel` is the
+    /// workspace's key scope ([`collab_types::workspace_scope`]) — read by
+    /// every participant — or one unit's own channel, a record whose readers
+    /// a Read Deny narrows. `route` is that record when the caller knows it
+    /// ([`Self::withheld_record_readers`]). `None` when neither `route` nor a
+    /// grant names the record: who may read it is then unknown, not no one.
     ///
     /// # Errors
     ///
@@ -105,6 +122,13 @@ impl PeerGovernance<'_> {
         channel: collab_types::ChannelId,
         route: Option<&collab_types::ChannelRoute>,
     ) -> Result<Option<BTreeSet<[u8; 32]>>, String> {
+        // The scope that carries the units whose readers are the workspace's
+        // participants is read by exactly them: it is named by the workspace
+        // itself, so every participant can decide it without knowing a record.
+        if channel == collab_types::workspace_scope(&self.peer.core.workspace) {
+            let access = self.peer.governance().governed_access(now)?;
+            return Ok(Some(access.member_devices.into_iter().collect()));
+        }
         let routes: Vec<collab_types::ChannelRoute> = route.cloned().into_iter().collect();
         let readers = self
             .peer
@@ -120,6 +144,40 @@ impl PeerGovernance<'_> {
                 .filter(|device| !withheld.contains(device))
                 .collect(),
         ))
+    }
+
+    /// The key scope the storage unit on `route` seals under: the workspace's
+    /// ([`collab_types::workspace_scope`]) while every device that may read
+    /// the workspace may read the record too, the record's own channel when a
+    /// Read Deny (or the record being a person's own) narrows its readers.
+    /// The two reader sets never share a key: a narrowed record's group holds
+    /// only the devices its own policy admits.
+    ///
+    /// # Errors
+    ///
+    /// The workspace's governance is missing or cannot be read.
+    pub fn unit_scope(
+        self,
+        now: SystemTime,
+        route: &collab_types::ChannelRoute,
+    ) -> Result<collab_types::ChannelId, String> {
+        let readers = self
+            .peer
+            .governance()
+            .withheld_record_readers(now, std::slice::from_ref(route))?;
+        let unit =
+            collab_types::document_channel_id(&route.app, &self.peer.core.workspace, &route.record);
+        Ok(
+            if readers
+                .withheld
+                .get(&unit)
+                .is_some_and(|denied| !denied.is_empty())
+            {
+                unit
+            } else {
+                collab_types::workspace_scope(&self.peer.core.workspace)
+            },
+        )
     }
 
     /// The governed member devices a Read Deny keeps out of a record's
@@ -987,18 +1045,47 @@ impl PeerGovernanceMut<'_> {
 }
 
 impl super::StatePeer {
+    /// The current member writing with `key`, as its own device's authority
+    /// holds it: what inviting is decided by.
+    fn inviter(&self, key: &SigningKey, now: SystemTime) -> Result<super::MemberAuthority, String> {
+        let device = key.verifying_key().to_bytes();
+        self.require_member_writer(key, now)?;
+        self.membership(device, now)
+    }
+
     /// A current member's device whose person may invite: what an
     /// admission through an invitation is written by.
     fn require_inviter(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
-        let device = key.verifying_key().to_bytes();
-        self.require_member_writer(key, now)?;
-        let member = self.membership(device, now)?;
+        let member = self.inviter(key, now)?;
         let bound = tilo_action_policy::roles::foreign_device_bound();
         member
             .policy
             .check_action(
                 &member.authority(&bound),
                 tilo_action_policy::roles::governance::INVITE,
+                &tilo_action_policy::Context::at_time(now),
+                false,
+            )
+            .map_err(|refusal| format!("the writer may not invite: {refusal}"))
+    }
+
+    /// A current member's device whose person may invite, and may hand out
+    /// `role` with what it makes: checked where an invitation is written, so
+    /// no surface issues a link its person could not redeem itself.
+    pub(crate) fn require_invitation_authority(
+        &self,
+        key: &SigningKey,
+        role: Role,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let member = self.inviter(key, now)?;
+        let bound = tilo_action_policy::roles::foreign_device_bound();
+        member
+            .policy
+            .check_invite(
+                &member.person,
+                &member.authority(&bound),
+                role,
                 &tilo_action_policy::Context::at_time(now),
                 false,
             )

@@ -3,11 +3,18 @@
 //! desktop resolve presses through this one table and key translation, so a
 //! chord means the same everywhere and a rebind reaches both.
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
+use std::rc::Rc;
 
 use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
 use winit::event::Modifiers;
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
+
+/// The desktop's one shortcut table, shared: what the desk matches a press
+/// against, what it shows beside its rows, and what a person's rebinding
+/// changes for both at once.
+pub type Shared = Rc<RefCell<ShortcutConfig>>;
 
 /// Match a persisted shortcut against a live winit key event.
 ///

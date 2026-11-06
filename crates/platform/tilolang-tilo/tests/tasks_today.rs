@@ -6,8 +6,8 @@ use tilolang_runtime::{Principal, Value};
 
 use crate::fixtures::Replica;
 use crate::tasks::{
-    APP, TASKS, TASKS_IDS, call, count, go_to, home_list_titles, page_commands, places, task_page,
-    texts, workspace,
+    APP, PACKAGES, call, count, go_to, home_list_titles, page_commands, places, task_page, texts,
+    workspace,
 };
 
 /// Ada's week and Ben's copy of it: a bill due today nobody holds, a report due today that is
@@ -17,14 +17,18 @@ fn week() -> (Replica, Replica, Value) {
     let called = call(
         &ada,
         "new_task",
-        vec![root.clone(), Value::text("Call the landlord")],
+        crate::tasks::create(&root, "Call the landlord"),
     );
     let bill = call(
         &ada,
         "new_task",
-        vec![root.clone(), Value::text("Pay the electricity bill")],
+        crate::tasks::create(&root, "Pay the electricity bill"),
     );
-    let report = call(&ada, "new_task", vec![root, Value::text("Send the report")]);
+    let report = call(
+        &ada,
+        "new_task",
+        crate::tasks::create(&root, "Send the report"),
+    );
     ada.commit();
     for task in [&bill, &report] {
         call(
@@ -40,7 +44,7 @@ fn week() -> (Replica, Replica, Value) {
     );
     call(&ada, "pick", vec![called.clone(), Value::Bool(true)]);
     ada.commit();
-    let ben = ada.fork("ben", &[(TASKS, TASKS_IDS)]);
+    let ben = ada.fork("ben", PACKAGES);
     ben.host.sync_from(&ben.doc);
     (ada, ben, called)
 }

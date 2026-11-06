@@ -54,6 +54,10 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
         if app.own_records {
             options.push("records: .own".to_owned());
         }
+        if !app.web.is_empty() {
+            let hosts: Vec<String> = app.web.iter().map(|host| quote(host)).collect();
+            options.push(format!("web: [{}]", hosts.join(", ")));
+        }
         let one = format!(
             "app {} {}{}",
             app.id,
@@ -286,9 +290,6 @@ fn param_text(p: &Param, col: usize, level: usize, ctx: &mut Ctx) -> String {
     if let Some(place) = &p.place {
         head = format!("{head} ({})", place.name);
     }
-    if p.entry {
-        head = format!("{head} (entry)");
-    }
     match &p.default {
         Some(default) => {
             let value = expr_with(default, 0, col + head.len() + 3, level, ctx);
@@ -323,6 +324,15 @@ pub fn print_type(t: &TypeExpr) -> String {
             inner.join(" | ")
         }
     }
+}
+
+/// ` uses web, time`, or nothing for a declaration that uses no effect.
+fn uses_text(uses: &[Ident]) -> String {
+    if uses.is_empty() {
+        return String::new();
+    }
+    let names: Vec<&str> = uses.iter().map(|u| u.name.as_str()).collect();
+    format!(" uses {}", names.join(", "))
 }
 
 /// A string literal with escapes.
@@ -644,11 +654,6 @@ fn expr_with(e: &Expr, min: u8, col: usize, level: usize, ctx: &mut Ctx) -> Stri
             )
         }
         ExprKind::Block(b) => block_text(b, col, level, ctx, true),
-        ExprKind::MadeFrom { of, body } => {
-            let head = format!("made from {}", expr_with(of, 0, col + 10, level, ctx));
-            let col = col + head.len() + 1;
-            format!("{head} {}", block_text(body, col, level, ctx, true))
-        }
         ExprKind::Match { scrutinee, arms } => {
             let mut out = format!(
                 "match {} {{\n",
@@ -999,6 +1004,9 @@ impl Printer<'_> {
                             t.name.name, origin.name
                         ));
                     }
+                    None if t.attached => {
+                        self.line(&format!("type {} (attached) {{", t.name.name));
+                    }
                     None => self.line(&format!("type {} {{", t.name.name)),
                 }
                 self.level += 1;
@@ -1074,6 +1082,21 @@ impl Printer<'_> {
                 self.block_body(&sc.body);
                 self.line("}");
             }
+            Item::Trigger(t) => {
+                let params = t.param.as_ref().map_or_else(String::new, |p| {
+                    format!("({}: {})", p.name.name, print_type(&p.ty))
+                });
+                let when = match &t.when {
+                    crate::ast::TriggerWhen::Every { amount, unit, .. } => {
+                        format!("every {amount}{unit}")
+                    }
+                    crate::ast::TriggerWhen::At { expr, .. } => {
+                        format!("at {}", self.ex(expr))
+                    }
+                };
+                let call = self.ex(&t.call);
+                self.line(&format!("trigger {}{params} {when}: {call}", t.name.name));
+            }
             Item::Action(a) => {
                 let role = a
                     .role
@@ -1083,6 +1106,7 @@ impl Printer<'_> {
                 if let Some(r) = &a.result {
                     tail.push_str(&format!(" -> {}", print_type(r)));
                 }
+                tail.push_str(&uses_text(&a.uses));
                 if let Some(p) = &a.proposal {
                     tail.push_str(&format!(" proposal {}", p.view.name));
                     if let Some(args) = &p.args {
@@ -1108,11 +1132,12 @@ impl Printer<'_> {
                 self.line("}");
             }
             Item::Flow(f) => {
-                let tail = f
+                let mut tail = f
                     .result
                     .as_ref()
                     .map(|r| format!(" -> {}", print_type(r)))
                     .unwrap_or_default();
+                tail.push_str(&uses_text(&f.uses));
                 let lead = format!("flow {}", f.name.name);
                 self.head(&lead, &f.params, &tail, &[], " {", param_text);
                 self.block_body(&f.body);
@@ -1132,7 +1157,11 @@ impl Printer<'_> {
                     let names: Vec<&str> = v.type_params.iter().map(|t| t.name.as_str()).collect();
                     format!("<{}>", names.join(", "))
                 };
-                let lead = format!("view {}{types}", v.name.name);
+                let lead = format!(
+                    "{}view {}{types}",
+                    if v.template { "template " } else { "" },
+                    v.name.name
+                );
                 self.head(&lead, &v.params, "", &[], " {", param_text);
                 self.ui_body(&v.body);
                 self.line("}");
@@ -1258,41 +1287,11 @@ impl Printer<'_> {
                 self.block_body(body);
                 self.line("}");
             }
-            StmtKind::As { who, at, body } => {
-                let head = "as ";
-                let col = self.level * 4 + head.len();
-                let w = self.ex_at(who, col);
-                let at = match at {
-                    Some(t) => {
-                        let col = self.level * 4 + head.len() + w.len() + 4;
-                        format!(" at {}", self.ex_at(t, col))
-                    }
-                    None => String::new(),
-                };
-                self.line(&format!("{head}{w}{at} {{"));
-                self.block_body(body);
-                self.line("}");
-            }
             StmtKind::Return(None) => self.line("return"),
             StmtKind::Return(Some(e)) => {
                 let col = self.level * 4 + 7;
                 let v = self.ex_at(e, col);
                 self.line(&format!("return {v}"));
-            }
-            StmtKind::SeedState {
-                layer,
-                view,
-                name,
-                value,
-            } => {
-                let path = view.as_ref().map_or_else(
-                    || name.name.clone(),
-                    |v| format!("{}.{}", v.name, name.name),
-                );
-                let head = format!("{} {path} = ", layer.word());
-                let col = self.level * 4 + head.len();
-                let v = self.ex_at(value, col);
-                self.line(&format!("{head}{v}"));
             }
             StmtKind::Expr(e) => {
                 let v = self.ex(e);

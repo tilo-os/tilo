@@ -256,6 +256,18 @@ pub enum FloatingSurfaceProtocolRole {
     Conversation,
 }
 
+impl FloatingSurfaceProtocolRole {
+    /// Whether interactive content stays rendered by its owning app rather
+    /// than becoming a compositor-owned capture mirror.
+    #[must_use]
+    pub const fn uses_app_owned_host(self) -> bool {
+        match self {
+            Self::ActiveCall | Self::Navigation | Self::Conversation => true,
+            Self::PictureInPicture | Self::LiveActivity => false,
+        }
+    }
+}
+
 /// Starting mode for an app-requested session-shell chooser. The request only
 /// opens trusted shell UI; it never grants an app capture permission or pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -14,6 +14,8 @@ use tilolang_tilo::instance::record::HostHistoryEdit;
 use crate::fixtures::{Replica, field_id};
 use crate::legibility::call;
 
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
 const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
 const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
@@ -23,8 +25,12 @@ const TASKS_APP: &str = "so.tilo.lang.tasks";
 const AGENT: &str = "agent:helper";
 const RUN: &str = "issue-9@8000000000000001";
 
-fn packages() -> [(&'static str, &'static str); 2] {
-    [(NOTES, NOTES_IDS), (TASKS, TASKS_IDS)]
+fn packages() -> [(&'static str, &'static str); 3] {
+    [
+        (DISCUSSION, DISCUSSION_IDS),
+        (NOTES, NOTES_IDS),
+        (TASKS, TASKS_IDS),
+    ]
 }
 
 /// Ada's workspace with the two apps, and Ben's replica of it.
@@ -224,7 +230,7 @@ fn a_task_retitled_by_somebody_else_since_keeps_their_title_when_its_first_title
         "ada",
         TASKS_APP,
         "new_task",
-        vec![root(&ada, TASKS_APP), Value::text("")],
+        crate::tasks::create(&root(&ada, TASKS_APP), ""),
     ));
     ada.commit();
     let title = |text: &str| EditOp::Replace {
@@ -276,14 +282,14 @@ fn a_removed_task_comes_back_after_the_task_beside_it_changed() {
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text("Milk")],
+        crate::tasks::create(&tasks, "Milk"),
     ));
     let eggs = target(&call(
         &ada,
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text("Eggs")],
+        crate::tasks::create(&tasks, "Eggs"),
     ));
     ada.commit();
     ada.sync_with(&mut ben);
@@ -423,7 +429,7 @@ fn undo_opens_a_checked_task_and_every_task_under_it_at_once() {
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text("Write the launch post")],
+        crate::tasks::create(&tasks, "Write the launch post"),
     ));
     ada.commit();
     call(
@@ -502,7 +508,7 @@ fn undo_takes_back_one_persons_pick_for_today_and_leaves_anothers() {
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks, Value::text("Call the landlord")],
+        crate::tasks::create(&tasks, "Call the landlord"),
     ));
     ada.commit();
     ben.sync_with(&mut ada);
@@ -562,7 +568,7 @@ fn a_task_indented_under_another_is_put_back_in_one_undo() {
             "ada",
             TASKS_APP,
             "new_task",
-            vec![Value::resource(&tasks), Value::text(title)],
+            crate::tasks::create(&Value::resource(&tasks), title),
         ))
     };
     let book = make(&ada, "Book a haircut");

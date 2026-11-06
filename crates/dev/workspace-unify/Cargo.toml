@@ -1497,7 +1497,7 @@ doc = false
 "wasmparser-0_252_0" = { package = "wasmparser", version = "^0.252.0", default-features = false, features = ["features", "simd", "std", "validate"] }
 "wasmparser-0_261_0" = { package = "wasmparser", version = "^0.261.0", default-features = false, features = ["component-model", "features", "serde", "simd", "std", "validate"] }
 "wasmprinter-0_261_0" = { package = "wasmprinter", version = "^0.261.0", default-features = false, features = ["component-model", "default", "validate"] }
-"wasmtime-50_0_1" = { package = "wasmtime", version = "^50.0.1", default-features = false, features = ["cranelift", "once_cell", "parallel-compilation", "runtime", "std", "wasmtime-jit-icache-coherence", "winch"] }
+"wasmtime-50_0_1" = { package = "wasmtime", version = "^50.0.1", default-features = false, features = ["cranelift", "once_cell", "runtime", "std", "wasmtime-jit-icache-coherence", "winch"] }
 "wasmtime-environ-50_0_1" = { package = "wasmtime-environ", version = "^50.0.1", default-features = false, features = ["compile", "component-model", "gc", "gc-copying", "gc-drc", "gc-null", "stack-switching", "std", "threads"] }
 "wasmtime-internal-component-util-50_0_1" = { package = "wasmtime-internal-component-util", version = "^50.0.1", default-features = false, features = [] }
 "wasmtime-internal-core-50_0_1" = { package = "wasmtime-internal-core", version = "^50.0.1", default-features = false, features = ["serde", "std"] }

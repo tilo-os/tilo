@@ -363,6 +363,7 @@ fn a_prop_a_component_does_not_declare_fails_the_compile() {
         }
         Module {
             funcs: vec![Func {
+                at: None,
                 kind: crate::ir::FuncKind::View,
                 name: "task_row".into(),
                 export: "v_task_row".into(),
@@ -732,8 +733,8 @@ fn the_sort_is_a_menu_and_the_item_types_toggles_are_the_sidebars_places() {
     assert!(has(&calls, "node ui.NavList"), "the places: {calls:#?}");
     assert!(has(&calls, "node ui.MenuButton"), "the sort menu");
     // The places are the item type's filters, asked of the platform where the list expands;
-    // the list as the place chosen shows it, and each place's count, are queries the index
-    // answers, of the items the view passed once.
+    // the list as the place chosen shows it is the one query the index answers, of the items
+    // the view passed once. A place that shows a count asks that query itself.
     let note = ids.get("Note").expect("id").to_string();
     let mut filters = Vec::new();
     let mut queries = 0;
@@ -747,7 +748,10 @@ fn the_sort_is_a_menu_and_the_item_types_toggles_are_the_sidebars_places() {
         });
     }
     assert_eq!(filters, [Some(note)]);
-    assert!(queries >= 2, "the list and the places' counts: {queries}");
+    assert_eq!(
+        queries, 1,
+        "the list, and no count of the places: {queries}"
+    );
     let listed = m
         .funcs
         .iter()
@@ -765,7 +769,7 @@ fn the_sort_is_a_menu_and_the_item_types_toggles_are_the_sidebars_places() {
 
 #[test]
 fn a_filter_named_by_its_type_is_the_value_a_query_and_a_sidebar_take() {
-    const FILTERS: &str = "type Task {\n    title: Text (title)\n    done: Bool (done) = false\n    project: Option<Project> = .none\n    search {\n        filter \"Inbox\" = not done (count: true)\n        filter \"Done\" = done\n        filter project\n    }\n}\ntype Project {\n    name: Text (title)\n}\ntype Board {\n    tasks: Collection<Task>\n    projects: Collection<Project>\n}\n";
+    const FILTERS: &str = "type Task {\n    title: Text (title)\n    done: Bool (done) = false\n    project: Option<Project> = .none\n    search {\n        filter \"Inbox\" = not done (icon: .inbox)\n        filter \"Done\" = done\n        filter project\n    }\n}\ntype Project {\n    name: Text (title)\n}\ntype Board {\n    tasks: Collection<Task>\n    projects: Collection<Project>\n}\n";
     let view = "view board(b: Board) {\n    window place: Filter<Task> = Task.inbox\n    ui.NavList(selected: place) {\n        for f in filters(Task).filter(f -> f.toggle) {\n            ui.NavItem(f, f.label) {\n                on select: set(place, f)\n            }\n        }\n        for p in b.projects {\n            ui.NavItem(Task.project(p), p.name, icon: .folder) {\n                on select: set(place, Task.project(p))\n            }\n        }\n    }\n    for t in b.tasks.matching(place) {\n        text(t.title)\n    }\n}";
     let (m, ids) = lower(&format!("{FILTERS}{view}"));
     let task = ids.get("Task").expect("id").to_string();
@@ -1064,6 +1068,24 @@ fn linked_and_made_from_are_read_from_the_log() {
 }
 
 #[test]
+fn an_action_applied_made_from_a_resource_is_invoked_from_it() {
+    let (m, _) = lower(
+        "type Note {\n    title: Text\n}\ntype Notes {\n    items: Collection<Note>\n}\nroot notes: Notes\ndefault view all for Notes\naction keep(all: Notes, title: Text) -> Note {\n    all.items.insert(Note(title: title))\n}\nview all(all: Notes) {\n    text(meta(all).title)\n}\nview note(n: Note) {\n    button(keep(notes, n.title).made_from(n))\n}",
+    );
+    // What a view shows of an action is the action the host runs; made from a resource, it runs
+    // from that resource, so what it makes records what it was made from.
+    let mut made_from = false;
+    for f in &m.funcs {
+        visit(f, &mut |e| {
+            if let Ek::Host(Imp::ActMadeFrom, _) = &e.kind {
+                made_from = true;
+            }
+        });
+    }
+    assert!(made_from, "`made_from` is the host's own step: {m:#?}");
+}
+
+#[test]
 fn a_links_how_is_a_case_of_the_hosts_link_how_enum() {
     let (m, _) = lower(
         "type Note {\n    title: Text\n}\nfn mentions(n: Note) -> Bool {\n    linked(n).any(l -> l.how == .mention)\n}",
@@ -1143,6 +1165,30 @@ fn a_generic_view_with_a_lambda_and_view_state_expands_where_it_is_called() {
     assert!(
         wrong.iter().any(|d| d.code == "E066"),
         "view state is passed by its name: {wrong:#?}"
+    );
+}
+
+/// A package may name a view as the library names one: only the same package's view is the same
+/// view, so an app's own `composer` calling `std.composer` expands the library's, not itself.
+#[test]
+fn an_apps_view_named_as_the_libraries_expands_the_libraries() {
+    let (m, _) = lower(
+        "type Chat {\n    topic: Text\n}\naction send(c: Chat, text: RichText) {\n}\nview composer(c: Chat) {\n    window draft: RichText = RichText(\"\")\n    std.composer(draft, \"Message {c.topic}\", send(c, draft))\n}\nview chat(c: Chat) {\n    composer(c)\n}",
+    );
+    let chat = ui_calls(func(&m, "chat"));
+    assert!(
+        chat.iter().any(|c| c.starts_with("node view:")),
+        "the app's composer stands in its chat: {chat:#?}"
+    );
+    let calls = ui_calls(func(&m, "composer"));
+    assert!(
+        calls.iter().any(|c| c.starts_with("node ui.RichInput")),
+        "the library's field is the one drawn: {calls:#?}"
+    );
+    assert!(has(&calls, "on submit"), "and it sends: {calls:#?}");
+    assert!(
+        has(&calls, "on press"),
+        "and so does its button: {calls:#?}"
     );
 }
 
@@ -1293,9 +1339,9 @@ fn a_length_of_time_is_a_value_of_its_own() {
     // A day and a moment move by one, and two of a kind are one apart.
     let (m, _) = lower(
         "type Note {\n    stamp: Date = Date(\"1970-01-01\")\n    at: Time = Time(\"1970-01-01T00:00:00Z\")\n}\n\
-         action soon(n: Note) -> Time { n.at = now + 2h \n now }\n\
-         action tomorrow(n: Note) -> Date { n.stamp = today + 1d \n today }\n\
-         action last_week(n: Note) -> Date { today - 1w }\n\
+         action soon(n: Note) -> Time uses time { n.at = now + 2h \n now }\n\
+         action tomorrow(n: Note) -> Date uses time { n.stamp = today + 1d \n today }\n\
+         action last_week(n: Note) -> Date uses time { today - 1w }\n\
          fn apart(a: Time, b: Time) -> Duration { b - a }\n\
          fn days(a: Date, b: Date) -> Duration { b - a }",
     );
@@ -1374,8 +1420,8 @@ fn a_day_and_a_moment_are_read_by_their_parts() {
 #[test]
 fn a_day_or_a_moment_is_read_from_a_text() {
     let (m, _) = lower(
-        "action day(t: Text) -> Option<Date> { Date.parse(t, near: now) }\n\
-         action at(t: Text) -> Option<Time> { Time.parse(t, near: now) }",
+        "action day(t: Text) -> Option<Date> uses time { Date.parse(t, near: now) }\n\
+         action at(t: Text) -> Option<Time> uses time { Time.parse(t, near: now) }",
     );
     assert_eq!(returned(func(&m, "day")).ty, Ty::Option(Box::new(Ty::Date)));
     assert_eq!(returned(func(&m, "at")).ty, Ty::Option(Box::new(Ty::Time)));
@@ -1412,7 +1458,7 @@ fn only_an_action_reads_the_day_it_is() {
     }
     // The action's day and moment read as one: the day is the one the moment falls on.
     let (m, _) = lower(
-        "type Note {\n    stamp: Date = Date(\"1970-01-01\")\n}\naction mark(n: Note) { n.stamp = now.day() }",
+        "type Note {\n    stamp: Date = Date(\"1970-01-01\")\n}\naction mark(n: Note) uses time { n.stamp = now.day() }",
     );
     assert!(imports(func(&m, "mark")).contains(&Imp::TimeDay));
 }

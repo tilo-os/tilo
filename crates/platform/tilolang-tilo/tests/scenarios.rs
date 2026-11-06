@@ -19,13 +19,25 @@ macro_rules! app {
 fn apps() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
         ("so.tilo.lang.counter", vec![app!("counter")]),
-        ("so.tilo.lang.tasks", vec![app!("tasks")]),
-        ("so.tilo.lang.notes", vec![app!("notes")]),
+        (
+            "so.tilo.lang.tasks",
+            vec![app!("discussion"), app!("tasks")],
+        ),
+        (
+            "so.tilo.lang.notes",
+            vec![app!("discussion"), app!("notes")],
+        ),
         ("so.tilo.lang.mail", vec![app!("mail")]),
         ("so.tilo.lang.chat", vec![app!("chat")]),
         (
             "so.tilo.lang.today",
-            vec![app!("notes"), app!("tasks"), app!("chat"), app!("today")],
+            vec![
+                app!("discussion"),
+                app!("notes"),
+                app!("tasks"),
+                app!("chat"),
+                app!("today"),
+            ],
         ),
     ]
 }
@@ -75,11 +87,13 @@ fn every_scenario_of_every_app_seeds_its_root_and_the_first_fills_a_list_past_a_
 /// members offers them too, by the name the scenario gave.
 #[test]
 fn a_scenarios_named_person_is_a_member_of_the_workspace() {
-    let packages = vec![app!("tasks")];
+    let packages = vec![app!("discussion"), app!("tasks")];
     let (mut replica, loaded) = Replica::new("ada", AutoCommit::new(), &packages);
     replica.host.root_of("so.tilo.lang.tasks").unwrap();
     replica.commit();
-    let scenario = loaded[0]
+    let scenario = loaded
+        .last()
+        .unwrap()
         .meta
         .scenarios
         .iter()
@@ -101,12 +115,23 @@ fn a_scenarios_named_person_is_a_member_of_the_workspace() {
 /// once their scenarios fill them.
 #[test]
 fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
-    let packages = vec![app!("notes"), app!("tasks"), app!("chat"), app!("today")];
+    let packages = vec![
+        app!("discussion"),
+        app!("notes"),
+        app!("tasks"),
+        app!("chat"),
+        app!("today"),
+    ];
     let (mut replica, loaded) = Replica::new("ada", AutoCommit::new(), &packages);
     replica.host.root_of("so.tilo.lang.today").unwrap();
     replica.commit();
     let mut view = replica.view("so.tilo.lang.today");
-    for package in &loaded[..3] {
+    for package in loaded.iter().filter(|p| {
+        matches!(
+            p.meta.app.as_str(),
+            "so.tilo.lang.notes" | "so.tilo.lang.tasks" | "so.tilo.lang.chat"
+        )
+    }) {
         replica.host.root_of(&package.meta.app).unwrap();
         replica.commit();
         let first = &package.meta.scenarios[0];

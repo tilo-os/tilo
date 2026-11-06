@@ -3533,15 +3533,12 @@ pub mod image_viewer;
 mod image_viewer_component;
 pub use image_viewer::ImageViewer;
 pub use image_viewer_component::{ImageViewerProps, ZoomableImage};
-pub mod tree_view;
-mod tree_view_component;
-pub use tree_view::{
-    TreeChildState, TreeClickActivation, TreeHeadingAction, TreeLoadReason, TreeLoadRequest,
-    TreeModel, TreeModelChange, TreeMove, TreeNode, TreeRowAction, TreeRowDecoration, TreeRowIcon,
-    TreeRowInfo, TreeRowKey, TreeRowTone, TreeSlot, TreeView,
-};
-pub use tree_view_component::{
-    DescribedTreeView, TreeTone, TreeViewNodeProps, TreeViewProps, TreeViewRowProps,
+mod tree_component;
+#[cfg(test)]
+pub(crate) use tree_component::items_tree;
+pub use tree_component::{
+    DescribedTreeView, TREE_ROW_HEIGHT, TreeTone, TreeViewNodeProps, TreeViewProps,
+    TreeViewRowProps,
 };
 mod row_selection;
 mod rows;
@@ -3549,7 +3546,7 @@ pub mod virtual_list;
 pub use virtual_list::{
     DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps, ListModel,
     RowActionRects, RowGroup, RowRenameField, RowSelection, RowSelectionSink, TREE_DISCLOSURE,
-    TREE_INDENT, TreeMarks, TreeRow, VecListModel, VirtualList, VirtualListProps,
+    TREE_INDENT, TreeMarks, TreeMove, TreeRow, VecListModel, VirtualList, VirtualListProps,
 };
 mod activation;
 pub(crate) mod control_verb;

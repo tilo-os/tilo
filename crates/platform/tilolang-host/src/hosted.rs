@@ -45,8 +45,7 @@ use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
 use tilolang_tilo::publish::package_resource_id;
 use tilolang_tilo::publish::{
-    Caller, Committer, Moved, Planner, Publications, host_resource, publish_availability,
-    publish_package,
+    Caller, Committer, Planner, Publications, host_resource, publish_package,
 };
 use tilolang_tilo::{HostEffect, OpenEffect};
 
@@ -83,22 +82,6 @@ pub struct Spec {
 /// loaded packages.
 type SurfaceInputs = (u64, Vec<tilolang_tilo::runtime::PackageId>, u64);
 
-/// What the actions of one published resource were read as: each action's answer, by the
-/// action's id.
-type Read = std::collections::HashMap<String, Said>;
-
-/// What one action's requirements answered, and what reading them read.
-#[derive(Clone)]
-struct Said {
-    /// Whether the action can run now, in the person at the window's words: `None` for an action
-    /// whose app keeps no requirement its subject decides, and it keeps what it is published as.
-    availability: Option<tilo_actions::Availability>,
-    /// The fields the requirements read, by resource and field: a change to one of them, or to
-    /// anything under a resource they read, reads them again. `None` for a requirement that read
-    /// more than the workspace holds (the clock, the window), which is read again every time.
-    reads: Option<Vec<(String, String)>>,
-}
-
 /// What the instance publishes on its connection: the workspace's records with their actions, kept up
 /// to date change by change.
 struct Surface {
@@ -110,10 +93,6 @@ struct Surface {
     planner: Arc<dyn Planner>,
     committer: Arc<dyn Committer>,
     publications: RefCell<Publications>,
-    /// Per published resource, each of its actions' availability as it was last read: a
-    /// resource's requirements are read again only when what they read moves, not when the tree
-    /// holding the resource is built again around a change to one of its neighbours.
-    availability: RefCell<std::collections::BTreeMap<String, Read>>,
 }
 
 impl Surface {
@@ -132,7 +111,6 @@ impl Surface {
             planner,
             committer: handle,
             publications: RefCell::new(publications),
-            availability: RefCell::new(std::collections::BTreeMap::new()),
         };
         surface.update();
         surface
@@ -145,9 +123,7 @@ impl Surface {
     }
 
     /// What [`Self::resources`] is built from, besides what never changes for this surface: the
-    /// published records' revision, the loaded packages, and the updates that saw a change: an
-    /// action's availability follows what its app's requirements read, which a change moves
-    /// without moving a label.
+    /// published records' revision, the loaded packages, and the updates that saw a change.
     fn inputs(&self) -> SurfaceInputs {
         (
             self.publications.borrow().revision(),
@@ -169,7 +145,7 @@ impl Surface {
             .map(|(doc, tree)| (doc.clone(), Rc::clone(tree)))
             .collect();
         for (_doc, tree) in trees {
-            out.push(self.available(&tree));
+            out.push((*tree).clone());
         }
         let words = self.host.runtime().words();
         for package in self.host.packages() {
@@ -177,136 +153,11 @@ impl Surface {
             if package.meta.app == self.app {
                 resource = with_app_actions(resource, &self.activate);
             }
-            publish_availability(&self.host, &mut resource);
             if !resource.actions.is_empty() {
                 out.push(resource);
             }
         }
         out
-    }
-
-    /// The record `doc` is published as, its actions' availability as its app says it now (see
-    /// [`fill_availability`]).
-    fn available(&self, tree: &ResourceSpec) -> ResourceSpec {
-        let mut published = tree.clone();
-        fill_availability(&self.host, &self.availability, &mut published);
-        published
-    }
-}
-
-/// Forget what actions were read as, where a requirement read something `moved` changed: what an
-/// answer read is read again when one of those fields, or anything its resource holds, changed.
-/// An answer that read more than the workspace is read again anyway.
-fn forget_reads(surface: &Surface, moved: &[(String, String)]) {
-    surface.availability.borrow_mut().retain(|_, said| {
-        said.values().all(|said| {
-            said.reads.as_ref().is_some_and(|reads| {
-                !reads
-                    .iter()
-                    .any(|read| moved.iter().any(|at| reached(at, read)))
-            })
-        })
-    });
-}
-
-/// Whether a change to `changed` moves what a read of `read` saw.
-///
-/// The same resource and field, either read or changed whole, is the same thing read and changed
-/// again. A requirement that read a resource whole sees everything published under it, so a
-/// change to one of its items reads it again. A change to a resource above what was read does
-/// not: what an item's own fields are is what a requirement of the item reads, and a collection
-/// changing around it is a change to the collection.
-fn reached(changed: &(String, String), read: &(String, String)) -> bool {
-    const WHOLE: &str = tilolang_tilo::runtime::store::ANY_FIELD;
-    let above = |outer: &str, inner: &str| {
-        inner
-            .strip_prefix(outer)
-            .is_some_and(|rest| rest.starts_with('/'))
-    };
-    if changed.0 == read.0 {
-        return changed.1 == read.1 || changed.1 == WHOLE || read.1 == WHOLE;
-    }
-    above(&read.0, &changed.0) || (changed.1 == WHOLE && above(&changed.0, &read.0))
-}
-
-/// The resources whose actions a catalogue reads again after `moved`: the changed resources, and
-/// every package's own resource, whose actions may read the whole workspace.
-fn reads_again(surface: &Surface, moved: &Moved) -> Vec<String> {
-    let mut again: Vec<String> = match moved {
-        Moved::These(these) => {
-            let mut at: Vec<String> = these.iter().map(|(resource, _)| resource.clone()).collect();
-            at.sort_unstable();
-            at.dedup();
-            at
-        }
-        Moved::Everything => surface
-            .publications
-            .borrow()
-            .trees()
-            .keys()
-            .cloned()
-            .collect(),
-    };
-    again.extend(
-        surface
-            .host
-            .packages()
-            .iter()
-            .map(|package| package_resource_id(&package.meta.app)),
-    );
-    again
-}
-
-/// What the action `action` of `resource` is read as now, as `host` says.
-fn read_action(host: &Host, resource: &str, action: &str) -> Said {
-    match host.availability_reading(resource, action) {
-        Some((availability, reading)) => Said {
-            availability: Some(availability),
-            reads: (!reading.beyond).then_some(reading.reads),
-        },
-        None => Said {
-            availability: None,
-            reads: Some(Vec::new()),
-        },
-    }
-}
-
-/// Set each action's availability on `resource` and the items under it, as `host` says it now:
-/// the answer kept in `cache` while nothing it read has moved, read from the app otherwise. Each
-/// resource is remembered by its own id, so a change to one item of a record of ten thousand
-/// reads that item's requirements again, and the record's above it, and no other item's.
-fn fill_availability(
-    host: &Host,
-    cache: &RefCell<std::collections::BTreeMap<String, Read>>,
-    resource: &mut ResourceSpec,
-) {
-    let held = cache.borrow().get(resource.id.as_str()).cloned();
-    let mut read = Read::new();
-    let mut reread = held.is_none();
-    for action in &mut resource.actions {
-        // An answer that read more than the workspace is read again every time: nothing it read
-        // is held anywhere, so a change gives no sign that it moved.
-        let said = match held.as_ref().and_then(|held| held.get(action.id.as_str())) {
-            Some(said) if said.reads.is_some() => said.clone(),
-            _ => {
-                reread = true;
-                read_action(host, resource.id.as_str(), &action.id)
-            }
-        };
-        // An action the app keeps no requirement for keeps what it is published as: a host
-        // action beside it (undo, redo) says for itself whether it can run now.
-        if let Some(availability) = &said.availability {
-            action.type_mut().contract.availability = availability.clone();
-        }
-        read.insert(action.id.clone(), said);
-    }
-    if reread {
-        cache
-            .borrow_mut()
-            .insert(resource.id.as_str().to_owned(), read);
-    }
-    for child in &mut resource.children {
-        fill_availability(host, cache, child);
     }
 }
 
@@ -387,6 +238,13 @@ impl Platform for HostPlatform {
         chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
     }
 
+    fn web(
+        &self,
+        request: &tilolang_tilo::runtime::flow::WebRequest,
+    ) -> tilolang_tilo::runtime::web::WebReply {
+        crate::web::fetch(request)
+    }
+
     fn waker(&self) -> Waker {
         Arc::clone(&self.wake)
     }
@@ -424,16 +282,12 @@ pub struct Hosted {
     /// The directory the instance answers its connection's directory requests from: what it
     /// last published, browsable by level and name, as the door and agents read it.
     directory: PublishedDirectory,
-    /// Whether labels moved since [`Self::directory`] was built ([`Self::relabel`]): it is
-    /// built again when it is next asked, not on every keystroke.
+    /// Whether the surface moved since [`Self::directory`] was built ([`Self::publish`],
+    /// [`Self::relabel`]): it is built again when it is next asked, not on every change.
     directory_behind: bool,
     /// The surface and its inputs ([`Surface::inputs`]) the broker's copy was built from: while
     /// they are the same, a turn publishes without building anything.
     published_from: Option<(Rc<Surface>, SurfaceInputs)>,
-    /// The update of the published records through which each action's availability was read
-    /// ([`Surface::inputs`]): what a change reached after it is read again before anything is
-    /// built, ([`forget_reads`]).
-    reads_from: u64,
     /// Why the surface was last refused instead of published: empty once it publishes.
     refused: Vec<tilo_actions::ContractViolation>,
     registry: ActionRegistry,
@@ -543,7 +397,6 @@ impl Hosted {
             directory: PublishedDirectory::default(),
             directory_behind: false,
             published_from: None,
-            reads_from: 0,
             refused: Vec::new(),
             registry,
             search_index: tilo_resource::search_index::Publisher::default(),
@@ -708,23 +561,58 @@ impl Hosted {
         let manager = self.record.manager_mut();
         manager.publish_action_directory(self.spec.app.clone());
         let requests = manager.take_action_directory_requests();
-        if !requests.is_empty() && self.directory_behind {
+        if requests.is_empty() {
+            return;
+        }
+        if self.directory_behind {
             self.catch_up_directory();
         }
+        // What an action can run for is its app's to say, and it says it for the rows a caller
+        // asks about: the surface carries what exists and what it offers, never a requirement's
+        // answer for every item.
+        let Some(host) = self.instance.host() else {
+            for request in requests {
+                self.directory.answer(request);
+            }
+            return;
+        };
         for request in requests {
-            self.directory.answer(request);
+            self.directory.answer_refreshed(request, |row| {
+                let Some(descriptor) = row.descriptor.as_mut() else {
+                    return;
+                };
+                if let Some(availability) =
+                    host.availability(&descriptor.resource, &descriptor.action)
+                {
+                    descriptor.contract.availability = availability;
+                }
+            });
         }
     }
 
-    /// Build the directory again from what the instance publishes now, after labels moved.
+    /// Build the directory from what the instance publishes now, when it is first asked after
+    /// the surface moved.
     fn catch_up_directory(&mut self) {
         self.directory_behind = false;
-        let (Some(surface), Some((descriptors, _))) =
-            (self.surface.borrow().clone(), self.published.as_ref())
-        else {
+        let Some(surface) = self.surface.borrow().clone() else {
             return;
         };
-        self.directory.publish(&surface.resources(), descriptors);
+        let inputs = surface.inputs();
+        let resources = surface.resources();
+        // The descriptors the broker holds are the surface's own while they were read from
+        // it, and rows answer from them; after a change they describe a surface that moved,
+        // so the directory is built from what the surface publishes now.
+        let held = self.published.as_ref().filter(|_| {
+            self.published_from
+                .as_ref()
+                .is_some_and(|(from, at)| Rc::ptr_eq(from, &surface) && *at == inputs)
+        });
+        if let Some((descriptors, _)) = held {
+            self.directory.publish(&resources, descriptors);
+        } else {
+            let descriptors = tilo_actions::door::survey(&resources);
+            self.directory.publish(&resources, &descriptors);
+        }
     }
 
     /// Run what the broker delivered on the instance's connection. Every event that waits on an
@@ -1029,14 +917,6 @@ impl Hosted {
         {
             return;
         }
-        // An action's availability follows what its app's requirements read, which a change
-        // moves without moving a label: what a change reached is read again, and everything
-        // when the journal no longer says what it was.
-        match surface.publications.borrow().changed_since(self.reads_from) {
-            Some(Moved::These(changed)) => forget_reads(&surface, &changed),
-            None | Some(Moved::Everything) => surface.availability.borrow_mut().clear(),
-        }
-        self.reads_from = inputs.2;
         if self.relabel(&surface, inputs.clone()) {
             return;
         }
@@ -1086,8 +966,9 @@ impl Hosted {
         self.refused.clear();
         let descriptors = tilo_actions::door::survey(&resources);
         self.offer(&descriptors);
-        self.directory.publish(&resources, &descriptors);
-        self.directory_behind = false;
+        // The directory is built when a caller asks for it: what the surface holds is the
+        // snapshot's input, not the answer to a question nobody asked.
+        self.directory_behind = true;
         if self
             .published
             .as_ref()
@@ -1197,7 +1078,7 @@ impl Hosted {
     /// those resources alone: their descriptors patched, and a delta of them, at the cost of
     /// what changed whatever the notebook. `inputs` are the surface's ([`Surface::inputs`]).
     /// Whether this turn's publishing is done; when the surface changed in more than labels
-    /// since the broker took it, or an action's availability moved, the caller builds it whole.
+    /// since the broker took it, the caller builds it whole.
     ///
     /// Nothing is validated again: no rule reads a label.
     fn relabel(&mut self, surface: &Rc<Surface>, inputs: SurfaceInputs) -> bool {
@@ -1207,12 +1088,6 @@ impl Hosted {
         if !Rc::ptr_eq(from, surface) || taken.1 != inputs.1 {
             return false;
         }
-        // A change moves what a requirement of an action reads without moving a label: the
-        // records it changed offer what they can run now, and a package's own actions may read
-        // the whole workspace a change moves (a task checked, and `Clear done` can run now).
-        let Some(moved) = surface.publications.borrow().changed_since(taken.2) else {
-            return false;
-        };
         let Some(labels) = surface.publications.borrow().labels_since(taken.0) else {
             return false;
         };
@@ -1230,24 +1105,6 @@ impl Hosted {
             for index in state.indices(resource).unwrap_or_default() {
                 if let Some(descriptor) = descriptors.get_mut(*index) {
                     descriptor.resource_label.clone_from(label);
-                }
-            }
-        }
-        // A catalogue the window holds says what its actions could run when it was sent: what
-        // moved since is offered whole, the way a label alone is not.
-        for resource in reads_again(surface, &moved) {
-            for index in state.indices(&resource).unwrap_or_default() {
-                let Some(descriptor) = descriptors.get(*index) else {
-                    continue;
-                };
-                let Some(availability) = surface
-                    .host
-                    .availability(&descriptor.address.resource, &descriptor.address.action)
-                else {
-                    continue;
-                };
-                if descriptor.contract.availability != availability {
-                    return false;
                 }
             }
         }

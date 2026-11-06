@@ -150,6 +150,12 @@ pub trait WindowPolicy {
     /// goes.
     fn withdrawn(&mut self, _window: &WindowInfo) {}
 
+    /// Whether `window` floats over the desk as a card an app draws: framed
+    /// square, in front of the windows, and taking no focus.
+    fn overlay(&self, _window: &WindowInfo) -> bool {
+        false
+    }
+
     /// Whether a window takes keyboard focus when it first shows.
     fn focus_on_map(&mut self, _window: &WindowInfo) -> bool {
         true

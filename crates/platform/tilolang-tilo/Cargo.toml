@@ -88,6 +88,11 @@ path = "tests/words.rs"
 name = "rust_types"
 path = "tests/rust_types.rs"
 
+[[bench]]
+name = "index_units"
+path = "benches/index_units.rs"
+harness = false
+
 [lints]
 workspace = true
 

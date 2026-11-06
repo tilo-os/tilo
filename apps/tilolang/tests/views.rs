@@ -79,10 +79,7 @@ fn an_answer_is_a_live_view_over_other_apps_at_every_size_and_theme() {
 #[test]
 fn the_recorded_answer_is_a_view_declaration_over_the_installed_apps() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let dirs: Vec<std::path::PathBuf> = ["tasks", "notes", "chat", "views"]
-        .iter()
-        .map(|app| root.join("../tl").join(app))
-        .collect();
+    let dirs = support::ordered(&["tasks", "notes", "chat", "views"]);
     let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
         .expect("the packages compile");
     let metas: Vec<tilolang::PackageMeta> = built.iter().map(|b| b.compiled.meta.clone()).collect();

@@ -29,26 +29,26 @@ type Board {
     logs: Collection<Log>
 }
 
-action seed(b: Board) {
+action seed(b: Board) uses time {
     let l = b.logs.insert(Log(at: 2026-10-29T23:30:00Z))
     // The day the action's own moment falls on: the filter's `today` is the same day.
     l.stamp = now.day()
 }
 
-action soon(b: Board) {
+action soon(b: Board) uses time {
     let l = b.logs.insert(Log())
     l.at = now + 2h
     l.stamp = today + 3d
     l.seconds = now.time_of_day().seconds()
 }
 
-action stamp(b: Board) {
+action stamp(b: Board) uses time {
     let l = b.logs.insert(Log())
     l.stamp = (today + 1w) - 2d
     l.seconds = (now - Time("1970-01-01T00:00:00Z")).seconds()
 }
 
-action read(b: Board, text: Text) {
+action read(b: Board, text: Text) uses time {
     let l = b.logs.insert(Log())
     l.at = Time.parse(text, near: now) ?? Time("1970-01-01T00:00:00Z")
     l.stamp = Date.parse(text, near: now) ?? Date("1970-01-01")
@@ -120,12 +120,12 @@ view agreed(b: Board) {
     }
 }
 
-action too_fine(b: Board) {
+action too_fine(b: Board) uses time {
     let l = b.logs.insert(Log())
     l.stamp = moved(today, 2h)
 }
 
-action fine(b: Board) {
+action fine(b: Board) uses time {
     let l = b.logs.insert(Log())
     l.stamp = moved(today, 2d)
 }

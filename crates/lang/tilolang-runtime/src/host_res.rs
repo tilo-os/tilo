@@ -112,6 +112,8 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         | Ty::Enum(_)
         | Ty::Filter(_)
         | Ty::Result(..)
+        | Ty::Bytes
+        | Ty::Response
         | Ty::Error => {
             return Err("the field has no value yet and no default".to_owned());
         }

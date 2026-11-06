@@ -1738,6 +1738,39 @@
           ]
         },
         {
+          "id": "issue-invitation",
+          "label": "Make an invitation into a workspace from this device: the link to hand to whoever is",
+          "description": "Make an invitation into a workspace from this device: the link to hand to whoever is being invited, which their device joins with",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "role",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "name": "invitee_name",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "name": "recipient",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "name": "expires_in_seconds",
+              "required": false,
+              "type": "int"
+            },
+            {
+              "name": "workspace",
+              "required": false,
+              "type": "text"
+            }
+          ]
+        },
+        {
           "id": "cancel-invitation",
           "label": "Cancel the invitation `invite` of a workspace: its link admits nobody from now on",
           "description": "Cancel the invitation `invite` of a workspace: its link admits nobody from now on",

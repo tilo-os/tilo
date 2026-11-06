@@ -335,13 +335,16 @@ fn participants_of_old_channels(doc: &mut ui::tilo_resource::Doc) -> Result<(), 
 /// string each; they are model values now, rewritten in place. Versions 1
 /// and 2 stored the fields of an attachment, of where an agent's work is and
 /// of what came of each operation flat, beside the variant's name; they are
-/// stored by their variant now.
+/// stored by their variant now. Versions up to 3 kept a message's shared
+/// resource and the record it lives in as two fields, and its file in a
+/// third; the three are one list of attachments now
+/// ([`upgrade_attachments`]).
 ///
 /// # Errors
 /// When `from` is not a version a part was, or a stored value does not read
 /// as its new type.
 pub(crate) fn upgrade_part(doc: &mut ui::tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
-    if !(1..=2).contains(&from) {
+    if !(1..=3).contains(&from) {
         return Err(ModelError::invalid(format!(
             "no chat part migration from {from}"
         )));
@@ -431,14 +434,16 @@ pub(crate) fn kept_names(doc: &ui::tilo_resource::Doc) -> BTreeMap<String, Strin
 /// [`upgrade_part`] of one message stored at `message`: each step leaves a
 /// value already stored as it reads where it is.
 fn upgrade_message(doc: &mut ui::tilo_resource::Doc, message: &ObjId) -> Result<(), ModelError> {
-    use crate::model::{AgentReasoning, AgentStepOutcome, AgentWorkState, Attachment};
+    use crate::model::{AgentReasoning, AgentStepOutcome, AgentWorkState};
+    use tilo_reference::StoredFile;
     retype_json::<Vec<ClipBlock>>(doc, message, "body")?;
     retype_json::<Vec<Revision>>(doc, message, "history")?;
     retype_json::<Vec<crate::mention::Mention>>(doc, message, "mentions")?;
     retype_json::<Option<tilo_reference::ResourceRef>>(doc, message, "reference")?;
-    retype_json::<Option<Attachment>>(doc, message, "attachment")?;
+    retype_json::<Option<StoredFile>>(doc, message, "attachment")?;
     retype_json::<Option<ShownAs>>(doc, message, "appearance")?;
-    retype_variant_fields::<Option<Attachment>>(doc, message, "attachment")?;
+    retype_variant_fields::<Option<StoredFile>>(doc, message, "attachment")?;
+    upgrade_attachments(doc, message)?;
     if let Some(work) = map_at(doc, message, "work")? {
         retype_json::<Option<Transition>>(doc, &work, "state")?;
         if let Some(transition) = map_at(doc, &work, "state")? {
@@ -453,6 +458,60 @@ fn upgrade_message(doc: &mut ui::tilo_resource::Doc, message: &ObjId) -> Result<
             retype_variant_fields::<Option<AgentStepOutcome>>(doc, &step, "outcome")?;
         }
     }
+    Ok(())
+}
+
+/// Rewrite a message's shared resource and file into its attachments, and
+/// drop the fields versions up to 3 kept them in.
+///
+/// A shared resource becomes a [`tilo_reference::Attached::Resource`] of the
+/// app and record its provider named, labelled as it was labelled then, with
+/// the part it named left in the reference's span. A resource whose provider
+/// was never known could not be opened then either: its words are kept,
+/// quoted, rather than an address nothing could resolve.
+///
+/// # Errors
+/// Returns the document's read or write error.
+fn upgrade_attachments(
+    doc: &mut ui::tilo_resource::Doc,
+    message: &ObjId,
+) -> Result<(), ModelError> {
+    use ui::tilo_resource::{Slot, read_key, write_key};
+    let reference = read_key::<Option<tilo_reference::ResourceRef>>(doc, message, "reference")?;
+    let provider = read_key::<Option<Atom>>(doc, message, "source_provider")?.map(|atom| atom.0);
+    let file = read_key::<Option<tilo_reference::StoredFile>>(doc, message, "attachment")?;
+    if reference.is_none() && file.is_none() && provider.is_none() {
+        return Ok(());
+    }
+    let mut attachments = read_key::<Vec<tilo_reference::Attached>>(doc, message, "attachments")?;
+    if let Some(reference) = reference {
+        let attached = match provider.as_deref().and_then(crate::record::provider_record) {
+            Some((app, record)) => {
+                let label = reference.label.clone();
+                tilo_reference::Attached::resource(
+                    tilo_reference::ResourceAt {
+                        app: app.to_owned(),
+                        record: (!record.is_empty()).then(|| record.to_owned()),
+                        reference,
+                    },
+                    None,
+                    label,
+                )
+            }
+            None => tilo_reference::Attached::Text {
+                text: reference.label,
+                from: None,
+            },
+        };
+        attachments.push(attached);
+    }
+    if let Some(file) = file {
+        attachments.push(file.into());
+    }
+    write_key(doc, message, "attachments", &attachments)?;
+    Slot::Key(message, "reference").remove(doc)?;
+    Slot::Key(message, "source_provider").remove(doc)?;
+    Slot::Key(message, "attachment").remove(doc)?;
     Ok(())
 }
 
@@ -683,15 +742,11 @@ pub struct Message {
     /// Who the text refers to, resolved when it was written.
     #[model(readonly)]
     pub mentions: Vec<crate::mention::Mention>,
-    /// The thing it is about, when it was written by sharing something.
+    /// What it carries besides its words: the records and parts of records
+    /// it was written by sharing, the words it quotes, and the files it
+    /// posts, each in the terms of the app that keeps it.
     #[model(readonly)]
-    pub reference: Option<tilo_reference::ResourceRef>,
-    /// The record the reference lives in, when the host resolved one.
-    #[model(readonly)]
-    pub source_provider: Option<Atom>,
-    /// A file, an image or a video, by its content address.
-    #[model(readonly)]
-    pub attachment: Option<crate::model::Attachment>,
+    pub attachments: Vec<tilo_reference::Attached>,
     /// Pinned messages are listed for everyone (`pin`).
     #[model(readonly)]
     pub pinned: bool,
@@ -704,7 +759,7 @@ pub struct Message {
     #[model(readonly)]
     pub appearance: Option<ShownAs>,
     /// The window it shares live, when it was written by sharing one: the
-    /// resource is `reference`, in the record `source_provider` names.
+    /// resource is the one its first resource attachment names.
     #[model(readonly)]
     pub share: Option<WindowShare>,
 }
@@ -826,9 +881,7 @@ impl Default for Message {
             parent: None,
             reactions: ui::tilo_resource::Reactions::new(),
             mentions: Vec::new(),
-            reference: None,
-            source_provider: None,
-            attachment: None,
+            attachments: Vec::new(),
             pinned: false,
             work: None,
             appearance: None,
@@ -1009,134 +1062,6 @@ pub struct StepUpdate {
     pub why: Option<String>,
 }
 
-/// A shared thing's address, as `share-resource` takes it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct SharedReference {
-    /// The publishing app's kind tag (`word_processor.block`).
-    pub kind: String,
-    /// Its resource id.
-    pub id: String,
-    /// What the chip says.
-    pub label: String,
-    /// The part of it, when not the whole.
-    #[serde(default)]
-    pub span: Option<SharedSpan>,
-}
-
-impl SharedReference {
-    /// The address a message stores.
-    #[must_use]
-    pub fn resolved(&self) -> tilo_reference::ResourceRef {
-        let span = self.span.as_ref().map(|span| tilo_reference::Span {
-            start: span.start,
-            end: span.end,
-            unit: match span.unit.as_str() {
-                "Bytes" => tilo_reference::SpanUnit::Bytes,
-                _ => tilo_reference::SpanUnit::Chars,
-            },
-        });
-        tilo_reference::ResourceRef {
-            kind: self.kind.clone(),
-            id: self.id.clone(),
-            label: self.label.clone(),
-            span,
-        }
-    }
-}
-
-/// A span of a shared thing.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct SharedSpan {
-    pub start: usize,
-    pub end: usize,
-    /// `Chars` or `Bytes`.
-    pub unit: String,
-}
-
-/// An attachment, as `post` takes it: content another action put in the
-/// store, by its hash.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct AttachmentUpdate {
-    /// `image`, `video` or `file`.
-    pub kind: String,
-    pub name: String,
-    /// The content hash.
-    pub blob: String,
-    #[serde(default)]
-    pub width: u32,
-    #[serde(default)]
-    pub height: u32,
-    #[serde(default)]
-    pub size: u64,
-}
-
-impl AttachmentUpdate {
-    /// The attachment a message stores.
-    #[must_use]
-    pub fn attachment(&self) -> Option<crate::model::Attachment> {
-        use crate::model::Attachment;
-        Some(match self.kind.as_str() {
-            "image" => Attachment::Image {
-                name: self.name.clone(),
-                blob: self.blob.clone(),
-                w: self.width,
-                h: self.height,
-            },
-            "video" => Attachment::Video {
-                name: self.name.clone(),
-                blob: self.blob.clone(),
-                w: self.width,
-                h: self.height,
-                size: self.size,
-            },
-            "file" => Attachment::File {
-                name: self.name.clone(),
-                blob: self.blob.clone(),
-                size: self.size,
-            },
-            _ => return None,
-        })
-    }
-
-    /// `attachment` as `post` takes it.
-    #[must_use]
-    pub fn of(attachment: &crate::model::Attachment) -> Self {
-        use crate::model::Attachment;
-        match attachment {
-            Attachment::Image { name, blob, w, h } => Self {
-                kind: "image".into(),
-                name: name.clone(),
-                blob: blob.clone(),
-                width: *w,
-                height: *h,
-                size: 0,
-            },
-            Attachment::Video {
-                name,
-                blob,
-                w,
-                h,
-                size,
-            } => Self {
-                kind: "video".into(),
-                name: name.clone(),
-                blob: blob.clone(),
-                width: *w,
-                height: *h,
-                size: *size,
-            },
-            Attachment::File { name, blob, size } => Self {
-                kind: "file".into(),
-                name: name.clone(),
-                blob: blob.clone(),
-                width: 0,
-                height: 0,
-                size: *size,
-            },
-        }
-    }
-}
-
 /// Describe the file a `post-file` names where it is posted: read it from
 /// this device's content store, so every replica posts the same picture or
 /// file, of its true size, and content that is not here is refused before
@@ -1160,21 +1085,24 @@ pub(crate) fn prepare_file_post(
     let bytes =
         ui::tilo_resource::content::read_hash(&hash).map_err(|refusal| refusal.to_string())?;
     let meta = tilo_content::sniff(&bytes);
-    let kind = if meta.mime.starts_with("image/") && meta.w > 0 && meta.h > 0 {
-        "image"
-    } else {
-        "file"
-    };
     params.content.clone_from(&hash);
     params.name.clone_from(&name);
-    params.attachment = Some(AttachmentUpdate {
-        kind: kind.into(),
-        name,
-        blob: hash,
-        width: meta.w,
-        height: meta.h,
-        size: meta.len,
-    });
+    params.attachment = Some(
+        if meta.mime.starts_with("image/") && meta.w > 0 && meta.h > 0 {
+            tilo_reference::Attached::Image {
+                name,
+                blob: hash,
+                w: meta.w,
+                h: meta.h,
+            }
+        } else {
+            tilo_reference::Attached::File {
+                name,
+                blob: hash,
+                size: meta.len,
+            }
+        },
+    );
     Ok(())
 }
 
@@ -1189,41 +1117,6 @@ fn author(cx: &ActionCx) -> Result<String, Refusal> {
 
 fn seconds(cx: &ActionCx) -> i64 {
     cx.now_ms().div_euclid(1000)
-}
-
-pub(crate) fn valid_attachment(attachment: &crate::model::Attachment) -> bool {
-    use crate::model::Attachment;
-    let valid_name = |name: &str| {
-        !name.is_empty()
-            && name.len() <= MAX_ATTACHMENT_NAME_BYTES
-            && !name.chars().any(char::is_control)
-    };
-    match attachment {
-        Attachment::Image { name, blob, w, h } => {
-            valid_name(name)
-                && tilo_content::valid_hash(blob)
-                && (1..=MAX_ATTACHMENT_DIMENSION).contains(w)
-                && (1..=MAX_ATTACHMENT_DIMENSION).contains(h)
-        }
-        Attachment::Video {
-            name,
-            blob,
-            w,
-            h,
-            size,
-        } => {
-            valid_name(name)
-                && tilo_content::valid_hash(blob)
-                && (1..=MAX_ATTACHMENT_BYTES).contains(size)
-                && *w <= MAX_ATTACHMENT_DIMENSION
-                && *h <= MAX_ATTACHMENT_DIMENSION
-        }
-        Attachment::File { name, blob, size } => {
-            valid_name(name)
-                && tilo_content::valid_hash(blob)
-                && (1..=MAX_ATTACHMENT_BYTES).contains(size)
-        }
-    }
 }
 
 /// A portable address, never copied content, a local path or an access grant.
@@ -1243,21 +1136,89 @@ pub(crate) fn valid_reference(reference: &tilo_reference::ResourceRef) -> bool {
         && reference.span.is_none_or(|span| span.start <= span.end)
 }
 
-/// An existing typed record provider. The host resolves and authorizes it;
-/// storing this address neither admits a collaborator nor grants Read.
-pub(crate) fn valid_source_provider(provider: &str) -> bool {
-    let Some(rest) = provider.strip_prefix("record:") else {
-        return false;
+/// What a message may carry: a bounded address or part of one, words worth
+/// reading, or a file this workspace's store holds.
+pub(crate) fn valid_attached(attached: &tilo_reference::Attached) -> bool {
+    use tilo_reference::Attached;
+    let valid_name = |name: &str| {
+        !name.is_empty()
+            && name.len() <= MAX_ATTACHMENT_NAME_BYTES
+            && !name.chars().any(char::is_control)
     };
-    let Some((app, _record)) = rest.split_once(':') else {
-        return false;
+    let bytes = |size: u64| (1..=MAX_ATTACHMENT_BYTES).contains(&size);
+    match attached {
+        Attached::Resource { at, anchor, label } => {
+            valid_resource_at(at) && valid_anchor(anchor.as_ref()) && label.len() <= 512
+        }
+        Attached::Text { text, from } => {
+            !text.trim().is_empty()
+                && text.len() <= MAX_MESSAGE_TEXT_BYTES
+                && from.as_ref().is_none_or(valid_resource_at)
+        }
+        Attached::Image { name, blob, w, h } => {
+            valid_name(name)
+                && tilo_content::valid_hash(blob)
+                && (1..=MAX_ATTACHMENT_DIMENSION).contains(w)
+                && (1..=MAX_ATTACHMENT_DIMENSION).contains(h)
+        }
+        Attached::Video {
+            name,
+            blob,
+            w,
+            h,
+            size,
+        } => {
+            valid_name(name)
+                && tilo_content::valid_hash(blob)
+                && bytes(*size)
+                && *w <= MAX_ATTACHMENT_DIMENSION
+                && *h <= MAX_ATTACHMENT_DIMENSION
+        }
+        Attached::File { name, blob, size } => {
+            valid_name(name) && tilo_content::valid_hash(blob) && bytes(*size)
+        }
+    }
+}
+
+/// The ids of the items an anchor names, and the path and cursors of a text
+/// run: the item ids an app publishes, which are bounded like a place's.
+fn valid_anchor(anchor: Option<&tilo_reference::Anchor>) -> bool {
+    use tilo_reference::Anchor;
+    let item = |id: &str| !id.is_empty() && id.len() <= 2048 && !id.chars().any(char::is_control);
+    match anchor {
+        None => true,
+        Some(Anchor::Item { id }) => item(id),
+        Some(Anchor::Items { ids }) => {
+            !ids.is_empty() && ids.len() <= 256 && ids.iter().all(|id| item(id))
+        }
+        Some(Anchor::Text { path, start, end }) => {
+            path.len() <= 2048
+                && ui::automerge::Cursor::try_from(start.as_str()).is_ok()
+                && ui::automerge::Cursor::try_from(end.as_str()).is_ok()
+        }
+    }
+}
+
+/// An existing record of an existing app, and the resource inside it. The
+/// host resolves and authorizes it; storing this address neither admits a
+/// collaborator nor grants Read.
+pub(crate) fn valid_resource_at(at: &tilo_reference::ResourceAt) -> bool {
+    let field = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 2048
+            && !value.chars().any(char::is_control)
+            && !value.contains("://")
+            && !value.contains('/')
+            && !value.contains('\\')
     };
-    provider.len() <= 2048
-        && !app.is_empty()
-        && !provider.chars().any(char::is_control)
-        && !provider.contains("://")
-        && !provider.contains('/')
-        && !provider.contains('\\')
+    field(&at.app) && at.record.as_deref().is_none_or(field) && valid_reference(&at.reference)
+}
+
+/// The app and record a `record:<app>:<record>` provider names, its record
+/// empty for the app's primary one: `None` when it names neither.
+pub(crate) fn provider_record(provider: &str) -> Option<(&str, &str)> {
+    let (app, record) = provider.strip_prefix("record:")?.split_once(':')?;
+    (!app.is_empty()).then_some((app, record))
 }
 
 /// The id of `agent`'s reply to the message `summons`: the same on every
@@ -1279,9 +1240,8 @@ pub(crate) struct Posting {
     pub text: String,
     pub body: Vec<ClipBlock>,
     pub parent: Option<Id>,
-    pub attachment: Option<crate::model::Attachment>,
-    pub reference: Option<tilo_reference::ResourceRef>,
-    pub source_provider: Option<String>,
+    /// What it carries besides its words.
+    pub attachments: Vec<tilo_reference::Attached>,
     pub appearance: Option<tilo_actions::Appearance>,
     pub share: Option<WindowShare>,
     /// Who the text refers to, as the chat record resolved it where the

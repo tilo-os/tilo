@@ -29,7 +29,7 @@ use ui::widget::{
 };
 
 use crate::app::{ChatApp, Hit, MenuTarget};
-use crate::model::{Attachment, Message, Presence};
+use crate::model::{Message, Presence};
 use crate::paint::{band_at_least, elide, line_of, push_clip};
 
 /// How much of the participant's colour a mention *of you* keeps when it is
@@ -637,20 +637,24 @@ fn day_label(ts: i64) -> String {
 }
 
 /// The icon that says what kind of file an attachment is.
-fn attachment_icon(att: &Attachment) -> Icon {
+fn attachment_icon(att: &tilo_reference::Attached) -> Icon {
     match att {
-        Attachment::Image { .. } => Icon::Image,
-        Attachment::Video { .. } => Icon::Film,
-        Attachment::File { .. } => Icon::FileText,
+        tilo_reference::Attached::Image { .. } => Icon::Image,
+        tilo_reference::Attached::Video { .. } => Icon::Film,
+        tilo_reference::Attached::File { .. }
+        | tilo_reference::Attached::Resource { .. }
+        | tilo_reference::Attached::Text { .. } => Icon::FileText,
     }
 }
 
 /// The facts a media card lists under its name: an image's pixel size, a
 /// video's file size.
-fn media_meta(att: &Attachment) -> Vec<String> {
+fn media_meta(att: &tilo_reference::Attached) -> Vec<String> {
     match att {
-        Attachment::Image { w, h, .. } if *w > 0 && *h > 0 => vec![format!("{w} × {h}")],
-        Attachment::Video { size, .. } => vec![format_bytes(*size)],
+        tilo_reference::Attached::Image { w, h, .. } if *w > 0 && *h > 0 => {
+            vec![format!("{w} × {h}")]
+        }
+        tilo_reference::Attached::Video { size, .. } => vec![format_bytes(*size)],
         _ => Vec::new(),
     }
 }
@@ -659,15 +663,18 @@ fn media_meta(att: &Attachment) -> Vec<String> {
 /// wide, and the width it is laid out at: the picture's own shape, never
 /// taller than a regular media card.
 fn media_face<'a>(
-    att: &'a Attachment,
+    att: &'a tilo_reference::Attached,
     art: MediaArt<'a>,
     meta: &'a [String],
     max_w: f64,
     theme: &Theme,
 ) -> (f64, MediaCardFace<'a>) {
     let (w, h) = match att {
-        Attachment::Image { w, h, .. } | Attachment::Video { w, h, .. } => (*w, *h),
-        Attachment::File { .. } => (0, 0),
+        tilo_reference::Attached::Image { w, h, .. }
+        | tilo_reference::Attached::Video { w, h, .. } => (*w, *h),
+        tilo_reference::Attached::File { .. }
+        | tilo_reference::Attached::Resource { .. }
+        | tilo_reference::Attached::Text { .. } => (0, 0),
     };
     let aspect = if w > 0 && h > 0 {
         MediaAspect::Ratio(f64::from(w) / f64::from(h))
@@ -676,7 +683,7 @@ fn media_face<'a>(
     };
     let max_h = MediaSize::Regular.extent(theme);
     let width = (max_h * aspect.ratio()).min(max_w).min(2.0 * max_h);
-    let mut face = MediaCardFace::new(art).aspect(aspect).title(att.name());
+    let mut face = MediaCardFace::new(art).aspect(aspect).title(att.label());
     for line in meta {
         face = face.meta(line);
     }
@@ -861,7 +868,6 @@ mod tests {
     use super::{RowM, TimelineItem, media_face, media_meta};
     use crate::model::{
         AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
-        Attachment,
     };
     use ui::theme::Theme;
     use ui::widget::{MediaArt, MediaSize};
@@ -897,9 +903,7 @@ mod tests {
             parent: None,
             reactions: Vec::new(),
             mentions: Vec::new(),
-            reference: None,
-            source_provider: None,
-            attachment: None,
+            attachments: Vec::new(),
             pinned: false,
             work: None,
             appearance: None,
@@ -930,7 +934,7 @@ mod tests {
     fn media_cards_keep_the_picture_shape_inside_a_regular_card() {
         let theme = Theme::dark();
         let max_h = MediaSize::Regular.extent(&theme);
-        let wide = Attachment::Image {
+        let wide = tilo_reference::Attached::Image {
             name: "wide.png".into(),
             blob: "sha256:image".into(),
             w: 800,
@@ -946,7 +950,7 @@ mod tests {
         let (narrow, _) = media_face(&wide, MediaArt::Placeholder, &meta, 120.0, &theme);
         assert!((narrow - 120.0).abs() < 1e-6, "never wider than its column");
 
-        let unknown_video = Attachment::Video {
+        let unknown_video = tilo_reference::Attached::Video {
             name: "clip.mp4".into(),
             blob: "sha256:video".into(),
             w: 0,
@@ -963,7 +967,7 @@ mod tests {
 
     #[test]
     fn a_file_card_names_the_file_and_never_a_path() {
-        let file = Attachment::File {
+        let file = tilo_reference::Attached::File {
             name: "transport-notes.md".into(),
             blob: "sha256:file".into(),
             size: 18_944,
