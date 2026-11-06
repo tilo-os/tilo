@@ -1,11 +1,9 @@
 //! What the operation log promises: every device holding the same operations
 //! holds the same membership, an operation its author could not make changes
 //! nothing, and the rows are the operations' projection.
-use std::collections::BTreeMap;
-
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use tilo_action_policy::{
-    Answer, Grant, GrantId, KindSet, Role, Subject, TreePath, WorkspacePolicy,
+    Answer, Change, Grant, GrantId, KindSet, Role, Subject, TreePath, WorkspacePolicy,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -79,24 +77,36 @@ fn sorted(membership: &WorkspacePolicy) -> WorkspacePolicy {
     membership
 }
 
-/// What `cert` holds after `membership`: the operation replay is asked to
-/// authorise.
+/// What `cert`'s device wrote: `changes`, in order, on top of `parents`.
 fn project(
     cert: &DeviceCert,
     key: &ed25519_dalek::SigningKey,
     parents: Vec<OpId>,
-    membership: &WorkspacePolicy,
+    changes: Vec<Change>,
 ) -> SignedMembershipOp {
     SignedMembershipOp::signed(
         cert,
         key,
         parents,
         1_700_000_000_000_000_000,
-        MembershipOpCommand::Project {
-            membership: Box::new(Membership::of(membership)),
-        },
+        MembershipOpCommand::Project { changes },
     )
     .unwrap()
+}
+
+/// The one change of adding `who` as a `role`.
+fn adding(who: &DeviceCert, role: Role) -> Vec<Change> {
+    vec![Change::AddMember {
+        person: person(who),
+        role,
+    }]
+}
+
+/// The one change of taking `who` out.
+fn removing(who: &DeviceCert) -> Vec<Change> {
+    vec![Change::RemoveMember {
+        person: person(who),
+    }]
 }
 
 fn genesis(
@@ -116,17 +126,14 @@ fn genesis(
 
 /// A log-holding document: `doc` with `ops` written into it in the order given.
 fn holding(doc: &AutoCommit, ops: &[SignedMembershipOp]) -> AutoCommit {
-    let mut held = doc.clone();
+    // A device writes under its own actor, so two devices that each hold part
+    // of the log can exchange their changes.
+    let mut seed = doc.clone();
+    let mut held = seed.fork();
     for op in ops {
         legacy::put_op(&mut held, op).unwrap();
     }
     held
-}
-
-fn with_role(membership: &WorkspacePolicy, who: &DeviceCert, role: Role) -> WorkspacePolicy {
-    let mut next = membership.clone();
-    next.members.insert(person(who), role);
-    next
 }
 
 #[test]
@@ -200,19 +207,11 @@ fn every_device_reaches_the_same_membership_from_the_same_operations() {
     let genesis = genesis(&owner, &owner_key, &mut doc);
     let start = holding(&doc, std::slice::from_ref(&genesis));
     let id = genesis.id().unwrap();
-    let base = replay(&start, WORKSPACE);
 
     // The administrator admits the guest; the owner, who has not seen that,
     // removes the administrator. Both name the genesis as their parent.
-    let admits_guest = project(
-        &admin,
-        &admin_key,
-        vec![id],
-        &with_role(&base, &guest, Role::Viewer),
-    );
-    let mut without_admin = base;
-    without_admin.members.remove(&person(&admin));
-    let remove = project(&owner, &owner_key, vec![id], &without_admin);
+    let admits_guest = project(&admin, &admin_key, vec![id], adding(&guest, Role::Viewer));
+    let remove = project(&owner, &owner_key, vec![id], removing(&admin));
 
     let forwards = holding(&start, &[admits_guest.clone(), remove.clone()]);
     let backwards = holding(&start, &[remove, admits_guest]);
@@ -224,6 +223,171 @@ fn every_device_reaches_the_same_membership_from_the_same_operations() {
     assert_eq!(reached.members.get(&person(&admin)), None);
     assert!(!reached.members.contains_key(&person(&guest)));
     let _ = guest_key;
+}
+
+/// A workspace document's membership rows, as stored: the bytes every device
+/// that projects the same membership writes.
+fn projected_rows(doc: &AutoCommit) -> Vec<(String, Vec<u8>)> {
+    let mut rows = Vec::new();
+    for key in ["members", "members_joined_v1", "grants"] {
+        let held = map(doc, key);
+        for name in doc.keys(&held) {
+            let Some((automerge::Value::Scalar(value), _)) = doc.get(&held, name.as_str()).unwrap()
+            else {
+                panic!("a row is a scalar");
+            };
+            let automerge::ScalarValue::Bytes(bytes) = value.as_ref() else {
+                panic!("a row is bytes");
+            };
+            rows.push((format!("{key}/{name}"), bytes.clone()));
+        }
+    }
+    rows
+}
+
+/// `doc` settled, and the rows it projects.
+fn settled(doc: &AutoCommit) -> (AutoCommit, Vec<(String, Vec<u8>)>) {
+    let mut doc = doc.clone();
+    settle(&mut doc, WORKSPACE).unwrap();
+    let rows = projected_rows(&doc);
+    (doc, rows)
+}
+
+/// Every device that holds the same operations holds the same membership, in
+/// whatever order the operations arrived: two owners removing each other at
+/// the same time resolve one way on every device, and the operation that does
+/// not take is kept with no effect.
+#[test]
+fn two_owners_removing_each_other_reach_the_same_membership_in_any_order() {
+    let (owner_key, owner) = device(1);
+    let (co_owner_key, co_owner) = device(2);
+    let mut doc = rows(&owner, &[(&co_owner, Role::Owner)], Vec::new());
+    let genesis = genesis(&owner, &owner_key, &mut doc);
+    let start = holding(&doc, std::slice::from_ref(&genesis));
+    let id = genesis.id().unwrap();
+
+    // The owner removes the co-owner; the co-owner removes the owner.
+    let remove_co_owner = project(&owner, &owner_key, vec![id], removing(&co_owner));
+    let remove_owner = project(&co_owner, &co_owner_key, vec![id], removing(&owner));
+
+    let forwards = holding(&start, &[remove_co_owner.clone(), remove_owner.clone()]);
+    let backwards = holding(&start, &[remove_owner, remove_co_owner]);
+    assert_eq!(replay(&forwards, WORKSPACE), replay(&backwards, WORKSPACE));
+    let reached = replay(&forwards, WORKSPACE);
+    assert!(reached.is_owner(&person(&owner)), "the owner stays");
+    assert_eq!(reached.role_of(&person(&co_owner)), None);
+    assert_eq!(ops(&forwards).len(), 3, "the refused operation is kept");
+
+    let (_, forwards_rows) = settled(&forwards);
+    let (_, backwards_rows) = settled(&backwards);
+    assert_eq!(
+        forwards_rows, backwards_rows,
+        "the rows every device writes"
+    );
+}
+
+/// A role change racing the removal of the member who made it: the owner's
+/// operation is applied first wherever the two arrive, so the role change names
+/// a membership it was not made in and changes nothing, on every device.
+#[test]
+fn a_role_change_racing_a_removal_reaches_the_same_membership_in_any_order() {
+    let (owner_key, owner) = device(1);
+    let (admin_key, admin) = device(2);
+    let (_, viewer) = device(3);
+    let mut doc = rows(
+        &owner,
+        &[(&admin, Role::Moderator), (&viewer, Role::Viewer)],
+        vec![admin_grant(&owner, &admin)],
+    );
+    let genesis = genesis(&owner, &owner_key, &mut doc);
+    let start = holding(&doc, std::slice::from_ref(&genesis));
+    let id = genesis.id().unwrap();
+
+    let promote = project(
+        &admin,
+        &admin_key,
+        vec![id],
+        vec![Change::SetRole {
+            person: person(&viewer),
+            role: Role::Commenter,
+        }],
+    );
+    let remove = project(&owner, &owner_key, vec![id], removing(&admin));
+
+    let forwards = holding(&start, &[promote.clone(), remove.clone()]);
+    let backwards = holding(&start, &[remove, promote]);
+    assert_eq!(replay(&forwards, WORKSPACE), replay(&backwards, WORKSPACE));
+    let reached = replay(&forwards, WORKSPACE);
+    assert_eq!(reached.role_of(&person(&admin)), None);
+    assert_eq!(
+        reached.role_of(&person(&viewer)),
+        Some(Role::Viewer),
+        "the removed administrator's role change changed nothing"
+    );
+    let (_, forwards_rows) = settled(&forwards);
+    let (_, backwards_rows) = settled(&backwards);
+    assert_eq!(forwards_rows, backwards_rows);
+}
+
+/// Two administrators inviting at the same time both admit, and neither
+/// operation takes the other's away; when both invite the same person, both
+/// devices admit them once, by the operation the order reaches first.
+#[test]
+fn two_admins_inviting_at_the_same_time_both_admit() {
+    let (owner_key, owner) = device(1);
+    let (first_key, first) = device(2);
+    let (second_key, second) = device(3);
+    let (_, guest_a) = device(4);
+    let (_, guest_b) = device(5);
+    let mut doc = rows(
+        &owner,
+        &[(&first, Role::Editor), (&second, Role::Editor)],
+        vec![admin_grant(&owner, &first), admin_grant(&owner, &second)],
+    );
+    let genesis = genesis(&owner, &owner_key, &mut doc);
+    let start = holding(&doc, std::slice::from_ref(&genesis));
+    let id = genesis.id().unwrap();
+
+    let invites_a = project(
+        &first,
+        &first_key,
+        vec![id],
+        adding(&guest_a, Role::Commenter),
+    );
+    let invites_b = project(
+        &second,
+        &second_key,
+        vec![id],
+        adding(&guest_b, Role::Commenter),
+    );
+    let forwards = holding(&start, &[invites_a.clone(), invites_b.clone()]);
+    let backwards = holding(&start, &[invites_b, invites_a]);
+    for held in [&forwards, &backwards] {
+        let reached = replay(held, WORKSPACE);
+        assert_eq!(reached.role_of(&person(&guest_a)), Some(Role::Commenter));
+        assert_eq!(reached.role_of(&person(&guest_b)), Some(Role::Commenter));
+    }
+
+    // The same guest, invited by both: admitted once. Which invitation is
+    // reached first is the same on every device, so the role they hold is too.
+    let as_editor = project(&first, &first_key, vec![id], adding(&guest_a, Role::Editor));
+    let as_commenter = project(
+        &second,
+        &second_key,
+        vec![id],
+        adding(&guest_a, Role::Commenter),
+    );
+    let forwards = holding(&start, &[as_editor.clone(), as_commenter.clone()]);
+    let backwards = holding(&start, &[as_commenter, as_editor]);
+    assert_eq!(replay(&forwards, WORKSPACE), replay(&backwards, WORKSPACE));
+    let joined = replay(&forwards, WORKSPACE);
+    assert!(
+        joined.role_of(&person(&guest_a)).is_some(),
+        "the guest is admitted once"
+    );
+    let (_, forwards_rows) = settled(&forwards);
+    let (_, backwards_rows) = settled(&backwards);
+    assert_eq!(forwards_rows, backwards_rows);
 }
 
 /// A member removed while they were writing an operation keeps that operation
@@ -243,18 +407,15 @@ fn an_operation_written_after_its_author_lost_the_grant_has_no_effect() {
     let start = holding(&doc, std::slice::from_ref(&genesis));
     let genesis_id = genesis.id().unwrap();
     let base = replay(&start, WORKSPACE);
+    let _ = base;
 
     let admits_guest = project(
         &admin,
         &admin_key,
         vec![genesis_id],
-        &with_role(&base, &guest, Role::Viewer),
+        adding(&guest, Role::Viewer),
     );
-    let remove = project(&owner, &owner_key, vec![genesis_id], &{
-        let mut next = base;
-        next.members.remove(&person(&admin));
-        next
-    });
+    let remove = project(&owner, &owner_key, vec![genesis_id], removing(&admin));
     let held = holding(&start, &[admits_guest.clone(), remove]);
     let reached = replay(&held, WORKSPACE);
     assert!(!reached.members.contains_key(&person(&guest)));
@@ -265,17 +426,17 @@ fn an_operation_written_after_its_author_lost_the_grant_has_no_effect() {
         &admin,
         &admin_key,
         vec![admits_guest.id().unwrap()],
-        &with_role(&reached, &guest, Role::Editor),
+        adding(&(device(4).1), Role::Editor),
     );
     let held = holding(&held, &[later]);
     assert_eq!(replay(&held, WORKSPACE), reached);
     let _ = guest_key;
 }
 
-/// A member who may not grant themself anything writes an operation that does:
-/// it is held, and it changes nothing, on every device.
+/// A member who may not grant themself anything writes operations that do:
+/// they are held, and they change nothing, on every device.
 #[test]
-fn a_projection_its_author_could_not_make_changes_nothing() {
+fn an_operation_its_author_could_not_make_changes_nothing() {
     let (owner_key, owner) = device(1);
     let (viewer_key, viewer) = device(2);
     let mut doc = rows(&owner, &[(&viewer, Role::Viewer)], Vec::new());
@@ -286,29 +447,87 @@ fn a_projection_its_author_could_not_make_changes_nothing() {
 
     // A viewer promoting themself to the owner (structural), and to a
     // moderator (out of their rank).
-    let mut as_owner = base.clone();
-    as_owner.members.insert(person(&viewer), Role::Owner);
-    let mut as_moderator = base.clone();
-    as_moderator
-        .members
-        .insert(person(&viewer), Role::Moderator);
+    let as_owner = vec![Change::SetRole {
+        person: person(&viewer),
+        role: Role::Owner,
+    }];
+    let as_moderator = vec![Change::SetRole {
+        person: person(&viewer),
+        role: Role::Moderator,
+    }];
     let held = holding(
         &start,
         &[
-            project(&viewer, &viewer_key, vec![genesis.id().unwrap()], &as_owner),
+            project(&viewer, &viewer_key, vec![genesis.id().unwrap()], as_owner),
             project(
                 &viewer,
                 &viewer_key,
                 vec![genesis.id().unwrap()],
-                &as_moderator,
+                as_moderator,
             ),
         ],
     );
     assert_eq!(replay(&held, WORKSPACE), base);
 }
 
+/// An operation is all of its changes or none: an author cannot put an allowed
+/// change in front of one its grants do not reach, and have the first stand.
+#[test]
+fn one_change_its_author_could_not_make_takes_the_whole_operation() {
+    let (owner_key, owner) = device(1);
+    let (editor_key, editor) = device(2);
+    let (_, guest) = device(3);
+    let mut doc = rows(&owner, &[(&editor, Role::Editor)], Vec::new());
+    let genesis = genesis(&owner, &owner_key, &mut doc);
+    let start = holding(&doc, std::slice::from_ref(&genesis));
+    let base = replay(&start, WORKSPACE);
+    let held = holding(
+        &start,
+        &[project(
+            &editor,
+            &editor_key,
+            vec![genesis.id().unwrap()],
+            // An Editor may not admit anyone...
+            adding(&guest, Role::Viewer),
+        )],
+    );
+    assert_eq!(
+        replay(&held, WORKSPACE),
+        base,
+        "the operation changes nothing"
+    );
+    // ...nor share the workspace it is in, so nothing it writes after that
+    // stands either.
+    let own_grant = Grant::new(
+        "app",
+        Subject::Person(person(&editor)),
+        TreePath::workspace(WORKSPACE),
+        KindSet::READ,
+        Answer::Allow,
+        Subject::Person(person(&owner)),
+    );
+    let mut steps = adding(&guest, Role::Viewer);
+    steps.push(Change::Grant(own_grant.clone()));
+    let held = holding(
+        &start,
+        &[project(
+            &editor,
+            &editor_key,
+            vec![genesis.id().unwrap()],
+            steps,
+        )],
+    );
+    assert_eq!(replay(&held, WORKSPACE), base);
+    assert!(
+        !replay(&held, WORKSPACE)
+            .grants
+            .iter()
+            .any(|g| g.id == own_grant.id)
+    );
+}
+
 /// A grant changes membership without touching a member row: the grant's own
-/// rows are what the operation carries, and removing it takes the authority
+/// steps are what the operation carries, and removing it takes the authority
 /// back.
 #[test]
 fn grants_are_the_operations_they_name() {
@@ -326,17 +545,37 @@ fn grants_are_the_operations_they_name() {
         Answer::Allow,
         Subject::Person(person(&owner)),
     );
-    let mut granted = base.clone();
-    granted.grants.push(grant);
-    let op = project(&member, &member_key, vec![genesis.id().unwrap()], &granted);
-    let held = holding(&start, &[op]);
+    let op = project(
+        &member,
+        &member_key,
+        vec![genesis.id().unwrap()],
+        vec![Change::Grant(grant.clone())],
+    );
+    let held = holding(&start, &[op.clone()]);
     // The member may not give itself a grant: only the owner and those the
     // grant's reach allows hand out authority.
     assert_eq!(replay(&held, WORKSPACE), base);
-    let op = project(&owner, &owner_key, vec![genesis.id().unwrap()], &granted);
-    let held = holding(&start, &[op]);
-    assert_eq!(replay(&held, WORKSPACE), sorted(&granted));
-    assert_eq!(replay(&held, WORKSPACE).grants.len(), base.grants.len() + 1);
+    let op = project(
+        &owner,
+        &owner_key,
+        vec![genesis.id().unwrap()],
+        vec![Change::Grant(grant.clone())],
+    );
+    let held = holding(&start, &[op.clone()]);
+    let granted = replay(&held, WORKSPACE);
+    assert!(granted.grants.iter().any(|held| held.id == grant.id));
+    assert_eq!(granted.grants.len(), base.grants.len() + 1);
+    assert_eq!(granted.members, base.members, "a grant is no member row");
+
+    // And taking it back leaves the membership it named as it was.
+    let revoke = project(
+        &owner,
+        &owner_key,
+        vec![op.id().unwrap()],
+        vec![Change::Revoke(grant.id.clone())],
+    );
+    let held = holding(&held, &[revoke]);
+    assert_eq!(replay(&held, WORKSPACE), base);
 }
 
 /// The rows are the projection of the operations: settling a document writes
@@ -408,22 +647,29 @@ fn held_operations_are_kept_and_new_ones_prove_their_writer() {
 #[test]
 fn an_operation_is_its_bytes() {
     let (key, cert) = device(1);
-    let mut membership = WorkspacePolicy {
-        workspace: WORKSPACE.to_owned(),
-        owner: Some(person(&cert)),
-        members: BTreeMap::from([(hex::encode([7; 32]), Role::Editor)]),
-        joined: BTreeMap::from([(hex::encode([7; 32]), 1_700_000_000_000)]),
-        grants: Vec::new(),
-    };
-    membership.grants.push(Grant::new(
-        "g",
-        Subject::Person(person(&cert)),
-        TreePath::workspace(WORKSPACE),
-        KindSet::READ,
-        Answer::Allow,
-        Subject::Person(person(&cert)),
-    ));
-    let op = project(&cert, &key, Vec::new(), &membership);
+    let changes = vec![
+        Change::AddMember {
+            person: person(&cert),
+            role: Role::Owner,
+        },
+        Change::Grant(Grant::new(
+            "g",
+            Subject::Person(person(&cert)),
+            TreePath::workspace(WORKSPACE),
+            KindSet::READ,
+            Answer::Allow,
+            Subject::Person(person(&cert)),
+        )),
+        Change::SetRole {
+            person: person(&cert),
+            role: Role::Editor,
+        },
+        Change::RemoveMember {
+            person: person(&cert),
+        },
+        Change::Revoke(GrantId::new("g")),
+    ];
+    let op = project(&cert, &key, Vec::new(), changes.clone());
     let bytes = op.to_bytes().unwrap();
     assert_eq!(
         hex::encode(blake3::hash(&bytes).as_bytes()),
@@ -431,11 +677,10 @@ fn an_operation_is_its_bytes() {
     );
     let read = SignedMembershipOp::verified(&bytes).unwrap();
     assert_eq!(read, op);
-    let MembershipOpCommand::Project { membership: read } = &read.command else {
+    let MembershipOpCommand::Project { changes: read } = &read.command else {
         panic!("a projection reads back as a projection");
     };
-    assert_eq!(read.policy(), membership);
-    let _ = GrantId::new("g");
+    assert_eq!(read, &changes, "a change is its bytes, in its order");
 }
 
 /// A workspace is more than its members: bots, their installations, the people
@@ -657,4 +902,134 @@ fn a_lounge_shaped_workspace_starts_from_its_rows_unchanged() {
         started.get(ROOT, "hosts_v1").unwrap(),
         doc.get(ROOT, "hosts_v1").unwrap()
     );
+}
+
+/// The property the replay is for: the operations a device holds decide the
+/// membership, and nothing else — not the order they arrived in, not which of
+/// them came from the same device, not how two devices' operations were split
+/// between them before they synced. Every replica holding the same operations
+/// writes the same rows, byte for byte.
+mod arrival {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// The devices a generated log's operations are written by: the owner, an
+    /// administrator, an editor and a viewer.
+    const AUTHORS: u8 = 4;
+    /// The changes a generated operation's author makes.
+    const CHANGES: u8 = 6;
+
+    fn change(pick: u8) -> Vec<Change> {
+        let guest = device(6).1;
+        let other = device(7).1;
+        let editor = device(2).1;
+        match pick {
+            0 => adding(&guest, Role::Commenter),
+            1 => adding(&other, Role::Viewer),
+            2 => removing(&guest),
+            3 => vec![Change::SetRole {
+                person: person(&guest),
+                role: Role::Editor,
+            }],
+            4 => vec![Change::SetRole {
+                person: person(&editor),
+                role: Role::Commenter,
+            }],
+            _ => removing(&other),
+        }
+    }
+
+    /// A workspace with the four authors in it, and the operations built for
+    /// the plan: each by its author, on the genesis or on the operation before
+    /// it, so any order they arrive in is one a device can reach.
+    fn build(plan: &[(u8, u8, u8)]) -> (AutoCommit, Vec<SignedMembershipOp>) {
+        let (owner_key, owner) = device(1);
+        let (admin_key, admin) = device(2);
+        let (editor_key, editor) = device(3);
+        let (viewer_key, viewer) = device(4);
+        let keys = [&owner_key, &admin_key, &editor_key, &viewer_key];
+        let mut doc = rows(
+            &owner,
+            &[
+                (&admin, Role::Moderator),
+                (&editor, Role::Editor),
+                (&viewer, Role::Viewer),
+            ],
+            vec![admin_grant(&owner, &admin)],
+        );
+        let genesis = genesis(&owner, &owner_key, &mut doc);
+        let start = holding(&doc, std::slice::from_ref(&genesis));
+        let mut ops = Vec::new();
+        for (index, (author, on_parent, step)) in plan.iter().enumerate() {
+            let (_, cert) = device(*author + 1);
+            let parent = if index > 0 && *on_parent == 0 {
+                ops.last().map(|op: &SignedMembershipOp| op.id().unwrap())
+            } else {
+                None
+            };
+            ops.push(project(
+                &cert,
+                keys[usize::from(*author)],
+                parent.into_iter().collect(),
+                change(*step),
+            ));
+        }
+        (start, ops)
+    }
+
+    /// `ops` put into `start` in `order`, settled, and the rows they project.
+    fn arrived(
+        start: &AutoCommit,
+        ops: &[SignedMembershipOp],
+        order: &[usize],
+    ) -> Vec<(String, Vec<u8>)> {
+        let ordered: Vec<SignedMembershipOp> = order.iter().map(|at| ops[*at].clone()).collect();
+        let (doc, rows) = settled(&holding(start, &ordered));
+        assert_eq!(
+            replay(&doc, WORKSPACE),
+            replay(&holding(start, ops), WORKSPACE),
+            "arrival order {order:?}"
+        );
+        rows
+    }
+
+    fn shuffled(length: usize, bytes: &[u8]) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..length).collect();
+        for (turn, byte) in bytes.iter().enumerate() {
+            let at = usize::from(*byte) % length;
+            let to = length.saturating_sub(1);
+            order.swap(at, turn % to.max(1));
+        }
+        order
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        #[test]
+        fn the_order_operations_arrive_in_never_changes_what_every_device_holds(
+            plan in proptest::collection::vec((0..AUTHORS, 0..3u8, 0..CHANGES), 1..=5),
+            orders in proptest::collection::vec(any::<u8>(), 64),
+        ) {
+            let (mut start, ops) = build(&plan);
+            let expected = arrived(&start, &ops, &(0..ops.len()).collect::<Vec<_>>());
+            for turn in 0..3 {
+                let seed = &orders[turn * 16..(turn + 1) * 16];
+                let order = shuffled(ops.len(), seed);
+                prop_assert_eq!(arrived(&start, &ops, &order), expected.clone());
+            }
+
+            // Two devices that received half each and then synced hold what one
+            // device that received all of them holds.
+            let half = ops.len() / 2;
+            let first = holding(&start, &ops[..half]);
+            let mut second = holding(&start, &ops[half..]);
+            let mut synced = first;
+            let changes = second.get_changes(&start.get_heads());
+            tilo_automerge::ApplyIncoming::apply_incoming(&mut synced, changes).unwrap();
+            let (synced, rows) = settled(&synced);
+            prop_assert_eq!(replay(&synced, WORKSPACE), replay(&holding(&start, &ops), WORKSPACE));
+            prop_assert_eq!(rows, expected);
+        }
+    }
 }

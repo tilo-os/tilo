@@ -2711,3 +2711,201 @@ fn a_record_covered_as_empty_is_held_from_its_coverage() {
         "the member's write lands on the record"
     );
 }
+
+/// A frame `author` signs as `key`: one change to its record, as a device
+/// publishes it.
+fn frame(author: &mut StatePeer, key: &SigningKey, now: SystemTime, name: &str) -> NeighbourMsg {
+    let mut doc = AutoCommit::load(&author.document("test.app", "tab:1").unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        key.verifying_key().to_bytes().to_vec(),
+    ));
+    let heads = doc.get_heads();
+    doc.put(ROOT, name, name).unwrap();
+    doc.commit_edit("fixture", "fixture");
+    author
+        .publication_mut()
+        .publish_incremental("test.app", "tab:1", doc.save_after(&heads), key, now)
+        .unwrap()
+}
+
+/// A guest of the workspace, admitted through an invitation the owner's device
+/// issued: their root and the device key it signs.
+fn admitted_guest(
+    peer: &mut StatePeer,
+    authority_key: &SigningKey,
+    now: SystemTime,
+) -> (SigningKey, DeviceCert) {
+    use crate::join::{
+        InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof,
+        verify_join_proof,
+    };
+    let now_ns = ns_since_epoch(now);
+    let root = SigningKey::from_bytes(&[61; 32]);
+    let key = SigningKey::from_bytes(&[62; 32]);
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "Guest".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut cert, &root).unwrap();
+    let signed = issue_invitation(
+        InviteGrant {
+            workspace_id: 7,
+            room: peer.workspace_id().into(),
+            issuer: peer.owner_certificates()[0].clone(),
+            role: MemberRole::Editor,
+            nonce: [63; 16],
+            recipient_user_public_key: Some(cert.user_public_key),
+            invitee_name: Some("Guest".into()),
+            expires_at_ns: now_ns + 10_000_000_000,
+            transport: vec![],
+        },
+        authority_key,
+    )
+    .unwrap();
+    let join = crate::join::decode_and_verify_invitation(
+        &signed,
+        Some(cert.user_public_key),
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    let challenge = JoinChallenge::new(
+        &join,
+        &cert,
+        [64; 32],
+        [65; 32],
+        now_ns + 1_000_000_000,
+        now_ns,
+    )
+    .unwrap();
+    let proof = sign_join_proof(challenge.clone(), &key).unwrap();
+    let redemption =
+        verify_join_proof(&proof, &challenge, &cert, &RevocationList::new(), now_ns).unwrap();
+    assert!(
+        peer.governance_mut()
+            .admit_invited_member(&redemption, authority_key, now)
+            .unwrap()
+    );
+    (key, cert)
+}
+
+fn ns_since_epoch(now: SystemTime) -> u64 {
+    now.duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .try_into()
+        .unwrap()
+}
+
+/// A removed member's device keeps its keys, and nothing it writes after the
+/// removal counts: a frame it publishes is refused however it signs it, and a
+/// membership operation it writes has no effect even where the workspace's own
+/// devices relay it. What it wrote before the removal stays.
+#[test]
+fn a_removed_members_device_writes_nothing_after_its_removal() {
+    let (mut peer, authority_key, _, _, now) = seeded();
+    let (guest_key, guest) = admitted_guest(&mut peer, &authority_key, now);
+    let origin = TransportOrigin::RelayDelta(guest_key.verifying_key().to_bytes());
+
+    // The guest's device publishes a frame while it is a member.
+    let mut guest_peer = peer.clone();
+    let before = frame(&mut guest_peer, &guest_key, now, "before");
+    peer.receive_from(origin, before, now)
+        .expect("a member's frame is admitted");
+
+    assert!(
+        peer.governance_mut()
+            .remove_member(guest.user_public_key, &authority_key, now)
+            .unwrap()
+    );
+
+    // The same device, with the same keys, writes a frame after the removal.
+    let later = now + Duration::from_secs(30);
+    let after = frame(&mut guest_peer, &guest_key, later, "after");
+    assert!(
+        peer.receive_from(origin, after, later).is_err(),
+        "a removed device's frame is refused"
+    );
+    let held = AutoCommit::load(&peer.document("test.app", "tab:1").unwrap()).unwrap();
+    assert!(
+        held.get(ROOT, "after").unwrap().is_none(),
+        "the refused frame wrote nothing"
+    );
+    assert!(
+        held.get(ROOT, "before").unwrap().is_some(),
+        "the frame admitted before the removal stays"
+    );
+
+    // A membership operation the removed device writes is relayed by the
+    // workspace's own devices and kept: replay gives it no effect, because its
+    // author is no longer a member.
+    let newcomer = SigningKey::from_bytes(&[66; 32]);
+    let mut newcomer_cert = DeviceCert {
+        user_public_key: newcomer.verifying_key().to_bytes(),
+        device_public_key: SigningKey::from_bytes(&[67; 32]).verifying_key().to_bytes(),
+        device_label: "Newcomer".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut newcomer_cert, &newcomer).unwrap();
+    let NeighbourMsg::SyncResp { changes, room } = peer.workspace_message() else {
+        panic!("unexpected fixture shape");
+    };
+    let mut workspace_doc = crate::workspace::candidate(None, &changes).unwrap();
+    let op = crate::members::SignedMembershipOp::signed(
+        &guest,
+        &guest_key,
+        crate::members::heads(&crate::members::ops(&workspace_doc)),
+        ns_since_epoch(later),
+        crate::members::MembershipOpCommand::Project {
+            changes: vec![tilo_action_policy::Change::AddMember {
+                person: hex::encode(newcomer_cert.user_public_key),
+                role: tilo_action_policy::Role::Viewer,
+            }],
+        },
+    )
+    .unwrap();
+    let heads = workspace_doc.get_heads();
+    crate::members::legacy::put_op(&mut workspace_doc, &op).unwrap();
+    peer.receive_from(
+        TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
+        NeighbourMsg::SyncResp {
+            changes: workspace_doc
+                .get_changes(&heads)
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect(),
+            room,
+        },
+        later,
+    )
+    .expect("the workspace's device relays the operation");
+    let held = peer.workspace_message();
+    let NeighbourMsg::SyncResp { changes, .. } = held else {
+        panic!("unexpected fixture shape");
+    };
+    let held = crate::workspace::candidate(None, &changes).unwrap();
+    assert!(
+        crate::members::ops(&held)
+            .values()
+            .any(|held| held.id().unwrap() == op.id().unwrap()),
+        "the operation is kept"
+    );
+    assert_eq!(
+        crate::members::replay(&held, peer.workspace_id())
+            .role_of(&hex::encode(newcomer_cert.user_public_key)),
+        None,
+        "and has no effect"
+    );
+    assert!(
+        peer.permissions(newcomer_cert.device_public_key, later)
+            .is_err()
+    );
+}

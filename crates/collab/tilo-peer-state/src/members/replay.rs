@@ -87,6 +87,15 @@ pub fn genesis(held: &BTreeMap<OpId, SignedMembershipOp>) -> Option<OpId> {
         .min()
 }
 
+/// Whether the workspace's log starts in `doc`: it holds a genesis operation
+/// its owner's device wrote, at heads this device holds the history of. Where
+/// it does not, the document's rows govern the workspace as they did before the
+/// log, and the operations are kept for when they start.
+#[must_use]
+pub fn starts(doc: &AutoCommit, workspace: &str) -> bool {
+    start(doc, workspace, &ops(doc)).is_some()
+}
+
 /// The workspace's membership as `doc`'s operations make it.
 ///
 /// A workspace whose document holds no genesis operation the owner's device
@@ -253,12 +262,15 @@ fn redeem(doc: &AutoCommit, workspace: &str, policy: &mut WorkspacePolicy) {
     }
 }
 
-/// An author's standing in the workspace as the order reaches them: the
-/// owner first, then an administrator, then everyone else. Operations written
+/// An author's standing in the workspace as the order reaches them: an owner
+/// first, then an administrator, then everyone else. Operations written
 /// concurrently are applied in this order, so two devices that wrote without
 /// seeing each other resolve the same way on every device.
+///
+/// Ownership is a role: the person the workspace was made for holds it, and so
+/// does anyone else its rows name as an owner.
 fn tier(policy: &WorkspacePolicy, person: &str) -> u8 {
-    if policy.is_owner(person) {
+    if policy.role_of(person) == Some(Role::Owner) {
         return 0;
     }
     if policy
@@ -271,48 +283,56 @@ fn tier(policy: &WorkspacePolicy, person: &str) -> u8 {
     2
 }
 
-/// Fold one operation into the membership: a projection every difference of
-/// which from the membership at the operation's parents its author's grants
-/// allow. An operation that is not allowed changes nothing.
+/// Fold one operation into the membership: the changes it carries, in order,
+/// each decided against the membership as the operations before it left it. An
+/// operation with a change its author's grants do not allow changes nothing:
+/// one refused step takes the whole operation with it, so a writer cannot slip
+/// a change past the membership by putting an allowed one in front of it.
 fn op_effect(policy: &mut WorkspacePolicy, op: &SignedMembershipOp) {
     let person = op.person();
     let bound = roles::foreign_device_bound();
-    let foreign = op.author.capabilities.foreign && !policy.is_owner(&person);
     let cx = Context::at(op.at_ns / 1_000_000);
     match &op.command {
         // The genesis projection is the starting membership, not a change to it.
         MembershipOpCommand::Genesis { .. } => {}
-        MembershipOpCommand::Project { membership } => {
-            // ignored-failure: a projection the membership it reaches cannot
-            // become by this author's own changes changes nothing
-            let membership = membership.policy();
-            let Ok(steps) = changes(policy, &membership) else {
-                return;
-            };
-            for change in steps {
-                let held = policy.clone();
-                let authority = held.person_on_device(&person, foreign, &bound);
-                if policy
-                    .apply(&person, &authority, change, &cx, false)
+        MembershipOpCommand::Project { changes } => {
+            let mut next = policy.clone();
+            let foreign = op.author.capabilities.foreign && !next.is_owner(&person);
+            for change in changes {
+                // The change is decided against the membership as the changes
+                // before it left it, and applied to the operation's own copy:
+                // one refused change takes the whole operation with it.
+                let mut after = next.clone();
+                let authority = next.person_on_device(&person, foreign, &bound);
+                // ignored-failure: a change this author's grants do not allow
+                // takes the whole operation with it, and it has no effect
+                if after
+                    .apply(&person, &authority, change.clone(), &cx, false)
                     .is_err()
                 {
                     return;
                 }
+                next = after;
             }
-            // Every step was this author's to make, so what they held after
-            // them is the membership: take it as written rather than as the
-            // steps would rewrite it.
-            *policy = membership;
+            *policy = next;
         }
     }
 }
 
-/// The changes that turn `from` into `to`, or `None` when they are not a set of
-/// governance changes: a different workspace or owner (both structural), or a
-/// grant rewritten under an id it already has.
-fn changes(from: &WorkspacePolicy, to: &WorkspacePolicy) -> Result<Vec<Change>, ()> {
+/// The changes that turn `from` into `to`, as the steps an operation carries,
+/// or why they are not a set of governance changes: a different workspace or
+/// owner (both structural), a grant rewritten under an id it already has, or an
+/// admission time someone would be given back or taken away.
+///
+/// This is the writer's side of [`replay`]: a device that changed the
+/// workspace's rows writes the steps that lead from the membership it held to
+/// the one it holds now, and every device reads them back with [`replay`].
+///
+/// # Errors
+/// The difference is not the workspace's governance to change.
+pub fn steps(from: &WorkspacePolicy, to: &WorkspacePolicy) -> Result<Vec<Change>, String> {
     if from.workspace != to.workspace || from.owner != to.owner {
-        return Err(());
+        return Err("a workspace's owner and identity are not a membership change".into());
     }
     let mut steps = Vec::new();
     for person in from.members.keys() {
@@ -342,7 +362,9 @@ fn changes(from: &WorkspacePolicy, to: &WorkspacePolicy) -> Result<Vec<Change>, 
     for (id, grant) in &before {
         match after.get(id) {
             None => steps.push(Change::Revoke((*id).clone())),
-            Some(held) if held != grant => return Err(()),
+            Some(held) if held != grant => {
+                return Err(format!("the grant {id} is rewritten under its own id"));
+            }
             Some(_) => {}
         }
     }
@@ -351,11 +373,13 @@ fn changes(from: &WorkspacePolicy, to: &WorkspacePolicy) -> Result<Vec<Change>, 
             steps.push(Change::Grant((*grant).clone()));
         }
     }
-    // A kept member's admission time is recorded once; changing it is no
-    // governance change.
+    // A member's admission time is recorded once, when they are written in;
+    // changing it afterwards is no governance change.
     for (person, at) in &from.joined {
         if to.joined.get(person).is_some_and(|held| held != at) {
-            return Err(());
+            return Err(format!(
+                "{person}'s admission time is not a governance change"
+            ));
         }
     }
     Ok(steps)
@@ -388,7 +412,12 @@ pub fn growth(before: Option<&AutoCommit>, candidate: &AutoCommit) -> Result<usi
             continue;
         }
         // ignored-failure: an operation that does not prove its writer is refused
-        SignedMembershipOp::verified(&bytes)?;
+        let op = SignedMembershipOp::verified(&bytes)?;
+        // ignored-failure: an operation stored under a key that is not its own
+        // id is refused
+        if op.id()?.to_key() != key {
+            return Err("a membership operation is stored under another operation's id".into());
+        }
         added = added.saturating_add(1);
     }
     Ok(added)

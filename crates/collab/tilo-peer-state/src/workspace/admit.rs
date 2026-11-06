@@ -183,6 +183,17 @@ pub fn admit_workspace_changes(
                 if !super::governance_except_membership(input.before, &candidate) {
                     return Err(WorkspaceRefusal::GovernanceWriter);
                 }
+                // The rows a batch brings are never what admits it: they are
+                // the log's projection, and the receiver writes them from the
+                // log it replays ([`crate::members::settle`]). Where the log
+                // does not start yet there is nothing to project from, and the
+                // rows the batch brings would be the change itself: no batch
+                // that carries operations may move them then.
+                if !crate::members::starts(&candidate, input.workspace)
+                    && !super::governance_unchanged(input.before, &candidate)
+                {
+                    return Err(WorkspaceRefusal::GovernanceWriter);
+                }
                 true
             } else {
                 !governs

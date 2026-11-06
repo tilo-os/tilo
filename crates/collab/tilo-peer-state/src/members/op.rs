@@ -9,7 +9,7 @@
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::{Grant, Role, WorkspacePolicy};
+use tilo_action_policy::{Change, Grant, Role, WorkspacePolicy};
 use tilo_user_identity::DeviceCert;
 
 /// The workspace document key holding every membership operation, by
@@ -92,12 +92,15 @@ pub enum MembershipOpCommand {
         legacy_heads: Vec<Vec<u8>>,
         membership: Box<Membership>,
     },
-    /// The workspace's membership as its author's device holds it after one
-    /// change. Replay checks every difference from the membership at the
-    /// operation's parents is a change its author's grants allow, then takes
-    /// the membership as written: an operation that changes something its
-    /// author could not changes nothing.
-    Project { membership: Box<Membership> },
+    /// The workspace's membership changes its author's device made, in the
+    /// order it made them. Replay checks each against the membership at the
+    /// point the operation is reached, so an operation naming a change its
+    /// author was not allowed to make changes nothing at all.
+    ///
+    /// The changes are steps, not the membership they lead to: two members who
+    /// wrote at the same time each wrote what they did, and neither one's
+    /// operation takes the other's away.
+    Project { changes: Vec<Change> },
 }
 
 /// One member's change to a workspace's authority, signed by their device.
@@ -249,13 +252,10 @@ pub(crate) mod tests_support {
             Vec::new(),
             1_700_000_000_000_000_000,
             MembershipOpCommand::Project {
-                membership: Box::new(Membership::of(&tilo_action_policy::WorkspacePolicy {
-                    workspace: "r".to_owned(),
-                    owner: Some(hex::encode(cert.user_public_key)),
-                    members: [("member".to_owned(), tilo_action_policy::Role::Editor)].into(),
-                    joined: std::collections::BTreeMap::new(),
-                    grants: Vec::new(),
-                })),
+                changes: vec![Change::AddMember {
+                    person: "member".to_owned(),
+                    role: Role::Editor,
+                }],
             },
         )
         .unwrap();
@@ -301,10 +301,11 @@ mod tests {
         op.sig = other.sign(&op.signing_bytes().unwrap()).to_bytes();
         op.verify().expect("signed by the device it names");
         let (_, mut tampered) = an_op();
-        if let MembershipOpCommand::Project { membership } = &mut tampered.command {
-            membership
-                .members
-                .insert("someone".to_owned(), tilo_action_policy::Role::Editor);
+        if let MembershipOpCommand::Project { changes } = &mut tampered.command {
+            changes.push(Change::SetRole {
+                person: "member".to_owned(),
+                role: Role::Owner,
+            });
         }
         assert!(tampered.verify().is_err(), "the command was changed");
         let (_, mut forged) = an_op();

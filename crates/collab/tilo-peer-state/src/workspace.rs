@@ -586,9 +586,17 @@ pub fn refusal_slices_kept(
 
 /// What one who only reads a workspace may still change in it: their own effect
 /// receipts and history anchors ([`effect_slices_kept`]), their own write
-/// refusals ([`refusal_slices_kept`]), and its grants, as the shares they give
-/// ([`share`], decided as membership).
-const READER_WRITES: [&str; 4] = [EFFECT_RECEIPTS, EFFECT_HISTORY, WRITE_REFUSALS, "grants"];
+/// refusals ([`refusal_slices_kept`]), its grants, as the shares they give
+/// ([`share`], decided as membership), and the membership operations they hold
+/// — an operation is its author's, and one who only reads hands on what others
+/// signed without admitting it.
+const READER_WRITES: [&str; 5] = [
+    EFFECT_RECEIPTS,
+    EFFECT_HISTORY,
+    WRITE_REFUSALS,
+    "grants",
+    crate::members::MEMBERS_KEY,
+];
 
 /// Whether `after` differs from `before` only in what one who only reads
 /// the workspace may change in it ([`READER_WRITES`]).

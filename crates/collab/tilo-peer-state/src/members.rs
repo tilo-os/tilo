@@ -20,4 +20,4 @@ mod replay;
 mod tests;
 
 pub use op::{MEMBERS_KEY, Membership, MembershipOpCommand, OpId, SignedMembershipOp};
-pub use replay::{genesis, growth, heads, materialise, ops, replay, settle};
+pub use replay::{genesis, growth, heads, materialise, ops, replay, settle, starts, steps};
