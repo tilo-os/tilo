@@ -688,15 +688,17 @@ the module), so a table names a *unit* — a view, a row view, an action, a requ
 `applies`, a filter, an at-event argument — by its source line:
 
 ```
-tilolang profile apps/tl/tasks --seed 10000 --then click:300,150
-      fuel  unit                                  written                   calls    record     index
-    442511  Task.task_page view                                                1         0     10022
-    441276  Task.check action                    apps/tl/tasks/app.tl:200        1         0     10027
-      6302  Task.home row                        apps/tl/tasks/app.tl:567       23         0        69
-      1080  Task.check~present view              apps/tl/tasks/app.tl:200       24         0        46
-       504  Task.due_today requirement           apps/tl/tasks/app.tl:246       24         0        23
+tilolang profile apps/tl/tasks --seed 10000
+      fuel  unit                                  written                         calls    record     index
+    442511  Task.task_page view                                                      1         0     10026
+     13105  Task.home row                          apps/tl/tasks/app.tl:567         48         0       141
+      2340  Task.check~present view                apps/tl/tasks/app.tl:200         52         0        94
+      1092  Task.set_priority_high requirement     apps/tl/tasks/app.tl:298         52         0        47
+      1092  Task.set_priority_low requirement      apps/tl/tasks/app.tl:286         52         0        47
 ...
 ```
+
+A unit no declaration is written for (the view a list's page is rendered as) has no line.
 
 `--seed N` opens a workspace of N items, seeded as `tilolang bench` seeds one; `--scenario`
 stages a scenario (the app's first otherwise); each `--then` runs after the app is open and is
