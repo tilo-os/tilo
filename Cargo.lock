@@ -22276,8 +22276,18 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-render-protocol",
  "tilo-ui-graph",
+ "tilo-view-macros",
  "tracing",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-view-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
