@@ -420,15 +420,18 @@ impl StudioSurface {
         if self.own {
             return;
         }
-        // The receipt stays up to say where the screenshot went, and what
-        // became of it.
-        if self.picked() {
+        // What the person put down stays down, whatever the bar was still
+        // saying. A bar that went down with the pick of where a screenshot
+        // goes stays up to say what became of it, until that has been up long
+        // enough to read.
+        if !self.widget.take_put_away() && self.picked() {
             return;
         }
         let presentation = self.studio.presentation();
         if !self.widget.is_open() && presentation.phase() == Phase::Open {
-            // The studio put the bar away itself: what the session says of
-            // the capture may still bring it back.
+            // The studio put the bar away itself, receipt and all: what the
+            // person put down has been read, and the session says the next
+            // capture where the bar is down.
             self.put_away = true;
             presentation.dismissed();
         }
@@ -915,6 +918,53 @@ mod tests {
             "the shot's card is the floating layer's: the bar stays down"
         );
         assert!(!surface.widget.is_open(), "and so does the bar window");
+    }
+
+    /// A capture that could not be written says so on the bar, and a person
+    /// who puts the bar down while that answer is still up takes the studio
+    /// with it: the next capture answers on the desk, not behind a studio the
+    /// session still thinks it has up.
+    #[test]
+    fn a_failure_put_away_takes_the_studio_down_with_it() {
+        use crate::link::{Failed, Failure, WriteCause};
+
+        let studio = Studio::new();
+        let mut surface = StudioSurface::new(Some(studio.clone()));
+        studio.presentation().open(false);
+        surface.catch_up();
+        studio.link().publish(Scene {
+            failed: Some(Failed {
+                number: 1,
+                failure: Failure::NotWritten {
+                    folder: "/home/person/Pictures/Screenshots".into(),
+                    cause: WriteCause::Permission,
+                },
+            }),
+            ..Scene::default()
+        });
+        surface.catch_up();
+        assert!(
+            studio.presentation().is_open() && surface.widget.is_open(),
+            "the bar says what became of the capture until it is read"
+        );
+
+        // Escape, with the answer still up: the bar goes down, and the studio
+        // goes with it rather than standing over a desk nobody sees it on.
+        surface.widget.close();
+        surface.catch_up();
+        assert!(
+            !studio.presentation().is_drawn(),
+            "a bar the person put down leaves nothing drawn"
+        );
+
+        // The next capture opens the bar again, and what it says is read on
+        // it as before.
+        studio.presentation().open(false);
+        surface.catch_up();
+        assert!(
+            studio.presentation().is_open() && surface.widget.is_open(),
+            "the studio comes back up on the next capture"
+        );
     }
 
     #[test]

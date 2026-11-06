@@ -447,6 +447,10 @@ pub struct CaptureStudio {
     rect: Rect,
     overlay_rect: Rect,
     open: bool,
+    /// The person put the bar down themselves (Escape, the receipt's own ✕),
+    /// rather than the bar going down to hand the capture on: what it was
+    /// still saying goes down with it.
+    put_away: bool,
     opened_at: Option<Instant>,
     mode: CaptureMode,
     source: SourceMode,
@@ -517,6 +521,7 @@ impl Default for CaptureStudio {
             rect: Rect::ZERO,
             overlay_rect: Rect::ZERO,
             open: false,
+            put_away: false,
             opened_at: None,
             mode: CaptureMode::Screenshot,
             source: SourceMode::Region,
@@ -589,6 +594,7 @@ impl CaptureStudio {
         self.options_menu = None;
         self.close_send_menu();
         self.open = true;
+        self.put_away = false;
         self.opened_at = Some(crate::time::now());
         self.regions.clear();
         self.drag = None;
@@ -627,11 +633,18 @@ impl CaptureStudio {
     }
 
     pub fn close(&mut self) {
+        self.put_away = true;
         self.open = false;
         self.drag = None;
         self.armed_capture = None;
         self.end_recording_receipt();
         self.options_menu = None;
+    }
+
+    /// Whether the person put the bar down since this was last asked, rather
+    /// than the bar going down to hand the capture on.
+    pub fn take_put_away(&mut self) -> bool {
+        std::mem::take(&mut self.put_away)
     }
 
     pub fn is_open(&self) -> bool {
@@ -1712,6 +1725,7 @@ impl CaptureStudio {
             }
             self.screenshot_receipt = None;
             self.open = self.shows_status();
+            self.put_away |= !self.open;
             return;
         }
         if self.recording_finished_at.is_some() {
@@ -1733,6 +1747,7 @@ impl CaptureStudio {
             }
             self.end_recording_receipt();
             self.open = self.shows_status();
+            self.put_away |= !self.open;
         }
     }
 
