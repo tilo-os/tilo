@@ -304,8 +304,8 @@ fn the_session_publishes_what_it_puts_up_and_who_holds_the_keyboard() {
     );
     assert_eq!(focus(&session), "overlay:window-menu");
 
-    // And quick settings under the bar's trailing end: the stack holds both,
-    // the menu over the panel.
+    // And quick settings under the bar's trailing end: one anchored surface
+    // at a time, so the menu goes down for the panel.
     session
         .invoke(
             OVERLAYS,
@@ -314,27 +314,17 @@ fn the_session_publishes_what_it_puts_up_and_who_holds_the_keyboard() {
         )
         .expect("the panel opens");
     session.step(REFRESH).expect("a turn of the session");
-    assert_eq!(slots(&session), ["window-menu", "quick-settings"]);
+    assert_eq!(slots(&session), ["quick-settings"]);
     assert_eq!(
         surface(&session, "quick-settings")["anchor"],
         json!("top-trailing:8")
     );
     assert_eq!(
         focus(&session),
-        "overlay:window-menu",
-        "the top of the stack, not the last one opened"
+        "overlay:quick-settings",
+        "the surface the person just opened holds the keys"
     );
 
-    session
-        .invoke(OVERLAYS, "close", &args(&json!({ "slot": "window-menu" })))
-        .expect("the menu closes");
-    session.step(REFRESH).expect("a turn of the session");
-    assert_eq!(slots(&session), ["quick-settings"]);
-    assert_eq!(
-        focus(&session),
-        "overlay:quick-settings",
-        "the surface it covered takes the keyboard back"
-    );
     session
         .invoke(
             OVERLAYS,
@@ -358,18 +348,37 @@ fn escape_closes_the_topmost_surface_that_answers_it() {
         )
         .expect("the menu opens");
     open(&mut session, "quick-settings", None);
-    assert_eq!(slots(&session), ["window-menu", "quick-settings"]);
+    assert_eq!(
+        slots(&session),
+        ["quick-settings"],
+        "the panel takes the place of the menu"
+    );
 
-    // Escape takes the top one, and only it: a menu closes, the panel under
-    // it stays.
-    tap(&mut session, KEY_ESCAPE);
-    assert_eq!(slots(&session), ["quick-settings"]);
-    assert_eq!(focus(&session), "overlay:quick-settings");
+    // Escape in the panel is the panel's: it goes back a page inside it
+    // before it closes (the shell proves that with the real app). Here the
+    // stack says the menu below went down for it.
+    session
+        .invoke(
+            OVERLAYS,
+            "close",
+            &args(&json!({ "slot": "quick-settings" })),
+        )
+        .expect("the panel closes");
+    session.step(REFRESH).expect("a turn of the session");
+    assert!(slots(&session).is_empty());
+    assert_eq!(focus(&session), "window", "and the window again");
 
-    // Escape again takes the panel: a popup answers Escape, and a press
-    // outside it is not needed.
+    // A menu stands alone, and Escape closes it.
+    session
+        .invoke(
+            WINDOW_MENU,
+            "open",
+            &args(&json!({ "tab": "20", "anchor": "40,50" })),
+        )
+        .expect("the menu opens again");
+    assert_eq!(slots(&session), ["window-menu"]);
     tap(&mut session, KEY_ESCAPE);
-    assert!(slots(&session).is_empty(), "the panel closed");
+    assert!(slots(&session).is_empty(), "the menu closed");
     assert_eq!(focus(&session), "window");
 }
 

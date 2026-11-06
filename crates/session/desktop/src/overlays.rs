@@ -1006,15 +1006,20 @@ mod tests {
             "and none from inside it"
         );
 
-        // The window menu stands where its own view draws it: nothing the
-        // session can judge, so nothing it closes.
+        // The window menu takes its place: one anchored surface at a time.
         overlays.open(Slot::WindowMenu, Some(Anchor::At(Point::new(40.0, 50.0))));
+        assert!(
+            !overlays.is_open(Slot::QuickSettings),
+            "the panel goes down for the menu the person just opened"
+        );
+        // And it stands where its own view draws it: nothing the session can
+        // judge, so nothing it closes.
         assert_eq!(overlays.place(Slot::WindowMenu), None);
         assert_eq!(overlays.escape(), Some(Slot::WindowMenu));
         assert_eq!(
             overlays.press_outside(4.0, DISPLAY.y1 - 4.0),
-            Some(Slot::QuickSettings),
-            "the menu the session places, not the one its view does"
+            None,
+            "its view closes it, the session has no rect to judge"
         );
     }
 
@@ -1076,17 +1081,18 @@ mod tests {
         let overlays = overlays();
         assert!(overlays.entries().is_empty(), "nothing is up");
         overlays.open(Slot::QuickSettings, None);
-        overlays.open(Slot::WindowMenu, None);
+        overlays.open(Slot::Overview, None);
         let entries = overlays.entries();
         assert_eq!(
             entries.iter().map(|entry| entry.slot).collect::<Vec<_>>(),
-            vec![Slot::WindowMenu, Slot::QuickSettings]
+            vec![Slot::Overview, Slot::QuickSettings],
+            "the overview is the desk the panel stands over, not a second popup"
         );
-        let menu = &entries[0];
-        assert_eq!(menu.role, Role::Popup);
-        assert_eq!(menu.modality, Modality::WindowModal);
-        assert_eq!(menu.lifecycle, Lifecycle::Shown);
-        assert_eq!(menu.owner, Owner::Shell);
-        assert_eq!(overlays.target().as_str(), "overlay:window-menu");
+        let overview = &entries[0];
+        assert_eq!(overview.role, Role::Overlay);
+        assert_eq!(overview.modality, Modality::WindowModal);
+        assert_eq!(overview.lifecycle, Lifecycle::Shown);
+        assert_eq!(overview.owner, Owner::Shell);
+        assert_eq!(overlays.target().as_str(), "overlay:overview");
     }
 }
