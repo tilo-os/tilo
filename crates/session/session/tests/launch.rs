@@ -1466,7 +1466,7 @@ fn reopening_a_closed_window_starts_its_app_again() {
     session.desktop().with_policy(|policy| {
         policy
             .map(titled_window(11, X11_CLASS, PROBE_NAME))
-            .unwrap()
+            .unwrap();
     });
     until(&mut session, "the window is a tab", |session| {
         groups(session) == vec![vec![PROBE_NAME.to_owned()]]
@@ -1501,7 +1501,7 @@ fn reopening_a_closed_window_starts_its_app_again() {
     session.desktop().with_policy(|policy| {
         policy
             .map(titled_window(12, X11_CLASS, PROBE_NAME))
-            .unwrap()
+            .unwrap();
     });
     until(
         &mut session,
