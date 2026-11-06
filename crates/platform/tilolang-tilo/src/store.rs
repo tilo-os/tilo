@@ -1204,14 +1204,34 @@ impl TiloStore {
         inner.upgrade_plain_text(app, module, by)
     }
 
-    /// Whether the resource `doc`'s own map holds a value under any of `fields`: what a
-    /// migration reads to know its old field was ever written, without the record.
+    /// Whether the resource `doc` holds anything in any of `fields`: what a migration reads to
+    /// know its old field was ever written. Each field is read on its own, a collection by the
+    /// placements of the record's items, so a record of ten thousand items is not built to ask
+    /// whether one was written.
     #[must_use]
     pub fn holds_any(&self, doc: &str, fields: &[&str]) -> bool {
         if fields.is_empty() {
             return true;
         }
         if self.load_record().is_err() {
+            return false;
+        }
+        let schema: &'static crate::schema::TypeSchema = {
+            let inner = self.held();
+            let Some((_, ty)) = inner.index.get(doc) else {
+                return false;
+            };
+            let Some(schema) = lookup(ty) else {
+                return false;
+            };
+            schema
+        };
+        let named: Vec<&'static crate::schema::FieldSchema> = schema
+            .fields
+            .iter()
+            .filter(|field| fields.contains(&field.id.as_str()))
+            .collect();
+        if named.is_empty() {
             return false;
         }
         let inner = self.held();
@@ -1224,9 +1244,18 @@ impl TiloStore {
         let Some(root) = crate::reads::resource_obj(mirror, app, doc) else {
             return false;
         };
-        fields
-            .iter()
-            .any(|field| mirror.get(&root, *field).ok().flatten().is_some())
+        let located = crate::reads::Located {
+            obj: Some(root.clone()),
+            schema,
+            item: None,
+        };
+        named.iter().any(|field| {
+            if field.kind == crate::schema::MergeKind::Collection {
+                crate::reads::collection_holds(mirror, &root, field)
+            } else {
+                crate::reads::holds_something(mirror, &located, field)
+            }
+        })
     }
 
     /// Whether the migration `migration` (its action id) ran on the resource `doc`.
