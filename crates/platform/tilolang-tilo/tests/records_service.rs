@@ -41,7 +41,7 @@ fn service() -> (RecordService, tilolang_runtime::Meta) {
     let Replica { doc, host, .. } = ada;
     (
         RecordService::new(doc, host, "ada"),
-        packages[0].meta.clone(),
+        packages.last().unwrap().meta.clone(),
     )
 }
 
@@ -157,8 +157,15 @@ fn another_app_reads_the_published_note_through_the_notes_package() {
 
     // The shell's side: notes is another app's package here, its records read from the session.
     let shell = Host::new(&AutoCommit::new(), Principal::new("ada"), || None).unwrap();
-    let notes = tilolang::compile_package(NOTES.0, &IdsLock::parse(NOTES.1).unwrap(), &[])
-        .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    let discussion =
+        tilolang::compile_package(DISCUSSION.0, &IdsLock::parse(DISCUSSION.1).unwrap(), &[])
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    let notes = tilolang::compile_package(
+        NOTES.0,
+        &IdsLock::parse(NOTES.1).unwrap(),
+        std::slice::from_ref(&discussion.meta),
+    )
+    .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
     shell
         .load_foreign_package(&notes.wasm, &notes.meta)
         .unwrap();

@@ -34,8 +34,14 @@ type Package = (&'static str, &'static str);
 /// needs.
 fn fixtures() -> Vec<(&'static str, Vec<Package>)> {
     vec![
-        (include_str!("legacy/todo.hex"), vec![app!("tasks")]),
-        (include_str!("legacy/notes.hex"), vec![app!("notes")]),
+        (
+            include_str!("legacy/todo.hex"),
+            vec![app!("discussion"), app!("tasks")],
+        ),
+        (
+            include_str!("legacy/notes.hex"),
+            vec![app!("discussion"), app!("notes")],
+        ),
         // Letters as it was when it wrote its workspace: it became Mail since, keeping its ids.
         (
             include_str!("legacy/letters.hex"),
@@ -48,7 +54,13 @@ fn fixtures() -> Vec<(&'static str, Vec<Package>)> {
         (include_str!("legacy/board.hex"), vec![app!("board")]),
         (
             include_str!("legacy/today.hex"),
-            vec![app!("notes"), app!("tasks"), app!("chat"), app!("today")],
+            vec![
+                app!("discussion"),
+                app!("notes"),
+                app!("tasks"),
+                app!("chat"),
+                app!("today"),
+            ],
         ),
     ]
 }
@@ -281,7 +293,7 @@ fn field(replica: &Replica, app: &str, ty: &str, name: &str) -> (String, String)
 
 #[test]
 fn items_of_an_older_record_move_change_and_go_keeping_their_ids() {
-    let packages = vec![app!("tasks")];
+    let packages = vec![app!("discussion"), app!("tasks")];
     let mut replica = open(include_str!("legacy/todo.hex"), &packages);
     let app = "so.tilo.lang.tasks";
     let list = root(&replica, app);
@@ -600,7 +612,7 @@ fn todo_as_tasks() -> (String, &'static str) {
 #[test]
 fn a_renamed_app_opens_the_records_of_its_earlier_id_where_they_are() {
     let (source, ids) = todo_as_tasks();
-    let packages = vec![(source.as_str(), ids)];
+    let packages = vec![app!("discussion"), (source.as_str(), ids)];
     let mut replica = open(include_str!("legacy/todo.hex"), &packages);
     let heads = replica.doc.get_heads();
     let app = "so.tilo.lang.tasks";

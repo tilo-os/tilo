@@ -69,7 +69,7 @@ fn an_agent_the_person_denied_the_app_is_denied() {
         &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
         Some(standing(vec![answer])),
     );
-    let meta = &packages[0].meta;
+    let meta = &packages.last().unwrap().meta;
     let list = ada.host.root_of(APP).unwrap();
     ada.commit();
     let add = meta.actions.iter().find(|a| a.name == "new_task").unwrap();
@@ -141,7 +141,7 @@ fn reaching_outside_from_untrusted_or_an_agents_code_asks() {
         &[(LETTERS, LETTERS_IDS)],
         Some(standing(Vec::new())),
     );
-    let meta = &packages[0].meta;
+    let meta = &packages.last().unwrap().meta;
     let desk = ada.host.root_of("test.letters").unwrap();
     ada.commit();
     let new_draft = meta.actions.iter().find(|a| a.name == "new_draft").unwrap();

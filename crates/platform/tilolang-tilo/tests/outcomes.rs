@@ -27,7 +27,7 @@ fn workspace() -> (Replica, Replica, Meta, String) {
         AutoCommit::new(),
         &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
     );
-    let meta = packages[0].meta.clone();
+    let meta = packages.last().unwrap().meta.clone();
     let root = ada.host.root_of(APP).unwrap();
     ada.commit();
     let add = plan(

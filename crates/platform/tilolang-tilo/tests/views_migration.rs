@@ -83,6 +83,7 @@ fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
         AutoCommit::new(),
         &[
             app!("board"),
+            app!("discussion"),
             app!("tasks"),
             app!("chat"),
             app!("notes"),
@@ -121,7 +122,16 @@ fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
         record_document(&documents, VIEWS, WORKSPACE, &key).unwrap(),
         Some(workspace_document(&documents, VIEWS, WORKSPACE).unwrap()),
     );
-    let (after, _) = Replica::new("ada", doc, &[app!("tasks"), app!("chat"), app!("views")]);
+    let (after, _) = Replica::new(
+        "ada",
+        doc,
+        &[
+            app!("discussion"),
+            app!("tasks"),
+            app!("chat"),
+            app!("views"),
+        ],
+    );
 
     // The answer is hers, under the id it had, kept, written by the task that wrote it.
     let root = after.host.root_of(VIEWS).unwrap();

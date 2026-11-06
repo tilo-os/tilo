@@ -1645,7 +1645,9 @@ fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
 #[test]
 fn a_scenario_reads_the_keys_of_the_branch_it_stages() {
     let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), PACKAGES);
-    let scenario = loaded[0]
+    let scenario = loaded
+        .last()
+        .unwrap()
         .meta
         .scenarios
         .iter()

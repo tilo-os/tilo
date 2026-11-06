@@ -18,6 +18,8 @@ use crate::fixtures::Replica;
 
 const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
 const TASKS_APP: &str = "so.tilo.lang.tasks";
@@ -129,7 +131,11 @@ fn one_line_from_anywhere_makes_the_task_its_words_say() {
     let (mut ada, _) = Replica::new(
         "ada",
         AutoCommit::new(),
-        &[(CHAT, CHAT_IDS), (TASKS, TASKS_IDS)],
+        &[
+            (DISCUSSION, DISCUSSION_IDS),
+            (CHAT, CHAT_IDS),
+            (TASKS, TASKS_IDS),
+        ],
     );
     // Both roots exist, as they do once each app's window was opened in the workspace.
     let _ = ada.host.root_of(TASKS_APP).unwrap();
@@ -181,7 +187,11 @@ fn a_task_captured_from_a_message_says_what_it_was_made_from() {
     let (mut ada, _) = Replica::new(
         "ada",
         AutoCommit::new(),
-        &[(CHAT, CHAT_IDS), (TASKS, TASKS_IDS)],
+        &[
+            (DISCUSSION, DISCUSSION_IDS),
+            (CHAT, CHAT_IDS),
+            (TASKS, TASKS_IDS),
+        ],
     );
     let _ = ada.host.root_of(TASKS_APP).unwrap();
     // Bo says something in the channel `design`, and the palette captures a task from it.
