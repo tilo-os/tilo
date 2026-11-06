@@ -534,6 +534,7 @@ impl Core {
                 made_from: Vec::new(),
                 note: Box::new(note),
                 touched: std::collections::BTreeSet::new(),
+                effects: crate::handles::EffectLog::default(),
             }),
         );
         let result = self.call_in_frame(
@@ -543,13 +544,17 @@ impl Core {
             &aref.args,
             meta.result.as_deref(),
         );
-        let at = self.invocation_time();
+        let at = self.change_time();
         let frame = self.frames.borrow_mut().pop();
         let (queued, proposed, txn, note) = match frame.map(|f| f.kind) {
             Some(FrameKind::Action(a)) => {
                 let mut note = *a.note;
                 note.at = Some(at);
                 note.touched = a.touched.into_iter().collect();
+                // What the action read on its way, beside the change it made: the moment and
+                // the zone it read, and what later effects fetched or drew (convergence.md,
+                // "Actions").
+                note.effects = a.effects.entries;
                 (a.queued, a.suggestions, a.txn, note)
             }
             _ => (Vec::new(), Vec::new(), txn, Self::note(ctx, &pkg, aref)),
@@ -785,6 +790,7 @@ impl Core {
                 suggested_by: journal.suggested_by.clone().map(Principal),
                 journal,
                 cursor: 0,
+                clock: None,
             })),
         );
         let result = self.call_in_frame(
@@ -1487,8 +1493,100 @@ impl Core {
         ret_void()
     }
 
-    /// `now`: the invocation's time, read from the host's clock once per outermost invocation;
-    /// in a scenario's `as who at time` block, that time.
+    /// `now`: the invocation's time: what the action or flow read the first time it read the
+    /// clock, recorded in its journal; in a scenario's `as who at time` block, that time.
+    fn now(&self) -> HResult<Option<Wasm>> {
+        {
+            let frames = self.frames.borrow();
+            if let FrameKind::Action(state) = &frames.top()?.kind
+                && let Some(time) = state.acting_as.last().and_then(|(_, at)| at.clone())
+            {
+                drop(frames);
+                return self.ret_h(Value::Text(time));
+            }
+        }
+        let clock = self.clock()?;
+        tilolang::types::check_time(&clock.now)
+            .map_err(|e| HostFail::Trap(format!("the host's clock: {e}")))?;
+        self.ret_h(Value::Text(clock.now))
+    }
+
+    /// The clock and the person's zone, as the invocation running reads them: what it read the
+    /// first time, from its journal when it recorded one then, else from the host, which it
+    /// records. An action's entry is kept beside its change; a flow's is saved in its journal,
+    /// so a run resumed tomorrow reads the moment it started. Code that journals nothing (a
+    /// view's) reads the host live.
+    pub(crate) fn clock(&self) -> HResult<crate::flow::Clock> {
+        {
+            let mut frames = self.frames.borrow_mut();
+            let Some(mut effects) = frames.effects() else {
+                return Ok(self.host_clock());
+            };
+            if let Some(clock) = effects.pinned_clock() {
+                return Ok(clock);
+            }
+            match effects.next_entry() {
+                Some(crate::flow::JournalEntry::Clock(clock)) => {
+                    effects.pin(clock.clone());
+                    return Ok(clock);
+                }
+                Some(_) => {
+                    return trap(
+                        "the invocation diverged from its journal: expected the clock's entry",
+                    );
+                }
+                None => {}
+            }
+        }
+        let clock = self.host_clock();
+        {
+            let mut frames = self.frames.borrow_mut();
+            if let Some(mut effects) = frames.effects() {
+                effects.pin_clock(clock.clone());
+            }
+        }
+        self.save_flow_journal()?;
+        Ok(clock)
+    }
+
+    /// What the host says now: its clock, and the person's zone.
+    fn host_clock(&self) -> crate::flow::Clock {
+        crate::flow::Clock {
+            now: self.invocation_time(),
+            zone: self.zone_name.borrow().as_ref().and_then(|name| name()),
+            offset: self.zone.borrow().as_ref().map_or(0, |zone| zone()),
+        }
+    }
+
+    /// The clock and zone the invocation running pinned, when it read time.
+    pub(crate) fn pinned_clock(&self) -> Option<crate::flow::Clock> {
+        self.frames
+            .borrow_mut()
+            .effects()
+            .and_then(|effects| effects.pinned_clock())
+    }
+
+    /// The moment the change being made is recorded at: the one the action read, when it read
+    /// the clock, else the host's, which nothing replays.
+    fn change_time(&self) -> String {
+        self.invocation_time()
+    }
+
+    /// Saves the flow's journal when a flow is the invocation running: what it read so far,
+    /// kept for a run that resumes.
+    fn save_flow_journal(&self) -> HResult<()> {
+        let saved = {
+            let frames = self.frames.borrow();
+            frames.flow().map(|fs| (fs.run.clone(), fs.journal.clone()))
+        };
+        let Some((run, journal)) = saved else {
+            return Ok(());
+        };
+        self.store
+            .borrow_mut()
+            .save_journal(&run, &journal)
+            .map_err(|e| HostFail::Trap(e.to_string()))
+    }
     /// A moment moved by some seconds, backwards when `back` says.
     fn time_shift(&self, at_h: i32, secs: i64, back_h: i32) -> HResult<Option<Wasm>> {
         let at = self.text(at_h)?;
@@ -1513,33 +1611,31 @@ impl Core {
         self.ret_h(Value::Text(time))
     }
 
-    /// What this invocation reads as `now`: the moment a scenario acts at, else the host
-    /// clock's, read once and kept until the invocation returns. `today` is the day it falls
-    /// on, so the two never disagree.
+    /// What this invocation reads as `now`: the moment a scenario acts at, else the moment it
+    /// first read the clock, which a resumed run answers from its journal. `today` is the day it
+    /// falls on, so the two never disagree.
     pub(crate) fn now_text(&self) -> HResult<String> {
         {
             let frames = self.frames.borrow();
-            let FrameKind::Action(state) = &frames.top()?.kind else {
-                return trap("now is only available in actions");
-            };
-            if let Some(time) = state.acting_as.last().and_then(|(_, at)| at.clone()) {
+            if let FrameKind::Action(state) = &frames.top()?.kind
+                && let Some(time) = state.acting_as.last().and_then(|(_, at)| at.clone())
+            {
                 return Ok(time);
             }
         }
-        Ok(self.invocation_time())
+        Ok(self.clock()?.now)
     }
 
-    /// The time of the outermost invocation running: read from the host's clock at its first
-    /// use and kept until it returns.
+    /// The time of the outermost invocation running: the moment it recorded, else the host's
+    /// clock at its first use, kept until it returns.
     fn invocation_time(&self) -> String {
+        if let Some(clock) = self.pinned_clock() {
+            return clock.now;
+        }
         if let Some(time) = self.frames.borrow().now.clone() {
             return time;
         }
-        let time = self
-            .clock
-            .borrow()
-            .as_ref()
-            .map_or_else(|| crate::core::EPOCH.to_owned(), |clock| clock());
+        let time = self.clock_now();
         self.frames.borrow_mut().now = Some(time.clone());
         time
     }
@@ -1549,7 +1645,7 @@ impl Core {
     /// `as who at time` block is a change of its own, which history and reflection show as
     /// that person's at that time.
     fn scenario_segment(&self) -> HResult<()> {
-        let at = self.invocation_time();
+        let at = self.change_time();
         let (txn, note) = {
             let mut frames = self.frames.borrow_mut();
             let FrameKind::Action(state) = &mut frames.top_mut()?.kind else {
@@ -1778,6 +1874,11 @@ fn entry_value(entry: &JournalEntry) -> Value {
         JournalEntry::Read { value } => value.clone(),
         JournalEntry::Denied { reason, .. } | JournalEntry::Failed { reason, .. } => {
             Value::Error(reason.clone())
+        }
+        // A read of the clock, a draw and a fetch answer the code that made them where they
+        // are answered; none of them is a step's value.
+        JournalEntry::Clock(_) | JournalEntry::Random { .. } | JournalEntry::Web { .. } => {
+            Value::Unit
         }
     }
 }

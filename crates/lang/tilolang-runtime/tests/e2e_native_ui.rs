@@ -88,13 +88,13 @@ type Tasks {
     items: Collection<Task>
 }
 
-action finish(t: Task) {
+action finish(t: Task) uses time {
     t.done_at = now
     t.seen = "{now}"
     stamp(t)
 }
 
-action stamp(t: Task) {
+action stamp(t: Task) uses time {
     t.title = "{now}"
 }
 

@@ -58,6 +58,37 @@ pub struct ActionState {
     pub note: Box<crate::store::ChangeNote>,
     /// The resources the transaction changed, as [`ResourceRef::id_string`] writes them.
     pub touched: std::collections::BTreeSet<String>,
+    /// The effects the invocation read, as its journal: what the change records beside the
+    /// action, so a person can see what it fetched, what it drew and when it ran
+    /// (convergence.md, "Actions").
+    pub effects: EffectLog,
+}
+
+/// The effects an invocation read, and where it reads next: a replay answers from them instead
+/// of doing them again.
+#[derive(Default)]
+pub struct EffectLog {
+    pub entries: Vec<crate::flow::JournalEntry>,
+    pub cursor: usize,
+    /// The clock and the person's zone, read once per invocation: `now` and every day or wall
+    /// time of day read in their zone answer with it, so one invocation sees one time.
+    pub clock: Option<crate::flow::Clock>,
+}
+
+impl EffectLog {
+    /// The entry this invocation recorded for the read it is making now, when it made it
+    /// before: a replay's answer.
+    pub fn next_entry(&mut self) -> Option<crate::flow::JournalEntry> {
+        let entry = self.entries.get(self.cursor)?.clone();
+        self.cursor = self.cursor.saturating_add(1);
+        Some(entry)
+    }
+
+    /// Records a read for the invocation to replay.
+    pub fn push(&mut self, entry: crate::flow::JournalEntry) {
+        self.entries.push(entry);
+        self.cursor = self.cursor.saturating_add(1);
+    }
 }
 
 /// A block an action asked the host to run after it commits.
@@ -75,6 +106,64 @@ pub struct FlowState {
     pub invoker: Principal,
     /// Who proposed the run, when the person running it accepted a suggestion.
     pub suggested_by: Option<Principal>,
+    /// The clock and the person's zone, read once per run: a run resumed tomorrow reads the
+    /// moment it started ([`crate::flow::JournalEntry::Clock`]).
+    pub clock: Option<crate::flow::Clock>,
+}
+
+/// Which invocation's journal the code running records its effects in: the innermost action or
+/// flow, past the frames of pure code and of calls into another package's code. Code that runs
+/// in neither — a view's, a block's — reads the host's clock and zone live, and records
+/// nothing: a view is drawn again when the day turns, not replayed.
+pub enum Effects<'a> {
+    Action(&'a mut ActionState),
+    Flow(&'a mut FlowState),
+}
+
+impl Effects<'_> {
+    /// The clock and the zone this invocation already read, if it read them.
+    pub fn pinned_clock(&self) -> Option<crate::flow::Clock> {
+        match self {
+            Self::Action(a) => a.effects.clock.clone(),
+            Self::Flow(f) => f.clock.clone(),
+        }
+    }
+
+    /// The entry the invocation recorded for the read it is making now, when it made it
+    /// before: a replay's answer.
+    pub fn next_entry(&mut self) -> Option<crate::flow::JournalEntry> {
+        match self {
+            Self::Action(a) => a.effects.next_entry(),
+            Self::Flow(f) => {
+                let entry = f.journal.entries.get(f.cursor)?.clone();
+                f.cursor = f.cursor.saturating_add(1);
+                Some(entry)
+            }
+        }
+    }
+
+    /// Pins what the clock read answered, without recording it again: a replay answering from
+    /// the entry the invocation recorded the first time.
+    pub fn pin(&mut self, clock: crate::flow::Clock) {
+        match self {
+            Self::Action(a) => a.effects.clock = Some(clock),
+            Self::Flow(f) => f.clock = Some(clock),
+        }
+    }
+
+    /// Pins the clock and zone the invocation read, and records the read where a replay finds
+    /// it.
+    pub fn pin_clock(&mut self, clock: crate::flow::Clock) {
+        let entry = crate::flow::JournalEntry::Clock(clock.clone());
+        self.pin(clock);
+        match self {
+            Self::Action(a) => a.effects.push(entry),
+            Self::Flow(f) => {
+                f.journal.entries.push(entry);
+                f.cursor = f.cursor.saturating_add(1);
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -132,9 +221,6 @@ pub struct Frames {
     next_serial: u32,
     retained: HashMap<u64, Value>,
     next_retained: u64,
-    /// The time `now` reads in the running invocation: read from the clock at its first use
-    /// and kept until the outermost frame returns, so one invocation sees one time.
-    pub now: Option<String>,
 }
 
 impl Frames {
@@ -149,11 +235,7 @@ impl Frames {
     }
 
     pub fn pop(&mut self) -> Option<Frame> {
-        let frame = self.stack.pop();
-        if self.stack.is_empty() {
-            self.now = None;
-        }
-        frame
+        self.stack.pop()
     }
 
     ///
@@ -314,6 +396,21 @@ impl Frames {
                 FrameKind::Call => {}
                 FrameKind::Flow(fs) => return Some(fs),
                 FrameKind::Pure | FrameKind::Action(_) | FrameKind::View(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// The journal the code running records its effects in: the innermost action or flow, past
+    /// the frames of calls into other packages' code. None in a view or outside either, which
+    /// read the host's clock live.
+    pub fn effects(&mut self) -> Option<Effects<'_>> {
+        for frame in self.stack.iter_mut().rev() {
+            match &mut frame.kind {
+                FrameKind::Call | FrameKind::Pure => {}
+                FrameKind::Action(a) => return Some(Effects::Action(a)),
+                FrameKind::Flow(f) => return Some(Effects::Flow(f)),
+                FrameKind::View(_) => return None,
             }
         }
         None

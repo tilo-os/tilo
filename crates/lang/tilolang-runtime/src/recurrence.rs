@@ -40,6 +40,7 @@ impl Core {
                 self.ret_h(Value::Text(day_text(next)))
             }
             Imp::RepeatNextAt => {
+                self.clock()?;
                 let at = self.text(a.h(1)?)?;
                 let day = self.day(a.h(2)?)?;
                 let Some(instant) = tilolang::calendar::instant(&at) else {
@@ -55,6 +56,7 @@ impl Core {
                 )))
             }
             Imp::WallClock => {
+                self.clock()?;
                 let text = self.text(a.h(0)?)?;
                 self.ret_h(Value::Text(self.wall_clock(&text)?))
             }
@@ -68,6 +70,7 @@ impl Core {
                 }
             }
             Imp::ReminderAt => {
+                self.clock()?;
                 let held = self.text(a.h(0)?)?;
                 let reminder = Self::reminder(&held)?;
                 let due = self.day(a.h(1)?)?;
@@ -135,8 +138,12 @@ impl Core {
         Ok(tilolang::calendar::time_text(self.instant_of(wall)))
     }
 
-    /// The person's zone as its IANA name, when the host named one this build knows.
+    /// The person's zone as its IANA name: the one the invocation pinned when it read the
+    /// clock, else the host's, when it named one this build knows.
     fn zone_name(&self) -> Option<String> {
+        if let Some(clock) = self.pinned_clock() {
+            return clock.zone.and_then(|zone| tilo_recurrence::canonical_zone(&zone));
+        }
         let name = self.zone_name.borrow().as_ref().and_then(|name| name())?;
         tilo_recurrence::canonical_zone(&name)
     }
@@ -147,8 +154,12 @@ impl Core {
         self.zone_name()?.parse().ok()
     }
 
-    /// The person's offset from UTC now, in seconds: what a host that names no zone gives.
+    /// The person's offset from UTC now, in seconds: what the invocation pinned, else what a
+    /// host that names no zone gives.
     fn offset(&self) -> i64 {
+        if let Some(clock) = self.pinned_clock() {
+            return clock.offset;
+        }
         self.zone.borrow().as_ref().map_or(0, |zone| zone())
     }
 

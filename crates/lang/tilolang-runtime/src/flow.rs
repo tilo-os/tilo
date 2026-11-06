@@ -37,6 +37,47 @@ pub enum JournalEntry {
     /// replayed flow sees what it saw the first time and takes the same branches, even after
     /// the actions it approved have changed the resources.
     Read { value: Value },
+    /// The clock and the person's zone, read once per invocation (convergence.md, "Actions").
+    Clock(Clock),
+    /// A draw: `value` was one of `0..upto`.
+    Random { upto: i64, value: i64 },
+    /// A request to a service outside Tilo, and the answer it got.
+    Web {
+        request: WebRequest,
+        response: WebResponse,
+    },
+}
+
+/// The clock and the person's zone, as an invocation read them: what it pinned at its first
+/// read, and what a replay answers from instead of asking the host again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Clock {
+    /// The moment, ISO-8601 UTC text with the seconds (`2026-06-30T13:40:00Z`).
+    pub now: String,
+    /// The person's zone as its IANA name, when the host named one this build knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
+    /// How many seconds their clock is ahead of UTC, which is what reads a day where the host
+    /// named no zone.
+    #[serde(default)]
+    pub offset: i64,
+}
+
+/// A request to a service outside Tilo, as it was made.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WebRequest {
+    pub method: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<serde_json::Value>,
+}
+
+/// What the service answered.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WebResponse {
+    pub status: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<serde_json::Value>,
 }
 
 /// Everything needed to replay a run.

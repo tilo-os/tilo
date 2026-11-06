@@ -347,6 +347,11 @@ pub struct ChangeNote {
     /// ([`Version::from`], [`Store::linked`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<ResourceRef>,
+    /// What the action read that a replay cannot compute again, in the order it read them: the
+    /// moment and zone it ran at, what it fetched and what it drew (convergence.md, "Actions").
+    /// Kept with the change, so history says what the change was made of.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<crate::flow::JournalEntry>,
 }
 
 /// The action id of the change that made a resource, when the host made it.

@@ -51,7 +51,7 @@ action next(probe: Probe, rule: std.Repeat, from: Date, done_on: Date) {
     probe.day = .some(rule.next(from, done_on))
 }
 
-action next_at(probe: Probe, rule: std.Repeat, at: Time, day: Date) {
+action next_at(probe: Probe, rule: std.Repeat, at: Time, day: Date) uses time {
     probe.when = .some(rule.next_at(at, day))
 }
 
@@ -63,7 +63,7 @@ action say_reminder(probe: Probe, reminder: std.Reminder) {
     probe.said = reminder.label()
 }
 
-action remind(probe: Probe, reminder: std.Reminder, due: Date, at: Option<Time>) {
+action remind(probe: Probe, reminder: std.Reminder, due: Date, at: Option<Time>) uses time {
     probe.when = .some(reminder.at(due, at))
 }
 
@@ -79,7 +79,7 @@ action seed_at(item: Item, at: Time) {
     item.at = .some(at)
 }
 
-action check(item: Item, done: Bool) {
+action check(item: Item, done: Bool) uses time {
     let again = std.complete(item, done)
     item.done = done and not again
 }
