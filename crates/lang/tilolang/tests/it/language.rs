@@ -129,6 +129,21 @@ fn index_of_is_where_an_item_stands() {
 }
 
 #[test]
+fn at_reads_the_item_at_a_place() {
+    ok("fn f(c: C) -> Option<C> {\n    c.items.at(0)\n}");
+    ok("fn f(c: C) -> Option<C> {\n    c.items.filter(.b).at(2)\n}");
+    ok(
+        "fn f(c: C) -> Bool {\n    if let x = c.items.at(0) {\n        x.t == \"\"\n    } else {\n        false\n    }\n}",
+    );
+    // The place is a whole number, and the item at it may be nothing.
+    expect("E020", "fn f(c: C) -> C {\n    c.items.at(0)\n}");
+    expect(
+        "E020",
+        "fn f(c: C) -> Option<C> {\n    c.items.at(\"0\")\n}",
+    );
+}
+
+#[test]
 fn remove_where_removes_and_counts() {
     ok("action clear(c: C) -> Int {\n    c.items.remove_where(.b)\n}");
     ok("action clear(c: C) -> Int {\n    c.items.remove_where(x -> x.t == \"\")\n}");
