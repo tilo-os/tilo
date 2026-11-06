@@ -672,27 +672,10 @@ impl Core {
     /// # Errors
     ///
     /// As [`Core::run_action`].
-    fn run_many(&self, ctx: &ExecCtx, refs: &[ActionRef]) -> Result<ActionOutcome, RuntimeError> {
-        let Some(first) = refs.first() else {
-            return Ok(ActionOutcome::Done(Value::Unit));
-        };
-        let pkg = self
-            .registry
-            .borrow()
-            .action_package(&first.action)
-            .ok_or_else(|| RuntimeError::NotFound(format!("action {}", first.action)))?;
-        let meta = pkg
-            .action(&first.action)
-            .ok_or_else(|| RuntimeError::NotFound(format!("action {}", first.action)))?
-            .clone();
-        let txn = self.store.borrow_mut().begin()?;
-        let primary = first.args.iter().find_map(|v| match v {
-            Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
-            _ => None,
-        });
-        let mut note = Self::note(ctx, &pkg, first);
-        note.count = u32::try_from(refs.len()).unwrap_or(u32::MAX);
-        let run = RunState {
+    /// The run of one action applied to many items: one attempt, and no journal, because an
+    /// action that calls another action has a change and a journal per call.
+    fn many_run(&self, ctx: &ExecCtx, first: &ActionRef) -> RunState {
+        RunState {
             run: self.store.borrow_mut().fresh_id("r"),
             journal: Journal {
                 action: Some(first.action.clone()),
@@ -713,10 +696,30 @@ impl Core {
             invoker: ctx.invoker.clone(),
             suggested_by: ctx.suggested_by.clone(),
             clock: None,
-            // One change over many items is one attempt: an action that calls another action
-            // inside `many` has no one journal to replay it from, so it makes no call here.
             journaled: false,
+        }
+    }
+
+    fn run_many(&self, ctx: &ExecCtx, refs: &[ActionRef]) -> Result<ActionOutcome, RuntimeError> {
+        let Some(first) = refs.first() else {
+            return Ok(ActionOutcome::Done(Value::Unit));
         };
+        let pkg = self
+            .registry
+            .borrow()
+            .action_package(&first.action)
+            .ok_or_else(|| RuntimeError::NotFound(format!("action {}", first.action)))?;
+        let meta = pkg
+            .action(&first.action)
+            .ok_or_else(|| RuntimeError::NotFound(format!("action {}", first.action)))?
+            .clone();
+        let txn = self.store.borrow_mut().begin()?;
+        let primary = first.args.iter().find_map(|v| match v {
+            Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
+            _ => None,
+        });
+        let mut note = Self::note(ctx, &pkg, first);
+        note.count = u32::try_from(refs.len()).unwrap_or(u32::MAX);
         self.frames.borrow_mut().push(
             pkg.hash.clone(),
             FrameKind::Action(ActionState {
@@ -732,7 +735,7 @@ impl Core {
                 invocations: Vec::new(),
                 note: Box::new(note),
                 touched: std::collections::BTreeSet::new(),
-                run: Box::new(run),
+                run: Box::new(self.many_run(ctx, first)),
             }),
         );
         let mut failure = None;
