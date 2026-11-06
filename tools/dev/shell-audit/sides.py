@@ -738,14 +738,32 @@ class NewSide(Side):
             return {"err": {"code": "failed", "message": str(error)}}
 
     def action_rows(self, query: str = "") -> list[dict]:
-        """The session pages its listing; the audit wants all of it."""
+        """The session pages its listing; the audit wants all of it.
+
+        The listing is asked for as it stands rather than waited on, because a
+        story asks many times in a row and a settle that long is minutes a
+        story. What a step changed is seen by asking again, and a page that
+        moved on under the walk starts the walk again."""
         if self.session is None:
             raise Failed("the session is not running")
-        try:
-            rows = self.session.actions(query)
-        except self.real_apps.Failed as error:
-            raise Failed(str(error))
-        return [row for row in rows or [] if isinstance(row, dict)]
+        for _ in range(10):
+            rows: list[dict] = []
+            cursor = None
+            try:
+                while True:
+                    payload = {"op": "actions_enumerate", "query": query,
+                               "include_programmatic": True, "limit": 1000, "wait_ms": 200}
+                    if cursor:
+                        payload["cursor"] = cursor
+                    answer = self.ok(payload, timeout=60)
+                    rows += answer.get("actions") or []
+                    cursor = answer.get("next_cursor")
+                    if not cursor:
+                        return [row for row in rows if isinstance(row, dict)]
+            except Failed as error:
+                if "stale_cursor" not in str(error):
+                    raise
+        raise Failed(f"the actions for {query!r} kept moving on")
 
     def client_key(self, key: str) -> dict:
         """A key the desktop's keymap lets through reaches the focused app."""
