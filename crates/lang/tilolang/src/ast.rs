@@ -123,9 +123,6 @@ pub struct TypeDecl {
     /// `(origin: mail.message)`: the outside service whose resources the type holds
     /// (convergence.md, "Outside services"), as the dotted name of one of its kinds.
     pub origin: Option<Ident>,
-    /// `(attached)`: its records are about the resource they were made from, a comment on a
-    /// task, so `linked` tells them apart from work made from it.
-    pub attached: bool,
     pub fields: Vec<FieldDecl>,
     /// `derive folded: Bool = finished and parent.all(folded)`: a value the store derives
     /// from the collection, which no record keeps ([`crate::derived`]).
@@ -314,9 +311,6 @@ pub struct MergeSpec {
 pub struct FieldDecl {
     pub node: NodeId,
     pub doc: Vec<String>,
-    /// `personal today: Bool = false`: one value per person, in a record everyone shares
-    /// ([`crate::personal`]).
-    pub personal: bool,
     pub name: Ident,
     pub ty: TypeExpr,
     pub merge: Option<MergeSpec>,

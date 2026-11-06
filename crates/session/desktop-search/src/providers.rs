@@ -420,7 +420,7 @@ impl PublishedActions {
 
     /// The other words the app is known by, from the registry's metadata
     /// (`app-fleet`): "youtube" for Tube, "channel", "videos". A query naming
-    /// one names the app, so "youtube videos of mkbhd" is the YouTube
+    /// one names the app, so "youtube videos of mkbhd" is the video
     /// client's channel, whatever the app is titled. Empty for an app the
     /// fleet does not know.
     #[must_use]

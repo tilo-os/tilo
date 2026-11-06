@@ -687,7 +687,10 @@ impl ResourceSurface<Capture, CaptureEffect> for StudioSurface {
 
     fn effect(&mut self, effect: CaptureEffect, _cx: &mut EffectCx<Capture, Self>) -> EffectAnswer {
         match effect {
-            CaptureEffect::Open => {
+            CaptureEffect::Open { mode } => {
+                if let Some(mode) = mode {
+                    self.studio.link().open_on(mode.into());
+                }
                 if self.own {
                     self.widget.open();
                 } else {
@@ -707,7 +710,17 @@ impl ResourceSurface<Capture, CaptureEffect> for StudioSurface {
                 self.studio.link().ask(Ask::StartRecording(take));
             }
             CaptureEffect::StopRecording => self.studio.link().ask(Ask::StopRecording),
-            CaptureEffect::SaveReplay => self.studio.link().ask(Ask::SaveReplay),
+            // The last half minute when a buffer keeps one. With nothing
+            // kept there is nothing to save: the person's chord starts a
+            // recording instead, unless one already runs.
+            CaptureEffect::SaveReplay => {
+                if self.scene.replay.is_some() {
+                    self.studio.link().ask(Ask::SaveReplay);
+                } else if self.scene.recording.is_none() {
+                    self.studio.link().open_on(CaptureMode::Recording);
+                    self.studio.presentation().open(false);
+                }
+            }
         }
         self.dirty = true;
         Ok(Effected::done())

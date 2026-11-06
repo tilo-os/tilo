@@ -230,6 +230,13 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Text",
                 "Who proposed the action the change made, as a sentence names them, when the person making it accepted their suggestion; empty for a change made on its own.",
             ),
+            (
+                "count",
+                "Int",
+                "How many items the change was made over: `1` for an action applied to its \
+                 subject, and for one action applied to many items at once (`many`), as many \
+                 as the items it changed.",
+            ),
         ],
     },
     ValueType {
@@ -266,6 +273,12 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "mine",
                 "Bool",
                 "Whether the person looking made it, outside any task run.",
+            ),
+            (
+                "changes",
+                "Int",
+                "How many changes it folds: one for one command, however many items it \
+                 changed at once, and more for a step of several.",
             ),
         ],
     },
@@ -414,11 +427,6 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Bool",
                 "Whether its type declares a row view, the one a list of its type draws each item through.",
             ),
-            (
-                "attached",
-                "Bool",
-                "Whether its type is `(attached)`: its records are about what they were made from, a comment on a task, rather than work made from it.",
-            ),
         ],
     },
     ValueType {
@@ -533,7 +541,6 @@ fn field(name: &str, ty: &str, doc: &str) -> FieldMeta {
         ty: ty.to_string(),
         merge: MergeKind::Register,
         doc: doc.to_string(),
-        personal: false,
         default: None,
         role: None,
         derived: None,
@@ -579,7 +586,6 @@ pub fn host_meta() -> PackageMeta {
             ],
             search: crate::meta::SearchMeta::default(),
             origin: None,
-            attached: false,
         })
         .chain(std::iter::once(TypeMeta {
             id: format!("host-{}", RESOURCE_TYPE_NAME.to_lowercase()),
@@ -588,7 +594,6 @@ pub fn host_meta() -> PackageMeta {
             fields: Vec::new(),
             search: crate::meta::SearchMeta::default(),
             origin: None,
-            attached: false,
         }))
         .chain(VALUE_TYPES.iter().map(|value| {
             TypeMeta {
@@ -604,7 +609,6 @@ pub fn host_meta() -> PackageMeta {
                         ty: (*ty).to_string(),
                         merge: MergeKind::Register,
                         doc: (*doc).to_string(),
-                        personal: false,
                         default: None,
                         role: None,
                         derived: None,
@@ -612,8 +616,7 @@ pub fn host_meta() -> PackageMeta {
                     .collect(),
                 search: crate::meta::SearchMeta::default(),
                 origin: None,
-                attached: false,
-            }
+                }
         }))
         .collect(),
         enums: HOST_ENUMS

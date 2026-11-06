@@ -5356,6 +5356,11 @@
           }
         },
         {
+          "name": "multi_select",
+          "doc": "The list holds more than one selected row: a click with ctrl (or cmd) adds or takes away the row it lands on, one with shift takes the range from the last row chosen, and Escape puts the selection away. Without it a click chooses the one row the window shows.",
+          "type": "bool"
+        },
+        {
           "name": "unread",
           "doc": "The item a conversation's reader had not seen when they opened it (`first_unseen(c)`): the \"New messages\" divider stands over the row that shows it, and while that is above the view a pill at the foot offers to take the reader back to it. `None` draws neither. The list works out the row as it builds, so the same list keeps its rows and only the two the divider moved between build again.",
           "type": {
@@ -5409,6 +5414,10 @@
           "name": "activate",
           "doc": "A row was activated (a click, Enter, an assistive technology): carries the item it shows.",
           "value": "resource"
+        },
+        {
+          "name": "selected",
+          "doc": "The selection changed: carries the items selected, in the order they stand, and none when the selection was put away."
         }
       ],
       "state": [
@@ -5418,6 +5427,15 @@
           "type": {
             "option": {
               "list": "text"
+            }
+          }
+        },
+        {
+          "name": "chosen",
+          "doc": "The items selected, in the order they stand: the selection a host keeps for its person, given back so a list built again shows it as they left it.",
+          "type": {
+            "option": {
+              "list": "resource"
             }
           }
         },

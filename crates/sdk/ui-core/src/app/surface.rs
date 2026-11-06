@@ -178,6 +178,9 @@ impl App {
             WindowEvent::KeyboardLayoutChanged(layout) => {
                 self.input.keyboard_layout.clone_from(layout)
             }
+            // Every press and click reads the modifiers the surface last reported, whatever
+            // source the input comes from.
+            WindowEvent::ModifiersChanged(modifiers) => self.input.modifiers = *modifiers,
             WindowEvent::Focused(false) => {
                 self.input.keyboard_layout = None;
                 self.input.window_focused = false;

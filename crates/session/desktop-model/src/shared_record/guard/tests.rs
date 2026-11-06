@@ -303,3 +303,110 @@ fn a_write_ahead_of_what_it_builds_on_waits_and_is_decided_as_its_authors() {
         Err(DesktopRefusal::NotTheirs { act, .. }) if act.id == 1 && act.act == Act::Close
     ));
 }
+
+/// A window `id` opened in `strip`'s first group, as a member's page adds it.
+fn open_window(desktop: &mut SharedDesktop, id: u64, who: &str, record: &str) {
+    let strip = &mut desktop.tree.workspaces[0].strips[0];
+    strip.window_groups.push(WindowGroup {
+        // A group id of its own per window; test window ids are small.
+        id: id.saturating_mul(100),
+        tabs: vec![tab(id)],
+        active_tab: id,
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    });
+    desktop.authors.insert(id, who.to_owned());
+    desktop.records.push((id, record.to_owned()));
+}
+
+/// A desk holding Ada's window 1 on the package primary (`""`, the primary
+/// record's route).
+fn primary_workspace() -> DesktopGuard {
+    let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
+    let mut desk = desktop(&[(1, 100, ADA)]);
+    desk.records = vec![(1, String::new())];
+    shared_record::write(&mut doc, &desk).unwrap();
+    doc.commit();
+    DesktopGuard::new(doc)
+}
+
+/// Two people open one shared desk: Ben joins, takes the records the desk
+/// shows for its windows, opens one of his own, and writes it back. The
+/// window Ada opened arrives with its record, and both can keep working.
+#[test]
+fn a_member_who_joins_a_shared_desk_opens_a_window_on_top_of_its_records() {
+    let mut guard = primary_workspace();
+    let mut ben = Page::of(&guard, 2);
+    let mut adopted = shared_record::read(guard.doc(), None).unwrap();
+    assert_eq!(adopted.records, vec![(1, String::new())]);
+    open_window(&mut adopted, 3, BEN, "derived:default@tab:0000000000000003");
+    let opens = ben.write(&adopted);
+    guard
+        .decide(&opens, &writer(BEN, None, &moderates(BEN)))
+        .unwrap();
+    assert_eq!(windows(&guard), vec![1, 3], "Ben sees Ada's window too");
+    let seen = shared_record::read(guard.doc(), None).unwrap();
+    assert_eq!(
+        seen.records, adopted.records,
+        "the desk holds each window's record as it showed it"
+    );
+
+    // Ada's page, joining on the desk Ben left, writes her own change.
+    let mut ada = Page::of(&guard, 1);
+    let mut adopted = shared_record::read(guard.doc(), None).unwrap();
+    adopted.tree.workspaces[0].strips[0].window_groups[0].tabs[0].title = "Lounge renamed".into();
+    let renames = ada.write(&adopted);
+    guard
+        .decide(&renames, &writer(ADA, None, &moderates(ADA)))
+        .unwrap();
+    assert_eq!(windows(&guard), vec![1, 3]);
+}
+
+/// A page that leaves out a window's record binds it to another one (none):
+/// refused, as before.
+#[test]
+fn a_member_who_joins_without_the_desks_records_is_refused() {
+    let mut guard = primary_workspace();
+    let mut ben = Page::of(&guard, 2);
+    let mut adopted = shared_record::read(guard.doc(), None).unwrap();
+    adopted.records.clear();
+    open_window(&mut adopted, 3, BEN, "derived:default@tab:0000000000000003");
+    let forgets = ben.write(&adopted);
+    assert_eq!(
+        guard.decide(&forgets, &writer(BEN, None, &moderates(BEN))),
+        Err(DesktopRefusal::Rebound {
+            writer: BEN.into(),
+            window: 1,
+        })
+    );
+    assert_eq!(windows(&guard), vec![1], "the refused write left nothing");
+}
+
+/// A desk written before pages named records by their route holds the package
+/// primary's custody key for it. It reads as the primary's route, so the page
+/// that writes the desk next restates the same record instead of rebinding it.
+#[test]
+fn a_desk_holding_the_primarys_custody_key_reads_and_heals_to_its_route() {
+    let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
+    let mut desk = desktop(&[(1, 100, ADA)]);
+    desk.records = vec![(1, "@tilo:package-primary".into())];
+    shared_record::write(&mut doc, &desk).unwrap();
+    doc.commit();
+    let mut guard = DesktopGuard::new(doc);
+    let mut ada = Page::of(&guard, 1);
+    let adopted = shared_record::read(guard.doc(), None).unwrap();
+    assert_eq!(
+        adopted.records,
+        vec![(1, String::new())],
+        "the custody key reads as the primary's route"
+    );
+    let heals = ada.write(&adopted);
+    guard
+        .decide(&heals, &writer(ADA, None, &moderates(ADA)))
+        .unwrap();
+    assert_eq!(
+        shared_record::read(guard.doc(), None).unwrap().records,
+        vec![(1, String::new())]
+    );
+}

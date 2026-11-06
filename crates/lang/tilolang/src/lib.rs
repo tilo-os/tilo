@@ -61,7 +61,6 @@ pub mod natural;
 pub mod origin;
 mod package;
 pub mod parser;
-pub mod personal;
 pub mod pred;
 mod prims;
 pub mod print;

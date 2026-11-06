@@ -2,7 +2,7 @@
 //! tilolang type is: search names its app by its registry words and its
 //! things by their type's noun, with nothing the app writes for it.
 //!
-//! The types here are Tube's: a channel and a video of a YouTube client whose
+//! The types here are Tube's: a channel and a video of a video client whose
 //! published title is a name of its own, found by the client's keyword
 //! ("youtube"). The test is the one the design names: "youtube videos of
 //! <channel>".

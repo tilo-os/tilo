@@ -386,7 +386,6 @@ fn field_meta(f: &crate::resolve::FieldInfo, app: &str) -> FieldMeta {
         ty: f.ty.meta_text(app),
         merge: f.merge,
         doc: f.doc.clone(),
-        personal: f.personal,
         default: f.default.clone(),
         role: f.role.clone(),
         derived: f.derived.clone(),
@@ -664,7 +663,6 @@ fn build_meta(
                     fields,
                     search: info.search.clone(),
                     origin: info.origin.clone(),
-                    attached: t.attached,
                 });
             }
             Item::Action(a) => {

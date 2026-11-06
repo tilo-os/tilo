@@ -73,6 +73,25 @@ pub struct Authorship {
     /// history says while the change is theirs ([`tilolang_runtime::store::Version::suggested_by`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_by: Option<String>,
+    /// How many items the change was made over ([`ChangeNote::count`]): one for an action
+    /// applied to its subject, as many as the items for one applied to many at once
+    /// ([`tilolang_runtime::store::ChangeNote::count`]).
+    #[serde(default = "one", skip_serializing_if = "crate::action::is_one")]
+    pub count: u32,
+}
+
+/// The count of a change made over its one subject.
+fn one() -> u32 {
+    1
+}
+
+/// Whether the change was made over its one subject.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "`skip_serializing_if` calls it with the field by reference"
+)]
+pub(crate) fn is_one(count: &u32) -> bool {
+    *count == 1
 }
 
 impl Authorship {

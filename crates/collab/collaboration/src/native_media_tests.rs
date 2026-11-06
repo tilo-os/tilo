@@ -23,6 +23,7 @@ fn native_media_leave_bypasses_wedged_document_and_retires_unmute_reply() {
     assert!(manager.send(CollabRequest::Document {
         mutation: collab_types::DocumentMutation::Snapshot(b"wedged document".to_vec()),
         authorization: None,
+        commit: None,
     }));
     tilo_test_env::recv("the gated document RPC", &observed);
     assert!(manager.send(CollabRequest::NativeMediaCommand {
@@ -101,6 +102,7 @@ fn native_media_manager_drop_tears_down_while_document_rpc_is_wedged() {
     assert!(manager.send(CollabRequest::Document {
         mutation: collab_types::DocumentMutation::Snapshot(b"wedged document".to_vec()),
         authorization: None,
+        commit: None,
     }));
     tilo_test_env::recv("the gated document RPC", &observed);
     drop(manager);

@@ -647,6 +647,17 @@ pub enum ChromeEffect {
     /// Open or close the workspace menu
     #[effect(view, own_device, idempotent)]
     WorkspaceMenu,
+
+    /// Run a fixed desktop shortcut
+    ///
+    /// By its id in the shortcut catalogue: a chord Settings cannot rebind,
+    /// such as closing the window in front or opening the capture studio.
+    #[effect(own_device)]
+    FixedShortcut {
+        /// The fixed shortcut's id.
+        #[param("The fixed shortcut's id in the shortcut catalogue")]
+        action: String,
+    },
 }
 
 /// A verb a host page or a surface dispatches, from either resource: the
@@ -1144,6 +1155,7 @@ fn admit_chrome(
         | ChromeEffect::LeaveWorkspace { .. }
         | ChromeEffect::WorkspaceSettings
         | ChromeEffect::Shortcut { .. }
+        | ChromeEffect::FixedShortcut { .. }
         | ChromeEffect::ToggleCollaborators
         | ChromeEffect::ShowStrips
         | ChromeEffect::ShowPerson { .. }

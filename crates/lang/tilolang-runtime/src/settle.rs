@@ -611,6 +611,7 @@ impl Core {
             suggested_by,
             origin: Some(format!("invocation:{origin}")),
             from: None,
+            at: None,
         };
         let aref = ActionRef {
             action: rec.action.clone(),

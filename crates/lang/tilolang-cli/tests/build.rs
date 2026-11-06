@@ -15,15 +15,15 @@ use tilolang_cli::package::{self, BuildOptions};
 
 mod support;
 
-use support::{copy_package, packages};
+use support::{copy_package, packages, with_used};
 
 #[test]
 fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
     let scratch = tempfile::tempdir().unwrap();
     // The packages are copied: a build writes new ids into their locks.
     let source = scratch.path().join("tl");
-    for name in ["today", "notes", "tasks", "chat"] {
-        copy_package(&packages().join(name), &source.join(name));
+    for name in with_used(&["today"]) {
+        copy_package(&packages().join(&name), &source.join(&name));
     }
     let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
     let options = BuildOptions {
@@ -45,6 +45,7 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
         "so.tilo.lang.notes",
         "so.tilo.lang.tasks",
         "so.tilo.lang.chat",
+        "so.tilo.lang.discussion",
     ] {
         assert!(ids.contains(&used), "{used} is an app of its own: {ids:?}");
     }
@@ -162,9 +163,9 @@ fn every_payload_carries_the_standard_library(
 fn a_package_that_uses_the_platforms_apps_builds() {
     let scratch = tempfile::tempdir().unwrap();
     let source = scratch.path().join("tl");
-    // With the session's description, a native app's directory beside them.
-    for name in ["shell", "notes", "tasks", "chat", "session"] {
-        copy_package(&packages().join(name), &source.join(name));
+    // With the session's description, a native app's directory beside it.
+    for name in with_used(&["shell"]) {
+        copy_package(&packages().join(&name), &source.join(&name));
     }
     let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
     let options = BuildOptions {

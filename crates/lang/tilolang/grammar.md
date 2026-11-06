@@ -25,7 +25,7 @@ views      = "views" ident { "," ident } "for" type ;   (* what a window of the 
 role       = "primary" | "destructive" | "migration" | "internal" ;
 
 type_decl  = "type" Ident [ "(" "origin" ":" Ident { "." Ident } ")" ] "{" { field | derived | search } "}" ;
-field      = { doc } [ "personal" ] ident ":" type [ "merge" merge_kind ]
+field      = { doc } ident ":" type [ "merge" merge_kind ]
              [ "(" ( "title" | "body" | "previously" | "parent" ) ")" ] [ "=" expr ] ;
 derived    = { doc } "derive" ident ":" ( "Bool" | "Int" ) "=" derived_expr ;
 derived_expr = derived_or [ ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) derived_or ] ;
@@ -116,7 +116,7 @@ Tokens:
 - `Ident` starts with an uppercase letter (types and enums), `ident` with a lowercase one.
   Keywords: `app use as type enum action flow view fn let if else match for in return and or not
   true false try merge proposal`. `window`, `lens`, `root`, `default`, `row`, `scenario`,
-  `primary`, `destructive`, `migration`, `views`, `personal` and `template` are keywords only
+  `primary`, `destructive`, `migration`, `views` and `template` are keywords only
   where the grammar above uses them.
 - `length` is a number with `rem`, `dp` or `fr` (`11rem`); `duration` an integer with `s`, `m`,
   `h`, `d` or `w` (`-7d`).

@@ -1,6 +1,6 @@
 //! Expressions: literals, operators, fields, strings and coercions.
 
-use super::{Checker, Ctx, Ex, conv, load_op, store_op};
+use super::{Checker, Ctx, Ex, Invoked, conv, load_op, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, BinOp, ExprKind, StrPart, UnOp};
 use crate::diag::Span;
@@ -237,9 +237,9 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
-        self.st.try_invoke = true;
+        self.st.invoked = Invoked::Try;
         let ex = self.expr(call, None);
-        if std::mem::take(&mut self.st.try_invoke) {
+        if std::mem::replace(&mut self.st.invoked, Invoked::Plain) == Invoked::Try {
             self.err(
                 "E044",
                 span,

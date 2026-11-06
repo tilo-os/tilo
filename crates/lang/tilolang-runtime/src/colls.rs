@@ -193,12 +193,7 @@ pub(crate) fn field_reads(
     item: &crate::registry::TypeInfo,
 ) -> Option<crate::store::Pred> {
     pred.resolve(&mut |id: &String| {
-        let field = item
-            .fields
-            .iter()
-            .find(|f| f.id == tilolang::personal::field_of(id))?;
-        // A personal field's read names the person it is for (`today@ada`): the store reads
-        // their value under that id.
+        let field = item.fields.iter().find(|f| f.id == **id)?;
         FieldRead::of(id, field.kind, &field.ty, field.default.as_ref())
     })
 }

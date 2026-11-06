@@ -477,16 +477,19 @@ pub fn packages_key() -> StateKey {
     StateKey::runtime(crate::platform::LENS_WINDOW, None, "$packages-arrived")
 }
 
-/// The apps whose package a view read a resource of before the package was loaded: the types
-/// it named, by app. The host loads each app's package ([`crate::Runtime::load_foreign_package`]),
-/// and the view that read it runs again then ([`packages_key`]).
+/// The apps whose package a view read a resource of, or called a view of, before the package
+/// was loaded: what it named, by app. The host loads each app's package
+/// ([`crate::Runtime::load_foreign_package`]), and the view that read it runs again then
+/// ([`packages_key`]).
 ///
-/// Each app is asked for once: a package that never declares the type it was asked for, or one
-/// no host can serve, leaves the view call its waiting state instead of asking again every
-/// frame. Unloading the app forgets the ask, so a package that comes again is loaded again.
+/// Each app is asked for once: a package that never declares the type or the view it was asked
+/// for, or one no host can serve, leaves the view call its waiting state instead of asking
+/// again every frame. Unloading the app forgets the ask, so a package that comes again is
+/// loaded again.
 #[derive(Debug, Default)]
 pub struct WantedPackages {
-    /// The types read of each app, by app, since the host last took them.
+    /// What a view read of each app, by app, since the host last took them: the type it read a
+    /// resource of (`app#Type`), or the app itself for a view call (`view:<app>:<view id>`).
     wanted: BTreeMap<String, String>,
     /// Every app asked for, by app: an app is asked for once until it is unloaded.
     asked: std::collections::BTreeSet<String>,
@@ -506,6 +509,14 @@ impl WantedPackages {
             self.wanted.insert(key.app, ty.to_owned());
         }
         true
+    }
+
+    /// Ask for the package of `app`, whose view a view call composes (`view:<app>:<view id>`):
+    /// a view of another app is that app's code, as a resource of its type is its app's record.
+    pub(crate) fn want_app(&mut self, app: &str) {
+        if self.asked.insert(app.to_owned()) {
+            self.wanted.insert(app.to_owned(), app.to_owned());
+        }
     }
 
     /// The apps asked for since the last call, each with the type as the view named it: what

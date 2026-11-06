@@ -294,7 +294,6 @@ impl Env {
             ty: Ty::parse_meta(&f.ty, &app).unwrap_or(Ty::Error),
             merge: f.merge,
             doc: f.doc.clone(),
-            personal: f.personal,
             default: f.default.clone(),
             role: f.role.clone(),
             derived: f.derived.clone(),
@@ -765,7 +764,6 @@ impl Resolver<'_> {
                     id: id_of(lock, &format!("{name}.{}.{}", v.name.name, p.name.name)),
                     ty,
                     merge: MergeKind::Register,
-                    personal: false,
                     doc: String::new(),
                     default: None,
                     role: None,
@@ -865,9 +863,6 @@ impl Resolver<'_> {
             self.err("E023", f.ty.span, "a field cannot hold a `Duration`: a stored length of time keeps the number the app measures it in (`Int`), and `Duration(n)` reads it as one where a moment moves by it".to_string());
         }
         let merge = self.merge(&ty, f.merge.as_ref(), &f.name.name);
-        if f.personal {
-            self.personal_field(&ty, f, merge);
-        }
         let default = match &f.default {
             Some(d) => self.default_value(&ty, d),
             None => self.implicit_default(&ty, f),
@@ -878,50 +873,9 @@ impl Resolver<'_> {
             ty,
             merge,
             doc: f.doc.join("\n"),
-            personal: f.personal,
             default,
             role: None,
             derived: None,
-        }
-    }
-
-    /// A field declared `personal` holds one value per person ([`crate::personal`]): the empty
-    /// value of a `Bool` or an `Option`, so a person who never set it reads as one who set it to
-    /// none, and a register, as each person's value is their own to write.
-    fn personal_field(&mut self, ty: &Ty, f: &ast::FieldDecl, merge: MergeKind) {
-        let name = &f.name.name;
-        if !matches!(ty, Ty::Bool | Ty::Option(_)) {
-            self.err(
-                "E121",
-                f.ty.span,
-                format!(
-                    "`{name}` is personal, so each person has a value of their own and a person who never set one reads the empty value: a personal field is a `Bool` or an `Option`, not `{}`",
-                    ty.display(&self.env.app)
-                ),
-            );
-        }
-        if merge != MergeKind::Register {
-            self.err(
-                "E121",
-                f.name.span,
-                format!("`{name}` is personal: each person's value is their own register, so it merges as one and takes no `merge`"),
-            );
-        }
-        if let Some(default) = &f.default {
-            let empty = match ty {
-                Ty::Bool => Some(serde_json::Value::Bool(false)),
-                Ty::Option(_) => Some(serde_json::Value::Null),
-                _ => None,
-            };
-            if empty.is_some_and(|empty| self.default_value(ty, default).as_ref() != Some(&empty)) {
-                self.err(
-                    "E121",
-                    default.span,
-                    format!(
-                        "`{name}` is personal, so a person who never set it reads the empty value: write no default, or the empty one (`= false`, `= .none`)"
-                    ),
-                );
-            }
         }
     }
 
@@ -932,17 +886,6 @@ impl Resolver<'_> {
     fn roles(&mut self, owner: &str, decl: &ast::TypeDecl, fields: &mut [FieldInfo]) {
         for f in &decl.fields {
             let Some(marker) = &f.marker else { continue };
-            if f.personal {
-                self.err(
-                    "E121",
-                    f.name.span,
-                    format!(
-                        "`{}` is personal: what the platform reads a field by (`(title)`, `(done)`, `(repeats: due)`, `(time of: due)`) is one value of the record, and a personal field holds one per person",
-                        f.name.name
-                    ),
-                );
-                continue;
-            }
             let Some(at) = fields.iter().position(|x| x.name == f.name.name) else {
                 continue;
             };
@@ -956,7 +899,7 @@ impl Resolver<'_> {
         // A field whose marker was refused already says what it is; the marker's own error is
         // the one to read.
         for f in &decl.fields {
-            if f.marker.is_some() || f.personal {
+            if f.marker.is_some() {
                 continue;
             }
             let Some(info) = fields.iter().find(|x| x.name == f.name.name) else {

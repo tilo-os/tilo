@@ -806,7 +806,7 @@ view task_page(t: Task) {
                     on submit: add_subtask(tasks, t, step).then(set(step, ""))
                 }
             }
-            std.linked(t)
+            std.linked(t, without: discussion.said_about(t))
             facts(t) {
                 ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {
                     ui.MenuItem("Inbox", icon: .inbox, checked: t.project == .none) {
@@ -1149,12 +1149,12 @@ scenario "a project board" -> Project {
     flat
 }
 
-/// A task page with the discussion under it: the thread a task is talked over in, its field
-/// ready for the first thing said. A scenario leaves the thread empty: a comment is the
-/// discussion app's change, and one change does not span apps.
+/// A task page with the discussion under it: what two people said about the chairs, days apart,
+/// each with their face and the time they said it, and the thread's field ready for the next.
 scenario "a discussion on a task" -> Task {
     let ada = person("Ada")
-    tasks.items.insert(
+    let bo = person("Bo")
+    let t = tasks.items.insert(
         Task(
             title: "Order the new office chairs",
             notes: RichText("Two for the window desks, and four for the room."),
@@ -1162,4 +1162,29 @@ scenario "a discussion on a task" -> Task {
             assignee: .some(ada),
         ),
     )
+    invoke(
+        discussion.comment(
+            discussion.comments,
+            RichText("The supplier quotes six weeks. Do we order before the summer?"),
+        ),
+        by: ada,
+        at: 2026-06-24T09:12Z,
+        from: t,
+    )
+    invoke(
+        discussion.comment(discussion.comments, RichText("Yes. The room stays empty either way.")),
+        by: bo,
+        at: 2026-06-24T15:40Z,
+        from: t,
+    )
+    invoke(
+        discussion.comment(
+            discussion.comments,
+            RichText("Ordered, delivery the first week of August."),
+        ),
+        by: ada,
+        at: 2026-06-25T08:03Z,
+        from: t,
+    )
+    t
 }

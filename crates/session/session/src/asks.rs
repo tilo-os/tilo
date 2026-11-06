@@ -14,7 +14,7 @@ use tilo_desktop::desktop_host::{
 use tilo_desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
 use tilo_desktop::overlays::{Anchor, Slot};
 use tilo_sheets::power::PowerEffect;
-use ui::shortcut_table::{ShortcutAction, ShortcutHome};
+use ui::shortcut_table::{FixedAction, ShortcutAction};
 
 use crate::keys::Invocation;
 use crate::{
@@ -80,6 +80,7 @@ impl Shared {
                     self.tray_request(&key, request);
                 }
                 DesktopAsk::Shortcut(action) => self.shortcut(action),
+                DesktopAsk::FixedShortcut(action) => self.fixed_shortcut(action),
                 DesktopAsk::HostAction(action) => self.host_action(&action),
                 DesktopAsk::Music(action) => self.music(action),
                 // A card of Alt+Tab's panel under the pointer, a press on
@@ -470,28 +471,25 @@ impl Shared {
         self.overlays.open(Slot::QuickSettings, anchor);
     }
 
-    /// A desktop shortcut the desk left to its host: the device's own
-    /// answers, and the surfaces over the desk. Every shortcut of the
-    /// session's is named here ([`ShortcutAction::home`]), so one the table
-    /// gains without an answer does not build.
-    fn shortcut(&self, action: ShortcutAction) {
-        if action.home() == ShortcutHome::Desk {
-            // The desk carries out its own windows' shortcuts; one arriving
-            // here is one it has nothing to act on right now.
-            tracing::debug!(?action, "a shortcut of the desk's found no window");
-            return;
+    /// Close the quick settings when they are up, open them otherwise.
+    fn toggle_quick_settings(&self) {
+        if self.quick_settings {
+            if self.overlays.is_open(Slot::QuickSettings) {
+                self.overlays.close(Slot::QuickSettings);
+            } else {
+                self.overlays.open(Slot::QuickSettings, None);
+            }
         }
+    }
+
+    /// A desktop shortcut the desk left to its host: the device's own
+    /// answers, and the surfaces over the desk. Every shortcut is named here
+    /// or among the desk's, so one the table gains without an answer does
+    /// not build.
+    fn shortcut(&self, action: ShortcutAction) {
         let mut invocations = self.invocations.borrow_mut();
         match action {
-            ShortcutAction::QuickSettings => {
-                if self.quick_settings {
-                    if self.overlays.is_open(Slot::QuickSettings) {
-                        self.overlays.close(Slot::QuickSettings);
-                    } else {
-                        self.overlays.open(Slot::QuickSettings, None);
-                    }
-                }
-            }
+            ShortcutAction::QuickSettings => self.toggle_quick_settings(),
             // The panel's own pages: it is asked for them once it runs, which
             // is a pass after the stack has it up.
             ShortcutAction::Notifications => {
@@ -539,15 +537,101 @@ impl Shared {
             ShortcutAction::AskAgent | ShortcutAction::SaySomething => {
                 self.launchpad(LaunchpadAction::Chat);
             }
-            // The desk's feedback picker asks the host for the report's
-            // transport, and this session carries none yet: the browser
-            // desktop reports, the native one has nowhere to send it.
-            ShortcutAction::ReportProblem => {}
-            _ => debug_assert_eq!(
-                action.home(),
-                ShortcutHome::Desk,
-                "a shortcut of the session's is answered above"
-            ),
+            // The desk answers these on its own windows, strips and places
+            // before handing anything on: one arriving here is one it had
+            // nothing to act on.
+            ShortcutAction::WorkspaceOverview
+            | ShortcutAction::EmojiPicker
+            | ShortcutAction::FocusPreviousWindow
+            | ShortcutAction::FocusNextWindow
+            | ShortcutAction::PreviousTab
+            | ShortcutAction::NextTab
+            | ShortcutAction::PreviousStrip
+            | ShortcutAction::NextStrip
+            | ShortcutAction::PreviousWorkspace
+            | ShortcutAction::NextWorkspace
+            | ShortcutAction::MaximizeWindow
+            | ShortcutAction::RestoreWindow
+            | ShortcutAction::ReopenClosedTab
+            | ShortcutAction::ToggleMaximize
+            | ShortcutAction::ToggleFullscreen
+            | ShortcutAction::DetachTab
+            | ShortcutAction::AttachTabLeft
+            | ShortcutAction::AttachTabRight
+            | ShortcutAction::MoveGroupLeft
+            | ShortcutAction::MoveGroupRight
+            | ShortcutAction::MoveGroupToPreviousStrip
+            | ShortcutAction::MoveGroupToNextStrip
+            | ShortcutAction::MoveGroupToPreviousDisplay
+            | ShortcutAction::MoveGroupToNextDisplay
+            | ShortcutAction::ResizeNarrower
+            | ShortcutAction::ResizeWider
+            | ShortcutAction::OpenFiles
+            | ShortcutAction::OpenTerminal
+            | ShortcutAction::ReportProblem
+            | ShortcutAction::FocusGroup1
+            | ShortcutAction::FocusGroup2
+            | ShortcutAction::FocusGroup3
+            | ShortcutAction::FocusGroup4
+            | ShortcutAction::FocusGroup5
+            | ShortcutAction::FocusGroup6
+            | ShortcutAction::FocusGroup7
+            | ShortcutAction::FocusGroup8
+            | ShortcutAction::FocusGroup9
+            | ShortcutAction::FocusStrip1
+            | ShortcutAction::FocusStrip2
+            | ShortcutAction::FocusStrip3
+            | ShortcutAction::FocusStrip4
+            | ShortcutAction::FocusStrip5
+            | ShortcutAction::FocusStrip6
+            | ShortcutAction::FocusStrip7
+            | ShortcutAction::FocusStrip8
+            | ShortcutAction::FocusStrip9 => {
+                tracing::debug!(?action, "a shortcut of the desk's found no window");
+            }
+        }
+    }
+
+    /// A fixed desktop shortcut the desk left to its host: the capture
+    /// studio, the shortcut guide and the remote control. Every one the desk
+    /// does not carry out is named here.
+    fn fixed_shortcut(&self, action: FixedAction) {
+        use ui::floating_surface::CaptureStudioProtocolMode as Mode;
+        match action {
+            FixedAction::CaptureScreenshot | FixedAction::PictureInPicture => {
+                let mode = if action == FixedAction::CaptureScreenshot {
+                    Mode::Screenshot
+                } else {
+                    Mode::PictureInPicture
+                };
+                self.invocations.borrow_mut().push(
+                    Invocation::new(tilo_capture_studio::RESOURCE, "open")
+                        .with("mode", serde_json::to_value(mode).unwrap_or_default()),
+                );
+            }
+            // The last half minute, when the buffer keeps one; starting a
+            // recording when it does not, as the studio's own button does
+            // when there is nothing to save.
+            FixedAction::SaveRecentReplay => self.invocations.borrow_mut().push(Invocation::new(
+                tilo_capture_studio::RESOURCE,
+                "save-replay",
+            )),
+            FixedAction::ShortcutGuide => self.shortcut_guide.toggle(),
+            FixedAction::StopRemoteInput => self
+                .commands
+                .borrow_mut()
+                .push(SessionCommand::CutRemoteInput),
+            // The desk answers these on its own windows and strips: one
+            // arriving here is one it had nothing to act on.
+            FixedAction::CloseTab
+            | FixedAction::NewWindow
+            | FixedAction::DuplicateTab
+            | FixedAction::OpenTerminal
+            | FixedAction::StripSwitcher
+            | FixedAction::WorkspaceHistory
+            | FixedAction::ExploreWorkspaceHistory => {
+                tracing::debug!(?action, "a fixed shortcut of the desk's found no window");
+            }
         }
     }
 }

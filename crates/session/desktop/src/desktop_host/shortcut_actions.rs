@@ -2,8 +2,11 @@
 //! action carried out through the verb its menu row, its palette row and an
 //! agent's invocation name, and the rest handed to the session.
 
-use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, Destination};
-use ui::shortcut_table::ShortcutAction;
+use tilo_desktop_model::layout::TileContent;
+use tilo_desktop_surface::navigation::{
+    ActivityView, ChromeEffect, DeskEffect, Destination, Route,
+};
+use ui::shortcut_table::{FixedAction, ShortcutAction};
 
 use super::{DesktopAsk, DesktopChrome};
 use crate::chrome::ChromeIntent;
@@ -96,6 +99,116 @@ impl DesktopChrome {
             }
         }
         true
+    }
+
+    /// Perform a fixed desktop shortcut: a chord Settings cannot rebind.
+    /// False for one the desk has no part in (a capture, the shortcut guide,
+    /// cutting a remote control), which the session then answers.
+    pub fn fixed_shortcut(&mut self, action: FixedAction) -> bool {
+        match action {
+            // The window in front goes, as its menu's Close row does.
+            FixedAction::CloseTab => {
+                if let Some(route) = self.focused_route() {
+                    self.dispatch(DeskEffect::CloseTab { tab: route.tab });
+                }
+            }
+            // Another window of the app in front, right after it, as the
+            // menu's New tab row opens one; with no window, the app picker.
+            FixedAction::DuplicateTab => {
+                match self.focused_route().and_then(|route| {
+                    let app = self.app_of(&route)?;
+                    Some((app, route))
+                }) {
+                    Some((app, route)) => {
+                        self.dispatch(ChromeEffect::OpenApp {
+                            app,
+                            beside: Some(route.tab),
+                            background: None,
+                        });
+                    }
+                    None => self.open_the_app_picker(),
+                }
+            }
+            // A new window is the app picker: the rule for where it stands
+            // is the desk's, and the person chooses the app.
+            FixedAction::NewWindow => self.open_the_app_picker(),
+            FixedAction::OpenTerminal => self.open_app("so.tilo.terminal"),
+            FixedAction::StripSwitcher => {
+                self.apply_intent(crate::chrome::ChromeIntent::ToggleStrips);
+            }
+            // The workspace's history, where the person is: what Super+H
+            // showed of what happened here.
+            FixedAction::WorkspaceHistory | FixedAction::ExploreWorkspaceHistory => {
+                let view = if action == FixedAction::WorkspaceHistory {
+                    ActivityView::CatchUp
+                } else {
+                    ActivityView::Explore
+                };
+                if let Some(workspace) = self.active_workspace() {
+                    self.dispatch(ChromeEffect::Activity {
+                        workspace,
+                        view,
+                        author: None,
+                    });
+                }
+            }
+            FixedAction::CaptureScreenshot
+            | FixedAction::PictureInPicture
+            | FixedAction::SaveRecentReplay
+            | FixedAction::ShortcutGuide
+            | FixedAction::StopRemoteInput => {
+                self.asks
+                    .borrow_mut()
+                    .push(DesktopAsk::FixedShortcut(action));
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Open the app picker, as an empty desk does: a new window of the app
+    /// the person chooses, placed by the desk's rule.
+    fn open_the_app_picker(&self) {
+        self.dispatch(DeskEffect::Launchpad {
+            card: "apps".to_owned(),
+        });
+    }
+
+    /// Where the window in front stands, and the app it runs, when it runs
+    /// one.
+    fn app_of(&self, route: &Route) -> Option<String> {
+        self.handle.read(|tree| {
+            let workspace = tree
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.slot.0.to_string() == route.workspace)?;
+            let strip = workspace
+                .strips
+                .iter()
+                .find(|strip| strip.id.0.to_string() == route.strip)?;
+            let group = strip
+                .window_groups
+                .iter()
+                .find(|group| group.id.to_string() == route.group)?;
+            let tab = group
+                .tabs
+                .iter()
+                .find(|tab| tab.id.to_string() == route.tab)?;
+            match &tab.tile {
+                TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
+                    Some(app_id.clone())
+                }
+                _ => None,
+            }
+        })
+    }
+
+    /// The workspace shown, as the desk addresses it.
+    fn active_workspace(&self) -> Option<String> {
+        self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.slot.0.to_string())
+        })
     }
 
     /// Put the keyboard on the window group `index` of the shown strip, as a

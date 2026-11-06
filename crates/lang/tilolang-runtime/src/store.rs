@@ -352,6 +352,22 @@ pub struct ChangeNote {
     /// Kept with the change, so history says what the change was made of.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<crate::flow::JournalEntry>,
+    /// How many items the change was made over: one for an action applied to its subject, and
+    /// for one action applied to many items at once (`many`), as many as the items.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub count: u32,
+}
+
+fn one() -> u32 {
+    1
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "`skip_serializing_if` calls it with the field by reference"
+)]
+fn is_one(count: &u32) -> bool {
+    *count == 1
 }
 
 /// The action id of the change that made a resource, when the host made it.
@@ -398,6 +414,9 @@ pub struct Version {
     /// Who proposed the action, for a change made by accepting a suggestion, so history says
     /// who proposed it; `None` for a change made on its own.
     pub suggested_by: Option<String>,
+    /// How many items the change was made over ([`ChangeNote::count`]): more than one for one
+    /// action applied to many items at once.
+    pub count: u32,
 }
 
 /// Where a removed item stood ([`Version::left`]).
@@ -620,6 +639,7 @@ pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
                 // What it was made from is a fact of the change that made it.
                 from: made.then(|| note.from.clone()).flatten(),
                 suggested_by: note.suggested_by.clone(),
+                count: note.count.max(1),
             }
         })
         .collect()

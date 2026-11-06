@@ -82,13 +82,13 @@ pub trait Host {
     /// A [`HostFail`] traps or suspends the guest.
     fn guest_import(
         &self,
-        _module: &str,
-        _name: &str,
+        module: &str,
+        name: &str,
         _memory: &[u8],
         _args: &[Wasm],
     ) -> Result<GuestAnswer, HostFail> {
         Err(HostFail::Trap(format!(
-            "this host imports no {_module}::{_name}"
+            "this host imports no {module}::{name}"
         )))
     }
 
@@ -742,15 +742,13 @@ impl<B: Backend> Pools<B> {
                 .ok_or_else(|| CallError::Link(format!("module {module} is not compiled")))?;
             (c.module.clone(), c.idle.pop())
         };
-        match idle {
-            Some(instance) => Ok(instance),
-            None => {
-                let linker = self.linker()?;
-                self.compiler
-                    .backend
-                    .instantiate(&linker, &compiled, limits)
-            }
+        if let Some(instance) = idle {
+            return Ok(instance);
         }
+        let linker = self.linker()?;
+        self.compiler
+            .backend
+            .instantiate(&linker, &compiled, limits)
     }
 
     fn call(

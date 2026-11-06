@@ -1118,16 +1118,9 @@ impl<'a> Parser<'a> {
         let node = self.node();
         let name = self.ident("a type name")?;
         let mut origin = None;
-        let mut attached = false;
         if self.eat(&Tok::LParen) {
-            // One option: an outside service's kind, or that the type's records are attached to
-            // what they were made from.
-            if matches!(self.peek(), Tok::Ident(word) if word == "attached") {
-                self.bump();
-                attached = true;
-            } else {
-                origin = Some(self.type_origin()?);
-            }
+            // One option: the kind of an outside service's resource the type holds.
+            origin = Some(self.type_origin()?);
             self.expect(&Tok::RParen)?;
         }
         self.expect(&Tok::LBrace)?;
@@ -1197,7 +1190,6 @@ impl<'a> Parser<'a> {
             doc,
             name,
             origin,
-            attached,
             fields,
             derives,
             search,
@@ -1353,15 +1345,6 @@ impl<'a> Parser<'a> {
         let doc = self.docs();
         let start = self.span();
         let node = self.node();
-        // `personal today: Bool = false`: one value per person. A word of its own before the
-        // name, so a field may still be named `personal` (`personal: Text`).
-        let personal = match self.peek() {
-            Tok::Ident(word) if word == "personal" && matches!(self.peek_at(1), Tok::Ident(_)) => {
-                self.bump();
-                true
-            }
-            _ => false,
-        };
         let name = self.ident("a field name")?;
         self.expect(&Tok::Colon)?;
         let ty = self.type_expr()?;
@@ -1427,7 +1410,6 @@ impl<'a> Parser<'a> {
         Ok(FieldDecl {
             node,
             doc,
-            personal,
             name,
             ty,
             merge,

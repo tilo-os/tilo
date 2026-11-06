@@ -207,6 +207,12 @@ impl Staged {
         let mut record = staging.record.unwrap_or_default();
 
         instance.sync(Some(&record));
+        // The window is laid out for a still picture: no frame comes to take in the indexes
+        // its load builds off the frame, so they are waited for, as a host without frames
+        // waits for them. Until then the window would show the platform's loading state.
+        if let Some(host) = instance.host() {
+            host.wait_index();
+        }
         // Counted from the first frame: a workspace's opening is what it costs to open.
         if staging.costs
             && let Some(host) = instance.host()

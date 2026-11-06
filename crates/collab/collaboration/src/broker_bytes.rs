@@ -131,6 +131,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         CollabRequest::Document {
             mutation,
             authorization,
+            ..
         } => {
             match mutation {
                 DocumentMutation::Snapshot(data) | DocumentMutation::Incremental(data) => {

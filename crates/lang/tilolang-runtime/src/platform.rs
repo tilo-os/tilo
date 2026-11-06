@@ -27,19 +27,6 @@ pub const LENS_WINDOW: &str = "$lenses";
 /// Where the runtime keeps how each resource's outside effects stand (`delivery(r)`).
 pub const DELIVERY_WINDOW: &str = "$delivery";
 
-/// Whether a person's value of a personal field is one they set: the empty value says they
-/// never set it, or set it to nothing (a `Bool` false, an `Option` none).
-fn set_by_person(value: &crate::store::Scalar) -> bool {
-    use crate::store::Scalar;
-    match value {
-        Scalar::Bool(set) => *set,
-        Scalar::Int(n) => *n != 0,
-        Scalar::Float(n) => *n != 0.0,
-        Scalar::Text(text) => !text.is_empty(),
-        Scalar::Json(json) => !json.is_null(),
-    }
-}
-
 /// One line of what proposing an action with some arguments says: the words a change to the
 /// field reads with, and the value they speak of as its type shows it, when they speak of one.
 pub(crate) struct Says {
@@ -363,7 +350,6 @@ impl Core {
                 let value = self.links_import(a)?;
                 self.ret_h(value)
             }
-            Imp::Others => self.others_import(a),
             Imp::Mentions => self.mentions_import(a),
             Imp::FirstUnseen => self.first_unseen_import(a),
             Imp::MetaOf => {
@@ -450,42 +436,6 @@ impl Core {
         self.ret_h(value)
     }
 
-    /// `others(r, field)`: the people besides the one looking who set a value of the personal
-    /// field `field` of `r`, by their ids: who picked a shared task for their day, who snoozed a
-    /// shared mail. It is not secret, so anyone may ask; the value of each stays theirs to read.
-    fn others_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
-        let target = self.ref_arg(a.h(0)?)?;
-        let id = self.text(a.h(1)?)?;
-        let (_, field) = self.lookup_field(&target.target, &id)?;
-        if !field.personal {
-            return trap(format!("`{}` is not a personal field", field.name));
-        }
-        let who = self.looking()?;
-        let read = self
-            .store
-            .borrow()
-            .read(&target.target, &crate::host_res::spec_all(&field))
-            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-        let mut people: Vec<String> = match read {
-            crate::store::FieldValue::Entries(entries) => entries
-                .into_iter()
-                .filter(|(person, value)| *person != who && set_by_person(value))
-                .map(|(person, _)| person)
-                .collect(),
-            _ => Vec::new(),
-        };
-        people.sort_unstable();
-        if let Some(view) = self.frames.borrow_mut().view_mut() {
-            view.reads.push((target.target.id_string(), field.id));
-        }
-        self.ret_h(Value::List(
-            people
-                .into_iter()
-                .map(|person| Value::Principal(Principal(person)))
-                .collect(),
-        ))
-    }
-
     /// `workspace.me`: the person the view is shown to, which the frame running carries as the
     /// runtime was opened for them. An action reads `invoker` instead: it acts for someone,
     /// where the viewer only looks.
@@ -495,9 +445,10 @@ impl Core {
     }
 
     /// A version of `of` as a `host.Version`: who, when, what, the task run, its kind, the
-    /// fields it changed by name, the resource, what its action says it does, what it did and
-    /// its icon, and each field it changed with what it held before and after; then the id of
-    /// the action that made it, which `v.is(edit)` compares (`tilolang::host::action_id_at`).
+    /// fields it changed by name, the resource, what its action says it does, what it did, its
+    /// icon, each field it changed with what it held before and after, and how many items the
+    /// change was made over; then the id of the action that made it and of its change, which
+    /// code compares rather than reads (`tilolang::host::action_id_at`).
     fn version_value(&self, v: crate::store::Version, of: &ResourceRef) -> HResult<Value> {
         let task = v.task.as_ref().map(|run| {
             Box::new(Value::Tuple(vec![
@@ -581,6 +532,9 @@ impl Core {
             Value::Opt(icon),
             Value::List(changes),
             Value::Text(suggested),
+            // How many items it changed, read by name; the action and the change it names
+            // stand after the fields code reads by name (`host::action_id_at`).
+            Value::Int(i64::from(v.count)),
             Value::Text(v.action),
             Value::Text(v.change),
         ]))
@@ -621,7 +575,6 @@ impl Core {
                 name: param.name.clone(),
                 ty: ty.clone(),
                 kind: crate::meta::FieldKind::Register,
-                personal: false,
                 role: None,
                 default: None,
                 derived: None,
@@ -744,10 +697,7 @@ impl Core {
             let Some(field) = info.field(&id) else {
                 continue;
             };
-            // A personal field stands as the change's own person had it: the value it wrote, not
-            // everyone's.
             let side = |held: crate::store::FieldValue| -> HResult<Value> {
-                let held = crate::host_res::for_person(field, held, Some(&v.who));
                 let value = self
                     .field_value(of, field, held, None)
                     .map_err(crate::engine::HostFail::Trap)?;
@@ -995,48 +945,7 @@ impl Core {
                         .collect::<HResult<_>>()?,
                 )
             }
-            Imp::Steps => {
-                let versions = self.store.borrow().versions(at).map_err(trapped)?;
-                self.read_versions_of(at);
-                let mut steps: Vec<Vec<crate::store::Version>> = Vec::new();
-                for v in versions {
-                    match steps.last_mut() {
-                        Some(step) if step.last().is_some_and(|last| same_step(last, &v)) => {
-                            step.push(v);
-                        }
-                        _ => steps.push(vec![v]),
-                    }
-                }
-                let mut out = Vec::with_capacity(steps.len());
-                for step in steps.into_iter().rev() {
-                    let Some(last) = step.last() else {
-                        continue;
-                    };
-                    let who = Value::Principal(Principal(last.who.clone()));
-                    let at_time = Value::Text(last.at.clone());
-                    let task = Value::Opt(last.task.as_ref().map(|run| {
-                        Box::new(Value::Tuple(vec![
-                            Value::Text(run.id.clone()),
-                            Value::Text(run.task().to_owned()),
-                            Value::Text(run.title.clone()),
-                        ]))
-                    }));
-                    let mine = last.task.is_none()
-                        && self.looking_now().as_deref() == Some(last.who.as_str());
-                    let versions = step
-                        .into_iter()
-                        .map(|v| self.version_value(v, at))
-                        .collect::<HResult<_>>()?;
-                    out.push(Value::Tuple(vec![
-                        who,
-                        at_time,
-                        task,
-                        Value::List(versions),
-                        Value::Bool(mine),
-                    ]));
-                }
-                Value::List(out)
-            }
+            Imp::Steps => self.steps_value(at)?,
             _ => {
                 let versions = self.store.borrow().versions(at).map_err(trapped)?;
                 self.read_versions_of(at);
@@ -1048,6 +957,66 @@ impl Core {
                 )
             }
         })
+    }
+
+    /// `steps(at)`: the changes made to a resource, newest first, each with the versions one
+    /// change made together and the count of changes it folds.
+    fn steps_value(&self, at: &crate::value::ResourceRef) -> HResult<Value> {
+        let trapped = |e: crate::store::StoreError| crate::engine::HostFail::Trap(e.to_string());
+        let versions = self.store.borrow().versions(at).map_err(trapped)?;
+        self.read_versions_of(at);
+        let mut steps: Vec<Vec<crate::store::Version>> = Vec::new();
+        for v in versions {
+            match steps.last_mut() {
+                Some(step) if step.last().is_some_and(|last| same_step(last, &v)) => {
+                    step.push(v);
+                }
+                _ => steps.push(vec![v]),
+            }
+        }
+        let mut out = Vec::with_capacity(steps.len());
+        for step in steps.into_iter().rev() {
+            let Some(last) = step.last() else {
+                continue;
+            };
+            let who = Value::Principal(Principal(last.who.clone()));
+            let at_time = Value::Text(last.at.clone());
+            let task = Value::Opt(last.task.as_ref().map(|run| {
+                Box::new(Value::Tuple(vec![
+                    Value::Text(run.id.clone()),
+                    Value::Text(run.task().to_owned()),
+                    Value::Text(run.title.clone()),
+                ]))
+            }));
+            let mine =
+                last.task.is_none() && self.looking_now().as_deref() == Some(last.who.as_str());
+            // How many changes the step folds: versions of one change are one command over many
+            // items, which history says the count of and Undo takes back together.
+            let changes = {
+                let mut count = 0usize;
+                let mut previous: Option<&str> = None;
+                for v in &step {
+                    if previous != Some(v.change.as_str()) {
+                        count = count.saturating_add(1);
+                    }
+                    previous = Some(v.change.as_str());
+                }
+                count
+            };
+            let versions = step
+                .into_iter()
+                .map(|v| self.version_value(v, at))
+                .collect::<HResult<_>>()?;
+            out.push(Value::Tuple(vec![
+                who,
+                at_time,
+                task,
+                Value::List(versions),
+                Value::Bool(mine),
+                Value::Int(i64::try_from(changes).unwrap_or(i64::MAX)),
+            ]));
+        }
+        Ok(Value::List(out))
     }
 
     /// `changes(of: run)` of the `host.TaskRun` held at `h`: every version it made, oldest
@@ -1679,7 +1648,6 @@ impl Core {
                 .map_or_else(Value::none, |icon| Value::some(Value::Text(icon))),
             Value::Bool(meta.default_view(ty).is_some()),
             Value::Bool(meta.row_view(ty).is_some()),
-            Value::Bool(declared.attached),
         ]))
     }
 

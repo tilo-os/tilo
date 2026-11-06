@@ -527,6 +527,7 @@ impl RouteDocument {
         let request = crate::collaboration::CollabRequest::Document {
             mutation,
             authorization: None,
+            commit: None,
         };
         match self.manager.try_send_to_route(self.route.clone(), request) {
             Ok(()) => {

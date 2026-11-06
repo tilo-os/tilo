@@ -235,13 +235,29 @@ impl Workspace {
         }
     }
 
-    /// Frames and doors until the window has nothing more to hand over.
+    /// Frames and doors until the window has nothing more to hand over, and its instance
+    /// reads the indexes its packages' load built: a host's frames keep coming until then,
+    /// and this harness's stop when it is at rest.
     fn settle(&mut self) {
         for _ in 0..4 {
             self.frame();
             self.door();
         }
+        let start = std::time::Instant::now();
+        while !self.index_ready() && start.elapsed().as_secs() < 120 {
+            self.frame();
+            self.door();
+            if !self.index_ready() {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+        assert!(self.index_ready(), "the window reads its packages' indexes");
         self.frame();
+    }
+
+    /// Whether the window's instance reads the indexes its packages' load built off the frame.
+    fn index_ready(&self) -> bool {
+        self.window.host().is_some_and(|host| host.index_ready())
     }
 
     fn surveyed() -> Vec<ui::tilo_actions::door::ActionDescriptor> {

@@ -1,7 +1,8 @@
 //! A discussion under a task and under a note: a comment made from what it is about, the thread
 //! that draws under it, what the comment changes for whoever made or read what it is about
-//! (their row, the window's count, the line in the thread), an agent's comment, and what
-//! `linked` leaves out because the comment is about the task rather than made from it.
+//! (their row, the window's count, the line in the thread), an agent's comment, what a page that
+//! draws the thread leaves out of `std.linked`, and a scenario that comments as the people and
+//! times it names.
 
 use automerge::AutoCommit;
 use tilolang_runtime::rich::{Reference, RichValue};
@@ -425,8 +426,9 @@ fn a_comment_is_about_its_task_so_the_page_does_not_list_it_as_made_from_it() {
     let said = comment(&ada, "ada", &task, "Ask Bo about the receipt.");
     ada.commit();
 
-    // What the store knows is a link either way; what the page shows is the difference the
-    // comment's type declares: a comment is about the task, never work made from it.
+    // What the store knows is a link either way; what the page says is what it draws: a page
+    // that draws the thread under a resource leaves what is said about it out of `std.linked`,
+    // so it is drawn once.
     assert_eq!(
         ada.host
             .store()
@@ -453,6 +455,129 @@ fn a_comment_is_about_its_task_so_the_page_does_not_list_it_as_made_from_it() {
             .iter()
             .any(|rich| rich.written_text() == "Ask Bo about the receipt."),
         "the thread draws it: {said:?}"
+    );
+}
+
+/// Ada's workspace with Tasks' discussion scenario run in it: the task it answers with, and what
+/// the two people it names said about it.
+fn a_task_discussed_by_a_scenario() -> (Replica, ResourceRef) {
+    let (mut ada, loaded) = Replica::new(
+        "ada",
+        AutoCommit::new(),
+        &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)],
+    );
+    ada.host.root_of(DISCUSSION_APP).unwrap();
+    ada.host.root_of(TASKS_APP).unwrap();
+    ada.commit();
+    let scenario = loaded
+        .last()
+        .unwrap()
+        .meta
+        .scenarios
+        .iter()
+        .find(|scenario| scenario.name == "a discussion on a task")
+        .expect("Tasks stages a discussion on a task");
+    let task = target(&match ada
+        .host
+        .runtime()
+        .invoke_action(&Principal::new("ada"), (scenario.action.as_str(), vec![]))
+        .unwrap()
+    {
+        InvokeOutcome::Done(v) => v,
+        other => panic!("the scenario answers the task: {other:?}"),
+    });
+    (ada, task)
+}
+
+/// What was said about `task`, each as the change that made it.
+fn comments_about(ada: &Replica, task: &ResourceRef) -> Vec<tilolang_runtime::store::Version> {
+    ada.host
+        .store()
+        .linked(task)
+        .unwrap()
+        .into_iter()
+        // The task is made from the tasks root too; what the scenario comments are items.
+        .filter(|link| link.how == LinkHow::CreatedFrom && link.of.item.is_some())
+        .map(|link| {
+            ada.host
+                .store()
+                .version_end(&link.of, false)
+                .unwrap()
+                .unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn a_scenario_comments_as_the_people_and_times_it_names() {
+    let (ada, task) = a_task_discussed_by_a_scenario();
+    let made = comments_about(&ada, &task);
+    assert_eq!(
+        made.iter().map(|v| v.who.as_str()).collect::<Vec<_>>(),
+        ["scenario:Ada", "scenario:Bo", "scenario:Ada"],
+        "each comment is the person the scenario names"
+    );
+    assert_eq!(
+        made.iter().map(|v| v.at.as_str()).collect::<Vec<_>>(),
+        [
+            "2026-06-24T09:12:00Z",
+            "2026-06-24T15:40:00Z",
+            "2026-06-25T08:03:00Z"
+        ],
+        "each comment is when the scenario names"
+    );
+    assert!(
+        made.iter().all(|v| v
+            .from
+            .as_ref()
+            .is_some_and(|from| from.id_string() == task.id_string())),
+        "each comment is about the task: {made:#?}"
+    );
+}
+
+#[test]
+fn the_page_under_a_task_draws_its_thread_with_names_and_times() {
+    let (ada, task) = a_task_discussed_by_a_scenario();
+    let page = ada.host.open_resource(&task, None).unwrap();
+    assert_eq!(
+        comments_drawn(page.tree())
+            .iter()
+            .map(RichValue::written_text)
+            .collect::<Vec<_>>(),
+        [
+            "The supplier quotes six weeks. Do we order before the summer?",
+            "Yes. The room stays empty either way.",
+            "Ordered, delivery the first week of August."
+        ],
+        "the task's thread draws them oldest first"
+    );
+    let who: Vec<String> = of_kind(page.tree(), "ui.Avatar")
+        .into_iter()
+        .filter_map(|node| match node.props.get("who") {
+            Some(Value::Principal(who)) => Some(who.0.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        who,
+        ["scenario:Ada", "scenario:Bo", "scenario:Ada"],
+        "the thread names who said each thing"
+    );
+    let when: Vec<String> = of_kind(page.tree(), "ui.Time")
+        .into_iter()
+        .filter_map(|node| match node.props.get("at") {
+            Some(Value::Text(at)) => Some(at.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        when,
+        [
+            "2026-06-24T09:12:00Z",
+            "2026-06-24T15:40:00Z",
+            "2026-06-25T08:03:00Z"
+        ],
+        "each comment says when it was said"
     );
 }
 

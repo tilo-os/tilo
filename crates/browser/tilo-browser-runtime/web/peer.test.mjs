@@ -230,9 +230,9 @@ test('a member page joins its workspace as one device of it, and leaves it', asy
   assert.deepEqual(runtime.peer.announced, [{workspace: WORKSPACE, arrived: true}]);
   assert.equal(peer.live.publisherId, SELF, 'the publisher the workspace knows this device by');
 
-  peer.live.publishPresence({pointer: {tile: {tab: 7}, at: [5, 6]}});
+  peer.live.publishPresence({pointer: {tile: {tab: '7'}, at: [5, 6]}});
   await until(() => runtime.peer.published.some(value => value.pointer), 'the pointer frame');
-  assert.deepEqual(runtime.peer.published.at(-1).pointer, {tile: {tab: 7}, at: [5, 6]});
+  assert.deepEqual(runtime.peer.published.at(-1).pointer, {tile: {tab: '7'}, at: [5, 6]});
   assert.deepEqual(runtime.peer.published.at(-1).participant, peer.live.stats().state === 'live'
     ? runtime.peer.published.at(-1).participant : undefined);
   assert.equal(runtime.peer.published.at(-1).participant.kind, 'person', 'with who it is');
@@ -281,9 +281,9 @@ test("the live layer reads the members' presence from the session, on their own 
   assert.equal(remote.participant.label, 'Visitor');
   assert.deepEqual(remote.focus, {app: 'so.tilo.notes', record: 'note-1'});
 
-  say(runtime, [{kind: 'pointer', publisher: OTHER, tab: 7, at: [1, 2], sentAtMs: Date.now()}]);
+  say(runtime, [{kind: 'pointer', publisher: OTHER, tab: '7', at: [1, 2], sentAtMs: Date.now()}]);
   await until(() => peer.live.remoteState(performance.now() + 50)[0].pointer, 'the pointer');
-  assert.deepEqual(peer.live.remoteState(performance.now() + 50)[0].pointer, {tile: {tab: 7}, at: [1, 2]});
+  assert.deepEqual(peer.live.remoteState(performance.now() + 50)[0].pointer, {tile: {tab: '7'}, at: [1, 2]});
 
   const record = {app: 'so.tilo.notes', record: 'note-1'};
   say(runtime, [{kind: 'preview', publisher: OTHER, record, seq: 1, ops: [{kind: 'insert', at: '01', text: 'x'}]}]);

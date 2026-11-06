@@ -231,14 +231,7 @@ impl CaptureStudio {
     /// Open the studio on what an app asked for, as the person's own shortcut
     /// opens it: the bar comes up choosing that kind of capture.
     pub(crate) fn open_asked(&self, mode: ui::floating_surface::CaptureStudioProtocolMode) {
-        use ui::floating_surface::CaptureStudioProtocolMode as Mode;
-        use ui::widget::CaptureMode;
-        let mode = match mode {
-            Mode::Screenshot => CaptureMode::Screenshot,
-            Mode::Recording => CaptureMode::Recording,
-            Mode::PictureInPicture => CaptureMode::Pip,
-        };
-        self.seat.link().open_on(mode);
+        self.seat.link().open_on(mode.into());
         self.presentation().open(false);
     }
 

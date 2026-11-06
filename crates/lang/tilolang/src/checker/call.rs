@@ -1,7 +1,7 @@
 //! Calls: functions, actions, flows, record construction, built-ins and methods.
 
 use super::expr::dotted;
-use super::{Checker, Ctx, Ex, Written, conv, store_op};
+use super::{Checker, Ctx, Ex, Invoked, Written, conv, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind};
 use crate::diag::Span;
@@ -182,7 +182,6 @@ impl Checker<'_> {
             }
             "changed" => return self.builtin_changed(args, span),
             "unseen" => return self.builtin_unseen(args, span),
-            "others" => return self.builtin_others(args, span),
             "linked" => return self.builtin_links(args, span),
             "proposal_note" => return self.builtin_proposal_note(args, span),
             "first_unseen" => return self.builtin_first_unseen(args, span),
@@ -559,6 +558,13 @@ impl Checker<'_> {
                     return self.invoke(c, bound);
                 }
                 if !c.own {
+                    // `invoke(other.act(args), by: mia, ...)` in a scenario: another app's
+                    // action is invoked at its own door, a change of its own, as a flow
+                    // applies one, never called inside this action's change.
+                    if std::mem::replace(&mut self.st.invoked, Invoked::Plain) == Invoked::Foreign {
+                        let bound = self.applied_args(c, bound, span);
+                        return self.invoke(c, bound);
+                    }
                     self.err("E041", span, format!("an action cannot call the foreign action `{}`: one change cannot span apps. Call it from a flow with `{}(...)`", c.name, c.name));
                     return Ex::error();
                 }
@@ -680,7 +686,7 @@ impl Checker<'_> {
             }
             return Ex::host(Imp::Suggest, vec![act], Ty::Unit);
         }
-        if std::mem::take(&mut self.st.try_invoke) {
+        if std::mem::replace(&mut self.st.invoked, Invoked::Plain) == Invoked::Try {
             // The host builds the `Result`: `.ok(result)`, or `.err(reason)`.
             let ty = Ty::Result(Box::new(c.result.clone()), Box::new(Ty::Text));
             return Ex::host(Imp::TryInvoke, vec![act], ty);
@@ -2241,6 +2247,11 @@ impl Checker<'_> {
                 Ex::host(Imp::PrincipalRole, vec![r], Ty::Option(Box::new(Ty::Text)))
             }
             (Ty::Record(_), "id") if args.is_empty() => Ex::host(Imp::RefId, vec![r], Ty::Text),
+            // `as.many()`: an action that applies each of `as` to its own item, all at once:
+            // one change, one undo.
+            (Ty::List(inner), "many") if args.is_empty() && matches!(**inner, Ty::Action) => {
+                Ex::host(Imp::ActMany, vec![r], Ty::Action)
+            }
             // `a.then(b)`: an action that applies `a`, then `b` once `a` is done.
             (Ty::Action, "then") => {
                 let [next] = args else {

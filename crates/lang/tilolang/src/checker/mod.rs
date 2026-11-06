@@ -101,6 +101,19 @@ impl Ctx {
     }
 }
 
+/// What the `invoke` call being checked is, if it is one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Invoked {
+    /// Any other call.
+    #[default]
+    Plain,
+    /// The operand of `try`: it reports failure rather than trapping.
+    Try,
+    /// The first expression of a scenario's `invoke`: an action of another app is invoked at its
+    /// own door, as a flow applies one.
+    Foreign,
+}
+
 #[derive(Default)]
 struct FnState {
     ctx: Ctx,
@@ -120,8 +133,11 @@ struct FnState {
     shown: std::collections::HashSet<Span>,
     /// Locals holding the key suffix of each enclosing UI loop, innermost last.
     keys: Vec<LocalId>,
-    /// Set while checking the operand of `try`: the next `invoke` reports failure.
-    try_invoke: bool,
+    /// What the `invoke` call being checked is: the operand of `try`, which reports failure, or
+    /// the first expression of a scenario's `invoke`, where another app's action is invoked at
+    /// its own door, a change of its own, rather than refused as a change spanning apps. Seed
+    /// data is the host's making, as a scenario's own actions are.
+    invoked: Invoked,
     /// Set while checking the operand of `suggest`: `Some(true)` when the call is the value an
     /// agent block proposes, `Some(false)` when it is a statement recording a proposal.
     suggest: Option<bool>,
@@ -950,7 +966,9 @@ impl Checker<'_> {
                 }
             }
         }
+        self.st.invoked = Invoked::Foreign;
         let value = self.expr(&first.value, None);
+        self.st.invoked = Invoked::Plain;
         let ty = value.ty.clone();
         let (mut stmts, last) = match value.kind {
             Ek::Seq(inner, last) => (inner, last),

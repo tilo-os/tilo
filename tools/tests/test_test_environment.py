@@ -159,6 +159,20 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds Chat and its launcher for the acceptance",
             )
+        # The lounge's end-to-end test starts a persistent relay room, a program
+        # of another package that only its `agents` feature builds.
+        lounge = scripts.pop("lounge-siblings")
+        self.assertEqual(lounge["command"], ["bash", "tools/build-sibling-binaries.sh",
+                                             "tilo-relay:tilo-relay=tilo-relay/agents"])
+        for profile in ("default", "ci"):
+            rules = [rule for rule in config["profile"][profile]["scripts"]
+                     if rule["setup"] == "lounge-siblings"]
+            self.assertEqual(
+                [(rule["filter"], rule["platform"]) for rule in rules],
+                [("package(tilo-session) and binary(lounge_e2e)",
+                  {"host": 'cfg(target_os = "linux")'})],
+                f"the {profile} profile builds the relay for the lounge's test",
+            )
         steps = {name: script["command"][2:] for name, script in scripts.items()}
         self.assertEqual(steps, {"test-runtime": ["runtime"], "headless-audio": ["audio"],
                                  "ntfs-fixtures": ["ntfs"]})
@@ -168,6 +182,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         # `ci` inherits `default`'s rules, so it names only what it adds.
         self.assertEqual(rules, {"all()": ["test-runtime", "headless-audio"],
                                  "package(tilo-session) and binary(chat_2x2)": "chat-siblings",
+                                 "package(tilo-session) and binary(lounge_e2e)": "lounge-siblings",
                                  "package(tilo-ntfs-helper)": "ntfs-fixtures"})
 
     def test_runtime_provides_the_renderer_and_the_promised_capabilities(self) -> None:

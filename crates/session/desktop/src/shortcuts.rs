@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
-use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
+use ui::shortcut_table::{FixedAction, KeyChord, ShortcutAction, ShortcutConfig};
 use winit::event::Modifiers;
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
@@ -82,6 +82,16 @@ pub fn configured_shortcut_action(
         .or_else(|| is_bare_f11(logical_key, modifiers).then_some(ShortcutAction::ToggleFullscreen))
 }
 
+/// The fixed action a live key press asks for, from the fixed table: a
+/// chord Settings cannot rebind, answered before any application and before
+/// the person's own bindings. `None` for a chord the keys answer where they
+/// are resolved (the window walk, the workspace steps, the display sheet) or
+/// that nothing dispatches.
+pub fn fixed_shortcut_action(logical_key: &Key, modifiers: Modifiers) -> Option<FixedAction> {
+    let chord = shortcut_chord_from_event(logical_key, modifiers)?;
+    ui::shortcut_table::fixed_action(&chord)
+}
+
 /// F11 is every desktop's full-screen key; it toggles the same real
 /// fullscreen as the configurable chord, unless the person bound it to
 /// something else.
@@ -99,6 +109,9 @@ fn shortcut_key_name(logical_key: &Key) -> Option<String> {
             NamedKey::ArrowUp => "up",
             NamedKey::ArrowDown => "down",
             NamedKey::Tab => "tab",
+            // Bare Escape dismisses what the desktop has open; the fixed
+            // table's way out of a remote session names it with Super.
+            NamedKey::Escape => "escape",
             NamedKey::Enter => "enter",
             NamedKey::Space => "space",
             NamedKey::Home => "home",

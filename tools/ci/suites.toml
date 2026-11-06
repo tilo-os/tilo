@@ -733,7 +733,6 @@ readers = [
   "apps/tilolang/src/packages.rs",
   "apps/tilolang/tests/board.rs",
   "apps/tilolang/tests/history_undo.rs",
-  "apps/tilolang/tests/hosted.rs",
   "apps/tilolang/tests/opening.rs",
   "apps/tilolang/tests/support.rs",
 ]
@@ -779,6 +778,7 @@ readers = [
   "crates/lang/tilolang-runtime/tests/e2e_notes.rs",
   "crates/lang/tilolang-runtime/tests/e2e_todo.rs",
   "crates/lang/tilolang-runtime/tests/programs.rs",
+  "crates/lang/tilolang-runtime/tests/multi_select.rs",
   "crates/lang/tilolang-runtime/tests/provenance.rs",
   "crates/lang/tilolang-runtime/tests/rich_text.rs",
   "crates/lang/tilolang-runtime/tests/window_bar.rs",

@@ -822,34 +822,16 @@ impl<'d> Derive<'d> {
             {
                 continue;
             }
-            // A personal field holds a value per person: one column per person of the record,
-            // each named for theirs (`id@person`), so what a filter, an order or a count reads
-            // is the value of whoever asks, from the index.
-            let each: Vec<crate::schema::ColumnSchema> = match column
-                .field
-                .as_deref()
-                .and_then(|id| schema.field(id))
-                .filter(|field| field.personal)
-            {
-                Some(field) => match field_value(sink, path, field)? {
-                    FieldValue::Entries(entries) => entries
-                        .into_iter()
-                        .map(|(person, _)| {
-                            let mut each = column.clone();
-                            each.name = tilolang::personal::id(&field.id, &person);
-                            each
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                },
-                None => vec![column.clone()],
-            };
-            for each in &each {
-                let now =
-                    columns::values(each, schema, &mut |field| field_value(sink, path, field))?;
-                self.column(sink, path, schema, (each, split), (scope, &mut open), &now)?;
-                out.push((each.name.clone(), now));
-            }
+            let now = columns::values(column, schema, &mut |field| field_value(sink, path, field))?;
+            self.column(
+                sink,
+                path,
+                schema,
+                (column, split),
+                (scope, &mut open),
+                &now,
+            )?;
+            out.push((column.name.clone(), now));
         }
         Ok(out)
     }
@@ -1091,11 +1073,9 @@ impl<'d> Derive<'d> {
                     .as_ref(),
             );
             for (column, values) in values {
-                let schema = item_schema.column_for(&column);
-                let counted = schema.as_ref().is_some_and(columns::counted);
-                let split = schema
-                    .as_ref()
-                    .is_some_and(|c| columns::open_split(c, item_schema.done()));
+                let schema = item_schema.column(&column);
+                let counted = schema.is_some_and(columns::counted);
+                let split = schema.is_some_and(|c| columns::open_split(c, item_schema.done()));
                 let name = scope_list(path, &field.id, &column);
                 for value in values {
                     if counted {

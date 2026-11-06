@@ -129,6 +129,11 @@ impl Stamp {
         if let (Some(who), Some(map)) = (&self.version.suggested_by, held.as_object_mut()) {
             map.insert("suggested_by".to_owned(), Json::String(who.clone()));
         }
+        if self.version.count > 1
+            && let Some(map) = held.as_object_mut()
+        {
+            map.insert("count".to_owned(), serde_json::json!(self.version.count));
+        }
         FieldValue::Scalar(Scalar::Json(held))
     }
 
@@ -171,6 +176,11 @@ impl Stamp {
                 change: change.clone(),
                 from,
                 suggested_by: text("suggested_by"),
+                count: json
+                    .get("count")
+                    .and_then(Json::as_u64)
+                    .and_then(|count| u32::try_from(count).ok())
+                    .unwrap_or(1),
                 ..Version::default()
             },
             change,
@@ -301,6 +311,7 @@ fn read(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<TaskRun>
             change: hash.clone(),
             from: action.authorship.from.clone(),
             suggested_by: action.authorship.suggested_by.clone(),
+            count: action.authorship.count.max(1),
             ..Version::default()
         },
         change: hash,
@@ -520,6 +531,7 @@ pub fn step_stamp(change: &automerge::Change) -> Option<Stamp> {
             action: STEP_ACTION.to_owned(),
             task: task_of(&context),
             change: hash.clone(),
+            count: 1,
             ..Version::default()
         },
         change: hash,

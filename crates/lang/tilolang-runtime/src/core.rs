@@ -347,35 +347,35 @@ impl Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActMadeFrom, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, AgentNamed,
-            ArgAt, BytesLength, CallFn, ChangeView, CollCount, CollInsert, CollMove, CollMoveAmong,
-            CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, CountBy, DayParse,
-            DayPart, DayShift, DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef,
-            DurationText, EditField, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew,
-            EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged, FilterLit, Filters,
-            Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor,
+            Abort, ActMadeFrom, ActMany, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions,
+            AgentNamed, ArgAt, BytesLength, CallFn, ChangeView, CollCount, CollInsert, CollMove,
+            CollMoveAmong, CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, CountBy,
+            DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday, Delivery, Describe,
+            DescribeRef, DurationText, EditField, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs,
+            EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged, FilterLit,
+            Filters, Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor,
             FloatFloorTo, FloatMax, FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef,
             Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop,
             InvocationPush, Invoke, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse,
             Keep, Lenses, Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf,
             ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse,
-            ListSortByKey, ListSumF, ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue,
-            MapPut, MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members,
-            Mentions, MetaOf, ModelCall, NoneV, Now, OfType, Others, Outside, OutsideAt, Phrase,
-            PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Print,
-            PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
-            RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq,
-            RefId, RefIs, RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt,
-            ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
-            ResourceRef, RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove,
-            Single, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps,
-            StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit,
-            StrLower, StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim,
-            StrUpper, Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today,
-            TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
-            UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
-            UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
-            Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
+            ListSortByKey, ListSumF, ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapPut,
+            MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf,
+            ModelCall, NoneV, Now, OfType, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind,
+            PrincipalName, PrincipalNamed, PrincipalRole, Print, PrintRows, ProposalNote, Query,
+            QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText,
+            ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ReminderAt,
+            ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt, ResAddF, ResAddI, ResGetF,
+            ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmpty,
+            RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove, Single, SomeF, SomeH,
+            SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat,
+            StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
+            StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper,
+            Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke,
+            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction,
+            UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH,
+            UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
+            Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
             WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
@@ -423,11 +423,10 @@ impl Core {
             JsonParse | JsonDecode | JsonEncode => self.json_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet
-            | ActThen | ActMadeFrom | ActOpen | ActUndo | ChangeView | UiActions | UiAction => {
-                self.ui_import(imp, a)
-            }
+            | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView | UiActions
+            | UiAction => self.ui_import(imp, a),
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
-            | RunChanges | Unseen | FirstUnseen | Mentions | Others | Steps | VersionEnd
+            | RunChanges | Unseen | FirstUnseen | Mentions | Steps | VersionEnd
             | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)

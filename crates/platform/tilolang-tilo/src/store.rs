@@ -66,9 +66,7 @@ use crate::index::overlay::{ListState, Overlay, OverlaySink};
 use crate::index::view::{self, View};
 use crate::index::{self as idx, Index, IndexError, IndexReads};
 use crate::items::Nested;
-use crate::reads::{
-    Changed, changed_by, default_value, for_person, locate_ref, read_field, type_at,
-};
+use crate::reads::{Changed, changed_by, default_value, locate_ref, read_field, type_at};
 use crate::record::DynRecord;
 use crate::schema::{MergeKind, TYPE_KEY, lookup};
 
@@ -288,13 +286,7 @@ impl ListedOnce {
     fn reached_by(&self, key: &FieldKey) -> bool {
         let item = key.resource.contains('/') && key.doc() == doc_of(&self.resource);
         let filtered_on = |field: &str| {
-            // A personal field is written whole, under the field's id: a read of it names the
-            // person it reads for (`today@ada`), and one person's value moving moves what every
-            // read of it is part of.
-            let reads = |id: &str| {
-                id == field
-                    || tilolang::personal::field_of(id) == tilolang::personal::field_of(field)
-            };
+            let reads = |id: &str| id == field;
             field == ANY_FIELD
                 || self
                     .pred
@@ -1864,6 +1856,7 @@ impl Inner {
                 action: note.action.clone(),
                 task: note.group.clone(),
                 from: note.from.clone(),
+                count: note.count.max(1),
                 ..Version::default()
             },
             // No change yet: the action was invoked on top of every change this device
@@ -2056,22 +2049,21 @@ impl Inner {
     ) -> Result<FieldValue, StoreError> {
         let mirror = self.mirror()?;
         let located = locate_ref(mirror, (app, ty), at, &self.nested)?;
-        let (spec, person) = located
+        let spec = located
             .schema
-            .field_of(field)
+            .field(field)
             .ok_or_else(|| not_found(format!("field {field}")))?;
-        if spec.kind == MergeKind::Collection && person.is_none() {
+        if spec.kind == MergeKind::Collection {
             let (_, resolved) = self.resolved(at)?;
             return Ok(FieldValue::Items(resolved.items(at.item.as_deref(), field)));
         }
         self.count(DocReads {
             located: 1,
             fields: 1,
-            listings: u64::from(spec.kind == MergeKind::Collection && person.is_none()),
+            listings: 0,
             entries: 0,
         });
-        let whole = read_field(mirror, &located, spec)?;
-        Ok(for_person(spec, whole, person))
+        read_field(mirror, &located, spec)
     }
 
     /// Count what was read of the record.
@@ -2483,6 +2475,7 @@ impl Store for TiloStore {
                 at: note.at.clone(),
                 from: note.from.clone(),
                 suggested_by: note.suggested_by.clone(),
+                count: note.count.max(1),
             },
             edits: state.edits,
         };
@@ -2544,19 +2537,18 @@ impl Store for TiloStore {
                     return Err(not_found(format!("resource {resource}")));
                 };
                 let schema = lookup(&stored).ok_or_else(|| not_found(format!("type {stored}")))?;
-                let (spec, person) = schema
-                    .field_of(&field.id)
+                let spec = schema
+                    .field(&field.id)
                     .ok_or_else(|| not_found(format!("field {}", field.id)))?;
                 match spec.kind {
-                    MergeKind::Collection if person.is_none() => {
+                    MergeKind::Collection => {
                         return Ok(FieldValue::Items(inner.listed(at, &field.id, None)?.ids()));
                     }
                     // Not a field the index holds: read from the record.
-                    MergeKind::Record if person.is_none() => true,
+                    MergeKind::Record => true,
                     _ => match view.field(&resource, &spec.id) {
                         Ok(value) => {
-                            let whole = value.unwrap_or_else(|| default_value(spec));
-                            return Ok(for_person(spec, whole, person));
+                            return Ok(value.unwrap_or_else(|| default_value(spec)));
                         }
                         // Never read from a corrupt index: the record says, until the index
                         // is built anew.
@@ -2679,12 +2671,11 @@ impl Store for TiloStore {
         let before = committed.fork_at(made.deps()).map_err(backend)?;
         let before = Doc::load(&before.save()).map_err(backend)?;
         let located = locate_ref(&before, (&app, &ty), at, &inner.nested)?;
-        let (spec, person) = located
+        let spec = located
             .schema
-            .field_of(&field.id)
+            .field(&field.id)
             .ok_or_else(|| not_found(format!("field {}", field.id)))?;
-        let whole = read_field(&before, &located, spec)?;
-        Ok(for_person(spec, whole, person))
+        read_field(&before, &located, spec)
     }
 
     fn written(

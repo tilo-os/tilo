@@ -13,7 +13,9 @@ use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
-use crate::host_ui::{OPEN_ACTION, REVIEW_ACTION, SET_ACTION, THEN_ACTION, UNDO_ACTION};
+use crate::host_ui::{
+    KEEP_ACTION, OPEN_ACTION, REVIEW_ACTION, SET_ACTION, THEN_ACTION, UNDO_ACTION,
+};
 use crate::ids::{DocId, ModuleHash, Principal};
 use crate::live::{Live, LiveStats};
 use crate::meta::{EffectClass, FieldKind};
@@ -520,6 +522,7 @@ impl ViewInstance {
     fn run(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
         match aref.action.as_str() {
             SET_ACTION => self.platform_set(aref),
+            KEEP_ACTION => self.platform_keep(aref),
             OPEN_ACTION => self.platform_open(aref),
             REVIEW_ACTION => {
                 let (Some(Value::Text(run)), Some(Value::Ref(r))) =
@@ -584,6 +587,21 @@ impl ViewInstance {
             StateLayer::Lens => StateKey::lens(window, principal, state),
         };
         self.core.view_states.borrow_mut().write(key, value.clone());
+        Ok(InvokeOutcome::Done(Value::Unit))
+    }
+
+    /// What the host wires to a selection it keeps: put what the control reported in this
+    /// window's slot `state`, which is the runtime's reading and not kept in a record: a
+    /// selection is where a person is, not what they set.
+    fn platform_keep(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
+        let [state, value] = aref.args.as_slice() else {
+            return Err(RuntimeError::BadArgs("a malformed `keep`".into()));
+        };
+        let Some(state) = state.as_text() else {
+            return Err(RuntimeError::BadArgs("a malformed `keep`".into()));
+        };
+        let key = self.lens_key(state);
+        self.core.view_states.borrow_mut().set(key, value.clone());
         Ok(InvokeOutcome::Done(Value::Unit))
     }
 
@@ -764,6 +782,7 @@ impl ViewInstance {
             suggested_by: None,
             origin: None,
             from: None,
+            at: None,
         };
         let decision = self.core.decide_with(
             &ctx,
@@ -819,6 +838,7 @@ impl ViewInstance {
             approved_by: None,
             at: Some(self.core.clock_now()),
             touched: vec![target.id_string()],
+            count: 1,
             group: None,
             from: None,
             suggested_by: None,

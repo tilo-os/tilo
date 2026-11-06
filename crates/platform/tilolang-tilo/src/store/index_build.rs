@@ -1,7 +1,7 @@
 //! A package's index in the store: opening it, building it from the record whole (off the
-//! frame when it is kept on disk), catching it up from the heads it reflects, and putting a
-//! fresh one in place of a broken one. What is built here is what the store's reads answer
-//! from ([`Inner::view`]).
+//! frame whenever a frame can be woken to take it in), catching it up from the heads it
+//! reflects, and putting a fresh one in place of a broken one. What is built here is what the
+//! store's reads answer from ([`Inner::view`]).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -252,7 +252,8 @@ impl Inner {
     }
 
     /// Have the index of `app` reflect the mirror: caught up from its heads when the mirror
-    /// holds them, else built anew (off the frame when it is kept on disk).
+    /// holds them, else built anew (off the frame whenever a frame can be woken to take it
+    /// in).
     fn bring_up(&mut self, app: &str) {
         let Some(held) = self.apps.get(app) else {
             return;
@@ -339,8 +340,11 @@ impl Inner {
         let Some(held) = self.apps.get(app) else {
             return;
         };
-        let on_disk = held.index.path().is_some() && held.index.clear_for_build().is_ok();
-        if !on_disk {
+        // Built off the frame whenever a frame can be woken to take it in, or when it is kept
+        // on disk; a store nothing wakes (a capture, a past version read once) builds it here.
+        let off_frame = held.index.clear_for_build().is_ok()
+            && (self.wake.is_some() || held.index.path().is_some());
+        if !off_frame {
             self.build_now(app);
             return;
         }

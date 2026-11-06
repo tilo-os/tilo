@@ -983,6 +983,133 @@ fn enter_chooses_a_row_that_opens_nothing() {
     assert_eq!(&*chosen.borrow(), &[1], "chosen once");
 }
 
+/// Shift and an arrow grow a choice of rows from where it began, and each step tells the
+/// listener what is chosen, in the order the rows stand; Escape puts the choice away and
+/// says so.
+#[test]
+fn shift_arrows_extend_a_choice_and_escape_puts_it_away() {
+    let reported = Rc::new(RefCell::new(Vec::<Vec<u32>>::new()));
+    let reports = Rc::clone(&reported);
+    let mut list = plain_rows(6)
+        .multi_select(true)
+        .on_selected(move |keys| reports.borrow_mut().push(keys.to_vec()));
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    list.set_focus(true);
+    // As a click on the second row leaves the list: the keyboard stands there and the
+    // choice begins there.
+    assert!(list.reveal(&1));
+    list.selection_mut().select_only(1);
+    let shift = winit::keyboard::ModifiersState::SHIFT;
+    for _ in 0..2 {
+        assert!(
+            Dispatch::new()
+                .modifiers(shift)
+                .layout(&taffy, node)
+                .send(
+                    &mut list,
+                    &crate::synthetic_input::named_key(NamedKey::ArrowDown)
+                )
+                .handled,
+            "the list takes the extended walk"
+        );
+    }
+    assert_eq!(
+        &*reported.borrow(),
+        &[vec![1, 2], vec![1, 2, 3]],
+        "each step tells the listener the whole choice, in row order"
+    );
+    assert!(
+        list.selection().is_selected(&3),
+        "the row the keyboard walked to is chosen"
+    );
+    assert!(
+        Dispatch::new()
+            .layout(&taffy, node)
+            .send(
+                &mut list,
+                &crate::synthetic_input::named_key(NamedKey::Escape)
+            )
+            .handled,
+        "Escape belongs to a list that holds a choice"
+    );
+    assert_eq!(
+        reported.borrow_mut().pop(),
+        Some(Vec::new()),
+        "the choice is put away, and the listener hears of it"
+    );
+    assert!(
+        list.selection().is_empty(6),
+        "an empty choice, not one merely hidden"
+    );
+}
+
+/// A click that changes a choice by its modifier changes the choice alone: it does not tell
+/// the row's listener the row was chosen, so a list whose choosing opens a page does not open
+/// one for every row a person adds to a choice. A plain click still opens the row it lands on.
+#[test]
+fn a_modified_click_changes_the_choice_without_opening_the_row() {
+    let opened = Rc::new(RefCell::new(Vec::<u32>::new()));
+    let reported = Rc::new(RefCell::new(Vec::<Vec<u32>>::new()));
+    let (opens, reports) = (Rc::clone(&opened), Rc::clone(&reported));
+    let mut list = plain_rows(4)
+        .multi_select(true)
+        .on_select(move |key, _| opens.borrow_mut().push(key))
+        .on_selected(move |keys| reports.borrow_mut().push(keys.to_vec()));
+    let ctrl = winit::keyboard::ModifiersState::CONTROL;
+    click_row(&mut list, 1, ctrl);
+    assert_eq!(
+        list.selection().stored_keys().copied().collect::<Vec<_>>(),
+        vec![1],
+        "the modified click chooses the row it lands on"
+    );
+    click_row(&mut list, 3, ctrl);
+    let mut chosen: Vec<u32> = list.selection().stored_keys().copied().collect();
+    chosen.sort_unstable();
+    assert_eq!(chosen, vec![1, 3], "and the next one adds to the choice");
+    assert!(
+        opened.borrow().is_empty(),
+        "a click that chooses as part of a choice opens nothing: {:?}",
+        opened.borrow()
+    );
+    assert_eq!(
+        &*reported.borrow(),
+        &[vec![1], vec![1, 3]],
+        "a choice of one row is kept, so the next click adds to it"
+    );
+    click_row(&mut list, 2, winit::keyboard::ModifiersState::empty());
+    assert_eq!(&*opened.borrow(), &[2], "a plain click opens its row");
+    assert_eq!(
+        list.selection().stored_keys().copied().collect::<Vec<_>>(),
+        vec![2],
+        "and leaves a choice of that row alone"
+    );
+}
+
+/// Click `key`'s row with `modifiers` held, as a person's pointer does.
+fn click_row(
+    list: &mut VirtualList<VecListModel<u32, u32>>,
+    key: u32,
+    modifiers: winit::keyboard::ModifiersState,
+) {
+    let (taffy, node) = lay_out(list, 300.0);
+    let at = list.row_rect(&key).expect("the row is placed").center();
+    let dispatch = |list: &mut VirtualList<VecListModel<u32, u32>>, event: &WindowEvent| {
+        Dispatch::new()
+            .modifiers(modifiers)
+            .layout(&taffy, node)
+            .send(list, event)
+    };
+    dispatch(
+        list,
+        &WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: (at.x, at.y).into(),
+        },
+    );
+    dispatch(list, &crate::synthetic_input::mouse_press());
+    dispatch(list, &crate::synthetic_input::mouse_release());
+}
+
 fn plain_rows(count: u32) -> VirtualList<VecListModel<u32, u32>> {
     VirtualList::from_items(
         (0..count).collect(),

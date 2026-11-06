@@ -730,6 +730,7 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                     std::sync::Arc::new(authorization)
                         as std::sync::Arc<dyn crate::collaboration::DocumentCustody>
                 }),
+                commit: None,
             };
             sends.push((entry.route.clone(), request, heads));
         }

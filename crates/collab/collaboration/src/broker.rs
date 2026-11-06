@@ -474,6 +474,12 @@ pub struct NativeHistoryInvocationFixture {
 }
 
 impl BrokerTransport {
+    /// Every complete action this endpoint has seen in `workspace`, oldest
+    /// first: the log [`crate::commits`] keeps for history.
+    pub(crate) fn action_history(&self, workspace: &str) -> Vec<crate::commits::CommitHistory> {
+        self.state.commits().history(workspace)
+    }
+
     /// Hand a command to the shovel. A full bounded queue is backpressure,
     /// never a reason to disable collaboration: a durable command that does
     /// not fit waits in [`Self::spill`] (in order, with a newer action
@@ -1102,7 +1108,7 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
 /// Shared failure latch. The UI reads it through `is_connected()` even when
 /// overload is detected by a subscription task on the shovel thread.
 #[derive(Clone)]
-struct BridgeState {
+pub(crate) struct BridgeState {
     connection_snapshots: Arc<
         std::sync::Mutex<
             std::collections::HashMap<
@@ -1112,6 +1118,10 @@ struct BridgeState {
         >,
     >,
     document_reads: committed_document::Reads,
+    /// The workspace commits this endpoint has seen, and the parts of
+    /// actions still waiting for the rest of them: what the app applies as
+    /// one action, and what history reads.
+    commits: Arc<std::sync::Mutex<crate::commits::Commits>>,
     /// Why each route whose last join failed failed, by channel: a route
     /// that never joined says so instead of staying unready without a word.
     route_join_failures: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
@@ -1310,7 +1320,7 @@ struct QueuedCollabEvent {
 }
 
 impl BridgeState {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let owner_wake = crate::wake::WakeHandle::new();
         // Both outbound budgets share one latch: a refused document send is
         // queued behind commands of either kind.
@@ -1321,6 +1331,7 @@ impl BridgeState {
         Self {
             connection_snapshots: Arc::default(),
             document_reads: committed_document::Reads::default(),
+            commits: Arc::default(),
             route_join_failures: Arc::default(),
             route_record_kinds: Arc::default(),
             healthy: Arc::new(AtomicBool::new(true)),
@@ -1346,6 +1357,12 @@ impl BridgeState {
 
     fn is_healthy(&self) -> bool {
         self.healthy.load(Ordering::Acquire)
+    }
+
+    /// The workspace commits this endpoint has seen. A poisoned lock is a
+    /// panic in the gate: the endpoint goes on with what it has.
+    pub(crate) fn commits(&self) -> std::sync::MutexGuard<'_, crate::commits::Commits> {
+        self.commits.lock_recover()
     }
 
     fn connect_phase(&self) -> ConnectPhase {
@@ -4621,43 +4638,8 @@ async fn spawn_op_stream(
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
             while let Ok(event) = stream.read().await {
-                let translated = match postcard::from_bytes::<SignedOp>(&event.op) {
-                    Ok(envelope) => {
-                        let (author, seq) = (envelope.author, envelope.seq);
-                        let arrived = Arrived {
-                            envelope,
-                            from_user_id: event.from_user_id,
-                            admission: event.admission,
-                        };
-                        match signed_document_event(arrived, &encryption) {
-                            Ok(event) => event,
-                            Err(UndeliveredDocument::Held) => {
-                                // Sealed under an epoch the held keys lack:
-                                // ask for newer keys, once per generation.
-                                if let Some((route, signals)) = key_signals.as_ref()
-                                    && encryption
-                                        .lock()
-                                        .is_ok_and(|mut keys| keys.wants_keys_for_held())
-                                {
-                                    let _ = signals.send(KeySignal::Changed(route.clone()));
-                                }
-                                continue;
-                            }
-                            Err(error) => {
-                                tracing::warn!(
-                                    %error,
-                                    app = %label.app,
-                                    workspace = %label.workspace,
-                                    record = %label.record,
-                                    route = %label.channel,
-                                    author = %hex::encode(author.as_bytes()),
-                                    seq,
-                                    "collab: refused a live document op"
-                                );
-                                continue;
-                            }
-                        }
-                    }
+                let envelope = match postcard::from_bytes::<SignedOp>(&event.op) {
+                    Ok(envelope) => envelope,
                     Err(error) => {
                         tracing::warn!(
                             "collab: signed op is not postcard SignedOp ({error}); dropping"
@@ -4665,11 +4647,80 @@ async fn spawn_op_stream(
                         continue;
                     }
                 };
-                let Some(complete) = complete_document_event(translated, &tx.reassembly.live)
+                let (author, seq) = (envelope.author, envelope.seq);
+                let arrived = Arrived {
+                    envelope,
+                    from_user_id: event.from_user_id,
+                    admission: event.admission,
+                };
+                let signed = match signed_document_event(arrived, &encryption) {
+                    Ok(signed) => signed,
+                    Err(UndeliveredDocument::Held) => {
+                        // Sealed under an epoch the held keys lack:
+                        // ask for newer keys, once per generation.
+                        if let Some((route, signals)) = key_signals.as_ref()
+                            && encryption
+                                .lock()
+                                .is_ok_and(|mut keys| keys.wants_keys_for_held())
+                        {
+                            let _ = signals.send(KeySignal::Changed(route.clone()));
+                        }
+                        continue;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            app = %label.app,
+                            workspace = %label.workspace,
+                            record = %label.record,
+                            route = %label.channel,
+                            author = %hex::encode(author.as_bytes()),
+                            seq,
+                            "collab: refused a live document op"
+                        );
+                        continue;
+                    }
+                };
+                let Some(complete) = complete_document_event(signed.event, &tx.reassembly.live)
                 else {
                     continue;
                 };
-                if !tx.send_document(complete).await {
+                let claims: Vec<[u8; 32]> = match &complete {
+                    CollabEvent::Document { envelope, .. } => {
+                        envelope.claims.iter().map(|claim| claim.change).collect()
+                    }
+                    _ => Vec::new(),
+                };
+                let events = match crate::commits::gate(
+                    &tx.state,
+                    signed.commit,
+                    &claims,
+                    (label.app.as_str(), label.record.as_str()),
+                    complete,
+                ) {
+                    crate::commits::Delivery::Now(event) => vec![event],
+                    crate::commits::Delivery::Waiting => continue,
+                    crate::commits::Delivery::Complete(events) => events,
+                    crate::commits::Delivery::Refused(reason) => {
+                        tracing::warn!(
+                            reason,
+                            app = %label.app,
+                            workspace = %label.workspace,
+                            record = %label.record,
+                            author = %hex::encode(author.as_bytes()),
+                            "collab: refused a document part that is not the action it names"
+                        );
+                        continue;
+                    }
+                };
+                let mut open = true;
+                for event in events {
+                    if !tx.send_document(event).await {
+                        open = false;
+                        break;
+                    }
+                }
+                if !open {
                     break;
                 }
             }
@@ -5447,6 +5498,7 @@ async fn send_document_mutation(
     signer: &mut LocalSdkDocumentSigner,
     mutation: collab_types::DocumentMutation,
     authorization: Option<std::sync::Arc<dyn crate::DocumentCustody>>,
+    commit: Option<collab_types::WorkspaceCommit>,
     inbound: &InboundBridge,
 ) -> Result<(), DocumentPublicationError> {
     wait_for_document_publication(route, &inbound.state).await?;
@@ -5480,8 +5532,22 @@ async fn send_document_mutation(
         }
     };
     let claims = origin_claims(&route.spec.app_id, &mutation);
+    let commit = origin_commit(route, signer, commit, &mutation);
     let count = frames.len();
     for (index, frame) in frames.into_iter().enumerate() {
+        let frame = match &commit {
+            Some(commit) => match commit.frame(&frame) {
+                Ok(framed) => framed,
+                Err(error) => {
+                    return Err(inbound.state.publication_failed(
+                        "workspace commit",
+                        error.to_string(),
+                        true,
+                    ));
+                }
+            },
+            None => frame,
+        };
         if let Err(error) = send_document_frame(route, signer, frame, &claims, &inbound.state).await
         {
             if count > 1 {
@@ -5494,7 +5560,52 @@ async fn send_document_mutation(
             return Err(error);
         }
     }
+    if let Some(commit) = commit {
+        inbound.state.commits().record(commit);
+    }
     Ok(())
+}
+
+/// The commit this publication carries: the action across every unit its
+/// caller made it as, or one this unit alone. A caller that names another
+/// device, or a commit naming another unit, publishes its change without
+/// one: the change must not be lost because its action was described wrong.
+fn origin_commit(
+    route: &SdkRoute,
+    signer: &LocalSdkDocumentSigner,
+    declared: Option<collab_types::WorkspaceCommit>,
+    mutation: &collab_types::DocumentMutation,
+) -> Option<collab_types::WorkspaceCommit> {
+    let app = route.spec.app_id.as_str();
+    let record = route.spec.record.as_deref().unwrap_or("");
+    let device = signer_device(signer);
+    if let Some(commit) = declared {
+        if commit.author.device == device && commit.covers(app, record) {
+            return Some(commit);
+        }
+        tracing::error!(
+            app,
+            record,
+            "collab: refusing to publish an action commit this device or unit is not part of; sending the change alone"
+        );
+        return None;
+    }
+    match collab_types::WorkspaceCommit::of_mutation(
+        &route.spec.cluster_id.to_string(),
+        app,
+        record,
+        &collab_types::CommitAuthor {
+            principal: None,
+            device,
+        },
+        mutation,
+    ) {
+        Ok(commit) => commit,
+        Err(error) => {
+            tracing::warn!(%error, app, record, "collab: a published change commits to no action");
+            None
+        }
+    }
 }
 
 /// The claims a mutation's op carries: what each of its changes is, read
@@ -5579,6 +5690,19 @@ fn frame_refused(state: &BridgeState, refusal: &FrameRefusal) -> DocumentPublica
     }
 }
 
+/// The device key a signed publication will carry.
+fn signer_device(signer: &LocalSdkDocumentSigner) -> [u8; 32] {
+    match signer {
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
+            identity.signing_public_key()
+        }
+        LocalSdkDocumentSigner::Inherited(
+            SdkDocumentSigner::Harness(key, _) | SdkDocumentSigner::Delegated(key, _),
+        ) => key.verifying_key().to_bytes(),
+        LocalSdkDocumentSigner::Host(identity) => identity.metadata().signing_public_key(),
+    }
+}
+
 #[allow(
     clippy::future_not_send,
     clippy::too_many_lines,
@@ -5607,16 +5731,7 @@ async fn try_send_frame(
             }
         };
     let now = crate::time::wall();
-    let author = match signer {
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
-            identity.signing_public_key()
-        }
-        LocalSdkDocumentSigner::Inherited(
-            SdkDocumentSigner::Harness(key, _) | SdkDocumentSigner::Delegated(key, _),
-        ) => key.verifying_key().to_bytes(),
-        LocalSdkDocumentSigner::Host(identity) => identity.metadata().signing_public_key(),
-    };
-    let author = collab_types::Ed25519PublicKey::from_bytes(author);
+    let author = collab_types::Ed25519PublicKey::from_bytes(signer_device(signer));
     let attestation =
         collab_types::document_attestation_id(&route.spec.app_id, &workspace_id, record_id);
     let seq = collab_types::next_unordered_document_sequence(now);
@@ -6127,11 +6242,13 @@ async fn dispatch_sdk_request(
         CollabRequest::Document {
             mutation,
             authorization,
+            commit,
         } => {
             // The helper records every failure, including a policy denial that
             // leaves the identity connection usable, before returning its result.
             let outcome =
-                send_document_mutation(route, signer, mutation, authorization, inbound_tx).await;
+                send_document_mutation(route, signer, mutation, authorization, commit, inbound_tx)
+                    .await;
             return outcome.is_ok();
         }
         CollabRequest::OfferContent { hash, bytes } => {
@@ -8890,6 +9007,7 @@ mod tests {
             ),
 
             authorization: None,
+            commit: None,
         });
         manager.send(CollabRequest::UpdateInvocation {
             id: 42,
@@ -10986,8 +11104,7 @@ mod tests {
                 Ok(QueuedSdkCommand {
                     command: SdkCommand::Primary(CollabRequest::Document {
                         mutation: DocumentMutation::Incremental(data),
-
-                        authorization: None,
+                        ..
                     }),
                     ..
                 })
@@ -11219,6 +11336,7 @@ mod tests {
             let command = SdkCommand::Primary(CollabRequest::Document {
                 mutation: collab_types::DocumentMutation::Snapshot(data),
                 authorization: None,
+                commit: None,
             });
 
             assert!(enqueue_sdk_command(&tx, command, &state));
@@ -11644,7 +11762,8 @@ mod tests {
                 },
                 &plain_route_keys(),
             )
-            .unwrap();
+            .unwrap()
+            .event;
             assert!(matches!(
                 &event,
                 CollabEvent::Document { from_user_id, .. } if from_user_id == "peer-alice"
@@ -11673,9 +11792,30 @@ mod tests {
             let plaintext = DocumentMutation::Incremental(b"secret change".to_vec())
                 .encode()
                 .unwrap();
+            // The action commit a sealed part carries rides inside what only
+            // the unit's readers open.
+            let commit = collab_types::WorkspaceCommit::new(
+                "workspace",
+                collab_types::CommitAuthor {
+                    principal: Some("alice".into()),
+                    device: [9; 32],
+                },
+                1,
+                collab_types::CommitAction {
+                    name: "send".into(),
+                    item: None,
+                    invocation: None,
+                },
+                vec![collab_types::CommitPart {
+                    app: "chat".into(),
+                    record: "main".into(),
+                    changes: vec![[1; 32]],
+                }],
+            );
+            let sealed_plaintext = commit.frame(&plaintext).unwrap();
             let alice_endpoint = group_route_keys(alice);
             let PreparedFrame::Ready(ciphertext, metadata) =
-                prepare_document_payload(&alice_endpoint, artifact, plaintext.clone(), &[])
+                prepare_document_payload(&alice_endpoint, artifact, sealed_plaintext, &[])
             else {
                 panic!("a provisioned endpoint seals at once");
             };
@@ -11701,7 +11841,7 @@ mod tests {
             let endpoint = group_route_keys(bob);
             for _ in 0..2 {
                 // Live delivery and a later scrollback read of the same op.
-                let event = signed_document_event(
+                let signed = signed_document_event(
                     Arrived {
                         envelope: op.clone(),
                         from_user_id: "alice".into(),
@@ -11711,9 +11851,14 @@ mod tests {
                 )
                 .unwrap();
                 assert!(matches!(
-                    event.document_mutation(),
+                    signed.event.document_mutation(),
                     Some(Ok(DocumentMutation::Incremental(data))) if data == b"secret change"
                 ));
+                assert_eq!(
+                    signed.commit,
+                    Some(commit.clone()),
+                    "the part's action comes out of the sealed payload"
+                );
             }
             let plaintext_downgrade = SignedOp::new_unsigned(
                 plaintext,
@@ -11796,7 +11941,8 @@ mod tests {
                 },
                 &carol_endpoint,
             )
-            .unwrap();
+            .unwrap()
+            .event;
             assert!(matches!(
                 event.document_mutation(),
                 Some(Ok(DocumentMutation::Incremental(data))) if data == b"secret change"

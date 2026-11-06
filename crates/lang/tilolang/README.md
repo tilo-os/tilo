@@ -192,33 +192,12 @@ fn label(c: Channel) -> Text {
 results and resources compare with `==`; options and results are taken apart with `match`
 (`.some(x) => ...`), `if let`, `?.` and `??`.
 
-**A value each person has their own of.** A field declared `personal` holds one value per
-person, in a record everyone shares: the tasks a person picked for their Today, the order they
-put their day in, the day they snoozed a shared mail to. It is a `Bool` or an `Option`, so a
-person who never set it reads the empty value, and the action that writes it writes the value of
-the person who runs it:
-
-```
-type Task {
-    title: Text (title)
-    personal today: Bool = false
-    personal order: Option<Float> = .none
-}
-action pick(t: Task, on: Bool = not t.today) { t.today = on }
-```
-
-Reading `t.today` gives the person looking's value, and a filter or a sort asks the field for
-them too (`filter "Today" = today and not done`), so the same task stands in one person's Today
-and not another's. `others(t.today)` is the people other than the one looking whose value is set
-(`List<Principal>`), which is how a view shows that someone else picked a task.
-
-**Type names and roots.** `type Name = T` names any type and nothing else: `type Names =
-List<Note>` is a name for a list. A name for a `Collection`, `Set` or `Map` is refused (E013):
-it would read as a resource where the container goes. A resource is a `type` with fields, so
-what holds a collection says so, `type Notebook { notes: Collection<Note> }`, and code reads
-it as a field (`nb.notes.insert(n)`, `for n in nb.notes`, `std.list(nb, nb.notes)`). A root
-names one resource per workspace: `root notebook: Notebook` is `notebook` in the package and
-`alias.notebook` in a package that uses it, its collection `alias.notebook.notes`.
+**Type names and roots.** `type Name = T` names any type. A name for a collection, set or map is
+a resource of its own that code uses as that container (`notes.insert(n)`, `for n in notes`,
+`std.list(notes, notes)`); its one field is `Name.items` in the ids lock, so renaming an old
+`type Notebook { notes: Collection<Note> }` to it (`tilolang ids --rename`) keeps its records. A
+root names one such resource per room: `root notes: Notes` is `notes` in the package and
+`alias.notes` in a package that uses it.
 
 **`if` and blocks.** There is one `if`: `if cond { ... } else { ... }`. Used as a value its branches
 agree on a type and the value is each block's last expression; as a statement it needs no
@@ -300,10 +279,9 @@ of the app's; `ui.ChangeMark(r)` places the mark where the default spot is wrong
 `.mention` for one whose rich text names it. It is read from the index, at the cost of what links to `r` and not of the
 workspace's size, and a view that reads it runs again when what links to `r` changes.
 
-A type declared `(attached)` says what its records are to the rest of the workspace: about
-what they were made from, not work made from it, as a comment is about the task it discusses.
-`linked` leaves them out, since the view that draws what they are about draws them all, and a
-record made from `r` is a change to `r` for whoever made or read it, as any edit is.
+What a type's records are to a resource is the page's to show: a comment is about what it
+was made from, and the thread under that resource draws every comment about it, so a page that
+draws a thread says what it draws itself (`std.linked(t, without: discussion.said_about(t))`).
 
 **Members.** Who is in the workspace is the platform's membership, read and never copied:
 `workspace.members` is everyone in it, people and agents, a `List<Principal>`, and `members(r)`
@@ -450,9 +428,8 @@ list and insert what it holds.
 `json.encode(value)` writes the fields a record's type declares, by their names, an enum as its
 case's name, a list as an array, a `Map` as an object, an `Option` as its value or `null`, and a
 `json.Value` as it was read. Writing a stored resource (a reference) traps: its fields are what to
-write, and a resource's JSON is not one document — a `personal` field's value is the looking
-person's, and two resources may point at each other. Read the text into values, or write the
-fields it should carry into a record, and encode those.
+write, and a resource's JSON is not one document: two resources may point at each other. Read
+the text into values, or write the fields it should carry into a record, and encode those.
 
 A service whose shape the code does not know is read as a `json.Value` and taken apart as the
 code asks, with `json.parse(text)`:

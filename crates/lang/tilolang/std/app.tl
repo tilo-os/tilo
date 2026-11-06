@@ -278,6 +278,7 @@ view rows_list<T, K>(
     let nested = if let p = parent { true } else { false }
     ui.VirtualList(
         selection_follows_focus: true,
+        multi_select: true,
         in_column: true,
         tail_title: tail_title,
         tree: nested,
@@ -572,10 +573,11 @@ view linked_row<R>(of: R, dense: Bool = false) {
 /// at the density of a page of related things, or compact — quiet reference rows right under
 /// the content they belong to, one caption line each, as what a message was made from. Links by
 /// a field are left out: the page of the resource holding the field draws that reference as its
-/// own section of related things, so drawing it here again would show it twice. So are records
-/// of an `(attached)` type: their own view, where they belong, already draws them all.
-view linked<R>(of: R, compact: Bool = false) {
-    let links = linked(of).filter(l -> l.how != .field and not meta(l.of).attached)
+/// own section of related things, so drawing it here again would show it twice. `without` names
+/// what the page draws itself, as a task's page draws its discussion: those are left out too.
+view linked<R>(of: R, compact: Bool = false, without: List<host.Resource> = []) {
+    let linked_to = linked(of).filter(l -> l.how != .field)
+    let links = linked_to.filter(l -> not without.any(x -> x == l.of))
     if not links.is_empty() {
         if compact {
             stack(gap: .tight) {
@@ -607,7 +609,9 @@ view suggestions<R>(of: R) {
 /// "You". A step of one change shows each field it changed, what it held before beside what it
 /// holds now, each as the field's type shows it; a step of several opens to each of them. A step
 /// the person looking made offers Undo for it, and a run's step Undo for the whole run; each
-/// change of theirs in a longer step is undone on its own.
+/// change of theirs in a longer step is undone on its own. One change made over many items at
+/// once — a command run on a choice of them — is one step: it says how many items it changed,
+/// and its Undo takes them all back together.
 view history<R>(of: R) {
     lens open: Text = ""
     let steps = steps(of)
@@ -615,7 +619,6 @@ view history<R>(of: R) {
         section(phrase("tilolang-history")) {
             for s in steps {
                 let key = "{s.at}/{s.who}"
-                let single = s.versions.len() == 1
                 // What was done: the sentence its last change says, or, for a step of a run,
                 // who ran it and what it ran.
                 stack(gap: .related) {
@@ -630,9 +633,9 @@ view history<R>(of: R) {
                             } else if let v = s.versions.last() {
                                 std.version_sentence(v)
                             }
-                            if not single {
+                            if s.changes > 1 {
                                 ui.Text(
-                                    phrase("tilolang-history-changes", count: s.versions.len()),
+                                    phrase("tilolang-history-changes", count: s.changes),
                                     role: .caption,
                                     secondary: true,
                                 )
@@ -644,7 +647,7 @@ view history<R>(of: R) {
                             ui.Button(phrase("tilolang-history-undo-run")) {
                                 on press: undo(run)
                             }
-                        } else if single and s.mine {
+                        } else if s.changes == 1 and s.mine {
                             if let v = s.versions.last() {
                                 ui.Button(phrase("tilolang-undo")) {
                                     on press: undo(v)
@@ -652,32 +655,34 @@ view history<R>(of: R) {
                             }
                         }
                     }
-                    if single {
+                    if s.changes == 1 {
                         if let v = s.versions.last() {
                             std.version_changes(v)
                         }
-                    } else if open == key {
-                        ui.Button(phrase("tilolang-history-hide")) {
-                            on press: set(open, "")
-                        }
-                        for v in s.versions {
-                            stack(gap: .tight) {
-                                row(gap: .related, align: .center) {
-                                    std.version_sentence(v)
-                                    spacer()
-                                    ui.Time(v.at, role: .caption, secondary: true)
-                                    if v.mine {
-                                        ui.Button(phrase("tilolang-undo")) {
-                                            on press: undo(v)
+                    } else if s.changes > 1 {
+                        if open == key {
+                            ui.Button(phrase("tilolang-history-hide")) {
+                                on press: set(open, "")
+                            }
+                            for v in s.versions {
+                                stack(gap: .tight) {
+                                    row(gap: .related, align: .center) {
+                                        std.version_sentence(v)
+                                        spacer()
+                                        ui.Time(v.at, role: .caption, secondary: true)
+                                        if v.mine {
+                                            ui.Button(phrase("tilolang-undo")) {
+                                                on press: undo(v)
+                                            }
                                         }
                                     }
+                                    std.version_changes(v)
                                 }
-                                std.version_changes(v)
                             }
-                        }
-                    } else {
-                        ui.Button(phrase("tilolang-history-show")) {
-                            on press: set(open, key)
+                        } else {
+                            ui.Button(phrase("tilolang-history-show")) {
+                                on press: set(open, key)
+                            }
                         }
                     }
                 }
@@ -690,9 +695,18 @@ view history<R>(of: R) {
 /// beside each change (`said`, `shows`). The words come from the fields the change wrote and
 /// what they held before and after ("moved this to", then the day as a day), or from what the
 /// action declares (`did:`); a version that says neither says what its action does.
+///
+/// A change made over many items at once says how many it changed instead of what one item
+/// read: what the action did to each is the fields of that one's own version, and the words of
+/// the action are written for one item.
 template view version_sentence(v: host.Version) {
     stack(gap: .tight) {
-        if v.did != "" {
+        if v.count > 1 {
+            ui.Text(
+                "{v.actor} {phrase("tilolang-did-many", count: v.count, kind: meta(v.of).plural)}",
+                role: .label,
+            )
+        } else if v.did != "" {
             ui.Text("{v.actor} {v.did}", role: .label)
         } else if not v.changes.is_empty() {
             row(gap: .tight, wrap: true) {

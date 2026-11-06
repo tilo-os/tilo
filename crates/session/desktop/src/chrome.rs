@@ -312,6 +312,9 @@ pub enum ChromeIntent {
     /// Show the active workspace's strips to choose from, in the strip
     /// switcher: a click on the strip's name after the workspace's.
     ShowStrips,
+    /// Open the strip switcher for the keyboard, or close it when it is up:
+    /// its chord does both.
+    ToggleStrips,
     /// Give the active workspace this name.
     RenameWorkspace {
         name: String,

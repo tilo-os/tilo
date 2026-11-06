@@ -50,6 +50,15 @@ impl NotesApp {
                 BarCommand::NewNote,
             )
         });
+        // The note's actions are offered only for a note: a menu that acts on
+        // nothing is a second "…" beside the bar's own that does nothing.
+        let note_actions = title.map(|_| {
+            bar.entry(
+                "more-horizontal",
+                ui::i18n!("notes-affordance-note-actions"),
+                BarCommand::NoteActions,
+            )
+        });
         WindowToolbar {
             sidebar: Some(sidebar_open),
             navigation: None,
@@ -61,16 +70,7 @@ impl NotesApp {
                 // record's save.
                 ..ToolbarLocation::default()
             }),
-            actions: new_note
-                .into_iter()
-                .chain([bar
-                    .entry(
-                        "more-horizontal",
-                        ui::i18n!("notes-affordance-note-actions"),
-                        BarCommand::NoteActions,
-                    )
-                    .enabled(title.is_some())])
-                .collect(),
+            actions: new_note.into_iter().chain(note_actions).collect(),
             ..WindowToolbar::default()
         }
     }
@@ -207,6 +207,39 @@ mod tests {
 
     fn new_note_in_window(app: &NotesApp) -> bool {
         ui::widget::find_test_id(&*app.shell, crate::app::NEW_NOTE_BUTTON_ID).is_some()
+    }
+
+    /// The actions the bar holds, by name.
+    fn bar_actions(app: &mut TestApp<crate::NotesShell>) -> Vec<String> {
+        app.settle();
+        ui::window_toolbar::declared()
+            .expect("the note's slots are declared")
+            .actions
+            .iter()
+            .map(|action| action.name.clone())
+            .collect()
+    }
+
+    /// The note's actions stand in the bar only for a note: with none open the
+    /// bar's own "…" is the window's, alone, not one dead "…" beside it.
+    #[test]
+    fn the_bar_offers_the_notes_actions_only_for_a_note() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut empty = notes_at("first_note", (1280, 800));
+        assert_eq!(
+            bar_actions(&mut empty),
+            vec![ui::i18n!("notes-affordance-new-note")],
+            "an empty notebook offers New note and no note actions"
+        );
+        let mut open = notes_at("table", (1280, 800));
+        assert_eq!(
+            bar_actions(&mut open),
+            vec![
+                ui::i18n!("notes-affordance-new-note"),
+                ui::i18n!("notes-affordance-note-actions")
+            ],
+            "an open note offers its actions beside New note"
+        );
     }
 
     #[test]

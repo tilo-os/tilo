@@ -511,16 +511,19 @@ fn room() -> Room {
         vec![design.clone(), said, Value::none()],
     );
     commit(&host, &mut record);
-    // The task is made from the message, as the message's own menu makes it.
+    // The task is made from the message, as the message's own menu makes it: the words the
+    // message says fill the title the task is called by, and the task is made from the message.
     let message = target(&message);
     let id = action_id(&tasks.meta, "new_task");
+    let filled = host
+        .runtime()
+        .fill_entry(&id, vec![Some(tasks_root)], SAID)
+        .unwrap()
+        .unwrap_or_else(|| panic!("the message's words make a task"));
+    let args = host.runtime().complete_args(&id, filled).unwrap();
     let made = match host
         .runtime()
-        .invoke_action_from(
-            &Principal::new("ada"),
-            (id.as_str(), vec![tasks_root, Value::text(SAID)]),
-            &message,
-        )
+        .invoke_action_from(&Principal::new("ada"), (id.as_str(), args), &message)
         .unwrap()
     {
         tilolang_tilo::runtime::InvokeOutcome::Done(made) => made,
