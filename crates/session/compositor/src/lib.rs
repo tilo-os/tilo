@@ -1819,6 +1819,15 @@ impl Compositor {
         self.data.state.shareable_window_rect(identifier)
     }
 
+    /// Where the mapped window whose [`WindowInfo::id`] is `id` stands in the
+    /// layout: `(x, y, width, height)` of the content, which is what a tool
+    /// driving the desk aims at. `None` for a window that is not mapped or
+    /// not placed on a display.
+    #[must_use]
+    pub fn window_rect(&self, id: u64) -> Option<(i32, i32, i32, i32)> {
+        self.data.state.window_rect(id)
+    }
+
     /// The foreign-toplevel identifier of the mapped window whose
     /// [`WindowInfo::id`] is `id`: what a capture names a window by, and how
     /// what the desk knows of a window reaches what it shows.
@@ -2284,9 +2293,7 @@ impl Compositor {
     /// What the X11 window `id` says about its program: its process, class,
     /// desktop start-up and icon. `None` for a Wayland window.
     pub fn x11_identity(&self, id: u64) -> Option<&X11Identity> {
-        let window = self.data.state.space.elements().find(|window| {
-            state::describe(&self.data.state, window).is_some_and(|info| info.id == id)
-        })?;
+        let window = self.data.state.mapped_window(id)?;
         let surface = window.x11_surface()?;
         let server = self.data.state.x11_server(surface.xwm_id()?)?;
         server.windows.as_ref()?.identity(surface.window_id())

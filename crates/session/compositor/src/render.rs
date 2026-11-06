@@ -476,12 +476,7 @@ where
     let output_scale = output.current_scale().fractional_scale();
     let scale = Scale::from(output_scale);
     let bounds = Rectangle::from_size(geometry.size.to_physical_precise_round(output_scale));
-    let window_of = |id: u64| {
-        state
-            .space
-            .elements()
-            .find(|window| crate::state::describe(state, window).is_some_and(|info| info.id == id))
-    };
+    let window_of = |id: u64| state.mapped_window(id);
     let locked = state.locked();
     let mut elements: Vec<OutputRenderElement<R>> = dim.into_iter().collect();
     let hosted = |renderer: &mut R, elements: &mut Vec<OutputRenderElement<R>>, below: bool| {

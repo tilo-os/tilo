@@ -660,12 +660,7 @@ impl State {
     /// Ask the window `id` to close, as its own close button would: the
     /// client decides what closing means, and does it.
     pub(crate) fn close_window(&self, id: u64) {
-        let Some(window) = self
-            .space
-            .elements()
-            .find(|window| describe(self, window).is_some_and(|info| info.id == id))
-            .cloned()
-        else {
+        let Some(window) = self.mapped_window(id).cloned() else {
             return;
         };
         if let Some(toplevel) = window.toplevel() {
@@ -1327,16 +1322,12 @@ impl State {
     /// Give the window with `id` the keyboard, for a seat's keys: it is not
     /// raised and stays inactive, so the person's desk looks as it did.
     pub(crate) fn focus_window_id(&mut self, id: u64, serial: Serial) {
-        let surface = self
-            .space
-            .elements()
-            .find(|window| describe(self, window).is_some_and(|info| info.id == id))
-            .and_then(|window| {
-                window
-                    .toplevel()
-                    .map(|toplevel| toplevel.wl_surface().clone())
-                    .or_else(|| crate::xwayland::x11_wl_surface(window))
-            });
+        let surface = self.mapped_window(id).and_then(|window| {
+            window
+                .toplevel()
+                .map(|toplevel| toplevel.wl_surface().clone())
+                .or_else(|| crate::xwayland::x11_wl_surface(window))
+        });
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, surface, serial);
         }
@@ -1512,13 +1503,7 @@ impl State {
     /// Give the keyboard to the window the policy brought forward, and ask
     /// the clients of the windows it closed to close.
     fn apply_policy_focus_and_closes(&mut self) {
-        let window_of = |state: &Self, id: u64| {
-            state
-                .space
-                .elements()
-                .find(|window| describe(state, window).is_some_and(|info| info.id == id))
-                .cloned()
-        };
+        let window_of = |state: &Self, id: u64| state.mapped_window(id).cloned();
         for id in self.policy.take_close_requests() {
             let Some(window) = window_of(self, id) else {
                 continue;
@@ -1700,11 +1685,30 @@ fn is_modal(toplevel: &ToplevelSurface) -> bool {
 }
 
 impl State {
+    /// The mapped window [`WindowInfo::id`] `id` names: the one a policy, a
+    /// tool or a client's own id is about. `None` for an id no mapped window
+    /// holds.
+    ///
+    /// [`WindowInfo::id`]: crate::capture::WindowInfo::id
+    pub(crate) fn mapped_window(&self, id: u64) -> Option<&Window> {
+        self.space
+            .elements()
+            .find(|window| describe(self, window).is_some_and(|info| info.id == id))
+    }
+
     /// The rectangle a shareable window holds in the layout, by its
     /// foreign-toplevel identifier.
     pub(crate) fn shareable_window_rect(&self, identifier: &str) -> Option<(i32, i32, i32, i32)> {
         let window = self.capture.window(identifier)?;
         let rect = self.space.element_geometry(window)?;
+        Some((rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
+    }
+
+    /// The rectangle the mapped window `id` holds in the layout: where its
+    /// content is drawn, which is what a tool driving the desk aims at. `None`
+    /// for a window that is not mapped, or is not placed on a display at all.
+    pub(crate) fn window_rect(&self, id: u64) -> Option<(i32, i32, i32, i32)> {
+        let rect = self.space.element_geometry(self.mapped_window(id)?)?;
         Some((rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
     }
 
