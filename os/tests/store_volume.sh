@@ -17,6 +17,7 @@ encryptor="$repo/os/usr/libexec/tilo-disk-encrypt"
 backend="$repo/os/usr/libexec/tilo-install"
 fs_unit="$repo/os/usr/lib/systemd/system/fs.service"
 volume_unit="$repo/os/usr/lib/systemd/system/tilo-store-volume.service"
+signin_path="$repo/os/usr/lib/systemd/system/tilo-store-volume-after-signin.path"
 loop_unit="$repo/os/usr/lib/systemd/system/tilo-store-loop.service"
 containerfile="$repo/os/Containerfile"
 fail=0
@@ -165,7 +166,7 @@ ensure_env() {
     TILO_STORE_IDENTITY="$root/identity" TILO_STORE_PASSWD="$root/passwd" \
     TILO_STORE_IDENTITY_TOOL="$root/tilo-identity" \
     TILO_STORE_LOGINCTL="${LOGINCTL_STUB:-/bin/false}" \
-    TILO_STORE_SYSTEMCTL=/bin/false "$helper" ensure > "$root/log" 2>&1
+    TILO_STORE_SYSTEMCTL="${SYSTEMCTL_STUB:-/bin/false}" "$helper" ensure > "$root/log" 2>&1
 }
 me="$(id -un)"
 device_id=61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241
@@ -236,16 +237,62 @@ else
   bad "the signed-in person was not chosen: $(cat "$r/run/fs.env" 2>/dev/null) $(cat "$r/log" 2>/dev/null)"
 fi
 
+# Nobody has proved anything yet. On a first boot the store is prepared before
+# the person can sign in — the proof is written by the sign-in — so this is a
+# state the preparation succeeds in and reports, not a failed unit: the files
+# keep being served by FUSE until the sign-in re-runs the unit.
 for tool in 1 none; do
   r="$(new_root "nobody-$tool" "no account here proves it holds this device's identity" "$tool")"
-  if ! ensure_env "$r" && [ "$(cat "$r/run/fs.env")" = "$fuse_line" ] \
-     && grep -Fq 'no local person' "$r/log" && grep -Fq "owner=<account> in $r/etc/tilo/store-volume.conf" "$r/log" \
+  if ensure_env "$r" && [ "$(cat "$r/run/fs.env")" = "$fuse_line" ] \
+     && grep -Fq 'has not signed in yet' "$r/log" \
+     && grep -Fq "owner=<account> in $r/etc/tilo/store-volume.conf" "$r/log" \
      && [ ! -e "$r/image-dir/store.img" ]; then
-    ok "with no proven or signed-in person ($tool) the unit fails loudly, says what to configure, and FUSE serves"
+    ok "with no person signed in yet ($tool) the preparation succeeds, says whose sign-in finishes it, and FUSE serves"
   else
-    bad "a device without a person was not refused loudly ($tool): $(cat "$r/log" 2>/dev/null)"
+    bad "a device waiting for its person was treated as failed ($tool): $(cat "$r/log" 2>/dev/null)"
   fi
 done
+
+# A preparation that ran before the sign-in announced FUSE, and the sign-in
+# re-runs it. fs.service is up by then, already holding the old answer, so the
+# daemon has to restart onto the one the preparation just wrote; the boot-time
+# run, which is before fs.service, never restarts it.
+cat > "$tmp/systemctl-restart" <<'SH'
+#!/bin/bash
+printf '%s\n' "$*" >>"$TILO_TEST_SYSTEMCTL_CALLS"
+[ "$1" = is-active ] && exit 0
+exit 0
+SH
+chmod 0755 "$tmp/systemctl-restart"
+r="$(new_root after-signin "cy 1002:1002" 0)"
+printf 'kind=none\n' > "$r/etc/tilo/store-volume.conf"
+printf 'TILO_FS_DATA_PLANE_ARGS="--data-plane=fuse"\n' > "$r/run/fs.env" 2>/dev/null || {
+  mkdir -p "$r/run"; printf 'TILO_FS_DATA_PLANE_ARGS="--data-plane=fuse"\n' > "$r/run/fs.env"; }
+if TILO_TEST_SYSTEMCTL_CALLS="$tmp/systemctl.calls" SYSTEMCTL_STUB="$tmp/systemctl-restart" ensure_env "$r" \
+   && [ "$(cat "$r/run/fs.env")" = "$(fuse_for 1002:1002)" ] \
+   && grep -Fqx 'try-restart fs.service' "$tmp/systemctl.calls"; then
+  ok "a preparation re-run after the sign-in restarts fs.service onto what it announced"
+else
+  bad "the sign-in's preparation did not hand its data plane to the running daemon: $(cat "$r/log" 2>/dev/null)"
+fi
+# Nothing changed (the same answer as an earlier run): no restart.
+rm -f "$tmp/systemctl.calls"
+if TILO_TEST_SYSTEMCTL_CALLS="$tmp/systemctl.calls" SYSTEMCTL_STUB="$tmp/systemctl-restart" ensure_env "$r" \
+   && ! grep -Fq 'try-restart' "$tmp/systemctl.calls"; then
+  ok "a preparation that announces what the daemon already runs restarts nothing"
+else
+  bad "an unchanged data plane restarted fs.service"
+fi
+
+# A device that names an owner it cannot use is misconfigured, and that is a
+# failure: nothing about a sign-in makes a name that is not an account work.
+r="$(new_root misnamed "cy 1002:1002" 0)"
+printf 'kind=none\nowner=nosuchaccount\n' > "$r/etc/tilo/store-volume.conf"
+if ! ensure_env "$r" && [ "$(cat "$r/run/fs.env")" = "$fuse_line" ] && grep -Fq 'not a regular account' "$r/log"; then
+  ok "an owner= that names no account fails loudly"
+else
+  bad "a misnamed owner did not fail: $(cat "$r/log" 2>/dev/null)"
+fi
 
 if [ "$(id -u)" -ge 1000 ]; then
   r="$(new_root partition-missing "" none)"
@@ -295,6 +342,34 @@ if grep -Fq 'os/usr/lib/systemd/system/tilo-store-volume.service \' "$containerf
   ok "the image ships the store helper and both units"
 else
   bad "the image does not ship the store helper and its units"
+fi
+
+# A boot starts the preparation before anyone can sign in, and the sign-in is
+# what proves who the person is. So the preparation must not fail for waiting,
+# and something must start it again the moment a proof appears — no timer, no
+# polling. The path unit watches the proof each account writes at sign-in and
+# starts the same preparation; enabled or it never fires.
+if [ -r "$signin_path" ] \
+   && exactly_once "$signin_path" 'PathExistsGlob=/var/home/*/.config/tilo/identity/local-person.sig' \
+   && exactly_once "$signin_path" 'PathExistsGlob=/home/*/.config/tilo/identity/local-person.sig' \
+   && exactly_once "$signin_path" 'PathChanged=/run/systemd/seats' \
+   && exactly_once "$signin_path" 'Unit=tilo-store-volume.service' \
+   && exactly_once "$signin_path" 'ConditionKernelCommandLine=!tilo.install' \
+   && exactly_once "$signin_path" 'WantedBy=multi-user.target' \
+   && grep -Fq 'os/usr/lib/systemd/system/tilo-store-volume-after-signin.path \' "$containerfile" \
+   && grep -Fq 'systemctl enable tilo-fs-start.timer fs-identity.path tilo-store-volume-after-signin.path' "$containerfile"; then
+  ok "a sign-in writes the proof the prep reads, and re-runs the prep for the person it names"
+else
+  bad "nothing re-runs the store preparation after the person signs in"
+fi
+# The waiting state is not a failure: the collection of what to do is a state
+# the person's sign-in ends, not a misconfiguration.
+if grep -Fq 'The person has not signed in yet, so the workspace has no owner.' "$helper" \
+   && grep -Fq 'return 2' "$helper" \
+   && grep -Fq 'publish_data_plane "--data-plane=fuse${OWNER:+ --native-owner=$OWNER}"' "$helper"; then
+  ok "waiting for a sign-in is reported, keeps FUSE serving, and does not fail the unit"
+else
+  bad "the store preparation fails a boot for waiting on the person"
 fi
 
 # The installer's whole-disk layout and the recovery-key binding.

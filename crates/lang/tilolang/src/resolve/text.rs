@@ -34,18 +34,13 @@ pub fn date_value(kind: &str, args: &[ast::Arg]) -> Result<(Ty, String), String>
 /// The standard library's types whose value is the text it is made from, by the path source
 /// writes: `std.Identifier`, `std.Repeat` and `std.Reminder`.
 pub fn std_text_ty(dotted: &[&str]) -> Option<Ty> {
-    match dotted {
-        ["std", "Identifier"] => Some(Ty::Identifier),
-        ["std", "Repeat"] => Some(Ty::Repeat),
-        ["std", "Reminder"] => Some(Ty::Reminder),
-        _ => None,
-    }
+    crate::types::named(dotted).filter(|ty| !matches!(ty, Ty::RichText | Ty::Json))
 }
 
 /// The std type and the arguments of a call that makes one of those values, when `e` is one:
 /// `std.Repeat("FREQ=DAILY")`, `std.Identifier("mailto:jane@x.com")`.
 pub fn std_text_call(e: &Expr) -> Option<(Ty, &[ast::Arg])> {
-    let ExprKind::Call { callee, args } = &e.kind else {
+    let ExprKind::Call { callee, args, .. } = &e.kind else {
         return None;
     };
     let ExprKind::Field { base, name } = &callee.kind else {

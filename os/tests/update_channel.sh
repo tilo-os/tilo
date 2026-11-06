@@ -30,9 +30,30 @@ EOF
 chmod +x "$work/bin/"*
 mkdir -p "$work/registry"
 
+# bootc reports the deployments; the field helper reads one selector from it,
+# as the real tilo-image-trust does. A test sets TILO_TEST_BOOTED_TRANSPORT.
+cat >"$work/bin/bootc" <<'EOF'
+#!/usr/bin/env bash
+[[ $1 == status && $2 == --format && $3 == json ]] || exit 2
+printf '{"status":{"booted":{"image":{"image":{"image":"%s","transport":"%s"}}}}}\n' \
+  "${TILO_TEST_BOOTED_IMAGE:-registry.tilo.so/tilo/tilo-vm:booted}" \
+  "${TILO_TEST_BOOTED_TRANSPORT:-registry}"
+EOF
+cat >"$work/bin/field" <<'EOF'
+#!/usr/bin/env bash
+[[ $1 == bootc-status-field ]] || exit 2
+status="$(cat)"
+case "$2" in
+  booted-transport) sed -n 's/.*"transport":"\([^"]*\)".*/\1/p' <<<"$status" ;;
+  *) exit 3 ;;
+esac
+EOF
+chmod +x "$work/bin/"*
+
 run() {
   PATH="$work/bin:$PATH" TILO_UPDATE_CHANNEL_ROOT="$work/root" TILO_UPDATE_POLICY="$work/policy" \
     TILO_UPDATE_POLICY_SET="$work/bin/policy-set" TILO_UPDATE_CHANNEL_ARCH=x86_64 \
+    TILO_UPDATE_CHANNEL_BOOTC="$work/bin/bootc" TILO_UPDATE_CHANNEL_FIELD="$work/bin/field" \
     TILO_TEST_CALLS="$work/calls" TILO_TEST_REGISTRY="$work/registry" \
     bash "$channel" "$@"
 }
@@ -54,6 +75,7 @@ if run pin registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64 2>/dev/null; the
   echo 'a release image took a pinned dev build' >&2
   exit 1
 fi
+expect registry installed
 
 # A dev image follows dev by default, main's dev image of its architecture or board.
 echo dev >"$work/root/usr/lib/tilo/image-flavour"
@@ -90,6 +112,47 @@ for bad in docker.io/library/fedora:latest registry.tilo.so/tilo/tilo-vm-reff:x 
     echo "a pin took $bad" >&2
     exit 1
   fi
+done
+
+# A deployment installed from a local medium (oci-archive, docker-archive, oci,
+# dir, containers-storage) is a developer's own image, verified where it was
+# made. No channel reference replaces it: `next` names nothing, so the update
+# path neither switches it nor fetches a registry reference its own policy may
+# refuse. It says what it installed from so a caller can tell.
+rm -f "$work/policy"
+for installed in oci-archive docker-archive oci dir containers-storage; do
+  got="$(TILO_TEST_BOOTED_TRANSPORT=$installed run installed)"
+  [ "$got" = "$installed" ] || { echo "installed on a $installed deployment: $got, expected $installed" >&2; exit 1; }
+  got="$(TILO_TEST_BOOTED_TRANSPORT=$installed run next)"
+  [ -z "$got" ] || { echo "a $installed-installed image followed a channel: $got" >&2; exit 1; }
+  # Not even a pinned build: only the person installing another image moves it.
+  printf 'pin=registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64\npin-base=sha256:%s\n' \
+    "$(printf one | sha256sum | cut -d' ' -f1)" >"$work/policy"
+  got="$(TILO_TEST_BOOTED_TRANSPORT=$installed run next)"
+  [ "$got" = registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64 ] || {
+    echo "a $installed-installed image lost its pinned build: $got" >&2; exit 1; }
+  rm -f "$work/policy"
+done
+# A registry deployment is unchanged: it follows its channel.
+expect registry installed
+publish registry.tilo.so/tilo/tilo-vm:x86_64-ci three
+expect registry.tilo.so/tilo/tilo-vm:x86_64-ci next
+# An image that cannot read its deployment (no bootc, no parser, no booted
+# deployment) keeps the previous behaviour: registry, so its channel applies.
+for unreadable in absent unparseable; do
+  case "$unreadable" in
+    absent)  bootc="$work/bin/absent"; field="$work/bin/absent" ;;
+    unparseable) bootc="$work/bin/bootc"; field="$work/bin/fails" ;;
+  esac
+  cat >"$work/bin/fails" <<'EOF'
+#!/usr/bin/env bash
+exit 3
+EOF
+  chmod +x "$work/bin/fails"
+  got="$(PATH="$work/bin:$PATH" TILO_UPDATE_CHANNEL_ROOT="$work/root" TILO_UPDATE_POLICY="$work/policy" \
+    TILO_UPDATE_CHANNEL_BOOTC="$bootc" TILO_UPDATE_CHANNEL_FIELD="$field" \
+    bash "$channel" installed)"
+  [ "$got" = registry ] || { echo "an unreadable deployment ($unreadable) read as $got, not registry" >&2; exit 1; }
 done
 
 # The policy service keeps the channel and the pin beside the schedule, takes only channels the

@@ -1153,7 +1153,7 @@ impl Checker<'_> {
 /// Whether the action `e` takes `name` only as one of its arguments, as it is: `open(x)`,
 /// `check(item, x)`, `set(filter, x)`.
 fn passed_as_is(e: &ast::Expr, name: &str) -> bool {
-    let ExprKind::Call { callee, args } = &e.kind else {
+    let ExprKind::Call { callee, args, .. } = &e.kind else {
         return false;
     };
     let names = [name];

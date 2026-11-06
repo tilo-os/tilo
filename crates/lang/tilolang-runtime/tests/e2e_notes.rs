@@ -29,7 +29,7 @@ mod cases {
             discussion.load(&rt);
             let app = App::compile(SOURCE, &[discussion.meta().clone()]);
             app.load(&rt);
-            let nb = rt.create("Notes").unwrap();
+            let nb = rt.create("Notebook").unwrap();
             Self { rt, app, nb }
         }
 
@@ -43,7 +43,7 @@ mod cases {
         }
 
         fn count(&self) -> i64 {
-            self.rt.project(&self.rt.read(&self.nb, "items").unwrap())["count"]
+            self.rt.project(&self.rt.read(&self.nb, "notes").unwrap())["count"]
                 .as_i64()
                 .unwrap()
         }
@@ -282,7 +282,7 @@ mod cases {
         discussion.load(&rt_b);
         app.load(&rt_a);
         app.load(&rt_b);
-        let nb = rt_a.create("Notes").unwrap();
+        let nb = rt_a.create("Notebook").unwrap();
         let note = returned_ref(
             rt_a.invoke_action(
                 &me(),

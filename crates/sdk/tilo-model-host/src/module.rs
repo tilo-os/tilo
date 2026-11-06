@@ -52,8 +52,6 @@ pub struct Module {
 enum Answered {
     Success(Answer),
     Refused(Refusal),
-    /// The module failed without saying why (a trap before it refused).
-    Nothing,
 }
 
 impl Module {
@@ -129,7 +127,8 @@ impl Module {
         match published {
             Some(Answered::Success(answer)) => Ok(answer),
             Some(Answered::Refused(refused)) => Err(ModuleError::Refused(refused.message)),
-            Some(Answered::Nothing) | None => match outcome {
+            // The module published neither an answer nor a refusal.
+            None => match outcome {
                 Ok(_) => Err(ModuleError::Call(format!(
                     "{}'s module answered nothing for {kind}",
                     self.app

@@ -2047,6 +2047,7 @@ mod tests {
                     expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3600 * NS_PER_SEC),
                     inviter_name: Some("Member".into()),
                     wait_list_entry: None,
+                    recipient: None,
                 },
             )
             .await

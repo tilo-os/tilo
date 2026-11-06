@@ -51,8 +51,9 @@ impl SurfaceHost for SlotsHost {
         }
     }
 
-    /// The button came up: whatever surface the press closed may be raised
-    /// again — by the press's own toggle no longer, since that press is over.
+    /// The button came up: the press is over. What it closed stays down until
+    /// what the press asked is carried out, which a quick click delivers after
+    /// its release.
     fn press_ended(&mut self, _x: f64, _y: f64) {
         self.overlays.press_ended();
     }

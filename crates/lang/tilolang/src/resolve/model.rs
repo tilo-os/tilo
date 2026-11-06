@@ -33,27 +33,11 @@ pub struct TypeInfo {
     pub fields: Vec<FieldInfo>,
     /// Its filters, default order and hidden fields (search.md, "What a type declares").
     pub search: crate::meta::SearchMeta,
-    /// `type Notes = Collection<Note>`: a resource that is its one field, [`HOLDER_FIELD`].
-    /// Code uses it as that container.
-    pub holder: bool,
     /// The kind of an outside service's resource it holds (`crate::origin`).
     pub origin: Option<String>,
 }
 
-/// The name of the one field of a type that names a container (`type Notes =
-/// Collection<Note>`): its ids lock entry is `Notes.items`.
-pub const HOLDER_FIELD: &str = "items";
-
 impl TypeInfo {
-    /// The container a holder type is.
-    pub fn held(&self) -> Option<&FieldInfo> {
-        if self.holder {
-            self.fields.first()
-        } else {
-            None
-        }
-    }
-
     pub fn field(&self, name: &str) -> Option<&FieldInfo> {
         self.fields.iter().find(|f| f.name == name)
     }

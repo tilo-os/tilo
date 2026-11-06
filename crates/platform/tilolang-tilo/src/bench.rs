@@ -244,8 +244,8 @@ pub(crate) struct Shape {
     /// The root's first counter.
     counter: Option<String>,
     /// The roots of other packages the root shows, by the field that holds the reference when
-    /// one does, or reached by name (`notes.notes`): a day's view over notes and todos. Each is
-    /// seeded too.
+    /// one does, or reached by name (`notes.notebook`): a day's view over notes and todos. Each
+    /// is seeded too.
     links: Vec<(Option<String>, Shape)>,
 }
 

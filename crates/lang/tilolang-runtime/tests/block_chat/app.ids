@@ -1,9 +1,9 @@
 # tilolang ids: generated, commit it. Edit only through `tilolang ids --rename`.
+BlockChat = 5cq72eeu
+BlockChat.items = dredwp3k
 Conversation = gq6e6hou
 Conversation.messages = axsezqjz
 Conversation.title = mtfko6rg
-Conversations = 5cq72eeu
-Conversations.items = dredwp3k
 Message = 64ddezxa
 Message.author = 3dcblzqc
 Message.parts = pm3jwwwh

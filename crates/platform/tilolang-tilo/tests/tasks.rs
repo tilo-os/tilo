@@ -1214,6 +1214,7 @@ fn bound_key(node: &UiNode, field: &str) -> Option<String> {
 }
 
 /// Every text the tree shows.
+#[cfg(feature = "record")]
 pub(crate) fn texts(node: &UiNode) -> Vec<String> {
     fn walk(node: &UiNode, out: &mut Vec<String>) {
         if let Some(Value::Text(text)) = node.props.get("label").or_else(|| node.props.get("value"))
@@ -1992,7 +1993,6 @@ fn spec_commands() -> Vec<&'static str> {
         "Complete",
         // It asks for the title it makes the task under: a task is never made unnamed.
         "Add subtask…",
-        "Pick for today",
         "Today",
         "Tomorrow",
         "Next week",
@@ -2129,20 +2129,20 @@ fn a_tasks_row_menu_offers_every_command_in_one_order() {
         Some("Due"),
         "the dates are one run"
     );
-    assert_eq!(commands[7].group.as_deref(), Some("Due"));
-    assert_eq!(commands[8].group.as_deref(), Some("Priority"));
+    assert_eq!(commands[6].group.as_deref(), Some("Due"));
+    assert_eq!(commands[7].group.as_deref(), Some("Priority"));
     assert!(
-        !commands[7].enabled && commands[7].reason.as_deref() == Some("It has no date"),
+        !commands[6].enabled && commands[6].reason.as_deref() == Some("It has no date"),
         "a command that cannot run stays listed and says why: {:?}",
+        commands[6]
+    );
+    assert!(
+        !commands[7].enabled && commands[7].reason.as_deref() == Some("It has no priority"),
+        "what it already is cannot be chosen: {:?}",
         commands[7]
     );
-    assert!(
-        !commands[8].enabled && commands[8].reason.as_deref() == Some("It has no priority"),
-        "what it already is cannot be chosen: {:?}",
-        commands[8]
-    );
     assert_eq!(
-        commands[16].key.as_deref(),
+        commands[15].key.as_deref(),
         Some("Ctrl+Shift+d"),
         "Duplicate"
     );

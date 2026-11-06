@@ -213,7 +213,7 @@ pub struct VariantDecl {
     pub span: Span,
 }
 
-/// `type Notes = Collection<Note>`, `type Channel = TextChannel | Thread`.
+/// `type Notes = List<Note>`, `type Channel = TextChannel | Thread`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AliasDecl {
     pub node: NodeId,
@@ -796,8 +796,11 @@ pub enum ExprKind {
         name: Ident,
         args: Option<Vec<Arg>>,
     },
+    /// `f(args)`, or `json.decode<Item>(text)` with the type arguments its callee takes.
     Call {
         callee: Box<Expr>,
+        /// The types written between `<` and `>` before the arguments, in order.
+        types: Vec<TypeExpr>,
         args: Vec<Arg>,
     },
     /// `try act(args)`: invokes in a flow; a `Result` of the action's result and the reason

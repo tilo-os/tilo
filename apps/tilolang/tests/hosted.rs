@@ -2216,6 +2216,9 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
                 Some(ui::icons::Icon::FolderPlus),
                 None,
             ),
+            // What an action's entry parameter lets a person start here: they
+            // type the task and the window adds it.
+            ("Add a task".to_owned(), Some(ui::icons::Icon::Plus), None,),
             ("Undo".to_owned(), Some(ui::icons::Icon::Undo2), undo),
             ("Redo".to_owned(), Some(ui::icons::Icon::Redo2), redo),
             (
@@ -2290,15 +2293,15 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "Open",
             "New task…",
             "New project",
+            "Add a task",
             "Task summary",
             "Complete",
+            "Pick for today",
             "Today",
             "Tomorrow",
             "Next week",
             "Pick date…",
             "Low",
-            "Medium",
-            "High",
         ],
         "the window's palette"
     );
@@ -2331,10 +2334,27 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
 
     // What cannot run now is no row: a task in the inbox has nowhere to move out of, the app
     // has nothing done to clear, and a task at the outline's top has nowhere to outdent to.
+    // Asked for by name, so the window's height is no part of the answer.
     for not_now in ["Inbox", "Delete finished tasks", "Outdent"] {
+        let asked: Vec<String> = palette_rows(session, not_now)
+            .into_iter()
+            .map(|(title, ..)| title)
+            .collect();
         assert!(
-            !titles.contains(&not_now),
-            "{not_now} cannot run now, so it is no row: {titles:?}"
+            !asked.iter().any(|title| title == not_now),
+            "{not_now} cannot run now, so it is no row: {asked:?}"
+        );
+    }
+    // What a person can do stands below the window's height, and a name finds it: the page
+    // draws the rows that fit.
+    for below in ["Medium", "High"] {
+        let asked: Vec<String> = palette_rows(session, below)
+            .into_iter()
+            .map(|(title, ..)| title)
+            .collect();
+        assert!(
+            asked.iter().any(|title| title == below),
+            "{below} can run now, so it is a row: {asked:?}"
         );
     }
     // The commands a task opens with run in the task's own window, which the

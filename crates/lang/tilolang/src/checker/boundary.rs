@@ -348,7 +348,7 @@ impl Checker<'_> {
         if call.block.is_some() || call.anchor.is_some() {
             return None;
         }
-        let ExprKind::Call { callee, args } = &call.call.kind else {
+        let ExprKind::Call { callee, args, .. } = &call.call.kind else {
             return None;
         };
         let ExprKind::Ident(name) = &callee.kind else {
@@ -464,7 +464,7 @@ impl Checker<'_> {
         let UiKind::Call(call) = &only.kind else {
             return (body.to_vec(), Vec::new());
         };
-        let ExprKind::Call { callee, args } = &call.call.kind else {
+        let ExprKind::Call { callee, args, .. } = &call.call.kind else {
             return (body.to_vec(), Vec::new());
         };
         let view_params: Option<Vec<String>> = match &callee.kind {
@@ -501,6 +501,7 @@ impl Checker<'_> {
         let mut call = call.clone();
         call.call.kind = ExprKind::Call {
             callee: callee.clone(),
+            types: Vec::new(),
             args: kept,
         };
         let stmt = UiStmt {
@@ -797,7 +798,7 @@ pub(super) fn names_in(e: &ast::Expr, out: &mut BTreeSet<String>) {
             names_in(rhs, out);
         }
         ExprKind::Field { base, .. } => names_in(base, out),
-        ExprKind::Call { callee, args } => {
+        ExprKind::Call { callee, args, .. } => {
             names_in(callee, out);
             for arg in args {
                 names_in(&arg.value, out);

@@ -211,7 +211,35 @@ fn opening_a_channel_wakes_a_parked_pump_and_reading_it_does_not() {
 /// ones its policy gives readers of their own.
 struct ScopedDirectory {
     readers: Directory,
-    narrowed: std::collections::HashSet<ChannelId>,
+    narrowed: Narrowing,
+}
+
+/// The units whose readers a Read Deny narrows until the test lifts it: a
+/// unit whose record was sealed before key scopes is emulated by one held
+/// narrowed first and carried by the workspace's scope after.
+#[derive(Clone, Default)]
+struct Narrowing {
+    units: Arc<Mutex<std::collections::HashSet<ChannelId>>>,
+}
+
+impl Narrowing {
+    fn of(workspace: WorkspaceId, routes: &[ChannelRoute]) -> Self {
+        let mut units = std::collections::HashSet::new();
+        for route in routes {
+            units.insert(route.channel(&workspace.to_string()));
+        }
+        Self {
+            units: Arc::new(Mutex::new(units)),
+        }
+    }
+
+    /// Let the workspace's scope carry `route`'s unit from now on.
+    fn lift(&self, workspace: WorkspaceId, route: &ChannelRoute) {
+        self.units
+            .lock()
+            .unwrap()
+            .remove(&route.channel(&workspace.to_string()));
+    }
 }
 
 impl ChannelDirectory for ScopedDirectory {
@@ -231,7 +259,7 @@ impl ChannelDirectory for ScopedDirectory {
         _: u64,
     ) -> Option<ChannelId> {
         let unit = route.channel(&workspace.to_string());
-        Some(if self.narrowed.contains(&unit) {
+        Some(if self.narrowed.units.lock().unwrap().contains(&unit) {
             unit
         } else {
             collab_types::workspace_scope(&workspace.to_string())
@@ -246,7 +274,7 @@ fn scoped_device(
     id: usize,
     seed: u8,
     policy: &Policy,
-    narrowed: &[ChannelRoute],
+    narrowed: &Narrowing,
     dir: &Path,
 ) -> Device {
     let broker = Arc::new(Mutex::new(BrokerChannels::default()));
@@ -260,10 +288,7 @@ fn scoped_device(
             readers: Directory {
                 policy: policy.clone(),
             },
-            narrowed: narrowed
-                .iter()
-                .map(|route| route.channel(&workspace_id.to_string()))
-                .collect(),
+            narrowed: narrowed.clone(),
         }),
         Arc::clone(&broker),
     )
@@ -294,7 +319,7 @@ fn units_of_one_reader_set_share_one_group_and_one_commit() {
         0,
         1,
         &policy,
-        &[],
+        &Narrowing::default(),
         owner_dir.path(),
     );
     let mut laptop = scoped_device(
@@ -303,7 +328,7 @@ fn units_of_one_reader_set_share_one_group_and_one_commit() {
         1,
         2,
         &policy,
-        &[],
+        &Narrowing::default(),
         laptop_dir.path(),
     );
 
@@ -408,7 +433,7 @@ fn a_narrowed_unit_seals_under_its_own_group() {
         0,
         1,
         &policy,
-        std::slice::from_ref(&payroll),
+        &Narrowing::of(workspace_id, std::slice::from_ref(&payroll)),
         owner_dir.path(),
     );
     let mut laptop = scoped_device(
@@ -417,7 +442,7 @@ fn a_narrowed_unit_seals_under_its_own_group() {
         1,
         2,
         &policy,
-        std::slice::from_ref(&payroll),
+        &Narrowing::of(workspace_id, std::slice::from_ref(&payroll)),
         laptop_dir.path(),
     );
     assert!(ready_epoch(&create(&mut owner, workspace_id, scope, now)).is_some());
@@ -460,6 +485,350 @@ fn a_narrowed_unit_seals_under_its_own_group() {
         2,
         "the laptop takes part in both groups"
     );
+}
+
+/// A unit sealed before key scopes under a group of its own, whose readers
+/// are now the workspace's participants. The holder of the old group hands
+/// its keys to the workspace's scope, so a device added later reads the
+/// unit's whole history — through the hand-over's commit or through the key
+/// history of its admission — and the old holder may be offline from then
+/// on.
+struct LegacyUnit {
+    workspace: Arc<Workspace>,
+    workspace_id: WorkspaceId,
+    route: ChannelRoute,
+    unit: ChannelId,
+    scope: ChannelId,
+    policy: Policy,
+    narrowing: Narrowing,
+    owner: Device,
+    /// Kept for as long as the owner runs, so its state has somewhere to go.
+    _owner_dir: tempfile::TempDir,
+    laptop_dir: tempfile::TempDir,
+    tablet_dir: tempfile::TempDir,
+    artifact: ArtifactId,
+    metadata: EncryptionMetadata,
+    sealed: Vec<u8>,
+    now: Instant,
+}
+
+impl LegacyUnit {
+    /// The owner's group for the unit and the history sealed under it, from
+    /// before the workspace had a scope; the other devices are still kept
+    /// out of the record.
+    fn sealed() -> Self {
+        let workspace = Arc::new(Workspace::default());
+        let workspace_id = WorkspaceId::new();
+        let route = ChannelRoute::new("so.tilo.notes", "minutes");
+        let unit = route.channel(&workspace_id.to_string());
+        let scope = collab_types::workspace_scope(&workspace_id.to_string());
+        let policy = Policy::readers([1, 2, 3]);
+        policy
+            .withheld
+            .lock()
+            .unwrap()
+            .insert(unit, [public(2), public(3)].into());
+        let narrowing = Narrowing::of(workspace_id, std::slice::from_ref(&route));
+        let (owner_dir, laptop_dir, tablet_dir) = (
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+        );
+        let now = Instant::now();
+        let mut owner = scoped_device(
+            &workspace,
+            workspace_id,
+            0,
+            1,
+            &policy,
+            &narrowing,
+            owner_dir.path(),
+        );
+        assert!(ready_epoch(&create(&mut owner, workspace_id, unit, now)).is_some());
+        let (_, ChannelAccess::Ready(old)) = owner.service.access_record(workspace_id, &route, now)
+        else {
+            panic!("the owner reads its own record");
+        };
+        let artifact = collab_types::document_artifact_id(
+            &route.app,
+            &workspace_id.to_string(),
+            &route.record,
+        );
+        let (metadata, sealed) = old
+            .seal_content(artifact, ContentRetention::Delta, b"before key scopes")
+            .unwrap();
+        Self {
+            workspace,
+            workspace_id,
+            route,
+            unit,
+            scope,
+            policy,
+            narrowing,
+            owner,
+            _owner_dir: owner_dir,
+            laptop_dir,
+            tablet_dir,
+            artifact,
+            metadata,
+            sealed,
+            now,
+        }
+    }
+
+    /// A device of the workspace that holds nothing of the unit's old group:
+    /// the laptop, or the tablet.
+    fn device(&self, id: usize, seed: u8, dir: &Path) -> Device {
+        scoped_device(
+            &self.workspace,
+            self.workspace_id,
+            id,
+            seed,
+            &self.policy,
+            &self.narrowing,
+            dir,
+        )
+    }
+
+    /// What `device` reads of the unit's old history, through the unit's own
+    /// channel as a unit of the scope.
+    fn opens(&self, device: &mut Device) -> Option<Vec<u8>> {
+        device
+            .service
+            .access_record(self.workspace_id, &self.route, self.now)
+            .1
+            .keys()
+            .open_content(self.artifact, &self.metadata, &self.sealed)
+            .ok()
+            .map(|plain| plain.to_vec())
+    }
+
+    /// The workspace's scope is established while the unit is still denied to
+    /// the others, and the laptop joins it holding none of the unit's keys.
+    fn scope_with(&mut self, laptop: &mut Device) {
+        assert!(
+            ready_epoch(&create(
+                &mut self.owner,
+                self.workspace_id,
+                self.scope,
+                self.now
+            ))
+            .is_some()
+        );
+        assert!(matches!(
+            laptop
+                .service
+                .access(self.workspace_id, self.scope, self.now),
+            ChannelAccess::Waiting
+        ));
+        run(&mut [&mut self.owner, laptop], &mut self.now, 8);
+        let ChannelAccess::Ready(keys) =
+            laptop
+                .service
+                .access(self.workspace_id, self.scope, self.now)
+        else {
+            panic!("the laptop joined the scope");
+        };
+        assert!(
+            keys.for_unit(self.unit)
+                .open_content(self.artifact, &self.metadata, &self.sealed)
+                .is_err(),
+            "the scope's keys open nothing the old group sealed, yet"
+        );
+    }
+
+    /// The unit reads to every participant now: the owner hands the old
+    /// group's keys to the scope — one commit, and no more however often the
+    /// pass runs — and the laptop reads what the old group sealed.
+    fn hand_over(&mut self, laptop: &mut Device) {
+        self.policy.withheld.lock().unwrap().remove(&self.unit);
+        self.narrowing.lift(self.workspace_id, &self.route);
+        assert!(matches!(
+            self.owner
+                .service
+                .access_record(self.workspace_id, &self.route, self.now)
+                .1,
+            ChannelAccess::Ready(_)
+        ));
+        run(&mut [&mut self.owner, laptop], &mut self.now, 4);
+        let handed_over = ready_epoch(
+            &laptop
+                .service
+                .access_record(self.workspace_id, &self.route, self.now)
+                .1,
+        )
+        .expect("the hand-over leaves the laptop reading");
+        assert!(
+            !self.owner.service.peers[&self.scope]
+                .peer
+                .holds_unshared_keys(),
+            "the scope took the keys over"
+        );
+        for _ in 0..2 {
+            run(&mut [&mut self.owner, laptop], &mut self.now, 4);
+            assert_eq!(
+                ready_epoch(
+                    &laptop
+                        .service
+                        .access_record(self.workspace_id, &self.route, self.now)
+                        .1
+                ),
+                Some(handed_over),
+                "a hand-over happens once"
+            );
+        }
+        assert_eq!(
+            self.opens(laptop).as_deref(),
+            Some(b"before key scopes".as_slice())
+        );
+    }
+}
+
+#[test]
+fn a_device_added_after_key_scopes_reads_a_legacy_units_whole_history() {
+    let mut unit = LegacyUnit::sealed();
+    let mut laptop = unit.device(1, 2, unit.laptop_dir.path());
+    unit.scope_with(&mut laptop);
+    // The laptop joined the scope before the hand-over and reads the old
+    // history from the commit that carried the keys.
+    unit.hand_over(&mut laptop);
+
+    // A tablet admitted after the hand-over receives them with its admission.
+    let mut tablet = unit.device(2, 3, unit.tablet_dir.path());
+    assert!(matches!(
+        tablet
+            .service
+            .access_record(unit.workspace_id, &unit.route, unit.now)
+            .1,
+        ChannelAccess::Waiting
+    ));
+    run(
+        &mut [&mut unit.owner, &mut laptop, &mut tablet],
+        &mut unit.now,
+        8,
+    );
+    assert_eq!(
+        unit.opens(&mut tablet).as_deref(),
+        Some(b"before key scopes".as_slice()),
+        "a device admitted after the hand-over reads the whole history"
+    );
+
+    // The holder of the old group goes offline: the keys are the scope's now,
+    // and survive a restart of a device that never held that group.
+    run(&mut [&mut laptop, &mut tablet], &mut unit.now, 4);
+    assert_eq!(
+        unit.opens(&mut tablet).as_deref(),
+        Some(b"before key scopes".as_slice())
+    );
+    drop(tablet);
+    let mut restarted = unit.device(2, 3, unit.tablet_dir.path());
+    assert_eq!(
+        unit.opens(&mut restarted).as_deref(),
+        Some(b"before key scopes".as_slice())
+    );
+}
+
+/// A unit whose readers a Read Deny narrows keeps its keys out of the
+/// workspace's scope, however many hand-over passes run: the denied device
+/// never reads what the unit's own group sealed.
+#[test]
+fn a_read_deny_keeps_a_legacy_units_keys_out_of_the_scope() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let payroll = ChannelRoute::new("so.tilo.sheets", "payroll");
+    let open = ChannelRoute::new("so.tilo.notes", "minutes");
+    let unit = payroll.channel(&workspace_id.to_string());
+    let scope = collab_types::workspace_scope(&workspace_id.to_string());
+    let policy = Policy::readers([1, 2]);
+    policy
+        .withheld
+        .lock()
+        .unwrap()
+        .insert(unit, [public(2)].into());
+    let narrowing = Narrowing::of(workspace_id, std::slice::from_ref(&payroll));
+    let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut now = Instant::now();
+    let mut owner = scoped_device(
+        &workspace,
+        workspace_id,
+        0,
+        1,
+        &policy,
+        &narrowing,
+        owner_dir.path(),
+    );
+    let mut laptop = scoped_device(
+        &workspace,
+        workspace_id,
+        1,
+        2,
+        &policy,
+        &narrowing,
+        laptop_dir.path(),
+    );
+
+    // The denied record sealed under its own group before key scopes.
+    assert!(ready_epoch(&create(&mut owner, workspace_id, unit, now)).is_some());
+    let (_, ChannelAccess::Ready(old)) = owner.service.access_record(workspace_id, &payroll, now)
+    else {
+        panic!("the owner reads the record the deny keeps from the laptop");
+    };
+    let artifact = collab_types::document_artifact_id(
+        &payroll.app,
+        &workspace_id.to_string(),
+        &payroll.record,
+    );
+    let (old_metadata, old_sealed) = old
+        .seal_content(artifact, ContentRetention::Delta, b"payroll")
+        .unwrap();
+
+    // The workspace's scope exists, the laptop joins it, and hand-over passes
+    // run for as long as a unit the scope carries would be handed over.
+    assert!(ready_epoch(&create(&mut owner, workspace_id, scope, now)).is_some());
+    assert!(matches!(
+        laptop.service.access_record(workspace_id, &open, now).1,
+        ChannelAccess::Waiting
+    ));
+    run(&mut [&mut owner, &mut laptop], &mut now, 12);
+    let (_, ChannelAccess::Ready(scope_keys)) =
+        laptop.service.access_record(workspace_id, &open, now)
+    else {
+        panic!("the laptop reads the record its role allows");
+    };
+    assert!(
+        !owner.service.peers[&scope].peer.holds_unshared_keys(),
+        "the denied unit's keys are not queued for the scope"
+    );
+    assert!(
+        scope_keys
+            .open_content(artifact, &old_metadata, &old_sealed)
+            .is_err(),
+        "a denied device's scope keys open nothing the denied unit sealed"
+    );
+    // The unit's own group still reads its history, and stays its own.
+    assert!(matches!(
+        owner.service.access_record(workspace_id, &payroll, now).1,
+        ChannelAccess::Ready(_)
+    ));
+    assert!(matches!(
+        laptop.service.access_record(workspace_id, &payroll, now).1,
+        ChannelAccess::Unavailable
+    ));
+}
+
+/// `access`, the answer for a unit, once admitted: the keys, so a test reads
+/// what they open without matching the variant.
+trait Keys {
+    fn keys(&self) -> &ChannelContentKeys;
+}
+
+impl Keys for ChannelAccess {
+    fn keys(&self) -> &ChannelContentKeys {
+        match self {
+            ChannelAccess::Ready(keys) => keys,
+            other => panic!("expected keys, got {other:?}"),
+        }
+    }
 }
 
 #[test]

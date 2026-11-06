@@ -677,11 +677,13 @@ type Note {
 }
 
 /// The notebook's notes.
-type Notes = Collection<Note>
+type Notebook {
+    notes: Collection<Note>
+}
 
-root notes: Notes
+root notebook: Notebook
 
-default view main for notes
+default view main for Notebook
 
 /// Adds a high mark to the board through the library's action.
 flow add_high() {
@@ -689,9 +691,9 @@ flow add_high() {
 }
 
 /// The notebook: its notes, and how many marks the board holds.
-view main(n: Notes) {
+view main(n: Notebook) {
     page {
-        for note in n {
+        for note in n.notes {
             text(note.title)
         }
         text("{marks.count(marks.marks)}")

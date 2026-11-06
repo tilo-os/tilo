@@ -150,9 +150,14 @@ printf '%s\n' "$*" >"$TILO_TEST_VERIFY_ARGS"
 [[ ${TILO_TEST_REJECT:-0} != 1 ]]
 EOF
 # The channel names what the update follows (tilo-update-channel next); nothing: the origin.
+# `installed` is the transport the booted deployment came from (registry unless a test says
+# otherwise).
 cat >"$work/bin/channel" <<'EOF'
 #!/usr/bin/env bash
-[[ $1 == next && -n ${TILO_TEST_CHANNEL_NEXT:-} ]] && printf '%s\n' "$TILO_TEST_CHANNEL_NEXT"
+case $1 in
+  next) [[ -n ${TILO_TEST_CHANNEL_NEXT:-} ]] && printf '%s\n' "$TILO_TEST_CHANNEL_NEXT" ;;
+  installed) printf '%s\n' "${TILO_TEST_CHANNEL_INSTALLED:-registry}" ;;
+esac
 exit 0
 EOF
 cat >"$work/bin/chronyc" <<'EOF'
@@ -189,6 +194,7 @@ run_update() {
     TILO_IMAGE_TRUST_SUCCESSOR="$work/bin/successor" \
     TILO_IMAGE_TRUST_CHANNEL="$work/bin/channel" \
     TILO_IMAGE_TRUST_GATE="$work/bin/image-trust-gate" \
+    TILO_IMAGE_TRUST_LOCAL_NOTICE="$work/local-image-notice" \
     TILO_TEST_GATE_SOURCE="$repo/os/usr/libexec/tilo-image-trust-staged" \
     TILO_TEST_DIGEST="$digest" TILO_TEST_VERITY="${TILO_TEST_VERITY_OVERRIDE-$verity}" \
     TILO_TEST_BOOTC_CALLS="$work/bootc.calls" TILO_TEST_VERIFY_ARGS="$work/verify.args" \
@@ -210,6 +216,41 @@ grep -Fqx 'upgrade --quiet' "$work/bootc.calls"
 rm -f "$work/bootc.calls"
 TILO_TEST_CHANNEL_NEXT=registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64 run_update --quiet
 grep -Fqx 'switch --quiet registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64' "$work/bootc.calls"
+rm -f "$work/bootc.calls"
+
+# A deployment installed from a local medium is a developer's own image. Neither
+# the channel's reference nor a pinned build may replace it, and bootc is not run
+# at all, so the update is reported as keeping the image rather than failing on a
+# registry reference the image's own policy refuses. The note to the person is
+# written once, not at every run.
+for installed in oci-archive docker-archive oci dir containers-storage; do
+  rm -f "$work/bootc.calls" "$work/local-image-notice"
+  note="$(TILO_TEST_CHANNEL_INSTALLED=$installed \
+    TILO_TEST_CHANNEL_NEXT=registry.tilo.so/tilo/tilo-vm:x86_64-ci \
+    run_update --quiet)" || {
+    echo "an update of a $installed-installed image failed" >&2
+    exit 1
+  }
+  [ ! -e "$work/bootc.calls" ] || {
+    echo "an update of a $installed-installed image ran bootc: $(cat "$work/bootc.calls")" >&2
+    exit 1
+  }
+  grep -Fq 'developer-installed image keeps itself' <<<"$note"
+  [ -e "$work/local-image-notice" ] || { echo 'the local-image note to the person was not written' >&2; exit 1; }
+  note="$(TILO_TEST_CHANNEL_INSTALLED=$installed run_update --quiet)"
+  grep -Fq 'developer-installed image keeps itself' <<<"$note"
+  [ "$(grep -Fc 'installed locally, so automatic updates leave it in place' <<<"$note")" -eq 0 ] || {
+    echo "an update of a $installed-installed image repeated the note to the person" >&2
+    exit 1
+  }
+done
+# A registry deployment is unaffected: it keeps following its channel, and the
+# note an image left behind is gone once one of them runs.
+rm -f "$work/bootc.calls"
+TILO_TEST_CHANNEL_INSTALLED=registry TILO_TEST_CHANNEL_NEXT=registry.tilo.so/tilo/tilo-vm:x86_64-ci \
+  run_update --quiet
+grep -Fqx 'upgrade --quiet' "$work/bootc.calls"
+[ ! -e "$work/local-image-notice" ] || { echo 'the local-image note outlived a registry update' >&2; exit 1; }
 rm -f "$work/bootc.calls"
 
 # Arming takes this same lock. Even before the marker exists, an update must

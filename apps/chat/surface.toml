@@ -706,7 +706,7 @@ incoming_message = true
 kind = "undoable"
 params = [
   { name = "channel", type = "text", required = true, schema = { type = "string" } },
-  { name = "attached", required = true, schema = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } },
+  { name = "attached", type = { named = "ResourceAt" }, required = true, schema = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } },
   { name = "text", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "mentions", type = { option = { list = { named = "Mention" } } }, required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
 ]
@@ -717,7 +717,7 @@ incoming_message = true
 kind = "undoable"
 params = [
   { name = "channel", type = "text", required = true, schema = { type = "string" } },
-  { name = "attached", required = true, schema = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } },
+  { name = "attached", type = { named = "ResourceAt" }, required = true, schema = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } },
   { name = "access", type = { option = { named = "ShareAccess" } }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "view" }, { type = "string", const = "edit" }] }] } },
   { name = "text", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "mentions", type = { option = { list = { named = "Mention" } } }, required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },

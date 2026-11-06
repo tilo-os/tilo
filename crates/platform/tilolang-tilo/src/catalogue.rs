@@ -554,7 +554,6 @@ impl Reader<'_> {
                     doc: named.doc.clone(),
                     fields,
                     search: SearchMeta::default(),
-                    holder: false,
                     origin: None,
                     attached: false,
                 });
@@ -589,7 +588,6 @@ impl Reader<'_> {
             },
             fields,
             search: SearchMeta::default(),
-            holder: false,
             origin: None,
             attached: false,
         });

@@ -28,7 +28,7 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 use tilo_compositor::OutputConfig;
 use tilo_model_host::ModelService;
-use tilo_service::{Questions, Service as _};
+use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 
 use common::{HEIGHT, PERSON, WIDTH, private_home};

@@ -601,7 +601,7 @@ impl Lower<'_> {
                 })
             }
             ExprKind::Binary { op, lhs, rhs } => self.comparison(*op, lhs, rhs, e.span),
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call { callee, args, .. } => {
                 let ExprKind::Field { base, name } = &callee.kind else {
                     return Err(self.not_own(e));
                 };
@@ -717,7 +717,7 @@ impl Lower<'_> {
             }
             return Ok((Operand::Field(field.id.clone()), field.ty.clone()));
         }
-        if let ExprKind::Call { callee, args } = &e.kind
+        if let ExprKind::Call { callee, args, .. } = &e.kind
             && let ExprKind::Field { base, name } = &callee.kind
             && name.name == "len"
             && args.is_empty()
@@ -801,7 +801,7 @@ impl Lower<'_> {
         let anchor = |e: &Expr| -> Option<bool> {
             let word = match &e.kind {
                 ExprKind::Ident(w) => w.as_str(),
-                ExprKind::Call { callee, args } if args.is_empty() => match &callee.kind {
+                ExprKind::Call { callee, args, .. } if args.is_empty() => match &callee.kind {
                     ExprKind::Ident(w) => w.as_str(),
                     _ => return None,
                 },
@@ -878,7 +878,7 @@ impl Lower<'_> {
                 }
                 Ok((Lit::Text(text), Ty::Text))
             }
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call { callee, args, .. } => {
                 if let ExprKind::Ident(kind) = &callee.kind
                     && matches!(kind.as_str(), "Date" | "Time")
                 {

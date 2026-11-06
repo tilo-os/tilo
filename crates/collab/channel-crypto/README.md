@@ -100,9 +100,14 @@ history.
   device that holds it reads their history as it always did — the scope's
   keys are merged with that group's when both are here
   (`ChannelContentKeys::with_earlier`). New content for those units seals
-  under the scope, so the device has to hold both; a device that never held an
-  old group reads the old content once it is re-sealed under the scope, and
-  until then the old group is what carries it.
+  under the scope, so the device has to hold both. A holder of an old group
+  hands its content keys to the scope (`ChannelPeer::adopt`): the scope's
+  next commit carries them to every member, and every admission afterwards
+  passes them on in the joiner's key history, so a device that never held the
+  old group reads the unit's whole history at once — through that commit, or
+  through its own admission — and no holder of the old group has to be online
+  for it. A unit a Read Deny narrows is carried by a group of its own and its
+  keys are never handed to the broader scope.
 
 ### Security properties
 

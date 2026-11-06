@@ -68,6 +68,9 @@ mod desk_migration;
 mod desk_resource;
 mod desk_restore;
 pub mod desktop_services;
+/// A Rust app's sample resources and views, in a development session only.
+#[cfg(feature = "dev-rust-views")]
+pub mod dev_rust_views;
 mod device_actions;
 mod devices;
 mod diagnostics;
@@ -803,8 +806,8 @@ pub struct Session {
     /// How often the keyboard's app was started on the display it stands on,
     /// so one that keeps exiting is given up on rather than started for ever.
     keyboard_starts: u32,
-    /// Where quick settings' app stands, while its slot is up, and how often
-    /// it was started at that place: one that keeps exiting is given up on.
+    /// Where quick settings' app stands, and how often it was started at
+    /// that place: one that keeps exiting is given up on.
     quick_settings_run: quick_settings::Run,
     quick_settings_starts: u32,
     /// The portal's link to the loop, while the portal serves.
@@ -2349,6 +2352,10 @@ impl Session {
             .copied()
             .find(|output| output.contains(ui::kurbo::Point::new(x, y)));
         self.shared.overlays.set_displays(&outputs, focused);
+        // Where the person types, for the surfaces a key opens at the caret.
+        self.shared
+            .overlays
+            .set_caret(self.readout_place.borrow().caret());
     }
 
     /// Take the displays a fullscreen window owns from the compositor, so

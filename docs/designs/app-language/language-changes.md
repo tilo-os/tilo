@@ -34,11 +34,11 @@ added only where a pattern is common, awkward otherwise, and no existing mechani
    to the item, so storage no longer shows in the language: a card moves between columns with
    `move` on the column it goes to and stays the same card, instead of an app keeping a
    `column` field beside one collection of every card.
-7. **Roots are named values of any type.** `type Notes = Collection<Note>`, `root notes: Notes`;
-   `type Channels = Collection<Category | Channel>`, `root channels: Channels`. No wrapper type
-   named after the app. Other code reaches a root by the app's alias and the root's name
-   (`notes.notes`) wherever authority allows, so a dashboard needs no `attach` action or optional
-   fields. Views attach with `default view chat for channels`.
+7. **Roots are named records.** `type Notebook { notes: Collection<Note> }`,
+   `root notebook: Notebook`; `type Conversations { channels: Collection<Category | Channel> }`,
+   `root conversations: Conversations`. Other code reaches a root by the app's alias and the
+   root's name (`notes.notebook.notes`) wherever authority allows, so a dashboard needs no
+   `attach` action or optional fields. Views attach with `default view sidebar for Conversations`.
 
 ## Syntax
 

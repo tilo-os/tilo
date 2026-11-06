@@ -101,7 +101,8 @@ host_profile=nested
 # (`tilo-runtime-mcp --connect`), so a check that drives the session as an
 # admitted agent runs against the staged build without building its own.
 host_bins=(tilo-session tilo-runtime-mcp tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
-           tilo-model-gateway tilo-ush tilo-control tilolang-host tilolang nested-session-bus)
+           tilo-model-gateway tilo-ush tilo-control tilolang-host tilolang nested-session-bus
+           tilo-quick-settings)
 build_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
@@ -121,6 +122,7 @@ build_host() {
         -p runtime-bundle --bin tilo-runtime-bundle \
         -p ush --bin tilo-ush \
         -p tilo-control --bin tilo-control \
+        -p tilo-quick-settings --bin tilo-quick-settings \
         -p nested-session-bus --bin nested-session-bus || return 1
     # The gateway, on a build of its own: its binary needs `server`, which no
     # longer comes from building beside the session, and the session's gateway

@@ -362,8 +362,8 @@ fn a_message_posted_to_an_older_conversation_follows_its_messages() {
     let mut replica = open(include_str!("legacy/chat.hex"), &packages);
     let app = "so.tilo.lang.chat";
     let all = root(&replica, app);
-    // The Chat of channels reads an older conversation as a text channel.
-    let (conversations, _) = field(&replica, app, "Channels", "items");
+    // The Conversations of channels reads an older conversation as a text channel.
+    let (conversations, _) = field(&replica, app, "Conversations", "channels");
     let (messages, _) = field(&replica, app, "TextChannel", "messages");
     let conversation_ty = replica
         .host

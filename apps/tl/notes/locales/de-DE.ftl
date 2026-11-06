@@ -42,7 +42,7 @@ d-v7cub7aw = Notizen
        *[other] Notizbücher
     }
 
-d-tmqqtkeb = Einträge
+d-tmqqtkeb = Notizen
 
 d-qef5yqkq = Notizreihenfolge
     .doc = Die Reihenfolge, in der ein Notizbuch seine Notizen auflistet.

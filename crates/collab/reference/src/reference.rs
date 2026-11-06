@@ -210,6 +210,12 @@ impl tilo_resource::JsonSchema for ResourceAt {
     fn json_schema() -> serde_json::Value {
         tilo_actions::resource_reference_schema()
     }
+
+    /// Its type as a surface publishes a verb's parameter: the record it is, named as its
+    /// fields are, so a verb taking a reference is a verb tilolang code calls with one.
+    fn field_type(types: &mut tilo_resource::TypeSet) -> tilo_resource::FieldType {
+        <Self as tilo_resource::Model>::field_type(types)
+    }
 }
 
 /// What an app answers when asked what is selected right now.
@@ -251,6 +257,17 @@ mod tests {
                 &<ResourceAt as tilo_resource::JsonSchema>::json_schema()
             )
             .is_ok()
+        );
+    }
+
+    /// A verb taking a reference publishes its parameter as the record it is, so tilolang code
+    /// calls it with one and a catalogue names the verb.
+    #[test]
+    fn a_resource_at_publishes_its_type_by_its_name() {
+        let mut types = tilo_resource::TypeSet::new();
+        assert_eq!(
+            <ResourceAt as tilo_resource::JsonSchema>::field_type(&mut types),
+            tilo_resource::FieldType::Named("ResourceAt".to_owned())
         );
     }
 
