@@ -954,6 +954,18 @@ impl Host {
         &self.inner.runtime
     }
 
+    /// Tell the host the Rust views this process declares, so a place showing a resource of one
+    /// of their types draws that app's view, exactly as it draws a tilolang package's view
+    /// (one-app-model.md §2). Everything a `#[view]` linked into this process declared
+    /// ([`crate::views::DeclaredViews`]).
+    pub fn declare_rust_views(&self) {
+        if !tilo_view::ViewRegistry::is_empty() {
+            self.inner
+                .runtime
+                .set_rust_views(std::rc::Rc::new(crate::views::DeclaredViews));
+        }
+    }
+
     #[must_use]
     pub fn store(&self) -> &TiloStore {
         &self.inner.store

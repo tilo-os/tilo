@@ -52,6 +52,7 @@ pub mod registry;
 mod render;
 pub mod rich;
 pub mod runtime;
+pub mod rust_views;
 pub mod seen;
 mod settle;
 pub mod space;

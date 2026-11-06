@@ -2053,6 +2053,12 @@ impl ShellPart {
             Box::new(app_end),
         );
         instance.set_standing(Rc::new(shell_standing(app, person)));
+        // The Rust apps' views linked into this process: a place showing a resource of one of
+        // their types draws that app's own view, exactly as it draws a tilolang package's
+        // (one-app-model.md §2).
+        if let Some(host) = instance.host() {
+            host.declare_rust_views();
+        }
         let origin = Rc::new(RefCell::new(SessionOrigin::new(link)));
         instance.add_origin(Rc::clone(&origin) as tilolang_tilo::origin::SharedOrigin);
         {

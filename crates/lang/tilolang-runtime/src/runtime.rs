@@ -349,6 +349,27 @@ impl Runtime {
         self.core.foreign.borrow().take_waiting();
     }
 
+    /// The reading of `target`, a resource of an app this runtime does not run, whole, with the
+    /// generation it was read at: what a Rust app's view is handed of the resource it shows.
+    ///
+    /// `None` before a reading arrived (the host is asked to publish one, as a field read does),
+    /// and for a resource this runtime holds: its own records run from here.
+    #[must_use]
+    pub fn reading(&self, target: &ResourceRef) -> Option<(serde_json::Value, u64)> {
+        if !crate::foreign::is_foreign(target) {
+            return None;
+        }
+        self.core.foreign.borrow_mut().whole(target)
+    }
+
+    /// Tell the runtime the views of a Rust app: its registry, so a `show` of a resource of one of
+    /// its types draws that app's view inline, as it draws a tilolang package's view
+    /// ([`crate::rust_views`]). The host that runs the app calls this once.
+    pub fn set_rust_views(&self, views: std::rc::Rc<dyn crate::rust_views::RustViews>) {
+        let app = views.app().to_owned();
+        self.core.rust_views.borrow_mut().insert(app, views);
+    }
+
     /// The reading of `target`, a resource of an app this runtime does not run, as the
     /// session's watch last saw it: the JSON its service read. Views that read a field of it
     /// run again at the next poll. Whether it differs from the reading held before: `false`

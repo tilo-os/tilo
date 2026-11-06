@@ -137,6 +137,10 @@ pub struct Core {
     /// of, and where in them it stands. A row reads the rows around it by that place, without
     /// walking the list.
     pub row_place: RefCell<Option<(Rc<crate::value::CollRef>, usize)>>,
+    /// The Rust apps' views the host told the runtime, by app: what a resource of a Rust app's
+    /// type is drawn with, where a tilolang view's export would be called
+    /// ([`crate::rust_views`]).
+    pub rust_views: crate::rust_views::Shared,
 }
 
 /// What `now` reads while the host has set no clock.
@@ -245,6 +249,7 @@ impl Core {
             reader: RefCell::new(None),
             trying: std::cell::Cell::new(false),
             foreign: RefCell::new(crate::foreign::Foreign::default()),
+            rust_views: crate::rust_views::Shared::default(),
             wanted_packages: RefCell::new(crate::foreign::WantedPackages::default()),
             seen_writes: RefCell::new(Vec::new()),
             row_place: RefCell::new(None),
