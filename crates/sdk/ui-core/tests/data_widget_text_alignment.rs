@@ -37,8 +37,8 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui::widget::{
     Banner, Button, Chart, Column, DescribedTreeView, Element, ListRowFace, SearchResultsView,
-    Section, SectionHeader, Series, StatGroup, StatTile, TREE_DISCLOSURE, TREE_INDENT, Text,
-    TreeViewNodeProps, TreeViewProps, Trend,
+    Section, SectionHeader, Series, StatGroup, StatTile, TREE_DISCLOSURE, TREE_INDENT,
+    TREE_ROW_HEIGHT, Text, TreeViewNodeProps, TreeViewProps, Trend,
 };
 use vello::kurbo::Rect;
 
@@ -403,10 +403,12 @@ fn data_rows_centre_their_text_and_scale_once() {
             let cap = capture("tree_view", tree_view(), (320, 220), scale);
             let tree = rect(find(&cap.harness.inspection().root, "TreeView"));
             let theme = Theme::dark().with_text_scale(scale);
-            // The row a tree draws is a list row: its title line and the row's own insets are
-            // what the band is made of.
+            // The row a tree draws is a list row standing at the tree's own row token, shorter
+            // than a list's row of the same theme.
             let mut text = TextRenderer::new();
-            let row_h = ListRowFace::new("crates").height(&mut text, &theme);
+            let row_h = ListRowFace::new("crates")
+                .row_height(TREE_ROW_HEIGHT)
+                .height(&mut text, &theme);
             // A chevron hangs in the gutter left of the label column, one indent a depth.
             let label_x0 = tree.x0 + row_bleed(&theme).max(TREE_INDENT);
             let row = Rect::new(label_x0, tree.y0, label_x0 + 200.0, tree.y0 + row_h);
