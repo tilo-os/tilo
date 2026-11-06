@@ -258,6 +258,6 @@ d-rj4l44km = Task summary
 d-ypbiaiq3 = Task outline row
 
 d-mtmufg3w = Task page
+    .w-inbox = Inbox
     .w-subtasks = Subtasks
     .w-add-a-subtask = Add a subtask
-    .w-inbox = Inbox
