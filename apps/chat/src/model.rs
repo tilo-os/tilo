@@ -302,12 +302,11 @@ impl Message {
             .filter(|attached| attached.blob().is_some())
     }
 
-    /// Whether it carries anything a chip opens: a record, or words quoted
-    /// from one.
-    pub fn carries_a_record(&self) -> bool {
+    /// Whether any of it shows as a chip: a record, or words quoted from one.
+    pub fn carries_a_chip(&self) -> bool {
         self.attachments
             .iter()
-            .any(|attached| attached.at().is_some())
+            .any(tilo_reference::Attached::is_chip)
     }
 }
 

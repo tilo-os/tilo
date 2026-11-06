@@ -474,6 +474,55 @@ fn a_message_part_of_version_three_keeps_the_record_it_was_written_by() {
     );
 }
 
+/// A part of the chat's messages of version 3: a message written by sharing
+/// a record whose app was never known keeps its words, quoted, rather than
+/// an address nothing could open.
+#[test]
+fn a_message_part_of_version_three_keeps_the_words_of_a_record_it_cannot_address() {
+    let mut replica = Replica::<ChatPart>::new();
+    let doc = replica.doc_mut();
+    evolution::fixture(
+        doc,
+        &ROOT,
+        &json!({
+            "messages": {
+                "m1": {
+                    "k": "a",
+                    "v": {
+                        "channel": "c_general",
+                        "author": "ada",
+                        "ts": 10,
+                        "text": "Discuss resource",
+                        "body": "[]",
+                        "reactions": {},
+                        "mentions": "[]",
+                        "reference": {
+                            "kind": "notes.page",
+                            "id": "notes.page:1",
+                            "label": "Plan",
+                            "span": {"start": 6, "end": 9, "unit": "chars"},
+                        },
+                    },
+                },
+            },
+        }),
+    )
+    .unwrap();
+    at_version(doc, 3);
+    doc.commit();
+    let mut old = doc.fork();
+    assert!(evolution::migrate::<ChatPart>(&mut old).unwrap());
+    let part = evolution::read_checked::<ChatPart>(&old).unwrap();
+    let message = part.messages.values().next().unwrap();
+    assert_eq!(
+        message.attachments,
+        [tilo_reference::Attached::Text {
+            text: "Plan".into(),
+            from: None,
+        }]
+    );
+}
+
 /// Each kept message: its id, author, time and text.
 fn kept(doc: &ui::tilo_resource::Doc) -> Vec<(String, String, i64, String)> {
     crate::record::kept_messages(doc)

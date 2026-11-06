@@ -616,7 +616,7 @@ impl ChatApp {
             },
             resource_h: if !editing && m.share.is_some() {
                 self.share_card_height(m, f64::from(text_w), tr, theme)
-            } else if !editing && m.carries_a_record() {
+            } else if !editing && m.carries_a_chip() {
                 Self::resource_controls_height(m, theme)
             } else if !editing && self.report_recordings.contains_key(&m.id) {
                 ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2)
@@ -861,12 +861,14 @@ impl ChatApp {
         let gap = f64::from(theme.tokens.spacing.s2);
         let height = ButtonFace::height(ControlSize::Regular, theme);
         let width = f64::from(column.text_width);
-        for (index, label) in m
+        for (index, attached) in m
             .attachments
             .iter()
             .enumerate()
-            .filter_map(|(index, attached)| attached.at().map(|_| (index, attached.label())))
+            .filter(|(_, attached)| attached.is_chip())
         {
+            let opens = attached.at().is_some();
+            let label = attached.label();
             // The resource as a reference chip, centred in a control's row so
             // it keeps a control's pointer target.
             *y += gap;
@@ -880,10 +882,14 @@ impl ChatApp {
                 row.x1,
                 row.center().y + chip_h / 2.0,
             );
-            ChipFace::new(chip, &label)
+            ChipFace::new(chip, label)
                 .lead(lead)
-                .hovered(self.hovered(row))
+                .hovered(opens && self.hovered(row))
                 .paint(scene, tf, tr, theme);
+            *y += height;
+            if !opens {
+                continue;
+            }
             ChatApp::push_hit(
                 hits,
                 row,
@@ -892,7 +898,7 @@ impl ChatApp {
                     attachment: index,
                 },
             );
-            *y += height + gap;
+            *y += gap;
             let caption = self.resource_navigation.label(&m.id, index, false);
             let button_w = ButtonFace::new(Rect::ZERO, &caption)
                 .intrinsic_width(tr, theme)
@@ -920,14 +926,19 @@ impl ChatApp {
     /// The height of the chip and "Copy link" a message's resource
     /// attachments take: a control's row each, with their gaps.
     fn resource_controls_height(m: &Message, theme: &Theme) -> f64 {
-        let rows = m
-            .attachments
+        let height = ButtonFace::height(ControlSize::Regular, theme);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        m.attachments
             .iter()
-            .filter(|attached| attached.at().is_some())
-            .count();
-        f64::from(u32::try_from(rows).unwrap_or(u32::MAX))
-            * (2.0 * ButtonFace::height(ControlSize::Regular, theme)
-                + f64::from(theme.tokens.spacing.s2))
+            .filter(|attached| attached.is_chip())
+            .map(|attached| {
+                if attached.at().is_some() {
+                    gap + height + gap + height
+                } else {
+                    gap + height
+                }
+            })
+            .fold(0.0, |total, row| total + row)
     }
 
     /// A message group's header: avatar, author and time. Advances `*y`

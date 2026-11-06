@@ -343,6 +343,13 @@ impl Attached {
         }
     }
 
+    /// Whether it shows as a chip rather than a card: a record or a run of
+    /// words, which hold no bytes of their own.
+    #[must_use]
+    pub fn is_chip(&self) -> bool {
+        matches!(self, Self::Resource { .. } | Self::Text { .. })
+    }
+
     /// The record it is in, when it is in one.
     #[must_use]
     pub fn at(&self) -> Option<&ResourceAt> {
