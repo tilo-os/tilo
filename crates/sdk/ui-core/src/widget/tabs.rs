@@ -3268,6 +3268,27 @@ impl TabBar {
             .filter(|rect| rect.area() > 0.0)
     }
 
+    /// The tab a middle press closes: the one under the pointer, unless it is
+    /// pinned or holds work of its own — a pinned tab is kept where it is, and
+    /// someone else's work is not this person's to end.
+    ///
+    /// A window's only tab closes too: it is drawn as its icon alone when the
+    /// app puts its slots in the title's row, and the press means the window.
+    fn tab_under_middle_press(&self) -> Option<u64> {
+        if !self.closable {
+            return None;
+        }
+        let cursor = self.last_cursor;
+        (0..self.tabs.len()).find_map(|index| {
+            let tab = self.tabs.get(index)?;
+            let hit = self
+                .tab_rects
+                .get(index)
+                .is_some_and(|rect| rect.contains(cursor));
+            (hit && !self.pinned_ids.contains(&tab.id) && !self.is_held(tab.id)).then_some(tab.id)
+        })
+    }
+
     /// The pointer target for a close glyph. During a live layout this is the
     /// 32px target at the pill's trailing edge; the visual glyph itself stays
     /// compact. The fallback keeps focused geometry tests that seed only the
@@ -4378,6 +4399,19 @@ impl Widget for TabBar {
                 // with no keyboard chord.
                 if let Some(request) = self.context_menu_target(self.last_cursor) {
                     self.pending_context_menu = Some(request);
+                    *ctx.handled = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Middle,
+                ..
+            } => {
+                // A middle press on a tab closes it: the × without aiming at
+                // it, down to the same fade and the host's word on a tab
+                // whose app has unsaved work.
+                if let Some(id) = self.tab_under_middle_press() {
+                    self.start_closing(id);
                     *ctx.handled = true;
                 }
             }
@@ -7864,14 +7898,14 @@ mod tests {
     }
 
     /// Mirrors the hand-built rects other tests use to skip the taffy layout pass.
-    fn holder() -> TabHolder {
+    pub(super) fn holder() -> TabHolder {
         TabHolder {
             name: "Ben".into(),
             rgb: (200, 80, 40),
         }
     }
 
-    fn move_to(b: &mut TabBar, x: f64, y: f64) {
+    pub(super) fn move_to(b: &mut TabBar, x: f64, y: f64) {
         let mut handled = false;
         b.on_cursor_moved(winit::dpi::PhysicalPosition::new(x, y), 1.0, &mut handled);
     }
@@ -7934,7 +7968,7 @@ mod tests {
         assert_eq!(b.resist_offset(), None);
     }
 
-    fn bar_with_laid_out_rects() -> TabBar {
+    pub(super) fn bar_with_laid_out_rects() -> TabBar {
         let mut b = bar();
         b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
         b.tab_rects = vec![
@@ -8973,7 +9007,7 @@ mod tests {
         (taffy, node)
     }
 
-    fn browser_slots() -> crate::window_toolbar::WindowToolbar {
+    pub(super) fn browser_slots() -> crate::window_toolbar::WindowToolbar {
         use crate::window_toolbar::{
             ToolbarAction, ToolbarLocation, ToolbarNavigation, WindowToolbar,
         };
