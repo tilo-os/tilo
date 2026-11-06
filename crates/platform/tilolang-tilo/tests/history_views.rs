@@ -1252,3 +1252,190 @@ fn a_command_over_many_chosen_tasks_is_one_change_its_undo_takes_back() {
         );
     }
 }
+
+/// Whether the task `at` is done.
+fn done(r: &Replica, at: &ResourceRef) -> Value {
+    field(r, TASKS_APP, at, "Task", "done")
+}
+
+/// How many tasks the list `root` holds.
+fn held(r: &Replica, root: &ResourceRef) -> usize {
+    match r.host.runtime().read(root, "items").unwrap() {
+        Value::List(items) => items.len(),
+        other => panic!("a list of tasks: {other:?}"),
+    }
+}
+
+/// How many changes the workspace holds of `roots`: of each resource in it.
+fn changes_of(r: &Replica, roots: &[&ResourceRef]) -> usize {
+    roots
+        .iter()
+        .map(|root| r.host.store().versions(root).unwrap().len())
+        .sum()
+}
+
+/// An action that calls two of its app's own actions is one step of the person's: one Undo
+/// takes back every change it made, and one Redo brings them all back.
+#[test]
+fn an_action_that_calls_two_of_its_apps_actions_is_one_step() {
+    let (mut ada, _notes, tasks) = two_people();
+    let root = target(&tasks);
+    let parent = target(&call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "new_task",
+        crate::tasks::create(&tasks, "Parent"),
+    ));
+    call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "check",
+        vec![Value::resource(&parent), Value::Bool(true)],
+    );
+    ada.commit();
+    assert_eq!(done(&ada, &parent), Value::Bool(true));
+    let before = changes_of(&ada, &[&root, &parent]);
+
+    // A subtask under the task that was done: the action inserts it and calls `check` to open
+    // the task again, so the person's one press made two changes.
+    call(
+        &ada,
+        "ada",
+        TASKS_APP,
+        "add_subtask",
+        vec![tasks, Value::resource(&parent), Value::text("Child")],
+    );
+    ada.commit();
+    assert_eq!(
+        done(&ada, &parent),
+        Value::Bool(false),
+        "the subtask opened the task again"
+    );
+    assert_eq!(held(&ada, &root), 2, "and it stands in the list");
+    assert_eq!(
+        changes_of(&ada, &[&root, &parent]),
+        before + 2,
+        "the one action made two changes"
+    );
+
+    // One Undo takes the whole action back: the subtask goes, and the task is done again.
+    ada.history(&HistoryAsk::Undo.edit());
+    assert_eq!(held(&ada, &root), 1, "Undo took the subtask back");
+    assert_eq!(
+        done(&ada, &parent),
+        Value::Bool(true),
+        "and made the task done again"
+    );
+
+    // One Redo brings both of them back.
+    ada.history(&HistoryAsk::Redo.edit());
+    assert_eq!(held(&ada, &root), 2, "Redo brought the subtask back");
+    assert_eq!(
+        done(&ada, &parent),
+        Value::Bool(false),
+        "and opened the task again"
+    );
+}
+
+/// An app whose action calls two of its own actions, each changing the one record: what makes
+/// the action's changes two, of one person, on one resource.
+const PAIRED: &str = r#"app test.paired "Paired"
+
+type Tally {
+  value: Int merge counter
+  note: Text
+}
+
+root Tally
+
+default view tally for Tally
+
+view tally(t: Tally) {
+  std.page(t) {
+    ui.Text("{t.value}")
+    std.history(t)
+  }
+}
+
+action bump(t: Tally) {
+  t.value += 1
+}
+
+action note(t: Tally) {
+  t.note = "noted"
+}
+
+action both(t: Tally) {
+  bump(t)
+  note(t)
+}
+"#;
+
+const PAIRED_APP: &str = "test.paired";
+
+/// The changes one action made on one record are one entry of its history, and its Undo takes
+/// them all back together.
+#[test]
+fn the_changes_of_one_action_are_one_entry_of_history_its_undo_takes_back() {
+    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(PAIRED, "")]);
+    let tally = ada.host.root_of(PAIRED_APP).unwrap();
+    ada.commit();
+    let before = changes_of(&ada, &[&tally]);
+    call(
+        &ada,
+        "ada",
+        PAIRED_APP,
+        "both",
+        vec![Value::resource(&tally)],
+    );
+    ada.commit();
+    assert_eq!(
+        changes_of(&ada, &[&tally]),
+        before + 2,
+        "the action and the two it called are two changes"
+    );
+
+    // History lists the action once: one entry saying how many changes it made, beside the
+    // record's own first entry.
+    let mut window = ada.host.open_resource(&tally, None).unwrap();
+    let section = history(&mut window);
+    let said = says(&section);
+    assert_eq!(
+        entries(&section).len(),
+        2,
+        "the record's creation, then the action: {said:#?}"
+    );
+    assert_eq!(
+        said.iter()
+            .filter(|said| said.as_str() == "tilolang-history-changes")
+            .count(),
+        1,
+        "the action stands in history once, saying how many changes it made: {said:?}"
+    );
+
+    // One Undo takes every change of it back, and one Redo brings them back.
+    ada.history(&HistoryAsk::Undo.edit());
+    assert_eq!(
+        field(&ada, PAIRED_APP, &tally, "Tally", "value"),
+        Value::Int(0),
+        "Undo took the action's first change back"
+    );
+    assert_eq!(
+        field(&ada, PAIRED_APP, &tally, "Tally", "note"),
+        Value::text(""),
+        "and its second with it"
+    );
+    ada.history(&HistoryAsk::Redo.edit());
+    assert_eq!(
+        field(&ada, PAIRED_APP, &tally, "Tally", "value"),
+        Value::Int(1),
+        "Redo brought the action's first change back"
+    );
+    assert_eq!(
+        field(&ada, PAIRED_APP, &tally, "Tally", "note"),
+        Value::text("noted"),
+        "and its second with it"
+    );
+}
