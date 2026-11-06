@@ -349,6 +349,25 @@ fn frozen_ms() -> u64 {
     }
 }
 
+/// Run `f` with this thread's wall clock held at `now_ms`: every wall read inside it —
+/// [`unix_now_ms`], [`unix_now_i64`], and so every change an action is stamped with — answers
+/// that time. Nested holds restore the one before them.
+///
+/// This is how a host lends code whose clock is the host's: a WebAssembly module has no clock
+/// of its own (a bare wasm32 has no `std` clock at all), and a change the host replays has to
+/// carry the time the host says, not one the module picked. Other threads keep their own
+/// clock, where [`testing::with_wall`] and [`pin_wall`] are a test's and a capture's.
+pub fn with_wall_ms<T>(now_ms: u64, f: impl FnOnce() -> T) -> T {
+    struct Restore(u64);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FROZEN_HERE_MS.with(|here| here.set(self.0));
+        }
+    }
+    let _restore = Restore(FROZEN_HERE_MS.with(|here| here.replace(now_ms)));
+    f()
+}
+
 /// The wall clock a whole process holds: a capture pins it with
 /// [`pin_wall`], a test that has its process to itself with
 /// [`testing::hold_wall_everywhere`]. `None` while every thread reads its own

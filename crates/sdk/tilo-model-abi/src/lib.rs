@@ -293,6 +293,12 @@ pub struct Reading {
     pub parts: Option<Vec<String>>,
 }
 
+/// The action type every verb a model serves is encoded under: one action whose payload names
+/// the resource and the verb, so the host runs the module's own verb rather than a closure of
+/// its own. A caller never sees it — the host resolves the address against what the record
+/// publishes, and what it hands the module is the verb's name and arguments.
+pub const VERB_TYPE: &str = "tilo.model.verb";
+
 /// The size a module's buffer starts at when it pulls from the host: enough for a small
 /// record's document, and the host answers with the bigger size a larger one needs.
 pub const BUFFER_START: usize = 64 * 1024;
