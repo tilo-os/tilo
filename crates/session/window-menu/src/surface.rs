@@ -386,6 +386,16 @@ impl Widget for WindowMenuSurface {
         if let [menu] = taffy.children(node).unwrap_or_default()[..] {
             self.menu.apply_layout(taffy, menu, inner);
         }
+        // A menu drawn before the host said how large the frame is was placed
+        // against no room at all. Now that there is one, it stands against the
+        // pointer again, inside the frame it draws in.
+        if self.reading.is_open() {
+            let anchor = self
+                .reading
+                .anchor
+                .map_or(Rect::ZERO, |(x, y)| Rect::new(x, y, x, y));
+            self.menu.reanchor(anchor, self.viewport);
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -549,6 +559,98 @@ mod tests {
                 title: "Notes".into(),
                 app: Some("so.tilo.notes".into()),
             })
+        );
+    }
+
+    /// Lay the view out in the frame a host gives it, as the host does
+    /// before it draws the surface a person looks at.
+    fn lay_out(surface: &mut WindowMenuSurface, width: f32, height: f32) {
+        let mut taffy = TaffyTree::new();
+        let mut map = HashMap::new();
+        let node = surface.build_layout(&mut taffy, &Theme::default(), &mut map);
+        // The window's root fills the host, and the surface fills it.
+        let root = taffy.fill_node(node);
+        taffy
+            .compute_layout(
+                root,
+                ui::taffy::Size {
+                    width: ui::taffy::AvailableSpace::Definite(width),
+                    height: ui::taffy::AvailableSpace::Definite(height),
+                },
+            )
+            .expect("the frame lays out");
+        surface.apply_layout(&taffy, node, Point::new(0.0, 0.0));
+    }
+
+    /// The menu a person sees is the rows in the frame the host draws: one
+    /// the pointer opened stands at the pointer, and none of its rows falls
+    /// outside the frame or is a sliver to aim at.
+    #[test]
+    fn the_rows_stand_in_the_frame_at_the_pointer() {
+        let _settled = ui::motion::testing::settled();
+        let mut surface = WindowMenuSurface::showing(READING);
+        lay_out(&mut surface, 1280.0, 800.0);
+        let frame = surface.get_rect();
+        assert_eq!(frame, Rect::new(0.0, 0.0, 1280.0, 800.0), "the whole host");
+        let rows: Vec<Rect> = (0..2)
+            .map(|index| surface.item_rect(index).expect("the row is painted"))
+            .collect();
+        for row in &rows {
+            assert!(
+                frame.contains_rect(*row),
+                "every row is in the frame: {row:?} in {frame:?}"
+            );
+            assert!(row.height() >= 20.0, "a row a person can aim at: {row:?}");
+        }
+        assert!(
+            rows[0].x0 < 120.0,
+            "the rows start at the pointer's own edge: {:?}",
+            rows[0]
+        );
+        assert!(
+            rows[0].y0 >= 50.0 && rows[0].y0 - 50.0 < 80.0,
+            "the first row stands just below the pointer that opened the menu, \
+             under the window the menu names: {:?}",
+            rows[0]
+        );
+        assert!(
+            rows[1].y0 >= rows[0].y1,
+            "the rows stack in the order the session lists them: {rows:?}"
+        );
+    }
+
+    /// The same rows, opened from the frame's last pixels: the corner of the
+    /// desk the window menu doubles as the way out of.
+    const AT_THE_CORNER: &str = r#"{
+        "tab": "20",
+        "anchor": { "x": 1272, "y": 792 },
+        "rows": [
+            { "id": "window-normal", "label": "Normal", "enabled": true },
+            { "id": "window-close", "label": "Close", "enabled": true }
+        ]
+    }"#;
+
+    /// A menu the session opened in the frame's last pixels is still drawn
+    /// whole: its rows stand inside the frame, not past the edge a person
+    /// cannot reach.
+    #[test]
+    fn a_menu_opened_at_the_frames_corner_stays_inside_it() {
+        let _settled = ui::motion::testing::settled();
+        let mut surface = WindowMenuSurface::showing(AT_THE_CORNER);
+        lay_out(&mut surface, 1280.0, 800.0);
+        let frame = surface.get_rect();
+        let rows: Vec<Rect> = (0..2)
+            .map(|index| surface.item_rect(index).expect("the row is painted"))
+            .collect();
+        for row in &rows {
+            assert!(
+                frame.contains_rect(*row),
+                "every row is in the frame: {row:?} in {frame:?}"
+            );
+        }
+        assert!(
+            rows[1].y0 >= rows[0].y1 && rows[1].y1 <= 800.0,
+            "the menu flips above the pointer when it has no room below: {rows:?}"
         );
     }
 
