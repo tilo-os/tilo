@@ -1152,6 +1152,18 @@ fn create_component(
 ) -> Result<AppComponent, LaunchError> {
     if let Some(catalog) = (app.catalog)() {
         catalog.ensure();
+        // What the app's types are called is refined by its words: a type
+        // whose name derives a noun English cannot (`Person`, a `person` and
+        // `people`) says so in its `locales/<lang>.ftl`, never in code.
+        tilo_resource::words::refine_with(|key, count| {
+            use ui_core::i18n::ArgValue;
+            let args: &[(&str, ArgValue)] = match count {
+                Some(count) => &[("count", ArgValue::from(count))],
+                None => &[],
+            };
+            let said = catalog.t_args(key, args);
+            (said != key).then_some(said)
+        });
     }
     // The workspace's record is being read off the frame: the window shows what the app shows
     // before it, and opens as below once the record is had.

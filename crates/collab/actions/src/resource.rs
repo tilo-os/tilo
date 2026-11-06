@@ -659,39 +659,7 @@ pub enum Readers {
     Granted,
 }
 
-/// What one of something is called and what several are, in a sentence:
-/// `mailbox` and `mailboxes`, `person` and `people`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct Noun {
-    pub one: String,
-    pub many: String,
-}
-
-impl Noun {
-    #[must_use]
-    pub fn new(one: impl Into<String>, many: impl Into<String>) -> Self {
-        Self {
-            one: one.into(),
-            many: many.into(),
-        }
-    }
-}
-
-/// What a resource is, in the words people use for it: its type's noun, the
-/// name of the app whose type it is, and whether it is that app's root.
-/// What search matches a query naming what something is ("my mails",
-/// "notes") against, rather than its title.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct ResourceType {
-    /// Its type: `mailbox`, `mailboxes`.
-    pub noun: Noun,
-    /// Its app, as people call it: `Mail`, `mails`.
-    pub app: Noun,
-    /// The app's root: its one resource of the type, which a search naming
-    /// the app means ("my mails" is Mail's root, drawn as its default view).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub root: bool,
-}
+pub use crate::noun::{Noun, ResourceType, in_words, plural, singular};
 
 /// One open/presented resource and the actions it exports. Resources
 /// nest via [`children`](ResourceSpec::children).

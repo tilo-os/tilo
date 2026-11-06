@@ -154,6 +154,7 @@ pub mod unreadable;
 mod upsert;
 mod value;
 pub mod vocabulary;
+pub mod words;
 
 pub use absolute_path::{AbsolutePath, RelativePath};
 pub use action::{

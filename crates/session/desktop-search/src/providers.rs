@@ -397,6 +397,16 @@ impl PublishedActions {
             types: types_of(resources),
         }
     }
+
+    /// The other words the app is known by, from the registry's metadata
+    /// (`app-fleet`): "youtube" for Tube, "channel", "videos". A query naming
+    /// one names the app, so "youtube videos of mkbhd" is the YouTube
+    /// client's channel, whatever the app is titled. Empty for an app the
+    /// fleet does not know.
+    #[must_use]
+    pub fn keywords(&self) -> &'static [&'static str] {
+        app_fleet::metadata(&self.app).map_or(&[], |app| app.keywords)
+    }
 }
 
 /// What each resource of `resources` and their children is, by resource id,
@@ -502,14 +512,20 @@ impl Source for Published {
                         .flatten()
                         .copied()
                         .filter(|noun| **noun != named.noun);
-                    ui::search::system::type_match_score(needle, named, kin, |rest| {
-                        rank::action_match_score(
-                            rest,
-                            &action.action_label,
-                            &action.keywords,
-                            &action.resource_label,
-                        )
-                    })
+                    ui::search::system::type_match_score_with(
+                        needle,
+                        named,
+                        kin,
+                        published.keywords(),
+                        |rest| {
+                            rank::action_match_score(
+                                rest,
+                                &action.action_label,
+                                &action.keywords,
+                                &action.resource_label,
+                            )
+                        },
+                    )
                 });
             let Some(score) = score.max(by_type) else {
                 continue;
