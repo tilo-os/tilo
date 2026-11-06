@@ -453,8 +453,21 @@ impl Hint {
             OsdKind::AirplaneMode => t("osd-airplane-mode-off"),
             OsdKind::Touchpad if self.on => t("osd-touchpad-on"),
             OsdKind::Touchpad => t("osd-touchpad-off"),
-            OsdKind::Play => t("osd-play"),
-            OsdKind::Pause => t("osd-pause"),
+            // What the transport did, and the song it did it to: a pause names
+            // what stopped, which the words alone cannot. The catalogue says
+            // both as one sentence, so the pill stays a single line of text.
+            kind @ (OsdKind::Play | OsdKind::Pause) => {
+                let named = if kind == OsdKind::Play {
+                    "osd-play-named"
+                } else {
+                    "osd-pause-named"
+                };
+                match &self.name {
+                    Some(name) if !name.is_empty() => t_args(named, &[("song", name.clone().into())]),
+                    _ if kind == OsdKind::Play => t("osd-play"),
+                    _ => t("osd-pause"),
+                }
+            }
             OsdKind::NextTrack => t("osd-next-track"),
             OsdKind::PreviousTrack => t("osd-previous-track"),
             OsdKind::Stop => t("osd-stop"),
@@ -1545,6 +1558,26 @@ mod tests {
                 words
             );
         }
+    }
+
+    #[test]
+    fn a_transport_hint_names_the_song_it_acted_on() {
+        ui::i18n::I18nManager::init("en-US");
+        let named = |kind, song: Option<&str>| {
+            Osd::from(Hint {
+                kind,
+                on: true,
+                chord: None,
+                name: song.map(str::to_owned),
+            })
+            .caption()
+        };
+        // A pause says what stopped, so the person knows which of the players
+        // in the room went quiet; without a song it says what the key does.
+        assert_eq!(named(OsdKind::Play, Some("Glasslight")), "Playing Glasslight");
+        assert_eq!(named(OsdKind::Pause, Some("Glasslight")), "Paused Glasslight");
+        assert_eq!(named(OsdKind::Play, None), "Play");
+        assert_eq!(named(OsdKind::Pause, Some("")), "Pause");
     }
 
     #[test]

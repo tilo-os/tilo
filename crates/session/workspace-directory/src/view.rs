@@ -1,7 +1,7 @@
-//! What the sheet shows: the workspaces the caller already holds, and what
-//! the sites' directories list.
+//! What the sheet shows: what the sites' directories list, which is the
+//! workspaces the caller does not already hold.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use tilo_relay_protocol::directory::Activity;
 use tilo_relay_protocol::workspaces::WorkspaceRole;
@@ -10,9 +10,10 @@ use tilo_sheets::directory::{Directory, Listing, ListingAction};
 use crate::Listed;
 use crate::store::Store;
 
-/// A workspace the caller already holds: its id, the key its desk knows it
-/// by, and the name it shows. A caller that keeps no desk says them itself
-/// (`Hold` is read from a page's `mountDesktop({directory})`).
+/// A workspace the caller already holds: its id, which leaves it out of what
+/// the sheet offers to join, and the key its desk knows it by and the name it
+/// shows, which a caller that keeps no desk says itself (`Hold` is read from
+/// a page's `mountDesktop({directory})`).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct Held {
     /// The workspace's id, as a listing names it.
@@ -24,34 +25,27 @@ pub struct Held {
 }
 
 impl Store {
-    /// What the sheet shows: the workspaces `held` holds, and what the sites'
-    /// directories list.
+    /// What the sheet shows: what the sites' directories list, without the
+    /// workspaces `held` holds.
     pub fn view(&self, held: &[Held]) -> Directory {
         let now_ms = tilo_clock::unix_now_ms();
-        // The workspaces the caller holds, by workspace: the listed ones it
-        // holds are opened by its own key.
-        let held_by: BTreeMap<&str, &Held> = held
+        // The workspaces the caller already holds are not ones to join: the
+        // sheet offers what the sites list, and someone who holds a
+        // workspace reaches it from their own desk, not from here.
+        let held_by: BTreeSet<&str> = held
             .iter()
-            .map(|workspace| (workspace.workspace.as_str(), workspace))
+            .map(|workspace| workspace.workspace.as_str())
             .collect();
         let joining = self.joining();
         let failures = self.failures.borrow().clone();
         let mut listings = Vec::new();
-        let mut shown: BTreeSet<String> = BTreeSet::new();
         for listing in crate::ordered(self.listed.borrow().clone(), now_ms) {
+            if held_by.contains(listing.entry.workspace.as_str()) {
+                continue;
+            }
             let listed_key = listing.key();
-            let held_by = held_by.get(listing.entry.workspace.as_str()).copied();
-            let key = match held_by {
-                Some(held) => {
-                    shown.insert(held.key.clone());
-                    held.key.clone()
-                }
-                None => listed_key.clone(),
-            };
             let failure = failures.get(&listed_key);
-            let action = if held_by.is_some() {
-                ListingAction::Open
-            } else if joining.as_deref() == Some(listed_key.as_str()) {
+            let action = if joining.as_deref() == Some(listed_key.as_str()) {
                 ListingAction::Joining
             } else if failure.is_some() {
                 ListingAction::TryAgain
@@ -59,7 +53,7 @@ impl Store {
                 ListingAction::Join
             };
             listings.push(Listing {
-                key,
+                key: listed_key,
                 name: listing.entry.name.clone(),
                 about: if listing.entry.description.is_empty() {
                     listing.host.clone()
@@ -84,19 +78,7 @@ impl Store {
                     .collect(),
                 here_count: usize::try_from(listing.entry.here_count).unwrap_or(usize::MAX),
                 action,
-                waiting: joining.is_some()
-                    && !matches!(action, ListingAction::Open | ListingAction::Joining),
-            });
-        }
-        for workspace in held {
-            if shown.contains(&workspace.key) {
-                continue;
-            }
-            listings.push(Listing {
-                key: workspace.key.clone(),
-                name: workspace.name.clone(),
-                action: ListingAction::Open,
-                ..Listing::default()
+                waiting: joining.is_some() && !matches!(action, ListingAction::Joining),
             });
         }
         Directory {
@@ -192,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn a_held_workspace_is_opened_by_the_key_the_caller_knows_it_by() {
+    fn a_workspace_the_caller_holds_is_not_one_to_join() {
         let store = Store::default();
         *store.listed.borrow_mut() = vec![listed(entry(
             "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71",
@@ -204,19 +186,15 @@ mod tests {
             name: "Coffee".into(),
         }];
         let shown = store.view(&held);
-        assert_eq!(shown.listings.len(), 1, "the held workspace is shown once");
-        let row = &shown.listings[0];
-        assert_eq!(row.key, "slot-1");
-        assert_eq!(row.action, ListingAction::Open);
+        assert!(
+            shown.listings.is_empty(),
+            "a site listing the caller's own workspace does not offer it to join"
+        );
     }
 
     #[test]
-    fn a_workspace_no_directory_lists_is_still_shown() {
+    fn a_workspace_no_site_lists_is_left_to_the_callers_own_desk() {
         let store = Store::default();
-        *store.listed.borrow_mut() = vec![listed(entry(
-            "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71",
-            "Coffee",
-        ))];
         let held = [
             Held {
                 workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
@@ -230,8 +208,9 @@ mod tests {
             },
         ];
         let shown = store.view(&held);
-        assert_eq!(shown.listings.len(), 2);
-        assert_eq!(shown.listings[1].key, "slot-2");
-        assert_eq!(shown.listings[1].name, "My notes");
+        assert!(
+            shown.listings.is_empty(),
+            "the sheet offers only what can be joined, never what the caller has"
+        );
     }
 }

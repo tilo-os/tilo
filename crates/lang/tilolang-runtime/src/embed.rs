@@ -487,8 +487,7 @@ impl Core {
         node.children = cards;
     }
 
-    /// The app and name of an action or flow by id, and the proposal view with the arguments
-    /// it takes.
+    /// The app and name of an action by id, and the proposal view with the arguments it takes.
     pub(crate) fn action_facts(
         &self,
         action: &str,
@@ -508,11 +507,6 @@ impl Core {
                 (p.view.clone(), shown)
             });
             return (pkg.meta.app.clone(), meta.name.clone(), proposal);
-        }
-        if let Some(pkg) = reg.flow_package(action)
-            && let Some(meta) = pkg.flow(action)
-        {
-            return (pkg.meta.app.clone(), meta.name.clone(), None);
         }
         (String::new(), action.to_owned(), None)
     }

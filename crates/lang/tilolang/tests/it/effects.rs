@@ -43,14 +43,6 @@ fn the_day_it_is_in_an_action_is_the_clock_too() {
 }
 
 #[test]
-fn a_flow_reading_the_clock_declares_uses_time() {
-    let read = "flow tick() -> Time {\n    return now\n}\n";
-    assert_eq!(codes(read), ["E121"]);
-    let declared = "flow tick() -> Time uses time {\n    return now\n}\n";
-    assert_eq!(codes(declared), Vec::<String>::new());
-}
-
-#[test]
 fn a_time_of_no_zone_and_a_phrase_read_in_the_zone_are_time() {
     let wall = "action stamp(m: Mail) {\n    m.at = 2026-06-30T09:00\n}\n";
     assert_eq!(codes(&with_mail(wall)), ["E121"]);
@@ -129,7 +121,7 @@ fn the_clause_keeps_its_place_in_the_canonical_form() {
     let src = "app so.tilo.demo \"Demo\"\n\n\
                type Mail {\n    at: Time\n}\n\n\
                primary action send(m: Mail) -> Mail uses web, time proposal compose(m) (icon: .send) {\n    m.at = now\n    return m\n}\n\n\
-               flow tick(m: Mail) uses time {\n    m.at = now\n}\n\n\
+               action tick(m: Mail) uses time {\n    m.at = now\n}\n\n\
                view compose(m: Mail) {\n    ui.Text(\"{m.at}\")\n}\n";
     let module = parse(src).unwrap_or_else(|d| panic!("{d:#?}"));
     assert_eq!(print_module(&module), src);
@@ -184,10 +176,10 @@ fn a_draw_says_which_one_and_what_to_declare() {
 }
 
 #[test]
-fn a_flow_that_draws_declares_uses_random() {
-    let draw = "flow tick() -> Int {\n    return random.int(1, 6)\n}\n";
+fn an_action_that_draws_declares_uses_random() {
+    let draw = "action tick() -> Int {\n    return random.int(1, 6)\n}\n";
     assert_eq!(codes(draw), ["E121"]);
-    let declared = "flow tick() -> Int uses random {\n    return random.int(1, 6)\n}\n";
+    let declared = "action tick() -> Int uses random {\n    return random.int(1, 6)\n}\n";
     assert_eq!(codes(declared), Vec::<String>::new());
 }
 
@@ -240,11 +232,11 @@ fn a_request_declares_uses_web() {
     );
     assert_eq!(codes(&declared), Vec::<String>::new());
     let posted = format!(
-        "{BOARD}flow send() -> Bool uses web {{\n    return web.post(\"https://example.com/a\", body: \"x\").ok\n}}\n"
+        "{BOARD}action send() -> Bool uses web {{\n    return web.post(\"https://example.com/a\", body: \"x\").ok\n}}\n"
     );
     assert_eq!(codes(&posted), Vec::<String>::new());
     let undeclared = format!(
-        "{BOARD}flow send() -> Bool {{\n    return web.post(\"https://example.com/a\", body: \"x\").ok\n}}\n"
+        "{BOARD}action send() -> Bool {{\n    return web.post(\"https://example.com/a\", body: \"x\").ok\n}}\n"
     );
     assert_eq!(codes(&undeclared), ["E121"]);
 }

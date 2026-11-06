@@ -23,6 +23,14 @@ use ui::search::system::{KindGroup, ResourceKind};
 /// height cut short; `more:{i}` expands `more_rows[i]`.
 const MORE_PREFIX: &str = "more:";
 
+/// The row `id` names when it is a group's "more" row: an id this palette
+/// wrote, so one that does not read as a number is no row here.
+fn more_row(id: &str) -> Option<usize> {
+    let more = id.strip_prefix(MORE_PREFIX)?;
+    // ignored-failure: the id is one this palette wrote, and another row has another
+    more.parse().ok()
+}
+
 /// The row under the apps that lists every one of them, by its name.
 const ALL_APPS_ID: &str = "all-apps";
 
@@ -237,6 +245,13 @@ pub struct DesktopSearch {
     /// in: a frame that has no room for it yet does not take their choice
     /// away.
     kept_choice: Option<ChosenRow>,
+    /// Where this search stands: the workspace, every workspace, one app's
+    /// own — so a row carried out by the host can be asked again where the
+    /// person was when they chose it.
+    scope: Scope,
+    /// The row the host could not carry out, with why: it keeps the reason
+    /// under its name until another row is chosen or search closes.
+    refusal: Option<(Target, String)>,
 }
 
 impl Default for DesktopSearch {
@@ -277,6 +292,8 @@ impl DesktopSearch {
             rows_room: RowRoom::Guess(0),
             shown_two_lines: false,
             kept_choice: None,
+            scope: Scope::Workspace,
+            refusal: None,
         }
     }
 
@@ -300,6 +317,7 @@ impl DesktopSearch {
 
     /// Open over `data` with an empty query.
     pub fn open(&mut self, mut data: SearchData) {
+        self.scope = data.scope.clone();
         let placeholder = data.placeholder.take().unwrap_or_else(placeholder);
         self.palette.set_query_placeholder(placeholder.as_str());
         // A search over the workspace in front says so at the start of the
@@ -358,6 +376,26 @@ impl DesktopSearch {
     pub fn set_query(&mut self, query: &str) {
         self.palette.set_query(query);
         self.refresh();
+    }
+
+    /// The host could not carry out the row `target` names, for `why`: search
+    /// opens again over the person's query with the reason on that row.
+    pub fn refuse(&mut self, target: Target, why: String) {
+        self.refusal = Some((target, why));
+    }
+
+    /// Why the row `target` names could not be carried out, while it still
+    /// stands under that row: the line the palette draws there.
+    #[must_use]
+    pub fn refusal_for(&self, target: &Target) -> Option<&str> {
+        let (refused, why) = self.refusal.as_ref()?;
+        (refused == target).then_some(why.as_str())
+    }
+
+    /// Where this search stands, for asking it again where it was.
+    #[must_use]
+    pub fn scope(&self) -> Scope {
+        self.scope.clone()
     }
 
     pub fn query(&self) -> &str {
@@ -701,7 +739,14 @@ impl DesktopSearch {
                     // everything lists them whole and scrolls.
                     ui::search::system::trim_groups(groups.clone(), allowed, &self.expanded)
                 };
-                let mut entries = entries_for(&trimmed, browsing, self.catalogue, more, rows);
+                let mut entries = entries_for(
+                    &trimmed,
+                    browsing,
+                    self.catalogue,
+                    self.refusal.as_ref(),
+                    more,
+                    rows,
+                );
                 let shown: usize = trimmed.iter().map(|group| group.results.len()).sum();
                 if dropped {
                     entries.push(all_results_entry(total.saturating_sub(shown)));
@@ -772,11 +817,8 @@ impl DesktopSearch {
     /// an open palette for its edited query.
     pub fn observe(&mut self) -> bool {
         if let Some(outcome) = self.palette.take_outcome() {
-            if let Some(more) = outcome
-                .id
-                .strip_prefix(MORE_PREFIX)
-                .and_then(|more| more.parse().ok())
-            {
+            let more = more_row(&outcome.id);
+            if let Some(more) = more {
                 self.expand(more);
             } else if outcome.id == ALL_RESULTS_ID {
                 self.show_everything();
@@ -815,6 +857,9 @@ impl DesktopSearch {
             return;
         }
         self.remember(&hit);
+        // Trying any row is the answer to the one that did not happen: the
+        // reason it stood under goes with it.
+        self.refusal = None;
         let mut target = hit.target;
         let mut toggles = false;
         match &mut target {
@@ -915,6 +960,7 @@ impl DesktopSearch {
         self.everything = false;
         self.auto_selected = None;
         self.kept_choice = None;
+        self.refusal = None;
         self.shown_query = None;
     }
 }
@@ -950,6 +996,7 @@ fn entries_for(
     groups: &[KindGroup<Hit>],
     browsing: bool,
     catalogue: bool,
+    refusal: Option<&(Target, String)>,
     more: &mut Vec<ResourceKind>,
     rows: &mut Vec<Hit>,
 ) -> Vec<CommandEntry> {
@@ -961,11 +1008,15 @@ fn entries_for(
         let capped = group.is_capped();
         let applications = browsing && !catalogue && group.kind == ResourceKind::Application;
         for hit in &group.results {
-            entries.push(
-                entry_for(hit, format!("hit:{}", rows.len()))
-                    .group(label.clone())
-                    .group_total(group.total),
-            );
+            let mut entry = entry_for(hit, format!("hit:{}", rows.len()));
+            // The row the host could not carry out keeps the reason under its
+            // name, where the person chose it, instead of closing over it.
+            if let Some((target, why)) = refusal
+                && target == &hit.target
+            {
+                entry.description = Some(why.clone());
+            }
+            entries.push(entry.group(label.clone()).group_total(group.total));
             rows.push(hit.clone());
         }
         if capped {
@@ -2068,6 +2119,49 @@ mod tests {
         assert_eq!(
             action.address(),
             tilo_actions::ActionAddress::new("page-1", "duplicate")
+        );
+    }
+
+    /// The host could not carry out the row the person chose: search opens
+    /// again where it stood, over the same query, and the row keeps the
+    /// reason under its name instead of the search closing over it.
+    #[test]
+    fn a_row_that_did_not_happen_keeps_its_reason_and_the_search_stays_open() {
+        let mut search = DesktopSearch::new();
+        search.open(data());
+        settled(&mut search);
+        search.set_query("notes");
+        settled(&mut search);
+        let target = search
+            .results()
+            .iter()
+            .find(|hit| matches!(hit.target, Target::Window { .. }))
+            .expect("the open window is a row")
+            .target
+            .clone();
+
+        search.open(data());
+        search.refuse(target.clone(), "its app is gone".to_owned());
+        search.set_query("notes");
+        settled(&mut search);
+
+        assert!(search.is_open(), "search stays open on the reason");
+        assert_eq!(search.query(), "notes", "over the query it stood at");
+        assert_eq!(
+            search.refusal_for(&target),
+            Some("its app is gone"),
+            "the row that did not happen is the one that says why"
+        );
+        let entries = search.palette().visible_entries();
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.description.as_deref() == Some("its app is gone")),
+            "the row says why it did not happen: {:?}",
+            entries
+                .iter()
+                .map(|entry| (&entry.label, &entry.description))
+                .collect::<Vec<_>>()
         );
     }
 

@@ -69,7 +69,7 @@ fn an_alias_is_another_name_for_a_type() {
     );
 }
 
-const NOTES: &str = "type Note {\n    title: Text (title)\n    pinned: Bool = false\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nroot notebook: Notebook\ndefault view notebook for Notebook\nview notebook(nb: Notebook) {\n    std.list(nb, nb.notes, empty: \"No notes\") { n ->\n        row(n.title)\n    }\n}\n";
+const NOTES: &str = "type Note {\n    title: Text (title)\n    pinned: Bool = false\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nroot notebook: Notebook\ndefault view notebook for Notebook\nview notebook(nb: Notebook) {\n    std.list(nb.notes) { (n, at) ->\n        ui.ListItem(item: n, presence: at)\n    }\n}\n";
 
 #[test]
 fn a_root_is_a_named_record_holding_its_collection() {

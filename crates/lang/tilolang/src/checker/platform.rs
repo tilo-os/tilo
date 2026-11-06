@@ -242,10 +242,9 @@ impl Checker<'_> {
         Ex::host(Imp::Steps, vec![r], Ty::List(Box::new(host_ty("Step"))))
     }
 
-    /// `unseen(r)`: the versions of `r` the person looking has not seen, oldest first: those a
-    /// task run or an agent made after the person's seen mark of `r` and after their own last
-    /// change of it (task-legibility.md §2, §4). A view that reads it runs again when either
-    /// moves.
+    /// `unseen(r)`: the versions of `r` the person looking has not seen, oldest first: those
+    /// someone else made after the person's seen mark of `r` and after their own last change
+    /// of it (task-legibility.md §2, §4). A view that reads it runs again when either moves.
     pub(super) fn builtin_unseen(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("unseen", args, span) else {
             return Ex::error();
@@ -682,14 +681,14 @@ impl Checker<'_> {
             [a] if a.name.is_none() => match &a.value.kind {
                 ast::ExprKind::Ident(name) if self.lookup(name).is_none() => self
                     .own_callable(name)
-                    .filter(|c| matches!(c.kind, CKind::Action | CKind::Flow))
+                    .filter(|c| matches!(c.kind, CKind::Action))
                     .map(|c| c.id.clone()),
                 ast::ExprKind::Field { base, name } if self.names_import(base) => {
                     super::expr::dotted(base).and_then(|path| {
                         let import = self.env.find_import(&path.join("."))?;
                         self.env
                             .foreign_callable(&import.app, &name.name)
-                            .filter(|c| matches!(c.kind, CKind::Action | CKind::Flow))
+                            .filter(|c| matches!(c.kind, CKind::Action))
                             .map(|c| c.id.clone())
                     })
                 }

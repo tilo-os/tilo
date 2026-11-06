@@ -14,7 +14,6 @@
 //! linked-in stand-in for it.
 
 use std::rc::Rc;
-use std::sync::Arc;
 
 use serde_json::{Map, json};
 use tilo_model_abi::{Op, Request};
@@ -32,9 +31,9 @@ fn wasm() -> Vec<u8> {
     tilo_model_host::fixture_module().expect("tilo-model-host's build script built the module")
 }
 
-fn module() -> Arc<Module> {
+fn module() -> Rc<Module> {
     let engine = Rc::new(Engine::new(EngineLimits::default()).expect("an engine"));
-    Arc::new(Module::load(APP, &wasm(), engine).expect("the app's module loads"))
+    Rc::new(Module::load(APP, &wasm(), engine).expect("the app's module loads"))
 }
 
 /// A record the module opened: the app's real model, in its real module.

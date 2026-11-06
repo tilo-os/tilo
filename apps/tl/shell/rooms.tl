@@ -7,7 +7,7 @@
 /// here now, and what happened there last. Switching, joining and making one are the
 /// session's actions.
 view workspaces(d: Desk) {
-    lens name: Text = ""
+    state name: Text = ""
     stack(gap: .section) {
         ui.Text("Workspaces", role: .title)
         grid(min: 18rem) {

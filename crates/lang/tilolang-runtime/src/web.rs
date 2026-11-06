@@ -3,15 +3,15 @@
 //! A request runs once, on the device whose code makes it, through the transport its host
 //! installs ([`crate::Runtime::set_web`]). The answer is a [`JournalEntry::Web`] entry of the
 //! invocation's journal, and a replay answers from it instead of asking the network again
-//! ([`crate::flow::JournalEntry::Web`]).
+//! ([`crate::run::JournalEntry::Web`]).
 //!
 //! What can go wrong is a value, never a trap: a refused host, a timeout and a network error
 //! answer with status 0 and a `status_text` that says what happened, and `ok` is false. One
 //! request is bounded in size and time ([`MAX_BODY`], [`TIMEOUT`]); nothing streams.
 //!
-//! [`JournalEntry::Web`]: crate::flow::JournalEntry::Web
+//! [`JournalEntry::Web`]: crate::run::JournalEntry::Web
 
-use crate::flow::{WebRequest, WebResponse};
+use crate::run::{WebRequest, WebResponse};
 
 /// The most a reply's body may be; a larger one is refused as a value.
 pub const MAX_BODY: usize = 2 * 1024 * 1024;

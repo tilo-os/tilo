@@ -1,7 +1,7 @@
 //! Whether a new build of a package can take over a running one in place.
 //!
 //! A running app keeps its state outside its module: resources in the workspace record, by
-//! declaration id; `window` and `lens` state in the runtime, by window, the person looking and
+//! declaration id; view state in the runtime, by window, the person looking and
 //! declaration id; scroll, selection and the open detail in the window. A new module can take
 //! over all of it when it reads that state as the old one wrote it. [`compare`] says whether
 //! it does, and when it does not, names the first declaration that stands in the way, in one
@@ -82,10 +82,10 @@ fn first_obstacle(old: &Meta, new: &Meta) -> Option<String> {
             let Some(now) = after.state.iter().find(|now| now.id == state.id) else {
                 continue;
             };
-            if now.ty != state.ty || now.layer != state.layer {
+            if now.ty != state.ty {
                 return Some(format!(
-                    "view {}: the {} state `{}` changed from {} {} to {} {}",
-                    after.name, state.layer, now.name, state.layer, state.ty, now.layer, now.ty
+                    "view {}: the state `{}` changed from {} to {}",
+                    after.name, now.name, state.ty, now.ty
                 ));
             }
         }

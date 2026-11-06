@@ -47,6 +47,7 @@ use automerge::{ChangeHash, ObjType, ReadDoc, ScalarValue, Value as AmValue};
 use serde_json::Value as Json;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Model, Segment};
+use tilolang_runtime::DOC_VERSIONS as VERSIONS;
 use tilolang_runtime::Journal;
 use tilolang_runtime::ids::{AppId, DocId, FieldId, RunId, TypeId};
 use tilolang_runtime::store::{
@@ -538,6 +539,13 @@ impl Changes {
         }
     }
 
+    /// Whether a change to `key` did not say how its collection's items changed: what it took
+    /// out or put in is unknown, so a reader of item text must read everything again.
+    #[must_use]
+    pub fn unsaid(&self, key: &FieldKey) -> bool {
+        self.unsaid.contains(key)
+    }
+
     /// The steps that changed the collection `key`, in order, when the store could say.
     #[must_use]
     pub fn listing(&self, key: &FieldKey) -> Option<&[Splice]> {
@@ -685,6 +693,37 @@ fn holds_heads(doc: &Doc, heads: &[ChangeHash]) -> bool {
     heads
         .iter()
         .all(|head| doc.committed_document().get_change_by_hash(head).is_some())
+}
+
+/// Name each resource in `ends` as changed in its versions: the record's changes made them,
+/// which marks and history read, and a change reaches the views of a resource even when the
+/// values it writes read as the ones the store already held, as they do when the steps were
+/// written locally first. A document the change reached whole names no field and is left as
+/// it is: every view of it reads the document anew.
+fn name_version_changes(ends: &Ends, docs: &mut BTreeMap<DocId, Vec<FieldKey>>) {
+    for resource in ends.keys() {
+        note_derived(
+            docs,
+            doc_of(resource),
+            vec![FieldKey {
+                resource: resource.clone(),
+                field: VERSIONS.to_owned(),
+            }],
+        );
+    }
+}
+
+/// Note what a change named in `doc`: the fields that changed there, which sets aside the
+/// listings of it reading one. A document the change reached as a whole keeps the empty list
+/// that says so: narrower fields would leave the listings they do not name on the old index.
+fn note_derived(docs: &mut BTreeMap<DocId, Vec<FieldKey>>, doc: &str, keys: Vec<FieldKey>) {
+    match docs.get_mut(doc) {
+        Some(fields) if fields.is_empty() => {}
+        Some(fields) => fields.extend(keys),
+        None => {
+            docs.insert(doc.to_owned(), keys);
+        }
+    }
 }
 
 /// Every record of `app` in `docs`, reached as a whole, with those of `before` that are gone:
@@ -907,13 +946,7 @@ impl TiloStore {
         // and the records derived anew whole.
         let mut docs = changed.docs;
         for key in items.keys() {
-            match docs.get_mut(key.doc()) {
-                Some(fields) if fields.is_empty() => {}
-                Some(fields) => fields.push(key.clone()),
-                None => {
-                    docs.insert(key.doc().to_owned(), vec![key.clone()]);
-                }
-            }
+            note_derived(&mut docs, key.doc(), vec![key.clone()]);
         }
         for doc in wholes {
             docs.insert(doc, Vec::new());
@@ -921,8 +954,9 @@ impl TiloStore {
         // A value the index derives may have moved on an item the change did not name: a
         // branch that folds because its last task was checked elsewhere.
         for (doc, keys) in derived {
-            docs.entry(doc).or_default().extend(keys);
+            note_derived(&mut docs, &doc, keys);
         }
+        name_version_changes(&ends, &mut docs);
         for fields in docs.values_mut() {
             fields.sort();
             fields.dedup();
@@ -1194,6 +1228,17 @@ impl TiloStore {
     #[must_use]
     pub fn resource_of(&self, doc: &str) -> Option<(AppId, TypeId)> {
         self.held().index.get(doc).cloned()
+    }
+
+    /// Whether the resource `doc` is one its origin derives: it lives in the store's unsaved
+    /// layer, so a change of it is never written into the workspace record.
+    #[must_use]
+    pub fn derives(&self, doc: &str) -> bool {
+        self.held()
+            .index
+            .get(doc)
+            .and_then(|(_, ty)| lookup(ty))
+            .is_some_and(crate::schema::TypeSchema::derived)
     }
 
     /// Whether the resource `doc` exists.

@@ -197,43 +197,88 @@ pub fn index_entries(host: &Host) -> Vec<IndexEntry> {
                 .strip_prefix("tl:")
                 .and_then(|rest| rest.split_once(':'))
                 .map(|(app, _)| app.to_owned())?;
-            let action = open_of.get(&app).cloned();
-            // The texts besides the title, each found by its weight: short metadata first
-            // (a sender, a subject), then long prose (a body), so the index keeps a bounded
-            // number of fields ([`IndexEntry::bounded`]) with the metadata that ranks highest.
-            let mut fields: Vec<(String, IndexWeight)> = hit
-                .texts
-                .iter()
-                .skip(1)
-                .filter(|text| text.chars().count() <= SHORT_TEXT)
-                .map(|text| (text.clone(), IndexWeight::Metadata))
-                .collect();
-            fields.extend(
-                hit.texts
-                    .iter()
-                    .skip(1)
-                    .filter(|text| text.chars().count() > SHORT_TEXT)
-                    .map(|text| (text.clone(), IndexWeight::Body)),
-            );
-            let entry = IndexEntry {
-                key: hit.resource.clone(),
-                resource: hit.resource.clone(),
-                action: action.map(|address| IndexAction {
-                    resource: address.resource.clone(),
-                    action: address.action,
-                }),
-                title: hit.title.clone(),
-                subtitle: Some(hit.type_name.clone()),
-                group: Some(hit.app_title.clone()),
-                icon: None,
-                boost: 0,
-                fields,
-                secret: false,
-                references: hit.references.clone(),
-            };
-            entry.bounded()
+            entry(
+                &hit.resource,
+                open_of.get(&app),
+                &hit.title,
+                &hit.type_name,
+                &hit.app_title,
+                &hit.texts,
+                &hit.references,
+            )
         })
         .collect()
+}
+
+/// The entry the session's persistent search index keeps of the resource at `path` of the
+/// package `meta`, read now: none when it holds no text, or when it is gone. What an instance
+/// publishes for the resources a change reached, instead of reading the workspace again.
+#[must_use]
+pub fn index_entry_at(host: &Host, meta: &Meta, path: &str) -> Option<IndexEntry> {
+    let snapshot = host.store().snapshot();
+    let _schemas = snapshot.scoped();
+    let reader: &crate::store::Snapshot = &snapshot;
+    let held = snapshot.view(&meta.app)?.texts_at(path).ok()??;
+    let texts: Vec<String> = held
+        .texts
+        .into_iter()
+        .filter_map(|text| reader.said(&held.path, text))
+        .collect();
+    let resource = resource_id(&meta.app, &held.path);
+    let open = tilo_actions::ActionAddress::new(package_resource_id(&meta.app), OPEN_ACTION);
+    entry(
+        &resource,
+        Some(&open),
+        texts.first()?,
+        &held.schema.name,
+        &meta.title,
+        &texts,
+        &held.references,
+    )
+}
+
+/// The index's entry of the resource `resource` with `texts`: short metadata first (a sender, a
+/// subject), then long prose (a body), so the index keeps a bounded number of fields
+/// ([`IndexEntry::bounded`]) with the metadata that ranks highest.
+fn entry(
+    resource: &str,
+    open: Option<&tilo_actions::ActionAddress>,
+    title: &str,
+    type_name: &str,
+    app_title: &str,
+    texts: &[String],
+    references: &[String],
+) -> Option<IndexEntry> {
+    let mut fields: Vec<(String, IndexWeight)> = texts
+        .iter()
+        .skip(1)
+        .filter(|text| text.chars().count() <= SHORT_TEXT)
+        .map(|text| (text.clone(), IndexWeight::Metadata))
+        .collect();
+    fields.extend(
+        texts
+            .iter()
+            .skip(1)
+            .filter(|text| text.chars().count() > SHORT_TEXT)
+            .map(|text| (text.clone(), IndexWeight::Body)),
+    );
+    let entry = IndexEntry {
+        key: resource.to_owned(),
+        resource: resource.to_owned(),
+        action: open.map(|address| IndexAction {
+            resource: address.resource.clone(),
+            action: address.action.clone(),
+        }),
+        title: title.to_owned(),
+        subtitle: Some(type_name.to_owned()),
+        group: Some(app_title.to_owned()),
+        icon: None,
+        boost: 0,
+        fields,
+        secret: false,
+        references: references.to_vec(),
+    };
+    entry.bounded()
 }
 
 /// The longest text an entry keeps as a short field: a name, a subject, a sender.

@@ -1054,7 +1054,7 @@ fn a_checked_task_keeps_its_row_until_the_place_is_left() {
     assert_eq!(now, place, "in the place it stood");
     assert!(drawn, "its box drawn checked");
     // Typing the next task into the entry is not leaving the place: the row stays.
-    view.set_lens("draft", Value::text("Buy bread"));
+    view.set_view_state("draft", Value::text("Buy bread"));
     let rows = home_list_rows(&mut view);
     assert_eq!(rows.len(), 3, "typing settles nothing: {rows:?}");
     // Pressing the box again opens it where it is.
@@ -2724,6 +2724,43 @@ fn a_place_whose_tasks_are_all_done_says_so() {
         home_list_rows(&mut view).len(),
         3,
         "and what is done with folds under it"
+    );
+}
+
+/// A place that holds nothing says it holds nothing: nothing there waits, but nothing there is
+/// done with either, so it is not that all of it is.
+#[test]
+fn a_place_that_holds_nothing_says_so_rather_than_all_done() {
+    let (mut ada, root) = workspace();
+    // Due today, so the place of what nobody sorted does not hold it.
+    let task = call(&ada, "new_task", create(&root, "Buy oat milk"));
+    call(
+        &ada,
+        "schedule",
+        vec![task, Value::some(Value::text("2026-10-29"))],
+    );
+    ada.commit();
+    let mut view = ada.view(APP);
+    let said: Vec<String> = all(view.tree(), "ui.EmptyState")
+        .into_iter()
+        .filter_map(|node| match node.props.get("title") {
+            Some(Value::Text(title)) => Some(title.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        said.iter().any(|title| title == "No tasks here"),
+        "the place says it holds nothing: {said:?}"
+    );
+    assert!(
+        !said
+            .iter()
+            .any(|title| title == "All done" || title == "tilolang-all-done"),
+        "and not that everything is done: {said:?}"
+    );
+    assert!(
+        home_list_rows(&mut view).is_empty(),
+        "a place that holds nothing draws no list"
     );
 }
 

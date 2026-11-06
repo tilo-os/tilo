@@ -31,7 +31,29 @@ fn name_of(n: Note) -> Text {
 
 /// The notebook's window: its notes, each opening in a window of its own.
 view notebook(nb: Notebook) {
-    std.list(nb, nb.notes, empty: "No notes yet")
+    ui.NavShell(
+        content_kind: .document,
+        overview_title: .some(meta(Notebook).title),
+        overview_count: .some(nb.notes.len()),
+    ) {
+        overview: {
+            if nb.notes.is_empty() {
+                ui.EmptyState("No notes yet", icon: meta(Note).icon)
+            } else {
+                std.list(nb.notes) { (n, at) ->
+                    ui.ListItem(item: n, presence: at) {
+                        note_row(n)
+                    }
+                }
+            }
+        }
+        content: {
+            ui.EmptyState(
+                phrase("tilolang-none-selected", kind: meta(Note).noun),
+                icon: meta(Note).icon,
+            )
+        }
+    }
 }
 
 /// One note in a list: its title, and the start of its body.

@@ -96,7 +96,6 @@ pub struct ForList {
 pub enum FuncKind {
     Fn,
     Action,
-    Flow,
     View,
     Block,
     /// An action's requirements its subject alone decides: it answers the first reason the
@@ -109,7 +108,7 @@ pub enum FuncKind {
     Applies,
 }
 
-/// An action or flow that code can apply: `app` and `id` name it for the host.
+/// An action that code can apply: `app` and `id` name it for the host.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ActionRef {
     pub app: String,
@@ -127,7 +126,6 @@ pub struct ActionRef {
 pub struct Facts {
     pub mutates: bool,
     pub outside: bool,
-    pub inline_actions: BTreeSet<usize>,
     pub invokes: BTreeSet<ActionRef>,
     pub action_values: BTreeSet<ActionRef>,
     pub views: BTreeSet<usize>,

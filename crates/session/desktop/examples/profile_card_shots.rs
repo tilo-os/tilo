@@ -34,11 +34,13 @@ fn ada() -> ProfileModel {
             tilo_desktop::here::PersonDevice {
                 id: "ada-device".to_owned(),
                 label: "Framework 16".to_owned(),
+                this: false,
                 availability: ui::Availability::Available,
             },
             tilo_desktop::here::PersonDevice {
                 id: "ada-laptop".to_owned(),
                 label: "ThinkPad".to_owned(),
+                this: false,
                 availability: ui::Availability::Focusing,
             },
         ],

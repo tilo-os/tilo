@@ -11,9 +11,8 @@ use crate::resolve::{CKind, Callable, TypeInfo};
 use crate::types::Ty;
 
 impl Checker<'_> {
-    /// Lowers the `window` and `lens` declarations at the top of a view body: each reads its
-    /// slot, or its default while the slot is empty, into a local of its name. Returns the rest
-    /// of the body.
+    /// Lowers the `state` declarations at the top of a view body: each reads its slot, or its
+    /// default while the slot is empty, into a local of its name. Returns the rest of the body.
     pub(super) fn view_state(&mut self, view: &str, body: &[UiStmt]) -> Vec<UiStmt> {
         let mut rest = Vec::new();
         for s in body {
@@ -35,8 +34,7 @@ impl Checker<'_> {
                 None => self.zero_of(&info.ty, d.name.span),
             };
             // The slot's value, or the default while it is empty; scalars travel boxed.
-            let layer = Ex::new(Ek::I32(info.layer.code()), Ty::Bool);
-            let args = vec![layer, Ex::str(&info.id), Self::handle_of(fallback)];
+            let args = vec![Ex::str(&info.id), Self::handle_of(fallback)];
             let value = if info.ty.is_scalar() {
                 let boxed = Ty::Option(Box::new(info.ty.clone()));
                 Self::unwrap_opt(Ex::host(Imp::StateGet, args, boxed), &info.ty)
@@ -48,7 +46,6 @@ impl Checker<'_> {
             self.st.states.insert(
                 info.name.clone(),
                 StateRef {
-                    layer: info.layer,
                     id: info.id.clone(),
                     ty: info.ty.clone(),
                     local,
@@ -243,8 +240,7 @@ impl Checker<'_> {
                         "E066",
                         d.span,
                         format!(
-                            "declare `{} {}` at the top of the view's body, not inside a block",
-                            d.layer.word(),
+                            "declare `state {}` at the top of the view's body, not inside a block",
                             d.name.name
                         ),
                     );
@@ -986,10 +982,9 @@ impl Checker<'_> {
                 self.err("E062", value.span, format!("this binds view state of type {names}; `{n}` is {t}; change it with `on: set({n}, value)`"));
                 return None;
             }
-            let layer = Ex::new(Ek::I32(state.layer.code()), Ty::Bool);
             self.emit(Stmt::Eval(Ex::host(
                 Imp::UiBindState,
-                vec![node.clone(), layer, Ex::str(&state.id)],
+                vec![node.clone(), Ex::str(&state.id)],
                 Ty::Unit,
             )));
             return Some(state.ty);
@@ -1002,7 +997,7 @@ impl Checker<'_> {
                 "E108",
                 value.span,
                 format!(
-                    "a composer's text is one person's until they send it, and `{}` is shared by everyone looking, so two people typing here overwrite each other; declare `lens {field}: Text` in the view, write `bind: {field}`, and pass it to the action: `send(c, {field}).then(set({field}, \"\"))`",
+                    "a composer's text is one person's until they send it, and `{}` is shared by everyone looking, so two people typing here overwrite each other; declare `state {field}: Text` in the view, write `bind: {field}`, and pass it to the action: `send(c, {field}).then(set({field}, \"\"))`",
                     crate::print::expr_source(value)
                 ),
             );
@@ -1012,7 +1007,7 @@ impl Checker<'_> {
             self.err(
                 "E062",
                 value.span,
-                "`bind:` takes a field of a resource, such as `bind: item.done`, or a `window` or `lens` declaration of the view",
+                "`bind:` takes a field of a resource, such as `bind: item.done`, or a `state` declaration of the view",
             );
             let _ = self.expr(value, None);
             return None;

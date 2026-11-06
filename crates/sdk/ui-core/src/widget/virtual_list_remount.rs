@@ -24,7 +24,7 @@ impl<M: ListModel> VirtualList<M> {
     /// glide mounts a few rows every few frames rather than one row every
     /// frame. A jump mounts only what it shows.
     pub(super) fn mount_window(&self) -> Range<usize> {
-        let near = self.viewport.visible_range();
+        let near = self.rows_to_hold();
         let mounted = self.mounted_range.clone();
         if self.mounted_covers(&near) {
             let count = self.model.len();

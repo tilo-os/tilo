@@ -20,7 +20,7 @@ root Note
 default view main for Note
 
 view main(n: Note) {
-  lens open: Bool = false
+  state open: Bool = false
   page { input(bind: n.title, placeholder: "Title") }
 }
 "#;
@@ -84,8 +84,8 @@ fn a_removed_case_restarts() {
 
 #[test]
 fn view_state_whose_type_changed_restarts() {
-    let v2 = V1.replace("lens open: Bool = false", "lens open: Int = 0");
-    assert!(reason(V1, &v2).contains("`open` changed from lens Bool to lens Int"));
+    let v2 = V1.replace("state open: Bool = false", "state open: Int = 0");
+    assert!(reason(V1, &v2).contains("`open` changed from Bool to Int"));
 }
 
 #[test]

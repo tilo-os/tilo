@@ -125,6 +125,28 @@ jobs:
           bash tools/ci/publish/oci-build.sh "$dir/context" "$dir/context/Containerfile" "$dir" --build-arg "SOURCE_REVISION=$revision"
           bash os/containers/tilo-lounge/test-image.sh "$dir/image.oci.tar"
 
+      - name: Install a browser for the integration test
+        # The gate opens the built web entry in a real headless Chromium and
+        # mints the certificate its own site is served with.
+        run: |
+          set -euo pipefail
+          missing=()
+          for package in chromium openssl; do
+            rpm -q "$package" >/dev/null || missing+=("$package")
+          done
+          if ((${#missing[@]})); then
+            dnf install -y --setopt=install_weak_deps=False "${missing[@]}"
+          fi
+          command -v chromium-browser >/dev/null && echo "CHROME=$(command -v chromium-browser)" >> "$GITHUB_ENV"
+
+      - name: Run the Lounge with people in it
+        # The gate before publishing: the image the deployment runs starts on
+        # a fresh volume and on the previous release's state, lists itself in
+        # its directory, and hosts two people's browsers in the shared desk —
+        # chat, windows and presence — with the same programs and entry the
+        # deployment uses.
+        run: bash os/containers/tilo-lounge/test-integration.sh "$OUT/lounge/image.oci.tar" "$OUT/web-desktop/bundle"
+
       - name: Publish
         env:
           REGISTRY_USER: ${{ github.actor }}

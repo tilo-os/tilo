@@ -1,5 +1,5 @@
-//! Flows: an Ask suspends the run, resolving replays it from the journal, and the journaled
-//! results are not executed again.
+//! Runs: an action that calls another action journals the call, an Ask suspends the run,
+//! resolving replays it from the journal, and the journaled calls are not executed again.
 
 #[cfg(test)]
 #[path = "common/mod.rs"]
@@ -11,7 +11,9 @@ mod cases {
     use std::rc::Rc;
 
     use super::common::*;
-    use tilolang_runtime::{FlowOutcome, ModelHost, Resolution, Runtime, Store, Value};
+    use tilolang_runtime::{
+        InvokeOutcome, ModelHost, Pending, Resolution, RunOutcome, Runtime, Store, Value,
+    };
 
     fn incs(w: &World, c: &tilolang_runtime::ResourceRef) -> usize {
         w.rt.history(&c.doc)
@@ -29,14 +31,19 @@ mod cases {
         (w, c)
     }
 
+    fn run(w: &World, action: &str, args: Vec<Value>) -> InvokeOutcome {
+        w.rt.invoke_action(&w.me, (action.to_owned(), args))
+            .unwrap()
+    }
+
     #[test]
-    fn a_flow_invoking_its_own_modules_actions_runs_straight_through() {
+    fn an_action_calling_its_own_modules_actions_runs_them_as_changes_of_their_own() {
         let w = World::new();
         let c = w.counter();
-        let out =
-            w.rt.run_flow(&w.me, "twice", vec![Value::resource(&c)])
-                .unwrap();
-        assert_eq!(out, FlowOutcome::Done(Value::Int(2)));
+        assert_eq!(
+            run(&w, "twice", vec![Value::resource(&c)]),
+            InvokeOutcome::Done(Value::Int(2))
+        );
         assert_eq!(incs(&w, &c), 2);
     }
 
@@ -45,13 +52,14 @@ mod cases {
         let (w, c) = world();
         let args = vec![Value::resource(&c)];
 
-        let FlowOutcome::Suspended(first) = w.rt.run_flow(&w.me, "ask", args).unwrap() else {
-            panic!("the first foreign invoke must ask");
+        let got = run(&w, "ask", args);
+        let InvokeOutcome::Suggested(first) = got else {
+            panic!("the first foreign invoke must ask: {got:?}");
         };
         assert_eq!(first.action, "inc");
         assert_eq!(incs(&w, &c), 0);
 
-        let FlowOutcome::Suspended(second) =
+        let RunOutcome::Suspended(second) =
             w.rt.resolve(&first.run, &w.me, Resolution::Approve)
                 .unwrap()
         else {
@@ -64,53 +72,43 @@ mod cases {
             "the replay answered the first invoke from the journal instead of running it again"
         );
 
-        let out =
-            w.rt.resolve(&second.run, &w.me, Resolution::Approve)
-                .unwrap();
-        assert_eq!(out, FlowOutcome::Done(Value::Int(2)));
+        let out = w.rt.resolve(&second.run, &w.me, Resolution::Approve).unwrap();
+        assert_eq!(out, RunOutcome::Done(Value::Int(2)));
         assert_eq!(incs(&w, &c), 2);
     }
 
     #[test]
-    fn a_declined_step_is_journaled_and_the_flow_goes_on() {
+    fn a_declined_step_is_journaled_and_the_run_goes_on() {
         let (w, c) = world();
-        let FlowOutcome::Suspended(first) =
-            w.rt.run_flow(&w.me, "ask", vec![Value::resource(&c)])
-                .unwrap()
-        else {
+        let InvokeOutcome::Suggested(first) = run(&w, "ask", vec![Value::resource(&c)]) else {
             panic!("expected a suggestion");
         };
-        let FlowOutcome::Suspended(second) =
+        let RunOutcome::Suspended(second) =
             w.rt.resolve(&first.run, &w.me, Resolution::Decline)
                 .unwrap()
         else {
-            panic!("the flow continues to its second invoke");
+            panic!("the run continues to its second invoke");
         };
-        let out =
-            w.rt.resolve(&second.run, &w.me, Resolution::Approve)
-                .unwrap();
-        assert_eq!(out, FlowOutcome::Done(Value::Int(1)));
+        let out = w.rt.resolve(&second.run, &w.me, Resolution::Approve).unwrap();
+        assert_eq!(out, RunOutcome::Done(Value::Int(1)));
         assert_eq!(incs(&w, &c), 1);
     }
 
     #[test]
-    fn trusting_the_author_lets_the_flow_run_without_asking() {
+    fn trusting_the_author_lets_the_run_without_asking() {
         let (w, c) = world();
         let stranger = Runtime::module_hash(&stranger_wasm());
         w.auth.trust(&stranger);
-        let out =
-            w.rt.run_flow(&w.me, "ask", vec![Value::resource(&c)])
-                .unwrap();
-        assert_eq!(out, FlowOutcome::Done(Value::Int(2)));
+        assert_eq!(
+            run(&w, "ask", vec![Value::resource(&c)]),
+            InvokeOutcome::Done(Value::Int(2))
+        );
     }
 
     #[test]
     fn a_suspended_run_survives_a_restart() {
         let (w, c) = world();
-        let FlowOutcome::Suspended(first) =
-            w.rt.run_flow(&w.me, "ask", vec![Value::resource(&c)])
-                .unwrap()
-        else {
+        let InvokeOutcome::Suggested(first) = run(&w, "ask", vec![Value::resource(&c)]) else {
             panic!("expected a suggestion");
         };
         let store = w.store.clone();
@@ -124,13 +122,13 @@ mod cases {
             ],
         );
         let me = me();
-        let FlowOutcome::Suspended(second) =
+        let RunOutcome::Suspended(second) =
             rt.resolve(&first.run, &me, Resolution::Approve).unwrap()
         else {
             panic!("expected the second suggestion");
         };
         let out = rt.resolve(&second.run, &me, Resolution::Approve).unwrap();
-        assert_eq!(out, FlowOutcome::Done(Value::Int(2)));
+        assert_eq!(out, RunOutcome::Done(Value::Int(2)));
     }
 
     struct CountingModel(Rc<Cell<u32>>);
@@ -150,31 +148,31 @@ mod cases {
         let (w, c) = world();
         let calls = Rc::new(Cell::new(0));
         w.rt.set_model_host(CountingModel(Rc::clone(&calls)));
-        let FlowOutcome::Suspended(s) =
-            w.rt.run_flow(&w.me, "m", vec![Value::resource(&c)])
-                .unwrap()
-        else {
+        let InvokeOutcome::Suggested(s) = run(&w, "m", vec![Value::resource(&c)]) else {
             panic!("expected a suggestion");
         };
         assert_eq!(calls.get(), 1);
         let out = w.rt.resolve(&s.run, &w.me, Resolution::Approve).unwrap();
-        assert_eq!(out, FlowOutcome::Done(Value::text("classify:hello")));
+        assert_eq!(
+            out,
+            RunOutcome::Done(Value::text("classify:hello"))
+        );
         assert_eq!(calls.get(), 1, "the replay used the journaled answer");
     }
 
     #[test]
     fn the_journal_is_persisted_through_the_store() {
         let (w, c) = world();
-        let FlowOutcome::Suspended(s) =
-            w.rt.run_flow(&w.me, "ask", vec![Value::resource(&c)])
-                .unwrap()
-        else {
+        let InvokeOutcome::Suggested(s) = run(&w, "ask", vec![Value::resource(&c)]) else {
             panic!("expected a suggestion");
         };
         let mut store = w.store;
         let journal = store.load_journal(&s.run).unwrap().unwrap();
-        assert_eq!(journal.flow.as_deref(), Some("ask"));
+        assert_eq!(journal.action.as_deref(), Some("ask"));
         assert!(journal.entries.is_empty());
-        assert_eq!(journal.pending.unwrap().action, "inc");
+        let Pending::Ask(pending) = journal.pending.unwrap() else {
+            panic!("the run waits for a person");
+        };
+        assert_eq!(pending.action, "inc");
     }
 }

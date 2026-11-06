@@ -36,7 +36,8 @@ pub mod resource;
 pub mod surface;
 
 pub use link::{
-    Ask, Finished, Kept, Link, Recording, Refusal, Scene, Selection, Sent, Studio, Take,
+    Ask, Failed, Failure, Finished, Kept, Link, Recording, Refusal, Scene, Selection, Sent, Studio,
+    Take,
 };
 pub use resource::{Capture, CaptureEffect, CaptureStudioApp};
 pub use surface::StudioSurface;

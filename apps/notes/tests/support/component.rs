@@ -420,7 +420,11 @@ pub fn semantic_rect(driver: &ui::headless::FrameHarness, target: &str) -> vello
     }
     retained(&driver.inspection().root, target)
         .or_else(|| driver.targets().get(target).copied())
-        .unwrap()
+        .unwrap_or_else(|| {
+            let mut drawn: Vec<String> = driver.targets().into_keys().collect();
+            drawn.sort_unstable();
+            panic!("`{target}` is on screen; the frame draws {drawn:?}")
+        })
 }
 
 /// The actual component boundary with its admitted layout, for an unfinished

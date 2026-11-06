@@ -13,7 +13,7 @@ fn said_in(m: chat.Messages, id: Text) -> List<chat.Message> {
 }
 
 /// Opens a voice channel in the room: a call of Chat's own action.
-flow open_voice(w: chat.Workspace, name: Text) {
+action open_voice(w: chat.Workspace, name: Text) {
     chat.create_channel(w, name, .none, chat.ChannelKind.voice, "Talk")
 }
 

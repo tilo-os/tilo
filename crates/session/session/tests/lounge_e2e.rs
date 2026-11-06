@@ -63,7 +63,6 @@ const HEIGHT: i32 = 800;
 struct Room {
     child: Child,
     stdin: Option<ChildStdin>,
-    events: std::sync::mpsc::Receiver<OperatorEvent>,
     /// The plain listener the deployment's ingress forwards to.
     plain: String,
     /// The governed workspace's UUID.
@@ -179,7 +178,6 @@ impl Room {
         Self {
             child,
             stdin,
-            events,
             plain,
             workspace,
             owner,
@@ -195,7 +193,7 @@ impl Room {
         let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
         let key = ed25519_dalek::SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
         let cert = certified(&root, &key, label, DeviceCapabilities::member());
-        Member { root, key, cert }
+        Member { key, cert }
     }
 
     /// The room's person: the root it serves, and its own device.
@@ -207,11 +205,7 @@ impl Room {
             "The Lounge's own",
             DeviceCapabilities::member(),
         );
-        Member {
-            root: self.owner.clone(),
-            key,
-            cert,
-        }
+        Member { key, cert }
     }
 }
 
@@ -287,7 +281,6 @@ fn relay_on_path() -> std::ffi::OsString {
 
 /// A person in the room: their root, a device of theirs and its certificate.
 struct Member {
-    root: ed25519_dalek::SigningKey,
     key: ed25519_dalek::SigningKey,
     cert: DeviceCert,
 }
@@ -420,10 +413,13 @@ fn desktop_route(room: &Room) -> DocumentRoute {
     }
 }
 
+/// Strips laid out by hand: each one's id, its name, and its windows' ids and titles.
+type LaidOut<'a> = [(u64, &'a str, &'a [(u64, &'a str)]); 2];
+
 /// The desktop the member laid out: two strips, three windows, all theirs.
 fn the_members_desktop(member: &Member) -> SharedDesktop {
     let person = hex::encode(member.cert.user_public_key);
-    let strips: [(u64, &str, &[(u64, &str)]); 2] = [
+    let strips: LaidOut = [
         (0x41, "Talk", &[(0x42, "Chat"), (0x43, "Notes")]),
         (0x44, "Work", &[(0x45, "Sheets")]),
     ];
@@ -680,7 +676,9 @@ fn listing_row(session: &Session, key: &str) -> tilo_sheets::directory::Listing 
         .unwrap_or_else(|| {
             panic!(
                 "the sheet lists {key}: {:?}",
-                session.workspace_directory().map(|seat| seat.directory())
+                session
+                    .workspace_directory()
+                    .map(tilo_sheets::directory::DirectorySeat::directory)
             )
         })
 }
@@ -1069,7 +1067,9 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
     assert!(
         refused.is_some(),
         "the door refused the uninvited person: {:?}",
-        session.workspace_directory().map(|seat| seat.directory())
+        session
+            .workspace_directory()
+            .map(tilo_sheets::directory::DirectorySeat::directory)
     );
     wait_until(
         &mut session,

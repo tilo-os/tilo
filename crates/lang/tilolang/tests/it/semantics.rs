@@ -41,21 +41,6 @@ fn a_view_cannot_mutate() {
 }
 
 #[test]
-fn a_flow_cannot_mutate_fields_directly() {
-    let src = "type C {\n    n: Int\n}\nflow f(c: C) {\n    c.n = 1\n}";
-    assert_eq!(codes(src), vec!["E040"]);
-}
-
-#[test]
-fn an_action_cannot_call_a_foreign_action() {
-    let got = crate::common::codes_with(
-        "use so.tilo.todo as todo\naction a(l: todo.TodoList, t: todo.Todo) {\n    todo.remove(l, t)\n}",
-        &[todo_meta()],
-    );
-    assert_eq!(got, vec!["E041"]);
-}
-
-#[test]
 fn a_view_presses_a_foreign_action_on_a_resource_named_by_its_id() {
     let got = crate::common::codes_with(
         "use so.tilo.todo as todo\ntype S {\n    key: Text\n}\nview v(s: S) {\n    \
@@ -141,26 +126,37 @@ fn a_view_reaches_the_actions_its_buttons_apply() {
 }
 
 #[test]
-fn a_flow_reaches_foreign_actions_with_their_class() {
+fn an_action_reaches_foreign_actions_with_their_class() {
     let todo = todo_meta();
     let c = compile_with(
         &crate::common::fixture("cleanup.tl"),
         std::slice::from_ref(&todo),
     )
     .expect("compiles");
-    let flow = &c.meta.flows[0];
+    let action = &c.meta.actions[0];
     let remove = todo
         .actions
         .iter()
         .find(|a| a.name == "remove")
         .expect("remove");
-    assert_eq!(flow.reaches.len(), 1);
-    assert_eq!(flow.reaches[0].action, remove.id);
-    assert_eq!(flow.reaches[0].app, "so.tilo.todo");
-    assert!(!flow.reaches[0].own);
-    assert_eq!(flow.class, EffectClass::Undoable);
-    assert_eq!(flow.result.as_deref(), Some("Int"));
-    // The view applies the flow as an action; the flow is own.
+    assert_eq!(action.reaches.len(), 2);
+    let reached = action
+        .reaches
+        .iter()
+        .find(|r| r.action == remove.id)
+        .expect("the todo app's remove");
+    assert_eq!(reached.app, "so.tilo.todo");
+    assert!(!reached.own);
+    assert!(
+        action
+            .reaches
+            .iter()
+            .any(|r| r.name == "clear_done" && r.own),
+        "and itself"
+    );
+    assert_eq!(action.class, EffectClass::Undoable);
+    assert_eq!(action.result.as_deref(), Some("Int"));
+    // The view applies the action; the action is own.
     let view = &c.meta.views[0];
     assert!(view.reaches.iter().any(|r| r.name == "clear_done" && r.own));
 }
@@ -180,7 +176,7 @@ fn the_view_of_the_todo_app_reaches_its_actions() {
 fn own_and_foreign_types_keep_their_apps() {
     let todo = todo_meta();
     let c = compile_with(&crate::common::fixture("cleanup.tl"), &[todo]).expect("compiles");
-    let param = &c.meta.flows[0].params[0];
+    let param = &c.meta.actions[0].params[0];
     assert_eq!(param.ty, "so.tilo.todo.TodoList");
 }
 
@@ -268,14 +264,13 @@ fn if_and_blocks_are_expressions() {
     );
 }
 
-// USER REQUIREMENT (2026-10-20): "Flows: remove the `do` keyword; plain `act(args)` invokes."
-// and "`try act(args)` in flows returns `Result<T, Text>` (unit actions: `Result<(), Text>`)".
+// An action calls another by naming it, and `try` gives the call's `Result`.
 #[test]
-fn flows_invoke_by_calling_and_try_gives_a_result() {
-    let src = "type L {\n    n: Int merge counter\n}\naction bump(l: L) {\n    l.n += 1\n}\naction size(l: L) -> Int {\n    l.n\n}\nflow f(l: L) -> Text {\n    bump(l)\n    let r: Result<(), Text> = try bump(l)\n    let s: Result<Int, Text> = try size(l)\n    match s {\n        .ok(v) => \"{v}\",\n        .err(why) => match r {\n            .ok => why,\n            .err(e) => e,\n        },\n    }\n}";
+fn actions_invoke_by_calling_and_try_gives_a_result() {
+    let src = "type L {\n    n: Int merge counter\n}\naction bump(l: L) {\n    l.n += 1\n}\naction size(l: L) -> Int {\n    l.n\n}\naction f(l: L) -> Text {\n    bump(l)\n    let r: Result<(), Text> = try bump(l)\n    let s: Result<Int, Text> = try size(l)\n    match s {\n        .ok(v) => \"{v}\",\n        .err(why) => match r {\n            .ok => why,\n            .err(e) => e,\n        },\n    }\n}";
     assert!(codes(src).is_empty(), "{:?}", codes(src));
     assert_eq!(
-        codes("type L {\n    n: Int\n}\naction a(l: L) {\n}\nflow f(l: L) {\n    do a(l)\n}"),
+        codes("type L {\n    n: Int\n}\naction a(l: L) {\n}\naction f(l: L) {\n    do a(l)\n}"),
         vec!["E003"]
     );
 }
@@ -310,28 +305,22 @@ fn roots_and_default_views_are_in_the_metadata() {
 }
 
 // USER REQUIREMENT (2026-10-20): view state per workspace-model.md: "inside a view body,
-// `window name: T = default` (shared per window) and `lens name: T = default` (per person per
-// window) declarations, readable in the view; changed only via bindings (`bind: name`) or a
-// platform action reference `set(name, value)` usable in `on:`."
+// `state name: T = default` (per person per window) declarations, readable in the view;
+// changed only via bindings (`bind: name`) or a platform action reference
+// `set(name, value)` usable in `on:`."
 #[test]
 fn view_state_is_declared_read_bound_and_set() {
     let c = crate::common::compile_body(
-        "enum Order {\n    recent\n    title\n}\nview v() {\n    window order: Order = .recent\n    lens query: Text\n    lens open: Bool = false\n    stack {\n        input(bind: query)\n        checkbox(\"Open\", bind: open)\n        button(\"By title\", on: set(order, .title))\n        if order == .title {\n            text(query)\n        }\n    }\n}",
+        "enum Order {\n    recent\n    title\n}\nview v() {\n    state order: Order = .recent\n    state query: Text\n    state open: Bool = false\n    stack {\n        input(bind: query)\n        checkbox(\"Open\", bind: open)\n        button(\"By title\", on: set(order, .title))\n        if order == .title {\n            text(query)\n        }\n    }\n}",
     );
     crate::common::validate(&c.wasm);
     let state = &c.meta.views[0].state;
-    let names: Vec<(&str, &str)> = state
-        .iter()
-        .map(|s| (s.name.as_str(), s.layer.as_str()))
-        .collect();
-    assert_eq!(
-        names,
-        vec![("order", "window"), ("query", "lens"), ("open", "lens")]
-    );
+    let names: Vec<&str> = state.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["order", "query", "open"]);
     assert_eq!(state[0].ty, "enum Order");
     assert_eq!(
         codes(
-            "view v() {\n    window n: Int = 0\n    text(\"{n}\")\n}\nfn f() -> Int {\n    return n\n}"
+            "view v() {\n    state n: Int = 0\n    text(\"{n}\")\n}\nfn f() -> Int {\n    return n\n}"
         ),
         vec!["E014"],
         "view state is the view's own"
@@ -339,7 +328,7 @@ fn view_state_is_declared_read_bound_and_set() {
 }
 
 // A list's rows are a view of their own (`<view>~row<n>`), and a component called in a row that
-// declares `window`/`lens` state keeps it there: the host binds the state by the id the row's
+// declares `state` keeps it there: the host binds the state by the id the row's
 // body reads (`<row view id>:<component>.<state>`), so the row's view meta carries it.
 #[test]
 fn view_state_of_a_component_called_in_a_lists_row_is_the_rows() {
@@ -357,5 +346,4 @@ fn view_state_of_a_component_called_in_a_lists_row_is_the_rows() {
     let ids: Vec<&str> = row.state.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, vec![format!("{}:add_entry.typed", row.id)]);
     assert_eq!(row.state[0].name, "typed");
-    assert_eq!(row.state[0].layer, "lens");
 }

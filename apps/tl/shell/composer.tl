@@ -8,8 +8,8 @@
 /// each running task shows its state and what it is on, and opening one shows its log, where
 /// each step is the program it ran and Undo reverses the run whole.
 view composer(d: Desk) {
-    lens words: Text = ""
-    lens subject: Text = ""
+    state words: Text = ""
+    state subject: Text = ""
     let live = d.tasks.filter(t -> t.state != "done")
     let agents = d.agents.filter(a -> a.state != "done")
     ui.FloatingPanel {

@@ -572,6 +572,11 @@ impl Shared {
         // back with this device's own change in it and nothing is undone.
         let mut tree = self.handle.read(Clone::clone);
         self.desktops.capture(engine, self.sync.as_deref(), &tree);
+        // What the workspace did not take of this desk is on the desk the
+        // person used: they hear it once, naming the workspace and why.
+        if let Some(refusal) = self.desktops.take_refusal() {
+            crate::notices::tell_desk_not_taken(&self.notifications, &tree, refusal);
+        }
         let device = self
             .sync
             .as_ref()
@@ -662,6 +667,9 @@ impl Shared {
         let workspace = apps.workspace_named(&workspace_id.to_string());
         if let Err(error) = apps.start(&launch, &workspace) {
             tracing::warn!(%error, %app, "an app is not opened from the history");
+            // The change is still in the history, so the person reads it
+            // there: what they chose did not happen, and why.
+            self.answer_failed(&crate::i18n::t("action-failed-that-change"), &error);
         }
     }
 

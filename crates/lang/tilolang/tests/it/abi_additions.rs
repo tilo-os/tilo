@@ -97,7 +97,7 @@ view v(nb: Notebook) {\n    if let shown = first(nb.id()) {\n        text(meta(s
 
 #[test]
 fn try_reports_whether_an_invocation_worked() {
-    let src = "type L {\n    n: Int merge counter\n}\naction bump(l: L) {\n    l.n += 1\n}\naction size(l: L) -> Int {\n    return l.n\n}\nflow f(l: L) -> Int {\n    let ok = try bump(l)\n    let got = try size(l)\n    match ok {\n        .ok => match got {\n            .ok(n) => n,\n            .err(_) => 0,\n        },\n        .err(_) => -1,\n    }\n}";
+    let src = "type L {\n    n: Int merge counter\n}\naction bump(l: L) {\n    l.n += 1\n}\naction size(l: L) -> Int {\n    return l.n\n}\naction f(l: L) -> Int {\n    let ok = try bump(l)\n    let got = try size(l)\n    match ok {\n        .ok => match got {\n            .ok(n) => n,\n            .err(_) => 0,\n        },\n        .err(_) => -1,\n    }\n}";
     let c = compile(src);
     validate(&c.wasm);
     let has = |name: &str| c.wasm.windows(name.len()).any(|w| w == name.as_bytes());
@@ -105,7 +105,7 @@ fn try_reports_whether_an_invocation_worked() {
 }
 
 #[test]
-fn try_is_for_flows_and_action_calls() {
+fn try_is_an_actions_or_a_programs() {
     assert_eq!(
         codes(
             "type L {\n    n: Int\n}\naction a(l: L) {\n    l.n = 1\n}\nview v(l: L) {\n    let x = try a(l)\n    text(\"x\")\n}"
@@ -114,12 +114,12 @@ fn try_is_for_flows_and_action_calls() {
     );
     assert_eq!(
         codes(
-            "fn f() -> Int {\n    return 1\n}\nflow g() -> Int {\n    let x = try f()\n    return 1\n}"
+            "fn f() -> Int {\n    return 1\n}\naction g() -> Int {\n    let x = try f()\n    return 1\n}"
         ),
         vec!["E044"]
     );
     assert_eq!(
-        codes("flow g() -> Int {\n    let x = try 1\n    return 1\n}"),
+        codes("action g() -> Int {\n    let x = try 1\n    return 1\n}"),
         vec!["E044"]
     );
 }
@@ -136,7 +136,7 @@ fn another_packages_fn_is_called_where_it_is_written() {
         "app t.x \"X\"\nuse so.tilo.lib as lib\n\
 type T {\n    n: Int\n}\nroot T\ndefault view v for T\n\
 fn twice(x: Int) -> Int {\n    return lib.double(lib.double(x))\n}\n\
-flow sweep(t: T) -> Int {\n    let n = lib.double(3)\n    return n\n}\n\
+action sweep(t: T) -> Int {\n    let n = lib.double(3)\n    return n\n}\n\
 action bump(t: T) {\n    t.n = twice(2)\n    lib.ping()\n}\n\
 view v(t: T) {\n    text(\"{lib.double(t.n)}\")\n}",
         &[lib],

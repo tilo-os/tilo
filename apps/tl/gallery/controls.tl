@@ -58,7 +58,7 @@ default view controls for Controls
 
 /// The controls window: each kind in a section of its own page.
 view controls(c: Controls) {
-    lens last: Text = ""
+    state last: Text = ""
     std.page(c) {
         ui.Section("Boxes and switches") {
             ui.Checkbox(value: c.by_email, label: .some("Send by email"))

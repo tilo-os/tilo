@@ -4,6 +4,7 @@
 //! network. The live app starts empty. Every track carries a synthetic
 //! `yt_id`; the streaming path replaces these with real search results.
 
+use base64::Engine as _;
 use ui::tilo_resource::{Id, Invoke};
 
 use crate::model::{Album, Artist, CatalogueTrack, Library, Playlist, Track};
@@ -45,6 +46,96 @@ fn track(
         yt_id: format!("yt_{id}"),
         plays,
     }
+}
+
+/// A sample album's bundled cover, by its id, as the portable `data:` picture
+/// the window and the shell's now-playing card read: the sample library is
+/// catalog data with no artwork of its own, and a capture of it should show a
+/// song the way a real album does. Each cover is drawn from the album's id, so
+/// it is the same picture every run and no two albums share one.
+#[must_use]
+pub fn sample_cover(album_id: &str) -> String {
+    /// A tile the size of a cover thumbnail.
+    const EDGE: u32 = 256;
+    let seed = fnv1a(album_id);
+    let hue = f32::from(u16::try_from(seed % 360).unwrap_or(0));
+    let drift = 24.0 + f32::from(u16::try_from((seed >> 9) % 48).unwrap_or(0));
+    let (from, to) = (hsv(hue, 0.55, 0.86), hsv((hue + drift) % 360.0, 0.78, 0.38));
+    let mut pixels = Vec::with_capacity((EDGE * EDGE * 4) as usize);
+    let centre = (EDGE as f32) * 0.18;
+    let reach = (EDGE as f32) * 0.62;
+    for y in 0..EDGE {
+        for x in 0..EDGE {
+            let (fx, fy) = (x as f32 / EDGE as f32, y as f32 / EDGE as f32);
+            // A diagonal wash between the two colours, lit from the top left.
+            let t = ((fx + fy) * 0.5).clamp(0.0, 1.0);
+            // One soft disc where the light falls, so the tile reads as art
+            // rather than a swatch.
+            let glow = (((x as f32 - centre).powi(2) + (y as f32 - centre).powi(2)).sqrt() / reach)
+                .clamp(0.0, 1.0);
+            let light = (1.0 - glow).powi(3) * 0.35;
+            let mix = |a: f32, b: f32| {
+                let lerp = a + (b - a) * t;
+                lerp + (1.0 - lerp) * light
+            };
+            pixels.extend_from_slice(&[
+                to_srgb(mix(from[0], to[0])),
+                to_srgb(mix(from[1], to[1])),
+                to_srgb(mix(from[2], to[2])),
+                255,
+            ]);
+        }
+    }
+    let Some(cover) = image::RgbaImage::from_raw(EDGE, EDGE, pixels) else {
+        return String::new();
+    };
+    let mut png = Vec::new();
+    if image::DynamicImage::ImageRgba8(cover)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .is_err()
+    {
+        return String::new();
+    }
+    format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    )
+}
+
+/// A number from `text`, stable across runs and processes.
+fn fnv1a(text: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// `hue` degrees, `saturation` and `value` from 0 to 1, as linear RGB.
+fn hsv(hue: f32, saturation: f32, value: f32) -> [f32; 3] {
+    let channel = |n: f32| {
+        let k = (n + hue / 60.0) % 6.0;
+        value - value * saturation * k.min(4.0 - k).clamp(0.0, 1.0)
+    };
+    [channel(5.0), channel(3.0), channel(1.0)]
+}
+
+/// A linear channel as the 8-bit sRGB value a picture carries.
+fn to_srgb(channel: f32) -> u8 {
+    let channel = channel.clamp(0.0, 1.0);
+    let gamma = if channel <= 0.003_130_8 {
+        12.92 * channel
+    } else {
+        1.055 * channel.powf(1.0 / 2.4) - 0.055
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a clamped channel in 0..=1 times 255 is a byte"
+    )]
+    let byte = (gamma * 255.0).round() as u8;
+    byte
 }
 
 /// Build the full seeded library: catalog + playlists + user-authored state.

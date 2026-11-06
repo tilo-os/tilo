@@ -172,6 +172,8 @@ icons! {
     EthernetPort => "ethernet-port",
     Mic => "mic",
     MicOff => "mic-off",
+    /// A song's lyrics: lines in a frame. Lucide `captions`.
+    Captions => "captions",
     SkipForward => "skip-forward",
     SkipBack => "skip-back",
     // --- On-screen-keyboard set (action keys) ---
@@ -259,6 +261,8 @@ icons! {
     Repeat => "repeat",
     Repeat1 => "repeat-1",
     Heart => "heart",
+    /// The same heart, solid: a song the person liked.
+    HeartFilled => "heart-filled",
     ListMusic => "list-music",
     Speaker => "speaker",
     Headphones => "headphones",
@@ -1520,9 +1524,16 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M21 13v1a4 4 0 0 1-4 4H3"),
             path_from_d("M11 10h1v4"),
         ],
-        Icon::Heart => vec![path_from_d(
+        Icon::Heart | Icon::HeartFilled => vec![path_from_d(
             "M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5",
         )],
+        Icon::Captions => vec![
+            rect_path(3.0, 5.0, 18.0, 14.0, 2.0),
+            path_from_d("M7 15h4"),
+            path_from_d("M15 15h2"),
+            path_from_d("M7 11h2"),
+            path_from_d("M13 11h4"),
+        ],
         Icon::ListMusic => vec![
             path_from_d("M16 5H3"),
             path_from_d("M11 12H3"),
@@ -2823,6 +2834,8 @@ mod tests {
             (Icon::Repeat, 4),
             (Icon::Repeat1, 5),
             (Icon::Heart, 1),
+            (Icon::HeartFilled, 1),
+            (Icon::Captions, 5),
             (Icon::ListMusic, 5),
             (Icon::Speaker, 4),
             (Icon::Headphones, 1),

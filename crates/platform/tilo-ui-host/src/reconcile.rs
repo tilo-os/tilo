@@ -607,22 +607,26 @@ impl Reconciler {
             .clone()
     }
 
-    /// Show `number` in the control `key`.
-    pub fn set_count(&self, key: &str, number: i64) {
+    /// Show `number` in the control `key`, reporting whether that changed what it shows.
+    pub fn set_count(&self, key: &str, number: i64) -> bool {
         if let Some(state) = self.counts.get(key)
             && state.get() != number
         {
             state.set(number);
+            return true;
         }
+        false
     }
 
-    /// Show `number` in the control `key`.
-    pub fn set_number(&self, key: &str, number: f64) {
+    /// Show `number` in the control `key`, reporting whether that changed what it shows.
+    pub fn set_number(&self, key: &str, number: f64) -> bool {
         if let Some(state) = self.numbers.get(key)
             && state.get().total_cmp(&number).is_ne()
         {
             state.set(number);
+            return true;
         }
+        false
     }
 
     /// The rich text the rich input `key` shows, kept in step with what it is bound to.
@@ -638,13 +642,15 @@ impl Reconciler {
             .clone()
     }
 
-    /// Show `rich` in the rich input `key`.
-    pub fn set_rich(&self, key: &str, rich: &tilo_render_protocol::patch::rich::RichText) {
+    /// Show `rich` in the rich input `key`, reporting whether that changed what it shows.
+    pub fn set_rich(&self, key: &str, rich: &tilo_render_protocol::patch::rich::RichText) -> bool {
         if let Some(state) = self.riches.get(key)
             && state.with(|shown| shown != rich)
         {
             state.set(rich.clone());
+            return true;
         }
+        false
     }
 
     /// The handle on the split of the view that collapses to one pane at a time, when it has one.
@@ -658,22 +664,27 @@ impl Reconciler {
         self.navigation = None;
     }
 
-    /// Show `text` in the input or text node `key`, whatever widget shows it.
-    pub fn set_text(&self, key: &str, text: &str) {
+    /// Show `text` in the input or text node `key`, whatever widget shows it, reporting whether
+    /// that changed what it shows.
+    pub fn set_text(&self, key: &str, text: &str) -> bool {
         if let Some(state) = self.texts.get(key)
             && state.with(|shown| shown != text)
         {
             state.set(text.to_owned());
+            return true;
         }
+        false
     }
 
-    /// Show `checked` in the checkbox `key`.
-    pub fn set_flag(&self, key: &str, checked: bool) {
+    /// Show `checked` in the checkbox `key`, reporting whether that changed what it shows.
+    pub fn set_flag(&self, key: &str, checked: bool) -> bool {
         if let Some(state) = self.flags.get(key)
             && state.get() != checked
         {
             state.set(checked);
+            return true;
         }
+        false
     }
 
     /// The widgets of the tree under `node`.

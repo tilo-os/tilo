@@ -16,6 +16,7 @@ use tilo_desktop::overlays::{Anchor, Slot};
 use tilo_sheets::power::PowerEffect;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 
+use crate::i18n::{t, t_args};
 use crate::keys::Invocation;
 use crate::{
     AppLists, Magnify, SessionAction, SessionCommand, Shared, identity, mount, people,
@@ -38,6 +39,24 @@ impl Shared {
         for ask in asked {
             match ask {
                 people::PeopleAsk::Message { key } => self.message_person(&key),
+                people::PeopleAsk::Rename(name) => self.name_self(&name),
+                people::PeopleAsk::Status(status) => self.set_own_status(&status),
+                people::PeopleAsk::Availability(chosen) => {
+                    let Some(sync) = &self.sync else {
+                        continue;
+                    };
+                    let mut own = sync.own();
+                    own.availability = chosen;
+                    sync.set_own(own);
+                }
+                people::PeopleAsk::Colour(id) => {
+                    if let Err(error) = settings_store::identity::COLOUR.set(Some(id)) {
+                        tracing::warn!(%error, "could not keep the chosen colour");
+                    }
+                }
+                people::PeopleAsk::Settings(link) => {
+                    crate::quick_settings::open_settings(self, &link);
+                }
             }
         }
         let asks = std::mem::take(&mut *self.asks.borrow_mut());
@@ -63,6 +82,11 @@ impl Shared {
                 }
                 DesktopAsk::Intent(ChromeIntent::ShowPerson(person)) => {
                     self.people.borrow().show_person(&person);
+                }
+                // This person's own avatar in the bar: their own card, the
+                // same card as anyone else's, where the roster stands.
+                DesktopAsk::Intent(ChromeIntent::ToggleProfile) => {
+                    self.people.borrow().show_self();
                 }
                 // Pulling an activity out of the bar's pill: its card is
                 // the floating layer's to draw.
@@ -123,11 +147,21 @@ impl Shared {
                 .unwrap_or_default()
         });
         for choice in choices {
-            self.search.perform(&workspace, choice, &mut |own| {
+            let carried = self.search.perform(&workspace, choice.clone(), &mut |own| {
                 self.doors
                     .invoke(&own.address, &own.arguments, look)
                     .map(drop)
             });
+            if let Err(error) = carried {
+                // The row the person chose did not happen: search opens
+                // again where it stood, saying why on that row. A row whose
+                // search is gone has nothing to answer on, and says it as a
+                // notice.
+                let why = why_in_words(&error);
+                if !self.handle.answer_search(&choice, why) {
+                    self.answer_failed(&t("action-failed-that-row"), &error);
+                }
+            }
         }
         // What the session's own actions asked of it.
         self.follow_asks(look);
@@ -142,6 +176,47 @@ impl Shared {
         self.invoke_app_action(LaunchpadAppAction::message_person(key));
     }
 
+    /// Name this person, as their own card asked: their active identity
+    /// record takes the name, so their own desktop and everyone they work
+    /// with say it from now on, and this workspace's presence says it here
+    /// at once. Says so when the record could not keep it.
+    fn name_self(&self, name: &str) {
+        use tilo_desktop_surface::notifications::{Notification, NotificationSeverity};
+
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        match identity::rename_to(name) {
+            Ok(()) => {
+                if let Some(sync) = &self.sync {
+                    let mut own = sync.own();
+                    name.clone_into(&mut own.label);
+                    sync.set_own(own);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not keep the person's name");
+                self.notices.post(
+                    Notification::new(crate::i18n::t("profile-name-not-saved"), error)
+                        .with_severity(NotificationSeverity::Error),
+                );
+            }
+        }
+    }
+
+    /// What this person says they are doing, in their own words, beside
+    /// their face here: clearing the words stops saying it.
+    fn set_own_status(&self, status: &str) {
+        let Some(sync) = &self.sync else {
+            return;
+        };
+        let mut own = sync.own();
+        let status = status.trim();
+        own.status = (!status.is_empty()).then(|| status.to_owned());
+        sync.set_own(own);
+    }
+
     /// Do what an app action names, in the workspace in front (where the
     /// person sees what the action works on): the app starts when it is
     /// closed and its action arrives ready to act. A launchpad card and a
@@ -151,7 +226,9 @@ impl Shared {
             tree.active_workspace()
                 .map(|workspace| workspace.id().to_string())
         }) else {
-            tracing::warn!(app = %action.display_name, "an app action reached no workspace");
+            // There is no workspace for the app to act in: the person hears it
+            // from the card they pressed, which has nothing else to say it on.
+            self.answer_failed(&action.display_name, &t("action-failed-no-workspace"));
             return;
         };
         let target = tilo_desktop_search::Target::Invoke(Box::new(
@@ -162,7 +239,7 @@ impl Shared {
                 action.action,
             ),
         ));
-        self.search.perform(&workspace, target, &mut |own| {
+        let carried = self.search.perform(&workspace, target, &mut |own| {
             self.doors
                 .invoke(
                     &own.address,
@@ -171,6 +248,26 @@ impl Shared {
                 )
                 .map(drop)
         });
+        if let Err(error) = carried {
+            self.answer_failed(&action.display_name, &error);
+        }
+    }
+
+    /// Something a person chose that the session could not carry out, and the
+    /// card or link it came from is gone: the person hears it as a notice,
+    /// naming what they asked for and why it did not happen.
+    pub(crate) fn answer_failed(&self, asked: &str, why: &impl std::fmt::Display) {
+        let notice = crate::notices::Notice {
+            app: t("action-failed-app"),
+            urgency: 1,
+            title: t_args("action-failed-title", &[("what", asked.into())]),
+            body: t_args("action-failed-body", &[("reason", why.to_string().into())]),
+            actions: Vec::new(),
+            expires_after: None,
+            machine_wide: true,
+            sound: None,
+        };
+        self.notifications.borrow().tell(notice);
     }
 
     /// What the pointer asked of Alt+Tab's panel: hovering a card reaches it,
@@ -272,7 +369,6 @@ impl Shared {
     /// ([`crate::certification::host_action`]); an ask that went — answered
     /// elsewhere, or expired — is taken back from them.
     pub(crate) fn follow_device_asks(&self) {
-        use tilo_desktop_surface::i18n::{t, t_args};
         use tilo_desktop_surface::notifications::{
             Addressed, Notification, NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS,
         };
@@ -295,11 +391,14 @@ impl Shared {
             let found = if asking.via.is_empty() {
                 String::new()
             } else {
-                t_args("pairing-asks-via", &[("device", asking.via.clone().into())])
+                tilo_desktop_surface::i18n::t_args(
+                    "pairing-asks-via",
+                    &[("device", asking.via.clone().into())],
+                )
             };
             let secs_ago = tilo_clock::unix_now_ms().saturating_sub(asking.asked_at_ms) / 1000;
             let when = ui::format::relative(i64::try_from(secs_ago).unwrap_or(i64::MAX));
-            let body = t_args(
+            let body = tilo_desktop_surface::i18n::t_args(
                 "pairing-asks-body",
                 &[
                     ("device", asking.label.clone().into()),
@@ -308,15 +407,22 @@ impl Shared {
                     ("code", asking.code.clone().into()),
                 ],
             );
-            let mut notice = Notification::new(t("pairing-asks-title"), body);
+            let mut notice =
+                Notification::new(tilo_desktop_surface::i18n::t("pairing-asks-title"), body);
             notice.actions = vec![
                 (
                     answer(asking.digest, true),
-                    t_args("pairing-approve", &[("code", asking.code.clone().into())]),
+                    tilo_desktop_surface::i18n::t_args(
+                        "pairing-approve",
+                        &[("code", asking.code.clone().into())],
+                    ),
                 ),
-                (answer(asking.digest, false), t("pairing-decline")),
+                (
+                    answer(asking.digest, false),
+                    tilo_desktop_surface::i18n::t("pairing-decline"),
+                ),
             ];
-            notice.app_name = Some(t("host-action-source-devices"));
+            notice.app_name = Some(tilo_desktop_surface::i18n::t("host-action-source-devices"));
             notice.icon_kind = NotificationIconKind::Permission;
             notice.severity = NotificationSeverity::Info;
             notice.addressed = Some(Addressed::Ask);
@@ -633,5 +739,17 @@ impl Shared {
                 tracing::debug!(?action, "a fixed shortcut of the desk's found no window");
             }
         }
+    }
+}
+
+/// Why a row the person chose did not happen, in words they read: the
+/// session's own missing app host says what it means, rather than naming its
+/// code on the row.
+fn why_in_words(error: &tilo_actions::DoorError) -> String {
+    match error {
+        tilo_actions::DoorError::Unavailable { code, .. } if code == "action_host_unavailable" => {
+            tilo_desktop_surface::i18n::t("answer-why-cannot-start")
+        }
+        other => other.to_string(),
     }
 }

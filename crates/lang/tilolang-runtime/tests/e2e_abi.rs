@@ -7,7 +7,7 @@ mod common;
 #[cfg(test)]
 mod cases {
     use super::common::*;
-    use tilolang_runtime::{AmStore, FlowOutcome, ResourceRef, Runtime, Value};
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = "app so.tilo.gaps \"Gaps\"\n\
 type Item {\n    title: Text\n    rank: Int\n}\n\
@@ -20,9 +20,9 @@ action drop_count(b: Bag, k: Text) {\n    b.counts.remove(k)\n}\n\
 action add_item(b: Bag, title: Text, rank: Int) {\n    b.items.insert(Item(title: title, rank: rank))\n}\n\
 action bump(b: Bag) {\n    b.n += 1\n}\n\
 action size(b: Bag) -> Int {\n    return b.n\n}\n\
-flow bump_flag(b: Bag) -> Int {\n    let ok = try bump(b)\n    match ok {\n        .ok => 1,\n        .err(_) => 0,\n    }\n}\n\
-flow size_or(b: Bag) -> Int {\n    match try size(b) {\n        .ok(n) => n,\n        .err(_) => -1,\n    }\n}\n\
-flow why(b: Bag) -> Text {\n    match try bump(b) {\n        .ok => \"fine\",\n        .err(reason) => reason,\n    }\n}\n\
+action bump_flag(b: Bag) -> Int {\n    let ok = try bump(b)\n    match ok {\n        .ok => 1,\n        .err(_) => 0,\n    }\n}\n\
+action size_or(b: Bag) -> Int {\n    match try size(b) {\n        .ok(n) => n,\n        .err(_) => -1,\n    }\n}\n\
+action why(b: Bag) -> Text {\n    match try bump(b) {\n        .ok => \"fine\",\n        .err(reason) => reason,\n    }\n}\n\
 view scores(b: Bag) {\n    stack {\n        for k in b.scores.keys() {\n            text(k)\n        }\n        let score = match b.scores.get(\"x\") {\n            .some(v) => v,\n            .none => 0.5,\n        }\n        let count = match b.counts.get(\"y\") {\n            .some(v) => v,\n            .none => -1,\n        }\n        text(\"{score}\")\n        text(\"{count}\")\n    }\n}\n\
 view by_title(b: Bag) {\n    stack {\n        for i in b.items.sort_by(t -> t.title) {\n            text(i.title)\n        }\n    }\n}\n\
 view by_rank(b: Bag) {\n    stack {\n        for i in b.items.sort_by(t -> t.rank) {\n            text(i.title)\n        }\n    }\n}\n\
@@ -66,12 +66,11 @@ view nums(b: Bag) {\n    stack {\n        for x in b.nums {\n            text(\"
                 .collect()
         }
 
-        fn flow(&self, name: &str) -> FlowOutcome {
+        fn run(&self, name: &str) -> InvokeOutcome {
             self.rt
-                .run_flow(
+                .invoke_action(
                     &me(),
-                    &self.app.flow(name),
-                    vec![Value::resource(&self.bag)],
+                    (self.app.action(name), vec![Value::resource(&self.bag)]),
                 )
                 .unwrap()
         }
@@ -128,22 +127,22 @@ view nums(b: Bag) {\n    stack {\n        for x in b.nums {\n            text(\"
         assert_eq!(titles(g.texts("by_rank")), ["fig", "pear", "apple"]);
     }
 
-    // USER REQUIREMENT (2026-10-20): "`try act(args)` in flows returns `Result<T, Text>` (unit
-    // actions: `Result<(), Text>`)."
+    // USER REQUIREMENT (2026-10-20): "`try act(args)` returns `Result<T, Text>` (unit actions:
+    // `Result<(), Text>`)." An action calls another the same way.
     #[test]
-    fn try_gives_a_flow_the_result_or_the_reason_it_failed() {
+    fn try_gives_an_action_the_result_or_the_reason_it_failed() {
         let g = gaps();
-        assert_eq!(g.flow("bump_flag"), FlowOutcome::Done(Value::Int(1)));
-        assert_eq!(g.flow("size_or"), FlowOutcome::Done(Value::Int(1)));
-        assert_eq!(g.flow("why"), FlowOutcome::Done(Value::text("fine")));
+        assert_eq!(g.run("bump_flag"), InvokeOutcome::Done(Value::Int(1)));
+        assert_eq!(g.run("size_or"), InvokeOutcome::Done(Value::Int(1)));
+        assert_eq!(g.run("why"), InvokeOutcome::Done(Value::text("fine")));
 
         g.auth.deny_action(&g.app.action("bump"));
         g.auth.deny_action(&g.app.action("size"));
-        assert_eq!(g.flow("bump_flag"), FlowOutcome::Done(Value::Int(0)));
-        assert_eq!(g.flow("size_or"), FlowOutcome::Done(Value::Int(-1)));
+        assert_eq!(g.run("bump_flag"), InvokeOutcome::Done(Value::Int(0)));
+        assert_eq!(g.run("size_or"), InvokeOutcome::Done(Value::Int(-1)));
         assert_eq!(
-            g.flow("why"),
-            FlowOutcome::Done(Value::text("denied by authority"))
+            g.run("why"),
+            InvokeOutcome::Done(Value::text("denied by authority"))
         );
         let c = g.rt.read(&g.bag, "n").unwrap();
         assert_eq!(c, Value::Int(2), "the denied bumps never ran");

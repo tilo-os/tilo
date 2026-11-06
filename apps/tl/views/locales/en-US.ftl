@@ -77,6 +77,9 @@ d-w2bt45l7 = Show this type with it
 d-fwot2jcg = Add to my views
     .doc = Adds the view a message sent to the person's own.
 
+d-ozj4btqo = Send
+    .doc = Sends a view to a channel: anyone there can add it to their own views.
+
 d-e2bdc4ge = Keep~present
 
 d-5c22cpkr = Make default~present
@@ -84,6 +87,7 @@ d-5c22cpkr = Make default~present
 d-tyfdfuwh = Add~present
 
 d-2dc3zfxw = Views list
+    .w-no-views-yet = No views yet
 
 d-unwqgbdt = View row
 

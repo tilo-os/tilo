@@ -6,7 +6,7 @@
 
 use std::rc::Rc;
 
-use tilolang_runtime::flow::WebRequest;
+use tilolang_runtime::run::WebRequest;
 use tilolang_runtime::web::WebReply;
 
 use crate::background::Waker;

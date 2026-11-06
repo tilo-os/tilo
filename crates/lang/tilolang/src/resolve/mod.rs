@@ -412,22 +412,6 @@ impl Env {
                 present,
             );
         }
-        for f in &meta.flows {
-            let present = Presentation {
-                label: action_label(&f.name, &f.doc),
-                ..Presentation::default()
-            };
-            add(
-                CKind::Flow,
-                &f.name,
-                &f.id,
-                params(&f.params),
-                result(&f.result),
-                Some(f.class),
-                effects::declared(&f.uses),
-                present,
-            );
-        }
         for v in meta.offered_views() {
             add(
                 CKind::View,
@@ -542,18 +526,6 @@ fn view_root_component(body: &[ast::UiStmt]) -> Option<String> {
             Some(name.name.clone())
         }
         _ => None,
-    }
-}
-
-fn mentions_principal(ty: &Ty) -> bool {
-    match ty {
-        Ty::Principal => true,
-        Ty::List(t) | Ty::Set(t) | Ty::Map(t) | Ty::Collection(t) | Ty::Option(t) => {
-            mentions_principal(t)
-        }
-        Ty::Result(a, b) => mentions_principal(a) || mentions_principal(b),
-        Ty::Tuple(ts) => ts.iter().any(mentions_principal),
-        _ => false,
     }
 }
 
@@ -1834,7 +1806,6 @@ impl Resolver<'_> {
             }
             let (kind, name, params, result) = match item {
                 Item::Action(a) => (CKind::Action, &a.name, &a.params, a.result.as_ref()),
-                Item::Flow(f) => (CKind::Flow, &f.name, &f.params, f.result.as_ref()),
                 Item::View(v) => (CKind::View, &v.name, &v.params, None),
                 Item::Fn(f) => (CKind::Fn, &f.name, &f.params, Some(&f.result)),
                 Item::Use(_)
@@ -1877,7 +1848,7 @@ impl Resolver<'_> {
                     "E011",
                     name.span,
                     format!(
-                        "`{}` is declared twice; actions, flows, views and fns share one namespace",
+                        "`{}` is declared twice; actions, views and fns share one namespace",
                         name.name
                     ),
                 );
@@ -1901,12 +1872,6 @@ impl Resolver<'_> {
                     }
                 }
             }
-            // An action may take a person to act on (`share(n, with: Principal)`, `assign(t,
-            // to: Principal)`): its form asks for one of the workspace's members. Who acts is
-            // always `invoker`. A flow runs on its own and takes none.
-            if kind == CKind::Flow && params.iter().any(|p| mentions_principal(&p.ty)) {
-                self.err("E048", name.span, format!("{} `{}` takes a Principal parameter; a flow runs on its own, and a caller could pass anyone. Read `invoker` inside the actions it runs instead", kind.word(), name.name));
-            }
             let result = match (kind, result) {
                 (CKind::View, _) => Ty::View,
                 (_, Some(t)) => self.resolve_type(t, false),
@@ -1927,10 +1892,6 @@ impl Resolver<'_> {
                     }
                     p
                 }
-                Item::Flow(f) => Presentation {
-                    label: action_label(&f.name.name, &f.doc.join("\n")),
-                    ..Presentation::default()
-                },
                 _ => Presentation::default(),
             };
             let uses = self.uses_of(item);
@@ -2006,7 +1967,7 @@ impl Resolver<'_> {
     }
 
     /// A view of the module expanded where it is called: its name taken, its body checked at
-    /// each call, its `window` and `lens` declarations made the view's own state.
+    /// each call, its `state` declarations made the view's own state.
     fn template(&mut self, v: &ast::ViewDecl) {
         if self.env.own_callable(&v.name.name).is_some()
             || self.env.template(None, &v.name.name).is_some()
@@ -2015,7 +1976,7 @@ impl Resolver<'_> {
                 "E011",
                 v.name.span,
                 format!(
-                    "`{}` is declared twice; actions, flows, views and fns share one namespace",
+                    "`{}` is declared twice; actions, views and fns share one namespace",
                     v.name.name
                 ),
             );
@@ -2285,7 +2246,7 @@ impl Resolver<'_> {
         })
     }
 
-    /// The `window` and `lens` declarations at the top of a view body.
+    /// The `state` declarations at the top of a view body.
     fn states(&mut self, v: &ast::ViewDecl, lock: &IdsLock) {
         for s in &v.body {
             let ast::UiKind::State(d) = &s.kind else {
@@ -2312,7 +2273,6 @@ impl Resolver<'_> {
                 view: v.name.name.clone(),
                 name: d.name.name.clone(),
                 id: id_of(lock, &format!("{}.{}", v.name.name, d.name.name)),
-                layer: d.layer,
                 ty,
             });
         }

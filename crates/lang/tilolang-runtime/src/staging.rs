@@ -1,4 +1,4 @@
-//! The value a window state starts from when a run stages one, before any person picks there:
+//! The value a view state starts from when a run stages one, before any person picks there:
 //! what `layout-check --state place=Task.today` sets, read in the app's own terms.
 
 use crate::meta::Meta;

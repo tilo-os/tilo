@@ -14,10 +14,10 @@ use super::Mount;
 
 impl Mount {
     /// Where this person is on the desktop, for the workspace's presence:
-    /// `{focus, place, layout}`, the record of the focused window (the
-    /// desktop's own record where no window is focused or it has none yet),
-    /// the strip shown and where its windows are
-    /// ([`layout_value`]). `None` for a single application.
+    /// `{focus, place, layout}`, the focused window named by its app and the
+    /// short digest of its record (the desktop's own record where no window
+    /// is focused or it has none yet), the strip shown and where its windows
+    /// are ([`layout_value`]). `None` for a single application.
     pub(super) fn live_place_value(&self) -> Option<serde_json::Value> {
         let desktop = self.desktop.as_ref()?;
         let shown = desktop.handle.shown_tabs();
@@ -46,11 +46,22 @@ impl Mount {
             )
         });
         Some(serde_json::json!({
-            "focus": {"app": app, "record": record},
+            "focus": named(app, record),
             "place": place.map(|strip| strip.0.to_string()),
             "layout": layout,
         }))
     }
+}
+
+/// `{app, record}` naming one window the way the rest of the presence does:
+/// the app and the 16-hex [`LiveRecord::short_digest`] of its record, never
+/// the record id, so that a receiver matches it against what it holds and
+/// learns nothing more than the app of a window on something not shared with
+/// it.
+fn named(app: String, record: String) -> serde_json::Value {
+    let named = LiveRecord { app, record };
+    let short = hex::encode(named.short_digest());
+    serde_json::json!({"app": named.app, "record": short})
 }
 
 /// The layout's JSON as the page's presence carries it: `{size: [w, h],
@@ -85,4 +96,24 @@ pub(super) fn layout_value(
             "focused": window.focused,
         })).collect::<Vec<_>>(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The focused window is named the way the rest of the presence and every
+    /// receiver's match against its own records reads it: the app and the
+    /// 16-hex short digest of the record, never the record id.
+    #[test]
+    fn a_focused_window_is_named_by_its_short_digest() {
+        let value = named("so.tilo.notes".into(), "a record id".into());
+        let record = LiveRecord {
+            app: "so.tilo.notes".into(),
+            record: "a record id".into(),
+        };
+        assert_eq!(value["app"], "so.tilo.notes");
+        assert_eq!(value["record"], hex::encode(record.short_digest()));
+        assert_eq!(value["record"].as_str().map(str::len), Some(16));
+    }
 }

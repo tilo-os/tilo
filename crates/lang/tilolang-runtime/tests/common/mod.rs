@@ -188,7 +188,7 @@ fn fill(v: &mut Json) {
     for (key, default) in [("title", json!("")), ("module_hash", json!(""))] {
         obj.entry(key).or_insert(default);
     }
-    for list in ["types", "actions", "views", "flows", "fns"] {
+    for list in ["types", "actions", "views", "fns"] {
         obj.entry(list).or_insert(json!([]));
     }
     for t in obj["types"].as_array_mut().unwrap() {
@@ -209,11 +209,7 @@ fn fill(v: &mut Json) {
             f["doc"] = f.get("doc").cloned().unwrap_or_else(|| json!(""));
         }
     }
-    for (list, class) in [
-        ("actions", None),
-        ("views", None),
-        ("flows", Some("undoable")),
-    ] {
+    for list in ["actions", "views"] {
         for item in obj[list].as_array_mut().unwrap() {
             for (k, d) in [
                 ("doc", json!("")),
@@ -230,9 +226,6 @@ fn fill(v: &mut Json) {
             }
             if list == "views" {
                 item["anchors"] = item.get("anchors").cloned().unwrap_or_else(|| json!([]));
-            }
-            if let Some(c) = class {
-                item["class"] = item.get("class").cloned().unwrap_or_else(|| json!(c));
             }
         }
     }
@@ -261,8 +254,8 @@ pub fn counter_view(export: &str) -> String {
     )
 }
 
-/// A flow that invokes `inc` twice on its counter and returns the counter's value.
-pub fn twice_flow(export: &str) -> String {
+/// An action that invokes `inc` twice on its counter and returns the counter's value.
+pub fn twice_action(export: &str) -> String {
     format!(
         r#"(func (export "{export}") (param $c i32) (result i64)
   (local $args i32) (local $a i32)
@@ -275,7 +268,7 @@ pub fn twice_flow(export: &str) -> String {
     )
 }
 
-/// The literals the counter views and flows use.
+/// The literals the counter views and actions use.
 pub fn counter_lits(w: Wat) -> Wat {
     w.lit("fv", "fv")
         .lit("inc", "inc")
@@ -314,7 +307,7 @@ pub fn counter_wasm() -> Vec<u8> {
   (call $tl_res_add_i (local.get $c) (call $L_fv) (i64.const 1))
   (call $tl_ui_node (call $L_column) (call $L_kcol)))"#,
         )
-        .func(&twice_flow("f_twice"))
+        .func(&twice_action("a_twice"))
         .func(
             r#"(func (export "v_vspace") (param $c i32) (result i32) (local $n i32)
   (local.set $n (call $tl_ui_node (call $L_column) (call $L_kcol)))
@@ -336,19 +329,19 @@ pub fn counter_meta() -> Meta {
         "app": "so.tilo.counter", "title": "Counter",
         "types": [{"id": "tc", "name": "Counter", "doc": "A counter.",
                    "fields": [{"id": "fv", "name": "value", "type": "Int", "merge": "counter"}]}],
+        "views": [
+            {"id": "vc", "name": "counter", "params": c, "anchors": [{"id": "p", "name": "plus"}]},
+            {"id": "vmut", "name": "mutating", "params": c},
+            {"id": "vspace", "name": "spacey", "params": c},
+        ],
         "actions": [
             {"id": "inc", "name": "increment", "doc": "Add one to the counter.", "class": "undoable", "params": c},
             action("bad", "bad", "undoable", &c),
             action("spin", "spin", "undoable", &c),
             action("grow", "grow", "undoable", &c),
             action("forge", "forge", "undoable", &c),
+            {"id": "twice", "name": "twice", "doc": "", "class": "undoable", "params": c, "result": "Int"},
         ],
-        "views": [
-            {"id": "vc", "name": "counter", "params": c, "anchors": [{"id": "p", "name": "plus"}]},
-            {"id": "vmut", "name": "mutating", "params": c},
-            {"id": "vspace", "name": "spacey", "params": c},
-        ],
-        "flows": [{"id": "twice", "name": "twice", "params": c, "result": "Int"}],
     }))
 }
 
@@ -530,16 +523,16 @@ pub fn item(rt: &Runtime, list: &tilolang_runtime::ResourceRef, label: &str) -> 
         .unwrap_or_else(|| panic!("no item {label}"))
 }
 
-/// A module by someone else: a view whose button invokes the counter app's `inc`, and flows
+/// A module by someone else: a view whose button invokes the counter app's `inc`, and actions
 /// that invoke it, one of which calls a model first.
 pub fn stranger_wasm() -> Vec<u8> {
     counter_lits(Wat::new())
         .lit("kind", "classify")
         .lit("input", "hello")
         .func(&counter_view("v_vs"))
-        .func(&twice_flow("f_ask"))
+        .func(&twice_action("a_ask"))
         .func(
-            r#"(func (export "f_m") (param $c i32) (result i32)
+            r#"(func (export "a_m") (param $c i32) (result i32)
   (local $m i32) (local $args i32)
   (local.set $m (call $tl_model_call (call $L_kind) (call $L_input)))
   (local.set $args (call $tl_list_new))
@@ -555,9 +548,9 @@ pub fn stranger_meta() -> Meta {
     meta(json!({
         "app": "x.stranger",
         "views": [{"id": "vs", "name": "strange", "params": c}],
-        "flows": [
-            {"id": "ask", "name": "ask", "params": c, "result": "Int"},
-            {"id": "m", "name": "m", "params": c, "result": "Text"},
+        "actions": [
+            {"id": "ask", "name": "ask", "doc": "", "class": "undoable", "params": c, "result": "Int"},
+            {"id": "m", "name": "m", "doc": "", "class": "undoable", "params": c, "result": "Text"},
         ],
     }))
 }
@@ -630,11 +623,6 @@ impl App {
     pub fn view(&self, name: &str) -> String {
         let v = self.meta().views.iter().find(|v| v.name == name);
         v.unwrap_or_else(|| panic!("no view {name}")).id.clone()
-    }
-
-    pub fn flow(&self, name: &str) -> String {
-        let f = self.meta().flows.iter().find(|f| f.name == name);
-        f.unwrap_or_else(|| panic!("no flow {name}")).id.clone()
     }
 
     pub fn anchor(&self, view: &str, name: &str) -> String {

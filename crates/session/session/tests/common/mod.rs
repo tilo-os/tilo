@@ -426,7 +426,7 @@ pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
     let book = service
         .resources()
         .into_iter()
-        .find(|resource| resource.kind == format!("tl.{NOTES}.Notes"))
+        .find(|resource| resource.kind == format!("tl.{NOTES}.Notebook"))
         .unwrap();
     let mut made = Vec::new();
     for title in titles {

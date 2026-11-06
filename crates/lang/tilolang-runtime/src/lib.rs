@@ -4,7 +4,7 @@
 //!
 //! * [`engine`]: compiles and runs wasm; the only module that names wasmi (or wasmtime).
 //! * [`handles`] and [`abi`]: the handle table and the `"tl"` import table.
-//! * `core` and its `host_*`/`exec` parts: every import, the action transaction, the flow
+//! * `core` and its `host_*`/`exec` parts: every import, the action transaction, the run
 //!   journal and the view run.
 //! * [`store`] and [`amstore`]: where resources live, and the Automerge reference store.
 //! * [`authority`]: who may invoke what.
@@ -26,7 +26,6 @@ pub mod engine;
 mod entry;
 pub mod error;
 mod exec;
-pub mod flow;
 pub mod foreign;
 pub mod handles;
 mod host_res;
@@ -54,6 +53,7 @@ mod recurrence;
 pub mod registry;
 mod render;
 pub mod rich;
+pub mod run;
 pub mod runtime;
 pub mod rust_views;
 pub mod seen;
@@ -82,12 +82,13 @@ pub use engine::{
 };
 pub use error::RuntimeError;
 pub use exec::InvokeOutcome;
-pub use flow::{FlowOutcome, Journal, JournalEntry, Resolution, Suggestion};
 pub use ids::{ModuleHash, PackageId, Principal};
 pub use live::LiveStats;
+pub use marks::DOC_VERSIONS;
 pub use meta::Meta;
 pub use project::ProjectOptions;
 pub use render::ViewTarget;
+pub use run::{Journal, JournalEntry, Pending, Resolution, RunOutcome, Suggestion};
 pub use runtime::{BlockOutput, MemorySink, Reading, Runtime, SettleReport};
 pub use settle::{AgentBlock, InvocationRecord};
 pub use space::Space;
@@ -98,6 +99,6 @@ pub use store::{
 pub use value::{ActionRef, CollRef, EnumValue, RefValue, ResourceRef, Value};
 pub use view::{BindTarget, Binding, Patch, UiNode};
 pub use view_instance::{EditOutcome, UndoAsk, ViewEvent, ViewInstance};
-pub use view_state::{StateKey, StateLayer};
+pub use view_state::StateKey;
 pub use words::{SourceWords, Words};
 pub use written::WrittenViewInfo;

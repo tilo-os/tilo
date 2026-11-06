@@ -35,7 +35,7 @@ fn bounded(n: Int) -> Int { return n.clamp(0, 10) }\n\
 fn size(n: Int) -> Int { return n.abs() }\n\
 fn as_float(n: Int) -> Float { return n.to_float() }\n\
 fn int_text(n: Int) -> Text { return n.to_text() }\n\
-fn flowest(a: Float, b: Float) -> Float { return a.min(b) }\n\
+fn least(a: Float, b: Float) -> Float { return a.min(b) }\n\
 fn fhighest(a: Float, b: Float) -> Float { return a.max(b) }\n\
 fn fbounded(f: Float) -> Float { return f.clamp(0.0, 1.0) }\n\
 fn fsize(f: Float) -> Float { return f.abs() }\n\

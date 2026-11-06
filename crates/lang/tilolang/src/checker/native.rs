@@ -284,7 +284,7 @@ impl Checker<'_> {
         };
         let Some((name, state)) = name.and_then(|n| Some((n, self.state_named(n)?))) else {
             let known = self.state_names();
-            self.err("E097", value.span, format!("`{what}:` takes the name of a `window` or `lens` declaration of this view whose type is an enum, such as `{what}: order`; this view declares: {known}"));
+            self.err("E097", value.span, format!("`{what}:` takes the name of a `state` declaration of this view whose type is an enum, such as `{what}: order`; this view declares: {known}"));
             return None;
         };
         let info = match &state.ty {
@@ -899,7 +899,7 @@ impl Checker<'_> {
                 Some("bind") => {
                     bound = true;
                     if matches!(value.kind, ExprKind::Field { .. }) {
-                        self.err("E098", value.span, "choose a field's value with an action; `choice` binds view state, a `window` or `lens` declaration of an enum type");
+                        self.err("E098", value.span, "choose a field's value with an action; `choice` binds view state, a `state` declaration of an enum type");
                     } else if let Some((state, info)) = self.enum_state("bind", value) {
                         self.state_control(n, ("", "pick."), &state, &info, value.span);
                     }
@@ -934,7 +934,7 @@ impl Checker<'_> {
         n
     }
 
-    /// The declared action or flow a button's first argument applies, when it applies one.
+    /// The declared action a button's first argument applies, when it applies one.
     fn declared_action(&self, args: &[ast::Arg]) -> Option<Callable> {
         let first = args
             .iter()
@@ -952,7 +952,7 @@ impl Checker<'_> {
             }
             _ => None,
         }?;
-        matches!(found.kind, CKind::Action | CKind::Flow).then(|| found.clone())
+        matches!(found.kind, CKind::Action).then(|| found.clone())
     }
 
     /// What a button for the application `applied` (`pin(m)`, `move_to(b, card, other)`) shows

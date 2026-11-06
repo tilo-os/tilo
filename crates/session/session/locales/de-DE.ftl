@@ -107,6 +107,44 @@ agent-bindings-unreadable-body = Dieser Rechner konnte nicht lesen, welchen Agen
 refused-write-app = Änderungen
 refused-write-title = { $device } nimmt deine Änderung nicht an
 refused-write-body = Deine Änderung bleibt auf den Geräten, die sie angenommen haben: { $reason }.
+
+## Warum ein Gerät oder ein Arbeitsbereich eine Änderung nicht angenommen hat,
+## als Fortsetzung des Satzes davor.
+refusal-reason-revoked = dem Gerät wurde der Zugang entzogen
+refusal-reason-expired = die Bescheinigung des Geräts ist abgelaufen
+refusal-reason-not-certified = das Gerät gehört nicht dazu
+refusal-reason-forbidden = das darf es nicht ändern
+refusal-reason-malformed = die Änderung war nicht lesbar
+refusal-reason-waiting = sie wartet auf frühere Änderungen
+refusal-reason-conflict = eine andere Änderung hält ihren Platz
+refusal-reason-full = dort ist kein Platz mehr
+refusal-reason-other = der Grund ist nicht bekannt
+
+# Was eine Person am geteilten Schreibtisch eines Arbeitsbereichs geändert hat,
+# ist dort nicht angekommen: die Änderung bleibt auf diesem Gerät.
+desk-not-shared-app = Geteilter Schreibtisch
+desk-not-shared-title = { $workspace } hat deine Fensteranordnung nicht übernommen
+desk-not-shared-body = Sie bleibt auf diesem Gerät: { $reason }.
+
+# Das Gerät einer mitarbeitenden Person spricht eine andere Tilo-Protokollversion:
+# die beiden arbeiten wieder zusammen, sobald eines von ihnen aktualisiert.
+version-mismatch-updating-title = Tilo wird aktualisiert, um mit { $device } weiterzuarbeiten
+version-mismatch-updating-body = { $device } hat ein neueres Tilo. Dieser Rechner holt das neueste System und startet darauf neu, wenn niemand arbeitet.
+version-mismatch-needs-update-title = { $device } muss aktualisieren, um weiter zusammenzuarbeiten
+version-mismatch-needs-update-body = { $device } hat ein älteres Tilo als dieser Rechner. Aktualisiere Tilo dort, dann arbeiten beide wieder zusammen.
+
+# Was jemand in der Suche, auf einer Karte oder in einer Mitteilung gewählt
+# hat, ist nicht geschehen, und die Zeile ist fort: die Mitteilung sagt, was
+# gefragt war und warum es nicht geschah.
+action-failed-app = Tilo
+action-failed-title = { $what } konnte nicht ausgeführt werden
+action-failed-body = { $reason }
+action-failed-that-row = Diese Suchzeile
+action-failed-that-notification = Was diese Mitteilung öffnet
+action-failed-that-app = Diese App
+action-failed-no-workspace = Diese Sitzung hat keinen Workspace geöffnet
+action-failed-that-settings = Einstellungen
+action-failed-that-change = Diese Änderung
 downloaded-apps-app-name = Heruntergeladene Apps
 downloaded-apps-unreadable-title = Deine heruntergeladenen Apps ließen sich nicht lesen
 downloaded-apps-unreadable-body = Dieser Rechner konnte die Liste der Programme, die du zu deinen Apps hinzugefügt hast, nicht lesen, deshalb werden sie jetzt nicht aufgelistet. Nichts wurde entfernt: sie sind weiterhin auf diesem Computer.
@@ -311,3 +349,9 @@ window-move-bringing-edits = Das Fenster kommt mit dem zurück, was nach dem Ver
 ## A reminder a workspace holds for the person, shown by the session itself.
 reminder-open = Öffnen
 reminder-late = Verspätet
+
+## The person's own card in the top bar: what it offers about who they are.
+profile-action-identities = Deine Identitäten
+profile-action-backup = Deine Identität sichern
+profile-action-pair-device = Ein weiteres Gerät koppeln
+profile-name-not-saved = Dein Name wurde nicht gespeichert

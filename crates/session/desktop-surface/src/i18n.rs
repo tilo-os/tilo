@@ -64,15 +64,39 @@ mod tests {
         assert_eq!(t("workspace-menu-new-strip"), "New strip");
     }
 
-    /// A window whose app crashed says so in words, naming the app twice:
-    /// what stopped, and what to open again.
+    /// A window whose app stopped says so in words, naming the app, and says
+    /// why without blaming the person for it.
     #[test]
-    fn a_crashed_app_is_named_in_plain_words() {
-        let notice = t_args("browser-app-crashed", &[("app", "Canvas".into())]);
+    fn a_stopped_app_is_named_in_plain_words() {
         assert_eq!(
-            notice,
-            "Canvas stopped working, so it was closed to keep the rest of the desktop running. \
-             Close this window, or open Canvas again."
+            crate::outcome::Closed::Crashed
+                .outcome("Canvas", t("answer-reopen"))
+                .detail(),
+            "Canvas stopped working. It ended unexpectedly."
+        );
+        assert_eq!(
+            crate::outcome::Closed::Memory
+                .outcome("Canvas", t("answer-reopen"))
+                .detail(),
+            "Canvas was closed to free memory"
+        );
+        assert_eq!(
+            crate::outcome::Closed::Runaway
+                .outcome("Canvas", t("answer-reopen"))
+                .detail(),
+            "Canvas was using too much memory. It was closed so the rest keeps running."
+        );
+        assert_eq!(
+            t_args("answer-app-not-opened", &[("app", "Notes".into())]),
+            "Notes could not open"
+        );
+        assert_eq!(
+            t_args("answer-app-stopped", &[("app", "Notes".into())]),
+            "Notes stopped working"
+        );
+        assert_eq!(
+            t("answer-why-not-opened"),
+            "It was stopped before a window appeared."
         );
     }
 

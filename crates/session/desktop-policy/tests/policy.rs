@@ -633,10 +633,85 @@ fn a_launch_that_opens_no_window_takes_its_held_tab_back() {
 }
 
 #[test]
-fn a_crashed_app_leaves_a_notice_that_asks_for_it_again() {
+fn an_app_that_did_not_start_says_why_in_its_tab_and_tries_again() {
+    let (mut driver, mut policy) = mount();
+    let launch = ChromeEffect::OpenApp {
+        app: "so.tilo.notes".into(),
+        beside: None,
+        background: None,
+    };
+    policy.handle().dispatch(launch).unwrap();
+    settle(&mut driver);
+    let tab = policy.take_launches()[0].tab.expect("a held tab");
+    assert!(
+        policy.holds_a_place(tab),
+        "no window came for it: the tab still holds the app's place"
+    );
+
+    // The launch could not start it: the tab the person opened stays, and
+    // says what happened and why instead of vanishing.
+    let answer = tilo_desktop_surface::outcome::Outcome::new("Notes could not open")
+        .saying("it is not installed here")
+        .retryable("Try again");
+    policy.failed_at(tab, "so.tilo.notes", answer);
+    settle(&mut driver);
+    let texts = ui::a11y::texts(driver.root_widget());
+    assert!(
+        texts.iter().any(|text| text == "Notes could not open"),
+        "{texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text == "it is not installed here"),
+        "{texts:?}"
+    );
+    assert_eq!(tabs(&policy).len(), 1, "the tab the person opened stays");
+    assert_eq!(policy.layout(), Layout::default(), "no window is here");
+
+    // Trying again asks for the app with the answer's own tab as its place,
+    // so a window that comes fills it rather than opening a second one.
+    driver
+        .perform_named(
+            tilo_desktop_surface::outcome::RETRY_ID,
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    settle(&mut driver);
+    let asked = policy.take_launches();
+    assert_eq!(asked.len(), 1, "Try again asks for the app once");
+    assert_eq!(asked[0].tab, Some(tab), "in the tab the answer stands in");
+    assert_eq!(tabs(&policy).len(), 1, "and opens no other tab");
+
+    // The window comes: the answer gives its tab up to it.
+    map(&mut driver, &mut policy, 41, "so.tilo.notes");
+    settle(&mut driver);
+    assert!(
+        !policy.holds_a_place(tab),
+        "the window filled the place the tab held"
+    );
+    assert_eq!(
+        tabs(&policy),
+        vec![(
+            tab,
+            TileContent::Foreign {
+                app_id: "so.tilo.notes".into(),
+                surface_id: 41,
+            },
+        )],
+        "the window took the tab, and the answer is gone"
+    );
+}
+
+#[test]
+fn a_stopped_app_leaves_a_notice_that_asks_for_it_again() {
     let (mut driver, mut policy) = mount();
     let asked = "host:org.example.Probe.desktop";
-    policy.crashed(asked, "Probe").unwrap();
+    policy
+        .stopped(
+            asked,
+            "Probe",
+            tilo_desktop_surface::outcome::Closed::Crashed,
+        )
+        .unwrap();
     settle(&mut driver);
     assert!(
         policy.take_launches().is_empty(),
@@ -652,12 +727,12 @@ fn a_crashed_app_leaves_a_notice_that_asks_for_it_again() {
     );
     assert!(
         texts.iter().any(|text| text == "Reopen"),
-        "the notice offers a way back: {texts:?}"
+        "the answer offers a way back: {texts:?}"
     );
 
     driver
         .perform_named(
-            tilo_desktop_surface::crashed_app::REOPEN_ID,
+            tilo_desktop_surface::outcome::RETRY_ID,
             &ui::a11y::Action::Activate,
         )
         .unwrap();
@@ -671,8 +746,8 @@ fn a_crashed_app_leaves_a_notice_that_asks_for_it_again() {
         [asked],
         "Reopen asks for the same thing that was launched"
     );
-    assert_eq!(
-        reopened[0].tab, None,
-        "the notice keeps its tab, so the launch names no other"
+    assert!(
+        reopened[0].tab.is_some(),
+        "the window that comes takes the tab the answer stands in"
     );
 }

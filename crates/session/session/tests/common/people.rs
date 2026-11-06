@@ -368,6 +368,23 @@ impl Site {
         tilo_desktop_model::shared_record::read(&document, None).map(|desk| desk.tree)
     }
 
+    /// The verdicts the workspace holds on writes, as the site keeps them
+    /// now, described for a step that waited for one: what the site refused,
+    /// of whose write, and why.
+    pub fn refusals_report(&self) -> String {
+        let held = self.runtime.block_on(async {
+            self.workspaces
+                .state(&self.workspace)
+                .await
+                .map(|state| state.workspace().write_refusals())
+        });
+        match held {
+            Some(refusals) if refusals.is_empty() => "no refusal of any write".to_owned(),
+            Some(refusals) => format!("{refusals:#?}"),
+            None => "the site holds no copy of the workspace".to_owned(),
+        }
+    }
+
     /// The workspace's shared desktop as the site keeps it, described for a
     /// step that waited for it: how many bytes and changes it holds, and how
     /// many windows read out of it.

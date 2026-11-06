@@ -557,7 +557,7 @@ pub fn host_meta() -> PackageMeta {
             name: "Invocation".to_string(),
             doc: "An action a block applied, and what became of it.".to_string(),
             fields: vec![
-                field("action", "Text", "The id of the action or flow."),
+                field("action", "Text", "The id of the action."),
                 field("name", "Text", "Its name."),
                 field("app", "Text", "The app that declares it."),
                 field("args", "Text", "The arguments, as JSON."),

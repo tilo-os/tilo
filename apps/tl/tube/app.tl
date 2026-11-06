@@ -370,7 +370,7 @@ action load_trending(yt: YouTube) (icon: .flame, label: "Trending") {
 /// The app's window: the person's subscriptions, trending, what they kept and what they watched,
 /// with search over the service's catalogue.
 view feed(yt: YouTube) {
-    window place: Text = "subscriptions"
+    state place: Text = "subscriptions"
     let subs = subscribed_videos(yt)
     let trending = trending_videos(yt)
     let later = yt.videos.filter(.watch_later).sort_by(.published, desc)
@@ -522,7 +522,7 @@ fn item_clock(v: Video) -> Text {
 /// top asks YouTube for what is typed; a query typed into the system's search reaches the same
 /// place (`search_text` and `search`), so an agent or the palette finds the catalogue too.
 view search_results(yt: YouTube) {
-    lens typed: Text = ""
+    state typed: Text = ""
     stack(gap: .section) {
         ui.TextInput(value: typed, placeholder: "Search YouTube", fill) {
             on submit: search(yt, typed)
@@ -606,25 +606,22 @@ view watched_page(h: WatchEntry) {
             }
         }
         content: {
-            std.rows(
-                entries,
-                "Nothing watched yet",
-                .some("The videos you watch are listed here"),
-            ) { (entry, _) ->
-                watch_row(entry)
-            }
+            history_list(yt, fill)
         }
     }
 }
 
 /// The history in the feed's content: the same rows as its own place draws.
 view history_list(yt: YouTube) {
-    std.rows(
-        yt.history.sort_by(.watched, desc),
-        "Nothing watched yet",
-        .some("The videos you watch are listed here"),
-    ) { (entry, _) ->
-        watch_row(entry)
+    let entries = yt.history.sort_by(.watched, desc)
+    if entries.is_empty() {
+        ui.EmptyState("Nothing watched yet", message: .some("The videos you watch are listed here"))
+    } else {
+        std.list(entries) { (entry, at) ->
+            ui.ListItem(item: entry, presence: at) {
+                watch_row(entry)
+            }
+        }
     }
 }
 
@@ -690,7 +687,7 @@ view channel_page(c: Channel) {
 /// A video's page: it plays at the top, then its name, who made it, what people did with it, what
 /// it says, and what YouTube plays next.
 view video_page(v: Video) {
-    lens playing: Bool = false
+    state playing: Bool = false
     let yt = root YouTube
     let channel = yt.channels.find(c -> c.key == v.channel_key)
     let left = watched_before(yt, v)?.progress ?? 0.0

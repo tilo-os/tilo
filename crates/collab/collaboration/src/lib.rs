@@ -167,6 +167,8 @@ pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
 pub mod channel_settings;
 #[cfg(feature = "broker-transport")]
+pub mod commit_log;
+#[cfg(feature = "broker-transport")]
 pub mod commits;
 #[cfg(feature = "broker-transport")]
 pub mod external_moderation;
@@ -704,12 +706,16 @@ impl CollabRequest {
         }
     }
 
-    /// One part of the action `commit` names: an incremental change set
-    /// this unit made, carrying the action across every unit it wrote, so a
-    /// peer applies all of it or none.
-    pub fn document_action(data: Vec<u8>, commit: collab_types::WorkspaceCommit) -> Self {
+    /// One part of the action `commit` names: the changes this unit made,
+    /// carrying the action across every unit it wrote, so a peer applies all
+    /// of it or none. The commit's device is stamped by the transport that
+    /// signs the frame.
+    pub fn document_action(
+        mutation: DocumentMutation,
+        commit: collab_types::WorkspaceCommit,
+    ) -> Self {
         Self::Document {
-            mutation: DocumentMutation::Incremental(data),
+            mutation,
             authorization: None,
             commit: Some(commit),
         }

@@ -147,6 +147,26 @@ pub(crate) fn person_in(workspace: &str, person: &str) -> String {
         .unwrap_or_else(|| person.to_owned())
 }
 
+/// Name this person's identity `name`: their active identity record takes
+/// it, so their own desktop and the people they work with see it from now
+/// on. Says what stopped it when it could not.
+pub(crate) fn rename_to(name: &str) -> Result<(), String> {
+    let dir = runtime_identity::identity_dir_from_env().map_err(|error| error.to_string())?;
+    let record = runtime_identity::resolve_active_identity(&dir)
+        .ok_or_else(|| "no active identity".to_owned())?;
+    let id = record
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or_else(|| "identity record without an id".to_owned())?
+        .to_owned();
+    let colour = runtime_identity::load_metadata_from_path(&record)
+        .map(|metadata| metadata.avatar_color)
+        .map_err(|error| error.to_string())?;
+    runtime_identity::update_identity_profile(&dir, &id, name, colour)
+        .map(drop)
+        .map_err(|error| error.to_string())
+}
+
 /// Put a host offer to the person: one about who they are
 /// ([`HostAction::is_personal`], their name and key here or another of
 /// their devices) is asked from their own avatar in the top bar, where it

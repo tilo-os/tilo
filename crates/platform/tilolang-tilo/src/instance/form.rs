@@ -7,7 +7,7 @@
 //! a choice of the workspace's members, a resource a choice of those of its type. Defaults
 //! start filled in; what the caller gave is not shown.
 //!
-//! What the person types is their lens state in the window the form opened from, so closing the
+//! What the person types is their view state in the window the form opened from, so closing the
 //! form and opening it again keeps it. Each value is read as the action takes it (the door's own
 //! reading, [`crate::host::Host::argument`]), and submit stays disabled while one does not
 //! read. Submit is one invocation, run as the control would have run it, with undo and history.
@@ -100,7 +100,7 @@ impl Pending {
         })
     }
 
-    /// The lens state what the person typed is kept under: one per action and what the control
+    /// The view state what the person typed is kept under: one per action and what the control
     /// gave it, so the form of `share(n)` for another note starts afresh.
     fn state(&self) -> String {
         let given: Vec<Json> = self
@@ -117,7 +117,7 @@ impl Pending {
 
     /// What the person typed into each field so far, by parameter name.
     fn typed(&self) -> BTreeMap<String, String> {
-        match self.view.borrow().lens(&self.state()) {
+        match self.view.borrow().view_state(&self.state()) {
             Some(Value::Map(entries)) => entries
                 .into_iter()
                 .filter_map(|(name, text)| match (name, text) {
@@ -129,7 +129,7 @@ impl Pending {
         }
     }
 
-    /// The field `key` now holds `text`: kept as the person's lens state.
+    /// The field `key` now holds `text`: kept as the person's view state.
     pub fn edit(&mut self, key: &str, text: String) {
         let Some(field) = self.fields.iter().find(|field| field.key == key) else {
             return;
@@ -142,7 +142,7 @@ impl Pending {
                 .map(|(name, text)| (Value::Text(name), Value::Text(text)))
                 .collect(),
         );
-        self.view.borrow().set_lens(&self.state(), value);
+        self.view.borrow().set_view_state(&self.state(), value);
         self.error = None;
     }
 
@@ -150,7 +150,7 @@ impl Pending {
     pub fn forget(&self) {
         self.view
             .borrow()
-            .set_lens(&self.state(), Value::Map(Vec::new()));
+            .set_view_state(&self.state(), Value::Map(Vec::new()));
     }
 
     /// Each field's text now: what the person typed, else its default as text, else nothing.

@@ -56,7 +56,7 @@ view board(m: Marks) {
 "#;
 
 /// The package that uses it: no declarations of its own that the library owns, its action
-/// applied from a flow, its function called from the view.
+/// applied from an action, its function called from the view.
 const NOTES: &str = r#"app test.notes "Notes"
 
 use test.marks as marks
@@ -76,7 +76,7 @@ root notebook: Notebook
 default view main for Notebook
 
 /// Adds a high mark to the board through the library's action.
-flow add_high() {
+action add_high() {
     marks.add(marks.marks, "High", .high)
 }
 
@@ -123,7 +123,7 @@ fn a_library_owns_the_records_its_action_writes() {
     view.press(&button_key(&view)).unwrap();
     ada.commit();
 
-    // The press ran the user's flow, which applied the library's action: the mark is in the
+    // The press ran the user's action, which applied the library's action: the mark is in the
     // library's root record, under the library's app id.
     let record = ada.root(LIBRARY);
     let Some(DynValue::Collection(marks)) = record.get(&field_id(&library.meta, "Marks", "marks"))

@@ -1,12 +1,10 @@
-//! A person's own state of a workspace: the window and lens state they pick in a window and what
-//! they have seen are kept under their own entries of the workspace's one record of it, so what
-//! they picked is still theirs after a restart, reaches their other devices, and is nobody
-//! else's to write.
+//! A person's own state of a workspace: the view state they pick in a window and what they have
+//! seen are kept under their own entries of the workspace's one record of it, so what they picked
+//! is still theirs after a restart, reaches their other devices, and is nobody else's to write.
 
 use super::*;
 use tilolang_tilo::personal::{self, Keep, Personal};
 use tilolang_tilo::runtime::seen::SeenMark;
-use tilolang_tilo::runtime::view_state::StateLayer;
 use ui::automerge::{ObjType, ROOT, ReadDoc as _, Value as AmValue};
 use ui::prelude::TestApp;
 
@@ -93,16 +91,11 @@ fn the_place_a_person_picks_in_a_window_is_theirs_after_a_restart_and_no_one_els
     // person and the window that declared it.
     let windows = kept_keys(&mine, &["$personal", &ada(), "views"]);
     assert_eq!(windows.len(), 1, "{windows:?}");
-    let layer: Vec<String> = kept_keys(
-        &mine,
-        &["$personal", &ada(), "views", &windows[0], "window"],
-    );
-    assert!(!layer.is_empty(), "the place is kept as window state");
+    let picked: Vec<String> = kept_keys(&mine, &["$personal", &ada(), "views", &windows[0]]);
+    assert!(!picked.is_empty(), "the place is kept as view state");
     let kept = mine.get().of(&ada());
     assert!(
-        kept.slots
-            .iter()
-            .any(|slot| slot.layer == StateLayer::Window && slot.value == today_filter()),
+        kept.slots.iter().any(|slot| slot.value == today_filter()),
         "{kept:?}"
     );
 
@@ -155,17 +148,17 @@ fn the_channel_a_person_opens_is_theirs_after_a_restart() {
     let chosen = first.key_of("ui.NavItem", "label", "general");
     first.fire(&chosen, "select", None);
 
-    // A lens is where the person is in the window: their entries keep it as one.
+    // Where the person is in the window is view state: their entries keep it as such.
     let windows = kept_keys(&mine, &["$personal", &ada(), "views"]);
     assert_eq!(windows.len(), 1, "{windows:?}");
-    let lens: Vec<String> = kept_keys(&mine, &["$personal", &ada(), "views", &windows[0], "lens"]);
-    assert!(!lens.is_empty(), "the channel is kept as lens state");
+    let opened: Vec<String> = kept_keys(&mine, &["$personal", &ada(), "views", &windows[0]]);
+    assert!(!opened.is_empty(), "the channel is kept as view state");
     assert!(
         mine.get()
             .of(&ada())
             .slots
             .iter()
-            .any(|slot| slot.layer == StateLayer::Lens && slot.value == RtValue::text("/general")),
+            .any(|slot| slot.value == RtValue::text("/general")),
         "{:?}",
         mine.get()
     );

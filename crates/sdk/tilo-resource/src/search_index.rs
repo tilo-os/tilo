@@ -249,9 +249,8 @@ impl Publisher {
         self.state != Some(state)
     }
 
-    /// The deltas, each within [`MAX_DELTA_BYTES`], that bring the index
-    /// from what this publisher sent to `entries` at `state`. What they
-    /// carry counts as sent.
+    /// The deltas, each within [`MAX_DELTA_BYTES`], that bring the index from what this
+    /// publisher sent to `entries` at `state`. What they carry counts as sent.
     pub fn publish(&mut self, state: IndexState, entries: Vec<IndexEntry>) -> Vec<IndexDelta> {
         let mut next: BTreeMap<String, IndexEntry> = BTreeMap::new();
         for entry in entries.into_iter().filter_map(IndexEntry::bounded) {
@@ -279,10 +278,59 @@ impl Publisher {
                 },
             ),
         };
+        self.published = Some(next.into_iter().collect());
+        self.delta(state, reset, upsert, remove)
+    }
+
+    /// The deltas that send `upsert` entries, new or changed, and drop `remove` keys, from what
+    /// this publisher sent: what a source that knows what moved publishes instead of reading
+    /// its whole set again. `None` when what this publisher sent does not cover the change (the
+    /// first publication on a route, or a source that never sent the whole set): the caller
+    /// publishes the whole set again instead.
+    pub fn publish_moved(
+        &mut self,
+        state: IndexState,
+        upsert: Vec<IndexEntry>,
+        remove: Vec<String>,
+    ) -> Option<Vec<IndexDelta>> {
+        let published = self.published.as_mut()?;
+        let upsert: Vec<IndexEntry> = upsert
+            .into_iter()
+            .filter_map(IndexEntry::bounded)
+            .filter(|entry| published.get(&entry.key) != Some(entry))
+            .collect();
+        // The set the whole publication kept has room; one that would grow past it is read
+        // whole again, which caps it.
+        let added = upsert
+            .iter()
+            .filter(|entry| !published.contains_key(&entry.key))
+            .count();
+        if published.len().saturating_add(added) > MAX_ENTRIES {
+            return None;
+        }
+        for entry in &upsert {
+            published.insert(entry.key.clone(), entry.clone());
+        }
+        let mut remove: Vec<String> = remove
+            .into_iter()
+            .filter(|key| published.remove(key).is_some())
+            .collect();
+        remove.sort_unstable();
+        remove.dedup();
+        Some(self.delta(state, false, upsert, remove))
+    }
+
+    /// The deltas `upsert` and `remove` make at `state`, once they count as sent.
+    fn delta(
+        &mut self,
+        state: IndexState,
+        reset: bool,
+        upsert: Vec<IndexEntry>,
+        remove: Vec<String>,
+    ) -> Vec<IndexDelta> {
         let secrets_moved = self
             .state
             .is_none_or(|before| before.secrets_unlocked != state.secrets_unlocked);
-        self.published = Some(next.into_iter().collect());
         self.state = Some(state);
         if !reset && upsert.is_empty() && remove.is_empty() && !secrets_moved {
             return Vec::new();

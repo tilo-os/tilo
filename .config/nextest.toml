@@ -135,6 +135,13 @@ agent-participant-sessions = { max-threads = 2 }
 filter = '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline)))'
 test-group = "gpu-golden"
 
+# What a person's interactions at 10k tasks cost, printed on a pass too: the
+# reading against the targets it is held to, so a drift toward them shows in
+# every CI log before a run crosses one.
+[[profile.default.overrides]]
+filter = 'package(tilolang-app) and binary(hosted) and test(=what_the_interactions_a_person_feels_cost)'
+success-output = "final"
+
 [[profile.default.overrides]]
 filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'
 test-group = "compositor"

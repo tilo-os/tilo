@@ -59,7 +59,9 @@ impl TransportControl {
         }
     }
 
-    const fn is_play(self) -> bool {
+    /// Whether it is the transport's one prominent control.
+    #[must_use]
+    pub const fn is_play(self) -> bool {
         matches!(self, Self::PlayPause { .. })
     }
 }

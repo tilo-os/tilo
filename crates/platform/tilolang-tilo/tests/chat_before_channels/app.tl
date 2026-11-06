@@ -71,7 +71,19 @@ action send(c: Conversation, text: Text) (icon: .send, label: "Send") {
 /// The chat's window: its conversations, the latest active first, each opening in a window of
 /// its own. A post is a change of its conversation; an edit of a message, or a draft, is not.
 view chats(all: Conversations) {
-    std.list(all, all.items.sort_by(c -> updated(c), desc), empty: "No conversations yet")
+    ui.NavShell(content_kind: .list, count: .some(all.items.len())) {
+        content: {
+            if all.items.is_empty() {
+                ui.EmptyState("No conversations yet", icon: meta(Conversation).icon)
+            } else {
+                std.list(all.items.sort_by(c -> updated(c), desc)) { (c, at) ->
+                    ui.ListItem(item: c, presence: at) {
+                        conversation_row(c)
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// What a message says in a line: its text, or that it holds a block.
@@ -93,7 +105,7 @@ view conversation_row(c: Conversation) {
 /// A conversation's window: its messages, the latest at the foot, above the composer. What is
 /// typed there is the person's own until they send it.
 view thread(c: Conversation) {
-    lens draft: Text
+    state draft: Text
     std.transcript(c, c.messages, row: message) {
         composer: {
             row {

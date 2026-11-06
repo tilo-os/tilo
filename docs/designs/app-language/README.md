@@ -105,7 +105,7 @@ the app's code. A record naming nobody is its creator's to be reminded of.
 ## Effects
 
 An effect is something a replay cannot compute again: a draw, the time, a service outside
-Tilo. The action or flow that uses one declares it (`uses random`, `uses time`, `uses web`) and
+Tilo. The action that uses one declares it (`uses random`, `uses time`, `uses web`) and
 the compiler refuses it anywhere else (E121); a view never reads one, since it is drawn again
 from what it is shown.
 
@@ -119,9 +119,9 @@ action roll(die: Die) uses random {
 `random.int(lo, hi)` draws a number in `lo..=hi`; `random.float()` one in `[0, 1)`;
 `random.choice(xs)` one item of a list, as an `Option` (nothing drawn from nothing);
 `random.shuffle(xs)` the same items in a drawn order; `random.id()` 128 random bits as text.
-The draw is made on the device that invokes the action or flow, from the system's
+The draw is made on the device that invokes the action, from the system's
 cryptographic random source, and the numbers it drew are kept in the invocation's journal: a
-flow resumed after waiting for a person, and any run replayed, reads the numbers it drew the
+run resumed after waiting for a person, and any run replayed, reads the numbers it drew the
 first time.
 
 ## Triggers
@@ -165,7 +165,7 @@ view todayboard(t: todo.Tasks, nb: notes.Notes) {
 }
 ```
 
-What a package declares is its own: record types, aliases, enums, functions, actions, flows,
+What a package declares is its own: record types, aliases, enums, functions, actions,
 views and the resource types it roots. A package that `use`s it sees them as `alias.X`, and
 they stay the library's: the ids are locked in the library's `app.ids`, and a record its action
 writes is an ordinary workspace record under the library's app id, written under the authority
@@ -204,7 +204,7 @@ state, a function or a view (`template.rs`).
 | Topic | Doc |
 |---|---|
 | Who may do what; versions | authority.md |
-| Concurrency, offline, outside services, invariants, flows | convergence.md |
+| Concurrency, offline, outside services, invariants, calls between actions | convergence.md |
 | Search and identifiers | search.md |
 | Words and their translations | i18n.md |
 | Agents writing tilolang programs | agents.md |

@@ -195,6 +195,72 @@ pub fn picture_bytes(text: &str) -> Option<Vec<u8>> {
         .filter(|bytes| !bytes.is_empty())
 }
 
+/// A cover already decoded (`crate::peniko::ImageData` from an image store or
+/// a media reading) as the small `data:` picture a card draws, or another
+/// process is handed: a `edge` square cut from its centre, JPEG-encoded so it
+/// costs a few kilobytes rather than a cover's own tens. Empty for a picture
+/// that is not straight 8-bit RGBA or that does not encode.
+///
+/// The picture keeps inside [`PICTURE_BUDGET`] even for a cover busy enough to
+/// fill the square with detail: it is cut smaller, and its quality lowered,
+/// until it does, because it rides beside the song a live activity publishes
+/// and that message is bounded.
+#[must_use]
+pub fn cover(picture: &crate::peniko::ImageData, edge: u32) -> String {
+    /// Enough quality for a thumbnail.
+    const QUALITY: u8 = 82;
+    /// What the encoded picture may cost before it is cut smaller.
+    const SMALLER: u8 = 62;
+    if picture.format != crate::peniko::ImageFormat::Rgba8 || edge == 0 {
+        return String::new();
+    }
+    let Some(rgba) =
+        image::RgbaImage::from_raw(picture.width, picture.height, picture.data.data().to_vec())
+    else {
+        return String::new();
+    };
+    let side = rgba.width().min(rgba.height());
+    if side == 0 {
+        return String::new();
+    }
+    let square = image::imageops::crop_imm(
+        &rgba,
+        (rgba.width() - side) / 2,
+        (rgba.height() - side) / 2,
+        side,
+        side,
+    )
+    .to_image();
+    for (edge, quality) in [
+        (edge, QUALITY),
+        (edge, SMALLER),
+        (edge / 2, QUALITY),
+        (edge / 4, QUALITY),
+    ] {
+        let Some(small) = (edge > 0)
+            .then(|| image::imageops::resize(&square, edge, edge, image::imageops::FilterType::Triangle))
+        else {
+            continue;
+        };
+        let mut encoded = Vec::new();
+        if image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality)
+            .encode_image(&image::DynamicImage::ImageRgba8(small))
+            .is_err()
+        {
+            return String::new();
+        }
+        if encoded.len() <= PICTURE_BUDGET {
+            return format!("data:image/jpeg;base64,{}", picture_text(&encoded));
+        }
+    }
+    String::new()
+}
+
+/// The most a cover's encoded bytes may cost: a live activity carries the
+/// picture beside the song under a wire bound, and a base64 `data:` picture
+/// takes four thirds of that room.
+pub const PICTURE_BUDGET: usize = 6 * 1024;
+
 /// [`mosaic`] for pictures already decoded (covers an image store loaded):
 /// a `side` square of up to four, sampled straight into place, so composing
 /// it costs one pass over its pixels. `None` without a picture in a format
@@ -378,5 +444,65 @@ mod tests {
             assert_eq!(&pixels[at..at + 4], &[r, g, b, 255], "{x},{y}");
         }
         assert!(mosaic_of(&[], 64).is_none());
+    }
+
+    #[test]
+    fn a_cover_becomes_a_small_square_picture_a_card_can_draw() {
+        let wide = crate::peniko::ImageData {
+            data: crate::peniko::Blob::new(Arc::new([30, 120, 200, 255].repeat(80 * 40))),
+            format: crate::peniko::ImageFormat::Rgba8,
+            alpha_type: crate::peniko::ImageAlphaType::Alpha,
+            width: 80,
+            height: 40,
+        };
+        let picture = cover(&wide, 24);
+        assert!(picture.starts_with("data:image/jpeg;base64,"), "{picture}");
+        let bytes = picture_bytes(picture.strip_prefix("data:image/jpeg;base64,").unwrap())
+            .expect("the encoded picture");
+        let decoded = image::load_from_memory(&bytes).unwrap().to_rgb8();
+        assert_eq!((decoded.width(), decoded.height()), (24, 24));
+        let pixel = decoded.get_pixel(12, 12).0;
+        for (got, want) in pixel.iter().zip([30, 120, 200]) {
+            assert!(got.abs_diff(want) < 40, "{pixel:?}");
+        }
+        let grey = crate::peniko::ImageData {
+            format: crate::peniko::ImageFormat::Bgra8,
+            ..wide.clone()
+        };
+        assert_eq!(cover(&grey, 24), "", "a picture it does not read");
+        assert_eq!(cover(&wide, 0), "", "a picture with no pixels");
+    }
+
+    /// Noise is what costs a JPEG bytes: a cover that fills its square with
+    /// detail is cut down until it fits the budget the song's message has.
+    #[test]
+    fn a_busy_cover_keeps_inside_the_picture_budget() {
+        let mut seed = 0x2545_f491_u32;
+        let mut pixels = Vec::with_capacity(512 * 512 * 4);
+        for _ in 0..512 * 512 {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            pixels.extend_from_slice(&[
+                (seed >> 24) as u8,
+                (seed >> 16) as u8,
+                (seed >> 8) as u8,
+                255,
+            ]);
+        }
+        let busy = crate::peniko::ImageData {
+            data: crate::peniko::Blob::new(Arc::new(pixels.into_boxed_slice())),
+            format: crate::peniko::ImageFormat::Rgba8,
+            alpha_type: crate::peniko::ImageAlphaType::Alpha,
+            width: 512,
+            height: 512,
+        };
+        let picture = cover(&busy, 112);
+        assert!(picture.starts_with("data:image/jpeg;base64,"), "{picture}");
+        let bytes = picture_bytes(picture.strip_prefix("data:image/jpeg;base64,").unwrap())
+            .expect("the encoded picture");
+        assert!(
+            bytes.len() <= PICTURE_BUDGET,
+            "{} bytes is over the budget",
+            bytes.len()
+        );
     }
 }

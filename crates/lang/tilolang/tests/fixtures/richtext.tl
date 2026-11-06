@@ -99,7 +99,19 @@ action people_count(p: Post) -> Int {
 
 /// The board: its posts.
 view board(b: Board) {
-    std.list(b, b.posts, empty: "No posts yet")
+    ui.NavShell(content_kind: .list) {
+        content: {
+            if b.posts.is_empty() {
+                ui.EmptyState("No posts yet", icon: .file_text)
+            } else {
+                std.list(b.posts) { (p, at) ->
+                    ui.ListItem(item: p, presence: at) {
+                        post_row(p)
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A post: what it says, each reference as the reader's inline view of it.
