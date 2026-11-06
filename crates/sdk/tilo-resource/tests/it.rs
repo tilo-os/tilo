@@ -36,6 +36,8 @@ pub mod one_pass_reads;
 pub mod outbox;
 #[path = "paths.rs"]
 pub mod paths;
+#[path = "reading.rs"]
+pub mod reading;
 #[path = "schema.rs"]
 pub mod schema;
 #[path = "shape.rs"]
