@@ -243,12 +243,23 @@ fn an_app_that_stops_on_its_own_leaves_a_notice_in_its_place() {
     });
 }
 
-/// A window of `app` the compositor mapped.
+/// A window of `app` the compositor mapped, its bar saying the app's own id:
+/// the window of an app run without its list, whose tab is named for the app.
 fn window(id: u64, app: &str) -> Window {
     Window {
         id,
         app_id: Some(app.into()),
         title: Some(app.into()),
+        ..Window::default()
+    }
+}
+
+/// A window of `app` whose bar says `title`, the place it shows.
+fn titled_window(id: u64, app: &str, title: &str) -> Window {
+    Window {
+        id,
+        app_id: Some(app.into()),
+        title: Some(title.into()),
         ..Window::default()
     }
 }
@@ -308,6 +319,9 @@ fn a_second_launch_raises_the_window_the_app_already_has() {
 /// The app the tab tests install: a Tilo package whose window is a tab of the
 /// desktop.
 const PROBE: &str = "so.tilo.probe";
+/// What the person reads for [`PROBE`]: the name its package gives it, which
+/// its window bar says and its tab takes.
+const PROBE_NAME: &str = "Probe";
 
 /// Install [`PROBE`] in `home`'s own app store, and write the launcher the
 /// session starts it through: it records the pid of every start and runs, as
@@ -736,7 +750,7 @@ fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
     );
     assert_eq!(
         groups(&session),
-        vec![vec![PROBE.to_owned()]],
+        vec![vec![PROBE_NAME.to_owned()]],
         "the window whose markers were read stays on the desk"
     );
 }
@@ -948,7 +962,7 @@ fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, St
         .desktop()
         .with_policy(|policy| policy.map(window(11, PROBE)).unwrap());
     until(session, "the app's window is on the desk", |session| {
-        groups(session) == vec![vec![PROBE.to_owned()]]
+        groups(session) == vec![vec![PROBE_NAME.to_owned()]]
     });
     (pid, workspace)
 }
@@ -1021,7 +1035,7 @@ fn a_window_the_app_asks_for_opens_beside_its_own_tab() {
     });
     assert_eq!(
         groups(&session),
-        vec![vec![PROBE.to_owned(), PROBE.to_owned()]],
+        vec![vec![PROBE_NAME.to_owned(), PROBE_NAME.to_owned()]],
         "the window took the tab beside the app's own"
     );
 }
@@ -1164,7 +1178,7 @@ fn an_address_the_app_does_not_claim_opens_no_tab() {
     }
     assert_eq!(
         groups(&session),
-        vec![vec![PROBE.to_owned()]],
+        vec![vec![PROBE_NAME.to_owned()]],
         "an address the app does not declare opens nothing"
     );
     assert_eq!(
@@ -1449,11 +1463,13 @@ fn reopening_a_closed_window_starts_its_app_again() {
     let (mut session, _apps, _launches) = session_through(&home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     // The client's window: its class is the app, its title the tab's.
-    session
-        .desktop()
-        .with_policy(|policy| policy.map(window(11, X11_CLASS)).unwrap());
+    session.desktop().with_policy(|policy| {
+        policy
+            .map(titled_window(11, X11_CLASS, PROBE_NAME))
+            .unwrap()
+    });
     until(&mut session, "the window is a tab", |session| {
-        groups(session) == vec![vec![X11_CLASS.to_owned()]]
+        groups(session) == vec![vec![PROBE_NAME.to_owned()]]
     });
 
     // The person closes the tab, and the window goes with it.
@@ -1477,14 +1493,16 @@ fn reopening_a_closed_window_starts_its_app_again() {
     until(&mut session, "the app runs again", |_| records.exists());
     assert_eq!(
         groups(&session),
-        vec![vec![X11_CLASS.to_owned()]],
+        vec![vec![PROBE_NAME.to_owned()]],
         "the tab is back where it was, waiting for the app"
     );
 
     // The window the app opens takes the restored tab.
-    session
-        .desktop()
-        .with_policy(|policy| policy.map(window(12, X11_CLASS)).unwrap());
+    session.desktop().with_policy(|policy| {
+        policy
+            .map(titled_window(12, X11_CLASS, PROBE_NAME))
+            .unwrap()
+    });
     until(
         &mut session,
         "the app's window is in the restored tab",
@@ -1492,7 +1510,7 @@ fn reopening_a_closed_window_starts_its_app_again() {
     );
     assert_eq!(
         groups(&session),
-        vec![vec![X11_CLASS.to_owned()]],
+        vec![vec![PROBE_NAME.to_owned()]],
         "one tab, not two"
     );
     assert_eq!(
@@ -1524,11 +1542,14 @@ fn an_app_closes_only_its_own_tab() {
         &FloatingSurfaceClientMessage::CloseTab { instance: None },
     );
     until(&mut session, "the app's own tab is closed", |session| {
-        !groups(session).iter().flatten().any(|title| title == PROBE)
+        !groups(session)
+            .iter()
+            .flatten()
+            .any(|title| title == PROBE_NAME)
     });
     assert_eq!(
         groups(&session),
-        vec![vec!["org.example.Other".to_owned()]],
+        vec![vec!["Other".to_owned()]],
         "the other app's tab stays"
     );
 
@@ -1541,7 +1562,10 @@ fn an_app_closes_only_its_own_tab() {
         &FloatingSurfaceClientMessage::ReopenClosedTab,
     );
     until(&mut session, "the closed tab is back", |session| {
-        groups(session).iter().flatten().any(|title| title == PROBE)
+        groups(session)
+            .iter()
+            .flatten()
+            .any(|title| title == PROBE_NAME)
     });
 }
 
