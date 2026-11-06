@@ -405,11 +405,7 @@ fn the_menus_view_stands_with_the_session_and_is_shown_while_a_menu_is_up() {
 
     let mut session = session_with(desk_tree());
     assert!(
-        session
-            .surfaces()
-            .names()
-            .iter()
-            .any(|name| *name == "window-menu"),
+        session.surfaces().names().contains(&"window-menu"),
         "the menu's view stands before anything asks for a menu: {:?}",
         session.surfaces().names()
     );
@@ -433,11 +429,7 @@ fn the_menus_view_stands_with_the_session_and_is_shown_while_a_menu_is_up() {
         "hidden again once the menu closes"
     );
     assert!(
-        session
-            .surfaces()
-            .names()
-            .iter()
-            .any(|name| *name == "window-menu"),
+        session.surfaces().names().contains(&"window-menu"),
         "and the view it shows again stands there still: {:?}",
         session.surfaces().names()
     );

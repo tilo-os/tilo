@@ -59,7 +59,7 @@ impl Session {
         // again when a menu next opens, rather than on every pass of a menu
         // that is down: an app that will not stay up then costs one start an
         // opening, and not the session.
-        if up || !self.window_menu_stood {
+        if up || !self.slots.stood(VIEW) {
             let settings = self.read(mount::slots::BINDINGS);
             match self.slots.follow(VIEW, SHIPPED, settings.as_ref()) {
                 Mount::Nothing => {}
@@ -78,7 +78,6 @@ impl Session {
                     }
                 }
             }
-            self.window_menu_stood = true;
         }
         // What the view reads is what the session publishes for the slot now.
         if self.slot_views.running(VIEW) {

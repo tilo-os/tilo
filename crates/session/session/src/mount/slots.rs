@@ -97,6 +97,11 @@ pub struct Slots {
     /// the view the session ships with, and the miss is not retried every
     /// pass.
     absent: BTreeSet<Binding>,
+    /// Slots whose view has been put up once in this session. A view runs for
+    /// the session's life, so the part it draws comes up with it already
+    /// there; one whose program is not on this machine is not looked for
+    /// again on every pass while the part is away.
+    stood: BTreeSet<String>,
 }
 
 impl Slots {
@@ -114,6 +119,7 @@ impl Slots {
     /// Follow `slot`: the view bound to it now, which runs for the session's
     /// life so every time the part comes up the view already stands there.
     pub fn follow(&mut self, slot: &str, shipped: (&str, &str), settings: Option<&Value>) -> Mount {
+        self.stood.insert(slot.to_owned());
         let bound = Self::bound(slot, shipped, settings);
         let shipped = Self::bound(slot, shipped, None);
         // What the person bound runs here; one this machine does not have
@@ -203,6 +209,12 @@ impl Slots {
     #[must_use]
     pub fn running(&self, slot: &str) -> Option<&Binding> {
         self.running.get(slot)
+    }
+
+    /// Whether `slot`'s view has been put up once in this session.
+    #[must_use]
+    pub fn stood(&self, slot: &str) -> bool {
+        self.stood.contains(slot)
     }
 }
 
