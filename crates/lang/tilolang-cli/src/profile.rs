@@ -83,6 +83,16 @@ impl Interaction {
             )),
         }
     }
+
+    /// The interaction as `--then` takes it: what a table is headed by.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Key(key) => format!("key:{key}"),
+            Self::Click(x, y) => format!("click:{x},{y}"),
+            Self::Type(text) => format!("type:{text}"),
+            Self::Scroll(dx, dy) => format!("scroll:{dx},{dy}"),
+        }
+    }
 }
 
 /// Print what the app in `options.dir` costs to open, and then to do each of `options.then`,
@@ -97,8 +107,8 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
         .iter()
         .map(|spec| Interaction::parse(spec))
         .collect::<Result<_, _>>()?;
-    // The clock the table is of does not matter, but a run's dates must: the days a view shows
-    // are read from it, as a layout check reads them.
+    // The instant a run is of does not matter, but it must not move while it runs: the days a
+    // view shows are read from it, as a layout check reads them.
     ui::clock::freeze_for_capture();
     tilo_ui_host::i18n::ensure();
     let search = if options.search.is_empty() {
@@ -173,18 +183,6 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
         print_costs(&staged, &format!("then {}", interaction.label()))?;
     }
     Ok(())
-}
-
-impl Interaction {
-    /// The interaction as `--then` takes it: what a table is headed by.
-    pub fn label(&self) -> String {
-        match self {
-            Self::Key(key) => format!("key:{key}"),
-            Self::Click(x, y) => format!("click:{x},{y}"),
-            Self::Type(text) => format!("type:{text}"),
-            Self::Scroll(dx, dy) => format!("scroll:{dx},{dy}"),
-        }
-    }
 }
 
 /// One interaction's table, by the unit that ran it.

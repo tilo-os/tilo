@@ -881,6 +881,43 @@ fn read_leb(bytes: &[u8], pos: &mut usize) -> Option<usize> {
     }
 }
 
+/// The module `wasm` without the custom section `name`: the module apart from what the
+/// compiler writes beside its code for tools, which the same code written in one file and in
+/// several does not share (the lines each declaration is on).
+#[must_use]
+pub fn without_section(wasm: &[u8], name: &str) -> Vec<u8> {
+    let mut out = wasm.get(..8).unwrap_or_default().to_vec();
+    let mut pos = 8usize;
+    while pos < wasm.len() {
+        let start = pos;
+        let Some(id) = wasm.get(pos).copied() else {
+            break;
+        };
+        pos += 1;
+        let Some(size) = read_leb(wasm, &mut pos) else {
+            break;
+        };
+        let Some(end) = pos.checked_add(size) else {
+            break;
+        };
+        if end > wasm.len() {
+            break;
+        }
+        let named = id == 0 && {
+            let mut p = pos;
+            match read_leb(wasm, &mut p) {
+                Some(len) => wasm.get(p..p.saturating_add(len)) == Some(name.as_bytes()),
+                None => false,
+            }
+        };
+        if !named {
+            out.extend_from_slice(&wasm[start..end]);
+        }
+        pos = end;
+    }
+    out
+}
+
 /// The payload of the named custom section of a wasm module.
 pub fn custom_section<'a>(wasm: &'a [u8], name: &str) -> Option<&'a [u8]> {
     let mut pos = 8usize;

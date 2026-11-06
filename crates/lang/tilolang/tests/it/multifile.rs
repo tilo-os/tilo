@@ -43,7 +43,23 @@ fn a_package_split_over_files_is_the_same_module_as_one_file() {
     .unwrap();
     let split = compile(&split_counter()).unwrap_or_else(|d| panic!("{d:#?}"));
     assert_eq!(split.meta, whole.meta);
-    assert_eq!(split.wasm, whole.wasm);
+    // The code is the same module; the lines beside it name the files each declaration is
+    // written in, which one written in a single file does not have.
+    assert_eq!(
+        tilolang::meta::without_section(&split.wasm, tilolang::meta::LINES_SECTION),
+        tilolang::meta::without_section(&whole.wasm, tilolang::meta::LINES_SECTION)
+    );
+    let split_lines = tilolang::meta::lines_from_wasm(&split.wasm);
+    assert!(
+        split_lines.iter().any(|line| line.file == "b.tl"),
+        "the action is placed in the file it is written in: {split_lines:?}"
+    );
+    assert!(
+        tilolang::meta::lines_from_wasm(&whole.wasm)
+            .iter()
+            .all(|line| line.file == "/"),
+        "one file's declarations are all placed in it"
+    );
     assert_eq!(split.ids.to_text(), whole.ids.to_text());
 }
 
