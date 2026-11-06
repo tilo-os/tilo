@@ -1,7 +1,7 @@
 //! Calls: functions, actions, flows, record construction, built-ins and methods.
 
 use super::expr::dotted;
-use super::{Checker, Ctx, Ex, Written, conv, store_op};
+use super::{Checker, Ctx, Ex, Invoked, Written, conv, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind};
 use crate::diag::Span;
@@ -561,7 +561,7 @@ impl Checker<'_> {
                     // `invoke(other.act(args), by: mia, ...)` in a scenario: another app's
                     // action is invoked at its own door, a change of its own, as a flow
                     // applies one, never called inside this action's change.
-                    if std::mem::take(&mut self.st.invoking_foreign) {
+                    if std::mem::replace(&mut self.st.invoked, Invoked::Plain) == Invoked::Foreign {
                         let bound = self.applied_args(c, bound, span);
                         return self.invoke(c, bound);
                     }
@@ -686,7 +686,7 @@ impl Checker<'_> {
             }
             return Ex::host(Imp::Suggest, vec![act], Ty::Unit);
         }
-        if std::mem::take(&mut self.st.try_invoke) {
+        if std::mem::replace(&mut self.st.invoked, Invoked::Plain) == Invoked::Try {
             // The host builds the `Result`: `.ok(result)`, or `.err(reason)`.
             let ty = Ty::Result(Box::new(c.result.clone()), Box::new(Ty::Text));
             return Ex::host(Imp::TryInvoke, vec![act], ty);
