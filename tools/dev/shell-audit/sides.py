@@ -782,7 +782,8 @@ class NewSide(Side):
     # What the session logs when a surface it starts is not there. A dev
     # session without one is a broken desktop, and every story about it is
     # judged against nothing, so a run says so instead of quietly capturing it.
-    SURFACE_WARNINGS = ("no quick settings app is installed",
+    SURFACE_WARNINGS = ("the view bound to this slot is not installed here",
+                        "no quick settings app is installed",
                         "no on-screen keyboard is installed",
                         "no lock screen",
                         "the audio service is not installed",
