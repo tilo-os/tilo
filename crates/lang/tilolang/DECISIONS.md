@@ -348,6 +348,39 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   tool (the host binary, with `run`); the compiler crate's own binary is `tilolangc`, also
   built as `tlc`, from the same `main.rs`, so neither clashes with `target/<profile>/tilolang`.
 
+## The standard library is a package
+
+- **`std` is `tilo.std`, compiled from its source** (`stdlib.rs`, `std/app.tl`, `std/app.ids`).
+  It names its app like any package, locks its ids like any package, and reaches every module
+  through the same `Env::add_import` a `use` goes through: there is no views-only parse, and no
+  second path by which its names become code's. A package sees its types, enums, functions,
+  actions and views as `std.X`.
+- **Its own module is not an import of itself.** Compiling `std` registers the alias `std` for
+  its own app, so its views call each other by their plain names and see its own declarations.
+- **Every package depends on it.** `meta.uses` carries `tilo.std`, and a bundle carries the
+  library's module before the packages the app `use`s, so the package id its declarations
+  belong to is loaded wherever a record of one of its types is read or written.
+- **What a library declares is the library's.** A resource type declared in a library package
+  is rooted under that package's id: the records its actions write are ordinary workspace
+  records under it, and a package that uses the library writes them through the library's
+  actions, under the authority of whoever applied them.
+
+## Template views
+
+- **A template view expands where it is called** (`checker/template.rs`). Its name is taken at
+  the call, its body checked there, and what it builds is the caller's: its nodes, its reads,
+  its view state, under the caller's authority. Its type parameters, state, function and view
+  parameters come from the call.
+- **`template view v(...)` declares one.** A view is a template when it is written that way, or
+  when it takes type parameters, or when a parameter takes view state (`State<E>`), a function
+  or a view. A template has no function of its own and appears in no `meta` view list: it is
+  expanded by the compiler, and only from the source the compiler has.
+- **View state inside a template is the caller's.** A `state` declaration at the top of a
+  template body becomes state of the view the template expands in, keyed by that view's id, the
+  template's name and the state's: the same template called twice in one view keeps two states.
+- **Every view of `std` is a template.** The library builds the caller's frames; it runs no
+  views of its own. A test holds that (`stdlib.rs`).
+
 ## Deviations to report
 
 - E072 (a block with no value) is defined but cannot be reached from source today.

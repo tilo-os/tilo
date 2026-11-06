@@ -122,6 +122,37 @@ cryptographic random source, and the numbers it drew are kept in the invocation'
 flow resumed after waiting for a person, and any run replayed, reads the numbers it drew the
 first time.
 
+## Packages and libraries
+
+A package is a directory of `.tl` files with one `app` header and its `app.ids`, the ids every
+declaration in it takes. Packages `use` each other by app id, and the alias is what code names
+them by:
+
+```
+use so.tilo.lang.notes as notes
+
+view todayboard(t: todo.Tasks, nb: notes.Notes) {
+    ...
+}
+```
+
+What a package declares is its own: record types, aliases, enums, functions, actions, flows,
+views and the resource types it roots. A package that `use`s it sees them as `alias.X`, and
+they stay the library's: the ids are locked in the library's `app.ids`, and a record its action
+writes is an ordinary workspace record under the library's app id, written under the authority
+of whoever applied the action.
+
+The standard library is one of these packages (`tilo.std`, `crates/lang/tilolang/std/app.tl`):
+the frames every window gets. Every package compiles with it and sees its declarations as
+`std.X`, whether or not it writes a `use`.
+
+A **template view** is a view that expands where it is called rather than being a function of
+its own: it takes its name at the call, builds the caller's nodes, reads and view state under
+the caller's authority, and takes its type, state, function and view parameters from the call.
+Every view of `std` is one, so `std.list(...)` inside a view is that view's own list. A view is
+a template when it is written `template view`, or when it takes type parameters or takes view
+state, a function or a view (`template.rs`).
+
 ## How it runs
 
 - Code compiles to wasm and runs sandboxed. Authority follows authorship: what code may do is
