@@ -128,9 +128,9 @@ What differs is the host around it.
 
 | Behaviour | Old | New | Status |
 |---|---|---|---|
-| Banner stack: top-right, springs to its slot, hover-to-hold with an aim delay, `N more` fold, never ages while held | `desktop-surface/src/notifications/stack.rs`, mounted by `overlay_host/banners.rs` | the same crate; `DesktopNotifications` installed by `session/src/desk.rs` `set_notifications` | same |
+| Banner stack: top-right, springs to its slot, hover-to-hold with an aim delay, at most three, the rest folding into `+N more from the app` which opens the centre, never ages while held | `desktop-surface/src/notifications/stack.rs`, mounted by `overlay_host/banners.rs` | the same crate; `DesktopNotifications` installed by `session/src/desk.rs` `set_notifications` | better (the corner never fills; a fold leads to the one list) |
 | Banners below window bars, shifting when a bar arrives under them | `stack.rs` `transient_slot`, `clear_top` | `DesktopNotifications` + `surface/notices.rs` `set_clear_top` | same |
-| Notification centre: groups by app, paging, fold, per-row actions, reader, agent hand-off, clear with an 8 s undo | `notifications/center.rs`, `history.rs`, `reader.rs` | `notifications/center.rs` and the Quick Settings notifications page (`quick-settings/src/view/pages.rs`) | same |
+| Notification centre: groups by app, one scrolling list, per-row actions, reader, agent hand-off, clear with an 8 s undo | `notifications/center.rs`, `history.rs`, `reader.rs` | `notifications/center.rs`, and the one door to it: the bell and the Quick Settings notifications row both open the desk's centre (`quick-settings/src/verbs.rs` `ShowCentre`) | better (one list, no paging; the panel keeps no second copy) |
 | Quiet: Do Not Disturb, presenting, sharing, a focus schedule; banners held with a line saying why | `chrome_state` `notifications_quiet`, `QuietReason` | `NotificationsView::quiet`, `qs-notifications-quiet` | same |
 | Machine-wide banners on the other displays; a locked session shows a redacted count | `stack.rs` `draw_machine_wide`, `draw_locked_card` | `DesktopNotifications::show_banners_elsewhere`; `surface/notices.rs` | same |
 | Banners answer a call, reply inline, act on their sender | `banners.rs` `Ask::Banner/Reply/AnswerCall`; `notification.rs` `actions_for` | `notices.rs` `answer`, `DesktopNotifications::take_outcomes` | same |

@@ -1715,20 +1715,23 @@ fn escape_goes_back_a_page_in_the_panel_before_it_closes_it() {
         session.quick_settings_open() && session.surfaces().running(quick_settings::SURFACE)
     });
     let controls = drawn(&mut session);
-    // A page of the panel's own, over the controls: what the person reads.
+    // A page of the panel's own, over the controls: what plays on this
+    // machine, which is what the person reads after picking Sound.
     let page = common::wait_for(&mut session, "the panel's page", |session| {
         session
             .surfaces()
             .published(quick_settings::SURFACE)
             .into_iter()
-            .find(|offered| offered.action == "show-notifications")
+            .find(|offered| offered.action == "open-section")
     });
+    let mut asked = serde_json::Map::new();
+    asked.insert("section".to_owned(), "sound".into());
     session
         .ask_surface(
             quick_settings::SURFACE,
             &page.resource,
             &page.action,
-            ui::tilo_actions::remote::InvokeArgument::None,
+            ui::tilo_actions::remote::InvokeArgument::Json(asked),
         )
         .expect("the panel's app answers the page it publishes");
     let page = common::wait_for(&mut session, "the page drawn", |session| {

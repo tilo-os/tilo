@@ -4704,7 +4704,7 @@
     },
     {
      "id": "qs-section-notifications",
-     "story": "open the notifications section",
+     "story": "open the notifications row",
      "steps": [
       {
        "door": "desk.quick-settings",
@@ -4723,8 +4723,8 @@
      ],
      "capture": "the notifications section",
      "measure": [
-      "a section opened",
-      "what it holds"
+      "the one list it opens",
+      "where it opens"
      ]
     },
     {
@@ -4925,23 +4925,6 @@
      "capture": "the desk in dark",
      "measure": [
       "changed pixels"
-     ]
-    },
-    {
-     "id": "settings-quick-notifications",
-     "story": "the notification controls",
-     "steps": [
-      {
-       "door": "desk.quick-settings.section",
-       "section": "notifications"
-      },
-      {
-       "wait": 1.0
-      }
-     ],
-     "capture": "the notification controls",
-     "measure": [
-      "what they offer"
      ]
     },
     {
