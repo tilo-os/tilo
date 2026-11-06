@@ -393,6 +393,10 @@ impl<L: Layout> Arranged<L> {
 
     /// Slot `index`'s wrapper style: what the layout arranges it with, and the block size the
     /// fit's `aspect` derived from the width it was solved at.
+    ///
+    /// A wrapper that holds a derived height keeps no ratio of its own: with one, taffy would
+    /// derive the width back out of the height it was given, and a slot whose width its
+    /// container decides would shrink to a fraction of the room every other solve.
     fn slot_style(&self, index: usize, slot: &Slot) -> Style {
         let mut style = self.layout.slot(index, slot, &self.resolved);
         if slot.fit.aspect.is_some()
@@ -401,6 +405,7 @@ impl<L: Layout> Arranged<L> {
             // A ratio decides the block size; a layer that fills the cell or a share of the
             // column gives way to it, since the ratio is the size the view asked for.
             style.size.height = taffy::style_helpers::length(height);
+            style.aspect_ratio = None;
         }
         style
     }
@@ -450,12 +455,14 @@ impl<L: Layout> Arranged<L> {
             if slot.height.is_some_and(|held| (held - height).abs() < 0.5) {
                 continue;
             }
-            let Some(slot) = self.slots.get_mut(index) else {
-                continue;
-            };
-            slot.height = Some(height);
-            let mut style = self.layout.slot(index, slot, &self.resolved);
-            style.size.height = taffy::style_helpers::length(height);
+            if let Some(slot) = self.slots.get_mut(index) {
+                slot.height = Some(height);
+            }
+            let style = self
+                .slots
+                .get(index)
+                .map(|slot| self.slot_style(index, slot));
+            let Some(style) = style else { continue };
             if tree.set_style(wrapper, style).is_ok() {
                 changed = true;
             }

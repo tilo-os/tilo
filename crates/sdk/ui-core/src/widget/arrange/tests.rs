@@ -946,6 +946,36 @@ fn a_child_that_fills_at_an_aspect_keeps_its_ratio_in_a_row() {
     );
 }
 
+/// The same in a canvas that fills its pane and scrolls inside its own parts, where the layers
+/// gets no width of its own from the page: the ratio must not feed its width back from the
+/// height it derived, or the box shrinks to a fraction of the room and grows back every solve.
+#[test]
+fn an_aspect_layer_in_a_filling_page_keeps_its_width_and_ratio() {
+    let theme = Theme::dark();
+    let inner = Layers::layers().push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0));
+    let column = Stack::stack()
+        .fill_width()
+        .fill_height()
+        .push(Box::new(inner))
+        .push(boxed(40.0));
+    let mut page = Page::full().filling().push(Box::new(column));
+    solve_in(
+        &mut page,
+        &theme,
+        1000.0,
+        taffy::AvailableSpace::Definite(744.0),
+    );
+    let r = subject_rect(&page);
+    assert!(
+        (r.width() - r.height() * 16.0 / 9.0).abs() < 1.0,
+        "a layer at 16:9 in a filling page is {r:?}"
+    );
+    assert!(
+        (r.width() - 1000.0).abs() < 1.0,
+        "it takes the page's width: {r:?}"
+    );
+}
+
 /// A layer that fills the cell at an aspect takes the cell's width and the height the ratio
 /// gives, not the whole cell's height: `layers(fill, aspect: 16/9)` is the video box.
 #[test]
@@ -953,8 +983,16 @@ fn a_layer_that_fills_at_an_aspect_keeps_its_ratio() {
     let theme = Theme::dark();
     let layers = Layers::layers().push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0));
     // The layers stand in a page's column, which gives them the width they lay out in.
-    let mut page = Stack::stack().fill_width().push(Box::new(layers));
-    solve(&mut page, &theme, 800.0);
+    let mut page = Stack::stack()
+        .fill_width()
+        .fill_height()
+        .push(Box::new(layers));
+    solve_in(
+        &mut page,
+        &theme,
+        800.0,
+        taffy::AvailableSpace::Definite(600.0),
+    );
     let r = subject_rect(&page);
     assert!(
         (r.width() - r.height() * 16.0 / 9.0).abs() < 1.0,
