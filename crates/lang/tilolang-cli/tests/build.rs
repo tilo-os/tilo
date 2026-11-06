@@ -122,10 +122,17 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
             .iter()
             .any(|import| import.meta.app == "so.tilo.lang.notes")
     );
-    // Every app compiles with the standard library and carries it: the package its declarations
-    // belong to is loaded wherever its code runs. Its views are no views of its own: they expand
-    // into the app's, so its module is the small one every payload holds.
-    for app in &apps {
+    every_payload_carries_the_standard_library(&apps, &installed);
+}
+
+/// Every app compiles with the standard library and carries it: the package its declarations
+/// belong to is loaded wherever its code runs. Its views are no views of its own (they expand
+/// into the app's), so its module is the small one every payload holds.
+fn every_payload_carries_the_standard_library(
+    apps: &[package::BuiltApp],
+    installed: &tilolang_tilo::bundle::Bundle,
+) {
+    for app in apps {
         assert!(
             app.payload.join("imports/tilo.std.wasm").is_file(),
             "{} carries the standard library",
