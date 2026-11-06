@@ -58,9 +58,9 @@ YouTube.title = olrung72
 YouTube.videos = qnfjkti5
 channel_page = yh23kjna
 channel_row = uiu73od5
-clear_history = auitjgor
 clock = 3vka7hfz
 count_text = ty7ximvr
+delete_history = wzt3qvyb
 feed = mufcicuu
 feed.place = 3bn4tiip
 feed.query = nln5fijb
@@ -77,7 +77,6 @@ load_trending = khblapap
 name_client = 4s4rrocr
 play = 6ux63onw
 play_again = yc4rjoeg
-play_from = 2gma62nm
 playlist_page = eijjevst
 progress = jxokfijg
 refresh_channel = wx26izlg
@@ -117,3 +116,5 @@ watched_before = z2qcup5u
 
 # retired
 channel_link = oxhzdjad
+clear_history = auitjgor
+play_from = 2gma62nm

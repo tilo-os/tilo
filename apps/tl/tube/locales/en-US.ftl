@@ -181,17 +181,14 @@ d-6ux63onw = Play
 d-s334bmn6 = Resume
     .doc = Plays the video from where the person left off, when they did not finish it.
 
-d-2gma62nm = Play from
-    .doc = Records that the video is being played: it goes to the front of the history, and the service is asked for the address its bytes play from when that is not known yet.
-
 d-jxokfijg = Progress
-    .doc = Records how far into the video the person is, and that they watched it now.
+    .doc = Records how far into the video the person is — and that they watched it now: it moves to the front of the history — and asks the service for the address its bytes play from when that is not known yet.
 
-d-oqumfxkj = Remove from history
+d-oqumfxkj = Delete from history
     .doc = Takes one video out of the history.
 
-d-auitjgor = Clear history
-    .doc = Forgets everything the person watched.
+d-wzt3qvyb = Delete history
+    .doc = Deletes the watch history: everything the person watched.
 
 d-6lgqby4s = Search
     .doc = Searches YouTube: the service answers with channels, playlists and videos, written where the search view lists them.
@@ -282,13 +279,3 @@ d-z642pnnw = Video row
 d-uiu73od5 = Channel row
 
 d-pgyjhoe2 = Watch row
-
-d-mufcicuu-row0 = Feed for c
-
-d-dfz6u5sa-row0 = Video grid for v
-
-d-nxne4q6s-row0 = Search results for p
-    .w-videos = { $video_count } videos
-
-d-2f4tdssu-row0 = History list for h
-    .w-watched = { $share_text } watched

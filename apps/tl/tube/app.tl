@@ -158,21 +158,13 @@ fn count_text(n: Int) -> Text {
         tenths(n / 100000000, "B")
     } else if n >= 1000000 {
         tenths(n / 100000, "M")
-    } else if n >= 1000 {
-        tenths(n / 100, "K")
-    } else {
-        "{n}"
-    }
+    } else if n >= 1000 { tenths(n / 100, "K") } else { "{n}" }
 }
 
 /// `tenths` tenths of a unit, as a whole number and its tenth: 19 is "1.9", 21 is "2.1", and
 /// 210 is "21" rather than "21.0".
 fn tenths(tenths: Int, suffix: Text) -> Text {
-    if tenths % 10 == 0 {
-        "{tenths / 10}{suffix}"
-    } else {
-        "{tenths / 10}.{tenths % 10}{suffix}"
-    }
+    if tenths % 10 == 0 { "{tenths / 10}{suffix}" } else { "{tenths / 10}.{tenths % 10}{suffix}" }
 }
 
 /// How many people watched it.
@@ -194,9 +186,7 @@ fn two(n: Int) -> Text {
 fn clock(secs: Int) -> Text {
     if secs >= 3600 {
         "{secs / 3600}:{two(secs % 3600 / 60)}:{two(secs % 60)}"
-    } else {
-        "{secs / 60}:{two(secs % 60)}"
-    }
+    } else { "{secs / 60}:{two(secs % 60)}" }
 }
 
 /// Whether the person subscribed to the channel.
@@ -212,9 +202,7 @@ fn watched_before(yt: YouTube, v: Video) -> Option<WatchEntry> {
 /// The channels the person follows, as the client holds them, by name: a subscription whose
 /// channel has not been fetched yet is not listed here.
 fn subscribed_channels(yt: YouTube) -> List<Channel> {
-    yt.channels
-        .filter(c -> yt.subscriptions.any(s -> s.key == c.key))
-        .sort_by(.name)
+    yt.channels.filter(c -> yt.subscriptions.any(s -> s.key == c.key)).sort_by(.name)
 }
 
 /// The videos of the channels the person subscribed to, newest first: the subscriptions feed.
@@ -231,7 +219,8 @@ fn trending_videos(yt: YouTube) -> List<Video> {
 
 /// What the last search found, of the kind `wanted`: `video`, `channel` or `playlist`.
 fn found(yt: YouTube) -> List<Video> {
-    yt.videos.filter(v -> v.found_for != "" and v.found_for == yt.search_text)
+    yt.videos
+        .filter(v -> v.found_for != "" and v.found_for == yt.search_text)
         .sort_by(.published, desc)
 }
 
@@ -284,57 +273,49 @@ action watch_later(v: Video, saved: Bool = not v.watch_later) (
 
 /// Plays the video, whether or not it was played before.
 primary action play(v: Video) (icon: .play) {
-    play_from(v, 0.0)
+    progress(v, 0.0)
 }
 
 /// Plays the video from where the person left off, when they did not finish it.
 action resume(v: Video) (icon: .play, label: "Resume") {
     let yt = root YouTube
-    play_from(v, watched_before(yt, v)?.progress ?? 0.0)
+    progress(v, watched_before(yt, v)?.progress ?? 0.0)
 }
 
-/// Records that the video is being played: it goes to the front of the history, and the service
-/// is asked for the address its bytes play from when that is not known yet.
-action play_from(v: Video, from: Float) {
-    let yt = root YouTube
-    let at = now
-    if let entry = yt.history.find(h -> h.key == v.key) {
-        entry.watched = at
-        entry.progress = from
-        entry.title = v.title
-        entry.channel_name = v.channel_name
-    } else {
-        yt.history.insert(
-            WatchEntry(key: v.key, title: v.title, channel_name: v.channel_name, watched: at, progress: from),
-        )
-    }
-    if v.stream == "" {
-        outside("youtube.stream", v.key)
-    }
-}
-
-/// Records how far into the video the person is, and that they watched it now.
+/// Records how far into the video the person is — and that they watched it now: it moves to the
+/// front of the history — and asks the service for the address its bytes play from when that is
+/// not known yet. Starting a video, resuming it and moving the playhead as it plays are one
+/// action, so a video has one place it is played from.
 action progress(v: Video, at: Float) {
     let yt = root YouTube
     let watched = now
     if let entry = yt.history.find(h -> h.key == v.key) {
         entry.progress = at
         entry.watched = watched
+        entry.title = v.title
+        entry.channel_name = v.channel_name
     } else {
         yt.history.insert(
-            WatchEntry(key: v.key, title: v.title, channel_name: v.channel_name, watched: watched, progress: at),
+            WatchEntry(
+                key: v.key,
+                title: v.title,
+                channel_name: v.channel_name,
+                watched: watched,
+                progress: at,
+            ),
         )
     }
+    if v.stream == "" { outside("youtube.stream", v.key) }
 }
 
 /// Takes one video out of the history.
-destructive action forget(v: Video) (icon: .trash, label: "Remove from history") {
+destructive action forget(v: Video) (icon: .trash, label: "Delete from history") {
     let yt = root YouTube
     yt.history.remove_where(h -> h.key == v.key)
 }
 
-/// Forgets everything the person watched.
-destructive action clear_history(yt: YouTube) (icon: .trash) {
+/// Deletes the watch history: everything the person watched.
+destructive action delete_history(yt: YouTube) (icon: .trash, label: "Delete history") {
     yt.history.remove_where(h -> true)
 }
 
@@ -391,27 +372,22 @@ view feed(yt: YouTube) {
     ui.NavShell(content_kind: .grid, sidebar_title: .some("YouTube")) {
         sidebar: {
             ui.NavList(selected: here) {
-                ui.NavItem(
-                    "subscriptions",
-                    "Subscriptions",
-                    icon: .rss,
-                    count: .some(subs.len()),
-                ) {
+                ui.NavItem("subscriptions", "Subscriptions", icon: .rss, count: .some(subs.len())) {
                     on select: set(place, "subscriptions").then(set(query, ""))
                 }
                 ui.NavItem("trending", "Trending", icon: .flame, count: .some(trending.len())) {
                     on select: set(place, "trending").then(set(query, ""))
                 }
                 ui.NavSection("You", collapsible: true) {
-                    ui.NavItem(
-                        "later",
-                        "Watch later",
-                        icon: .bookmark,
-                        count: .some(later.len()),
-                    ) {
+                    ui.NavItem("later", "Watch later", icon: .bookmark, count: .some(later.len())) {
                         on select: set(place, "later").then(set(query, ""))
                     }
-                    ui.NavItem("liked", "Liked videos", icon: .thumbs_up, count: .some(liked.len())) {
+                    ui.NavItem(
+                        "liked",
+                        "Liked videos",
+                        icon: .thumbs_up,
+                        count: .some(liked.len()),
+                    ) {
                         on select: set(place, "liked").then(set(query, ""))
                     }
                     ui.NavItem(
@@ -440,49 +416,64 @@ view feed(yt: YouTube) {
             }
         }
         actions: {
-            std.header(actions(yt))
+            std.header
         }
         content: {
             scroll {
-                if here == "search" {
-                    search_results(yt, query)
-                } else if here == "history" {
-                    history_list(yt)
-                } else if here == "later" {
-                    video_grid(later, "Nothing kept for later", "The videos you keep are here")
-                } else if here == "liked" {
-                    video_grid(liked, "Nothing liked yet", "The videos you like are here")
-                } else if here == "trending" {
-                    if trending.is_empty() {
-                        ui.EmptyState("Nothing trending yet", message: .some("Ask YouTube what is trending"), icon: .flame, action: .some("Trending")) {
-                            on act: load_trending(yt)
+                page(full) {
+                    if here == "search" {
+                        search_results(yt, query)
+                    } else if here == "history" {
+                        history_list(yt)
+                    } else if here == "later" {
+                        video_grid(later, "Nothing kept for later", "The videos you keep are here")
+                    } else if here == "liked" {
+                        video_grid(liked, "Nothing liked yet", "The videos you like are here")
+                    } else if here == "trending" {
+                        if trending.is_empty() {
+                            ui.EmptyState(
+                                "Nothing trending yet",
+                                message: .some("Ask YouTube what is trending"),
+                                icon: .flame,
+                                action: .some("Trending"),
+                            ) {
+                                on act: load_trending(yt)
+                            }
+                        } else {
+                            video_grid(trending, "", "")
+                        }
+                    } else if subs.is_empty() {
+                        if yt.subscriptions.is_empty() {
+                            ui.EmptyState(
+                                "No subscriptions yet",
+                                message: .some(
+                                    "A channel's page subscribes to it, and its newest videos arrive here",
+                                ),
+                                icon: .rss,
+                            )
+                        } else {
+                            ui.EmptyState(
+                                "Nothing new yet",
+                                message: .some(
+                                    "Ask YouTube for the newest videos of the channels you follow",
+                                ),
+                                icon: .rss,
+                                action: .some("Refresh"),
+                            ) {
+                                on act: refresh_feed(yt)
+                            }
                         }
                     } else {
-                        video_grid(trending, "", "")
-                    }
-                } else if subs.is_empty() {
-                    if yt.subscriptions.is_empty() {
-                        ui.EmptyState(
-                            "No subscriptions yet",
-                            message: .some("A channel's page subscribes to it, and its newest videos arrive here"),
-                            icon: .rss,
-                        )
-                    } else {
-                        ui.EmptyState(
-                            "Nothing new yet",
-                            message: .some("Ask YouTube for the newest videos of the channels you follow"),
-                            icon: .rss,
-                            action: .some("Refresh"),
-                        ) {
-                            on act: refresh_feed(yt)
+                        stack(gap: .section) {
+                            if yt.feed_trouble != "" {
+                                ui.Banner(
+                                    "YouTube could not be reached",
+                                    message: .some(yt.feed_trouble),
+                                    kind: .warning,
+                                )
+                            }
+                            video_grid(subs, "", "")
                         }
-                    }
-                } else {
-                    stack(gap: .section) {
-                        if yt.feed_trouble != "" {
-                            ui.Banner("YouTube could not be reached", message: .some(yt.feed_trouble), kind: .warning)
-                        }
-                        video_grid(subs, "", "")
                     }
                 }
             }
@@ -574,17 +565,28 @@ view search_results(yt: YouTube, query: Text) {
 view history_list(yt: YouTube) {
     let entries = yt.history.sort_by(.watched, desc)
     if entries.is_empty() {
-        ui.EmptyState("Nothing watched yet", message: .some("The videos you watch are listed here"), icon: .history)
+        ui.EmptyState(
+            "Nothing watched yet",
+            message: .some("The videos you watch are listed here"),
+            icon: .history,
+        )
     } else {
         stack(gap: .section) {
             row(distribute: .between) {
                 text("History", role: .title)
-                button(clear_history(yt)) as clear
+                button(delete_history(yt)) as clear
             }
             ui.VirtualList(selection_follows_focus: true, in_column: true) {
                 for h in entries {
                     ui.ListItem(item: h, time: h.watched) {
-                        ui.ListRow(title: h.title, secondary: h.channel_name, meta: h.watched, badge: if h.progress > 0.0 { "{share_text(h.progress)} watched" } else { "" }) {
+                        ui.ListRow(
+                            title: h.title,
+                            secondary: h.channel_name,
+                            meta: h.watched,
+                            badge: if h.progress > 0.0 {
+                                "{share_text(h.progress)} watched"
+                            } else { "" },
+                        ) {
                             on activate: play_again(yt, h)
                         }
                     }
@@ -601,9 +603,7 @@ fn share_text(share: Float) -> Text {
 
 /// Plays the video a history entry names, from where the person left off.
 action play_again(yt: YouTube, h: WatchEntry) {
-    if let v = yt.videos.find(x -> x.key == h.key) {
-        play_from(v, h.progress)
-    }
+    if let v = yt.videos.find(x -> x.key == h.key) { progress(v, h.progress) }
 }
 
 /// A channel's page: its banner, its avatar and name, whether the person follows it, and its
@@ -679,7 +679,7 @@ view video_page(v: Video) {
                     ui.Image(v.thumbnail, alt: v.title, fit: .cover, aspect: 16.0 / 9.0)
                 }
                 ui.Button("Play", icon: .play, role: .primary) {
-                    on press: play_from(v, left)
+                    on press: progress(v, left)
                 }
             }
         } else {
@@ -774,7 +774,12 @@ view playlist_page(p: Playlist) {
 
 /// A video in a list: its name, who made it and how many people watched it.
 view video_row(v: Video) {
-    row(v.title, secondary: v.channel_name, meta: v.published, mark: if v.watch_later { .bookmark } else if v.liked { .thumbs_up })
+    row(
+        v.title,
+        secondary: v.channel_name,
+        meta: v.published,
+        mark: if v.watch_later { .bookmark } else if v.liked { .thumbs_up },
+    )
 }
 
 /// A channel in a list: its name, its handle and how many people follow it.
@@ -959,16 +964,40 @@ scenario "a subscriptions feed" {
     wires.liked = true
     let watched = now
     yt.history.insert(
-        WatchEntry(key: phone.key, title: phone.title, channel_name: phone.channel_name, watched: watched, progress: 0.35),
+        WatchEntry(
+            key: phone.key,
+            title: phone.title,
+            channel_name: phone.channel_name,
+            watched: watched,
+            progress: 0.35,
+        ),
     )
     yt.history.insert(
-        WatchEntry(key: cache.key, title: cache.title, channel_name: cache.channel_name, watched: watched, progress: 0.0),
+        WatchEntry(
+            key: cache.key,
+            title: cache.title,
+            channel_name: cache.channel_name,
+            watched: watched,
+            progress: 0.0,
+        ),
     )
     yt.history.insert(
-        WatchEntry(key: wires.key, title: wires.title, channel_name: wires.channel_name, watched: watched, progress: 0.72),
+        WatchEntry(
+            key: wires.key,
+            title: wires.title,
+            channel_name: wires.channel_name,
+            watched: watched,
+            progress: 0.72,
+        ),
     )
     yt.playlists.insert(
-        Playlist(key: "pl-science", title: "Science, explained", channel_name: veritasium.name, channel_key: veritasium.key, video_count: 24),
+        Playlist(
+            key: "pl-science",
+            title: "Science, explained",
+            channel_name: veritasium.name,
+            channel_key: veritasium.key,
+            video_count: 24,
+        ),
     )
     yt
 }
@@ -1053,7 +1082,13 @@ scenario "a video playing" -> Video {
         ),
     )
     yt.history.insert(
-        WatchEntry(key: v.key, title: v.title, channel_name: v.channel_name, watched: now, progress: 0.4),
+        WatchEntry(
+            key: v.key,
+            title: v.title,
+            channel_name: v.channel_name,
+            watched: now,
+            progress: 0.4,
+        ),
     )
     v
 }

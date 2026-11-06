@@ -188,9 +188,13 @@ fn scrolls(node: &InspectionNode) -> Scrolls {
         };
     }
     let lower = node.widget.to_ascii_lowercase();
+    // A navigation list scrolls its rows on the same list engine as a virtual list
+    // (`ui_core::widget::nav_list`): a sidebar with more places than fit scrolls, it does not
+    // overflow.
     let down = lower.contains("scroll")
         || lower.contains("virtuallist")
-        || lower.contains("describedlist");
+        || lower.contains("describedlist")
+        || lower.contains("navlist");
     Scrolls {
         down,
         across: false,

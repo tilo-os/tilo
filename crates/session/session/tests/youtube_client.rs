@@ -24,7 +24,7 @@ mod common;
 
 use tilo_session::Session;
 
-use common::{Repl, on_screen, placed_resources, private_home, until};
+use common::{CANVAS_ENTRY, Repl, on_screen, placed_resources, private_home, until};
 
 /// The YouTube client, as a package names it.
 const TUBE: &str = "so.tilo.lang.tube";
@@ -105,8 +105,9 @@ fn youtube_videos_of_a_creator_places_the_channel_and_its_page_draws() {
         "the client's package is the one the place loads"
     );
     assert!(
-        on_screen(&session, "Frames").is_some(),
-        "the canvas keeps its controls"
+        on_screen(&session, CANVAS_ENTRY).is_some(),
+        "the canvas keeps its entry beside the place: {:?}",
+        session.accessible_labels()
     );
 }
 
