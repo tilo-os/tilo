@@ -15,6 +15,17 @@ use audio::sound::Sound;
 use crate::i18n::t;
 use crate::{QuickSettingsState, SoundInput, SoundOutput, SoundStream};
 
+/// What a person calls an output: a device by the short name it gives
+/// itself, and the session's own software sink by a name the panel says in
+/// the person's language — the sink is Tilo's, not a device's.
+fn output_name(device: &audio::sound::Device) -> String {
+    if device.name == media::audio::SESSION_SINK {
+        t("qs-sound-session-output")
+    } else {
+        device.label.clone()
+    }
+}
+
 /// Land `sound` in the panel's readings: how loud the sound is, whether it
 /// is muted, which outputs there are and which one plays, the microphone
 /// that records, every application's stream, and who is using the camera or
@@ -32,7 +43,7 @@ pub(crate) fn land(qs: &mut QuickSettingsState, sound: &Sound) {
         .iter()
         .map(|device| SoundOutput {
             node: device.node,
-            name: device.label.clone(),
+            name: output_name(device),
             current: device.chosen,
         })
         .collect();
@@ -211,6 +222,27 @@ mod tests {
                 kind: os_actions::MediaKind::Microphone,
             }],
             "who is recording, named as the service attributes it"
+        );
+    }
+
+    /// The session's own software sink carries no device's name, so the
+    /// panel says it in the person's language; a device keeps the short name
+    /// it gives itself.
+    #[test]
+    fn an_output_is_named_in_the_persons_language() {
+        let mut sound = sound();
+        sound.outputs[0].name = media::audio::SESSION_SINK.into();
+        sound.outputs[0].label = "Session output".into();
+        let mut qs = QuickSettingsState::unread();
+        land(&mut qs, &sound);
+        assert_eq!(
+            qs.sound_outputs[0].name,
+            t("qs-sound-session-output"),
+            "the session's sink is Tilo's to name"
+        );
+        assert_eq!(
+            qs.sound_outputs[1].name, "Headphones",
+            "a device is named as it names itself"
         );
     }
 
