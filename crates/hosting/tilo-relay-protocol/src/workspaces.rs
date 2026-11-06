@@ -303,6 +303,13 @@ pub enum WorkspacesRequest {
         /// once someone joins with the invitation.
         #[serde(default)]
         wait_list_entry: Option<[u8; 32]>,
+        /// The one person the invitation names, by their user root, when the
+        /// inviter knows who they are inviting: only a device of theirs
+        /// redeems it, and a workspace taking people by invitation answers
+        /// its door with it when they ask. Absent, the invitation is a link
+        /// anyone holding it may redeem.
+        #[serde(default)]
+        recipient: Option<[u8; 32]>,
     },
     /// Cancel an invitation not yet redeemed: answered with
     /// [`WorkspacesReply::Pending`].

@@ -390,6 +390,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
             expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
             inviter_name: Some("Ada".into()),
             wait_list_entry: None,
+            recipient: None,
         },
     )
     .await

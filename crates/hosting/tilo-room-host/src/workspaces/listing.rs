@@ -426,6 +426,19 @@ impl Workspaces {
     /// invitation only they can redeem, and the token of a pre-admission at
     /// the workspace's default role, under the owner's listing. The door answers
     /// them as a [`tilo_relay_protocol::directory::DoorAnswer`].
+    ///
+    /// A workspace that takes people by invitation answers this door only to a
+    /// person it has invited: someone the workspace already has in it (joining
+    /// again from another device of theirs) or one an invitation still names
+    /// [`PendingInvitation::recipient_user_public_key`]. Everyone else is
+    /// turned away with the door's own words.
+    ///
+    /// For a person an invitation still names, the door answers with that
+    /// invitation, and records a grant for it at once so the page that made
+    /// the join redeems it the way every page redeems a door's answer: its
+    /// token is the one the door hands back. The invitation itself is the
+    /// decision — its role and lifetime are the inviter's — and the door
+    /// mints nothing.
     pub async fn admit_listed(
         &self,
         workspace: &str,
@@ -476,6 +489,52 @@ impl Workspaces {
                 return Err(DoorRefusal::refused(
                     "you were removed from this workspace within the day",
                 ));
+            }
+            // A person an invitation of the workspace's own names is handed
+            // that invitation, not a new one: the inviter decided its role and
+            // how long it stands, and its consent is the decision. The page
+            // that joined redeems it with a token as it redeems every door's
+            // answer, so the door records a grant for this invitation at once.
+            // An invitation a member already pre-admitted carries that grant,
+            // and the person redeems it with the member's own token; a page
+            // that asks the door without it is handed a fresh invitation as
+            // any guest is.
+            let their_own = self
+                .inner
+                .listings
+                .invites_only(workspace)
+                .then(|| governed.invitation_for(user, now))
+                .flatten()
+                .filter(|issued| !governed.admissions.carries(issued.invite_id));
+            if let Some(issued) = &their_own {
+                let mut grant = PreAdmission {
+                    workspace: workspace.to_owned(),
+                    role: listing.default_role,
+                    token_sha256: Sha256::digest(token.as_bytes()).into(),
+                    label: DOOR_LABEL.to_owned(),
+                    expires_at_ns: now.saturating_add(DOOR_INVITATION_NS),
+                    owner_user_public_key: [0; 32],
+                    signature: [0; 64],
+                };
+                grant
+                    .sign(&self.inner.host.key)
+                    .map_err(|error| refused(CollaborationError::new(error.to_string())))?;
+                governed
+                    .admissions
+                    .record(
+                        issued.invite_id,
+                        grant,
+                        now,
+                        self.inner.host.max_pre_admissions,
+                    )
+                    .map_err(|error| refused(CollaborationError::new(error)))?;
+                // The grant is written before the door answers: the page
+                // redeems with it at once.
+                return {
+                    drop(governed);
+                    self.written(workspace, true).await.map_err(refused)?;
+                    Ok((issued.clone(), token))
+                };
             }
             if let Some(retry_after_secs) = governed
                 .admissions

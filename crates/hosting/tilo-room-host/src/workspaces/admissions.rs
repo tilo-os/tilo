@@ -130,6 +130,13 @@ impl Admissions {
         Ok(())
     }
 
+    /// Whether `invite_id` already carries a grant, spent or not: a door
+    /// handing back an invitation a member pre-admitted keeps that grant,
+    /// whose own token admits them.
+    pub(super) fn carries(&self, invite_id: [u8; 32]) -> bool {
+        self.grants.iter().any(|known| known.invite_id == invite_id)
+    }
+
     /// The unspent, unexpired grant of `invite_id` whose token is `token`.
     pub(super) fn grant_for(
         &self,

@@ -615,6 +615,13 @@ impl GovernedWorkspace {
         &self.record.collaboration
     }
 
+    /// The signed invitation the workspace issued `person` that is still
+    /// redeemable at `now_ns`: the door of a workspace that takes people by
+    /// invitation hands that one back rather than minting one.
+    fn invitation_for(&self, person: [u8; 32], now_ns: u64) -> Option<IssuedInvitation> {
+        self.collaboration().invitation_for(person, now_ns)
+    }
+
     /// Take off the wait list everyone who joined with an invitation sent
     /// for their entry. A failed write leaves them for the next time.
     fn forget_joined_wait_list(&mut self) {
