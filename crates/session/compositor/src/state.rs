@@ -712,13 +712,21 @@ impl State {
             .unwrap_or_default()
     }
 
-    /// How `window` is framed: its own frame, or the desktop's.
+    /// How `window` is framed: its own frame, or the desktop's; a window
+    /// that fills a display is drawn as its buffer is, so the display can
+    /// show that buffer itself instead of a composed picture of it.
     pub(crate) fn framing(&self, window: &Window) -> crate::effects::Framing<'_> {
         crate::effects::Framing {
             frame: describe(self, window)
                 .and_then(|info| self.window_frames.get(&info.id))
                 .copied()
-                .unwrap_or(self.frame),
+                .unwrap_or_else(|| {
+                    if self.filled_display(window).is_some() {
+                        crate::window_frame::WindowFrame::square()
+                    } else {
+                        self.frame
+                    }
+                }),
             images: &self.frame_images,
             snapshots: &self.snapshots,
             hdr: &self.hdr,
