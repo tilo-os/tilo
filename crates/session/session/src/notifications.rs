@@ -29,7 +29,7 @@ use tilo_desktop_surface::{DesktopNotifications, NotificationOutcome};
 use tilo_lock::MutexRecover as _;
 use tilo_notification_banners::{Ask, Link};
 use tilo_notifications_service::{Arrival, Caller, Callers, CloseReason, Notifications, Sender};
-use tilo_quick_settings::hosted::{KeptNotification, NotificationCentre};
+use tilo_quick_settings::hosted::NotificationCentre;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_session_power::PowerLink;
@@ -82,6 +82,72 @@ pub(crate) fn mount_banners(
 /// The most unread notifications one app's icon counts to.
 const MAX_BADGE: u32 = 9_999;
 
+/// Where the centre's history is kept between sessions: this person's state
+/// directory, as the emoji's recents are.
+pub(crate) fn history_file() -> Option<std::path::PathBuf> {
+    tilo_paths::state_dir().map(|root| root.join("tilo/notifications.json"))
+}
+
+/// Keep what the centre holds, so the next session opens the centre this one
+/// had: its titles, its bodies, its senders and how old each is. What a row
+/// could act on does not survive: the sender, its actions and the session's
+/// routes are gone with it.
+pub(crate) fn save_history(notices: &DesktopNotifications, path: &std::path::Path) {
+    let history = notices.log().history().to_vec();
+    let encoded = match tilo_desktop_surface::notifications::encode_history(
+        &history,
+        ui::time::SystemTime::now(),
+        ui::time::now(),
+    ) {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            tracing::warn!(%error, "the notification centre was not written");
+            return;
+        }
+    };
+    if let Some(parent) = path.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!(%error, "no place for the notification centre");
+        return;
+    }
+    // Written beside and moved over, so a session that ends mid-write never
+    // leaves half a file to be read back.
+    let beside = path.with_extension("json.new");
+    if let Err(error) =
+        std::fs::write(&beside, &encoded).and_then(|()| std::fs::rename(&beside, path))
+    {
+        tracing::warn!(%error, "the notification centre was not written");
+    }
+}
+
+/// Open the centre the last session left, and hand back where it is kept
+/// so this session writes it back there.
+pub(crate) fn restore_history(notices: &DesktopNotifications) -> Option<std::path::PathBuf> {
+    let path = history_file()?;
+    restore_kept(notices, &path);
+    Some(path)
+}
+
+/// Open the centre kept at `path`: what it kept, as old as it was.
+fn restore_kept(notices: &DesktopNotifications, path: &std::path::Path) {
+    let Ok(bytes) = std::fs::read(path) else {
+        return;
+    };
+    match tilo_desktop_surface::notifications::decode_history(
+        &bytes,
+        ui::time::SystemTime::now(),
+        ui::time::now(),
+    ) {
+        Ok(history) => {
+            if !history.is_empty() {
+                notices.restore_history(history);
+            }
+        }
+        Err(error) => tracing::warn!(%error, "the notification centre kept was not read"),
+    }
+}
+
 /// The event sound an arrival asks for: a `suppress-sound` sender asks for
 /// none, a critical one gets the machine's error voice — something failed,
 /// and that sound plays through quiet modes — and anything else gets its
@@ -123,10 +189,11 @@ pub(crate) fn shown(
     };
     notification.sender_id = Some(sent.id);
     // `app_name` is the sender's own word: an attributed app is named by
-    // what the device calls that app, an unattributed sender's name is shown
-    // as its claim, never as who it is.
+    // what the device calls that app — a program with no app behind it by
+    // what it calls itself — and an unattributed sender's name is shown as
+    // its claim, never as who it is.
     notification.app_name = match app_id.as_deref() {
-        Some(id) => Some(crate::app_names::app_name(id)),
+        Some(id) => Some(crate::app_names::sender_name(id, &sent.app_name)),
         None => notifications::sender_claim(&sent.app_name),
     };
     // Artwork from what proves the app first, then lower-trust hints that
@@ -341,12 +408,9 @@ pub(crate) struct SessionNotifications {
     /// The Do Not Disturb change since the readout last said one: whoever
     /// flipped the switch, on screen it says so.
     quiet_changed: Cell<Option<bool>>,
-    /// The agent a kept notification can be handed to, where one is live in
-    /// the workspace in front: what the centre's rows offer.
-    taking_agent: Option<String>,
-    /// The kept notifications the person handed to that agent, waiting for
-    /// the loop that asks it.
-    handed: Vec<u64>,
+    /// Where what the centre keeps is written between sessions; a session
+    /// with nowhere to write it keeps the centre in memory only.
+    history: Option<std::path::PathBuf>,
 }
 
 impl SessionNotifications {
@@ -359,6 +423,7 @@ impl SessionNotifications {
         policy: Arc<Mutex<NotificationPolicy>>,
         signals: Rc<NoticeSignals>,
         power: Option<PowerLink>,
+        history: Option<std::path::PathBuf>,
     ) -> Self {
         let opened: Opened = Rc::default();
         let choosing = Rc::clone(&opened);
@@ -408,8 +473,7 @@ impl SessionNotifications {
             published: None,
             generation: 0,
             quiet_changed: Cell::new(None),
-            taking_agent: None,
-            handed: Vec::new(),
+            history,
         }
     }
 
@@ -503,79 +567,26 @@ impl SessionNotifications {
         std::mem::take(&mut *self.opened.borrow_mut())
     }
 
-    /// The notification centre as the session publishes it: what it keeps,
-    /// newest first, why fresh banners are held and whether a Clear all can
-    /// be undone.
+    /// The notification centre as the session publishes it: how many it
+    /// keeps. The list itself is the shell's centre, which reads the desk's
+    /// own log; what the panel needs is the count that opens it.
     pub(crate) fn centre(&self) -> NotificationCentre {
-        let now = ui::time::now();
-        let unix_ms = ui::time::unix_now_ms();
-        let log = self.desktop.log();
-        let rows: Vec<KeptNotification> = log
-            .history()
-            .iter()
-            .rev()
-            .map(|notification| KeptNotification {
-                id: notification.id,
-                group: notifications::group_key(notification)
-                    .unwrap_or_else(|| format!("notification-{}", notification.id)),
-                app: notifications::group_label(notification),
-                title: notification.title.clone(),
-                body: notification.body.clone(),
-                // When it arrived, as the clock the panel counts ages by
-                // reads it: the log keeps the instant it was posted.
-                created_ms: unix_ms.saturating_sub(
-                    u64::try_from(
-                        now.saturating_duration_since(notification.created_at)
-                            .as_millis(),
-                    )
-                    .unwrap_or(u64::MAX),
-                ),
-                actions: notification.actions.clone(),
-                agent: self.taking_agent.clone(),
-                opens: notification.app_id.is_some() || !notification.actions.is_empty(),
-            })
-            .collect();
-        let can_undo = log.can_undo_clear();
-        drop(log);
         NotificationCentre {
-            count: rows.len(),
-            rows,
-            quiet: self.quiet_status(),
-            can_undo,
+            count: self.desktop.log().history().len(),
         }
     }
 
     /// Say which agent a kept notification can be handed to, where one is
     /// live here: the workspace in front's first agent, as the runs know it.
-    pub(crate) fn set_taking_agent(&mut self, agent: Option<String>) {
-        self.taking_agent = agent;
-    }
-
-    /// Hand the kept notification `id` to the agent that takes one here,
-    /// waiting for the loop that asks it.
-    pub(crate) fn ask_hand_to_agent(&mut self, id: u64) {
-        self.handed.push(id);
+    pub(crate) fn set_taking_agent(&self, agent: Option<String>) {
+        self.desktop.set_taking_agent(agent);
     }
 
     /// The notifications handed to that agent since the last look, as the
     /// agent's name, the title it is told and the body it reads: a
     /// notification no longer kept is not handed on.
-    pub(crate) fn take_handed(&mut self) -> Vec<(String, String, String)> {
-        let ids = std::mem::take(&mut self.handed);
-        let Some(agent) = self.taking_agent.clone() else {
-            return Vec::new();
-        };
-        let log = self.desktop.log();
-        ids.into_iter()
-            .filter_map(|id| {
-                let notification = log.history_entry(id)?;
-                Some((
-                    agent.clone(),
-                    notification.title.clone(),
-                    notification.body.clone(),
-                ))
-            })
-            .collect()
+    pub(crate) fn take_handed(&self) -> Vec<(String, String, String)> {
+        self.desktop.take_handed()
     }
 
     /// Choose a retained notification in the centre, as the panel asks.
@@ -706,6 +717,13 @@ impl SessionNotifications {
             self.published = Some(revision);
             self.banners.publish(self.desktop.feed());
         }
+        // What the centre kept since the last look is written to this
+        // person's state, so a restart opens the centre it had.
+        if self.desktop.take_history_dirty()
+            && let Some(path) = &self.history
+        {
+            save_history(&self.desktop, path);
+        }
         self.publish_signals();
         appeared
     }
@@ -730,8 +748,10 @@ impl SessionNotifications {
                 notification.show_on_lock_screen = effective.lock_screen;
                 // Held banners go straight to the centre, unread: quiet
                 // asks for calm, not to be kept uninformed. Presenting is
-                // held whatever the sender's own rule says.
-                let id = if effective.banners && !self.presenting() {
+                // held whatever the sender's own rule says, and so is a
+                // banner while the centre stands open: it joins the list
+                // the person is reading rather than covering it.
+                let id = if effective.banners && !self.presenting() && !self.desktop.centre_open() {
                     self.desktop.post(notification)
                 } else {
                     self.desktop.post_quiet(notification)
@@ -944,13 +964,6 @@ pub enum CentreAction {
     /// Bring back what the last Clear all took
     #[effect(own_device, idempotent)]
     UndoClear,
-    /// Hand a notification the centre kept to an agent as a task
-    #[effect(own_device)]
-    HandToAgent {
-        /// The notification's id, as the rows carry it.
-        #[param("The notification")]
-        notification: u64,
-    },
     /// Open one of the notifications the centre kept
     #[effect(own_device)]
     Open {
@@ -1001,7 +1014,6 @@ impl Service for Served {
                 "act" => t("session-notifications-act"),
                 "clear" => t("session-notifications-clear"),
                 "undo-clear" => t("session-notifications-undo-clear"),
-                "hand-to-agent" => t("session-notifications-hand-to-agent"),
                 "open" => t("session-notifications-open"),
                 _ => continue,
             };
@@ -1048,11 +1060,6 @@ impl Service for Served {
             CentreAction::UndoClear => self.notifications.borrow().undo_clear(),
             CentreAction::Open { notification } => {
                 self.notifications.borrow().ask_open(notification);
-            }
-            CentreAction::HandToAgent { notification } => {
-                self.notifications
-                    .borrow_mut()
-                    .ask_hand_to_agent(notification);
             }
             CentreAction::SetQuiet { on } => {
                 if let Err(error) = self.notifications.borrow().set_do_not_disturb(on) {
@@ -1103,7 +1110,7 @@ impl crate::Shared {
         // What the person handed to an agent becomes the task it acts on, in
         // the workspace in front: the notification's title is what it is
         // asked, and the whole of it is what the agent reads.
-        for (agent, title, body) in self.notifications.borrow_mut().take_handed() {
+        for (agent, title, body) in self.notifications.borrow().take_handed() {
             let title: String = title.chars().take(240).collect();
             let body = if body.is_empty() {
                 title.clone()

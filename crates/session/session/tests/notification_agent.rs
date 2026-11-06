@@ -92,8 +92,9 @@ fn press(session: &mut Session, effect: &str, args: Value) {
 }
 
 /// A program of this login at the agent door: it says who it is, and asks what
-/// the session has for it. What it read comes back, however far it got.
-fn door_client(socket: &Path, answers: &mpsc::Sender<Vec<Value>>) {
+/// the session has for it. What it read comes back, however far it got, and it
+/// stays seated until `leave` lets it go.
+fn door_client(socket: &Path, answers: &mpsc::Sender<Vec<Value>>, leave: &mpsc::Receiver<()>) {
     let stream = UnixStream::connect(socket).expect("the agent door's socket");
     stream
         .set_read_timeout(Some(tilo_test_env::hang_bound()))
@@ -132,6 +133,7 @@ fn door_client(socket: &Path, answers: &mpsc::Sender<Vec<Value>>) {
         }
     }
     let _ = answers.send(read);
+    let _ = leave.recv();
 }
 
 #[test]
@@ -156,21 +158,21 @@ fn a_notification_handed_to_a_live_agent_becomes_its_task() {
     // The person lets the program work here as its agent: from then on the
     // desk's workspace holds it.
     let (answers, received) = mpsc::channel();
-    let client = std::thread::spawn(move || door_client(&socket, &answers));
+    let (leaving, leave) = mpsc::channel();
+    let client = std::thread::spawn(move || door_client(&socket, &answers, &leave));
     pump(&mut session, |_| !questions.pending().is_empty());
     press(&mut session, PortalEffect::SELECT.id, json!({"index": 1}));
     press(&mut session, PortalEffect::CONFIRM.id, json!({}));
     let read = received
         .recv_timeout(tilo_test_env::hang_bound())
         .expect("the program at the door is served");
-    client.join().expect("the program's thread");
     assert!(
         read[1].get("error").is_none(),
         "it works here as the agent it was admitted as: {read:?}"
     );
 
     // A notice from an app, pushed off the banners by the ones after it: the
-    // centre keeps it, and says which agent it can be handed to.
+    // centre keeps it, and offers the agent that works here.
     let kept = session
         .notifications()
         .post(Notification::new("Invoice", "From Ada"));
@@ -187,28 +189,16 @@ fn a_notification_handed_to_a_live_agent_becomes_its_task() {
             .post(Notification::new(title, "From Ada"));
     }
     let centre = until(&mut session, |session| {
-        let centre = session.read(NOTIFICATIONS_RESOURCE)?;
-        let rows = centre.get("rows")?.as_array()?;
-        rows.iter()
-            .any(|row| {
-                row.get("id").and_then(Value::as_u64) == Some(kept)
-                    && row.get("agent").and_then(Value::as_str) == Some("claude-code")
-            })
-            .then_some(centre)
+        let count = session
+            .read(NOTIFICATIONS_RESOURCE)?
+            .get("count")?
+            .as_u64()?;
+        (count > 0).then_some(count)
     });
-    assert!(
-        centre.get("rows").is_some(),
-        "the centre keeps it, and says who takes it: {centre:?}"
-    );
+    assert!(centre > 0, "the centre kept the one pushed off the stack");
 
-    // The person hands it on, as the panel's row does.
-    session
-        .invoke(
-            NOTIFICATIONS_RESOURCE,
-            "hand-to-agent",
-            &Map::from_iter([("notification".to_owned(), Value::from(kept))]),
-        )
-        .expect("the centre takes the hand-off");
+    // The person presses the agent on the kept one's row in the centre.
+    session.notifications().hand_to_agent(kept);
     let run = until(&mut session, |session| {
         let runs = session.read(AGENT_RUNS_RESOURCE)?;
         let runs = runs.get("runs")?.as_array()?;
@@ -229,4 +219,6 @@ fn a_notification_handed_to_a_live_agent_becomes_its_task() {
         Some(true),
         "a hand-off is a quick task, answered once"
     );
+    leaving.send(()).expect("the program leaves");
+    client.join().expect("the program's thread");
 }

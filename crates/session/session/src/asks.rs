@@ -148,8 +148,7 @@ impl Shared {
             ChromeIntent::ToggleQuickSettings => {
                 // The press that closed it is still being delivered: the same
                 // press does not open it again.
-                if self.quick_settings && !self.overlays.dismissed_recently(Slot::QuickSettings)
-                {
+                if self.quick_settings && !self.overlays.dismissed_recently(Slot::QuickSettings) {
                     if self.overlays.is_open(Slot::QuickSettings) {
                         self.overlays.close(Slot::QuickSettings);
                     } else {
@@ -628,11 +627,11 @@ impl Shared {
         let mut invocations = self.invocations.borrow_mut();
         match action {
             ShortcutAction::QuickSettings => self.toggle_quick_settings(),
-            // The panel's own pages: it is asked for them once it runs, which
-            // is a pass after the stack has it up.
+            // The bell opens the one list of notifications: the centre over
+            // the desk, which a press on it opens and another closes.
             ShortcutAction::Notifications => {
-                self.show_quick_settings();
-                self.panel_asks.borrow_mut().push("show-notifications");
+                invocations
+                    .push(Invocation::new(DESK_RESOURCE, "show-surface").with("surface", "centre"));
             }
             ShortcutAction::ClipboardHistory => {
                 self.show_quick_settings_beside_caret();

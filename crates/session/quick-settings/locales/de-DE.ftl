@@ -172,7 +172,6 @@ status-wired-named = Kabelgebunden: { $name }
 # The panel as an app: its pages, the clipboard's search, the password
 # prompt and arranging the controls.
 qs-back-to-controls = Zurück zu den Schnelleinstellungen
-qs-back-to-notifications = Zurück zu den Mitteilungen
 qs-bluetooth-accessory = Bluetooth-Zubehör
 qs-bluetooth-disconnect = { $accessory } trennen, ohne es zu vergessen
 qs-bluetooth-move = { $accessory } verschieben
@@ -209,13 +208,6 @@ qs-devices-send-here = Nimmt den Ton dieses Geräts
 qs-edit-move-down = Nach unten
 qs-edit-move-up = Nach oben
 qs-edit-required = Erforderlich
-qs-notification-dismiss = Schließen
-qs-notification-gone = Diese Mitteilung wird nicht mehr aufbewahrt
-qs-notification-hand-to = An { $agent } übergeben
-qs-notifications-clear = Alle löschen
-qs-notifications-dismiss-all = Alle von { $app } schließen
-qs-notifications-empty = Keine aktuellen Mitteilungen
-qs-notifications-undo = Rückgängig
 qs-refused-dismiss = Verwerfen
 qs-refused-nothing-answers = Nichts auf diesem Gerät antwortet darauf
 qs-wifi-password = Passwort

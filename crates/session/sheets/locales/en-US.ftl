@@ -392,6 +392,11 @@ lock-pause = Pause
 lock-next = Next song
 lock-previous = Previous song
 lock-battery = Battery
+lock-battery-critical = Battery at { $percent }. Plug in to keep this machine running.
+lock-notifications = { $count ->
+    [one] 1 notification
+   *[other] { $count } notifications
+}
 lock-suspend = Suspend
 lock-restart = Restart
 lock-shut-down = Shut down

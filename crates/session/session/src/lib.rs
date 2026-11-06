@@ -183,9 +183,7 @@ use std::time::Instant;
 
 use tilo_actions::remote::InvokeArgument;
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_compositor::{
-    Compositor, DisplayConfig, Error, KeyboardLayout, NestedConfig, OutputConfig, WindowPolicy,
-};
+use tilo_compositor::{Compositor, DisplayConfig, Error, NestedConfig, OutputConfig, WindowPolicy};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::DesktopAsk;
 use tilo_desktop::osd::{Hint, Osd, OsdKind};
@@ -543,17 +541,6 @@ struct Shared {
     folder_import: RefCell<Option<import_readiness::Continuation>>,
 }
 
-/// Type with `keyboard`: the compositor's keymap, and the words printed on
-/// the keys of what the session draws (the shortcut guide, the desk's
-/// chords), both follow it.
-pub(crate) fn apply_keyboard(compositor: &mut Compositor, keyboard: &KeyboardLayout) {
-    compositor.set_keyboard_layout(keyboard);
-    ui::keycaps::set_active(ui::keycaps::Keycaps::from_xkb(
-        &keyboard.layout,
-        &keyboard.variant,
-    ));
-}
-
 /// A running session: the compositor and the desktop it hosts.
 pub struct Session {
     compositor: Compositor,
@@ -806,6 +793,8 @@ impl Session {
         // What the desk and the chrome ask of the session, from their own
         // widget trees.
         let notices = tilo_desktop_surface::DesktopNotifications::default();
+        // The centre opens with what it kept when this session last ended.
+        let notice_history = notifications::restore_history(&notices);
         // What the bar reads of the notifications, and the policy arrivals
         // are judged by: the person may change it at any time.
         let notice_signals = Rc::new(notifications::NoticeSignals::default());
@@ -1048,7 +1037,7 @@ impl Session {
         // its next pass.
         options.wake.bind(compositor.waker());
         compositor.set_input_config(options.config.input.clone());
-        apply_keyboard(&mut compositor, &options.config.keyboard);
+        controls::apply_keyboard(&mut compositor, &options.config.keyboard);
         compositor.set_idle_config(options.config.idle);
         a11y_settings::apply(&mut compositor, &options.config.a11y)?;
         compositor.set_backlight(Box::new(display_settings::PanelBacklight::find()));
@@ -1392,7 +1381,8 @@ impl Session {
             directory.is_some(),
         );
 
-        // The one worker that encodes a recording and writes every capture.
+        // The one worker that encodes a recording and writes every capture's
+        // file, and what it makes of the recorder's work.
         let (capture_io, capture_notes) = capture_io::CaptureIo::new(options.wake.handle());
         // The capture studio, over everything it captures.
         let capture_studio = capture_studio::mount(
@@ -1402,7 +1392,6 @@ impl Session {
             nearby.as_ref(),
             Rc::clone(&capture_io),
             capture_notes,
-            &live_activities,
         );
 
         // The desktop's own chords win over every app's: the portal's
@@ -1799,6 +1788,7 @@ impl Session {
                 notification_policy,
                 notice_signals,
                 options.power.clone(),
+                notice_history,
             ))),
             asker,
             agent_door: RefCell::new(agent_door),

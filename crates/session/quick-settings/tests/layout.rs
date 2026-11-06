@@ -685,43 +685,6 @@ fn a_devices_row_says_which_of_its_buttons_was_pressed() {
 }
 
 #[test]
-fn the_notifications_page_groups_by_app_and_says_why_banners_are_held() {
-    let mut app = staged("notifications");
-    assert!(has(&mut app, "qs-notifications-quiet"));
-    let chat = target(&mut app, "qs-notification-1");
-    let calendar = target(&mut app, "qs-notification-3");
-    assert!(chat.y1 <= calendar.y0, "newest group first");
-    assert!(has(&mut app, "qs-notifications-clear"));
-}
-
-/// A kept notification offers the sender's own choices as buttons under
-/// its row, so it can be dealt with without opening it.
-#[test]
-fn a_notification_offers_its_senders_choices_inline() {
-    let (mut app, host) = hosted("notifications");
-    click(&mut app, "qs-notification-3-dismiss");
-    assert_eq!(
-        host.ran(),
-        [QsEffect::RunNotificationAction {
-            notification: 3,
-            action: "dismiss".into(),
-        }]
-    );
-}
-
-#[test]
-fn a_notification_nothing_can_open_is_read_in_full_and_back_returns_to_the_list() {
-    let (mut app, host) = hosted("notifications");
-    click(&mut app, "qs-notification-3");
-    assert!(host.ran().is_empty(), "nothing opens it");
-    assert!(has(&mut app, "qs-notification-body"));
-    click(&mut app, "qs-back");
-    assert!(has(&mut app, "qs-notification-1"));
-    click(&mut app, "qs-notification-1");
-    assert_eq!(host.ran(), [QsEffect::OpenNotification { notification: 1 }]);
-}
-
-#[test]
 fn an_accessory_moves_to_a_device_in_reach_and_disconnects_from_here() {
     // Where things rest: the motion on the way is its own test.
     let _settled = ui::motion::testing::settled();
@@ -756,24 +719,6 @@ fn an_accessory_moves_to_a_device_in_reach_and_disconnects_from_here() {
                 address: "00:1B:66:A1:B2:C3".into(),
             },
         ]
-    );
-}
-
-/// A kept notification of a desktop an agent works on goes to that agent as
-/// the task it acts on.
-#[test]
-fn a_notification_is_handed_to_the_agent_that_takes_it() {
-    // Where things rest: the motion on the way is its own test.
-    let _settled = ui::motion::testing::settled();
-    let (mut app, host) = hosted("notifications");
-    app.harness()
-        .perform_named("qs-notification-1/action/1", &ui::a11y::Action::Activate)
-        .expect("the notification offers its agent");
-    app.settle();
-    assert_eq!(
-        host.ran(),
-        [QsEffect::HandNotificationToAgent { notification: 1 }],
-        "the row's agent action hands the notification on"
     );
 }
 
@@ -969,10 +914,6 @@ fn back_closes_a_section_leaves_a_page_and_finishes_arranging() {
     panel.back();
     assert_eq!(panel.section, None);
     assert!(!panel.showing().goes_back(), "now Back closes the panel");
-    panel.show_notifications();
-    panel.read_notification(3);
-    panel.back();
-    assert_eq!(panel.page, Page::Notifications);
     panel.paste();
     assert!(
         !panel.showing().goes_back(),
@@ -1158,8 +1099,8 @@ fn a_page_change_keeps_the_panels_edges() {
     let footer = target(&mut app, "qs-power");
     let wifi = target(&mut app, "qs-tile-wifi");
 
-    // The notifications page, which stands one deep.
-    app.invoke(QuickSettings::SHOW_NOTIFICATIONS.invoke())
+    // An accessory's page, which stands one deep over the controls.
+    app.invoke(QuickSettings::SHOW_ACCESSORY.with("00:1B:66:A1:B2:C3".to_owned()))
         .unwrap();
     app.settle();
     assert!(
@@ -1169,7 +1110,7 @@ fn a_page_change_keeps_the_panels_edges() {
     assert_eq!(
         target(&mut app, "qs-power"),
         footer,
-        "the notifications page leaves the footer where the controls had it"
+        "the accessory's page leaves the footer where the controls had it"
     );
 
     // Back to the controls, and a section under them.

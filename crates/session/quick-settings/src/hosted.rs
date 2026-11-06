@@ -319,72 +319,13 @@ pub struct ClipboardCopy {
     pub from: Option<String>,
 }
 
-/// One notification the centre keeps, as the session publishes it: what it
-/// says, when it arrived, and what it offers.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct KeptNotification {
-    /// Names it in the centre's actions.
-    pub id: u64,
-    /// The app group it is listed under, by its stable key.
-    pub group: String,
-    /// The app, as the group is named.
-    pub app: String,
-    pub title: String,
-    pub body: String,
-    /// When it arrived, in Unix milliseconds.
-    pub created_ms: u64,
-    /// The sender's choices, as `(key, label)`.
-    pub actions: Vec<(String, String)>,
-    /// The agent it can be handed to, where one is live.
-    pub agent: Option<String>,
-    /// Choosing it opens something (its sender, or its app); otherwise it
-    /// is read in full in the panel.
-    pub opens: bool,
-}
-
-/// The notification centre, as the session publishes it: what it keeps,
-/// why fresh banners are held, and whether a Clear all can be undone.
+/// The notification centre, as the session publishes it: how many it keeps.
+/// The list itself is the shell's centre, which reads its own log; the panel
+/// shows the count that opens it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NotificationCentre {
     /// How many it keeps.
     pub count: usize,
-    /// Newest first.
-    pub rows: Vec<KeptNotification>,
-    /// Why fresh notifications are being held (Do Not Disturb, presenting,
-    /// a focus schedule); `None` while they show.
-    pub quiet: Option<String>,
-    /// The last Clear all can still be undone.
-    pub can_undo: bool,
-}
-
-impl NotificationCentre {
-    /// The centre as the panel lists it, as of `now_ms`.
-    #[must_use]
-    pub fn view(&self, now_ms: u64) -> crate::NotificationsView {
-        crate::NotificationsView {
-            rows: self
-                .rows
-                .iter()
-                .map(|kept| crate::NotificationRow {
-                    id: kept.id,
-                    group: kept.group.clone(),
-                    app: kept.app.clone(),
-                    title: kept.title.clone(),
-                    body: kept.body.clone(),
-                    age: ui::format::relative(
-                        i64::try_from(now_ms.saturating_sub(kept.created_ms) / 1000)
-                            .unwrap_or(i64::MAX),
-                    ),
-                    // A row shows at most the two the banner showed it.
-                    actions: kept.actions.iter().take(2).cloned().collect(),
-                    agent: kept.agent.clone(),
-                    opens: kept.opens,
-                })
-                .collect(),
-            quiet: self.quiet.clone(),
-            can_undo: self.can_undo,
-        }
-    }
 }
 
 /// Formats whose copies are pictures.
@@ -486,76 +427,6 @@ mod tests {
             pinned: false,
             from: None,
         }
-    }
-
-    /// One notification the centre keeps.
-    fn kept(id: u64, title: &str, created_ms: u64, actions: &[(&str, &str)]) -> KeptNotification {
-        KeptNotification {
-            id,
-            group: "mail".to_owned(),
-            app: "Mail".to_owned(),
-            title: title.to_owned(),
-            body: "Two new messages".to_owned(),
-            created_ms,
-            actions: actions
-                .iter()
-                .map(|(key, label)| ((*key).to_owned(), (*label).to_owned()))
-                .collect(),
-            agent: None,
-            opens: true,
-        }
-    }
-
-    #[test]
-    fn the_panel_lists_the_centre_the_session_publishes() {
-        // Case `the_centre_lists_what_arrived_named_after_its_app`:
-        // A row says what arrived, from which app, how long ago, and offers
-        // at most the two choices the banner offered.
-        let now = 1_000_000;
-        let centre = NotificationCentre {
-            count: 2,
-            rows: vec![
-                kept(2, "New mail", now - 30_000, &[]),
-                kept(
-                    1,
-                    "Backup finished",
-                    now - 600_000,
-                    &[
-                        ("retry", "Try again"),
-                        ("open", "Open"),
-                        ("late", "Too late"),
-                    ],
-                ),
-            ],
-            quiet: Some("Do Not Disturb".to_owned()),
-            can_undo: true,
-        };
-        let view = centre.view(now);
-        assert_eq!(
-            view.rows
-                .iter()
-                .map(|row| (row.title.as_str(), row.app.as_str()))
-                .collect::<Vec<_>>(),
-            [("New mail", "Mail"), ("Backup finished", "Mail")],
-            "newest first, named after its app"
-        );
-        assert_eq!(
-            view.rows[0].age,
-            ui::format::relative(30),
-            "a row's age is its own arrival's"
-        );
-        assert_eq!(view.rows[1].age, ui::format::relative(600));
-        assert_eq!(
-            view.rows[1]
-                .actions
-                .iter()
-                .map(|(key, _)| key.as_str())
-                .collect::<Vec<_>>(),
-            ["retry", "open"],
-            "a row offers the two the banner offered"
-        );
-        assert_eq!(view.quiet.as_deref(), Some("Do Not Disturb"));
-        assert!(view.can_undo, "the centre's Clear all can be undone");
     }
 
     #[test]

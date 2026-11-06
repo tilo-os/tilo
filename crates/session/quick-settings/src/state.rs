@@ -131,8 +131,8 @@ pub struct QuickSettingsState {
     pub device_rows: Vec<crate::hosted::HostedRow>,
     /// Which controls the panel shows, in the person's order.
     pub arrangement: settings_store::hardware::QuickSettingsConfig,
-    /// The notifications kept since they arrived.
-    pub notifications: crate::NotificationsView,
+    /// How many notifications the session keeps: the row's count.
+    pub notifications: usize,
     /// The person's devices a Bluetooth accessory can move to, read while
     /// an accessory's page shows; `None` without a device fabric.
     pub handoff_targets: Option<Vec<crate::HandoffTarget>>,
@@ -190,7 +190,7 @@ impl Default for QuickSettingsState {
             sound_streams: Vec::new(),
             device_rows: Vec::new(),
             arrangement: settings_store::hardware::QuickSettingsConfig::default(),
-            notifications: crate::NotificationsView::default(),
+            notifications: 0,
             handoff_targets: None,
             now_playing: None,
             offer: None,

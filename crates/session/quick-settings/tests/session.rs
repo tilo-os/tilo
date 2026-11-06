@@ -40,7 +40,7 @@ const BATTERY: &str = "power:battery";
 /// The network, as the connectivity service publishes it.
 const NETWORK: &str = "network";
 /// The notification centre, as the session publishes it.
-const NOTIFICATIONS: &str = "session:notifications";
+const CHROME: &str = "desktop:chrome";
 /// How long the panel may take to show its window.
 const OPENING: Duration = Duration::from_secs(90);
 /// One display's refresh: how often the session asks its clients for their
@@ -115,81 +115,6 @@ fn the_session_starts_the_panel_as_a_trusted_client_on_its_layer() {
         !session.surfaces().running("quick-settings"),
         "the panel is gone"
     );
-}
-
-#[test]
-fn the_session_asks_the_panel_to_show_the_notifications() {
-    let mut session = session_with(&[]);
-    let desk = drawn_desk(&mut session);
-    session.start_surface(&panel()).expect("the panel starts");
-
-    assert!(
-        session.surfaces().running("quick-settings"),
-        "the session started the panel"
-    );
-
-    // What the panel offers reaches the session as actions, like any app's.
-    // The offer is what the panel's last frame drew, so it fills in as the
-    // panel draws: wait for the page the session is about to run.
-    let deadline = Instant::now() + OPENING;
-    let published = loop {
-        let published = session.surfaces().published("quick-settings");
-        if published
-            .iter()
-            .any(|action| action.action == "show-notifications")
-        {
-            break published;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the panel never offered its notifications page: {:?}",
-            published
-                .iter()
-                .map(|action| action.action.as_str())
-                .collect::<Vec<_>>()
-        );
-        pump(&mut session);
-    };
-    let notifications = published
-        .iter()
-        .find(|action| action.action == "show-notifications")
-        .expect("the panel offers its notifications page");
-    let (resource, action) = (notifications.resource.clone(), notifications.action.clone());
-
-    // The session runs it, as a person's palette or an agent would, and the
-    // panel answers on its own actions socket.
-    let id = session
-        .ask_surface(
-            "quick-settings",
-            &resource,
-            &action,
-            tilo_actions::remote::InvokeArgument::None,
-        )
-        .expect("the panel is running");
-    let mut ended = None;
-    while ended.is_none() {
-        assert!(Instant::now() < deadline, "the panel did not answer");
-        pump(&mut session);
-        if let Some(state) = session.surfaces().outcome(id)
-            && !matches!(
-                state.update,
-                ui::tilo_actions::InvocationUpdate::Accepted { .. }
-            )
-        {
-            ended = Some(state.update.clone());
-        }
-    }
-    assert!(
-        matches!(
-            ended,
-            Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
-        ),
-        "the panel ran it: {ended:?}"
-    );
-
-    let frame = drawn(&mut session, &desk);
-    save(&frame, "session-quick-settings-notifications");
-    session.stop_surface("quick-settings");
 }
 
 #[test]
@@ -313,28 +238,6 @@ fn the_panel_on_a_laptops_output_stays_inside_it_over_the_desk() {
             "the panel keeps off the output's bottom edge at {x}"
         );
     }
-}
-
-#[test]
-fn the_notification_key_asks_the_panel_for_the_page_it_shows() {
-    let mut laptop = session_of_device(&[panel()], Machine::Owned);
-    let session = &mut laptop.session;
-    open_the_panel(session);
-    until_ready(session, "toggle-wifi");
-    let controls = settled(session);
-
-    // The notification key opens the panel and asks it for its notifications:
-    // that page is one of the panel's own actions, run in the app, and the
-    // frame it draws moves to the kept notifications.
-    until_ready(session, "show-notifications");
-    let ended = ask_ended(session, "show-notifications", None);
-    assert!(
-        matches!(ended, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
-        "the panel showed its notifications: {ended:?}"
-    );
-    let notifications = changed(session, &controls);
-    save(&notifications, "session-quick-settings-notifications");
-    session.stop_surface("quick-settings");
 }
 
 #[test]
@@ -465,21 +368,20 @@ fn the_wifi_tile_is_the_published_networks_action() {
 }
 
 #[test]
-fn the_quiet_tile_is_the_published_centres_switch() {
+fn the_quiet_tile_is_the_bars_silenced_bell() {
     let mut laptop = session_of_device(&[panel()], Machine::Owned);
     let session = &mut laptop.session;
     open_the_panel(session);
     until_ready(session, "set-do-not-disturb");
     assert!(
-        session
-            .read(NOTIFICATIONS)
-            .expect("the centre is published")["quiet"]
-            .is_null(),
+        !session.read(CHROME).expect("the bar is published")["notifications_quiet"]
+            .as_bool()
+            .unwrap_or(true),
         "nothing holds notifications back to start with"
     );
 
-    // A press on the tile is the panel's effect, which is one action of the
-    // session's notification centre: the centre holds them and says so.
+    // A press on the tile is the panel's effect on the session's own switch:
+    // fresh banners are held, and the bar's bell says so.
     let ended = ask_ended(session, "set-do-not-disturb", Some(json!({ "on": true })));
     assert!(
         matches!(ended, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
@@ -489,15 +391,33 @@ fn the_quiet_tile_is_the_published_centres_switch() {
     loop {
         session.settle_services();
         pump(session);
-        let centre = session
-            .read(NOTIFICATIONS)
-            .expect("the centre is published");
-        if !centre["quiet"].is_null() {
+        let bar = session.read(CHROME).expect("the bar is published");
+        if bar["notifications_quiet"].as_bool() == Some(true) {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "the centre never held notifications back: {centre:?}"
+            "the bar never showed a silenced bell: {bar:?}"
+        );
+    }
+    // The same switch turned off lets them through again, and the bell rings
+    // as it did before the first press.
+    let ended = ask_ended(session, "set-do-not-disturb", Some(json!({ "on": false })));
+    assert!(
+        matches!(ended, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "the tile's press is carried out: {ended:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        session.settle_services();
+        pump(session);
+        let bar = session.read(CHROME).expect("the bar is published");
+        if bar["notifications_quiet"].as_bool() == Some(false) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the bell never rang again: {bar:?}"
         );
     }
     session.stop_surface("quick-settings");

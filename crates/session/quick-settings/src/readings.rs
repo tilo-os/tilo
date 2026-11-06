@@ -300,7 +300,7 @@ fn land_displays(state: &mut QuickSettingsState, reading: &Displays) {
 }
 
 fn land_notifications(state: &mut QuickSettingsState, centre: &crate::hosted::NotificationCentre) {
-    state.notifications = centre.view(ui::time::unix_now_ms());
+    state.notifications = centre.count;
     state.do_not_disturb =
         settings_store::notification_policy::NotificationPolicy::load().do_not_disturb;
 }

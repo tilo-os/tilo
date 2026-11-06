@@ -5,7 +5,7 @@
 //! status glyph with its own stretch of numbers. A status cluster is that
 //! whole thing as one bar control: square slots for the bell, the volume,
 //! the link and the battery — the ones the machine has a reading for, never
-//! a plausible default — a count badge on the bell's shoulder, a battery
+//! a plausible default — a count beside the bell, a battery
 //! gauge with its percentage, and the critical-battery wash that makes the
 //! whole control say what the glyph alone cannot.
 //!
@@ -27,7 +27,7 @@ use crate::widget::{BadgeFace, BarControlFace, ChipStyle};
 pub enum StatusSlot {
     /// The notification bell; `quiet` when fresh banners are held.
     Bell {
-        /// Unread notifications, counted on the bell's shoulder.
+        /// Unread notifications, counted beside the bell.
         unread: u32,
         /// Fresh banners are held (Do Not Disturb, presenting): the bell is silenced.
         quiet: bool,
@@ -243,13 +243,45 @@ impl<'a> StatusClusterFace<'a> {
         self.slots.len().min(MAX_SLOTS)
     }
 
-    /// The cluster's width: its pad each side, a square per slot, and the
-    /// battery's percentage where it has a reading.
+    /// The bell's count and whether it is silenced, when the cluster has a
+    /// bell.
+    fn bell(&self) -> Option<(u32, bool)> {
+        self.slots
+            .iter()
+            .take(MAX_SLOTS)
+            .find_map(|slot| match slot {
+                StatusSlot::Bell { unread, quiet } => Some((*unread, *quiet)),
+                _ => None,
+            })
+    }
+
+    /// The room between a slot's glyph and the count beside it.
+    fn badge_gap(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.spacing.s1)
+    }
+
+    /// The room the bell's count takes beside its glyph, beyond the slot: the
+    /// widest count's, kept whether the bell carries one or not, so a count
+    /// arriving or growing never moves what stands beside the cluster.
+    fn bell_room(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
+        if self.bell().is_none() {
+            return 0.0;
+        }
+        let style = Self::percentage_style(theme);
+        let (label_w, label_h) = text.measure_style(&badge_label(10), None, &style);
+        let (width, _) = badge_size(label_w, label_h, theme);
+        Self::badge_gap(theme) + width
+    }
+
+    /// The cluster's width: its pad each side, a square per slot, the bell's
+    /// room for a count beside it, and the battery's percentage where it has
+    /// a reading.
     #[must_use]
     pub fn width(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
         let slots = self.slots_shown();
         let mut w = 2.0 * Self::pad(theme)
-            + f64::from(u32::try_from(slots).unwrap_or(u32::MAX)) * self.slot(theme);
+            + f64::from(u32::try_from(slots).unwrap_or(u32::MAX)) * self.slot(theme)
+            + self.bell_room(text, theme);
         if let Some(percent) = self.battery {
             let label = format!("{percent}%");
             let (label_w, _) = text.measure_style(&label, None, &Self::percentage_style(theme));
@@ -313,12 +345,18 @@ impl<'a> StatusClusterFace<'a> {
             ..StatusClusterLayout::default()
         };
         let mut x = rect.x0 + Self::pad(theme);
+        let room = self.bell_room(ctx.text, theme);
         for (index, status) in self.slots.iter().take(MAX_SLOTS).enumerate() {
             let cell = Rect::new(x, cy - slot / 2.0, x + slot, cy + slot / 2.0);
             let square = Rect::from_center_size(cell.center(), (glyph, glyph));
             layout.slots[index] = cell;
+            // The bell's count stands beside its glyph rather than on it: a
+            // silenced bell reads as silenced with a count too. Its room is
+            // kept whether a count shows or not.
+            let mut beside = 0.0;
             match *status {
                 StatusSlot::Bell { unread, quiet } => {
+                    beside = room;
                     let ink = if unread == 0 && !quiet { dim } else { bright };
                     let icon = if quiet { Icon::BellOff } else { Icon::Bell };
                     icon.draw_with_stroke(
@@ -333,12 +371,12 @@ impl<'a> StatusClusterFace<'a> {
                         let style = Self::percentage_style(theme);
                         let (label_w, label_h) = ctx.text.measure_style(&label, None, &style);
                         let (width, height) = badge_size(label_w, label_h, theme);
-                        // The count sits on the bell's shoulder, nudged down
-                        // into the control's own band so a tall one is never
-                        // cut at the bar's top edge.
-                        let right = square.x1 + height / 2.0;
-                        let top = (square.y0 - height / 2.0).max(rect.y0);
-                        let badge = Rect::new(right - width, top, right, top + height);
+                        // The count stands beside the bell, on its own line
+                        // with the control: never over the glyph, so a
+                        // silenced bell is still read as one.
+                        let left = square.x1 + Self::badge_gap(theme);
+                        let top = cy - height / 2.0;
+                        let badge = Rect::new(left, top, left + width, top + height);
                         layout.badge = badge;
                         // A count is a capsule in the danger hue, its ink measured on it.
                         ctx.scene.fill(
@@ -429,7 +467,7 @@ impl<'a> StatusClusterFace<'a> {
                     );
                 }
             }
-            x += slot;
+            x += slot + beside;
         }
         if self.focused {
             crate::widget::paint_focus_ring(
@@ -505,7 +543,7 @@ impl<'a> StatusClusterFace<'a> {
 }
 
 /// The bell's count as it reads: `9+` once it needs a second digit, since
-/// the badge sits on the bell's shoulder.
+/// two digits would crowd the bar.
 #[must_use]
 pub fn badge_label(count: u32) -> String {
     if count > 9 {
@@ -759,12 +797,42 @@ mod tests {
         assert_eq!(status(LinkKind::Offline, 0).bars(), 0);
     }
 
+    /// The room a count takes beside the bell is kept whether a count shows
+    /// or not: news arriving on the bell never widens the cluster and never
+    /// moves what stands beside it.
+    #[test]
+    fn a_count_never_widens_the_cluster() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut width = |unread| {
+            StatusClusterFace::new(
+                &[StatusSlot::Bell {
+                    unread,
+                    quiet: false,
+                }],
+                StatusCluster::new(),
+            )
+            .width(&mut text, &theme)
+        };
+        let resting = width(0);
+        for unread in [1, 9, 42, 120] {
+            assert_eq!(width(unread), resting, "{unread} unread");
+        }
+        let (layout, _) = paint(&[BELL], StatusCluster::new());
+        assert!(
+            layout.badge.x1 <= layout.cluster.x1,
+            "the count stands in the bell's room: {:?} inside {:?}",
+            layout.badge,
+            layout.cluster
+        );
+    }
+
     #[test]
     fn a_bell_with_a_count_paints_its_badge() {
         let (layout, _) = paint(&[BELL], StatusCluster::new());
         assert!(
             layout.badge.width() > 0.0,
-            "the count sits on the bell's shoulder"
+            "the count stands beside the bell"
         );
         let (quiet, _) = paint(
             &[StatusSlot::Bell {

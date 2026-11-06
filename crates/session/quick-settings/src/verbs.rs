@@ -208,33 +208,12 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
             put(&mut arguments, "playing", &offer.playing);
             (MEDIA, "resume")
         }
-        // The notification centre.
-        QsEffect::OpenNotification { notification } => {
-            put(&mut arguments, "notification", notification);
-            (NOTIFICATIONS, "open")
+        // The notification centre: the panel's row opens the one list, on
+        // the desk, rather than a page of its own.
+        QsEffect::ShowCentre => {
+            put(&mut arguments, "surface", "centre");
+            (DESK, "show-surface")
         }
-        QsEffect::DismissNotification { notification } => {
-            put(&mut arguments, "notification", notification);
-            (NOTIFICATIONS, "dismiss")
-        }
-        QsEffect::DismissNotificationGroup { group } => {
-            put(&mut arguments, "group", group);
-            (NOTIFICATIONS, "dismiss")
-        }
-        QsEffect::RunNotificationAction {
-            notification,
-            action,
-        } => {
-            put(&mut arguments, "notification", notification);
-            put(&mut arguments, "action", action);
-            (NOTIFICATIONS, "act")
-        }
-        QsEffect::HandNotificationToAgent { notification } => {
-            put(&mut arguments, "notification", notification);
-            (NOTIFICATIONS, "hand-to-agent")
-        }
-        QsEffect::ClearNotifications => (NOTIFICATIONS, "clear"),
-        QsEffect::UndoClearNotifications => (NOTIFICATIONS, "undo-clear"),
         QsEffect::SetDoNotDisturb { on } => {
             put(&mut arguments, "on", on);
             (NOTIFICATIONS, "set-quiet")
@@ -379,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn an_accessory_move_and_a_handed_notification_are_the_sessions_own() {
+    fn an_accessory_move_is_the_sessions_own() {
         assert_eq!(
             said(&QsEffect::HandOffBluetooth {
                 address: "00:1B:66:A1:B2:C3".into(),
@@ -389,10 +368,14 @@ mod tests {
             Some("session:devices hand-off address=00:1B:66:A1:B2:C3 device=desk"),
             "the session moves the accessory between the person's devices"
         );
+    }
+
+    #[test]
+    fn the_notifications_row_opens_the_desks_own_centre() {
         assert_eq!(
-            said(&QsEffect::HandNotificationToAgent { notification: 7 }).as_deref(),
-            Some("session:notifications hand-to-agent notification=7"),
-            "the notification centre hands the kept notification on"
+            said(&QsEffect::ShowCentre).as_deref(),
+            Some("desktop:desk show-surface surface=centre"),
+            "one list, in the shell's centre"
         );
     }
 
