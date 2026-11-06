@@ -2918,3 +2918,58 @@ fn a_settled_idle_desk_of_arriving_windows_repaints_nothing() {
         );
     }
 }
+
+/// Every accessible name the tree publishes, synthetic children included.
+fn accessible_names(root: &ui::headless::InspectionNode) -> Vec<String> {
+    fn semantic(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+        out.extend(node.name.clone());
+        for child in &node.children {
+            semantic(child, out);
+        }
+    }
+    fn walk(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
+        if let Some(semantics) = &node.semantics {
+            semantic(semantics, out);
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, &mut out);
+    out
+}
+
+/// A window's bar reaches a reader once: the bar is the window's child and
+/// publishes its own node, so the window publishes none of it of its own.
+#[test]
+fn a_windows_bar_is_in_the_accessibility_tree_once() {
+    let (mut driver, _handle, _) = mount_apps(&["Groceries", "Recipes"]);
+    settle_still(&mut driver);
+    let names = accessible_names(&driver.inspection().root);
+    // Each window's bar reads its own pill once, and the controls every bar
+    // shows once per window.
+    for name in ["Close Groceries", "Close Recipes"] {
+        assert_eq!(
+            names.iter().filter(|read| *read == name).count(),
+            1,
+            "{name:?} is read once: {names:?}"
+        );
+    }
+    for name in ["New tab", "Maximize", "Close", "Search in this window"] {
+        assert_eq!(
+            names.iter().filter(|read| *read == name).count(),
+            2,
+            "{name:?} is read once for each of the two windows: {names:?}"
+        );
+    }
+    // A window's title is read twice, each time by something of its own:
+    // the bar's pill names the tab, the app's content group what it shows.
+    for title in ["Groceries", "Recipes"] {
+        assert_eq!(
+            names.iter().filter(|read| *read == title).count(),
+            2,
+            "{title:?} names the pill and the app: {names:?}"
+        );
+    }
+}
