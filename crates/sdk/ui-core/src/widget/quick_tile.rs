@@ -1,6 +1,8 @@
 //! [`QuickTile`]: a Quick Settings control. Its glyph, name and state line
 //! sit on a tile that is filled with the on colour while the control is on;
-//! a press anywhere on it switches the control. A tile whose control has a
+//! a press anywhere on it switches the control. The name takes one line and
+//! the state line up to two, broken after a word and elided only past that.
+//! A tile whose control has a
 //! section of its own (the networks under Wi-Fi) gives that section a
 //! chevron half, set apart by a hairline, that turns as the section opens.
 //!
@@ -79,7 +81,10 @@ impl TileMetrics {
         let metrics = &theme.tokens.metrics;
         let label = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
         let detail = theme.text(TextRole::Caption);
-        let lines = f64::from(label.line_height_px()) + f64::from(detail.line_height_px());
+        // The name on one line, the state line on up to two: a state read
+        // in words ("Not connected", a device's name) is the part of a tile
+        // that grows, so the tile is as tall as the two lines it may need.
+        let lines = f64::from(label.line_height_px()) + 2.0 * f64::from(detail.line_height_px());
         Self {
             inset: f64::from(spacing.s3),
             glyph: f64::from(metrics.icon_md),
@@ -87,11 +92,38 @@ impl TileMetrics {
             trailing: f64::from(spacing.s1),
             rule_inset: f64::from(spacing.s2) + f64::from(spacing.s1),
             details: QuickTile::details_width(theme),
-            height: f64::from(metrics.row_double).max(2.0 * f64::from(spacing.s2) + lines),
+            height: (f64::from(metrics.row_double).max(2.0 * f64::from(spacing.s2) + lines)).ceil(),
             label,
             detail,
         }
     }
+}
+
+/// The state line in the room it has: whole on one line when it fits,
+/// else broken after the last word that does and the rest elided on a
+/// second. `(first, second)`, the second `None` while one line holds it.
+fn detail_lines(
+    text: &mut TextRenderer,
+    detail: &str,
+    width: f32,
+    style: &TextStyle,
+) -> (String, Option<String>) {
+    if detail.is_empty() || width <= 0.0 {
+        return (String::new(), None);
+    }
+    if text.measure_style(detail, None, style).0 <= width {
+        return (detail.to_owned(), None);
+    }
+    let words: Vec<&str> = detail.split_whitespace().collect();
+    for cut in (1..words.len()).rev() {
+        let first = words.get(..cut).unwrap_or_default().join(" ");
+        if text.measure_style(&first, None, style).0 <= width {
+            let rest = words.get(cut..).unwrap_or_default().join(" ");
+            let second = text.elide_to_width_style(&rest, width, style);
+            return (first, Some(second));
+        }
+    }
+    (text.elide_to_width_style(detail, width, style), None)
 }
 
 /// A Quick Settings tile: a control's glyph, name and state line, on while
@@ -429,10 +461,16 @@ impl QuickTile {
         let text_x = glyph.x1 + metrics.gap;
         let width = crate::num::f32_of_f64((switch.x1 - metrics.trailing - text_x).max(1.0));
         let label = text.elide_to_width_style(&self.label, width, &metrics.label);
-        let detail = text.elide_to_width_style(&self.detail, width, &metrics.detail);
+        let (detail, detail_second) = detail_lines(text, &self.detail, width, &metrics.detail);
         let (_, label_h) = text.measure_style(&label, None, &metrics.label);
         let (_, detail_h) = text.measure_style(&detail, None, &metrics.detail);
-        let top = switch.center().y - (f64::from(label_h) + f64::from(detail_h)) / 2.0;
+        let line = f64::from(metrics.detail.line_height_px());
+        let detail_h = if detail_second.is_some() {
+            2.0 * line
+        } else {
+            f64::from(detail_h)
+        };
+        let top = switch.center().y - (f64::from(label_h) + detail_h) / 2.0;
         text.draw_style(
             scene,
             &label,
@@ -449,6 +487,16 @@ impl QuickTile {
             None,
             &metrics.detail,
         );
+        if let Some(second) = &detail_second {
+            text.draw_style(
+                scene,
+                second,
+                ink_dim,
+                transform.pre_translate((text_x, top + f64::from(label_h) + line).into()),
+                None,
+                &metrics.detail,
+            );
+        }
         if let Some(details) = details {
             face.paint_divider(scene, transform, theme, metrics.rule_inset);
             let chevron = Rect::from_center_size(details.center(), (metrics.glyph, metrics.glyph));

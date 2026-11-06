@@ -78,6 +78,41 @@ fn larger_text_grows_the_tile_to_fit_both_lines() {
 }
 
 #[test]
+fn a_tile_is_tall_enough_for_a_state_line_on_two_lines() {
+    let theme = Theme::dark();
+    let label = theme.text(TextRole::Label).line_height_px();
+    let detail = theme.text(TextRole::Caption).line_height_px();
+    assert!(
+        QuickTile::height(&theme) >= f64::from(label + 2.0 * detail),
+        "{} >= {}",
+        QuickTile::height(&theme),
+        f64::from(label + 2.0 * detail)
+    );
+}
+
+#[test]
+fn a_state_line_breaks_after_the_last_word_that_fits_and_elides_the_rest() {
+    let theme = Theme::dark();
+    let style = theme.text(TextRole::Caption);
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let room = text.measure_style("The network at", None, &style).0 + 1.0;
+    let (first, second) = detail_lines(
+        &mut text,
+        "The network at the far end of the corridor",
+        room,
+        &style,
+    );
+    assert_eq!(first, "The network at");
+    let second = second.expect("the rest goes on a second line");
+    assert!(!second.is_empty(), "the second line says something");
+
+    let (one, none) = detail_lines(&mut text, "The network", room, &style);
+    assert_eq!(one, "The network", "a state line that fits keeps one line");
+    assert!(none.is_none());
+}
+
+#[test]
 fn the_chevron_half_is_one_pointer_target_at_the_trailing_edge() {
     let theme = Theme::dark();
     let mut tile = wifi();
