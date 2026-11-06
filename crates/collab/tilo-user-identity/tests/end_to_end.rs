@@ -82,9 +82,6 @@ fn enrollment_and_directory_sync_work_end_to_end_only_for_one_user() {
         let mut primary_dir = WorkspaceDirectory::new(user.public_key, primary_dev.public_key);
         let mut phone_dir = WorkspaceDirectory::new(user.public_key, phone_dev.public_key);
         primary_dir.add_workspace(1, "Notes").unwrap();
-        primary_dir
-            .set_member_devices(1, &[primary_dev.public_key, phone_dev.public_key])
-            .unwrap();
         phone_dir.add_workspace(2, "Photos").unwrap();
 
         // 7. They exchange deltas. Both accept because:
@@ -103,17 +100,12 @@ fn enrollment_and_directory_sync_work_end_to_end_only_for_one_user() {
             .apply_incremental(&phone_delta, &phone_cert, &revs, 1_750_000)
             .unwrap();
 
-        // 8. Convergence: both see workspaces 1 and 2, with the shared
-        //    member set on workspace 1.
+        // 8. Convergence: both see workspaces 1 and 2.
         let primary_view = primary_dir.list_workspaces();
         let phone_view = phone_dir.list_workspaces();
         assert_eq!(primary_view.len(), 2);
         assert_eq!(phone_view.len(), 2);
         assert_eq!(primary_view, phone_view, "directories should converge");
-
-        let ws1 = primary_view.iter().find(|w| w.id == 1).unwrap();
-        assert!(ws1.member_devices.contains(&primary_dev.public_key));
-        assert!(ws1.member_devices.contains(&phone_dev.public_key));
 
         // 9. "Matching-user peers get owner permissions on each
         //    other's shares" — expressed via the cert chain: both

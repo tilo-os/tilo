@@ -853,6 +853,7 @@ impl StatePeer {
             &mut doc,
         )
         .map_err(err)?;
+        self.record_membership(&mut doc, before, key, now)?;
         let changes = doc
             .get_changes(before)
             .into_iter()
@@ -869,6 +870,58 @@ impl StatePeer {
         )?;
         Ok(outcome.changed || outcome.metadata_changed)
     }
+    /// Record this device's membership change as an operation on the log every
+    /// device replays, and project the log back into the document's rows.
+    ///
+    /// The owner's device starts the log: a workspace that has none yet — new,
+    /// or one whose membership was last-writer-wins — begins at an operation
+    /// naming the membership it holds now. After that every change is an
+    /// operation, and a change this device's grants do not allow is refused
+    /// here rather than written for other devices to discard.
+    fn record_membership(
+        &self,
+        doc: &mut CachedDocument,
+        before: &[automerge::ChangeHash],
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        use crate::members::{self, MembershipOpCommand, SignedMembershipOp};
+        let workspace = self.core.workspace.clone();
+        let target = tilo_desktop_model::projection::workspace_policy_of(doc, &workspace);
+        let old = self.core.workspace_doc.as_deref();
+        let live = old.is_some_and(|old| members::genesis(&members::ops(old)).is_some());
+        let cert = self
+            .certificate(&key.verifying_key().to_bytes(), now)
+            .map_err(|error| error.to_string())?;
+        let owner = cert.user_public_key == self.core.owner;
+        if !live {
+            if owner && old.is_none_or(crate::members::legacy::needs_genesis) {
+                let op =
+                    crate::members::legacy::genesis_op(cert, key, before, &target, now_ns(now))?;
+                crate::members::legacy::put_op(doc, &op)?;
+            }
+            return Ok(());
+        }
+        if old.is_some_and(|old| members::replay(old, &workspace) == target) {
+            return Ok(());
+        }
+        let op = SignedMembershipOp::signed(
+            cert,
+            key,
+            members::heads(&members::ops(doc)),
+            now_ns(now),
+            MembershipOpCommand::Project {
+                membership: Box::new(crate::members::Membership::of(&target)),
+            },
+        )?;
+        crate::members::legacy::put_op(doc, &op)?;
+        if members::replay(doc, &workspace) != target {
+            return Err("the membership change is not this device's to make".into());
+        }
+        members::materialise(doc, &target)?;
+        Ok(())
+    }
+
     fn import_governed_certificates(
         &mut self,
         doc: &AutoCommit,

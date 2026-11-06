@@ -166,17 +166,32 @@ pub fn admit_workspace_changes(
             // Changes waiting in the document that the batch shows to be of
             // another history go before the batch is applied.
             let pruned = super::base::pruned(input.before, replaced);
-            let candidate = super::candidate(pruned.as_ref().or(input.before), &changes)
+            let mut candidate = super::candidate(pruned.as_ref().or(input.before), &changes)
                 .map_err(WorkspaceRefusal::Malformed)?;
             // One who only reads the workspace records only their own receipts
             // and gives only their own shares.
             if !writes && !super::only_reader_writes_differ(input.before, &candidate) {
                 return Err(WorkspaceRefusal::WriteForbidden);
             }
-            let membership = !governs
-                && !super::governance_unchanged(input.before, &candidate)
-                && membership_authorized(&input, &changes)?;
+            // Operations are self-authorizing: replay applies a membership
+            // change only where its writer's grants allowed it, so a batch
+            // that adds operations that prove their writers is a membership
+            // change as long as it changes nothing else.
+            let grown = crate::members::growth(input.before, &candidate)
+                .map_err(WorkspaceRefusal::Membership)?;
+            let membership = if grown > 0 && !governs {
+                if !super::governance_except_membership(input.before, &candidate) {
+                    return Err(WorkspaceRefusal::GovernanceWriter);
+                }
+                true
+            } else {
+                !governs
+                    && !super::governance_unchanged(input.before, &candidate)
+                    && membership_authorized(&input, &changes)?
+            };
             let media = checked(&input, &candidate, membership)?;
+            crate::members::settle(&mut candidate, input.workspace)
+                .map_err(WorkspaceRefusal::Malformed)?;
             Ok(AdmittedWorkspace {
                 candidate,
                 media,
@@ -184,8 +199,10 @@ pub fn admit_workspace_changes(
             })
         }
         super::base::Lineage::Newer(changes) if governs => {
-            let candidate =
+            let mut candidate =
                 super::candidate(None, &changes).map_err(WorkspaceRefusal::Malformed)?;
+            crate::members::settle(&mut candidate, input.workspace)
+                .map_err(WorkspaceRefusal::Malformed)?;
             // The receiver projects what it owns onto the base it adopts, so a
             // base leaving out or changing its entries holds only until then.
             let media = checked(&input, &candidate, false)?;

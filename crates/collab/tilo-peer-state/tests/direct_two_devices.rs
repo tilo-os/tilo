@@ -180,3 +180,127 @@ async fn two_devices_of_one_person_converge_directly() {
     b_endpoint.close().await;
     c_endpoint.close().await;
 }
+
+/// A person's second device enters the workspace the first made, with no host
+/// and no invitation: the first writes it in as the member's own device
+/// because its root certifies it, and content crosses both ways.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways() {
+    let root = SigningKey::from_bytes(&[4; 32]);
+    let (a_key, a_cert) = device(&root, 5);
+    let (b_key, b_cert) = device(&root, 6);
+    let now = SystemTime::now();
+
+    // A makes the workspace with itself alone in it, and a document.
+    let mut a = StatePeer::new(
+        WORKSPACE,
+        a_cert.clone(),
+        vec![a_cert.clone()],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    a.select_admission_v5().unwrap();
+    let mut document = AutoCommit::new();
+    document.put(ROOT, "value", "from a").unwrap();
+    document.commit_edit("fixture", "value");
+    a.install_seed(
+        SeedState {
+            workspace_changes: seed_workspace(WORKSPACE, &a_cert, &[a_cert.clone()]).unwrap(),
+            documents: vec![SeedDocument {
+                app_id: APP.into(),
+                record_id: RECORD.into(),
+                kind: "test".into(),
+                bytes: document.save(),
+            }],
+        },
+        &a_key,
+        now,
+    )
+    .unwrap();
+
+    // B is the same person's second device. Its root certifies it, so A writes
+    // it in as that member's device: no invitation, and A is the only device
+    // that has to be there.
+    assert!(
+        a.governance_mut()
+            .admit_member_device(&b_cert, &a_key, now)
+            .unwrap()
+    );
+    let roster = a.certificates();
+    assert!(
+        roster
+            .iter()
+            .any(|cert| cert.device_public_key == b_cert.device_public_key),
+        "the workspace holds B's device"
+    );
+    let b = StatePeer::from_join(WORKSPACE, a_cert.clone(), roster, &[], now).unwrap();
+    assert!(b.rows().is_empty());
+
+    let a = DirectSync::new(a, a_key.clone());
+    let b = DirectSync::new(b, b_key.clone());
+    let a_endpoint = endpoint(&a_key).await;
+    let a_router = iroh::protocol::Router::builder(a_endpoint.clone())
+        .accept(DIRECT_ALPN, a.clone())
+        .spawn();
+    let b_endpoint = endpoint(&b_key).await;
+    let link = tokio::spawn({
+        let b = b.clone();
+        let b_endpoint = b_endpoint.clone();
+        let a_addr = addr(&a_endpoint);
+        async move { b.connect(&b_endpoint, a_addr).await }
+    });
+
+    // What A made reaches B.
+    let rows = a.read(StatePeer::rows);
+    until(&b, |b| b.rows() == rows).await;
+    let from_a = AutoCommit::load(&b.read(|b| b.document(APP, RECORD)).unwrap()).unwrap();
+    assert_eq!(
+        from_a
+            .get(ROOT, "value")
+            .unwrap()
+            .unwrap()
+            .0
+            .into_string()
+            .unwrap(),
+        "from a"
+    );
+
+    // What B writes reaches A.
+    let mut edit = AutoCommit::load(&b.read(|b| b.document(APP, RECORD)).unwrap()).unwrap();
+    edit.set_actor(automerge::ActorId::from(
+        b_key.verifying_key().to_bytes().to_vec(),
+    ));
+    let heads = edit.get_heads();
+    edit.put(ROOT, "value", "from b").unwrap();
+    edit.commit_edit("fixture", "value");
+    let change = edit.save_after(&heads);
+    b.publish(|b, key, now| {
+        b.publication_mut()
+            .publish_incremental(APP, RECORD, change, key, now)
+    })
+    .unwrap();
+    let edited = b.read(|b| b.document_heads(APP, RECORD));
+    until(&a, |a| a.document_heads(APP, RECORD) == edited).await;
+
+    // And A's next write reaches B.
+    let mut edit = AutoCommit::load(&a.read(|a| a.document(APP, RECORD)).unwrap()).unwrap();
+    edit.set_actor(automerge::ActorId::from(
+        a_key.verifying_key().to_bytes().to_vec(),
+    ));
+    let heads = edit.get_heads();
+    edit.put(ROOT, "value", "from a again").unwrap();
+    edit.commit_edit("fixture", "value");
+    let change = edit.save_after(&heads);
+    a.publish(|a, key, now| {
+        a.publication_mut()
+            .publish_incremental(APP, RECORD, change, key, now)
+    })
+    .unwrap();
+    let edited = a.read(|a| a.document_heads(APP, RECORD));
+    until(&b, |b| b.document_heads(APP, RECORD) == edited).await;
+
+    link.abort();
+    a_router.shutdown().await.unwrap();
+    b_endpoint.close().await;
+}
