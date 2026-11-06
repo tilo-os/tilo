@@ -348,15 +348,7 @@ fn items_of_an_older_record_move_change_and_go_keeping_their_ids() {
         &mut replica,
         app,
         "new_task",
-        vec![
-            Value::resource(&list),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::text("new"),
-        ],
+        crate::tasks::create(&Value::resource(&list), "new"),
     );
     let added = listed(&replica, &list, &items_field);
     assert_eq!(added.len(), before.len());
@@ -676,15 +668,7 @@ fn a_renamed_app_opens_the_records_of_its_earlier_id_where_they_are() {
         &mut replica,
         app,
         "new_task",
-        vec![
-            Value::resource(&list),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::text("after the rename"),
-        ],
+        crate::tasks::create(&Value::resource(&list), "after the rename"),
     );
     assert_eq!(listed(&replica, &list, &items_field).len(), items.len() + 1);
     // Every record is where it was, under the id it had.

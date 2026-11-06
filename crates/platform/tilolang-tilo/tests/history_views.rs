@@ -181,15 +181,7 @@ fn a_change_shows_what_the_title_and_the_due_day_held_before_and_after() {
         "ada",
         TASKS_APP,
         "new_task",
-        vec![
-            tasks,
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::text("Call the landlord"),
-        ],
+        crate::tasks::create(&tasks, "Call the landlord"),
     );
     let day = |d: &str| Value::some(Value::text(d));
     call(
@@ -438,15 +430,7 @@ fn a_task_of(ada: &mut Replica, tasks: &Value, title: &str) -> Value {
         "ada",
         TASKS_APP,
         "new_task",
-        vec![
-            tasks.clone(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::text(title),
-        ],
+        crate::tasks::create(&tasks, title),
     );
     ada.commit();
     task
@@ -578,15 +562,7 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
         "ada",
         TASKS_APP,
         "new_task",
-        vec![
-            tasks.clone(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::text("Write the launch post"),
-        ],
+        crate::tasks::create(&tasks, "Write the launch post"),
     );
     ada.commit();
     call(&ada, "bo", TASKS_APP, "check", vec![done.clone()]);
@@ -609,30 +585,14 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
         "ada",
         TASKS_APP,
         "new_task",
-        vec![
-            tasks.clone(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::text("Plan the week"),
-        ],
+        crate::tasks::create(&tasks, "Plan the week"),
     );
     let under = call(
         &ada,
         "ada",
         TASKS_APP,
         "new_task",
-        vec![
-            tasks,
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::text("Outline"),
-        ],
+        crate::tasks::create(&tasks, "Outline"),
     );
     ada.commit();
     call(
@@ -1096,22 +1056,14 @@ fn typing_in_a_bound_field_reads_as_an_edit_of_that_field() {
         "ada",
         TASKS_APP,
         "new_task",
-        vec![
-            tasks,
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::text("Buy oat milk"),
-        ],
+        crate::tasks::create(&tasks, "Buy oat milk"),
     );
     ada.commit();
     let at = target(&task);
     let title =
         crate::fixtures::field_id(&ada.host.package(TASKS_APP).unwrap().meta, "Task", "title");
     let page = ada.host.open_resource(&at, None).unwrap();
-    let input = bound_key(page.tree(), &title).expect("the task's title is bound to its input");
+    let input = bound_key(page.tree(), title).expect("the task's title is bound to its input");
     page.edit(&input, &Value::text("Bring oat milk")).unwrap();
     ada.commit();
     drop(page);
@@ -1146,15 +1098,7 @@ fn checking_a_task_off_is_one_entry_saying_what_it_did() {
         "ada",
         TASKS_APP,
         "new_task",
-        vec![
-            tasks.clone(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::text("Write the launch post"),
-        ],
+        crate::tasks::create(&tasks, "Write the launch post"),
     );
     call(
         &ada,

@@ -172,15 +172,15 @@ fn workspace() -> Replica {
 }
 
 /// The task `title` of Ada's workspace.
-fn page(r: &Replica, app: &str, action_name: &str, title: &str) -> ResourceRef {
-    let root = Value::resource(&r.host.root_of(app).unwrap());
+fn task_titled(r: &Replica, title: &str) -> ResourceRef {
+    let root = Value::resource(&r.host.root_of(TASKS_APP).unwrap());
     target(&call(
         r,
         "ada",
-        app,
-        action_name,
+        TASKS_APP,
+        "new_task",
         None,
-        vec![root, Value::text(title)],
+        crate::tasks::create(&root, title),
     ))
 }
 
@@ -203,7 +203,7 @@ fn note_named(r: &Replica, title: &str) -> ResourceRef {
 /// leaves, start from.
 fn ada_and_bo_after_a_comment() -> (Replica, Replica, ResourceRef, ResourceRef, String) {
     let mut ada = workspace();
-    let task = page(&ada, TASKS_APP, "new_task", "Pay rent");
+    let task = task_titled(&ada, "Pay rent");
     ada.commit();
     let mut bo = ada.fork("bo", &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)]);
     let mut asked = RichValue::from_text("Is this the one that pays the whole quarter? ");
@@ -350,7 +350,7 @@ fn a_thread_draws_what_was_said_and_is_read_with_what_it_is_about() {
 #[test]
 fn an_agent_comments_through_the_same_action() {
     let mut ada = workspace();
-    let task = page(&ada, TASKS_APP, "new_task", "Book the van");
+    let task = task_titled(&ada, "Book the van");
     ada.commit();
 
     // The agent alone in the discussion app: its comment is its own, made from the task the way
@@ -420,7 +420,7 @@ fn a_comment_under_a_note_draws_in_the_notes_view() {
 #[test]
 fn a_comment_is_about_its_task_so_the_page_does_not_list_it_as_made_from_it() {
     let mut ada = workspace();
-    let task = page(&ada, TASKS_APP, "new_task", "Pay rent");
+    let task = task_titled(&ada, "Pay rent");
     ada.commit();
     let said = comment(&ada, "ada", &task, "Ask Bo about the receipt.");
     ada.commit();
@@ -459,7 +459,7 @@ fn a_comment_is_about_its_task_so_the_page_does_not_list_it_as_made_from_it() {
 #[test]
 fn only_its_author_edits_or_deletes_a_comment() {
     let mut ada = workspace();
-    let task = page(&ada, TASKS_APP, "new_task", "Pay rent");
+    let task = task_titled(&ada, "Pay rent");
     ada.commit();
     let mut bo = ada.fork("bo", &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)]);
 

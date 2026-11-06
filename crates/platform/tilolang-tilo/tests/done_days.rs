@@ -57,19 +57,7 @@ fn done_stands_what_was_finished_under_the_day_it_was_finished() {
     let finish = |ada: &mut Replica, title: &str, at: &str| {
         let at = at.to_owned();
         ada.host.runtime().set_clock(move || at.clone());
-        let made = call(
-            ada,
-            "new_task",
-            vec![
-                root.clone(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::text(title),
-            ],
-        );
+        let made = call(ada, "new_task", crate::tasks::create(&root, title));
         call(ada, "check", vec![made.clone()]);
         ada.commit();
         made

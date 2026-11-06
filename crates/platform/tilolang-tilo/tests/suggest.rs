@@ -49,19 +49,7 @@ fn workspace() -> (Replica, Value) {
         .runtime()
         .set_clock(|| "2026-10-29T10:00:00Z".to_owned());
     let root = Value::resource(&ada.host.root_of(APP).unwrap());
-    let task = call(
-        &ada,
-        "new_task",
-        vec![
-            root.clone(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::text("van"),
-        ],
-    );
+    let task = call(&ada, "new_task", crate::tasks::create(&root, "van"));
     let project = call(&ada, "new_project", vec![root]);
     call(
         &ada,
