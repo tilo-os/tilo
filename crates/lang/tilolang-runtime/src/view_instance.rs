@@ -248,6 +248,13 @@ impl ViewInstance {
         self.live.stats()
     }
 
+    /// The resources the window shows now, by [`ResourceRef::id_string`]: the view's subject
+    /// and the items of the rows rendered (the visible rows and the overscan). What a surface
+    /// publishes to a window is bounded by this, not by what the workspace holds.
+    pub fn shown_refs(&self) -> Vec<String> {
+        self.live.shown_refs(&self.core)
+    }
+
     /// Whether rows of lists render only once shown (the default), or with the list. A host
     /// that draws the whole tree, rather than asking for rows, turns this off before the
     /// first poll; rows already left unrendered render at once, into the tree (no patches:

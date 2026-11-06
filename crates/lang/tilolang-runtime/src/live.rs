@@ -471,6 +471,37 @@ impl Live {
         }
     }
 
+    /// The resources the window shows now, by [`ResourceRef::id_string`]: the views' own
+    /// subjects, the items of the rows rendered, and the items the virtual lists built (the
+    /// visible rows and the overscan). What an app publishes for the window to act on: a
+    /// surface bounded by what a person can reach, whatever the workspace holds.
+    pub fn shown_refs(&self, core: &Core) -> Vec<String> {
+        let mut out = BTreeSet::new();
+        let collect = |out: &mut BTreeSet<String>, args: &[Value]| {
+            for arg in args {
+                if let Value::Ref(held) = arg {
+                    out.insert(held.target.id_string());
+                }
+            }
+        };
+        if let Some(root) = self.bound(ROOT) {
+            collect(&mut out, &root.args);
+        }
+        for id in self.shown.values().flatten() {
+            if let Some(bound) = self.bound(*id) {
+                collect(&mut out, &bound.args);
+            }
+        }
+        for list in self.lists.values() {
+            for item in list.shown_items(core) {
+                if let Value::Ref(held) = &item {
+                    out.insert(held.target.id_string());
+                }
+            }
+        }
+        out.into_iter().collect()
+    }
+
     // ----- invalidation ----------------------------------------------------------------------
 
     /// What a change reaches: the boundaries that read a field it changed, those that saw

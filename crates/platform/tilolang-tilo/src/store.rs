@@ -538,6 +538,13 @@ impl Changes {
         }
     }
 
+    /// Whether a change to `key` did not say how its collection's items changed: what it took
+    /// out or put in is unknown, so a reader of item text must read everything again.
+    #[must_use]
+    pub fn unsaid(&self, key: &FieldKey) -> bool {
+        self.unsaid.contains(key)
+    }
+
     /// The steps that changed the collection `key`, in order, when the store could say.
     #[must_use]
     pub fn listing(&self, key: &FieldKey) -> Option<&[Splice]> {
