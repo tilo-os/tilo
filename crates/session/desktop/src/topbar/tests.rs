@@ -50,7 +50,10 @@ fn desktop_topbar_uses_scaled_tokens_once_and_contains_workspace_text() {
             .with_weight(bar.workspace_name_text_weight()),
     );
     assert!(f64::from(height) <= bar.ws_pill_rect.height());
-    assert!(bar.ws_pill_rect.x1 <= bar.rect.center().x - bar.center_band_width(&theme) / 2.0);
+    assert!(
+        bar.ws_pill_rect.x1
+            <= bar.rect.center().x - bar.center_band_width(&theme, &mut renderer) / 2.0
+    );
 }
 
 fn sample_chrome() -> TopBarChrome {

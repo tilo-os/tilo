@@ -1734,8 +1734,8 @@ impl TopBarChrome {
                 self.rect.x0 + f64::from(theme.tokens.spacing.s3),
             ) + f64::from(theme.tokens.spacing.s2);
             self.draw_workspace_pill(scene, transform, theme, text_renderer, center_y, label_x);
-            let center_left =
-                f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
+            let center_left = f64::midpoint(self.rect.x0, self.rect.x1)
+                - self.center_band_width(theme, text_renderer) / 2.0;
             // The strip shown changes as the person moves between strips: it
             // is one part of the bar, so that change damages where it is
             // painted rather than the whole bar.

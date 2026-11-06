@@ -1538,7 +1538,8 @@ fn comes(tab: &Tab, held: &BTreeMap<String, Vec<HeldTab>>) -> bool {
 
 /// Whether the app a window announces is the app a request named: the id
 /// itself, or the short name it ends with (`so.tilo.notes` is `notes`).
-fn app_ids_match(announced: &str, asked: &str) -> bool {
+#[must_use]
+pub fn app_ids_match(announced: &str, asked: &str) -> bool {
     let announced = announced.to_ascii_lowercase();
     let asked = asked.to_ascii_lowercase();
     announced == asked || asked.rsplit('.').next() == Some(announced.as_str())
