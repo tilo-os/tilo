@@ -15,14 +15,24 @@ pub fn is_native_refusal(error: &io::Error) -> bool {
         .get_ref()
         .is_some_and(<dyn std::error::Error + Send + Sync>::is::<NativeRefused>)
 }
-pub(crate) fn check(status: crate::fs_capnp::NativeEntryStatus) -> Result<(), NotAvailable> {
+
+/// The payload the reply did not carry: the operation was refused under live
+/// scope, so it neither succeeded nor lost its authority.
+pub(crate) fn refused() -> NotAvailable {
+    NotAvailable::ConnectionFailed(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        NativeRefused,
+    ))
+}
+
+#[cfg(unix)]
+pub(crate) fn check(status: crate::wire::NativeEntryStatus) -> Result<(), NotAvailable> {
     match status {
-        crate::fs_capnp::NativeEntryStatus::Ok => Ok(()),
-        crate::fs_capnp::NativeEntryStatus::Refused => Err(NotAvailable::ConnectionFailed(
-            io::Error::new(io::ErrorKind::PermissionDenied, NativeRefused),
-        )),
+        crate::wire::NativeEntryStatus::Ok => Ok(()),
+        crate::wire::NativeEntryStatus::Refused => Err(refused()),
     }
 }
+
 #[cfg(unix)]
 pub(crate) fn client_error(error: NotAvailable) -> io::Error {
     match error {
@@ -53,17 +63,4 @@ pub fn is_operation_refusal(error: &io::Error) -> bool {
         || error
             .get_ref()
             .is_some_and(<dyn std::error::Error + Send + Sync>::is::<BoundedAdmission>)
-}
-
-pub(crate) fn check_payload(
-    status: crate::fs_capnp::NativeEntryStatus,
-    empty: bool,
-) -> Result<(), NotAvailable> {
-    if status == crate::fs_capnp::NativeEntryStatus::Refused && !empty {
-        return Err(capnp::Error::failed(
-            "refused native result contains successful payload".into(),
-        )
-        .into());
-    }
-    check(status)
 }

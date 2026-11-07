@@ -1,9 +1,8 @@
 //! The bounded bridge a capability client drives on a connected fd.
 //!
-//! The Cap'n Proto client stays on its own `LocalSet` in a worker thread;
-//! FUSE never receives source fds. Calls are admitted through one bounded
-//! queue, and a transport that died answers every waiting call with a
-//! refusal instead of blocking.
+//! The capability client stays on its own worker thread; FUSE never receives
+//! source fds. Calls are admitted through one bounded queue, and a transport
+//! that died answers every waiting call with a refusal instead of blocking.
 
 use std::{
     io,
@@ -129,7 +128,7 @@ where
         Ok(Self(inner))
     }
 
-    /// Close the queue and observe the exact RPC worker and transport outcome.
+    /// Close the queue and observe the exact worker and transport outcome.
     /// Requires sole custody after all FUSE callbacks and handles have retired.
     pub(crate) fn retire(self) -> io::Result<()> {
         let mut inner = Arc::try_unwrap(self.0)
@@ -226,43 +225,13 @@ where
     S: Serve<Request, Response>,
 {
     Box::pin(async move {
-        use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-        stream.set_nonblocking(true)?;
-        let stream = tokio::net::UnixStream::from_std(stream)?;
-        let (read, write) = stream.into_split();
-        let network = capnp_rpc::twoparty::VatNetwork::new(
-            read.compat(),
-            write.compat_write(),
-            capnp_rpc::rpc_twoparty_capnp::Side::Client,
-            capnp::message::ReaderOptions::default(),
-        );
-        let mut rpc = capnp_rpc::RpcSystem::new(Box::new(network), None);
-        let raw: crate::WorkspaceFsClient =
-            rpc.bootstrap(capnp_rpc::rpc_twoparty_capnp::Side::Server);
-        let disconnect = rpc.get_disconnector();
-        let mut driver = tokio::task::spawn_local(rpc);
-        let client = crate::FsClient::from_raw(raw);
+        let connection = crate::connection::Connection::connect("retained-source-fs", stream)?;
+        let client = crate::FsClient::from_object(crate::connection::Object::root(connection));
         let outcome =
             serve::<Request, Response, S>(client, receive, &worker_live, &worker_fault, started)
                 .await;
         worker_live.store(false, Ordering::Release);
-        // The driver is owned here, never detached by bootstrap().
-        // Graceful disconnect drains transport; cancellation is observed.
-        let disconnect_result = tokio::time::timeout(DEADLINE, disconnect).await;
-        let transport = if let Ok(result) = tokio::time::timeout(DEADLINE, &mut driver).await {
-            result.map_err(io::Error::other)?.map_err(io::Error::other)
-        } else {
-            driver.abort();
-            let cancelled = driver.await;
-            Err(io::Error::other(format!(
-                "retained RPC driver did not stop: {cancelled:?}"
-            )))
-        };
-        outcome?;
-        disconnect_result
-            .map_err(|_| io::Error::other("retained RPC disconnect timed out"))?
-            .map_err(io::Error::other)?;
-        transport
+        outcome
     })
 }
 
