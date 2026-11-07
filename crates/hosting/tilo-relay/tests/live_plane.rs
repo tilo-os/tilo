@@ -9,34 +9,12 @@
 )]
 use std::time::Duration;
 
-use tilo_relay::{Envelope, RelayClient};
-use tilo_user_identity::{DeviceCapabilities, RevocationList};
+use tilo_relay::Envelope;
+use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{TestDevice, TestUser, client_endpoint, next, spawn_relay};
+use crate::common::{TestUser, connect, next, spawn_relay};
 
 const WS: u64 = 41;
-
-async fn connect(
-    user: &TestUser,
-    device: &TestDevice,
-    addr: iroh_base::EndpointAddr,
-) -> RelayClient {
-    let client = RelayClient::connect(
-        client_endpoint().await,
-        addr,
-        user.user_pk,
-        device.cert.clone(),
-        device.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    client
-        .send(Envelope::Subscribe { workspace_id: WS })
-        .unwrap();
-    next(&client, |env| matches!(env, Envelope::Ready { .. })).await;
-    client
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
@@ -57,9 +35,9 @@ async fn commits_are_acknowledged_and_live_joins_are_announced() {
     )
     .await;
     let addr = relay.relay.node_addr();
-    let a_client = connect(&user, &a, addr.clone()).await;
-    let b_client = connect(&user, &b, addr.clone()).await;
-    let c_client = connect(&user, &c, addr).await;
+    let a_client = connect(&user, &a, addr.clone(), WS).await;
+    let b_client = connect(&user, &b, addr.clone(), WS).await;
+    let c_client = connect(&user, &c, addr, WS).await;
 
     // Commit: the author gets the host order, the others a plain Delta.
     let mut seqs = Vec::new();

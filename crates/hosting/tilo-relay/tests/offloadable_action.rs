@@ -16,7 +16,6 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use iroh::protocol::Router;
 use launcher::capture::{CapturedRunOutput, CapturedTermination};
 use runtime_fs::blobs::BlobScope;
 use thumbnail::batch::{ENTRYPOINT, PACKAGE};
@@ -28,7 +27,7 @@ use tilo_peer_state::actions::{ActionPlane, NoActions};
 use tilo_peer_state::direct::Replica;
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
-use tilo_relay::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
+use tilo_relay::host::HostMode;
 use tilo_relay::host_jobs::ComputeJobs;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspaces::IssueInvitationRequest;
@@ -38,9 +37,8 @@ use tilo_runtime::offload::{
 };
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::TestDevice;
-use crate::common::TestUser;
 use crate::common::compute::{FixtureCatalogue, installed_package};
+use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, host_on};
 
 /// Images in the batch, and their size: camera originals, roughly.
 const IMAGES: usize = 6;
@@ -203,50 +201,6 @@ impl ComputeContentStore for Media {
     }
 }
 
-/// An endpoint whose key is the device's own, as a device dials with.
-async fn device_endpoint(device: &TestDevice) -> iroh::Endpoint {
-    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&device.sk.to_bytes()))
-        .bind()
-        .await
-        .unwrap()
-}
-
-/// A host governing its own workspaces, on its own endpoint, routed as its
-/// embedder routes it.
-struct Hosted {
-    host: WorkspaceHost,
-    _router: Router,
-    _state: tempfile::TempDir,
-}
-
-async fn host_on(user: &TestUser, device: &TestDevice) -> Hosted {
-    let state = tempfile::tempdir().unwrap();
-    let endpoint = device_endpoint(device).await;
-    let host = WorkspaceHost::open(
-        HostConfig::new(state.path().to_path_buf(), HostMode::Device),
-        HostIdentity {
-            user_public_key: user.user_pk,
-            device_signing_key: device.sk.clone(),
-            device_cert: device.cert.clone(),
-            revocations: RevocationList::new(),
-        },
-        endpoint.clone(),
-        None,
-    )
-    .await
-    .unwrap();
-    let mut router = Router::builder(endpoint);
-    for (alpn, handler) in host.protocols() {
-        router = router.accept(alpn, handler);
-    }
-    Hosted {
-        host,
-        _router: router.spawn(),
-        _state: state,
-    }
-}
-
 /// Admit `laptop` to `workspace` as its invited member device, through the
 /// workspace-join exchange the workspace's host answers, so the host knows the
 /// device that asks it for work.
@@ -382,7 +336,7 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     // The host governs the workspace and keeps its content: the photographs
     // are the workspace's, so the device that asks reads them exactly where
     // the host does.
-    let hosted = host_on(&owner, &desk).await;
+    let hosted = host_on(&owner, &desk, HostMode::Device).await;
     let created = hosted.host.workspaces().create("Photos").await.unwrap();
     let workspace = created.workspace.clone();
     let content = Arc::new(Media::default());

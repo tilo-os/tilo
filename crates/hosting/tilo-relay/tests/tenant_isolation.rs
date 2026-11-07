@@ -45,20 +45,11 @@ use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig};
 use tilo_relay_protocol::delegation::{Delegate, DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestUser};
+use crate::common::{TestDevice, TestUser, device_endpoint};
 
 /// How long a refused write is given to surface anywhere before its absence
 /// counts as evidence.
 const QUIET: Duration = Duration::from_millis(500);
-
-/// An endpoint whose key is the device's own, as a device dials with.
-async fn device_endpoint(device: &TestDevice) -> iroh::Endpoint {
-    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&device.sk.to_bytes()))
-        .bind()
-        .await
-        .unwrap()
-}
 
 async fn connect(relay: &Relay, device: &TestDevice) -> RelayClient {
     try_connect(relay, device).await.unwrap()

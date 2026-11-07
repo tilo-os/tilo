@@ -3,83 +3,16 @@
 //! whom the room's governance admits as that governance changes, carries
 //! members' changes to the governor, and stops when detached.
 
-use iroh::protocol::Router;
-use tilo_relay::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
+use tilo_relay::host::HostMode;
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestUser};
+use crate::common::{TestUser, host_on, next_delta, session_to};
 
 /// How long the hosts are watched doing nothing: longer than the host's
 /// first two waits before dialing again, so a session that kept ending
 /// would show.
 const IDLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(4);
-
-/// An endpoint whose key is the device's own, as a device dials with.
-async fn device_endpoint(device: &TestDevice) -> iroh::Endpoint {
-    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&device.sk.to_bytes()))
-        .bind()
-        .await
-        .unwrap()
-}
-
-/// A room host in `mode` on `device`'s own endpoint, routed as its embedder
-/// routes it.
-struct Hosted {
-    host: WorkspaceHost,
-    router: Router,
-    _state: tempfile::TempDir,
-}
-
-async fn host_on(user: &TestUser, device: &TestDevice, mode: HostMode) -> Hosted {
-    let state = tempfile::tempdir().unwrap();
-    let endpoint = device_endpoint(device).await;
-    let host = WorkspaceHost::open(
-        HostConfig::new(state.path().to_path_buf(), mode),
-        HostIdentity {
-            user_public_key: user.user_pk,
-            device_signing_key: device.sk.clone(),
-            device_cert: device.cert.clone(),
-            revocations: RevocationList::new(),
-        },
-        endpoint.clone(),
-        None,
-    )
-    .await
-    .unwrap();
-    let mut router = Router::builder(endpoint);
-    for (alpn, handler) in host.protocols() {
-        router = router.accept(alpn, handler);
-    }
-    Hosted {
-        host,
-        router: router.spawn(),
-        _state: state,
-    }
-}
-
-impl Hosted {
-    async fn stop(self) {
-        self.router.shutdown().await.unwrap();
-        self.host.shutdown().await;
-    }
-}
-
-/// A session of `device` to the certified host `host` of its own person.
-async fn session_to(user: &TestUser, device: &TestDevice, host: &Hosted) -> RelayClient {
-    RelayClient::connect_v2_to_enrolled_home_peer(
-        device_endpoint(device).await,
-        host.host.node_addr(),
-        user.user_pk,
-        host.host.device_cert().device_public_key,
-        device.cert.clone(),
-        device.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .unwrap()
-}
 
 /// Whether `client`'s host admits it to `workspace_id`.
 async fn admitted(client: &RelayClient, workspace_id: u64) -> bool {
@@ -97,20 +30,6 @@ async fn admitted(client: &RelayClient, workspace_id: u64) -> bool {
             _ => {}
         }
     }
-}
-
-/// The next delta `client` receives.
-async fn next_delta(client: &RelayClient) -> Vec<u8> {
-    tilo_test_env::within("the delta arrives", async {
-        loop {
-            if let Envelope::Delta { delta, .. } =
-                client.recv().await.expect("the session stays open")
-            {
-                break delta;
-            }
-        }
-    })
-    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
