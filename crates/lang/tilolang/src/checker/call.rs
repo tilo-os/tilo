@@ -368,7 +368,7 @@ impl Checker<'_> {
             }
         }
         // An action a view applies may leave out its last parameters: running it opens its
-        // form, which asks the person for them (forms-and-diagrams.md §1).
+        // form, which asks the person for them.
         let asked = |at: usize| {
             at_press
                 && slots
@@ -388,7 +388,7 @@ impl Checker<'_> {
             .collect();
         // A parameter a form cannot ask for says so, naming the action, the parameter and its
         // type, rather than reading as one the person simply forgot: the action stays a command
-        // only an argument given here or a default reaches (forms-and-diagrams.md §1).
+        // only an argument given here or a default reaches.
         let unaskable: Vec<_> = params
             .iter()
             .zip(&slots)

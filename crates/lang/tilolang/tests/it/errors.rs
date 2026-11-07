@@ -130,8 +130,7 @@ fn e022_wrong_arguments() {
 }
 
 /// A parameter no form can ask for says so where the action is run short, naming the action,
-/// the parameter and its type, rather than reading as one the person forgot
-/// (forms-and-diagrams.md §1).
+/// the parameter and its type, rather than reading as one the person forgot.
 #[test]
 fn e022_names_a_parameter_no_form_can_ask_for() {
     let body = "action remind(at: Time, every: std.Repeat) {\n}\naction go() {\n    remind(now)\n}";

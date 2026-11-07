@@ -163,7 +163,7 @@ fn asks_for_own_item(meta: &Meta, holder: &str, rest: &[ParamMeta]) -> bool {
 /// Whether an action's form can ask the person for a value of the type `ty` (as metadata writes
 /// it): text, a number, a flag, a day or a moment, a person, a resource, or a case of the
 /// package's own plain enum, or none of one of those. What a form shows for each is the
-/// type's control (forms-and-diagrams.md §1).
+/// type's control.
 #[must_use]
 pub fn form_asks(meta: &Meta, ty: &str) -> bool {
     use crate::meta::Ty;
@@ -2478,8 +2478,8 @@ mod tests {
     }
 
     /// A form asks for each type that has a control, and for none of the types only an
-    /// argument or a default reaches (forms-and-diagrams.md §1): an enum of this package's
-    /// plain cases, or none of what a form asks for.
+    /// argument or a default reaches: an enum of this package's plain cases, or none of what
+    /// a form asks for.
     #[test]
     fn a_form_asks_for_every_type_it_has_a_control_for() {
         let meta = meta();
