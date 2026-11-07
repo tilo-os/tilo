@@ -172,6 +172,9 @@ impl<M: ListModel> VirtualList<M> {
             subject.bounds = subject.bounds.or(row);
             Some(subject)
         });
+        if key.is_some() && subject.is_none() {
+            tracing::debug!("this row's menu is about nothing: the app named no subject for it");
+        }
         let Some(menu) = self.menus.owned_mut() else {
             return false;
         };

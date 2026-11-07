@@ -398,6 +398,7 @@ impl AppTabs {
             )
         });
         if !asked {
+            tracing::debug!("no window in front opens a box: the send key opens Chat");
             shared.launchpad(LaunchpadAction::Chat);
         }
     }
@@ -845,6 +846,7 @@ impl Answers<'_> {
             FloatingSurfaceClientMessage::SelectionCapable => {
                 if let Some(link) = self.links.get_mut(&connection) {
                     link.selection = true;
+                    tracing::debug!(app = %link.app, "a window opens a send-to box");
                 }
             }
             // An app's own card — a call, a route — is a window of its own:

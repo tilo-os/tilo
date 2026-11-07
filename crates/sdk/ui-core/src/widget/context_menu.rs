@@ -762,6 +762,13 @@ impl ContextMenu {
             self.send_to.open(None);
             self.send_to.unfocus();
             self.send_to.place(self.rect, self.viewport);
+            tracing::debug!(
+                subjects = ?self.send_to.subjects(),
+                box_rect = ?self.send_to.rect(),
+                "a menu about something opened its send-to box"
+            );
+        } else if self.about.is_some() {
+            tracing::debug!("a menu about something opens no box: this window has no shell");
         }
         self.dirty = true;
     }

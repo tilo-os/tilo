@@ -534,6 +534,9 @@ impl App {
         // (`native_runner::slot_bar`).
         // No desktop agent to ask: offer no entry, and drop what was asked
         // while the connection went away.
+        if crate::shared_selection::send_host_available() {
+            tracing::debug!("this window has no shell: its menus carry no send-to box");
+        }
         crate::shared_selection::set_send_host_available(false);
         let _ = crate::shared_selection::take_send_to();
         let _ = crate::shared_selection::take_recipient_searches();
@@ -772,6 +775,7 @@ impl App {
                 .send(&crate::floating_surface::FloatingSurfaceClientMessage::SelectionCapable)?;
             self.floating.selection_capable_sent = true;
             crate::shared_selection::set_send_host_available(true);
+            tracing::debug!("this window opens a send-to box when the shell asks");
         }
         // What this window shows, so the desktop's own menus for it (its
         // window menu) attach it as the apps' menus do.
