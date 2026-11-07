@@ -382,8 +382,8 @@ impl Filtered {
     /// checked again as they stand now, and every other entry of the run keeping what `old`
     /// found of it and where it stood.
     ///
-    /// `Err` with the run and its check when `old` is of another read, has not checked its run
-    /// whole, or the run moved in a way the change did not name: the caller reads it anew.
+    /// `Err` with the run and its check when `old` is of another read, or the run moved in a
+    /// way the change did not name before the entries it checked: the caller reads it anew.
     pub fn spliced(
         old: &Self,
         base: Merged,
@@ -396,13 +396,14 @@ impl Filtered {
             return Err((base, keep));
         };
         let most = base.len();
+        let at = out.len();
         Ok(Self {
             most,
             base,
             keep,
             known: None,
             scanned: RefCell::new(out),
-            at: Cell::new(most),
+            at: Cell::new(at),
             kept: Cell::new(held),
             locate: None,
             shape: Some(shape),
@@ -411,6 +412,9 @@ impl Filtered {
 
     /// What [`Self::spliced`] keeps of `old` over the run `base`: each entry of the run and
     /// whether it is kept, and how many are. `None` when `old` says nothing of the run.
+    ///
+    /// A run `old` checked whole keeps all of its checks; one it was still reading keeps those
+    /// up to where the run moved, and reads the rest as it fills its pages again.
     fn kept_over(
         old: &Self,
         base: &Merged,
@@ -418,10 +422,32 @@ impl Filtered {
         keep: &Keep,
         touched: &BTreeSet<String>,
     ) -> Option<(Vec<Scanned>, usize)> {
-        if old.shape.as_ref() != Some(shape) || !old.exact() {
+        if old.shape.as_ref() != Some(shape) {
             return None;
         }
         let scanned = old.scanned.borrow();
+        if !old.exact() {
+            let mut out: Vec<Scanned> = Vec::new();
+            let mut kept = 0usize;
+            for at in 0..scanned.len() {
+                let old_id = old.base.get(at)?;
+                let new_id = base.get(at)?;
+                // Where the run moved, what `old` found of the entries before it still holds;
+                // from there the entries are read anew.
+                if old_id != new_id || touched.contains(&*old_id) {
+                    break;
+                }
+                let holds = scanned.get(at)?.kept;
+                if holds {
+                    kept = kept.saturating_add(1);
+                }
+                out.push(Scanned {
+                    id: new_id,
+                    kept: holds,
+                });
+            }
+            return Some((out, kept));
+        }
         let mut out: Vec<Scanned> = Vec::with_capacity(base.len());
         let mut kept = 0usize;
         let (mut before, mut now) = (0usize, 0usize);
@@ -556,6 +582,18 @@ impl Filtered {
                 // One of the item's entries is not in the run.
                 continue;
             };
+            // The run's last entry stands after every other one it keeps, so the count the
+            // index answers of the listing says where it is: its own check and no read of the
+            // run before it.
+            if at.saturating_add(1) == self.base.len()
+                && let Some(total) = self.known
+            {
+                if (self.keep)(&id) {
+                    let held = total.saturating_sub(1);
+                    best = Some(best.map_or(held, |now| now.min(held)));
+                }
+                continue;
+            }
             // Check the run up to and with the entry, then count the ones kept before it.
             self.scan_to(at.saturating_add(1));
             let scanned = self.scanned.borrow();
@@ -934,18 +972,36 @@ mod tests {
             .is_err(),
             "an entry no change names went"
         );
-        let partial = Filtered::new(numbered(200), Box::new(even)).shaped(shape.clone());
+    }
+
+    #[test]
+    fn a_spliced_listing_keeps_the_entries_it_checked_before_the_run_moved() {
+        let shape: Shape = Rc::from("the run of a column");
+        let checks = Rc::new(Cell::new(0usize));
+        let counting = {
+            let checks = Rc::clone(&checks);
+            Box::new(move |id: &str| {
+                checks.set(checks.get().saturating_add(1));
+                even(id)
+            })
+        };
+        // A listing still reading its run: its first page is checked, the rest is not.
+        let partial = Filtered::new(numbered(200), counting).shaped(shape.clone());
         assert_eq!(partial.get(0).as_deref(), Some("0000"));
-        assert!(
-            Filtered::spliced(
-                &partial,
-                numbered(200),
-                Box::new(even),
-                shape,
-                &BTreeSet::new()
-            )
-            .is_err(),
-            "a run not checked whole has nothing to keep"
+        let checked = checks.get();
+        assert!(checked > 0 && checked < 200, "a page of it is checked");
+        let touched = touched(&["0150"]);
+        let spliced = Filtered::spliced(&partial, numbered(200), Box::new(even), shape, &touched)
+            .ok()
+            .expect("the run is as it was");
+        assert_eq!(
+            checks.get(),
+            checked,
+            "the entries it checked are not read again"
+        );
+        assert_eq!(
+            read_all(&spliced),
+            read_all(&Filtered::new(numbered(200), Box::new(even)))
         );
     }
 }

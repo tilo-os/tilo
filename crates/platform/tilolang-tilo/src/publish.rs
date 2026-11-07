@@ -1927,7 +1927,8 @@ impl Published<'_> {
 
     /// Bring the children of the resource at `path` in line with the items of its
     /// collections: keep the unchanged ones, build the new and the changed ones (taking them out
-    /// of `nodes`).
+    /// of `nodes`). A tree holds what was reached of a collection, not all of it, so an item it
+    /// did not hold is added only when the change names it.
     fn membership(
         &self,
         tree: &mut ResourceSpec,
@@ -1967,10 +1968,14 @@ impl Published<'_> {
                 let item = crate::index::derive::item_path(path, &id);
                 match held.remove(&resource_id(app, &item)) {
                     Some(child) if !nodes.contains(&item) => ordered.push(child),
-                    _ => {
+                    Some(_) => {
                         nodes.remove(&item);
                         ordered.extend(self.item(&item));
                     }
+                    // The tree did not hold it: a change names the items it reaches, and the
+                    // tree grows by those rather than by all ten thousand a collection has.
+                    None if nodes.remove(&item) => ordered.extend(self.item(&item)),
+                    None => {}
                 }
             }
         }
