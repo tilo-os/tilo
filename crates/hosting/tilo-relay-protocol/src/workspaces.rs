@@ -291,8 +291,8 @@ pub enum WorkspacesRequest {
         #[serde(rename = "room")]
         workspace: String,
     },
-    /// Issue an invitation anyone holding it may redeem; the owner admits
-    /// each redemption.
+    /// Issue an invitation anyone holding it may redeem; it admits each
+    /// device that redeems it, by this invitation's own grant.
     Invite {
         #[serde(rename = "room")]
         workspace: String,
