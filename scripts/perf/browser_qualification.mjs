@@ -276,7 +276,7 @@ export function judgeGoals(summary) {
 }
 
 // A round without the demo (`--demo-seconds 0`).
-const NO_DEMO = {intervals: [], work: [], stages: {}, frames: 0, wheels: 0, seconds: 0, fps: NaN, distinctOffsets: 0};
+const NO_DEMO = {intervals: [], work: [], stages: {}, frames: 0, wheels: 0, seconds: 0, fps: NaN};
 // A round without typing (`--typing-keys 0`).
 const NO_TYPING = {keys: 0, latencies: [], work: [], stages: {}, damage: {}, requesters: {}, text: null};
 
@@ -390,36 +390,29 @@ const activateExpression = (route, timeoutMs) => `(async () => {
   return {ms: (await presented) - start};
 })()`;
 
-// Wheel the canvas from inside the page at 120 Hz, as a trackpad reports,
-// turning back at the strip's ends, and time every presented frame.
-const demoExpression = seconds => `(async () => {
+// The demo pan's wheel, as a fast trackpad swipe reports sideways travel: the
+// page reads it as pixels, so the strip follows the hand 1:1. Sent through
+// Chrome's input pipeline from the desktop's center.
+const PAN_STEP_PX = 20;
+const PAN_HZ = 120;
+
+// Starts the demo measurement in the page: every presented frame, and where
+// the strip stands. The runtime's frame metrics start with the pan.
+const demoRecorder = `(async () => {
   const runtime = ${RUNTIME};
-  const host = tiloMount.canvas.parentElement, canvas = tiloMount.canvas, nav = tiloMount.navigation;
-  const rect = canvas.getBoundingClientRect(), x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+  const host = tiloMount.canvas.parentElement;
+  const times = globalThis.__pan = [];
+  new MutationObserver(() => { if (host.dataset.phase === 'presented') times.push(performance.now()); })
+    .observe(host, {attributes: true, attributeFilter: ['data-frames']});
   runtime.configure_frame_metrics(true); runtime.take_frame_metrics();
-  const times = [], offsets = new Set();
-  const observer = new MutationObserver(() => { if (host.dataset.phase === 'presented') times.push(performance.now()); });
-  observer.observe(host, {attributes: true, attributeFilter: ['data-frames']});
-  // The pan is read back every 15 wheels (8 times a second), not per wheel:
-  // a navigation snapshot is page work the measurement must not add to every
-  // frame. Between reads the expected offset is tracked from the deltas sent.
-  let direction = 1, sent = 0, offset = nav.getSnapshot().desktopPan?.offset ?? 0;
-  const max = nav.getSnapshot().desktopPan?.max ?? 0, step = 6;
-  const start = performance.now();
-  await new Promise(done => {
-    const timer = setInterval(() => {
-      if (sent % 15 === 0) { offset = nav.getSnapshot().desktopPan?.offset ?? 0; offsets.add(offset.toFixed(1)); }
-      if (offset >= max - step) direction = -1; else if (offset <= step) direction = 1;
-      canvas.dispatchEvent(new WheelEvent('wheel', {deltaX: step * direction, deltaY: 0, deltaMode: 0, clientX: x, clientY: y,
-        bubbles: true, cancelable: true}));
-      offset += step * direction; sent++;
-      if (performance.now() - start >= ${seconds * 1000}) { clearInterval(timer); done(); }
-    }, 1000 / 120);
-  });
-  const inputEnd = performance.now();
-  await new Promise(done => setTimeout(done, 250));
-  observer.disconnect();
-  offsets.add((nav.getSnapshot().desktopPan?.offset ?? 0).toFixed(1));
+  const pan = tiloMount.navigation.getSnapshot().desktopPan ?? {};
+  return {offset: pan.offset ?? 0, max: pan.max ?? 0};
+})()`;
+
+// What the frames presented before `inputEnd` cost, and what presented them.
+const demoFinish = inputEnd => `(async () => {
+  const runtime = ${RUNTIME};
+  const during = (globalThis.__pan ?? []).filter(time => time <= ${inputEnd} + 50);
   const metrics = JSON.parse(runtime.take_frame_metrics()); runtime.configure_frame_metrics(false);
   const samples = metrics.flatMap(mount => mount.samples);
   const work = samples.filter(s => s.stage === 'draw_total').map(s => s.ms);
@@ -434,12 +427,80 @@ const demoExpression = seconds => `(async () => {
   for (const mount of metrics) {
     for (const [widget, n] of Object.entries(mount.measuredBy ?? {})) measuredBy[widget] = (measuredBy[widget] ?? 0) + n;
   }
-  const during = times.filter(t => t <= inputEnd + 50);
   const requesters = {};
   for (const mount of metrics) for (const [k, n] of Object.entries(mount.requesters ?? {})) requesters[k] = (requesters[k] ?? 0) + n;
-  return {requesters, times: during, work, stages, measuredBy, dropped, wheels: sent, seconds: (inputEnd - start) / 1000,
-    distinctOffsets: offsets.size, max};
+  return {times: during, work, stages, measuredBy, dropped, requesters};
 })()`;
+
+const digest = image => createHash('sha256').update(image ?? Buffer.alloc(0)).digest('hex');
+
+/** Wheel the shown desktop's strip back and forth for `seconds` at PAN_HZ,
+ * and hand back the frames it presented. `moved` says whether the strip
+ * ended somewhere else than it started and looked it: a wheel the desktop
+ * ignored presents frames that changed nothing. */
+async function panStrip(page, x, y, seconds) {
+  const {offset: startOffset, max} = await page.evaluate(demoRecorder);
+  if (!(max > 0)) return {max, frames: 0, wheels: 0, seconds: 0, moved: false, times: [], work: [], stages: {}, dropped: 0,
+    measuredBy: null, requesters: {}};
+  // The runtime reads the pointer from its last move: a wheel alone lands
+  // where it was.
+  await page.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y, button: 'none', buttons: 0, pointerType: 'mouse'});
+  await sleep(500);
+  // The page is not a `tab()` here, so it captures through the protocol.
+  const shot = async () => Buffer.from((await page.send('Page.captureScreenshot', {format: 'png'})).result?.data ?? '', 'base64');
+  const before = digest(await shot());
+  // A gesture publishes its pan when it ends, so while it runs the offset is
+  // tracked from the steps sent, and read back once it has settled.
+  let offset = startOffset, direction = offset > max / 2 ? -1 : 1, sent = 0, inputEnd = 0;
+  const startedAt = performance.now(), within = seconds * 1000;
+  while (true) {
+    if (performance.now() - startedAt >= within) { inputEnd = performance.now(); break; }
+    if (offset >= max - PAN_STEP_PX) direction = -1;
+    else if (offset <= PAN_STEP_PX) direction = 1;
+    await page.send('Input.dispatchMouseEvent', {type: 'mouseWheel', x, y, deltaX: PAN_STEP_PX * direction, deltaY: 0,
+      modifiers: 0, pointerType: 'mouse'});
+    offset += PAN_STEP_PX * direction;
+    sent++;
+    const wait = startedAt + (sent * 1000) / PAN_HZ - performance.now();
+    if (wait > 0) await sleep(wait);
+  }
+  // Past the end of the gesture: the strip settles and publishes where it is.
+  await sleep(500);
+  const endOffset = (await page.evaluate('tiloMount.navigation.getSnapshot().desktopPan').catch(() => null))?.offset ?? offset;
+  const after = digest(await shot());
+  const measured = await page.evaluate(demoFinish(inputEnd));
+  const elapsed = (inputEnd - startedAt) / 1000;
+  return {...measured, wheels: sent, seconds: elapsed, startOffset, endOffset, max, frames: measured.times.length,
+    fps: measured.times.length / elapsed, moved: endOffset !== startOffset && before !== after};
+}
+
+/** The demo workload on the strip of `windows`, after one unmeasured pass. */
+async function measureDemo(page, windows, options, index) {
+  await page.evaluate(`tiloMount.navigation.dispatch(${JSON.stringify(verb.focus(windows[0].route))})`);
+  await sleep(1000);
+  const {x, y} = await page.evaluate(`(() => { const r = tiloMount.canvas.getBoundingClientRect();
+    return {x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2)}; })()`);
+  // Warm up with the same workload, unmeasured: the first pan frames over
+  // each window compile the renderer's pipelines for it. On a GPU that is
+  // milliseconds; on SwiftShader one frame took a minute and left a
+  // five-second demo with a single frame.
+  await panStrip(page, x, y, options.demoSeconds);
+  await sleep(500);
+  const demo = await panStrip(page, x, y, options.demoSeconds);
+  if (demo.max <= 0) throw new Invalid(`round ${index}: the demo strip does not overflow the viewport; nothing to pan`);
+  // A strip that did not move is a wheel the desktop ignored, and the frames
+  // it presented measured nothing. A software rasterizer can block the page
+  // for seconds at a time, so the frame count is a floor, not a rate.
+  if (!demo.moved || demo.frames < 3) {
+    throw new Invalid(`round ${index}: the demo presented ${demo.frames} frames and left the strip at ${demo.endOffset} `
+      + `of ${demo.max}, from ${demo.startOffset}`);
+  }
+  if (!demo.work.length || demo.dropped) {
+    throw new Invalid(`round ${index}: frame metrics incomplete (${demo.work.length} samples, ${demo.dropped} dropped)`);
+  }
+  return {requesters: demo.requesters, intervals: intervals(demo.times), work: demo.work, stages: demo.stages, frames: demo.frames,
+    wheels: demo.wheels, seconds: demo.seconds, fps: demo.fps, measuredBy: demo.measuredBy};
+}
 
 // Frames the settled desktop presents per second, and — from the runtime's
 // own metrics — what each of them repainted and what asked for it: an idle
@@ -499,9 +560,18 @@ const typingRecorder = `(() => {
   typing.observer.observe(host, {attributes: true, attributeFilter: ['data-frames']});
   return true;
 })()`;
-const typingFinish = `(async () => {
+// Waits (up to `waitMs`, one frame's timeout) until every key has a presented
+// frame after it: a software rasterizer presents frames seconds apart, so the
+// last keys' frames arrive long after the last key was dispatched. `typed` is
+// what was sent: the semantics tree a reader is handed trails the document
+// being written, so the page is asked again until it shows those keys.
+const typingFinish = (waitMs, typed) => `(async () => {
   const runtime = ${RUNTIME};
   const typing = globalThis.__typing ?? {keys: [], frames: []};
+  const deadline = performance.now() + ${waitMs};
+  while (!typing.keys.every(at => typing.frames.some(time => time > at)) && performance.now() < deadline) {
+    await new Promise(done => setTimeout(done, 25));
+  }
   typing.observer?.disconnect();
   const metrics = JSON.parse(runtime.take_frame_metrics()); runtime.configure_frame_metrics(false);
   const latency = typing.keys.map(at => {
@@ -525,10 +595,17 @@ const typingFinish = `(async () => {
     for (const child of node.children ?? []) walk(child);
     for (const child of node.semantics?.children ?? []) walk(child);
   };
-  tiloMount.requestSemantics();
-  for (let i = 0; i < 40; i++) {
-    walk(tiloMount.state()?.semantics?.root);
-    if (values.length) break;
+  const want = ${JSON.stringify(typed.replace(/\s+/g, ' ').trim())};
+  const deadline = performance.now() + Math.min(${waitMs}, 5000);
+  for (;;) {
+    values.length = 0;
+    tiloMount.requestSemantics();
+    for (let i = 0; i < 20; i++) {
+      walk(tiloMount.state()?.semantics?.root);
+      if (values.length) break;
+      await new Promise(done => setTimeout(done, 50));
+    }
+    if (values.join(' ').replace(/\s+/g, ' ').trim().includes(want) || performance.now() >= deadline) break;
     await new Promise(done => setTimeout(done, 50));
   }
   return {keys: typing.keys.length, latency, work: samples.filter(s => s.stage === 'draw_total').map(s => s.ms),
@@ -587,32 +664,6 @@ async function gpuDiagnostics(browser) {
   return JSON.stringify({devices: gpu.devices, featureStatus: gpu.featureStatus, aux: Object.fromEntries(aux)}).slice(0, 4000);
 }
 
-/** The demo workload on the strip of `windows`, after one unmeasured pass. */
-async function measureDemo(page, windows, options, index) {
-  await page.evaluate(`tiloMount.navigation.dispatch(${JSON.stringify(verb.focus(windows[0].route))})`);
-  await sleep(1000);
-  // Warm up with the same workload, unmeasured: the first pan frames over
-  // each window compile the renderer's pipelines for it. On a GPU that is
-  // milliseconds; on SwiftShader one frame took a minute and left a
-  // five-second demo with a single frame.
-  await page.evaluate(demoExpression(options.demoSeconds));
-  await sleep(500);
-  const demo = await page.evaluate(demoExpression(options.demoSeconds));
-  if (demo.max <= 0) throw new Invalid(`round ${index}: the demo strip does not overflow the viewport; nothing to pan`);
-  // Pan offsets are read back eight times a second and once at the end.
-  // At least two intervals, and a strip that moved. A software rasterizer
-  // can block the page for seconds at a time, so neither is a rate.
-  if (demo.distinctOffsets < 2 || demo.times.length < 3) {
-    throw new Invalid(`round ${index}: the demo presented ${demo.times.length} frames over ${demo.distinctOffsets} pan offsets`);
-  }
-  if (!demo.work.length || demo.dropped) {
-    throw new Invalid(`round ${index}: frame metrics incomplete (${demo.work.length} samples, ${demo.dropped} dropped)`);
-  }
-  return {requesters: demo.requesters, intervals: intervals(demo.times), work: demo.work, stages: demo.stages, frames: demo.times.length,
-    wheels: demo.wheels, seconds: demo.seconds, fps: demo.times.length / demo.seconds, distinctOffsets: demo.distinctOffsets,
-    measuredBy: demo.measuredBy};
-}
-
 // How fast a person typing quickly sends keys: 20 a second, a fast typist's
 // burst, so a frame that arrives late shows up in the p95.
 const TYPING_INTERVAL_MS = 50;
@@ -651,8 +702,7 @@ async function measureTyping(page, windows, options, index) {
     await page.send('Input.dispatchKeyEvent', {type: 'keyUp', ...event});
     await sleep(TYPING_INTERVAL_MS);
   }
-  await sleep(300);
-  const typing = await page.evaluate(typingFinish);
+  const typing = await page.evaluate(typingFinish(options.frameTimeout * 1000, typed));
   if (typing.keys !== typed.length) {
     throw new Invalid(`round ${index}: the page saw ${typing.keys} of the ${typed.length} keys typed`);
   }
@@ -903,7 +953,7 @@ async function main() {
         transfer_bytes: loadBytes.map(t => t.bytes), request_count: loadBytes.map(t => t.requests),
       },
       rounds: rounds.map(({resources, ...r}) => ({...r, demo: {frames: r.demo.frames, wheels: r.demo.wheels,
-        seconds: r.demo.seconds, fps: r.demo.fps, distinctOffsets: r.demo.distinctOffsets, stages: r.demo.stages,
+        seconds: r.demo.seconds, fps: r.demo.fps, moved: r.demo.moved, stages: r.demo.stages,
         measuredBy: r.demo.measuredBy, requesters: r.demo.requesters}})),
     };
     writeFileSync(options.out, JSON.stringify(report, null, 1) + '\n');
