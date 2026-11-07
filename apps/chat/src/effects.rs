@@ -51,7 +51,7 @@ pub(crate) fn item_views(field: &str, _item: &tilo_resource::Id) -> Vec<Resource
 }
 
 /// Chat's effects. See the [module docs](self).
-#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "chat.effects")]
 pub enum ChatEffect {
     /// Ask the device's model about the latest message.
@@ -120,6 +120,8 @@ pub enum ChatEffect {
         attached: Vec<tilo_reference::Attached>,
         #[param("The message")]
         text: String,
+        #[param("Where the box stood on the desk, as left, top, right and bottom")]
+        bounds: Option<[f64; 4]>,
     },
     /// Read message
     ///

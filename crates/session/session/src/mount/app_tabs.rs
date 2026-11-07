@@ -353,7 +353,13 @@ impl AppTabs {
     /// deliver why.
     fn deliver_sends(&mut self, shared: &crate::Shared) {
         for sent in std::mem::take(&mut self.sent) {
-            let delivered = shared.send_to(&sent.workspace, &sent.to, &sent.attached, &sent.text);
+            let delivered = shared.send_to(
+                &sent.workspace,
+                &sent.to,
+                &sent.attached,
+                &sent.text,
+                sent.bounds,
+            );
             if let Err(reason) = delivered {
                 refuse(&sent.reply, &sent.app, "send_to", &reason);
             }
@@ -646,6 +652,9 @@ struct Sent {
     to: Vec<ui::floating_surface::Recipient>,
     attached: Vec<tilo_reference::Attached>,
     text: String,
+    /// Where the box stood on the desk: the spot the conversation it opens
+    /// stands at, so the message and where it landed are one gesture.
+    bounds: Option<[f64; 4]>,
 }
 
 /// A window's box asking the search whom it could send to.
@@ -905,7 +914,10 @@ impl Answers<'_> {
             // reach the session's records and the one search, so they are
             // carried out after this pass has every ask.
             FloatingSurfaceClientMessage::SendTo {
-                to, attached, text, ..
+                to,
+                attached,
+                text,
+                bounds,
             } => self.sent.push(Sent {
                 app,
                 workspace,
@@ -913,6 +925,7 @@ impl Answers<'_> {
                 to,
                 attached,
                 text,
+                bounds,
             }),
             FloatingSurfaceClientMessage::SearchRecipients { request, query } => {
                 self.asked.push(Asked {

@@ -732,10 +732,15 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
                 serde_json::json!({"peer": peer, "accepted": true}),
             ));
         }
-        ChatEffect::Send { to, attached, text } => {
+        ChatEffect::Send {
+            to,
+            attached,
+            text,
+            bounds,
+        } => {
             let state = cx.live().get();
             let mut chat = chat.borrow_mut();
-            return chat.send_from_box(to, attached.clone(), text, &state);
+            return chat.send_from_box(to, attached.clone(), text, *bounds, &state);
         }
         ChatEffect::ReadDirectConversation { public_key } => {
             let state = cx.live().get();

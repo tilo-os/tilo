@@ -152,6 +152,7 @@ impl ChatApp {
         to: &[ui::floating_surface::Recipient],
         attached: Vec<tilo_reference::Attached>,
         text: &str,
+        bounds: Option<[f64; 4]>,
         chat: &Chat,
     ) -> Result<Effected, String> {
         if text.trim().is_empty() && attached.is_empty() {
@@ -160,6 +161,11 @@ impl ChatApp {
         let id = self.conversation_named(to, chat)?;
         self.post_to_conversation(&id, text, attached)?;
         self.open_conversation(&id, chat);
+        // The conversation stands where the box stood: the message the person
+        // wrote and the conversation it landed in are one gesture.
+        if let Some(at) = bounds.and_then(|place| ui::floating_surface::protocol_rect(place).ok()) {
+            self.float_conversation_at(&id.to_string(), at, chat);
+        }
         Ok(Effected::value(
             serde_json::json!({"conversation": id.to_string(), "accepted": true}),
         ))

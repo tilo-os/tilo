@@ -41,6 +41,7 @@ impl Shared {
         to: &[Recipient],
         attached: &[tilo_reference::Attached],
         text: &str,
+        bounds: Option<[f64; 4]>,
     ) -> Result<(), String> {
         let text = text.trim();
         if text.is_empty() && attached.is_empty() {
@@ -68,7 +69,7 @@ impl Shared {
         if resolved.is_empty() {
             return Err("a message needs someone to go to".into());
         }
-        let target = send_target(workspace, &resolved, attached, text)?;
+        let target = send_target(workspace, &resolved, attached, text, bounds)?;
         self.search
             .perform(workspace, target, &mut |own| {
                 self.doors
@@ -105,6 +106,7 @@ fn send_target(
     to: &[Recipient],
     attached: &[tilo_reference::Attached],
     text: &str,
+    bounds: Option<[f64; 4]>,
 ) -> Result<Target, String> {
     let to = serde_json::to_value(to).map_err(|error| error.to_string())?;
     let attached = serde_json::to_value(attached).map_err(|error| error.to_string())?;
@@ -112,7 +114,8 @@ fn send_target(
         InvokeTarget::action(CHAT, workspace, CHAT_WORKSPACE, SEND)
             .with_argument("to", to)
             .with_argument("attached", attached)
-            .with_argument("text", text),
+            .with_argument("text", text)
+            .with_argument("bounds", bounds),
     )))
 }
 
@@ -137,6 +140,7 @@ mod tests {
             std::slice::from_ref(&ada),
             std::slice::from_ref(&carried),
             "look",
+            Some([210.0, 120.0, 530.0, 380.0]),
         )
         .expect("a send builds") else {
             panic!("a send invokes the chat");
@@ -155,5 +159,10 @@ mod tests {
         let attached: Vec<Attached> =
             serde_json::from_value(target.arguments["attached"].clone()).expect("what it carries");
         assert_eq!(attached, [carried]);
+        assert_eq!(
+            target.arguments.get("bounds"),
+            Some(&serde_json::json!([210.0, 120.0, 530.0, 380.0])),
+            "the box's place goes with it, so the conversation opens there"
+        );
     }
 }

@@ -215,6 +215,7 @@ fn a_box_send_reaches_the_conversation_the_two_already_have() {
             to: vec![Recipient::found(RecipientKind::Person, ada, "Ada")],
             attached: vec![carried],
             text: "can you look?".into(),
+            bounds: None,
         })
         .expect("Bob's box sends");
     let value = sent.value.expect("the send says where the message went");
@@ -275,6 +276,7 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
             to: vec![Recipient::found(RecipientKind::Agent, agent, "Ada")],
             attached: Vec::new(),
             text: "please look".into(),
+            bounds: None,
         })
         .expect("Bob's box sends");
     let value = sent.value.expect("the send says where the message went");
@@ -289,6 +291,46 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
     let rows = crate::testing::mounted_rows(&mut bob_window, &conversation.to_string());
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].text, "please look");
+}
+
+/// A send made in a box hands the conversation it opened to the desktop at the
+/// box's own bounds: the message and the conversation it landed in stand in
+/// one place, one gesture.
+#[test]
+fn a_box_send_opens_its_conversation_where_the_box_stood() {
+    use crate::effects::ChatEffect;
+    use ui::floating_surface::{FloatingRole, Recipient, RecipientKind};
+    use vello::kurbo::Rect;
+
+    const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000e";
+    let ada = "ad".repeat(32);
+    let bob = "b0".repeat(32);
+    let (_, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
+    let stood = [210.0, 120.0, 530.0, 380.0];
+
+    bob_window
+        .effect(&ChatEffect::Send {
+            to: vec![Recipient::found(RecipientKind::Person, ada, "Ada")],
+            attached: Vec::new(),
+            text: "look at this".into(),
+            bounds: Some(stood),
+        })
+        .expect("Bob's box sends");
+
+    let request = bob_window
+        .with_chat(|chat| ui::widget::FloatingSurfaceProvider::take_floating_surface_request(chat))
+        .flatten()
+        .expect("the send presents the conversation as a card");
+    assert_eq!(
+        request.role,
+        FloatingRole::Conversation,
+        "the card is the conversation, not a copy of the window"
+    );
+    assert_eq!(
+        request.initial_rect,
+        Some(Rect::new(stood[0], stood[1], stood[2], stood[3])),
+        "the card stands where the box stood"
+    );
 }
 
 /// What a person's card asks of Chat when they press Message: the row naming
