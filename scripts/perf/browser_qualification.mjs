@@ -596,7 +596,7 @@ const typingFinish = (waitMs, typed) => `(async () => {
     for (const child of node.semantics?.children ?? []) walk(child);
   };
   const want = ${JSON.stringify(typed.replace(/\s+/g, ' ').trim())};
-  const deadline = performance.now() + Math.min(${waitMs}, 5000);
+  const settled = performance.now() + Math.min(${waitMs}, 5000);
   for (;;) {
     values.length = 0;
     tiloMount.requestSemantics();
@@ -605,7 +605,7 @@ const typingFinish = (waitMs, typed) => `(async () => {
       if (values.length) break;
       await new Promise(done => setTimeout(done, 50));
     }
-    if (values.join(' ').replace(/\s+/g, ' ').trim().includes(want) || performance.now() >= deadline) break;
+    if (values.join(' ').replace(/\s+/g, ' ').trim().includes(want) || performance.now() >= settled) break;
     await new Promise(done => setTimeout(done, 50));
   }
   return {keys: typing.keys.length, latency, work: samples.filter(s => s.stage === 'draw_total').map(s => s.ms),
