@@ -151,24 +151,11 @@ impl Workspaces {
             .sealing_keys(&governed, app, record)
             .await
             .map_err(CollaborationError::new)?;
-        // A record whose history repeats a writer's sequence reads whole here
-        // and is repaired before it is authored: the repair publishes one
-        // checkpoint, so every device reads the record as this one, including
-        // devices whose read predates the rule.
-        let mut opened = governed
-            .opened_record(app_id, record)
+        let bytes = governed
+            .readable_document(app_id, record)
             .await
             .map_err(CollaborationError::new)?
             .ok_or_else(|| CollaborationError::new("native record is not prepared"))?;
-        if opened.needs_repair() {
-            self.repair_in(&mut governed, app_id, record).await;
-            opened = governed
-                .opened_record(app_id, record)
-                .await
-                .map_err(CollaborationError::new)?
-                .ok_or_else(|| CollaborationError::new("native record is not prepared"))?;
-        }
-        let bytes = opened.document;
         let mut document = automerge::AutoCommit::load(&bytes)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         let heads = match &keys {

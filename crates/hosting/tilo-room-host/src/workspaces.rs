@@ -82,8 +82,6 @@ use std::time::Duration;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
-#[cfg(any(feature = "agents", feature = "web"))]
-use tilo_peer_state::OpenedRecord;
 use tilo_peer_state::{GovernedAccess, StatePeer};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::Mutex as AsyncMutex;
@@ -1554,11 +1552,6 @@ impl Workspaces {
     /// `app` in `workspace`, saved: a record members write sealed is read with
     /// the keys this relay holds as a member of its channel.
     ///
-    /// A sealed record whose history repeats a writer's sequence is repaired
-    /// once here ([`GovernedWorkspace`]'s reads keep the change that reached
-    /// it first): the repair is published like any other write, so every
-    /// other device reads the record whole.
-    ///
     /// # Errors
     ///
     /// The workspace is not governed here, or a sealed record cannot be opened.
@@ -1571,21 +1564,13 @@ impl Workspaces {
         let state = self.workspace(workspace).await?;
         let governed = state.lock().await;
         #[cfg(any(feature = "agents", feature = "web"))]
-        let opened = governed
-            .opened_record(app, record)
+        let document = governed
+            .readable_document(app, record)
             .await
             .map_err(CollaborationError::new)?;
-        #[cfg(any(feature = "agents", feature = "web"))]
-        let repair = opened.as_ref().is_some_and(OpenedRecord::needs_repair);
-        #[cfg(any(feature = "agents", feature = "web"))]
-        let document = opened.map(|opened| opened.document);
         #[cfg(not(any(feature = "agents", feature = "web")))]
         let document = governed.peer().document(app, record);
         drop(governed);
-        #[cfg(any(feature = "agents", feature = "web"))]
-        if repair {
-            self.repair_repeated_sequence(workspace, app, record).await;
-        }
         Ok(document)
     }
 

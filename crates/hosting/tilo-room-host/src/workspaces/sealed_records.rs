@@ -20,7 +20,6 @@ use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, SignedOp};
 use ed25519_dalek::SigningKey;
 #[cfg(feature = "agents")]
 use neighbour_wire::NeighbourMsg;
-use tilo_peer_state::OpenedRecord;
 #[cfg(feature = "agents")]
 use tilo_peer_state::StatePeer;
 
@@ -137,29 +136,22 @@ impl GovernedWorkspace {
         open(op).map(Some)
     }
 
-    /// `record` of `app` as the governor reads it: the record itself, or for
-    /// a sealed one its history opened with the channel's keys, and the
-    /// writes the read leaves out ([`OpenedRecord`]). A sealed write that
-    /// does not open, or waits for a change the record lacks, is left out
-    /// and named in the log: the workspace reads the rest, and the write
-    /// stays in the history for when what it waits for comes.
+    /// `record` of `app` as the governor reads it, saved: the record itself,
+    /// or for a sealed one its history opened with the channel's keys.
+    /// A sealed write that does not open, or waits for a change the record
+    /// lacks, is left out and named in the log: the workspace reads the rest,
+    /// and the write stays in the history for when what it waits for comes.
     ///
     /// # Errors
     ///
     /// As [`Self::record_keys`], or the history's changes are malformed.
-    pub(super) async fn opened_record(
+    pub(super) async fn readable_document(
         &self,
         app: &str,
         record: &str,
-    ) -> Result<Option<OpenedRecord>, String> {
+    ) -> Result<Option<Vec<u8>>, String> {
         let Some(keys) = self.record_keys(app, record).await? else {
-            return Ok(self
-                .peer
-                .document(app, record)
-                .map(|document| OpenedRecord {
-                    document,
-                    unmerged: Vec::new(),
-                }));
+            return Ok(self.peer.document(app, record));
         };
         let Some(opened) =
             self.peer
@@ -169,47 +161,19 @@ impl GovernedWorkspace {
             return Ok(None);
         };
         if !opened.unmerged.is_empty() {
-            // One writer wrote a sequence twice: the record keeps the change
-            // that reached it first, nothing is lost, and no operator has to
-            // act. A write left out for any other reason is a loss.
+            // A write left out for any reason is a loss: nothing reads it, and
+            // it is kept for an operator rather than dropped.
             let writes: Vec<String> = opened.unmerged.iter().map(ToString::to_string).collect();
-            if opened.only_repeated_sequences() {
-                tracing::info!(
-                    workspace = %self.workspace(),
-                    %app,
-                    %record,
-                    writes = ?writes,
-                    "a sealed record keeps the change that reached it first of a writer's sequence"
-                );
-            } else {
-                tracing::warn!(
-                    workspace = %self.workspace(),
-                    %app,
-                    %record,
-                    left_out = writes.len(),
-                    writes = ?writes,
-                    "a sealed record is read without writes of its history that do not merge; they are kept"
-                );
-            }
+            tracing::warn!(
+                workspace = %self.workspace(),
+                %app,
+                %record,
+                left_out = writes.len(),
+                writes = ?writes,
+                "a sealed record is read without writes of its history that do not merge; they are kept"
+            );
         }
-        Ok(Some(opened))
-    }
-
-    /// [`Self::opened_record`]'s document alone, saved: the record's history
-    /// opened as it reads.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::opened_record`].
-    pub(super) async fn readable_document(
-        &self,
-        app: &str,
-        record: &str,
-    ) -> Result<Option<Vec<u8>>, String> {
-        Ok(self
-            .opened_record(app, record)
-            .await?
-            .map(|opened| opened.document))
+        Ok(Some(opened.document))
     }
 }
 
@@ -519,72 +483,6 @@ impl Workspaces {
             Ok(collaboration)
         })?;
         self.settle(workspace).await
-    }
-
-    /// Repair the sealed history of `record` of `app` in `workspace` once:
-    /// one writer wrote a sequence twice there, so every read of the history
-    /// keeps the change that reached the record first and leaves out the
-    /// other one. Compacting the history into one sealed checkpoint
-    /// supersedes the write it leaves out and publishes a record every
-    /// device following it reads whole, through the same path as any other
-    /// write — the checkpoint is the repair, not a special message.
-    ///
-    /// Paced by [`GovernedWorkspace::compaction_wait`] as
-    /// [`Self::compact_sealed_histories`] is, so a history that cannot be
-    /// compacted is not opened and merged on every read.
-    pub(super) async fn repair_repeated_sequence(&self, workspace: &str, app: &str, record: &str) {
-        let Ok(state) = self.workspace(workspace).await else {
-            return;
-        };
-        let mut governed = state.lock().await;
-        self.repair_in(&mut governed, app, record).await;
-    }
-
-    /// [`Self::repair_repeated_sequence`] of a workspace the caller has
-    /// locked.
-    pub(super) async fn repair_in(
-        &self,
-        governed: &mut GovernedWorkspace,
-        app: &str,
-        record: &str,
-    ) {
-        if governed.compaction_wait > 0 {
-            governed.compaction_wait = governed.compaction_wait.saturating_sub(1);
-            return;
-        }
-        let now = SystemTime::now();
-        let mut candidate = governed.peer().clone();
-        let compaction = match governed.record_keys(app, record).await {
-            Ok(Some(keys)) => candidate.publication_mut().compact_sealed_history(
-                app,
-                record,
-                &mut keys.open(),
-                &mut keys.seal(ContentRetention::Checkpoint),
-                &self.inner.host.key,
-                now,
-            ),
-            Ok(None) => return,
-            Err(error) => Err(error),
-        };
-        if let Err(error) = compaction {
-            governed.compaction_wait = COMPACTION_RETRY;
-            tracing::warn!(workspace = %governed.workspace(), %app, %record, %error,
-                "a sealed record repeating a writer's sequence was not repaired");
-            return;
-        }
-        let collaboration = governed.collaboration().clone();
-        if let Err(error) = governed.commit(candidate, &self.inner.host.key, now, |_, _| {
-            Ok(collaboration)
-        }) {
-            governed.compaction_wait = COMPACTION_RETRY;
-            tracing::warn!(workspace = %governed.workspace(), %app, %record, %error,
-                "a sealed record repeating a writer's sequence was not repaired");
-            return;
-        }
-        if let Err(error) = self.settle(governed).await {
-            tracing::warn!(workspace = %governed.workspace(), %app, %record, %error,
-                "a repaired sealed record was not published");
-        }
     }
 }
 
