@@ -1206,58 +1206,6 @@ fn a_columns_rows_start_on_its_content_edge_and_leave_the_bar_its_gutter() {
     assert!((row.x0 - edge).abs() < 0.5 && (row.x1 - (300.0 - edge)).abs() < 0.5);
 }
 
-/// The rect of the first widget under `widget` that holds no other.
-fn first_leaf(widget: &dyn Widget) -> Rect {
-    widget
-        .children()
-        .first()
-        .map_or_else(|| widget.get_rect(), |child| first_leaf(*child))
-}
-
-#[test]
-fn flush_page_rows_with_page_edges_stand_where_a_page_puts_its_content() {
-    use crate::widget::arrange::{Page, PageRowEdges};
-    let text = |n: u32| Box::new(crate::widget::Text::new(&format!("row {n}"))) as Element;
-    let mut list = VirtualList::from_items(
-        vec![0_u32, 1, 2],
-        40.0,
-        |item| *item,
-        move |item, _, _| Box::new(Page::full().row().push(text(*item))) as Element,
-    )
-    .unwrap()
-    .with_viewport_height(400.0)
-    .flush()
-    .with_edges(PageRowEdges::new());
-    // The first layout learns the rows' width, the second places them by it.
-    let _ = lay_out(&mut list, 600.0);
-    let _ = lay_out(&mut list, 600.0);
-    let row = first_leaf(list.mounted[0].widget.as_ref());
-
-    let mut page = Page::full().push(text(0));
-    let mut taffy = TaffyTree::new();
-    let mut node_map = HashMap::new();
-    let node = page.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-    taffy
-        .compute_layout(
-            node,
-            Size {
-                width: AvailableSpace::Definite(600.0),
-                height: AvailableSpace::Definite(400.0),
-            },
-        )
-        .unwrap();
-    page.apply_layout(&taffy, node, Point::ZERO);
-    let alone = first_leaf(&page);
-    assert!(
-        (row.x0 - alone.x0).abs() < 0.5,
-        "one content edge: {row:?} {alone:?}"
-    );
-    assert!(
-        (row.y0 - alone.y0).abs() < 0.5,
-        "the page's top spacing: {row:?} {alone:?}"
-    );
-}
-
 #[test]
 fn a_filling_list_takes_its_parents_height_as_its_viewport() {
     let mut list = plain_rows(1000).filling();

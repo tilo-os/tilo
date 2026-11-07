@@ -20,7 +20,9 @@ use crate::component::{
 };
 use crate::selection::KeySelection;
 use crate::tokens::{Rhythm, TextRole};
-use crate::widget::arrange::{Align, Fit, Page, Row, Slot, Stack, TranscriptEdges};
+use crate::widget::arrange::{
+    Align, Fit, Length, MEASURE_REM, Page, Row, Slot, Stack, TranscriptEdges,
+};
 use crate::widget::conversation::list::RUN_WINDOW_SECS;
 use crate::widget::conversation::{ConversationClock, DayDivider};
 use crate::widget::{
@@ -174,6 +176,11 @@ pub struct VirtualListProps {
     /// A conversation: each row stands in the page column, the list opens at its newest row
     /// and follows it.
     pub transcript: bool,
+    /// Each row stands in the page column, at the readable measure every page sets its blocks
+    /// on, a section's gap under the row before it. A list read from its first row to its last
+    /// (a conversation's messages, a document's replies) keeps the measure without following
+    /// its end as a transcript does.
+    pub page_column: bool,
     /// The title over the list's tail group: the rows whose item says it is one of those done
     /// with ([`ListItemProps::tail`]) stand after every group, under it, closed until the
     /// person opens them. `None` leaves those rows among the others.
@@ -595,6 +602,7 @@ struct Face {
     selection_follows_focus: bool,
     in_column: bool,
     transcript: bool,
+    page_column: bool,
     /// The rows stand in a tree: each under the row of the item it names.
     tree: bool,
     /// The rows the host renders as they are shown, by identity: they then change through
@@ -952,6 +960,7 @@ fn message_of(
     key: &str,
     unread: Option<&str>,
     feel: crate::motion::Feel,
+    measure: Option<Length>,
 ) -> Element {
     // The row that shows the item the reader has not seen, of the rows the host rendered. An
     // item is named by its id (`root-x/iy`), the one the app said and the one the row shows.
@@ -966,7 +975,7 @@ fn message_of(
     });
     let said = rows.with_item(key, |item| (item.author, item.time));
     let Some((Some(author), at)) = said else {
-        let row = page_row(row_of(rows, key, feel, None), RUN_GAP);
+        let row = page_row(row_of(rows, key, feel, None), RUN_GAP, measure);
         return if first_unread { with_unread(row) } else { row };
     };
     let before = rows
@@ -993,7 +1002,7 @@ fn message_of(
                 }
         });
     let Some((said, swipe, attached)) = bare_row(rows, key, feel, None) else {
-        return page_row(row_of(rows, key, feel, None), RUN_GAP);
+        return page_row(row_of(rows, key, feel, None), RUN_GAP, measure);
     };
     let avatar = Avatar::person(author.name.clone(), author.identity.clone());
     let message = Row::row().fill_width().align(Align::Start);
@@ -1041,8 +1050,9 @@ fn message_of(
                     .push(message),
             ),
             gap,
+            measure,
         ),
-        None => page_row(message, gap),
+        None => page_row(message, gap, measure),
     };
     if first_unread { with_unread(row) } else { row }
 }
@@ -1065,9 +1075,15 @@ fn with_unread(row: Element) -> Element {
 /// The gap over a run of messages, and over a day's divider.
 const RUN_GAP: Rhythm = Rhythm::Section;
 
-/// `content` as a row of a transcript's page column, `gap` under the row before it.
-fn page_row(content: Element, gap: Rhythm) -> Element {
-    Box::new(Page::full().row_after(gap).push_slot(Slot::new(content)))
+/// `content` as a row of a transcript's page column, `gap` under the row before it, at `measure`
+/// when the list keeps a page's readable width.
+fn page_row(content: Element, gap: Rhythm, measure: Option<Length>) -> Element {
+    let page = Page::full().row_after(gap);
+    let page = match measure {
+        Some(measure) => page.measure(measure),
+        None => page,
+    };
+    Box::new(page.push_slot(Slot::new(content)))
 }
 
 /// The menu of the row under `at` (its focused row when the keyboard opened it): what its
@@ -1113,6 +1129,7 @@ impl Described for DescribedList {
             selection_follows_focus,
             in_column,
             transcript,
+            page_column,
             tail_title,
             tree,
             ungrouped_title,
@@ -1133,6 +1150,7 @@ impl Described for DescribedList {
             selection_follows_focus,
             in_column,
             transcript,
+            page_column,
             tree,
             rendered: rendered(&rows),
             removed: removed.keys(),
@@ -1143,20 +1161,29 @@ impl Described for DescribedList {
         let feel = motion.unwrap_or(crate::motion::Feel::Standard);
         // The items the list's events read, kept as the list holds them.
         let reading = Rc::new(RefCell::new(rows.reader()));
-        if transcript {
-            // The divider stands over the row that shows the item: a row says which item it
-            // shows, so the list finds it as the rows arrive.
-            let marked = unread.as_ref().map(|item| item.0.clone());
+        if transcript || page_column {
+            // A transcript's divider stands over the row that shows the item: a row says which
+            // item it shows, so the list finds it as the rows arrive.
+            let marked = if transcript {
+                unread.as_ref().map(|item| item.0.clone())
+            } else {
+                None
+            };
             let divider = marked.clone();
-            let list = VirtualList::new(rows, MESSAGE_ESTIMATE, move |rows, _, key| {
-                message_of(rows, key, divider.as_deref(), feel)
+            // A page column's rows keep the width a page's blocks are read at; a transcript's
+            // fill the column they are in.
+            let measure = page_column.then_some(Length::Rem(MEASURE_REM));
+            let mut list = VirtualList::new(rows, MESSAGE_ESTIMATE, move |rows, _, key| {
+                message_of(rows, key, divider.as_deref(), feel, measure)
             })
             .flush()
             .with_edges(TranscriptEdges::new(RUN_GAP))
             .filling()
-            .following_end()
             .with_id(key)
             .with_feel(feel);
+            if transcript {
+                list = list.following_end();
+            }
             let list = list.unread_from(marked);
             // A message offers its menu as every row does.
             let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
@@ -1272,6 +1299,7 @@ impl Described for DescribedList {
             selection_follows_focus,
             in_column,
             transcript,
+            page_column,
             tail_title,
             tree,
             ungrouped_title,
@@ -1292,6 +1320,7 @@ impl Described for DescribedList {
             selection_follows_focus,
             in_column,
             transcript,
+            page_column,
             tree,
             rendered: rendered(&rows),
             removed: removed.keys(),

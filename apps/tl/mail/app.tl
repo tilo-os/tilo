@@ -828,9 +828,9 @@ view conversation(t: Thread) {
                         }
                     }
                 }
-                ui.VirtualList(transcript: true) {
+                ui.VirtualList(page_column: true) {
                     for m in t.messages {
-                        ui.ListItem(item: m, time: m.received) {
+                        ui.ListItem(item: m) {
                             message(m)
                         }
                     }
@@ -853,6 +853,7 @@ view message(m: Message) {
     stack(gap: .related) {
         row(gap: .related, align: .center) {
             ui.Text(if m.from_name == "" { m.from } else { m.from_name }, role: .subheading)
+            ui.Time(m.received, role: .caption, secondary: true)
             spacer()
             ui.HoverToolbar {
                 ui.Button("Reply", icon: .reply, icon_only: true) {
@@ -877,23 +878,22 @@ view message(m: Message) {
                 on choose: forward_message(m)
             }
         }
-        ui.Text("to {m.to}", role: .caption, secondary: true)
-        ui.Text(said, role: .reading)
-        if at != .none {
-            ui.DisclosureRow(
-                if quoting { "Hide quoted text" } else { "Show quoted text" },
-                icon: .quote,
-            ) {
-                on toggle: set(quoting, not quoting)
-                if quoting {
-                    ui.Text(quoted_part, role: .reading, secondary: true)
+        ui.Card {
+            ui.Text("to {m.to}", role: .caption, secondary: true)
+            ui.Text(said, role: .body)
+            if at != .none {
+                ui.DisclosureRow(
+                    if quoting { "Hide quoted text" } else { "Show quoted text" },
+                    icon: .quote,
+                ) {
+                    on toggle: set(quoting, not quoting)
+                    if quoting {
+                        ui.Text(quoted_part, role: .body, secondary: true)
+                    }
                 }
             }
-        }
-        if m.attachments != "" {
-            stack(gap: .tight) {
-                ui.Text("Attached", role: .caption, secondary: true)
-                ui.Text(m.attachments, role: .label)
+            if m.attachments != "" {
+                ui.Text("Attached: {m.attachments}", role: .label)
             }
         }
     }

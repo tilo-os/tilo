@@ -22,11 +22,9 @@ pub struct PageLayout {
     row: Option<RowSpacing>,
 }
 
-/// The space a row of a page's content ([`Page::row`]) has above and below it.
+/// The space a row of a page's content ([`Page::row_after`]) has above and below it.
 #[derive(Clone, Copy, Debug)]
 enum RowSpacing {
-    /// Half the sibling rhythm above and below: rows a sibling apart.
-    Halves,
     /// The gap to the row before it above, nothing below: a transcript's message, the next
     /// line of a run closer than the next run.
     After(crate::tokens::Rhythm),
@@ -65,10 +63,6 @@ impl Layout for PageLayout {
             length(self.gutter(resolved) + lead)
         };
         let (top, bottom) = match self.row {
-            Some(RowSpacing::Halves) => {
-                let half = length(resolved.gap(crate::tokens::Rhythm::Sibling) / 2.0);
-                (half, half)
-            }
             Some(RowSpacing::After(gap)) => (length(resolved.gap(gap)), length(0.0_f32)),
             Some(RowSpacing::Foot) => {
                 (length(resolved.gap(crate::tokens::Rhythm::Section)), gutter)
@@ -163,16 +157,6 @@ impl Arranged<PageLayout> {
         self
     }
 
-    /// One row of a page's content, for a virtual list that shows the page's rows one by one
-    /// (a transcript): the page's gutter at its sides, and half the sibling rhythm above and
-    /// below, so the rows it stacks sit a sibling apart in the page's column as a page's
-    /// children do.
-    #[must_use]
-    pub const fn row(mut self) -> Self {
-        self.layout.row = Some(RowSpacing::Halves);
-        self
-    }
-
     /// One row of a page's content that stands `gap` below the row before it and has nothing
     /// below it: a transcript's message, whose run's next line sits closer than the next run.
     /// Its list leaves [`TranscriptEdges`] around the rows.
@@ -196,51 +180,6 @@ impl Arranged<PageLayout> {
     pub const fn measure(mut self, measure: Length) -> Self {
         self.layout.measure = Some(measure);
         self
-    }
-}
-
-/// The space a list of page rows ([`Page::row`]) leaves above its first row and below its last
-/// ([`crate::widget::VirtualList::with_edges`]): the page's gutter, less the half sibling a row
-/// has there, so the first row's content stands where a page's first child does, under the
-/// page's top spacing.
-#[derive(Debug, Default)]
-pub struct PageRowEdges {
-    resolved: Option<Resolved>,
-    /// The width class of the rows, with the history a page keeps.
-    class: Option<WidthClass>,
-}
-
-impl PageRowEdges {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            resolved: None,
-            class: None,
-        }
-    }
-}
-
-impl crate::widget::virtual_list::ListEdges for PageRowEdges {
-    fn theme(&mut self, theme: &crate::theme::Theme) {
-        self.resolved = Some(Resolved::of(theme));
-    }
-
-    fn edges(&mut self, width: f64) -> (f64, f64) {
-        let Some(resolved) = self.resolved else {
-            return (0.0, 0.0);
-        };
-        let width = crate::num::f32_of_f64(width);
-        let class = WidthClass::with_history(width / resolved.rem, self.class);
-        self.class = Some(class);
-        let layout = PageLayout {
-            measure: None,
-            fill: false,
-            class: Some(class),
-            row: Some(RowSpacing::Halves),
-        };
-        let edge = (layout.gutter(&resolved) - resolved.gap(crate::tokens::Rhythm::Sibling) / 2.0)
-            .max(0.0);
-        (f64::from(edge), f64::from(edge))
     }
 }
 
