@@ -53,21 +53,22 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         Ty::Int => Value::Int(0),
         Ty::Float => Value::Float(0.0),
         Ty::Bool => Value::Bool(false),
-        Ty::Text => Value::text(""),
+        // A date, a time, an identifier, a repeat or a reminder a record was never given reads
+        // as no text, which is what the store compares a field without one as
+        // ([`crate::store::FieldRead::of`]): a filter and a view then agree on it.
+        Ty::Text | Ty::Date | Ty::Time | Ty::Identifier | Ty::Repeat | Ty::Reminder => {
+            Value::text("")
+        }
         Ty::RichText => Value::Rich(crate::rich::RichValue::default()),
         Ty::Option(_) => Value::none(),
         Ty::List(_) | Ty::Set(_) | Ty::Map(_) | Ty::Collection(_) => Value::List(Vec::new()),
         Ty::Tuple(items) => Value::Tuple(items.iter().map(type_default).collect::<Result<_, _>>()?),
         Ty::Unit => Value::Unit,
+        // A person a record was never given is no one: an empty identity, never a trap.
+        Ty::Principal => Value::Principal(Principal::new("")),
         Ty::Record(_)
         | Ty::Union(_)
-        | Ty::Principal
-        | Ty::Date
-        | Ty::Time
         | Ty::Duration
-        | Ty::Identifier
-        | Ty::Repeat
-        | Ty::Reminder
         | Ty::Action
         | Ty::View
         | Ty::Length(_)
