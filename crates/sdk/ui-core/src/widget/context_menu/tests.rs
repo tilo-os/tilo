@@ -803,5 +803,48 @@ fn a_menu_near_the_trailing_edge_keeps_its_send_to_box_in_the_window() {
             && box_rect.y1 <= window.y1,
         "the box {box_rect:?} stands past the window {window:?} beside the menu {menu_rect:?}"
     );
+    // What a screen reader reads is what is drawn: the box and each of its
+    // parts where the person sees them, so the session's own targets reach
+    // them too.
+    let node = Widget::accessibility(&menu).expect("the menu is read");
+    let dialog = node
+        .children
+        .iter()
+        .find(|child| child.role == crate::a11y::Role::Dialog)
+        .expect("the box is read beside the menu");
+    assert_eq!(
+        dialog.bounds.map(crate::a11y::AccessBounds::to_rect),
+        Some(box_rect),
+        "the box is read where it stands"
+    );
+    // Each part of the box — who it goes to, the subjects, adding one, the
+    // words, Send — is read where it is drawn, inside the box the person
+    // sees, so the keyboard, a screen reader and the session's own targets
+    // all reach the same control in the same place.
+    for target in [
+        "send-to:recipients",
+        "send-to:add-subject",
+        "send-to:message",
+        "send-to:send",
+    ] {
+        let part = dialog
+            .children
+            .iter()
+            .find(|child| child.action_target.as_deref() == Some(target))
+            .unwrap_or_else(|| panic!("{target} is read"));
+        let bounds = part
+            .bounds
+            .map(crate::a11y::AccessBounds::to_rect)
+            .unwrap_or_else(|| panic!("{target} is read where it is drawn"));
+        assert!(
+            bounds.x0 >= box_rect.x0
+                && bounds.x1 <= box_rect.x1
+                && bounds.y0 >= box_rect.y0
+                && bounds.y1 <= box_rect.y1
+                && bounds.width() > 0.0
+                && bounds.height() > 0.0,
+            "{target} {bounds:?} is not drawn inside the box {box_rect:?}"
+        );
+    }
     crate::shared_selection::set_send_host_available(false);
 }

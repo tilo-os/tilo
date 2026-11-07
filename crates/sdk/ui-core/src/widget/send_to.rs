@@ -366,6 +366,37 @@ impl SendToBox {
         f64::from(self.theme.tokens.spacing.s2) * self.text_scale
     }
 
+    /// A line of chips from the box's leading edge, each as wide as its name
+    /// asks, sharing `room` between them when together they ask for more, and
+    /// how far the line reaches. So neither a chip nor the control after it —
+    /// the search, the button that adds a subject — stands past the box.
+    fn chip_row(&self, names: &[String], y: f64, room: f64) -> (Vec<Rect>, f64) {
+        let rect = self.rect;
+        let row = self.row_height();
+        let gap = f64::from(GAP) / 2.0 * self.text_scale;
+        let start = rect.x0 + self.padding();
+        let mut chips = Vec::new();
+        let narrowest = row * 0.5 + gap;
+        // As many chips as the line holds at its narrowest, so a count that
+        // would leave nothing to read does not crowd out the control after it.
+        let count = (room / narrowest).floor().max(0.0);
+        let shown = names
+            .len()
+            .min(usize::try_from(count as u64).unwrap_or(usize::MAX));
+        if shown == 0 {
+            return (chips, start);
+        }
+        let share = ((room - gap * shown as f64) / shown as f64).max(0.0);
+        let mut x = start;
+        for name in &names[..shown] {
+            let letters = f64::from(u32::try_from(name.chars().count()).unwrap_or(u32::MAX));
+            let width = (letters * row * 0.5 + row).min(share);
+            chips.push(Rect::new(x, y, x + width, y + row));
+            x += width + gap;
+        }
+        (chips, x)
+    }
+
     /// Where every painted row stands, from the box's own box.
     fn build_layout(&self) -> Layout {
         let rect = self.rect;
@@ -373,20 +404,17 @@ impl SendToBox {
         let pad = self.padding();
         let gap = f64::from(GAP) / 2.0 * self.text_scale;
         let mut y = rect.y0 + pad;
-        // The recipients' chips, from the leading edge; the search takes what
-        // is left of the line.
-        let mut x = rect.x0 + pad;
+        // The recipients' chips, from the leading edge; the search keeps the
+        // rest of the line.
         let mut chips = Vec::with_capacity(self.to.len());
-        let chip_width = |name: &str| {
-            let letters = f64::from(u32::try_from(name.chars().count()).unwrap_or(u32::MAX));
-            (letters * row * 0.5 + row).min(rect.width() - pad * 2.0)
-        };
-        for recipient in &self.to {
-            let width = chip_width(&recipient.name);
-            chips.push(Rect::new(x, y, x + width, y + row));
-            x += width + gap;
-        }
-        let search = Rect::new(x, y, rect.x1 - pad, y + row);
+        let names: Vec<String> = self
+            .to
+            .iter()
+            .map(|recipient| recipient.name.clone())
+            .collect();
+        let (laid, x) = self.chip_row(&names, y, rect.width() - pad * 2.0 - row * 2.5);
+        chips.extend(laid);
+        let search = Rect::new(x.min(rect.x1 - pad), y, rect.x1 - pad, y + row);
         y += row + if self.rows.is_empty() { 0.0 } else { gap };
         let mut rows = Vec::with_capacity(self.rows.len().min(MAX_ROWS));
         for _ in self.rows.iter().take(MAX_ROWS) {
@@ -394,13 +422,14 @@ impl SendToBox {
             y += row;
         }
         y += gap;
-        let mut x = rect.x0 + pad;
-        let mut subjects = Vec::with_capacity(self.subjects.len());
-        for subject in &self.subjects {
-            let width = chip_width(subject_label(subject).as_str());
-            subjects.push(Rect::new(x, y, x + width, y + row));
-            x += width + gap;
-        }
+        // The subjects share their line with the button that adds one, so both
+        // stay inside the box whatever they hold.
+        let labels: Vec<String> = self
+            .subjects
+            .iter()
+            .map(|subject| subject_label(subject))
+            .collect();
+        let (subjects, x) = self.chip_row(&labels, y, rect.width() - pad * 2.0 - row);
         let plus = Rect::new(x, y, x + row, y + row);
         y += row + gap;
         let message = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + row * 2.0);
