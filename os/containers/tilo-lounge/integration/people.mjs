@@ -782,17 +782,21 @@ try {
   const wheel = (tab, x, y, {deltaX = 0, deltaY = 0, modifiers = 0} = {}) =>
     tab.send('Input.dispatchMouseEvent',
       {type: 'mouseWheel', x, y, deltaX, deltaY, ...(modifiers ? {modifiers} : {})});
+  // One gesture: a trackpad's fingers send their travel many events per
+  // frame, and the desk gives a gesture to its first event's answer, so the
+  // events go in together and only the gesture's effect is waited for.
   const sidewaysSwipe = async (tab, x, y, forward = true, during = null) => {
     const steps = [6, 12, 18, 24, 18, 12, 6];
     for (const [index, step] of steps.entries()) {
-      const deltaX = forward ? step : -step;
-      await wheel(tab, x, y, {deltaX});
-      // What the desk shows while the fingers are still on it, not only
-      // where the gesture left it.
-      if (during && index === 2) await during();
-      await settle(tab, 1);
+      await wheel(tab, x, y, {deltaX: forward ? step : -step});
+      // What the desk shows while the fingers are still on it, not only where
+      // the gesture left it: a pause mid-gesture, one frame drawn, the rest.
+      if (during && index === 2) {
+        await settle(tab, 1);
+        await during();
+      }
     }
-    await settle(tab, 1);
+    await settle(tab, 2);
   };
   const rightClick = async (tab, x, y) => {
     await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
