@@ -60,6 +60,9 @@ impl ModelBackend for OwnerModel {
                 message: Message::text(Role::Assistant, text),
                 stop_reason: StopReason::EndTurn,
                 usage: Usage::default(),
+                // The owner's gateway charges the lent model; the page is told
+                // only the answer.
+                cost_micros: 0,
             }))
         }))
     }
