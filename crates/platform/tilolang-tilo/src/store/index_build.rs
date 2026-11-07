@@ -239,6 +239,7 @@ impl Inner {
     /// Take the document `doc` as chunk `chunk`: the store's mirror of it is a copy of it, the
     /// resources it holds are read again, and each index catches up with it.
     pub(super) fn attach_document(&mut self, chunk: ChunkNo, doc: &Doc) {
+        self.stats.attaches = self.stats.attaches.saturating_add(1);
         self.versions = None;
         self.nested.clear();
         let mirror = mirror_of(doc);

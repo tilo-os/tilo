@@ -818,6 +818,83 @@ fn turns_until_rest(session: &mut Session) -> u32 {
     changed
 }
 
+/// What opening a window did to the workspace: whether it wrote anything, how many times the
+/// store took the record, and the turns the window took to come to rest.
+fn opening(n: usize) -> (usize, u64, u32, usize) {
+    let doc = seeded_tasks(n);
+    // What the workspace holds before the window opens it: opening it must leave the record
+    // with no more changes than the workspace already had, whether the window finds the root
+    // it opens or makes it.
+    let seeded = doc.committed_document().get_changes(&[]).len();
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::tasks_over_launched(&route, doc, None);
+    let turns = session.settle();
+    let written = changes(&session) - seeded;
+    let hosted = session
+        .host
+        .instances()
+        .next()
+        .expect("the window's instance");
+    let host = hosted.instance().host().expect("the instance's store");
+    let stats = host.store().stats();
+    let read = (stats.attaches + stats.incremental_syncs) + stats.full_syncs;
+    let rows = session.titles().len();
+    (written, read, turns, rows)
+}
+
+/// The changes the window's record holds: what the window wrote into the workspace.
+fn changes(session: &Session) -> usize {
+    let hosted = session
+        .host
+        .instances()
+        .next()
+        .expect("the window's instance");
+    hosted
+        .record()
+        .doc()
+        .committed_document()
+        .get_changes(&[])
+        .len()
+}
+
+/// Opening a window of a workspace it has used before writes nothing: the root the window
+/// opens is the one the app made when it was first added, and a window that finds it reads it.
+/// The record is taken once, and the window comes to rest in as many turns whatever the
+/// workspace holds: a workspace ten times the size opens in the same turns, the same writes
+/// and the same one read.
+#[test]
+fn opening_a_window_writes_nothing() {
+    let _motion = ui::motion::testing::settled();
+    let (small_writes, small_reads, small_turns, small_rows) = opening(1_000);
+    let (large_writes, large_reads, large_turns, large_rows) = opening(10_000);
+    eprintln!(
+        "open: 1000 tasks wrote {small_writes} changes, read the record {small_reads} times, {small_turns} turns, {small_rows} rows; \
+         10000: {large_writes} changes, {large_reads} reads, {large_turns} turns, {large_rows} rows"
+    );
+    assert_eq!(
+        small_writes, 0,
+        "opening a workspace it has used writes nothing"
+    );
+    assert_eq!(large_writes, 0, "opening a larger workspace writes nothing");
+    assert_eq!(
+        (small_reads, large_reads),
+        (1, 1),
+        "the store takes the record once, whatever it holds"
+    );
+    assert!(
+        large_turns <= 32,
+        "the window comes to rest in a handful of turns: {large_turns}"
+    );
+    assert_eq!(
+        small_turns, large_turns,
+        "the turns do not grow with the workspace"
+    );
+    assert!(
+        small_rows > 0 && large_rows > 0,
+        "the window shows the workspace's rows"
+    );
+}
+
 /// Scrolling a list of ten thousand tasks: the app is asked for the rows a scroll is about to
 /// reach before it reaches them, so a step costs the window's frames and one ask, or none. What
 /// a scroll step asks of the app is what makes the person wait for it, so it is counted, not

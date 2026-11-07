@@ -264,6 +264,8 @@ impl Triggering {
 /// What the store did, for tests and the benchmark.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StoreStats {
+    /// Times the store took the record: its first copy of it, whole.
+    pub attaches: u64,
     /// Syncs that applied the record's new changes to the mirror.
     pub incremental_syncs: u64,
     /// Syncs that had to copy the whole record: the mirror held a change of its own.
