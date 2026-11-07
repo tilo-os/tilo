@@ -665,24 +665,6 @@ impl SecretPrompt {
         self
     }
 
-    /// The secret is shown as typed: the asker said it is no secret (PAM's
-    /// echo-on prompt for a one-time code).
-    #[must_use]
-    pub fn with_echo(mut self, echo: bool) -> Self {
-        if let Some(index) = self.index_of(FieldRole::Secret) {
-            let label = self.fields.get(index).map(|field| field.label.clone());
-            let mut field = self.new_field(index, FieldRole::Secret, echo);
-            if let Some(label) = label {
-                field.input = field.input.with_accessible_name(label.clone());
-                field.label = label;
-            }
-            if let Some(slot) = self.fields.get_mut(index) {
-                *slot = field;
-            }
-        }
-        self
-    }
-
     #[must_use]
     pub fn with_presentation(mut self, presentation: Presentation) -> Self {
         self.presentation = presentation;
@@ -900,16 +882,6 @@ impl SecretPrompt {
 
     pub fn resource(&self) -> &str {
         &self.resource
-    }
-
-    /// The SIM's attempts left changed (after a wrong PIN).
-    pub fn set_attempts_left(&mut self, attempts: Option<u32>) {
-        match &mut self.kind {
-            SecretKind::SimPin { attempts_left } | SecretKind::SimPuk { attempts_left } => {
-                *attempts_left = attempts;
-            }
-            _ => {}
-        }
     }
 
     /// The field holding `role`.
