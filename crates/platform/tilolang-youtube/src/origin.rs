@@ -230,10 +230,7 @@ fn answer(service: &dyn Service, pending: &Pending) -> Result<Answered, ServiceE
         Pending::Subscriptions { keys } => {
             let mut pages = Vec::new();
             for key in keys {
-                match service.channel(key) {
-                    Ok(page) => pages.push(page),
-                    Err(error) => return Err(error),
-                }
+                pages.push(service.channel(key)?);
             }
             Ok(Answered::Subscriptions(pages))
         }
