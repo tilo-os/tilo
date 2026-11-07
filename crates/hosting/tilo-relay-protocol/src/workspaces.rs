@@ -268,6 +268,13 @@ pub struct PendingInvite {
     pub role: WorkspaceRole,
     /// It stops being redeemable here.
     pub expires_at_ns: u64,
+    /// The one person it names, when it names one: only a device of theirs
+    /// redeems it.
+    #[serde(default)]
+    pub recipient: Option<[u8; 32]>,
+    /// How it names that person.
+    #[serde(default)]
+    pub invitee_name: Option<String>,
 }
 
 /// One `/rooms` request. `workspace` is a workspace UUID. Each change answers with

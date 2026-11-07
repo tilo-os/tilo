@@ -91,13 +91,25 @@ export async function admit({scope, secrets = {}, tickets, home = null, deps, on
     return viaHost({workspace: listed, room, deps, onProgress});
   }
   if (secrets.invite) {
-    const offer = await deps.inspectInvitation(origin, secrets.invite);
+    // A link's `invite` names the invitation its host keeps, sealed under a
+    // key in the link; the page opens it before anything reads it. An
+    // invitation's own text is its own secret.
+    let invitation = secrets.invite;
+    if (deps.openInvitation) {
+      try {
+        invitation = await deps.openInvitation(origin, secrets.invite);
+      } catch (error) {
+        console.warn('admission: the invitation did not open', error?.message ?? error);
+        throw new AdmissionError('invitation-unusable', 'This link’s invitation is no longer there. Ask the person who invited you for a new one.');
+      }
+    }
+    const offer = await deps.inspectInvitation(origin, invitation);
     if (offer.room && offer.room !== room) {
       throw new AdmissionError('mismatch', 'This invitation is for another workspace than the link names');
     }
     if (!await deps.confirmInvitation(offer)) throw new AdmissionError('declined', 'You did not join');
     const peer = await deps.joinWorkspace({
-      origin, invitation: secrets.invite, admissionToken: secrets.token,
+      origin, invitation, admissionToken: secrets.token,
       onProgress: event => onProgress(event),
     });
     return ready(peer);

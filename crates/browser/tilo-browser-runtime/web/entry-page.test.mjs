@@ -68,7 +68,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     .replace("import {servedVersion, watchForUpdate} from './bundle-update.mjs';", "import {servedVersion} from './bundle-update.mjs';\nconst watchForUpdate = () => {};")
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
     .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;')
-    .replace('isPublicHome, joinGranted, joinViaHost,', 'isPublicHome, joinGranted,')
+    .replace('hostToReconnect, joinGranted, joinViaHost,', 'hostToReconnect, joinGranted,')
     .replace('const PAGE_BUILD', 'const joinViaHost = (...args) => globalThis.__entryPageFixture.joinViaHost(...args);\nconst PAGE_BUILD')
     .replace(/from '(\.\/[^']+)'/g, (_all, path) => `from '${new URL(path, import.meta.url).href}'`);
   // A fresh module per fixture; the nonce rides in the source since Bun refuses a fragment on a base64 data URL.
@@ -132,24 +132,17 @@ test('workspaces another host held at the origin of the page host are no longer 
     {origin: ORIGIN, room: 'gone-2', hostDevice: 'e2'.repeat(32), name: 'Other'},
     {origin: 'https://elsewhere.example', room: 'away', hostDevice: 'e3'.repeat(32), name: 'Away'},
   ]});
-  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'Join a workspace', 'Invite someone']);
+  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'Join a workspace']);
   assert.deepEqual(enteredWorkspaces().map(entry => entry.room), ['current', 'other', 'away']);
 });
 
-test('the page keeps switch and invitation actions together and dispatches both', async () => {
+test('the page keeps switch actions together and dispatches them', async () => {
   const {calls, shown, diagnostics} = await fixture();
   const actions = shown.at(-1);
-  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'New workspace', 'Join a workspace', 'Invite someone']);
-  diagnostics.onHostAction('invite-someone');
-  await tick();
-  assert.deepEqual(calls, ['invite']);
-  const share = document.body.children.find(form => form.dataset.card === 'share');
-  assert.ok(share);
-  assert.equal(share.children.find(child => child.name === 'link').value, 'https://web.example/#/current?invite=signed-secret');
-  share.listeners.get('submit')({preventDefault() {}});
+  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'New workspace', 'Join a workspace']);
   diagnostics.onHostAction(actions.find(action => action.title === 'Open Other').id);
   await tick();
-  assert.deepEqual(calls, ['invite', 'flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
+  assert.deepEqual(calls, ['flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
   assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, room: 'other'});
 });
 
@@ -235,12 +228,17 @@ test('the home workspace’s peer that carries reports from another workspace as
   await assert.rejects(joined[0].wait({attempt: 0}), /did not let this device in/, 'it never waits at the door');
 });
 
-test('an embedded workspace offers no Invite it could not carry out', async () => {
+test('an embedded workspace offers no invite sheet it could not carry out', async () => {
   let deps;
   await fixture({search: '?embed=1', boot: async (options, page) => { deps = options.deps; return page; }});
-  assert.equal(deps.onInvite, undefined);
+  const embedded = deps;
+  const joining = {workspace: 'current', origin: ORIGIN, userPublicKey: USER};
+  assert.equal(embedded.invite({peer: joining, entry: {base: 'https://web.example/'}}), null);
   await fixture({boot: async (options, page) => { deps = options.deps; return page; }});
-  assert.equal(typeof deps.onInvite, 'function');
+  // Named no earlier than admission names the person; the sheet makes the
+  // link either way, and says who made it once there is a name.
+  assert.deepEqual(deps.invite({peer: joining, entry: {base: 'https://web.example/'}}),
+    {base: 'https://web.example/', origin: ORIGIN, workspace: 'current', name: '', user: USER});
 });
 
 const LOUNGE = {name: 'Lounge', host: {origin: 'https://home.example'}, admission: 'https://home.example/peer/v1/directory/lounge/'};

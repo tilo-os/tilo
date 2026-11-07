@@ -327,8 +327,9 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // A listed workspace is shown under its listed name, not its workspace id.
   const scope = route.target.scope;
   const listed = listedAt(workspaces, scope, admittedWorkspace);
-  // The desktop offers Invite in a workspace the page can invite to.
-  const invite = peer?.workspace && deps.onInvite ? {onInvite: deps.onInvite} : {};
+  // The desktop shows its invite sheet in a workspace the page can invite
+  // to, made and listed through the workspace's host.
+  const invite = deps.invite?.({peer, entry}) ?? null;
   const host = scopeHost(scope, window.location?.host);
   // Asked beside the door, not before it (`deps.rendererUnavailable`): a
   // browser that cannot draw opens no window, and the page says what to
@@ -342,7 +343,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
       ...(linkOffer ? {linkOffer} : {}),
       // The workspace service's watching count, for the desktop's people panel.
       ...(listed?.admission ? {presenceUrl: new URL('presence', listed.admission).href} : {}),
-      ...invite, ...diagnostics},
+      ...(invite ? {invite} : {}), ...diagnostics},
     onStatus: titled(window, diagnostics.onStatus)});
   if (shown.redirect) {
     window.location.replace(link.format({mode: shown.redirect, target: route.target}));

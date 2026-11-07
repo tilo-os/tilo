@@ -62,8 +62,9 @@ use ui::{TextRenderer, Theme};
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum HostRequest {
-    /// Invite someone into this workspace (`mountDesktop({onInvite})`).
-    Invite,
+    /// Put this link on the clipboard: the invite sheet's own copy, which the
+    /// page writes from the press that asked for it.
+    Copy(String),
     /// Perform the host action the person chose in search or on a banner
     /// (`mountDesktop({hostActions, onHostAction})`), by id.
     Action(String),
@@ -126,8 +127,9 @@ pub(crate) type HostRequests = Rc<RefCell<Vec<HostRequest>>>;
 /// What the embedding page offers the desktop.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct HostOffers {
-    /// The page takes [`HostRequest::Invite`].
-    pub invite: bool,
+    /// The invite sheet this page shows (`mountDesktop({invite})`): where the
+    /// links it hands over are made, and what they name.
+    pub invite: Option<crate::invite::PageInviteConfig>,
     /// The page runs on macOS: its command key is Cmd.
     pub mac: bool,
     /// The host of the workspace shown (`example.org`), named beside the
@@ -233,16 +235,16 @@ impl DesktopChromeSource for PageChrome {
 
 impl PageChrome {
     /// Whether the bar offers its invite button: the page takes invitations
-    /// and the workspace lets this person write in it. Someone it lets only
-    /// look, a viewer among them, brings nobody in; until the workspace answered,
-    /// the button stands, as for everyone it lets in.
+    /// and the workspace let this person invite others here when it last
+    /// answered. Someone it lets only look, or write without saying who may
+    /// join, brings nobody in; the button stands once the host says so, as
+    /// the desk's own bar keeps it by its governance.
     fn may_invite(&self) -> bool {
         self.invite
             && self
                 .shared
-                .standing
-                .role()
-                .is_none_or(|role| role.includes(tilo_action_policy::Role::Editor))
+                .invitable
+                .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn may(&self, command: &DesktopCommand) -> Result<(), String> {
@@ -467,6 +469,9 @@ pub(crate) struct BrowserShell {
     /// The workspace directory, over the page while it is up: the session's
     /// own sheet, with this page's site, person and workspaces.
     directory: crate::directory::PageDirectory,
+    /// The invite sheet, over the page while it is up: the session's own,
+    /// made and listed through the workspace's host.
+    invite: crate::invite::PageInvite,
     /// The linked accounts' revision the card last showed.
     linked_seen: Cell<u64>,
     /// Asks again while the card shows a code, until the account links.
@@ -501,6 +506,9 @@ pub struct ChromeSources {
     pub here: tilo_desktop::here::Here,
     pub shared: crate::desktop::Shared,
     pub authorship: Authorship,
+    /// The peer whose workspace this desktop is in, for the questions only its
+    /// host answers.
+    pub peer: Option<u32>,
     /// The page's notifications, whose unread ones the bell counts.
     pub notifications: tilo_desktop_surface::DesktopNotifications,
     pub wake: Arc<dyn Fn() + Send + Sync>,
@@ -551,6 +559,7 @@ impl BrowserShell {
                 &self.desk as &dyn Widget,
                 &self.top,
                 &self.profile,
+                &self.invite,
                 &self.directory,
             ]
             .iter()
@@ -569,20 +578,21 @@ impl BrowserShell {
             here,
             shared,
             authorship,
+            peer,
             notifications,
             wake,
         } = sources;
         let chrome = Rc::new(PageChrome {
             handle: handle.clone(),
-            shared,
+            shared: shared.clone(),
             here,
             authorship,
             notifications,
             intents: RefCell::default(),
             seen: Cell::new((u64::MAX, 0, 0, 0, u8::MAX)),
             revision: Cell::new(0),
-            wake,
-            invite: offers.invite,
+            wake: Arc::clone(&wake),
+            invite: offers.invite.is_some(),
         });
         let tree = handle.read(Clone::clone);
         let bar = TopBarChrome::from_tree(&tree)
@@ -621,6 +631,16 @@ impl BrowserShell {
             offers.directory.as_ref(),
             &chrome.wake,
         );
+        // The page's invite sheet, over everything: the session's own, made
+        // through the peer's workspace host (`mountDesktop({invite})`).
+        let invite = crate::invite::PageInvite::new(
+            Rc::clone(&requests),
+            offers.invite.as_ref(),
+            shared,
+            Rc::clone(&chrome.here),
+            peer,
+            &chrome.wake,
+        );
         Self {
             desk,
             top,
@@ -636,6 +656,7 @@ impl BrowserShell {
             people_open: false,
             pinned: people::PagePeople::new(),
             directory,
+            invite,
             linked_seen: Cell::new(0),
             linking: tilo_app::linked_accounts::LinkingRecheck::default(),
             profile_links: None,
@@ -1016,9 +1037,9 @@ impl BrowserShell {
         self.top.activity_by(None);
     }
 
-    fn invite(&self) {
-        if self.offers.invite {
-            self.requests.borrow_mut().push(HostRequest::Invite);
+    fn invite(&mut self) {
+        if self.offers.invite.is_some() {
+            self.invite.open();
         }
     }
 
@@ -1558,7 +1579,7 @@ impl BrowserShell {
     /// A verb of the empty desk's launchpad, as its card, its host action
     /// and its resource action all ask for it: the app action the verb
     /// declares, what only the page can do, and else the app itself.
-    fn launchpad(&self, action: LaunchpadAction) {
+    fn launchpad(&mut self, action: LaunchpadAction) {
         match action {
             LaunchpadAction::Invite => self.invite(),
             LaunchpadAction::Activity => self.activity(),
@@ -1631,6 +1652,7 @@ impl Widget for BrowserShell {
         changed |= self.top.update(state, path);
         changed |= self.desk.update(state, path);
         changed |= self.follow_asks();
+        changed |= self.invite.follow();
         changed |= self.directory.follow();
         self.update_hints();
         // Chosen while the surface updated (search, a banner): the page
@@ -1663,25 +1685,32 @@ impl Widget for BrowserShell {
         let profile = self.profile.build_layout(taffy, theme, map);
         let pinned = self.pinned.build_layout(taffy, theme, map);
         let directory = self.directory.build_layout(taffy, theme, map);
+        let invite = self.invite.build_layout(taffy, theme, map);
         let style = Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
             size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
-        taffy.widget_node(style, &[desk, top, profile, pinned, directory], map, self)
+        taffy.widget_node(
+            style,
+            &[desk, top, profile, pinned, invite, directory],
+            map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
-        if let [desk, top, profile, pinned, directory] =
+        if let [desk, top, profile, pinned, invite, directory] =
             taffy.children(node).unwrap_or_default()[..]
         {
             self.desk.apply_layout(taffy, desk, inner);
             self.top.apply_layout(taffy, top, inner);
             self.profile.apply_layout(taffy, profile, inner);
             self.pinned.apply_layout(taffy, pinned, inner);
+            self.invite.apply_layout(taffy, invite, inner);
             self.directory.apply_layout(taffy, directory, inner);
         }
     }
@@ -1711,8 +1740,9 @@ impl Widget for BrowserShell {
             self.people.clear();
             self.pinned.set_panel(None);
         }
-        // Over everything but the picker, while the person browses the
-        // directory.
+        // Over everything but the picker, while the person invites someone
+        // or browses the directory.
+        self.invite.draw(scene, transform, text, theme, presence);
         self.directory.draw(scene, transform, text, theme, presence);
         // Over everything, while picking what to report.
         self.picker.draw(scene, transform, text, theme, self.rect);
@@ -1722,7 +1752,7 @@ impl Widget for BrowserShell {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        let [desk, top, profile, _, directory] =
+        let [desk, top, profile, _, invite, directory] =
             ctx.taffy.children(ctx.node_id).unwrap_or_default()[..]
         else {
             return;
@@ -1744,6 +1774,16 @@ impl Widget for BrowserShell {
                 self.picker
                     .handle_event(event, self.cursor, modifiers, self.desk.area(), &windows);
             return;
+        }
+        // The invite sheet, like the directory: it takes what it covers, the
+        // keyboard and the press that dismisses it.
+        if self.invite.is_open() {
+            self.invite
+                .handle_event(event, &mut ctx.reborrow(ctx.path, invite));
+            if *ctx.handled {
+                self.invite.follow();
+                return;
+            }
         }
         // The directory sheet, like the profile card: it takes what it
         // covers, the keyboard and the press that dismisses it.
@@ -1789,6 +1829,7 @@ impl Widget for BrowserShell {
     fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         !self.people_open
             && !self.people.wants_pointer_capture()
+            && !self.invite.is_open()
             && !self.directory.is_open()
             && !self.pinned.wants_pointer_capture()
             && self.cursor.is_none_or(|point| !self.pinned.contains(point))
@@ -1811,6 +1852,7 @@ impl Widget for BrowserShell {
             &self.top,
             &self.profile,
             &self.pinned,
+            &self.invite,
             &self.directory,
         ]
     }
@@ -1838,6 +1880,7 @@ impl Widget for BrowserShell {
             &mut self.top,
             &mut self.profile,
             &mut self.pinned,
+            &mut self.invite,
             &mut self.directory,
         ]
     }
@@ -1878,6 +1921,7 @@ impl Widget for BrowserShell {
                 &self.desk as &dyn Widget,
                 &self.top,
                 &self.profile,
+                &self.invite,
                 &self.directory,
             ]
             .iter()

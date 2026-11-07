@@ -739,6 +739,8 @@ impl Workspaces {
                     invite_id: invitation.invite_id,
                     role: room_role(invitation.role),
                     expires_at_ns: invitation.expires_at_ns,
+                    recipient: invitation.recipient_user_public_key,
+                    invitee_name: invitation.invitee_name,
                 })
                 .collect(),
         ))

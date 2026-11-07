@@ -369,6 +369,12 @@ pub(crate) struct Shared {
     /// the desktop's policy decides what to offer by
     /// ([`tilo_desktop_model::commands::policy`]).
     pub standing: Standing,
+    /// Whether the workspace's host lets this page's person invite others
+    /// here, as the host last answered: the bar keeps its invite button and
+    /// the sheet offers making a link only where it does
+    /// ([`crate::replication`] asks it with the rest of their standing, as
+    /// the desk asks its own host).
+    pub invitable: Arc<AtomicBool>,
     /// The workspace keeps no member's layout (a public workspace refused this
     /// desktop's): its windows and desks are the person's own, sent to
     /// nobody, and the workspace's later layout no longer replaces them.

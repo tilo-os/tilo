@@ -22,7 +22,7 @@ import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './door-wait-list.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
-import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, profileDevice, withCustody} from './peer.mjs';
+import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, syncProfile} from './identity-actions.mjs';
@@ -35,10 +35,10 @@ import {createReconnect, domReconnectView} from './reconnect.mjs';
 import {followConnection} from './connection-status.mjs';
 import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
-import {createWorkspaceActions, INVITE, invitedLine} from './workspace-actions.mjs';
+import {createWorkspaceActions, invitedLine} from './workspace-actions.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces,
-  heldWorkspaces, hostDeviceOf, hostToReconnect, isPublicHome, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
+  heldWorkspaces, hostDeviceOf, hostToReconnect, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
   keptMembership, listedWorkspaces,
   membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
   settleFailedWorkspace, workspaceActions as workspaceSwitchActions, workspaceChoices,
@@ -661,7 +661,6 @@ export async function startEntryPage({mode}) {
   let enteredViaDoor = false;
   /** The workspace whose door this page was let in through, or waits at. */
   let visitedAt = null;
-  globalThis.tiloInvites = 0;
   /** Keeping the person this page joined as (`identity-actions.mjs`), once there is one. */
   let identityActions = null;
   /** Setting up a machine (`machine-setup.mjs`), once the page is open. */
@@ -716,7 +715,6 @@ export async function startEntryPage({mode}) {
     },
     ...(query.get('room') ? {room: query.get('room')} : {}),
     ...(query.get('workspace') ? {workspaceName: query.get('workspace')} : {}),
-    ...(query.has('invite') ? {onInvite: () => { globalThis.tiloInvites += 1; }} : {}),
     // The directory sheet's Join, which its door granted: the page joins with
     // the invitation it answered, then shows the workspace.
     onJoinGranted: joined => { void openGrantedWorkspace(joined); },
@@ -891,6 +889,14 @@ export async function startEntryPage({mode}) {
         wait: () => Promise.reject(new Error('the home workspace did not let this device in'))});
     },
     inspectInvitation: (origin, invitation) => inspectInvitation(origin, invitation, {runtime}),
+    // A link's `invite` names the invitation its host keeps: the page opens
+    // it before anything reads it.
+    openInvitation: (origin, secret) => openInvitation(origin, secret, {runtime}),
+    // The invite sheet this page's desktop shows, when the page is in a
+    // workspace: made and listed through that workspace's host, in links
+    // that open this page.
+    invite: ({peer, entry}) => peer?.workspace && !embed ? {base: entry.base, origin: peer.origin,
+      workspace: peer.workspace, name: displayName ?? '', user: peer.userPublicKey ?? ''} : null,
     confirmInvitation: offer => {
       workspaceName = offer.workspaceName || workspaceName;
       invitedTo = offer.workspaceName || null;
@@ -932,7 +938,6 @@ export async function startEntryPage({mode}) {
     },
     // An embed lists no host actions, so it has nothing to invite with:
     // the desktop offers no Invite there rather than one that does nothing.
-    ...(embed ? {} : {onInvite: () => { void workspaceActions?.perform(INVITE.id); }}),
     pairDevice: async ({origin, room, userPublicKey, invite, workspace}) => {
       displayName = chosenDisplayName(userPublicKey) ?? defaultDisplayName(userPublicKey);
       let waiting = () => {};
@@ -1119,15 +1124,6 @@ export async function startEntryPage({mode}) {
     hostActions?.('machine').setHostActions([SET_UP]);
     const person = () => page.peer?.userPublicKey ?? currentIdentity()?.userPublicKey;
     const workspaceLink = (origin, room) => page.link.format({mode: 'desktop', target: {scope: {kind: 'room', host: origin, room}}});
-    // Whether the home's door lets only its members in (`admission` in its
-    // presence): then its bare link admits nobody new, and inviting someone
-    // is an invitation of their own.
-    let inviteOnlyHome = false;
-    const homeDoor = page.entry?.home?.admission;
-    if (homeDoor) {
-      void fetch(new URL('presence', homeDoor)).then(response => (response.ok ? response.json() : null))
-        .then(presence => { inviteOnlyHome = presence?.admission === 'invite'; }, () => {});
-    }
     // Only a desktop lists host actions and shows banners.
     workspaceActions = hostActions ? createWorkspaceActions({
       peer: page.peer,
@@ -1137,10 +1133,6 @@ export async function startEntryPage({mode}) {
         const url = workspaceLink(page.peer.origin, page.peer.workspace);
         return `${url}${new URL(url).hash.includes('?') ? '&' : '?'}invite=${invitation}`;
       },
-      // A public workspace's link is its bare entry: anyone opening it joins
-      // through the door, as a guest.
-      publicLink: () => (!inviteOnlyHome && remembering(() => isPublicHome({home: page.entry?.home, homeWorkspace: homeWorkspaceOf(page.entry),
-        scope: here.kind === 'room' ? {...here, room: here.room ?? page.peer?.workspace} : null})) ? page.entry.base : null),
       open: async ({origin, room, name, hostDevice: holder}) => {
         keepJoinedHost({origin, room, userPublicKey: (await rootOfThisPage(page.peer)).userPublicKey});
         remembering(() => rememberEntered({origin, room, name, hostDevice: holder}));
@@ -1151,7 +1143,6 @@ export async function startEntryPage({mode}) {
         askWorkspaceName: save => askLine({label: 'Name of the new workspace', action: 'Create', save}),
         chooseMachine: origins => card('Create the workspace on', [...origins.map(origin => [new URL(origin).host, origin]), ['Cancel', null]]),
         share: shareCard,
-        copy: text => navigator.clipboard.writeText(text).then(() => true, () => false),
         waitingList: waitingCard,
         fail: text => card(text, [['Close', null]]),
       },

@@ -1499,32 +1499,3 @@ activities-layer = Activities
 activity-collapse = Put away
 activity-close = Close
 
-# Inviting people: the link into the workspace in front, and the links that
-# still work.
-invite-title = Invite people
-invite-description = Make a link that brings someone into this workspace. Each link works for one hour, and you can take it back here.
-invite-close = Close
-invite-refusal = Only someone whose part in this workspace allows inviting can make a link.
-invite-role-label = They join as
-invite-for-label = This link is for
-invite-anyone = Anyone with the link
-invite-create = Create link
-invite-making = Making the link…
-invite-link-label = The link
-invite-copy = Copy link
-invite-code-alt = The invitation link as a code to scan
-invite-created-anyone = Anyone with this link joins as { $role }.
-invite-created-for = { $name } joins as { $role }.
-invite-created-lasts = The link works for the next { $minutes } minutes.
-invite-lasts = { $minutes } min left
-invite-for-anyone = For anyone with the link
-invite-for-person = For { $name }
-invite-for-someone = For a person this workspace knows
-invite-pending-title = Links that still work
-invite-pending-empty = No link is waiting to be used.
-invite-revoke = Take back
-invite-copied = The link is on the clipboard.
-invite-revoked = The link no longer works.
-invite-no-answer = No link was made: the workspace did not answer.
-invite-failed = No link was made: { $reason }
-invite-revoke-failed = The link was not taken back: { $reason }

@@ -262,12 +262,6 @@ function isHomeWorkspace({home, homeWorkspace = null, scope}) {
     && (scope.room == null || scope.room === (home.room ?? homeWorkspace));
 }
 
-/** Whether the workspace `scope` names is a public workspace: the web host's home
- * with a door (`admission`) anyone may join through as a guest. */
-export function isPublicHome({home = null, homeWorkspace = null, scope = null}) {
-  return Boolean(home?.admission) && scope?.kind === 'room' && isHomeWorkspace({home, homeWorkspace, scope});
-}
-
 /**
  * The workspaces the person can switch to from `current` (a route scope, or
  * `null`): the web host's `home` workspace, then the workspaces they `entered`,

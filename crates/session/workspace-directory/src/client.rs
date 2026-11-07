@@ -463,6 +463,25 @@ pub(crate) async fn redeem(
     Ok(tilo_workspace_join::encode_invitation_text(&invitation))
 }
 
+/// The invitation the link's `secret` names, fetched from `site` and opened:
+/// its text, as every build hands one over. A `secret` that names no sealed
+/// invitation — an invitation's own text — is answered as it came.
+///
+/// # Errors
+/// Why there is none: the site could not be reached, holds nothing under the
+/// handle any more, or the key does not open what it answered with.
+pub async fn sealed_invitation(site: &str, secret: &str) -> Result<String, String> {
+    let Some((handle, key)) = tilo_workspace_join::sealed::parse_ref(secret) else {
+        return Ok(secret.to_owned());
+    };
+    let link = tilo_workspace_join::sealed::SealedLink {
+        site: site.to_owned(),
+        handle: handle.to_owned(),
+        key: key.to_owned(),
+    };
+    redeem(&client()?, &link).await
+}
+
 /// The workspace an invitation for this person joins, without redeeming it:
 /// what a session the host set up for a workspace knows before the join
 /// settles.

@@ -301,13 +301,13 @@ test('the desktop gets the entry’s About links, no host pill on the person’s
   page.router.stop?.();
 });
 
-test('a workspace mount keeps Invite alongside host, About, presence and title forwarding', async () => {
+test('a workspace mount keeps its invite sheet alongside host, About, presence and title forwarding', async () => {
   const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
   const about = {source: 'https://example.org/source'};
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
   let mounted;
-  let invited = 0;
-  const peer = {workspace: 'WORKSPACE', whenReady: async () => {}, mountDesktop: async (_element, options) => { mounted = options; return {navigation}; }};
+  const peer = {workspace: 'WORKSPACE', origin: 'https://rooms.example', userPublicKey: 'ab'.repeat(32),
+    whenReady: async () => {}, mountDesktop: async (_element, options) => { mounted = options; return {navigation}; }};
   const window = {
     __tiloLinkSecrets: Object.freeze({}), document: {title: 'Tilo'},
     location: {href: 'https://rooms.example/open/', hash: ''},
@@ -317,10 +317,13 @@ test('a workspace mount keeps Invite alongside host, About, presence and title f
   const page = await boot({mode: 'desktop', window, diagnostics: {onStatus: status => statuses.push(status)}, deps: {
     loadRuntime: async () => ({formatLink: () => 'https://rooms.example/open/#/WORKSPACE'}),
     fetch: async () => ({ok: true, json: async () => ({home, about})}),
-    enterViaHost: async () => peer, onInvite: () => { invited += 1; },
+    enterViaHost: async () => peer,
+    // The invite sheet this page's desktop shows, made through the workspace's host.
+    invite: ({peer: joined}) => joined?.workspace ? {base: 'https://rooms.example/open/', origin: joined.origin,
+      workspace: joined.workspace, name: 'Reader', user: joined.userPublicKey} : null,
   }});
-  mounted.onInvite();
-  assert.equal(invited, 1);
+  assert.deepEqual(mounted.invite, {base: 'https://rooms.example/open/', origin: 'https://rooms.example',
+    workspace: 'WORKSPACE', name: 'Reader', user: 'ab'.repeat(32)});
   assert.equal(mounted.host, 'rooms.example');
   assert.deepEqual(mounted.about, about);
   assert.equal(mounted.presenceUrl, 'https://rooms.example/presence');

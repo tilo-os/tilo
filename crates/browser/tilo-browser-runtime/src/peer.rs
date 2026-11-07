@@ -491,6 +491,23 @@ fn request_id(text: &str) -> Result<[u8; 32], JsError> {
         .map_err(|_| js_error("request id must be 32 bytes"))
 }
 
+/// The invitation the link's `secret` names, as the page takes it: fetched
+/// from the shelf of `origin`, the workspace's host, and opened with the key
+/// the link carries. An invitation's own text is answered as it came, so
+/// every build's links join the same way. What [`inspect_invitation`] and
+/// [`ask_to_join`] take.
+///
+/// # Errors
+///
+/// The shelf could not be reached, holds nothing under the handle any more,
+/// or the key does not open what it answered with.
+#[wasm_bindgen(js_name = redeemInvitation)]
+pub async fn redeem_invitation(origin: String, secret: String) -> Result<String, JsError> {
+    tilo_workspace_directory::sealed_invitation(&origin, &secret)
+        .await
+        .map_err(js_error)
+}
+
 /// What `invitation` (the signed invitation's bytes) offers at the host
 /// `post` reaches: `{kind: 'invitation', room, workspaceId, name, role,
 /// expiresAtNs}`, or `{kind: 'refused', reason}`. Resolves to JSON.

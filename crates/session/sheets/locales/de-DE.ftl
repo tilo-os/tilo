@@ -566,3 +566,33 @@ workspace-delete-body = Alles in diesem Arbeitsbereich geht mit ihm: seine Fenst
 workspace-delete-confirm = Löschen
 workspace-delete-keep = Behalten
 workspace-delete-lens = Arbeitsbereich löschen
+
+# Inviting people: the link into the workspace in front, and the links that
+# still work.
+invite-title = Personen einladen
+invite-description = Erstelle einen Link, der jemanden in diesen Arbeitsbereich bringt. Jeder Link gilt eine Stunde, und du kannst ihn hier zurücknehmen.
+invite-close = Schließen
+invite-refusal = Nur wer hier eine Rolle hat, die Einladen erlaubt, kann einen Link erstellen.
+invite-role-label = Beitritt als
+invite-for-label = Dieser Link ist für
+invite-anyone = Alle mit diesem Link
+invite-create = Link erstellen
+invite-making = Der Link wird erstellt…
+invite-link-label = Der Link
+invite-copy = Link kopieren
+invite-code-alt = Der Einladungslink als Code zum Scannen
+invite-created-anyone = Alle mit diesem Link treten als { $role } bei.
+invite-created-for = { $name } tritt als { $role } bei.
+invite-created-lasts = Der Link gilt noch { $minutes } Minuten.
+invite-lasts = Noch { $minutes } Min.
+invite-for-anyone = Für alle mit dem Link
+invite-for-person = Für { $name }
+invite-for-someone = Für eine Person, die dieser Arbeitsbereich kennt
+invite-pending-title = Links, die noch gelten
+invite-pending-empty = Kein Link wartet auf eine Nutzung.
+invite-revoke = Zurücknehmen
+invite-copied = Der Link liegt auf der Zwischenablage.
+invite-revoked = Der Link gilt nicht mehr.
+invite-no-answer = Kein Link erstellt: Der Arbeitsbereich hat nicht geantwortet.
+invite-failed = Kein Link erstellt: { $reason }
+invite-revoke-failed = Der Link wurde nicht zurückgenommen: { $reason }

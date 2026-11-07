@@ -151,6 +151,10 @@ pub(crate) struct Joined {
     /// made on the shared desktop: the attached desktop's flag, set from the
     /// workspace's answer.
     moderates: Arc<AtomicBool>,
+    /// Whether the workspace lets this page's person invite others here: the
+    /// attached desktop's flag, which its bar's invite button and its invite
+    /// sheet follow, set from the workspace's answer.
+    invitable: Arc<AtomicBool>,
     /// When the page next asks the workspace that (Unix milliseconds; 0: now).
     moderation_due_ms: Arc<std::sync::atomic::AtomicU64>,
     /// The role the workspace last answered this page's person holds: the
@@ -223,6 +227,7 @@ pub(crate) fn open(
         unapplied: HashSet::new(),
         authored: 0,
         moderates: Arc::default(),
+        invitable: Arc::default(),
         moderation_due_ms: Arc::default(),
         standing: crate::desktop::Standing::unknown(),
         followed: 0,
@@ -468,6 +473,7 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
                 .set(joined.desktop_sending == DesktopSending::KeptOwn);
             shared.members.replace(joined.members.clone());
             joined.moderates = Arc::clone(&shared.moderates);
+            joined.invitable = Arc::clone(&shared.invitable);
             joined.standing.share(&shared.standing);
         }
         joined.moderation_due_ms.store(0, Ordering::Relaxed);
@@ -575,6 +581,7 @@ impl Joined {
             Ordering::Relaxed,
         );
         self.ask_permits();
+        self.ask_invitable(now);
         let wake: Vec<_> = self
             .mounts
             .values()
@@ -638,6 +645,61 @@ impl Joined {
                     .store(now.saturating_add(MODERATION_RETRY_MS), Ordering::Relaxed);
                 return;
             }
+        }
+    }
+
+    /// Ask the workspace whether this page's person may invite others here:
+    /// the node its governance decides inviting by. Its bar's invite button
+    /// and its invite sheet offer a link only where the workspace says so,
+    /// asked again with the rest of the standing, so a role granted while
+    /// the page is open reaches it.
+    fn ask_invitable(&self, now: u64) {
+        let node = tilo_action_policy::roles::governance_action(
+            &self.uuid,
+            tilo_action_policy::roles::governance::INVITE,
+        );
+        let invitable = Arc::clone(&self.invitable);
+        let due = Arc::clone(&self.moderation_due_ms);
+        let wake: Vec<_> = self
+            .mounts
+            .values()
+            .map(|mounted| Arc::clone(&mounted.attachment.notify))
+            .collect();
+        let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Permits {
+            workspace: self.uuid.clone(),
+            node: node.to_string(),
+        };
+        if let Err(error) = self.peer.rooms_then(
+            request,
+            Box::new(move |answer| {
+                let may = match &answer {
+                    Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
+                    Ok(other) => {
+                        warn(&format!(
+                            "the workspace did not say whether this page may invite: {other:?}"
+                        ));
+                        return;
+                    }
+                    Err(_) => {
+                        due.store(
+                            crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
+                            Ordering::Relaxed,
+                        );
+                        return;
+                    }
+                };
+                if invitable.swap(may, Ordering::Relaxed) != may {
+                    for wake in &wake {
+                        wake();
+                    }
+                }
+            }),
+        ) {
+            warn(&format!(
+                "could not ask the workspace whether this page may invite: {error}"
+            ));
+            self.moderation_due_ms
+                .store(now.saturating_add(MODERATION_RETRY_MS), Ordering::Relaxed);
         }
     }
 

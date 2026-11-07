@@ -226,9 +226,10 @@ struct Config {
     /// scratch budget (`SurfaceCaps::CONSERVATIVE`).
     #[serde(default)]
     conservative_gpu: bool,
-    /// The page takes the desktop's invitations (`mountDesktop({onInvite})`).
+    /// The invite sheet this page shows (`mountDesktop({invite})`): where the
+    /// links it hands over are made, and what they name.
     #[serde(default)]
-    invite: bool,
+    invite: Option<crate::invite::PageInviteConfig>,
     /// The name a desktop seeded for this mount gives its workspace.
     #[serde(default)]
     workspace_name: Option<String>,
@@ -1187,7 +1188,7 @@ fn present_desktop(
         handle.clone(),
         generation.clone(),
         crate::shell::HostOffers {
-            invite: config.invite,
+            invite: config.invite.clone(),
             mac: config.mac,
             host: config.host.clone(),
             about: config.about.clone(),
@@ -1201,6 +1202,7 @@ fn present_desktop(
             shared: shared.clone(),
             authorship,
             notifications: persistence.notifications.clone(),
+            peer: config.peer,
             wake: Arc::new(move || {
                 let _ = wake.send_event(id);
             }),

@@ -1270,6 +1270,18 @@ export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: f
 }
 
 /**
+ * The invitation a link's `invite` secret names, as `inspectInvitation` and
+ * `joinWorkspace` take one: fetched from the shelf of `origin`, the
+ * workspace's host, and opened with the key the link carries. A secret that
+ * is an invitation's own text is answered as it came, so links of every
+ * build join the same way.
+ */
+export async function openInvitation(origin, secret, {runtime} = {}) {
+  runtime ??= await pageRuntime();
+  return runtime.redeemInvitation(origin, secret);
+}
+
+/**
  * Become a new device of the person `userPublicKey` (hex) at the host at
  * `origin`, with no root on this page: the host relays the request, this
  * page shows `onPairingCode(code)`, and one of the person's devices that
