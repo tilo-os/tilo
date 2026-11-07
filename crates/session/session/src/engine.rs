@@ -141,6 +141,21 @@ impl FileHost for Slots {
     }
 }
 
+/// What this device may seal a workspace's record with
+/// ([`Engine::seal_keys`]): the channel's keys, the wait for them, or this
+/// device's own lack of a secret store to hold any.
+pub(crate) enum SealKeys {
+    /// The keys this device seals the record's writes with.
+    Here(channel_crypto::ChannelContentKeys),
+    /// The keys are not here yet: the answer arrives as the workspace's other
+    /// messages do, and the write waits for it.
+    Waiting,
+    /// This device has no secret store, so it holds no channel keys of any
+    /// workspace: a sealed record is one it can neither write nor read here,
+    /// and no workspace refused anything.
+    NoSecretStore,
+}
+
 /// This device's workspaces, and the identity they are held with.
 pub struct Engine {
     owner: NativeWorkspaceOwner,
@@ -363,38 +378,47 @@ impl Engine {
 
     /// The keys this device seals writes of `record` of `app` with in
     /// `workspace`, a workspace whose records are its members' sealed
-    /// channels: `Ok(None)` while the record's channel keys are not here yet,
-    /// and the answer arrives as the workspace's other messages do. That
-    /// includes a channel the workspace's governance does not name this device
-    /// in yet, as it does on the first look after a session starts: the device
-    /// waits for the answer rather than being told it will never get one.
+    /// channels.
+    ///
+    /// [`SealKeys::Here`] is the keys; [`SealKeys::Waiting`] says they are not
+    /// here yet, and the answer arrives as the workspace's other messages do.
+    /// That includes a channel the workspace's governance does not name this
+    /// device in yet, as it does on the first look after a session starts: the
+    /// device waits for the answer rather than being told it will never get
+    /// one.
+    ///
+    /// [`SealKeys::NoSecretStore`] is this device's own lack, not any
+    /// workspace's verdict: with no secret store this device holds no channel
+    /// keys at all, so there is nothing to wait for either. A caller says
+    /// nothing to the person about it: no workspace refused a write it never
+    /// made.
     ///
     /// # Errors
-    /// This session has no channel service, this device has no secret store,
-    /// or the workspace removed it from the record's channel: it holds no
-    /// keys, and none are coming.
+    /// This session has no channel service, or the workspace removed this
+    /// device from the record's channel: it holds no keys, and none are
+    /// coming.
     pub(crate) fn seal_keys(
         &self,
         workspace: WorkspaceId,
         app: &str,
         record: &str,
-    ) -> Result<Option<channel_crypto::ChannelContentKeys>, String> {
+    ) -> Result<SealKeys, String> {
         let Some(keys) = self.keys.get() else {
             return Err("this session's channel service is not running".to_owned());
         };
         let route = collab_types::ChannelRoute::new(app, record);
-        match keys.access_record(workspace, &route).0 {
-            ChannelAccess::Ready(keys) => Ok(Some(keys)),
+        Ok(match keys.access_record(workspace, &route).0 {
+            ChannelAccess::Ready(keys) => SealKeys::Here(keys),
             // Asked and not admitted yet, or admitted nowhere the governance
             // here can name: either way the keys are not here yet.
-            ChannelAccess::Waiting | ChannelAccess::Unavailable => Ok(None),
-            ChannelAccess::Removed => Err(format!(
-                "the workspace removed this device from {record}'s channel"
-            )),
-            ChannelAccess::NoSecretStore => {
-                Err("this device has no secret store, so it holds no channel keys".to_owned())
+            ChannelAccess::Waiting | ChannelAccess::Unavailable => SealKeys::Waiting,
+            ChannelAccess::Removed => {
+                return Err(format!(
+                    "the workspace removed this device from {record}'s channel"
+                ));
             }
-        }
+            ChannelAccess::NoSecretStore => SealKeys::NoSecretStore,
+        })
     }
 
     /// Ask `workspace`'s hosts for the record on `channel` the first time it

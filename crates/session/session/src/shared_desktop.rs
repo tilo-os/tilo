@@ -27,7 +27,7 @@ use tilo_desktop_model::{DesktopTree, WorkspaceId, peer_salt_of};
 
 use tilo_action_broker::owner_commits::OwnerCustody as _;
 
-use crate::engine::Engine;
+use crate::engine::{Engine, SealKeys};
 use crate::sync::Client as Sync;
 
 /// What a workspace's record held when this device last wrote it, how far this
@@ -210,6 +210,43 @@ impl SharedDesktops {
             .strips
             .iter()
             .any(|strip| !strip.window_groups.is_empty());
+        // What this device seals the write with, decided before any of it is
+        // made: a workspace whose records are its members' sealed channels
+        // takes a sealed write, and one whose channel keys this device holds
+        // none of — because they are not here yet, or because this device has
+        // no secret store at all — takes none. Neither is a workspace's
+        // verdict, so no notice names a workspace as having refused a write it
+        // never saw.
+        let sealed = if engine.commits_documents(room) {
+            // Its host takes part in no channels: its records are documents
+            // the owner commits, written in the clear.
+            None
+        } else {
+            match engine.seal_keys(room, DESKTOP_APP, DESKTOP_RECORD) {
+                Ok(SealKeys::Here(keys)) => Some(keys),
+                // The record's channel keys are not here yet: the desk is
+                // written on the look after they arrive, and this look leaves
+                // the workspace unread so that there is one.
+                Ok(SealKeys::Waiting) => {
+                    self.read.borrow_mut().remove(&room);
+                    return false;
+                }
+                // This device holds no secret store, so it holds no channel
+                // keys of any workspace: its desks stay the ones it keeps,
+                // and the person hears nothing. Decided here, before the desk
+                // is read, folded or written, so a look costs one lookup; a
+                // look after a store opens here writes the desk as any other.
+                Ok(SealKeys::NoSecretStore) => return false,
+                Err(error) => {
+                    self.say(
+                        &error,
+                        "the workspace's shared desktop was not written",
+                        room,
+                    );
+                    return false;
+                }
+            }
+        };
         // What the workspace's copy of the record holds here: a record this
         // device was never sent, or cannot read, is one it holds nothing of.
         let reached = Self::record(engine, room, self.revision.borrow().get(&room).copied())
@@ -283,7 +320,7 @@ impl SharedDesktops {
                 );
                 false
             }
-            Ok(true) => self.publish(engine, room, &person, candidate, &heads, own, notes),
+            Ok(true) => self.publish(engine, room, &person, candidate, &heads, own, notes, sealed),
         }
     }
 
@@ -310,6 +347,7 @@ impl SharedDesktops {
         heads: &[ChangeHash],
         own: u64,
         notes: Vec<(u64, String)>,
+        sealed: Option<channel_crypto::ChannelContentKeys>,
     ) -> bool {
         // Every change a device signs says what it is and who made
         // it: the edit of the record this person just made here.
@@ -320,34 +358,13 @@ impl SharedDesktops {
         let changes = candidate.save_after(heads);
         // A write on no history is the whole record: the one that founds it.
         let founding = heads.is_empty();
-        let mut keys = None;
-        if !engine.commits_documents(room) {
-            match engine.seal_keys(room, DESKTOP_APP, DESKTOP_RECORD) {
-                Ok(Some(here)) => keys = Some(here),
-                // The record's channel keys are not here yet: the desk is
-                // written on the look after they arrive, and this look leaves
-                // the workspace unread so that there is one.
-                Ok(None) => {
-                    self.read.borrow_mut().remove(&room);
-                    return false;
-                }
-                Err(error) => {
-                    self.say(
-                        &error,
-                        "the workspace's shared desktop was not written",
-                        room,
-                    );
-                    return false;
-                }
-            }
-        }
         let artifact =
             collab_types::document_artifact_id(DESKTOP_APP, &room.to_string(), DESKTOP_RECORD);
         let key = engine.identity().device_signing_key.clone();
         let committed = engine.owner().commit_document_with_current(
             room,
             |view| {
-                let message = match &keys {
+                let message = match &sealed {
                     None => view.peer().clone().publication_mut().publish_incremental(
                         DESKTOP_APP,
                         DESKTOP_RECORD,
