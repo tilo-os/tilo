@@ -877,21 +877,6 @@ impl WindowGroup {
         false
     }
 
-    /// Whether the shown bar's own surface is at `p`, so a press there is the
-    /// bar's and not the app's under it. Only the bar's chips count: between
-    /// them the app stays reachable.
-    pub fn maximized_chrome_captures(&self, p: Point) -> bool {
-        self.maximized_chrome_shown()
-            && [
-                self.title_rect,
-                self.fullscreen_rect,
-                self.restore_rect,
-                self.close_rect,
-            ]
-            .iter()
-            .any(|r| r.area() > 0.0 && r.contains(p))
-    }
-
     /// What the bar covers and which of its controls a pointer may head for.
     fn edge_rects(&self) -> (Vec<Rect>, Vec<Rect>) {
         let controls: Vec<Rect> = [self.fullscreen_rect, self.restore_rect, self.close_rect]
@@ -1748,17 +1733,6 @@ impl WindowGroup {
         true
     }
 
-    /// Complete capture bounds for the active app, including this group's tab
-    /// decoration. `None` preserves the normal whole-window capture path.
-    pub fn complete_capture_rect(&self) -> Option<Rect> {
-        if self.maximized {
-            return None;
-        }
-        self.active_host()
-            .and_then(TileHost::complete_content_rect)
-            .map(|content| self.rect.union(content))
-    }
-
     /// Paint a complete semantic app canvas with the same shared window card
     /// and tab decoration as the live group, without changing live layout.
     pub fn draw_complete_capture(
@@ -1905,15 +1879,6 @@ impl WindowGroup {
             return Some(Rect::from_origin_size(self.rect.origin(), dst.size()));
         }
         self.content_width_in_flight().map(|_| self.rect)
-    }
-
-    /// Not gated by `cfg(any(test, debug_assertions))`: `ui`'s `cfg(test)`
-    /// only applies when `ui` itself is under test, so the downstream
-    /// shell's `--release` test build (`debug_assertions` off) would lose
-    /// this method.
-    pub fn publish_maximize_intent_for_tests(&mut self) {
-        let active = self.bar.active_id();
-        self.bar.pending_max = Some(active);
     }
 
     pub fn detach_tab(&mut self, tab_id: u64) -> Option<(TabDescriptor, TileHost)> {
@@ -2075,16 +2040,6 @@ impl WindowGroup {
     /// The press on the bar became a carry of the window.
     pub fn cancel_press_for_carry(&mut self) {
         self.bar.cancel_press_for_carry();
-    }
-
-    /// Whether the bar has a menu or picker open over the window.
-    pub fn bar_popup_open(&self) -> bool {
-        self.navigation_bar_visible() && self.bar.popup_open()
-    }
-
-    /// Close what the bar has open over the window. Whether anything was.
-    pub fn close_bar_popups(&mut self) -> bool {
-        self.bar.close_popups()
     }
 
     /// Whether `p` is on the window's own controls at the end of its bar
@@ -2382,47 +2337,6 @@ impl WindowGroup {
         self.bar.set_new_tab(on)
     }
 
-    /// Mark tab `id` as a window whose app may control the desktop, or
-    /// clear the mark: while it is in front the bar says "Controls your
-    /// desktop". `true` when that changed what the window shows.
-    pub fn set_tab_desktop_control(&mut self, id: u64, on: bool) -> bool {
-        self.bar.set_desktop_control(id, on)
-    }
-
-    /// Mark tab `id` as running a developer's own build, installed by
-    /// `installer` into the room it is in, or clear the mark: while it is in
-    /// front the bar says "Dev build by …". `true` when that changed what
-    /// the window shows.
-    pub fn set_tab_dev_build(&mut self, id: u64, installer: Option<String>) -> bool {
-        self.bar.set_dev_build(id, installer)
-    }
-
-    /// Mark tab `id` as a window shared with its workspace, seen by whom
-    /// `shared` names, or clear the mark: while it is in front the bar says
-    /// "Shared with …" with the faces of the people who see it. `true` when
-    /// that changed what the window shows.
-    pub fn set_tab_shared(&mut self, id: u64, shared: Option<super::SharedWith>) -> bool {
-        self.bar.set_shared(id, shared)
-    }
-
-    /// Who sees the window of tab `id`, while it is shared.
-    pub fn tab_shared_with(&self, id: u64) -> Option<&super::SharedWith> {
-        self.bar.shared_with(id)
-    }
-
-    /// Mark tab `id` as a window someone else shared with its workspace,
-    /// whose `shared` names, or clear the mark: while it is in front the bar
-    /// says "Ana's window" with their face. `true` when that changed what
-    /// the window shows.
-    pub fn set_tab_shared_by(&mut self, id: u64, shared: Option<super::SharedBy>) -> bool {
-        self.bar.set_shared_by(id, shared)
-    }
-
-    /// Whose the window of tab `id` is, while someone else shares it here.
-    pub fn tab_shared_by(&self, id: u64) -> Option<&super::SharedBy> {
-        self.bar.shared_by(id)
-    }
-
     /// Press the bar's "Controls your desktop" chip without a pointer, as an
     /// assistive technology does. Whether the bar shows it.
     pub fn activate_desktop_control(&mut self) -> bool {
@@ -2532,14 +2446,6 @@ impl WindowGroup {
         true
     }
 
-    /// Exists because close was pointer-only: the `✕` only paints on an
-    /// active/hovered/pressed pill, so there was no route for someone
-    /// driving by keyboard.
-    pub fn request_close_active_tab(&mut self) -> bool {
-        let id = self.bar.active_id();
-        self.request_close_tab(id)
-    }
-
     pub fn take_tab_context_menu(&mut self) -> Option<(u64, Point)> {
         self.bar.take_context_menu()
     }
@@ -2583,25 +2489,6 @@ impl WindowGroup {
         restored
     }
 
-    /// Test-only: the state a click on a tab's `✕` leaves before the shell
-    /// harvests it.
-    pub fn click_close_for_tests(&mut self, tab_id: u64) -> bool {
-        if !self.bar.start_closing(tab_id) {
-            return false;
-        }
-        let _ = self.bar.take_close();
-        self.closing_hosts
-            .entry(tab_id)
-            .or_insert_with(crate::time::now);
-        if !self.pending_close_commit.contains(&tab_id) {
-            self.pending_close_commit.push(tab_id);
-        }
-        if self.bar.tabs().is_empty() {
-            self.start_closing();
-        }
-        true
-    }
-
     pub fn drag_in_flight(&self) -> bool {
         self.bar.drag_in_flight()
     }
@@ -2637,16 +2524,6 @@ impl WindowGroup {
     #[cfg(any(test, debug_assertions))]
     pub fn close_rect_for_tests(&self, tab_id: u64) -> Option<Rect> {
         self.bar.close_rect_for_tests(tab_id)
-    }
-
-    #[cfg(any(test, debug_assertions, feature = "test-support"))]
-    pub fn tile_kind_labels_for_tests(&self) -> Vec<String> {
-        self.hosts.iter().map(|(_, h)| h.kind_string()).collect()
-    }
-
-    #[cfg(any(test, debug_assertions))]
-    pub fn active_host_rect_for_tests(&self) -> Option<Rect> {
-        self.presentation_bounds().client
     }
 
     #[cfg(any(test, debug_assertions))]

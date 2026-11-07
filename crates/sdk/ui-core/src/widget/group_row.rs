@@ -18,7 +18,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -1261,63 +1260,6 @@ pub fn pan_within_canvas(scroll: f64, max_scroll: f64, pad: f64) -> bool {
 }
 
 impl GroupRow {
-    /// Paint selected active app surfaces without the row's viewport clip.
-    ///
-    /// The ordinary desktop pass clips the continuous strip to the physical
-    /// output. A capture of whole windows cannot reuse that pass: a window
-    /// may be partly or wholly beyond the monitor while still having live
-    /// layout and pixels. This calls each owning group directly, keeping its
-    /// real app draw path and geometry and omitting only the output clip.
-    /// Returns each painted window's id and the rect it was painted in.
-    pub fn draw_capture_targets(
-        &mut self,
-        capture: &crate::widget::LiveCapture<'_>,
-        ctx: &mut PaintCtx<'_>,
-        presence: &PresenceCtx,
-    ) -> Vec<(String, Rect)> {
-        let crate::widget::LiveCapture {
-            target_ids,
-            complete_semantic_content,
-            content_only,
-        } = *capture;
-        let PaintCtx {
-            scene,
-            transform,
-            text: text_renderer,
-            theme,
-        } = ctx.reborrow();
-        let mut rects = Vec::new();
-        for group in &mut self.groups {
-            let active = group.active_tab_id();
-            let id = format!("group:{}:tab:{}", group.id, active);
-            if !target_ids.iter().any(|wanted| wanted == &id) {
-                continue;
-            }
-            let Some(_) = group.active_host() else {
-                continue;
-            };
-            if complete_semantic_content
-                && let Some(rect) =
-                    group.draw_complete_capture(scene, transform, text_renderer, theme, presence)
-            {
-                rects.push((id, rect));
-                continue;
-            }
-            // `group.draw` includes the tab/window decoration, so its capture
-            // crop must use that same complete rect.
-            let rect = match group.active_host() {
-                Some(host) if content_only => host.get_rect(),
-                _ => group.get_rect(),
-            };
-            if rect.area() <= 0.0 {
-                continue;
-            }
-            group.draw(scene, transform, text_renderer, theme, presence);
-            rects.push((id, rect));
-        }
-        rects
-    }
-
     pub fn new(groups: Vec<WindowGroup>) -> Self {
         Self {
             groups,
@@ -1612,36 +1554,6 @@ impl GroupRow {
             .position(|lane| lane.spec.output == output)
     }
 
-    /// Visible screen-space edge grip, using ordinary widget dispatch geometry.
-    /// The viewport clips grips, and promoted or hidden groups have none.
-    pub fn group_resize_rects(&self, group_id: u64) -> Vec<Rect> {
-        if self.hidden {
-            return Vec::new();
-        }
-        let Some((index, group)) = self
-            .groups
-            .iter()
-            .enumerate()
-            .find(|(_, group)| group.id == group_id)
-        else {
-            return Vec::new();
-        };
-        if self.layout_hides_group(index) || self.fullscreen_group == Some(group_id) {
-            return Vec::new();
-        }
-        group
-            .resize_grab_rects()
-            .into_iter()
-            .map(|rect| rect.intersect(self.rect))
-            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
-            .collect()
-    }
-
-    /// Whether `p` lies on a window edge a press would resize.
-    pub fn resize_grab_hit_at(&self, p: Point) -> bool {
-        self.edge_grab_at(p).is_some()
-    }
-
     /// Whether the group promoted by [`Self::set_fullscreen`] stops at its
     /// lane's leading gutter (a maximize) or covers it (a client
     /// fullscreen).
@@ -1888,13 +1800,6 @@ impl GroupRow {
     pub fn output_of_group(&self, group_id: u64) -> Option<u32> {
         let lane = self.lane_of_group(group_id)?;
         self.lanes.get(lane).map(|lane| lane.spec.output)
-    }
-
-    /// The display a group was explicitly placed on in this row: by the
-    /// shell's partition, or by a tab dropped onto that display.
-    pub fn assigned_output_of_group(&self, group_id: u64) -> Option<u32> {
-        let lane = *self.group_lanes.get(&group_id)?;
-        self.lanes.get(lane).map(|l| l.spec.output)
     }
 
     /// Vector indices of the groups in lane `lane`. Groups are kept lane by
@@ -3046,34 +2951,6 @@ impl GroupRow {
         self.prune_empty_group_after_transfer(src);
         self.pending_topology_change = true;
         true
-    }
-
-    /// Move the active tab out to an adjacent standalone group.
-    pub fn detach_active_tab(&mut self, group_id: u64) -> bool {
-        let Some(src) = self.groups.iter().position(|group| group.id == group_id) else {
-            return false;
-        };
-        let tab = self.groups[src].active_tab_id();
-        self.split_tab_into_new_group(src, tab, src.saturating_add(1))
-    }
-
-    /// Move the active tab into the adjacent group in `direction`.
-    pub fn attach_active_tab(&mut self, group_id: u64, direction: i32) -> bool {
-        let Some(src) = self.groups.iter().position(|group| group.id == group_id) else {
-            return false;
-        };
-        let dst = if direction < 0 {
-            src.checked_sub(1)
-        } else {
-            src.checked_add(1).filter(|idx| *idx < self.groups.len())
-        };
-        let Some(dst) = dst.filter(|&dst| self.lane_index_of(dst) == self.lane_index_of(src))
-        else {
-            return false;
-        };
-        let tab = self.groups[src].active_tab_id();
-        let target = self.groups[dst].tabs().len();
-        self.transfer_tab(src, dst, tab, target)
     }
 
     /// A tab merged into a sibling may have emptied its source window.

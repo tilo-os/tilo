@@ -1415,19 +1415,6 @@ impl TabBar {
         self.hover_drop_animated_at = None;
     }
 
-    /// Report whether a retained tab row has reached a static
-    /// resting state. Visual tests use this after one layout pass instead of
-    /// assuming that a fixed sleep covers every nested curve.
-    #[cfg(any(test, debug_assertions))]
-    pub fn is_settled_for_tests(&self) -> bool {
-        !self.needs_animation_frame()
-            && self.hover_idx.is_none()
-            && self.press_origin.is_none()
-            && self.pending_drag.is_none()
-            && self.drop_zone_target.is_none()
-            && self.hover_drop_idx.is_none()
-    }
-
     /// Paints at an arbitrary rect `r` — the pill's sprung visual rect from `draw`,
     /// or the cursor-following ghost rect. `self.close_rects` etc. are cached at
     /// the pill's *target* position, so they're offset by `r - self.tab_rects[i]`
@@ -2550,25 +2537,6 @@ impl TabBar {
     /// passing over them: a control's hover wash shows only then.
     fn pointer_settled(&self) -> bool {
         self.hover_intent.settled(crate::time::now())
-    }
-
-    /// Hold every in-flight reveal curve `at` milliseconds along it. The curve runs
-    /// on wall time and an offscreen frame costs more wall time than the whole
-    /// curve lasts, so a capture that only steps frames would see just the
-    /// endpoints — same escape as `GroupRow::hold_shift_at`. Returns whether any
-    /// curve was running to sample.
-    pub fn hold_reveal_at(&mut self, at: Duration) -> bool {
-        self.touch();
-        let mut any = false;
-        let now = crate::time::now();
-        for anim in self.reveal_anim.values_mut() {
-            if (anim.from - anim.to).abs() <= f64::EPSILON {
-                continue;
-            }
-            anim.started = now.checked_sub(at).unwrap_or(now);
-            any = true;
-        }
-        any
     }
 
     fn reveal_in_flight(&self) -> bool {

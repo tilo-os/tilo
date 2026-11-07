@@ -318,17 +318,6 @@ impl<C: Widget> FloatingWindow<C> {
         self
     }
 
-    /// Lock interactive resizing to a finite positive content aspect ratio.
-    /// This is opt-in so ordinary floating dialogs remain freely resizable.
-    #[must_use]
-    pub fn with_aspect_ratio(mut self, aspect_ratio: f64) -> Self {
-        self.aspect_ratio = aspect_ratio
-            .is_finite()
-            .then_some(aspect_ratio)
-            .filter(|v| *v > 0.0);
-        self
-    }
-
     fn reset_overlay_chrome_presence(&mut self) {
         self.overlay_chrome_hovered = false;
         self.overlay_chrome_changed_at = None;

@@ -130,31 +130,6 @@ impl WindowGroup {
         true
     }
 
-    /// Route a keyboard or input-method event to the window's search while
-    /// its field holds the keyboard, for a host whose own chords and focus
-    /// would otherwise see the key first. Whether the search took it; an
-    /// event it did not take is the host's to dispatch as usual.
-    pub fn route_search_input(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
-    ) -> bool {
-        if !self.search.has_keyboard()
-            || !matches!(
-                event,
-                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
-            )
-        {
-            return false;
-        }
-        let routed = self.search.route(event, ctx);
-        if routed {
-            self.service_search();
-            self.drive_search();
-        }
-        routed
-    }
-
     /// Place the search control after the tabs, and let it reach up to the
     /// window's own controls.
     pub(super) fn place_search(&mut self) {
