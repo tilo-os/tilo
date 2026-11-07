@@ -36,7 +36,8 @@ pub const MAX_APP_ENTRY_BYTES: usize = 2 * 1024;
 /// The longest app id an app may name ([`ToolIntent::UninstallApplication`]).
 pub const MAX_APP_ID_BYTES: usize = 512;
 const MAX_DRIVE_ID_BYTES: usize = 64;
-const MAX_DIRECTORY_BYTES: usize = 2 * 1024;
+/// The longest path a request names: a Terminal's directory, a document.
+const MAX_PATH_BYTES: usize = 2 * 1024;
 const MAX_CONTAINER_NAME_BYTES: usize = 255;
 const TERMINAL_PACKAGE_ID: &str = "so.tilo.terminal";
 
@@ -147,6 +148,17 @@ pub enum ToolIntent {
     /// asks the person first unless they chose to remember the drive; the
     /// app learns nothing more than that the request was taken.
     OpenDrive { drive: String },
+    /// List the apps that open the document at `path`, the one this device
+    /// opens its type with today first ([`ToolReply::documents`]).
+    DocumentApps { path: String },
+    /// Open the document at `path`: in `app`, one of
+    /// [`ToolIntent::DocumentApps`], or in the app this device opens its type
+    /// with when none is named.
+    OpenDocument {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app: Option<String>,
+    },
     /// List the person's apps, every kind in one list ([`ToolReply::applications`]).
     /// The shell answers only Files: it is the person's own view of them.
     Applications,
@@ -235,6 +247,17 @@ impl AppEntry {
     }
 }
 
+/// One app that opens a document's type ([`ToolIntent::DocumentApps`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentApp {
+    /// The id [`ToolIntent::OpenDocument`] takes as `app`.
+    pub id: String,
+    /// Human name, as the desktop shows it elsewhere.
+    pub name: String,
+    /// Whether opening the document now starts this app.
+    pub is_default: bool,
+}
+
 /// An NTFS drive as an app lists it: what to call it and whether it is open.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DriveEntry {
@@ -281,10 +304,7 @@ impl ToolIntent {
             Self::Terminal {
                 directory: Some(directory),
             } => {
-                if !directory.starts_with('/')
-                    || directory.len() > MAX_DIRECTORY_BYTES
-                    || directory.chars().any(char::is_control)
-                {
+                if !is_path(directory) {
                     return Err("invalid Terminal directory".into());
                 }
                 Ok(())
@@ -313,10 +333,22 @@ impl ToolIntent {
                 Ok(())
             }
             Self::OpenApplication { app } | Self::UninstallApplication { app } => {
-                if app.is_empty()
-                    || app.len() > MAX_APP_ID_BYTES
-                    || app.chars().any(char::is_control)
-                {
+                if !is_app(app) {
+                    return Err("invalid app".into());
+                }
+                Ok(())
+            }
+            Self::DocumentApps { path } => {
+                if !is_path(path) {
+                    return Err("invalid document path".into());
+                }
+                Ok(())
+            }
+            Self::OpenDocument { path, app } => {
+                if !is_path(path) {
+                    return Err("invalid document path".into());
+                }
+                if app.as_deref().is_some_and(|app| !is_app(app)) {
                     return Err("invalid app".into());
                 }
                 Ok(())
@@ -381,9 +413,23 @@ impl ToolIntent {
             | Self::OpenDrive { .. }
             | Self::Applications
             | Self::OpenApplication { .. }
-            | Self::UninstallApplication { .. } => None,
+            | Self::UninstallApplication { .. }
+            | Self::DocumentApps { .. }
+            | Self::OpenDocument { .. } => None,
         }
     }
+}
+
+/// Whether `app` is an id the shell may be asked to start: bounded, and no
+/// control characters that a line or a name could be built from.
+fn is_app(app: &str) -> bool {
+    !app.is_empty() && app.len() <= MAX_APP_ID_BYTES && !app.chars().any(char::is_control)
+}
+
+/// Whether `path` is an absolute path of a bounded length, free of control
+/// characters.
+fn is_path(path: &str) -> bool {
+    path.starts_with('/') && path.len() <= MAX_PATH_BYTES && !path.chars().any(char::is_control)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -422,6 +468,9 @@ pub struct ToolReply {
     /// The answer to [`ToolIntent::Applications`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub applications: Vec<AppEntry>,
+    /// The answer to [`ToolIntent::DocumentApps`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<DocumentApp>,
 }
 
 /// Ask the current shell session to open a known tool at a typed context.
@@ -456,6 +505,38 @@ pub fn list_drives() -> Result<Vec<DriveEntry>, String> {
 /// As [`open_tool`].
 pub fn list_applications() -> Result<Vec<AppEntry>, String> {
     send_tool_request(ToolIntent::Applications, None).map(|reply| reply.applications)
+}
+
+/// The apps that open the document at `path`, the one it opens with today
+/// first, for Files' "Open with".
+///
+/// # Errors
+///
+/// As [`open_tool`].
+pub fn list_document_apps(path: &str) -> Result<Vec<DocumentApp>, String> {
+    send_tool_request(
+        ToolIntent::DocumentApps {
+            path: path.to_owned(),
+        },
+        None,
+    )
+    .map(|reply| reply.documents)
+}
+
+/// Open the document at `path` in `app`, or in the app this device opens its
+/// type with when none is named.
+///
+/// # Errors
+///
+/// As [`open_tool`].
+pub fn open_document(path: &str, app: Option<&str>) -> Result<(), String> {
+    open_tool(
+        ToolIntent::OpenDocument {
+            path: path.to_owned(),
+            app: app.map(str::to_owned),
+        },
+        None,
+    )
 }
 
 #[cfg(not(unix))]
@@ -670,6 +751,77 @@ mod tests {
     }
 
     #[test]
+    fn document_intents_name_an_app_and_a_bounded_path() {
+        let path = "/home/you/notes.pdf";
+        let open = ToolIntent::OpenDocument {
+            path: path.into(),
+            app: None,
+        };
+        assert!(open.validate().is_ok());
+        assert_eq!(
+            open.package_id(),
+            None,
+            "the shell routes a document, no package opens it"
+        );
+        assert_eq!(
+            serde_json::to_value(&open).unwrap(),
+            serde_json::json!({ "tool": "open_document", "path": path })
+        );
+        let chosen = ToolIntent::OpenDocument {
+            path: path.into(),
+            app: Some("so.tilo.pdf-viewer".into()),
+        };
+        assert!(chosen.validate().is_ok());
+        assert_eq!(
+            serde_json::to_value(&chosen).unwrap()["app"],
+            "so.tilo.pdf-viewer"
+        );
+        let listed = ToolIntent::DocumentApps { path: path.into() };
+        assert!(listed.validate().is_ok());
+        assert_eq!(
+            serde_json::to_value(&listed).unwrap(),
+            serde_json::json!({ "tool": "document_apps", "path": path })
+        );
+        for bad in [
+            String::new(),
+            "relative.pdf".to_string(),
+            "/a\nb".to_string(),
+            format!("/{}", "a".repeat(MAX_PATH_BYTES)),
+        ] {
+            assert!(
+                ToolIntent::OpenDocument {
+                    path: bad.clone(),
+                    app: None
+                }
+                .validate()
+                .is_err(),
+                "{bad:?}"
+            );
+            assert!(
+                ToolIntent::DocumentApps { path: bad }.validate().is_err(),
+                "a listing is bounded like an open"
+            );
+        }
+        assert!(
+            ToolIntent::OpenDocument {
+                path: path.into(),
+                app: Some("a\nb".into())
+            }
+            .validate()
+            .is_err()
+        );
+        let reply: ToolReply = serde_json::from_str(
+            r#"{"accepted":true,"message":"listed","documents":[
+                {"id":"so.tilo.pdf-viewer","name":"PDF Viewer","is_default":true},
+                {"id":"org.gnome.Evince.desktop","name":"Evince","is_default":false}]}"#,
+        )
+        .unwrap();
+        assert_eq!(reply.documents.len(), 2);
+        assert!(reply.documents[0].is_default);
+        assert!(reply.applications.is_empty(), "a list is not another list");
+    }
+
+    #[test]
     fn drive_intents_are_shell_routes_with_a_bounded_id() {
         let open = ToolIntent::OpenDrive {
             drive: "nvme0n1p3:1".into(),
@@ -733,7 +885,7 @@ mod tests {
                 String::new(),
                 "/tmp/a\nb".to_string(),
                 "/tmp/a\0b".to_string(),
-                format!("/{}", "a".repeat(MAX_DIRECTORY_BYTES)),
+                format!("/{}", "a".repeat(MAX_PATH_BYTES)),
             ] {
                 assert!(
                     ToolIntent::Terminal {

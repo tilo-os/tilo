@@ -1024,7 +1024,10 @@ mod tests {
                 remote_accounts: Vec::new(),
                 trusted_humans: crate::identity_directory::TrustedHumanDirectory::default(),
             },
-            HostedFileServices::deferred_document_open(),
+            HostedFileServices {
+                thumbnails: None,
+                local_clipboard: false,
+            },
         );
         files.state().navigate(path.into());
         files
