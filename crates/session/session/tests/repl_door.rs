@@ -739,7 +739,11 @@ fn the_seeded_inbox_placed_through_the_door_is_drawn_as_mails_inbox() {
         &root.path().join("test-control.sock"),
         &json!({"op": "snapshot", "path": png.to_str().unwrap()}),
     );
-    assert_eq!(answer, json!({"ok": {"frame": 0}}), "the snapshot is taken");
+    assert_eq!(
+        answer,
+        json!({"ok": {"frame": 0, "locked": false}}),
+        "the snapshot is taken, of a session that is not locked"
+    );
     let shot = image::open(&png).expect("a PNG").into_rgba8();
     assert!(
         inked(&shot, subject) > 20,

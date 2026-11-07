@@ -69,7 +69,7 @@ fn a_volume_key_names_the_output_it_changed() {
 #[test]
 fn a_brightness_key_answers_on_the_display_it_changed() {
     let _settled = ui::motion::testing::settled();
-    let dials = Dials::with(&[("HEADLESS-1", 0.5), ("HEADLESS-2", 0.5)]);
+    let dials = Dials::with(&[("eDP-1", 0.5), ("HEADLESS-2", 0.5)]);
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -78,7 +78,7 @@ fn a_brightness_key_answers_on_the_display_it_changed() {
             ..Options::default()
         },
         &[
-            OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT),
+            OutputConfig::new("eDP-1", WIDTH, HEIGHT),
             OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT),
         ],
     )
@@ -86,7 +86,7 @@ fn a_brightness_key_answers_on_the_display_it_changed() {
     pump(&mut session, &mut [], |_, _| true);
     let first = session
         .compositor()
-        .screenshot("HEADLESS-1")
+        .screenshot("eDP-1")
         .expect("screenshot")
         .rgba;
     let second = session
@@ -95,13 +95,13 @@ fn a_brightness_key_answers_on_the_display_it_changed() {
         .expect("screenshot")
         .rgba;
     tap(&mut session, keys::BRIGHTNESS_DOWN);
-    let said = readout_saying(&mut session, "HEADLESS-1");
+    let said = readout_saying(&mut session, "Built-in display");
     assert_eq!(
-        said, "HEADLESS-1, 40%",
+        said, "Built-in display, 40%",
         "the readout names the display it dimmed"
     );
     assert_eq!(
-        dials.asked("HEADLESS-1"),
+        dials.asked("eDP-1"),
         [40.0],
         "the display the person works on is the one dimmed"
     );
@@ -109,7 +109,7 @@ fn a_brightness_key_answers_on_the_display_it_changed() {
     assert_ne!(
         session
             .compositor()
-            .screenshot("HEADLESS-1")
+            .screenshot("eDP-1")
             .expect("screenshot")
             .rgba,
         first,

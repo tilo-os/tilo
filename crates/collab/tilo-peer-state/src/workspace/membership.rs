@@ -485,7 +485,7 @@ fn sandbox(
 
 /// The grants the batch adds that assign one of the workspace's saved grant sets
 /// (`preset:<id>:<set>:<rule>`), written by someone who may assign that set
-/// by a grant on it ([`tilo_desktop_model::preset_assign_node`]) and given
+/// by a grant on it ([`tilo_action_policy::roles::preset_assign_node`]) and given
 /// by them: each one of the set's rules placed in this workspace, no more than
 /// they hold. Any other grant is left to the workspace's grant rule.
 fn assignments(
@@ -502,13 +502,7 @@ fn assignments(
         if held.grants.iter().any(|kept| kept.id == grant.id) {
             continue;
         }
-        let Some((set, index)) = grant
-            .id
-            .as_str()
-            .strip_prefix("preset:")
-            .and_then(|rest| rest.split_once(':'))
-            .and_then(|(_, rest)| rest.rsplit_once(':'))
-        else {
+        let Some((set, index)) = roles::preset_assigned(&grant.id) else {
             continue;
         };
         let Some(preset) = presets
@@ -519,7 +513,7 @@ fn assignments(
         };
         let on_set = authority
             .decide(
-                &tilo_desktop_model::preset_assign_node(workspace, &preset.name),
+                &roles::preset_assign_node(workspace, &preset.name),
                 roles::GOVERNANCE_KIND,
                 cx,
             )
@@ -528,11 +522,7 @@ fn assignments(
         if !on_set {
             continue;
         }
-        let rule = index
-            // ignored-failure: an index that does not parse names no rule of the preset
-            .parse::<usize>()
-            .ok()
-            .and_then(|index| preset.rules.get(index));
+        let rule = preset.rules.get(index);
         if !rule.is_some_and(|rule| {
             grant.node == workspace_node.join(&rule.node)
                 && grant.kinds == rule.kinds

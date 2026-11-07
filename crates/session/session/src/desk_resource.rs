@@ -238,6 +238,7 @@ impl Surfaces {
             }
             return;
         }
+        self.panel_closes();
         self.overlays.toggle(surface);
         self.clear_beside();
         self.settled();
@@ -251,6 +252,7 @@ impl Surfaces {
                 .open(tilo_desktop::overlays::Slot::QuickSettings, None);
             return;
         }
+        self.panel_closes();
         self.overlays.open(name);
         self.clear_beside();
         self.settled();
@@ -302,6 +304,18 @@ impl Surfaces {
         }
         self.overlays.close(surface);
         self.settled();
+    }
+
+    /// Close the panel when a surface of the shell's own opens: one surface stands at a time,
+    /// so the centre is not opened behind the panel that asked for it.
+    fn panel_closes(&self) {
+        if self
+            .panel
+            .is_open(tilo_desktop::overlays::Slot::QuickSettings)
+        {
+            self.panel
+                .close(tilo_desktop::overlays::Slot::QuickSettings);
+        }
     }
 
     /// Keep the desk's reading of the overview in step with the surface just changed: the desk
@@ -1521,6 +1535,25 @@ mod tests {
         assert!(surfaces.overview.get(), "closing another surface leaves it");
         surfaces.close(Overlay::Overview.name());
         assert!(!surfaces.overview.get());
+    }
+
+    #[test]
+    fn a_surface_of_the_shells_own_closes_the_panel_that_asked_for_it() {
+        let surfaces = surfaces(true, false);
+        surfaces.open(crate::quick_settings::SURFACE);
+        assert!(
+            surfaces
+                .panel
+                .is_open(tilo_desktop::overlays::Slot::QuickSettings)
+        );
+        surfaces.open(Overlay::Centre.name());
+        assert_eq!(surfaces.overlays.here(), Overlay::Centre.name());
+        assert!(
+            !surfaces
+                .panel
+                .is_open(tilo_desktop::overlays::Slot::QuickSettings),
+            "one surface at a time: the centre is not opened behind the panel"
+        );
     }
 
     #[test]

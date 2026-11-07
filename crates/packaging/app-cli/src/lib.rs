@@ -661,12 +661,12 @@ pub fn installed_version(package_id: &str) -> Result<Option<String>, String> {
 }
 
 /// Whether the installed `package_id` needs nothing an update would bring
-/// besides a newer version. One recorded before the package format changed
-/// is behind whatever its version ([`package_store::integrity::record_current`]),
-/// and so is one whose runtime build is missing, as after a rollback to an
-/// image that does not ship it: the next update fetches the runtime. A
-/// package that is not installed, or a registry that cannot be read, is not
-/// judged here.
+/// besides a newer version. One recorded at a package format this build does
+/// not read is behind whatever its version
+/// ([`package_store::integrity::record_current`]), and so is one whose
+/// runtime build is missing, as after a rollback to an image that does not
+/// ship it: the next update fetches the runtime. A package that is not
+/// installed, or a registry that cannot be read, is not judged here.
 #[must_use]
 pub fn installed_current(package_id: &str) -> bool {
     package_store::find_installed(package_id)

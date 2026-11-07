@@ -423,6 +423,76 @@ fn a_places_view_and_pin_are_kept_with_the_desk_across_a_restart() {
     assert!(back.pinned, "the place is still pinned");
 }
 
+// A place a launch left on the desk and no window came for is not a window
+// the person had open: the next start does not bring it back, and the desk is
+// exactly what was open.
+#[test]
+fn a_launch_that_left_no_window_is_gone_after_a_restart() {
+    let _settled = ui::motion::testing::settled();
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let state = home.state().to_path_buf();
+    let (window, place) = {
+        let mut session = session_in(Some(state.clone()));
+        step(&mut session);
+        let window = open_window(&mut session, "org.example.Notes");
+        // A launch of Files opened its place, and no window came for it.
+        let handle = session.handle().clone();
+        let mut tree = handle.read(Clone::clone);
+        let (tab, group) = (handle.mint_id(), handle.mint_id());
+        let workspace = tree
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.slot == tree.active)
+            .expect("a workspace is in front");
+        workspace
+            .strips
+            .first_mut()
+            .expect("a strip is in front")
+            .window_groups
+            .push(tilo_desktop_model::WindowGroup {
+                id: group,
+                tabs: vec![tilo_desktop_model::Tab {
+                    id: tab,
+                    title: "Files".into(),
+                    tile: tilo_desktop_model::TileContent::AppPlaceholder {
+                        kind: tilo_desktop_model::AppKind::Other("org.example.Files".into()),
+                        label: "org.example.Files".into(),
+                    },
+                    app_title: None,
+                    view: String::new(),
+                    pinned: false,
+                }],
+                active_tab: tab,
+                width: tilo_desktop_model::WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            });
+        handle.replace_tree(tree);
+        step(&mut session);
+        (window, tab)
+    };
+
+    let mut next = session_in(Some(state));
+    step(&mut next);
+    let tabs: Vec<u64> = next.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .collect()
+    });
+    assert!(
+        !tabs.contains(&place),
+        "the place no window came for is not on the desk again: {tabs:?}"
+    );
+    assert!(
+        tabs.contains(&window),
+        "the window that was open is: {tabs:?}"
+    );
+}
+
 // (6) The arrangement a build before this one kept beside the desk comes into
 // the desk once: the windows it held are open on the desk again, and the file
 // it was kept in is gone. A window it kept as a live surface comes back as the

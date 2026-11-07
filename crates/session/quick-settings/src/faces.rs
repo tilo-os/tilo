@@ -460,7 +460,7 @@ pub(crate) struct RowFace {
 
 impl RowFace {
     /// The section whose page the row opens; `None` for Notifications,
-    /// which opens theirs.
+    /// which opens the shell's centre.
     pub(crate) fn section(&self) -> Option<QsSection> {
         match self.row {
             RootRow::Battery => Some(QsSection::Battery),
@@ -530,7 +530,7 @@ pub(crate) fn rows(state: &QuickSettingsState) -> Vec<RowFace> {
         icon: Icon::Bell,
         title: t("qs-notifications"),
         detail: None,
-        value: Some(match state.notifications.rows.len() {
+        value: Some(match state.notifications {
             0 => t("qs-notifications-none"),
             count => t_args("qs-notifications-count", &[("count", count.into())]),
         }),

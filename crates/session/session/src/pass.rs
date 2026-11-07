@@ -196,6 +196,7 @@ impl Session {
                 seats: &self.shared.seats,
                 locked: self.compositor.locked(),
                 lock_screen_drawn: self.compositor.lock_drawn(),
+                lock: &self.shared.lock,
             },
         );
         self.compositor.mark_pump(pass.elapsed());
@@ -249,6 +250,7 @@ impl Session {
                 seats: &self.shared.seats,
                 locked,
                 lock_screen_drawn,
+                lock: &self.shared.lock,
             },
         );
         self.tool_input = answering.elapsed();
@@ -274,6 +276,7 @@ impl Session {
                 seats: &self.shared.seats,
                 locked,
                 lock_screen_drawn,
+                lock: &self.shared.lock,
             },
         );
         self.compositor

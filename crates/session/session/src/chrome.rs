@@ -35,6 +35,9 @@ use crate::notifications::NoticeSignals;
 /// running timer.
 pub(crate) const CLOCKS_APP: &str = "so.tilo.clocks";
 
+/// What the board published, parsed, at the revision it was read at.
+type Parsed = (u64, Rc<Vec<(String, Published)>>);
+
 /// The apps' live activities, as the session presents them: every summary
 /// the apps publish on the board, and the person's own say over them.
 ///
@@ -46,6 +49,10 @@ pub(crate) struct Activities {
     board: Arc<runtime_collab::LiveActivities>,
     /// The cards the apps draw themselves, and where the layer gives them.
     cards: crate::cards::Cards,
+    /// What the board last published, parsed, with the revision it was read
+    /// at: the bar and the layer read it several times a frame, and the
+    /// activities are JSON.
+    shown: RefCell<Option<Parsed>>,
     /// Per activity, the identity (its id and title) the person put away:
     /// it stays away until the app shows something with another identity.
     hidden: RefCell<std::collections::BTreeMap<String, (String, String)>>,
@@ -69,6 +76,7 @@ impl Activities {
         Self {
             board,
             cards,
+            shown: RefCell::default(),
             hidden: RefCell::default(),
             collapsed: RefCell::default(),
             pulled: RefCell::default(),
@@ -95,12 +103,19 @@ impl Activities {
     /// its summary, in app id order.
     pub(crate) fn summaries(&self) -> Vec<(String, Summary)> {
         self.read()
-            .into_iter()
+            .iter()
             .filter_map(|(app, published)| {
-                let summary = published.summary?;
-                self.shows(&app, &summary).then_some((app, summary))
+                let summary = published.summary.as_ref()?;
+                self.shows(app, summary)
+                    .then(|| (app.clone(), summary.clone()))
             })
             .collect()
+    }
+
+    /// The bar's pill: the activity that stands first and how many wait
+    /// behind it.
+    pub(crate) fn pill(&self) -> ui::floating_layer::Pill {
+        ui::floating_layer::pill(&self.summaries())
     }
 
     /// The cards the floating layer draws: what asks to float and what the
@@ -109,19 +124,19 @@ impl Activities {
     pub(crate) fn cards(&self) -> Vec<Card> {
         let mut cards: Vec<(usize, Card)> = self
             .read()
-            .into_iter()
+            .iter()
             .filter_map(|(app, published)| {
-                let summary = published.summary?;
-                if !self.shows(&app, &summary) {
+                let summary = published.summary.clone()?;
+                if !self.shows(app, &summary) {
                     return None;
                 }
-                let key = key(&app, &summary);
+                let key = key(app, &summary);
                 let pulled = self.pulled.borrow().contains(&key);
                 let collapsed = self.collapsed.borrow().contains(&key);
                 if collapsed || !(published.overlay || pulled) {
                     return None;
                 }
-                let mut card = Card::new(app, summary);
+                let mut card = Card::new(app.clone(), summary);
                 // A call or a route is drawn by its app: the layer keeps its
                 // place, and its body comes from the app's own window while
                 // that app has no window of its own on the desk.
@@ -167,15 +182,30 @@ impl Activities {
         );
     }
 
+    /// The person dragged an activity's progress bar to `fraction` of it,
+    /// from 0 to 1: its app goes there, through the same press a control on
+    /// the card makes.
+    pub(crate) fn seek(&self, app: &str, activity: &str, fraction: f64) {
+        self.touch(app, activity);
+        self.board.press(
+            app,
+            serde_json::json!({
+                "command": "seek",
+                "activity_id": (!activity.is_empty()).then_some(activity),
+                "fraction": fraction,
+            }),
+        );
+    }
+
     /// The person ended or put away an activity: an app that offers a close
     /// has it asked to end it, and one that cannot be stopped from outside
     /// goes away until it shows something else.
     pub(crate) fn close(&self, app: &str, activity: &str) {
         let summary = self
             .read()
-            .into_iter()
+            .iter()
             .find(|(shown, _)| shown == app)
-            .and_then(|(_, published)| published.summary)
+            .and_then(|(_, published)| published.summary.clone())
             .filter(|summary| summary.id == activity);
         let Some(summary) = summary else {
             return;
@@ -202,19 +232,22 @@ impl Activities {
     }
 
     /// The person pulled the activity out of the bar's pill: its card shows
-    /// again, however the app asked for it. The board is what knows which
-    /// app publishes the activity the pill named.
-    pub(crate) fn expand(&self, activity: &str) {
-        let Some((app, summary)) = self.read().into_iter().find_map(|(app, published)| {
-            let summary = published.summary?;
-            (summary.id == activity).then_some((app, summary))
-        }) else {
+    /// again, however the app asked for it. An activity's id is its app's
+    /// own, so the app the pill named is half of what it names.
+    pub(crate) fn expand(&self, app: &str, activity: &str) {
+        let summary = self
+            .read()
+            .iter()
+            .find(|(shown, _)| shown == app)
+            .and_then(|(_, published)| published.summary.clone())
+            .filter(|summary| summary.id == activity);
+        let Some(summary) = summary else {
             return;
         };
-        let key = key(&app, &summary);
+        let key = key(app, &summary);
         self.collapsed.borrow_mut().remove(&key);
         self.pulled.borrow_mut().insert(key);
-        self.touch(&app, activity);
+        self.touch(app, activity);
     }
 
     /// The person left a card `at` a place of its own (`None`: back in the
@@ -228,22 +261,10 @@ impl Activities {
         self.touch(app, activity);
     }
 
-    /// Keyboard focus came to the cards, or left them.
-    pub(crate) fn focus(&self, on: bool) {
-        if on
-            && let Some((app, activity)) = self
-                .cards()
-                .first()
-                .map(|card| (card.app.clone(), card.summary.id.clone()))
-        {
-            self.touch(&app, &activity);
-        }
-    }
-
     /// The due events the apps want announced, each posted once.
     pub(crate) fn announce(&self, notices: &DesktopNotifications) {
-        for (app, published) in self.read() {
-            let Some(announcement) = published.announce else {
+        for (app, published) in self.read().iter() {
+            let Some(announcement) = &published.announce else {
                 continue;
             };
             let key = format!("{app}:{}", announcement.id);
@@ -253,41 +274,51 @@ impl Activities {
             let title = if announcement.title.is_empty() {
                 crate::i18n::t("clock-due-title")
             } else {
-                announcement.title
+                announcement.title.clone()
             };
             let body = if announcement.body.is_empty() {
                 crate::i18n::t("clock-due-body")
             } else {
-                announcement.body
+                announcement.body.clone()
             };
             notices.post(Notification::new(title, body));
         }
     }
 
-    /// What every app publishes now, by app.
-    fn read(&self) -> Vec<(String, Published)> {
-        self.board
-            .activities()
-            .into_iter()
-            .filter_map(|(app, activity)| {
-                serde_json::from_value(activity)
-                    .inspect_err(|error| {
-                        tracing::warn!(%error, app, "a live activity does not read back");
-                    })
-                    .ok()
-                    .map(|mut published: Published| {
-                        // A card's header names the app that shows the
-                        // activity, in the person's language: the app knows
-                        // its own copy, never the name this device calls it.
-                        if let Some(summary) = &mut published.summary
-                            && summary.source.is_empty()
-                        {
-                            summary.source = crate::app_names::app_name(&app);
-                        }
-                        (app, published)
-                    })
-            })
-            .collect()
+    /// What every app publishes now, by app, parsed once per board revision.
+    fn read(&self) -> Rc<Vec<(String, Published)>> {
+        let revision = self.board.revision();
+        if let Some((at, shown)) = self.shown.borrow().as_ref()
+            && *at == revision
+        {
+            return Rc::clone(shown);
+        }
+        let shown: Rc<Vec<(String, Published)>> = Rc::new(
+            self.board
+                .activities()
+                .into_iter()
+                .filter_map(|(app, activity)| {
+                    serde_json::from_value(activity)
+                        .inspect_err(|error| {
+                            tracing::warn!(%error, app, "a live activity does not read back");
+                        })
+                        .ok()
+                        .map(|mut published: Published| {
+                            // A card's header names the app that shows the
+                            // activity, in the person's language: the app knows
+                            // its own copy, never the name this device calls it.
+                            if let Some(summary) = &mut published.summary
+                                && summary.source.is_empty()
+                            {
+                                summary.source = crate::app_names::app_name(&app);
+                            }
+                            (app, published)
+                        })
+                })
+                .collect(),
+        );
+        self.shown.replace(Some((revision, Rc::clone(&shown))));
+        shown
     }
 
     /// Whether `summary` shows: an activity the person put away stays away
@@ -515,12 +546,10 @@ impl DesktopChromeSource for SessionChrome {
         let waved = self.sync.as_ref().and_then(|sync| sync.wave_notice());
         // A due event is announced once, here, where the bar reads it.
         self.activities.announce(&self.notices);
-        let activities: Vec<Summary> = self
-            .activities
-            .summaries()
-            .into_iter()
-            .map(|(_, summary)| summary)
-            .collect();
+        // The pill the bar shows, built once here: the bar reads its
+        // snapshot many times a frame, and the activities' own words do not
+        // change between its reads.
+        let activities = self.activities.pill();
         // The bar's pixels for an ask that comes, opens, folds, is answered
         // or is put off change with it, so the revision moves for those as
         // it does for the tree.
@@ -1142,7 +1171,15 @@ mod tests {
         assert!(activities.cards().is_empty(), "folded into the bar");
         assert_eq!(activities.summaries().len(), 1, "the pill still names it");
 
-        activities.expand("timer-1");
+        // An activity's id is its own app's: another app that names the
+        // same id is not the activity the pill named.
+        activities.expand("so.tilo.other", "timer-1");
+        assert!(
+            activities.cards().is_empty(),
+            "another app's activity of that id stays folded"
+        );
+
+        activities.expand(CLOCKS_APP, "timer-1");
         assert_eq!(activities.cards().len(), 1, "pulled out");
         assert_eq!(activities.cards()[0].summary.tone, Tone::Neutral);
     }

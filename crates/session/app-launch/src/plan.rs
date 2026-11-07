@@ -160,6 +160,12 @@ pub struct PlanContext<'a> {
     /// told it as its window's instance, so what it reports about the window
     /// is about that tab.
     pub continuity_instance: Option<u64>,
+    /// The app's origin this launch is its connector for (`imap`, `youtube`),
+    /// rather than a window (`docs/architecture/apps.md` §1): the launcher
+    /// gives the process the sandbox the app's manifest declares for that
+    /// origin — the network a window and the tilolang host never have — and
+    /// the app's runtime runs that origin's connector there.
+    pub connector: Option<&'a str>,
 }
 
 impl PlanContext<'_> {
@@ -309,6 +315,13 @@ impl Planned {
                 args.push(uri.clone());
             }
             None => {}
+        }
+        if let Some(origin) = context.connector {
+            // The app's connector for `origin`, not a window: the process runs the origin's
+            // connector in the sandbox the manifest declares for it
+            // (`launcher::run::RunOptions::tilolang_connector`).
+            args.push("--tilolang-connector".to_owned());
+            args.push(origin.to_owned());
         }
         let mut env = context.environment.variables();
         if let Some(instance) = context.continuity_instance {
@@ -490,6 +503,7 @@ mod tests {
             render_node: None,
             new_window: false,
             continuity_instance: None,
+            connector: None,
         }
     }
 

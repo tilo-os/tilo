@@ -51,6 +51,12 @@ pub struct RecordService {
     /// this service takes in to publish what they wrote.
     shared_records:
         std::collections::BTreeMap<String, std::rc::Rc<std::cell::RefCell<tilo_resource::Doc>>>,
+    /// The outside services its packages' types with an origin are kept in step with, by
+    /// origin (`imap`, `youtube`): each native code this service runs beside the records,
+    /// reached through the connection the session hands it ([`Service::connect`]).
+    origins: crate::origin::Origins,
+    /// What wakes the session's loop when an origin has an answer and work waits.
+    origin_waker: Option<crate::background::Waker>,
 }
 
 impl RecordService {
@@ -74,6 +80,8 @@ impl RecordService {
             moved_unsaid: false,
             shared: std::collections::BTreeMap::new(),
             shared_records: std::collections::BTreeMap::new(),
+            origins: crate::origin::Origins::default(),
+            origin_waker: None,
         }
     }
 
@@ -216,6 +224,108 @@ impl RecordService {
     /// the next [`Service::poll`] to publish.
     pub fn set_waker(&mut self, wake: crate::background::Waker) {
         self.publications.set_waker(wake);
+    }
+
+    /// Reach the connector of `origin` at the far end of `connection`: the origin that keeps
+    /// the packages' types of its kinds in step with the service, native code this service runs
+    /// beside the records, asks the connector over the socket.
+    ///
+    /// The connector is the process the session started for the app in the sandbox its
+    /// manifest declares for the origin: this service asks through it, never holding the
+    /// network or the credentials itself.
+    ///
+    /// # Errors
+    /// The origin is not one this platform has a client for, or the socket cannot be used.
+    pub fn connect_origin(
+        &mut self,
+        origin: &str,
+        connection: std::os::fd::OwnedFd,
+    ) -> Result<(), String> {
+        let wake = self.origin_waker.clone().unwrap_or_else(|| Arc::new(|| {}));
+        let stream = std::os::unix::net::UnixStream::from(connection);
+        let shared = crate::origin::remote(origin, stream, wake)?;
+        self.origins.borrow_mut().push(shared);
+        // What an effect of a package's action hands an origin goes to that origin; anything
+        // this service does not carry out itself (the development log's `post`) goes to the
+        // log, as a window without a sink does.
+        self.host.runtime().set_sink(crate::origin::RoutingSink {
+            origins: std::rc::Rc::clone(&self.origins),
+            rest: Box::new(crate::sink::LogSink::dev()),
+        });
+        Ok(())
+    }
+
+    /// Have `wake` called when an origin has something for the next [`Service::poll`]: an
+    /// answer from the service it asked.
+    pub fn set_origin_waker(&mut self, wake: crate::background::Waker) {
+        self.origin_waker = Some(wake);
+    }
+
+    /// Poll each origin, and carry out the outside effects the record queued that wait for it:
+    /// what it wrote is committed to the record as the origin's change and published. Whether
+    /// anything was written.
+    fn poll_origins(&mut self) -> bool {
+        if self.origins.borrow().is_empty() {
+            return false;
+        }
+        let now = crate::host::system_time();
+        let waker = self.origin_waker.clone().unwrap_or_else(|| Arc::new(|| {}));
+        let origins: Vec<crate::origin::SharedOrigin> = self.origins.borrow().clone();
+        let mut wrote = false;
+        // The outside effects a package's action queued, handed to the origin that carries
+        // them out: an effect queued since the last pass goes now, whether or not any origin is
+        // already due (an origin is due once something is handed to it). What cannot be carried
+        // out yet waits in the record, as a window's does.
+        match self.host.settle_outbox() {
+            Ok(settled) if settled.written > 0 => wrote = true,
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "outside effects could not be settled"),
+        }
+        for origin in &origins {
+            if !origin.borrow().due() {
+                continue;
+            }
+            // The app whose types hold this origin's kinds: the package that declares them, so
+            // an origin writes into the records of the app that holds its resources.
+            let name = origin.borrow().name().to_owned();
+            let prefix = format!("{name}.");
+            let app = self
+                .host
+                .packages()
+                .iter()
+                .rev()
+                .find(|package| {
+                    package.meta.types.iter().any(|ty| {
+                        ty.origin
+                            .as_deref()
+                            .is_some_and(|kind| kind.starts_with(&prefix))
+                    })
+                })
+                .map(|package| package.meta.app.clone())
+                .unwrap_or_default();
+            let cx = crate::origin::OriginCx {
+                host: &self.host,
+                app: &app,
+                waker: &waker,
+                now: now.clone(),
+            };
+            let polled = origin.borrow_mut().poll(&cx);
+            if polled.wrote {
+                wrote = true;
+            }
+        }
+        if wrote {
+            // What the origins wrote is committed to the record this service publishes, as the
+            // origins' own changes.
+            for committed in self.host.take_committed() {
+                use tilo_actions::Action as _;
+                let _ = committed.action.apply(&mut self.record);
+            }
+            self.record.commit();
+            self.host.sync_from(&self.record);
+            self.publications.settle(&self.host, &self.planner);
+        }
+        wrote
     }
 
     /// Whether a field of any record changed since the last call. What changed is kept for
@@ -495,7 +605,10 @@ impl Service for RecordService {
 
     fn poll(&mut self) -> bool {
         let touched = self.publications.update(&self.host, &self.planner);
-        self.watched() || !touched.is_empty()
+        // The origins keep their records in step with their services, and hand the outside
+        // effects the record queued to them: what they wrote is committed and published.
+        let wrote = self.poll_origins();
+        self.watched() || !touched.is_empty() || wrote
     }
 
     fn moved(&mut self) -> Option<Vec<String>> {
@@ -531,6 +644,37 @@ impl Service for RecordService {
 
     fn follow(&mut self) -> Result<bool, String> {
         Self::follow(self)
+    }
+
+    fn connectors(&self) -> Vec<tilo_service::Connector> {
+        // A package's types that hold an outside service's resources: the origins the session
+        // runs a connector for, for the app whose manifest the package is
+        // (`crate::origin::origin_types`).
+        let mut connectors: Vec<tilo_service::Connector> = Vec::new();
+        for package in self.host.packages() {
+            for ty in &package.meta.types {
+                let Some(origin) = ty.origin.as_deref().and_then(|kind| kind.split('.').next())
+                else {
+                    continue;
+                };
+                let connector = tilo_service::Connector {
+                    app: package.meta.app.clone(),
+                    origin: origin.to_owned(),
+                };
+                if !connectors.contains(&connector) {
+                    connectors.push(connector);
+                }
+            }
+        }
+        connectors
+    }
+
+    fn connect(&mut self, origin: &str, connection: std::os::fd::OwnedFd) -> Result<(), String> {
+        self.connect_origin(origin, connection)
+    }
+
+    fn wake_origins(&mut self, wake: tilo_service::Wake) {
+        self.set_origin_waker(wake);
     }
 
     fn settle(&mut self) {

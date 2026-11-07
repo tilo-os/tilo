@@ -28,7 +28,11 @@
 //!
 //! - `snapshot` (`tilo-control snapshot PATH`): a PNG of every display, each at its place in the
 //!   layout, as the person in front of them sees it — the lock screen included while the session
-//!   is locked, which no copy that leaves the session shows ([`crate::capture::shown`]);
+//!   is locked, which no copy that leaves the session shows ([`crate::capture::shown`]), and the
+//!   answer says whether that is what the picture shows;
+//! - `unlock` (`tilo-control unlock`): the session's lock lifted the one way it is — the screen
+//!   dissolves and the compositor comes down once it has, as it does for an accepted password —
+//!   so a tool driving a device off its own display reaches the desk under it;
 //! - `provision_test_identity` (`tilo-control raw '{"op":"provision_test_identity"}'`), which
 //!   mints the throwaway identity a development session opens its desk with instead of first-use
 //!   setup, as the shell's does for a dev image;
@@ -255,6 +259,11 @@ pub(crate) struct Desk<'a> {
     pub(crate) seats: &'a std::sync::Arc<agent_door::Seats>,
     pub(crate) locked: bool,
     pub(crate) lock_screen_drawn: bool,
+    /// The lock's own state: what unlocking it is, the same one an accepted
+    /// password sets, so a tool that unlocks asks the session to come down the
+    /// one way it does — the screen dissolves and the compositor lifts the
+    /// lock once it has.
+    pub(crate) lock: &'a crate::lock_service::Lock,
 }
 
 /// Answer what `control`, when there is one, was asked since the last pass, and publish the
@@ -379,13 +388,14 @@ enum Op {
     StateDump,
     Swipe,
     Type,
+    Unlock,
     Watch,
     Windows,
 }
 
 impl Op {
     /// Every op the protocol answers, in the order the refusal names them.
-    const ALL: [Self; 28] = [
+    const ALL: [Self; 29] = [
         Self::ActionsCancel,
         Self::ActionsEnumerate,
         Self::ActionsInvoke,
@@ -412,6 +422,7 @@ impl Op {
         Self::StateDump,
         Self::Swipe,
         Self::Type,
+        Self::Unlock,
         Self::Watch,
         Self::Windows,
     ];
@@ -445,6 +456,7 @@ impl Op {
             "state_dump" => Self::StateDump,
             "swipe" => Self::Swipe,
             "type" => Self::Type,
+            "unlock" => Self::Unlock,
             "watch" => Self::Watch,
             "windows" => Self::Windows,
             _ => return None,
@@ -480,6 +492,7 @@ impl Op {
             Self::StateDump => "state_dump",
             Self::Swipe => "swipe",
             Self::Type => "type",
+            Self::Unlock => "unlock",
             Self::Watch => "watch",
             Self::Windows => "windows",
         }
@@ -1056,9 +1069,20 @@ fn asked_of_desk(
                 .and_then(Json::as_str)
                 .unwrap_or_default();
             match snapshot(compositor, path) {
-                Ok(()) => json!({"ok": {"frame": 0}}),
+                // Whether the picture is of the lock screen, which is all a
+                // locked display shows: a tool reads it, never a blank frame.
+                Ok(()) => json!({"ok": {"frame": 0, "locked": desk.locked}}),
                 Err((code, message)) => refusal(code, &message),
             }
+        }
+        // The session's lock comes down as it does for a password that unlocks:
+        // the screen dissolves, and the compositor lifts the lock once it has.
+        Op::Unlock => {
+            let was_locked = desk.locked;
+            if was_locked {
+                desk.lock.unlocked();
+            }
+            json!({"ok": {"locked": false, "was_locked": was_locked}})
         }
         Op::ProvisionTestIdentity => provision_test_identity(),
         Op::ListTargets => {
@@ -1117,9 +1141,14 @@ fn asked_of_desk(
             let rows = if ctx.gate != Gate::Dev && desk.locked {
                 Vec::new()
             } else {
+                // Where each window is drawn, read off the frame's own layout:
+                // a row says what a tool aiming at that window aims at.
+                let rect_of = |id: u64| compositor.window_rect(id);
                 match &ctx.scope {
-                    None => desk.handle.read(window_rows),
-                    Some(scope) => desk.handle.read(|tree| window_rows(&within(tree, scope))),
+                    None => desk.handle.read(|tree| window_rows(tree, rect_of)),
+                    Some(scope) => desk
+                        .handle
+                        .read(|tree| window_rows(&within(tree, scope), rect_of)),
                 }
             };
             json!({"answer": {"windows": rows}})
@@ -2523,11 +2552,77 @@ mod tests {
         }
         // Every op the protocol answers is in the list, each once.
         let mut names: Vec<&str> = Op::ALL.iter().map(|op| op.name()).collect();
-        assert_eq!(names.len(), 28, "the protocol's ops");
+        assert_eq!(names.len(), 29, "the protocol's ops");
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), Op::ALL.len(), "{names:?}");
         assert_eq!(Op::of(&json!({"op": "nonsense"})), None);
+    }
+
+    #[test]
+    fn a_window_row_says_the_window_and_where_its_frame_draws_it() {
+        use tilo_desktop_model::{
+            DesktopTree, Strip, Tab, TileContent, WindowGroup, Workspace, WorkspaceSlot,
+            ids::StripId, width::WindowWidth,
+        };
+        let tab = |id: u64, title: &str, tile: TileContent| Tab {
+            id,
+            title: title.to_owned(),
+            tile,
+            app_title: None,
+            view: String::new(),
+            pinned: false,
+        };
+        let mut strip = Strip::new(StripId(1), "Windows");
+        strip.window_groups = vec![WindowGroup {
+            id: 10,
+            tabs: vec![
+                tab(
+                    100,
+                    "Notes",
+                    TileContent::Foreign {
+                        app_id: "so.tilo.notes".into(),
+                        surface_id: 7,
+                    },
+                ),
+                tab(
+                    101,
+                    "Files",
+                    TileContent::LocalApp {
+                        app_id: "so.tilo.files".into(),
+                        label: "Files".into(),
+                        note: String::new(),
+                    },
+                ),
+            ],
+            active_tab: 100,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        }];
+        let mut home = Workspace::new(WorkspaceSlot(1), "Home");
+        home.strips = vec![strip];
+        let mut tree = DesktopTree {
+            active: home.slot,
+            workspaces: vec![home],
+            ..DesktopTree::default()
+        };
+        tree.active_strip.insert(WorkspaceSlot(1), StripId(1));
+        tree.set_active_group(StripId(1), 10);
+        // The frame draws the one window it has mapped; the other tab is an
+        // app to open again, with no window of its own yet.
+        let rows = window_rows(&tree, |id| (id == 7).then_some((14, 96, 946, 984)));
+        assert_eq!(rows.len(), 2, "one row per tab: {rows:?}");
+        assert_eq!(rows[0]["window"], json!(7));
+        assert_eq!(rows[0]["rect"], json!([14, 96, 946, 984]));
+        assert_eq!(rows[0]["active"], json!(true));
+        assert_eq!(rows[1]["window"], Json::Null);
+        assert_eq!(rows[1]["rect"], Json::Null);
+        // A frame that no longer maps the window leaves the row without a
+        // rectangle rather than one that is no longer where it is drawn.
+        let closed = window_rows(&tree, |_| None);
+        assert_eq!(closed[0]["window"], json!(7));
+        assert_eq!(closed[0]["rect"], Json::Null);
     }
 
     #[test]

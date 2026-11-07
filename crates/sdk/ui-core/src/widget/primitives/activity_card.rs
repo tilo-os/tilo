@@ -9,11 +9,10 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use vello::peniko::Color;
 
 use crate::floating_layer::{Parts, card_parts};
 use crate::icons::Icon;
-use crate::live_activity::{ControlKind, Summary, Tone};
+use crate::live_activity::{Art, ControlKind, Summary};
 use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
 use crate::pictures::Pictures;
@@ -38,15 +37,12 @@ pub struct ActivityCardFace<'a> {
     pub focused: bool,
     /// One of the activity's offered controls is held down, by id.
     pub held: Option<&'a str>,
+    /// The person is dragging the song's progress bar: how far into it they
+    /// point, from 0 to 1, until they let go.
+    pub scrub: Option<f32>,
 }
 
 impl ActivityCardFace<'_> {
-    /// Where the parts of the card stand in `rect`.
-    #[must_use]
-    pub fn parts(&self, rect: Rect) -> Parts {
-        card_parts(rect, self.summary)
-    }
-
     /// Paint the card in `rect`, returning where its parts landed.
     pub fn paint(
         &self,
@@ -63,7 +59,7 @@ impl ActivityCardFace<'_> {
         let glyph = Icon::from_name(summary.glyph())
             .or_else(|| Icon::from_name(summary.kind.glyph()))
             .unwrap_or(Icon::Layers);
-        glyph.draw(scene, transform, parts.icon, tone_ink(summary.tone, theme));
+        glyph.draw(scene, transform, parts.icon, summary.tone.ink(theme));
         if let Some(line) = parts.title {
             let style = theme.text(TextRole::Label);
             let header = text.elide_to_width_style(summary.header_line(), width(line), &style);
@@ -94,7 +90,13 @@ impl ActivityCardFace<'_> {
         // The hero: the countdown or reading, large and in tabular figures so
         // a ticking number keeps its width; a card with no reading leads with
         // its title instead.
-        let hero = theme.text(TextRole::LargeTitle).numeric();
+        let hero = if summary.art == Art::Hero {
+            // The picture is what the card is for: its title stands under it,
+            // the size of a heading rather than of a reading.
+            theme.text(TextRole::Heading)
+        } else {
+            theme.text(TextRole::LargeTitle).numeric()
+        };
         let reading = if summary.value.is_empty() {
             &summary.title
         } else {
@@ -140,7 +142,7 @@ impl ActivityCardFace<'_> {
         }
         if let (Some(row), Some(progress)) = (parts.progress, summary.progress) {
             let mut ctx = PaintCtx::new(scene, transform, text, theme);
-            ProgressBarFace::new(progress).paint(&mut ctx, row);
+            ProgressBarFace::new(self.scrub.unwrap_or(progress)).paint(&mut ctx, row);
         }
         // Where the song is and what is left of it, at the bar's ends.
         if let (Some(elapsed), Some(remaining)) = (parts.elapsed, parts.remaining) {
@@ -200,17 +202,24 @@ impl ActivityCardFace<'_> {
             let role = match control.kind {
                 ControlKind::Primary => ButtonRole::Primary,
                 ControlKind::Secondary | ControlKind::Close => ButtonRole::Secondary,
+                ControlKind::Destructive => ButtonRole::Destructive,
             };
             let held = self.held == Some(id.as_str());
             if let Some(icon) = Icon::from_name(&control.icon) {
-                // A media control is its glyph; its label is still what it is
+                // A glyph leads its label where the slot is wide enough for
+                // both, so a row of three says what each one does; a narrower
+                // slot keeps the glyph, and its label is still what it is
                 // called out loud.
+                let style = theme.text(TextRole::Label);
+                let fits = f64::from(text.measure_style(&control.label, None, &style).0) + 24.0
+                    <= rect.width();
+                let label = if fits { control.label.as_str() } else { "" };
                 Button::paint(
                     scene,
                     transform,
                     text,
                     theme,
-                    &ButtonFace::new(*rect, "")
+                    &ButtonFace::new(*rect, label)
                         .icon(icon)
                         .accessible_name(&control.label)
                         .role(role)
@@ -233,15 +242,6 @@ impl ActivityCardFace<'_> {
             }
         }
         parts
-    }
-}
-
-/// The ink an activity's tone reads in on a card: its own colour, or the
-/// theme's warning when it asks for attention.
-fn tone_ink(tone: Tone, theme: &Theme) -> Color {
-    match tone {
-        Tone::Neutral | Tone::Accent => theme.tokens.colors.intent.accent,
-        Tone::Alert => theme.tokens.colors.semantic.danger,
     }
 }
 

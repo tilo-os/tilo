@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use tilo_capture_studio::{Frame, Recorder, Settings, Unfinished};
+use tilo_capture_studio::{Frame, Recorder, Settings, Unfinished, WriteCause};
 use tilo_service::Wake;
 
 /// Frames the encoder may hold before the loop keeps one back. One frame is
@@ -58,6 +58,36 @@ pub(crate) enum Note {
         ended: Result<Option<PathBuf>, Unfinished>,
         dropped: u64,
     },
+}
+
+/// Why a screenshot's file was not written: the folder it was to go in, the
+/// reason a person reads, and what the system said for the log.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WriteFailed {
+    /// The folder the file was to be written in.
+    pub folder: PathBuf,
+    /// What stopped it, as the person reads it.
+    pub cause: WriteCause,
+    /// What the system said, in its own words: for the log and an app's own
+    /// error, never for the person.
+    pub reason: String,
+}
+
+impl WriteFailed {
+    /// A write that failed for `error` in `folder`.
+    fn new(folder: &Path, cause: WriteCause, reason: impl Into<String>) -> Self {
+        Self {
+            folder: folder.to_path_buf(),
+            cause,
+            reason: reason.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for WriteFailed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.folder.display(), self.reason)
+    }
 }
 
 /// A picture the worker wrote.
@@ -103,10 +133,16 @@ enum Job {
     },
     /// Write `picture` as a PNG under `directory`.
     Write {
-        picture: image::RgbaImage,
+        picture: Arc<image::RgbaImage>,
         directory: PathBuf,
         copy: bool,
-        done: Sender<Result<Written, String>>,
+        done: Sender<Result<Written, WriteFailed>>,
+    },
+    /// Encode `picture` as a PNG, for a clipboard that takes it instead of a
+    /// file.
+    Encode {
+        picture: Arc<image::RgbaImage>,
+        done: Sender<Result<Vec<u8>, String>>,
     },
     /// The bytes of the file at `path`.
     Read {
@@ -248,15 +284,32 @@ impl CaptureIo {
     /// hands the file's bytes back for the clipboard.
     pub(crate) fn write(
         &self,
-        picture: image::RgbaImage,
+        picture: Arc<image::RgbaImage>,
         directory: PathBuf,
         copy: bool,
-    ) -> Receiver<Result<Written, String>> {
+    ) -> Receiver<Result<Written, WriteFailed>> {
         let (done, answer) = channel();
+        let failed = WriteFailed::new(&directory, WriteCause::Other, NO_WORKER);
         if !self.submit(Job::Write {
             picture,
             directory,
             copy,
+            done: done.clone(),
+        }) {
+            let _ = done.send(Err(failed));
+        }
+        answer
+    }
+
+    /// Encode `picture` as a PNG for the clipboard, without a file of its own:
+    /// a shot that could not be saved can still be copied.
+    pub(crate) fn encode(
+        &self,
+        picture: Arc<image::RgbaImage>,
+    ) -> Receiver<Result<Vec<u8>, String>> {
+        let (done, answer) = channel();
+        if !self.submit(Job::Encode {
+            picture,
             done: done.clone(),
         }) {
             let _ = done.send(Err(NO_WORKER.to_owned()));
@@ -423,6 +476,10 @@ impl Worker {
                 let _ = done.send(write_png(&picture, &directory, copy));
                 self.wake();
             }
+            Job::Encode { picture, done } => {
+                let _ = done.send(encode_png(&picture));
+                self.wake();
+            }
             Job::Read { path, done } => {
                 let _ = done.send(read(&path));
                 self.wake();
@@ -554,19 +611,48 @@ fn in_folder(path: &Path) -> Result<(), String> {
 /// The file is written beside its name and moved onto it once it is whole: a
 /// screenshot folder watched by anything — a person's file manager, a test —
 /// never shows a picture that is still being written.
-fn write_png(picture: &image::RgbaImage, directory: &Path, copy: bool) -> Result<Written, String> {
-    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-    let path = crate::capture::unique(directory, "screenshot", "png");
+fn write_png(
+    picture: &image::RgbaImage,
+    directory: &Path,
+    copy: bool,
+) -> Result<Written, WriteFailed> {
+    std::fs::create_dir_all(directory).map_err(|error| refused(directory, &error))?;
+    let path = crate::capture::unique(directory, "Screenshot", "png");
     let writing = path.with_extension("part");
     picture
         .save_with_format(&writing, image::ImageFormat::Png)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            // An encoder's own refusal of the picture is not about the folder;
+            // one that failed writing the file is.
+            match &error {
+                image::ImageError::IoError(why) => refused(directory, why),
+                _ => WriteFailed::new(directory, WriteCause::Other, error.to_string()),
+            }
+        })?;
     std::fs::rename(&writing, &path).map_err(|error| {
         let _ = std::fs::remove_file(&writing);
-        format!("{}: {error}", path.display())
+        refused(directory, &error)
     })?;
-    let png = if copy { Some(read(&path)?) } else { None };
+    let png = if copy {
+        Some(read(&path).map_err(|why| WriteFailed::new(directory, WriteCause::Other, why))?)
+    } else {
+        None
+    };
     Ok(Written { path, png })
+}
+
+/// A write refused by `error` in `folder`.
+fn refused(folder: &Path, error: &std::io::Error) -> WriteFailed {
+    WriteFailed::new(folder, WriteCause::of(error), error.to_string())
+}
+
+/// `picture` as the bytes of a PNG.
+fn encode_png(picture: &image::RgbaImage) -> Result<Vec<u8>, String> {
+    let mut png = Vec::new();
+    picture
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|error| error.to_string())?;
+    Ok(png)
 }
 
 fn read(path: &Path) -> Result<Vec<u8>, String> {

@@ -352,3 +352,29 @@ profile-action-identities = Deine Identitäten
 profile-action-backup = Deine Identität sichern
 profile-action-pair-device = Ein weiteres Gerät koppeln
 profile-name-not-saved = Dein Name wurde nicht gespeichert
+
+## A capture, while the capture studio's bar is down: the card the floating
+## layer and the bar's pill show, and what its controls do.
+capture-recording-title = Bildschirmaufnahme
+capture-recording-stop = Beenden
+capture-recording-pause = Pausieren
+capture-recording-resume = Fortsetzen
+capture-replay-title = Wiederholungspuffer
+capture-replay-save = Speichern
+capture-replay-stop = Beenden
+capture-shot-title = Bildschirmfoto
+capture-shot-copy = Kopieren
+capture-shot-open = Öffnen
+capture-shot-reveal = Im Ordner zeigen
+capture-shot-dismiss = Fertig
+capture-failed-not-saved = Das Bildschirmfoto konnte nicht gespeichert werden
+capture-failed-not-saved-permission = Tilo darf nicht in { $folder } schreiben
+capture-failed-not-saved-no-room = in { $folder } ist kein Platz mehr frei
+capture-failed-not-saved-read-only = { $folder } ist schreibgeschützt
+capture-failed-not-saved-folder = es gibt keinen Ordner { $folder }
+capture-failed-not-saved-other = das System ließ Tilo nicht in { $folder } schreiben
+capture-failed-copy-instead = Stattdessen kopieren
+capture-failed-dismiss = Fertig
+capture-target-display = Der ganze Schreibtisch
+capture-target-window = Ein Fenster
+capture-target-region = Ein Bereich des Schreibtischs

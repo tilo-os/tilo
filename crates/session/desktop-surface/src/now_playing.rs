@@ -71,6 +71,22 @@ impl NowPlaying {
         self.duration_ms > 0.0
     }
 
+    /// Where the song stands and what is left of it, in whole seconds, as the
+    /// card's bar labels them: missing while the player does not say how long
+    /// it is.
+    #[must_use]
+    pub fn times(&self) -> Option<(u64, u64)> {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a song's length in seconds is far inside u64"
+        )]
+        let round = |milliseconds: f64| (milliseconds.max(0.0) / 1_000.0).round() as u64;
+        let length = (self.duration_ms > 0.0).then(|| round(self.duration_ms))?;
+        let elapsed = round(self.position_ms).min(length);
+        Some((elapsed, length.saturating_sub(elapsed)))
+    }
+
     /// What another of the person's devices offers to continue here: a title
     /// and no controls, because nothing here plays it yet.
     #[must_use]

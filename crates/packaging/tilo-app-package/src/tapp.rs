@@ -36,31 +36,28 @@ use crate::id::PackageId;
 use crate::package::{MetaError, PackageMeta};
 use crate::signed::SIGNED_ROOT_LEN;
 
-/// The store package format's one version: the archive layout, the
-/// manifest it signs, the signed root and the chunk list. A device installs
-/// apps of exactly this version, and reads images of every version in
-/// [`READABLE_FORMATS`] (docs/architecture/compatibility.md);
-/// `interface.toml` holds the manifest and header schema, and the repository
-/// policy fails a change to it that keeps the number. The binary layouts
-/// (signed root, chunk list) are not in that schema: a change to them bumps
-/// this by hand.
+/// The store package format this build writes: the archive layout, the
+/// manifest it signs, the signed root and the chunk list. A device reads and
+/// installs packages of every version in [`READABLE_FORMATS`]
+/// (docs/architecture/compatibility.md); `interface.toml` holds the manifest
+/// and header schema, and the repository policy fails a change to it that
+/// keeps the number. The binary layouts (signed root, chunk list) are not in
+/// that schema: a change to them bumps this by hand.
 pub const TAPP_FORMAT_VERSION: u32 = registry_types::PACKAGE_FORMAT_VERSION;
 
-/// Every package format a device reads an installed or fetched image of
-/// (`env-runtime`, `tool`), oldest first; the last is
-/// [`TAPP_FORMAT_VERSION`]. An image is named by the hash of its signed
+/// Every package format a device reads and installs, oldest first; the last
+/// is [`TAPP_FORMAT_VERSION`]. A package is named by the hash of its signed
 /// root, which includes the format, and environments name their images by
 /// that id: an image written at an earlier format cannot be rewritten at
-/// this one without becoming another image, so it is read as it is.
+/// this one without becoming another image, so it is read as it is. Apps
+/// are read the same way: publishing at a new format moves the writer, not
+/// the packages already published, and a reader keeps installing every
+/// format it can verify.
 ///
 /// Format 2 changed only the registry catalogue; the archive, the signed
 /// root and the chunk list are byte for byte format 1's, so one reader
 /// reads both. A format that changes one of those layouts needs its reader
-/// here before images at it ship.
-///
-/// An app is different: one at an earlier format is behind and is updated
-/// (`package_store::interfaces::unmet_at`), and only an app at
-/// [`TAPP_FORMAT_VERSION`] is installed.
+/// here before anything ships at it.
 pub const READABLE_FORMATS: [u32; 2] = [1, TAPP_FORMAT_VERSION];
 
 /// What a package at `format`, which this build does not read, means for
@@ -132,11 +129,6 @@ pub enum TappError {
     BadHeader(String),
     #[error("{}", unreadable_format(*.0))]
     UnsupportedFormat(u32),
-    #[error(
-        "this app is at package format {0}, and this Tilo installs apps at format \
-         {TAPP_FORMAT_VERSION} only: its publisher must rebuild it"
-    )]
-    AppAtOlderFormat(u32),
     #[error("the archive header says package format {header} but its signed root says {root}")]
     HeaderFormatMismatch { header: u32, root: u32 },
     #[error("archive entry {name} exceeds {limit} bytes")]
@@ -193,11 +185,7 @@ impl Pending {
                 root: root.format,
             });
         }
-        let meta = PackageMeta::from_root(root, manifest, collection)?;
-        if header.format != TAPP_FORMAT_VERSION && !meta.manifest.package.kind.is_image() {
-            return Err(TappError::AppAtOlderFormat(header.format));
-        }
-        Ok(meta)
+        Ok(PackageMeta::from_root(root, manifest, collection)?)
     }
 }
 
@@ -585,20 +573,22 @@ type = "gui"
                 "{error}"
             );
         }
-        // phase: an_app_at_an_earlier_format_is_not_installed
-        // It would be behind as soon as it was installed; images at it are
-        // read (tests/image.rs).
+        // phase: an_app_at_an_earlier_format_is_read
+        // The store published every app at format 1; format 2 changed only
+        // the catalogue, so such an app verifies and installs as it is.
         {
             let (_dir, packed) = packed();
             let (identity, meta) = at_format(&packed, 1);
             assert_eq!(meta.root.publisher_identity, identity.public_key_bytes());
             let bytes = to_bytes(&meta, Some(&packed)).unwrap();
-            let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
-            assert!(matches!(error, TappError::AppAtOlderFormat(1)), "{error}");
-            assert!(
-                error.to_string().contains("publisher must rebuild"),
-                "{error}"
-            );
+            let read = read(bytes.as_slice(), &mut DiscardBlobs).unwrap();
+            assert_eq!(read.meta.id, meta.id);
+            assert_eq!(read.meta.root.format, 1);
+            assert!(!read.meta.manifest.package.kind.is_image());
+            assert!(matches!(
+                crate::verify(&read.meta, &[identity.public_key_bytes()]),
+                crate::Verification::Trusted { .. }
+            ));
         }
     }
 

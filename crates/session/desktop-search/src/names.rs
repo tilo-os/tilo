@@ -47,6 +47,16 @@ pub fn is_apps_own_name(app_id: &str, said: &str) -> bool {
             || said == ui::search::fold_search_text(package_id(app_id)))
 }
 
+/// The program an id names, where the id is the path of one: a process with
+/// no installed app behind it is named by its program, and its path is never
+/// shown.
+fn file_name(id: &str) -> &str {
+    if !id.starts_with('/') {
+        return id;
+    }
+    id.rsplit('/').find(|part| !part.is_empty()).unwrap_or(id)
+}
+
 /// The package an id names: a host app's desktop entry (`host:` and
 /// `.desktop` around it) is the same app as the package it installs.
 fn package_id(app_id: &str) -> &str {
@@ -55,13 +65,14 @@ fn package_id(app_id: &str) -> &str {
     id.strip_suffix(".desktop").unwrap_or(id)
 }
 
-/// An id written as words for a person: its last dotted part without a
-/// `.desktop` suffix, its `-`/`_` breaks made spaces, and a camel-case hump
-/// a space too — "org.gnome.TextEditor" → "Text Editor",
-/// "so.tilo.file-explorer" → "File Explorer".
+/// An id written as words for a person: a program named by its file's name,
+/// else the id's last dotted part without a `.desktop` suffix, its `-`/`_`
+/// breaks made spaces, and a camel-case hump a space too —
+/// "org.gnome.TextEditor" → "Text Editor", "so.tilo.file-explorer" →
+/// "File Explorer", "/usr/bin/notify-send" → "Notify Send".
 #[must_use]
 pub fn humanized(app_id: &str) -> String {
-    let id = package_id(app_id);
+    let id = file_name(package_id(app_id));
     let last = id.rsplit('.').find(|part| !part.is_empty()).unwrap_or(id);
     let spread = last.replace(['-', '_'], " ");
     let mut broken = String::new();
@@ -105,6 +116,16 @@ mod tests {
         assert_eq!(app_name("org.example.Terminal"), "Terminal");
         assert_eq!(app_name("org.example.Krita.desktop"), "Krita");
         assert_eq!(app_name("  "), "");
+    }
+
+    #[test]
+    fn a_program_named_by_its_path_is_named_by_the_program() {
+        // A sender with no installed app behind it is named by its file:
+        // never by the path it runs from.
+        assert_eq!(app_name("/usr/bin/notify-send"), "Notify Send");
+        assert_eq!(app_name("/usr/bin/gnome-text-editor"), "Gnome Text Editor");
+        assert_eq!(humanized("/opt/apps/thing"), "Thing");
+        assert_eq!(humanized("/"), "/", "a path with no file name stays itself");
     }
 
     #[test]
