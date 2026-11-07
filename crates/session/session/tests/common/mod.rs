@@ -830,26 +830,6 @@ pub fn control(session: &mut Session, socket: &Path, request: &Value) -> Value {
     })
 }
 
-/// Show `preset` ("Strips", "Frames", "Spaces", "Desktop") the way a person does: the bar's own
-/// preset switch for the three the switch stays on, and the shell's layout for the traditional
-/// desktop, which takes the switch off its bar (`bar_is_traditional`: its bar is the focused
-/// window's commands). The layout is the setting the settings page's own card runs
-/// (`shell.apply(shell.shell, to: shell.Layout.windows_desktop)`), and the same one acceptance
-/// step 8 drives, so the desktop a test draws is the desktop a person gets.
-///
-/// # Panics
-/// The switch or the layout refuses: the preset it names is not one this shell knows.
-#[track_caller]
-pub fn show_preset_by_name(session: &mut Session, preset: &str) {
-    if preset.eq_ignore_ascii_case("desktop") {
-        session
-            .run_shell_setting("apply", vec![Value::from("windows_desktop")])
-            .unwrap_or_else(|why| panic!("the desk shows {preset}: {why}"));
-        return;
-    }
-    show_preset(session, preset);
-}
-
 /// The surface the desk shows over its windows now, as its own reading names it: `none` at rest,
 /// `centre` for the notification centre, `quick-settings`, `launcher` and the rest.
 #[must_use]
