@@ -373,7 +373,7 @@ impl Conversations {
         let name = tilo_resource::NonBlank::parse(&crate::i18n::t("session-ask-conversation"))?;
         let made = chat.invoke(&chat::Chat::CREATE_CHANNEL_WITH_ID.with(
             chat::record::chat::CreateChannelWithId {
-                id: channel.clone(),
+                id: channel,
                 name,
                 category: None,
                 kind: None,
