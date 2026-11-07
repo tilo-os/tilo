@@ -22839,6 +22839,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "tilo-actions",
  "tilo-app-module",
  "tilo-app-package",
  "tilo-files",

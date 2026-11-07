@@ -44,6 +44,12 @@ impl Default for CheckboxProps {
 impl Described for Checkbox {
     type Props = CheckboxProps;
 
+    /// A mark is the box's own action: the widget holds the binding, so the press is a route
+    /// an agent's invocation of it lands on, and both run from the door.
+    fn press_events() -> &'static [&'static str] {
+        &["check"]
+    }
+
     fn from_props(key: &str, props: CheckboxProps) -> Self {
         let CheckboxProps {
             value,
@@ -57,11 +63,14 @@ impl Described for Checkbox {
             .with_id(key)
             .with_enabled(enabled)
             .with_feel(motion);
-        if check.is_none() {
-            let edits = value.clone();
-            boxed = boxed.on_change(move |marked| edits.edited(Value::Bool(marked)));
-        } else {
-            boxed = boxed.on_change(move |_| check.fire(None));
+        match check {
+            Event::None => {
+                let edits = value.clone();
+                boxed = boxed.on_change(move |marked| edits.edited(Value::Bool(marked)));
+            }
+            // The app's own action for a mark, run through the door like any other.
+            Event::Action(binding) => boxed = boxed.on_choose(binding),
+            Event::View(intent) => boxed = boxed.on_change(move |_| intent.fire(None)),
         }
         if let Some(label) = label {
             boxed = boxed.with_label(label);

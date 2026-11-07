@@ -11,6 +11,68 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 pub(super) type BoolChangeCallback = Box<dyn FnMut(bool)>;
 
+/// The action a flip runs: an action told the value the control takes, or one that takes no
+/// argument and works the value out from the record itself (an app's `check(task)`).
+pub(crate) enum BoolAction {
+    Value(ActionEmitter<bool>),
+    Press(ActionEmitter<()>),
+}
+
+impl BoolAction {
+    /// Queue the invocation of a flip to `flipped`; unavailable and refused flips queue nothing.
+    pub(crate) fn emit(&mut self, flipped: bool) {
+        let queued = match self {
+            Self::Value(action) => action.emit(flipped),
+            Self::Press(action) => action.emit(()),
+        };
+        if let Err(error) = queued {
+            tracing::warn!(%error, "a control's action refused its arguments");
+        }
+    }
+
+    pub(crate) fn take(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        match self {
+            Self::Value(action) => action.take(),
+            Self::Press(action) => action.take(),
+        }
+    }
+
+    pub(crate) fn is_available(&self) -> bool {
+        match self {
+            Self::Value(action) => action.is_available(),
+            Self::Press(action) => action.is_available(),
+        }
+    }
+
+    pub(crate) fn install_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        let _ = match self {
+            Self::Value(action) => action.install_custody(domain, attachment),
+            Self::Press(action) => action.install_custody(domain, attachment),
+        };
+    }
+
+    pub(crate) fn refresh_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        match self {
+            Self::Value(action) => action.refresh_availability(allowed),
+            Self::Press(action) => action.refresh_availability(allowed),
+        }
+    }
+
+    pub(crate) fn metadata(&self, control_id: impl Into<String>) -> ControlBindingMetadata {
+        match self {
+            Self::Value(action) => action.metadata(control_id),
+            Self::Press(action) => action.metadata(control_id),
+        }
+    }
+}
+
 /// `is_hovered`, `is_checked`, `is_focused` and `enabled` are four
 /// independent state axes (pointer, CRDT-synced value, keyboard focus,
 /// build-time enablement), each set/read by name — not positional bool
@@ -43,7 +105,7 @@ pub(super) struct BoolControl {
     pub binding: Option<BoxedBinding<bool>>,
     /// Observes user intent without owning model synchronization.
     pub on_change: Option<BoolChangeCallback>,
-    pub action: Option<ActionEmitter<bool>>,
+    pub action: Option<BoolAction>,
     /// The control's own published view action (`on_view`): what its
     /// action is bound to, and `on_change` answers.
     pub view_resource: Option<tilo_actions::ResourceSpec>,
@@ -121,7 +183,7 @@ impl BoolControl {
         })
         .expect("the set action is the resource's own");
         self.id_override = Some(id.to_owned());
-        self.action = Some(ActionEmitter::new(binding));
+        self.action = Some(BoolAction::Value(ActionEmitter::new(binding)));
         self.view_resource = Some(resource);
         self.on_change = Some(handler);
     }
@@ -179,7 +241,7 @@ impl BoolControl {
     }
 
     pub fn effectively_enabled(&self) -> bool {
-        self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
+        self.enabled && self.action.as_ref().is_none_or(BoolAction::is_available)
     }
 
     pub fn test_id<'a>(&'a self, kind: &'a str) -> &'a str {
@@ -217,9 +279,7 @@ impl BoolControl {
     /// that dragged a switch's knob to one side: the side it left it on.
     pub fn choose(&mut self, flipped: bool) {
         if let Some(action) = &mut self.action {
-            if let Err(error) = action.emit(flipped) {
-                tracing::warn!(%error, "the switch's action refused its value");
-            }
+            action.emit(flipped);
         } else if let Some(binding) = &mut self.binding {
             binding.publish(&flipped);
         }
@@ -300,9 +360,13 @@ impl BoolControl {
     }
 
     pub fn control_action_bindings(&self, kind: &str) -> Vec<ControlBindingMetadata> {
-        crate::widget::controls::value_control_bindings(
-            self.test_id(kind),
-            self.action.as_ref(),
+        let id = self.test_id(kind);
+        if let Some(action) = &self.action {
+            return vec![action.metadata(id)];
+        }
+        crate::widget::controls::value_control_bindings::<bool>(
+            id,
+            None,
             self.binding.as_ref().and_then(|b| b.document_key()),
             self.on_change.is_some(),
         )
@@ -340,7 +404,22 @@ macro_rules! bool_control_api {
         /// exported resource action.
         #[must_use]
         pub fn on_action(mut self, binding: tilo_actions::ActionBinding<bool>) -> Self {
-            self.control.action = Some(crate::widget::ActionEmitter::new(binding));
+            self.control.action = Some(crate::widget::BoolAction::Value(
+                crate::widget::ActionEmitter::new(binding),
+            ));
+            self.control.view_resource = None;
+            self.control.on_change = None;
+            self
+        }
+
+        /// Route pointer, keyboard and accessibility flips through an exported action that takes
+        /// no argument: what a flip means (which item it is about, what the new value is) is the
+        /// app's own action, not the control's guess.
+        #[must_use]
+        pub fn on_choose(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
+            self.control.action = Some(crate::widget::BoolAction::Press(
+                crate::widget::ActionEmitter::new(binding),
+            ));
             self.control.view_resource = None;
             self.control.on_change = None;
             self
@@ -541,14 +620,14 @@ macro_rules! bool_control_capabilities {
                 attachment: crate::control_custody::CustodyAttachment,
             ) {
                 if let Some(action) = &mut self.control.action {
-                    let _ = action.install_custody(domain, attachment);
+                    action.install_custody(domain, attachment);
                 }
             }
             fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
                 self.control
                     .action
                     .as_mut()
-                    .and_then(crate::widget::ActionEmitter::take)
+                    .and_then(crate::widget::BoolAction::take)
             }
             fn refresh_control_action_availability(
                 &mut self,

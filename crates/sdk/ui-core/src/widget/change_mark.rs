@@ -325,5 +325,7 @@ pub fn entry() -> component::Entry {
         update,
         slot_views,
         part_views,
+        // A mark is shown, never pressed.
+        press_events: || &[],
     }
 }

@@ -1074,6 +1074,14 @@ pub trait Described: crate::widget::Widget + Sized + 'static {
     /// The widget of `props`, with `key` its stable id.
     fn from_props(key: &str, props: Self::Props) -> Self;
 
+    /// The events that are its control's own action: the widget keeps the action's binding, so
+    /// a press of it runs through the door with a route of its own, the same one an agent's
+    /// invocation takes. An event not named here is the view's: its press goes back to the view
+    /// as an intent, which no control can route.
+    fn press_events() -> &'static [&'static str] {
+        &[]
+    }
+
     /// Take changed props in place, damaging what they change: `false` when this widget cannot
     /// and is to be built again.
     fn set_props(&mut self, props: Self::Props) -> bool {
@@ -1129,6 +1137,8 @@ pub struct Entry {
     pub slot_views: for<'a> fn(&'a mut Element, &str) -> Option<&'a mut dyn SlotViews>,
     /// The views of one part of a slot, to change by key in place.
     pub part_views: for<'a> fn(&'a mut Element, &str, &str, &str) -> Option<&'a mut dyn SlotViews>,
+    /// The events that are its control's own action ([`Described::press_events`]).
+    pub press_events: fn() -> &'static [&'static str],
 }
 
 /// The [`Entry`] of the widget `W`.
@@ -1173,6 +1183,7 @@ pub fn entry<W: Described>() -> Entry {
         update: update::<W>,
         slot_views: slot_views::<W>,
         part_views: part_views::<W>,
+        press_events: W::press_events,
     }
 }
 
@@ -1191,6 +1202,14 @@ pub fn registry() -> &'static [Entry] {
 #[must_use]
 pub fn get(name: &str) -> Option<&'static Entry> {
     registry().iter().find(|entry| entry.name == name)
+}
+
+/// Whether the event `event` of the component `component` is its control's own action: the
+/// widget holds the binding, so the press and an agent's invocation of the action take one path
+/// ([`Described::press_events`]).
+#[must_use]
+pub fn presses(component: &str, event: &str) -> bool {
+    get(component).is_some_and(|entry| (entry.press_events)().contains(&event))
 }
 
 /// Build the component `name` of `source`.

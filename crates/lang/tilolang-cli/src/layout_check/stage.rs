@@ -648,3 +648,278 @@ fn resource_of(edit: &tilolang_tilo::action::DynEdit) -> &str {
         DynEdit::In { edit, .. } => resource_of(edit),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use tilo_render_protocol::patch::{ActionCatalogue, ToUi};
+
+    fn tasks_packages() -> Rc<Packages> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/tasks");
+        let search = vec![dir.parent().expect("apps/tl").to_path_buf()];
+        let (built, platform) = crate::layout_check::build(&dir, &search).expect("tasks compiles");
+        Rc::new(Packages(
+            Rc::new(built.into_iter().map(|b| b.compiled).collect()),
+            platform,
+        ))
+    }
+
+    /// The actions the app publishes at its window, offered the way its host offers them: the
+    /// window's palette, action directory and agents read them off it from then on.
+    fn publish_actions(staged: &mut Staged) -> Vec<tilo_actions::ActionDescriptor> {
+        let host = staged.instance.host().expect("a host");
+        let planner: Arc<dyn tilolang_tilo::publish::Planner> = Arc::new(host.handle());
+        let mut publications = tilolang_tilo::publish::Publications::new(&host);
+        // Records are published whole off the frame: a window with no frames waits for them.
+        publications.settle(&host, &planner);
+        let resources: Vec<tilo_actions::ResourceSpec> = publications
+            .trees()
+            .values()
+            .map(|tree| (**tree).clone())
+            .collect();
+        let descriptors = tilo_actions::door::survey(&resources);
+        let encoded = serde_json::to_vec(&descriptors).expect("the action directory encodes");
+        staged
+            .instance
+            .say(ToUi::Actions(ActionCatalogue::All(encoded)));
+        staged.instance.flush();
+        staged.exchange();
+        staged.harness.relayout();
+        descriptors
+    }
+
+    /// Where the captures of a frame go: the target directory's own, as the toolkit's marker
+    /// captures do.
+    fn marker_shots() -> std::path::PathBuf {
+        match std::env::var_os("CARGO_TARGET_DIR") {
+            Some(dir) => std::path::PathBuf::from(dir).join("tilolang-marker"),
+            None => Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/tilolang-marker"),
+        }
+    }
+
+    /// The check box the frame binds to a published action: the one control of `descriptor`'s
+    /// exactly, holding a check box where a person would press.
+    fn bound_check(
+        staged: &Staged,
+        descriptors: &[tilo_actions::ActionDescriptor],
+    ) -> Option<(
+        tilo_actions::ActionDescriptor,
+        String,
+        ui::kurbo::Rect,
+        ui::kurbo::Rect,
+    )> {
+        let controls = staged.harness().controls();
+        for descriptor in descriptors {
+            let routes = staged.harness().action_ui_routes(&descriptor.address);
+            let [route] = routes.as_slice() else {
+                continue;
+            };
+            let Some(control) = route.bounds else {
+                continue;
+            };
+            let Some(check) = controls
+                .iter()
+                .filter(|shown| shown.role == ui::accesskit::Role::CheckBox)
+                .filter_map(|shown| shown.bounds)
+                .find(|bounds| control.contains(bounds.center()))
+            else {
+                continue;
+            };
+            return Some((descriptor.clone(), route.control_id.clone(), control, check));
+        }
+        None
+    }
+
+    /// The agent's mark on the control the tilolang Tasks app binds: an action the app
+    /// published lands on the control that runs it and nowhere else, and the frame draws the
+    /// agent there — the same pixels rule the app's own tests hold a marker to.
+    #[test]
+    fn an_agents_marker_rests_on_the_control_the_tasks_app_binds() {
+        tilo_ui_host::i18n::ensure();
+        let packages = tasks_packages();
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let (width, height) = (1280, 800);
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a busy week",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged.harness.relayout();
+        let descriptors = publish_actions(&mut staged);
+        assert!(
+            !descriptors.is_empty(),
+            "the app publishes the actions its views run"
+        );
+
+        let (descriptor, control_id, control, check) =
+            bound_check(&staged, &descriptors).expect("the app binds a check box to an action");
+        let event = tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
+            invocation: tilo_actions::InvocationId::new(),
+            sequence: 1,
+            actor: tilo_actions::InteractionActor {
+                id: "scribe".into(),
+                kind: tilo_actions::ActorKind::Agent,
+                for_person: None,
+            },
+            phase: tilo_actions::InteractionPhase::Applying,
+            action: tilo_actions::InteractionAction {
+                id: descriptor.address.action.clone(),
+                label: descriptor.action_label.clone(),
+                app: None,
+            },
+            resource: tilo_actions::ActionResource {
+                id: descriptor.address.resource.clone(),
+                kind: descriptor.resource_kind.clone(),
+                label: descriptor.resource_label.clone(),
+            },
+            anchor: tilo_actions::InteractionAnchor::Resource,
+            group: None,
+        };
+        let locus = staged
+            .harness()
+            .semantic_locus(&event)
+            .expect("the control the app binds the action to");
+        assert!(
+            locus.contains(check.center()),
+            "the locus is the check box the row offers: {locus:?} vs {check:?}"
+        );
+        assert!(
+            control.contains(locus.center()),
+            "the locus is the control bound to the action: {locus:?} vs {control:?}"
+        );
+
+        let captures = marker_shots();
+        std::fs::create_dir_all(&captures).expect("the captures' directory");
+        let before = staged.harness().render_rgba();
+        staged
+            .harness()
+            .render_png(&captures.join("tasks-tilolang-before.png"));
+        let applied = staged.harness_mut().update_presence(|presence| {
+            presence
+                .names
+                .insert(ui::permissions::UserId("scribe".into()), "Ada".into());
+            presence
+                .apply_interaction(event.clone())
+                .expect("a well-formed interaction applies")
+        });
+        assert!(applied, "the agent's action shows");
+        // The frames the pointer glides in, run out: the capture shows it at rest on the
+        // control rather than mid-glide.
+        assert!(
+            staged
+                .harness_mut()
+                .settle_for_capture(ui::time::Duration::from_secs(2)),
+            "the marker comes to rest"
+        );
+        staged.harness_mut().poll_frame().expect("a frame is drawn");
+        staged.harness_mut().relayout();
+        staged
+            .harness()
+            .render_png(&captures.join("tasks-tilolang-agent-marker.png"));
+        let after = staged.harness().render_rgba();
+
+        marked_only(&staged, &before, &after, width, control, check);
+
+        // The press and the agent's action take the one path: the app is handed the action,
+        // not a view event.
+        staged
+            .press(&control_id, false)
+            .expect("the control presses");
+        let chosen: Vec<_> = staged
+            .instance
+            .take_chosen()
+            .into_iter()
+            .map(|(address, _)| (address.resource, address.action))
+            .collect();
+        assert_eq!(
+            chosen,
+            vec![(descriptor.address.resource, descriptor.address.action)],
+            "pressing the control runs the action the app published"
+        );
+    }
+
+    /// The agent's mark shows inside the check box the app binds, and on no other check box the
+    /// window shows: the agent is drawn where it acts, not where any control of the same kind
+    /// stands.
+    fn marked_only(
+        staged: &Staged,
+        before: &[u8],
+        after: &[u8],
+        width: u32,
+        control: ui::kurbo::Rect,
+        check: ui::kurbo::Rect,
+    ) {
+        changed_pixels(before, after, width, pixels(check))
+            .expect("the agent's marker rests on the check box the app binds");
+        let others: Vec<_> = staged
+            .harness()
+            .controls()
+            .iter()
+            .filter(|shown| shown.role == ui::accesskit::Role::CheckBox)
+            .filter_map(|shown| shown.bounds)
+            .filter(|bounds| !control.contains(bounds.center()))
+            .collect();
+        assert!(!others.is_empty(), "the scenario shows more than one row");
+        for other in others {
+            assert!(
+                changed_pixels(before, after, width, pixels(other)).is_none(),
+                "no mark rests on {other:?}, which the action does not act on"
+            );
+        }
+    }
+
+    /// `rect` as the pixels a frame draws it in: the whole pixels its edges cut.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a laid out edge inside a viewport's pixels"
+    )]
+    fn pixels(rect: ui::kurbo::Rect) -> (u32, u32, u32, u32) {
+        (
+            rect.x0.floor().max(0.0) as u32,
+            rect.y0.floor().max(0.0) as u32,
+            rect.x1.ceil().max(0.0) as u32,
+            rect.y1.ceil().max(0.0) as u32,
+        )
+    }
+
+    /// The bounds of the pixels that changed between `before` and `after`, within `region`.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "a pixel index and its neighbours inside a frame's own dimensions"
+    )]
+    fn changed_pixels(
+        before: &[u8],
+        after: &[u8],
+        width: u32,
+        region: (u32, u32, u32, u32),
+    ) -> Option<(u32, u32, u32, u32)> {
+        let mut bbox: Option<(u32, u32, u32, u32)> = None;
+        for (index, (a, b)) in before
+            .chunks_exact(4)
+            .zip(after.chunks_exact(4))
+            .enumerate()
+        {
+            if a == b {
+                continue;
+            }
+            let index = u32::try_from(index).expect("a pixel index fits u32");
+            let (x, y) = (index % width, index / width);
+            if x < region.0 || y < region.1 || x >= region.2 || y >= region.3 {
+                continue;
+            }
+            bbox = Some(match bbox {
+                None => (x, y, x + 1, y + 1),
+                Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)),
+            });
+        }
+        bbox
+    }
+}

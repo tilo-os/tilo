@@ -3056,6 +3056,7 @@ pub use button::{
 mod control_size;
 pub use control_size::ControlSize;
 mod bool_control;
+pub(crate) use bool_control::BoolAction;
 mod checkbox;
 #[cfg(test)]
 mod control_hand_on_tests;
