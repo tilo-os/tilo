@@ -4,7 +4,7 @@ use crate::suggest::{Suggestion, suggestion_rects};
 use crate::toolbar::{Latch, ModifierLatches, OskToolbarAction, OskToolbarItem, toolbar_rects};
 use crate::touch_model::{CORE_FRACTION, HitCell, core_zone};
 use ui::text_render::TextWeight;
-use ui::widget::{Button, ButtonFace, ButtonInteract, ButtonRole, ChipFace};
+use ui::widget::{Button, ButtonFace, ButtonRole, ChipFace, Interaction};
 use ui::{
     TextRenderer, TextRole, TextStyle, Theme,
     icons::{self, Icon},
@@ -440,10 +440,10 @@ fn key_fill(theme: &Theme, tone: CellTone, hovered: bool, pressed: bool) -> Colo
             ui::widget::face_colors(
                 theme,
                 ButtonRole::Key,
-                ButtonInteract {
+                Interaction {
                     hovered,
                     pressed,
-                    ..ButtonInteract::default()
+                    ..Interaction::default()
                 },
             )
             .0

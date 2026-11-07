@@ -50,6 +50,20 @@ pub fn paint_focus_ring(
     );
 }
 
+/// Lay everything painted next under the disabled veil, over the shape the
+/// control draws as its bounds: a disabled control is its rest face dimmed as
+/// one group, at full-strength edges so it still reads where it stands. The
+/// caller pops the layer once its face is painted.
+pub fn paint_disabled(scene: &mut Scene, transform: Affine, bounds: &impl vello::kurbo::Shape) {
+    scene.push_layer(
+        vello::peniko::Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        crate::widget::DISABLED_ALPHA,
+        transform,
+        bounds,
+    );
+}
+
 /// The operation type every closure-bound control publishes (`on_effect`,
 /// `on_view`): its payload is the control's id.
 pub(crate) const NATIVE_INVOKE: &str = "tilo.ui.control.invoke";

@@ -928,13 +928,7 @@ impl Slider {
     /// widget and any immediate-mode caller, so the two cannot drift apart.
     pub fn paint(scene: &mut Scene, transform: Affine, theme: &Theme, face: &SliderFace) {
         if face.disabled {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &face.paint_bounds(),
-            );
+            crate::widget::paint_disabled(scene, transform, &face.paint_bounds());
         }
         let track_rect = face.track_rect();
         // Capsule ends: the radius is the track's own half-height, so it

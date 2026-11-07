@@ -8,6 +8,7 @@ use crate::theme::Theme;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::ActionEmitter;
 use crate::widget::ControlSize;
+use crate::widget::Interaction;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::badge::{BadgeMetrics, CountBadge};
@@ -921,21 +922,6 @@ fn fills_when_on(icon: crate::icons::Icon) -> bool {
     matches!(icon, crate::icons::Icon::Star | crate::icons::Icon::Pin)
 }
 
-/// The retained [`Button`] tracks these itself; an immediate-mode caller
-/// (a canvas app that owns its own hit-testing) passes what it knows —
-/// usually just `hovered`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "a POD bundle of independent interaction flags a button can be in any combination of; not a state machine"
-)]
-pub struct ButtonInteract {
-    pub hovered: bool,
-    pub pressed: bool,
-    pub focused: bool,
-    pub disabled: bool,
-}
-
 /// `(fill, edge, ink)` of one button face.
 type FaceColors = (
     vello::peniko::Color,
@@ -945,7 +931,7 @@ type FaceColors = (
 
 /// The filled destructive face: the confirmation step of a destructive
 /// action, and nowhere else.
-fn confirmation_face_colors(theme: &Theme, interact: ButtonInteract) -> FaceColors {
+fn confirmation_face_colors(theme: &Theme, interact: Interaction) -> FaceColors {
     let colors = &theme.tokens.colors;
     let rest = colors.semantic.danger;
     let active = colors.lift_on(rest, 0.5);
@@ -966,7 +952,7 @@ fn confirmation_face_colors(theme: &Theme, interact: ButtonInteract) -> FaceColo
 
 /// The colours of `role` in `interact`, the one source for the retained and immediate-mode
 /// painters; `edge` is `None` where the fill defines the shape or there is no face.
-pub fn face_colors(theme: &Theme, role: ButtonRole, interact: ButtonInteract) -> FaceColors {
+pub fn face_colors(theme: &Theme, role: ButtonRole, interact: Interaction) -> FaceColors {
     use vello::peniko::Color;
     let colors = &theme.tokens.colors;
     let intent = &colors.intent;
@@ -1105,7 +1091,7 @@ fn resolve_face_colors(
     theme: &Theme,
     role: ButtonRole,
     confirms: bool,
-    interact: ButtonInteract,
+    interact: Interaction,
 ) -> FaceColors {
     if confirms && role == ButtonRole::Destructive && !interact.disabled {
         confirmation_face_colors(theme, interact)
@@ -1562,7 +1548,7 @@ struct FacePaint<'a> {
     confirms: bool,
     /// A toggle that is on: the face stands on the selection lift.
     on: bool,
-    interact: ButtonInteract,
+    interact: Interaction,
     content: FaceContent<'a>,
     metrics: &'a FaceMetrics,
     /// Where the container is in its motion between states.
@@ -1571,7 +1557,7 @@ struct FacePaint<'a> {
 
 /// The container states of a face in `interact`, `on` for a toggle that is
 /// on.
-fn container_states(interact: ButtonInteract, on: bool) -> crate::part_paint::States {
+fn container_states(interact: Interaction, on: bool) -> crate::part_paint::States {
     use crate::part_paint::States;
     States::REST
         .with(States::HOVERED, interact.hovered)
@@ -1584,11 +1570,11 @@ fn container_states(interact: ButtonInteract, on: bool) -> crate::part_paint::St
 impl FacePaint<'_> {
     /// The face's colours `(fill, edge, ink)` in its state and the effective
     /// interaction they were resolved for.
-    fn colors(&self, theme: &Theme) -> (FaceColors, ButtonInteract) {
+    fn colors(&self, theme: &Theme) -> (FaceColors, Interaction) {
         let on = self.on && !self.interact.disabled;
         // An "on" toggle is a lift and stays one under the pointer; a press
         // still answers.
-        let interact = ButtonInteract {
+        let interact = Interaction {
             hovered: self.interact.hovered && !on,
             ..self.interact
         };
@@ -1671,13 +1657,7 @@ impl FacePaint<'_> {
             } else {
                 shape
             };
-            ctx.scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                ctx.transform,
-                &clip,
-            );
+            crate::widget::paint_disabled(ctx.scene, ctx.transform, &clip);
         }
         if painted.is_some() {
             ctx.scene.append(&container, None);
@@ -1764,7 +1744,7 @@ pub struct ButtonFace<'a> {
     role: ButtonRole,
     confirms: bool,
     on: bool,
-    interact: ButtonInteract,
+    interact: Interaction,
     control_size: ControlSize,
     shortcut: Option<crate::platform::Shortcut>,
     accessible_name: Option<&'a str>,
@@ -1780,7 +1760,7 @@ impl<'a> ButtonFace<'a> {
             role: ButtonRole::Secondary,
             confirms: false,
             on: false,
-            interact: ButtonInteract::default(),
+            interact: Interaction::default(),
             control_size: ControlSize::Regular,
             shortcut: None,
             accessible_name: None,
@@ -2326,7 +2306,7 @@ impl Widget for Button {
             self.dirty = true;
             self.last_theme = Some(key);
         }
-        let interact = ButtonInteract {
+        let interact = Interaction {
             hovered: self.is_hovered,
             pressed: self.press.is_held(),
             focused: self.focus_visible(),
@@ -2392,7 +2372,7 @@ impl Widget for Button {
             role: self.role,
             confirms: false,
             on,
-            interact: ButtonInteract {
+            interact: Interaction {
                 disabled: !enabled,
                 ..interact
             },

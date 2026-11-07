@@ -741,7 +741,7 @@ impl Widget for CollaborationLaunchpad {
             let (fill, _, _) = ui::widget::face_colors(
                 theme,
                 ui::widget::ButtonRole::Secondary,
-                ui::widget::ButtonInteract {
+                ui::widget::Interaction {
                     hovered: hovered_here,
                     pressed: interaction.pressed,
                     focused,
@@ -1192,9 +1192,9 @@ mod tests {
                 ui::widget::face_colors(
                     &theme,
                     ui::widget::ButtonRole::Secondary,
-                    ui::widget::ButtonInteract {
+                    ui::widget::Interaction {
                         hovered,
-                        ..ui::widget::ButtonInteract::default()
+                        ..ui::widget::Interaction::default()
                     },
                 )
             };

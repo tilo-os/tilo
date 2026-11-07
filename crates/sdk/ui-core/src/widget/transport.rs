@@ -24,7 +24,7 @@ use vello::peniko::Fill;
 
 use crate::icons::Icon;
 use crate::theme::Theme;
-use crate::widget::{ButtonInteract, ButtonRole, ControlSize, face_colors};
+use crate::widget::{ButtonRole, ControlSize, Interaction, face_colors};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportControl {
@@ -72,7 +72,7 @@ impl TransportControl {
 pub struct TransportFace {
     rect: Rect,
     control: TransportControl,
-    interact: ButtonInteract,
+    interact: Interaction,
 }
 
 impl TransportFace {
@@ -81,7 +81,7 @@ impl TransportFace {
         Self {
             rect,
             control,
-            interact: ButtonInteract::default(),
+            interact: Interaction::default(),
         }
     }
 
@@ -157,7 +157,7 @@ impl TransportFace {
         // A transport with nothing to play keeps its look under the disabled
         // alpha, so play still reads as the primary control.
         let disabled = face.interact.disabled;
-        let enabled = ButtonInteract {
+        let enabled = Interaction {
             disabled: false,
             hovered: face.interact.hovered && !disabled,
             pressed: face.interact.pressed && !disabled,
@@ -166,13 +166,7 @@ impl TransportFace {
         let (fill, _, ink) = face_colors(theme, role, enabled);
         let circle = Circle::new(centre, radius);
         if disabled {
-            scene.push_layer(
-                Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &circle,
-            );
+            crate::widget::paint_disabled(scene, transform, &circle);
         }
         if fill.components[3] > 0.0 {
             scene.fill(Fill::NonZero, transform, fill, None, &circle);

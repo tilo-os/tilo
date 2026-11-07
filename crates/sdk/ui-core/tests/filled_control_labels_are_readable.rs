@@ -18,8 +18,7 @@ use tilo_ui::color_compat::ColorCompat;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
 use tilo_ui::widget::{
-    ButtonInteract, ButtonRole, SegmentedStyle, ToggleInteract, face_colors, segment_colors,
-    toggle_face_colors,
+    ButtonRole, Interaction, SegmentedStyle, face_colors, segment_colors, toggle_face_colors,
 };
 use vello::peniko::Color;
 
@@ -42,26 +41,26 @@ fn ground(theme: &Theme, fill: Color) -> Color {
     }
 }
 
-fn interacts() -> [(&'static str, ButtonInteract); 4] {
+fn interacts() -> [(&'static str, Interaction); 4] {
     [
-        ("rest", ButtonInteract::default()),
+        ("rest", Interaction::default()),
         (
             "hovered",
-            ButtonInteract {
+            Interaction {
                 hovered: true,
                 ..Default::default()
             },
         ),
         (
             "pressed",
-            ButtonInteract {
+            Interaction {
                 pressed: true,
                 ..Default::default()
             },
         ),
         (
             "focused",
-            ButtonInteract {
+            Interaction {
                 focused: true,
                 ..Default::default()
             },
@@ -113,7 +112,7 @@ fn filled_control_labels_clear_their_floor_in_every_theme_and_state() {
     {
         for theme in themes() {
             for style in STYLES {
-                let rest = face_colors(&theme, style, ButtonInteract::default()).2;
+                let rest = face_colors(&theme, style, Interaction::default()).2;
                 for (state, interact) in interacts() {
                     let got = face_colors(&theme, style, interact).2;
                     assert_eq!(
@@ -174,17 +173,17 @@ fn toggle_knobs_stay_visible_and_in_place() {
         for theme in themes() {
             for on in [true, false] {
                 for (state, interact) in [
-                    ("rest", ToggleInteract::default()),
+                    ("rest", Interaction::default()),
                     (
                         "hovered",
-                        ToggleInteract {
+                        Interaction {
                             hovered: true,
                             ..Default::default()
                         },
                     ),
                     (
                         "focused",
-                        ToggleInteract {
+                        Interaction {
                             focused: true,
                             ..Default::default()
                         },
@@ -218,11 +217,11 @@ fn toggle_knobs_stay_visible_and_in_place() {
     {
         for theme in themes() {
             for on in [true, false] {
-                let rest = toggle_face_colors(&theme, on, ToggleInteract::default());
+                let rest = toggle_face_colors(&theme, on, Interaction::default());
                 let hovered = toggle_face_colors(
                     &theme,
                     on,
-                    ToggleInteract {
+                    Interaction {
                         hovered: true,
                         ..Default::default()
                     },

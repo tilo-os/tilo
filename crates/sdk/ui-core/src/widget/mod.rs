@@ -3023,9 +3023,7 @@ pub use layout::{
 mod cached_paint;
 pub use cached_paint::CachedPaint;
 mod button;
-pub use button::{
-    Button, ButtonFace, ButtonInteract, ButtonProps, ButtonRole, face_colors, focus_ring_reach,
-};
+pub use button::{Button, ButtonFace, ButtonProps, ButtonRole, face_colors, focus_ring_reach};
 mod control_size;
 pub use control_size::ControlSize;
 mod bool_control;
@@ -3033,9 +3031,7 @@ pub(crate) use bool_control::BoolAction;
 mod checkbox;
 #[cfg(test)]
 mod control_hand_on_tests;
-pub use checkbox::{
-    CheckGlyph, CheckMotion, CheckPose, Checkbox, CheckboxFace, CheckboxInteract, CheckboxProps,
-};
+pub use checkbox::{CheckGlyph, CheckMotion, CheckPose, Checkbox, CheckboxFace, CheckboxProps};
 mod column;
 pub use column::Column;
 mod composition;
@@ -3063,8 +3059,8 @@ mod face_motions;
 pub use face_motions::FaceMotions;
 mod toggle;
 pub use toggle::{
-    SwitchMotion, SwitchPose, Toggle, ToggleColors, ToggleFace, ToggleInteract, ToggleProps,
-    toggle_accessibility, toggle_face_colors,
+    SwitchMotion, SwitchPose, Toggle, ToggleColors, ToggleFace, ToggleProps, toggle_accessibility,
+    toggle_face_colors,
 };
 mod stack;
 pub use stack::Stack;
@@ -3532,7 +3528,7 @@ pub(crate) mod view_choice;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use activation::NATIVE_INVOKE;
 pub(crate) use activation::take_presses;
-pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
+pub use activation::{Interaction, PaintedTargets, paint_disabled, paint_focus_ring};
 pub mod media_card;
 mod media_grid_component;
 pub use media_card::{

@@ -1662,13 +1662,7 @@ impl ToggleGroup {
             |acc, seg| acc.union(*seg),
         );
         if face.disabled {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &outer,
-            );
+            crate::widget::paint_disabled(scene, transform, &outer);
         }
         let hovered = face.hovered.filter(|index| {
             !face.disabled && face.items.get(*index).is_some_and(|item| !item.disabled)

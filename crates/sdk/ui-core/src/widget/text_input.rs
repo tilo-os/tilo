@@ -4283,13 +4283,8 @@ impl TextInput {
             );
         }
         if !enabled {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &RoundedRect::from_rect(face, f64::from(theme.tokens.radii.item)),
-            );
+            let bounds = RoundedRect::from_rect(face, f64::from(theme.tokens.radii.item));
+            crate::widget::paint_disabled(scene, transform, &bounds);
         }
         let ink = if on {
             theme.tokens.colors.text_primary
@@ -5640,13 +5635,7 @@ fn paint_field_chrome(
     // and disabled never look alike; a "one step darker" fill with the
     // same declared border did, on the dark preset.
     if disabled {
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            crate::widget::DISABLED_ALPHA,
-            transform,
-            shape,
-        );
+        crate::widget::paint_disabled(scene, transform, shape);
     }
     let bordered = crate::surface::control_face(scene, transform, shape, bg_color, theme);
     // A field is a raised well: no edge at rest (the level step separates

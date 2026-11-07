@@ -332,13 +332,7 @@ impl<'a> NumberStepperFace<'a> {
     /// Paint the whole stepper: the steppers and, inline, the value.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>) {
         if self.disabled {
-            ctx.scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                ctx.transform,
-                &self.rect,
-            );
+            crate::widget::paint_disabled(ctx.scene, ctx.transform, &self.rect);
         }
         self.paint_steppers(ctx);
         if !self.framed {
@@ -924,13 +918,7 @@ impl Widget for NumberInput {
     ) {
         let disabled = !self.effectively_enabled();
         if disabled {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &self.rect,
-            );
+            crate::widget::paint_disabled(scene, transform, &self.rect);
         }
 
         // --- Steppers: the shared stepper face, bare when compact. The value
