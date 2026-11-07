@@ -559,8 +559,6 @@ notification-center-group-description = { $count } notifications. Press Enter to
 notification-center-dismiss-all = Dismiss all from { $app }
 notification-reply = Reply
 notification-center-dismiss = Dismiss
-notification-center-hand-to = Hand to { $agent }
-notification-center-hand-to-description = Give this notification to the workspace agent as a task.
 notification-center-group-count = { $count ->
         [one] { $count } notification
        *[other] { $count } notifications

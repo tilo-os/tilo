@@ -577,19 +577,6 @@ impl SessionNotifications {
         }
     }
 
-    /// Say which agent a kept notification can be handed to, where one is
-    /// live here: the workspace in front's first agent, as the runs know it.
-    pub(crate) fn set_taking_agent(&self, agent: Option<String>) {
-        self.desktop.set_taking_agent(agent);
-    }
-
-    /// The notifications handed to that agent since the last look, as the
-    /// agent's name, the title it is told and the body it reads: a
-    /// notification no longer kept is not handed on.
-    pub(crate) fn take_handed(&self) -> Vec<(String, String, String)> {
-        self.desktop.take_handed()
-    }
-
     /// Choose a retained notification in the centre, as the panel asks.
     pub(crate) fn open(&self, id: u64) -> notifications::HistoryActivation {
         self.desktop.activate_history(id)
@@ -1106,27 +1093,6 @@ impl crate::Shared {
             );
             if let Err(error) = opened {
                 self.answer_failed(&crate::i18n::t("action-failed-that-notification"), &error);
-            }
-        }
-        // What the person handed to an agent becomes the task it acts on, in
-        // the workspace in front: the notification's title is what it is
-        // asked, and the whole of it is what the agent reads.
-        for (agent, title, body) in self.notifications.borrow().take_handed() {
-            let title: String = title.chars().take(240).collect();
-            let body = if body.is_empty() {
-                title.clone()
-            } else {
-                format!("{title}\n\n{body}")
-            };
-            let ask = tilo_agent_runs::Ask {
-                agent,
-                title,
-                body: Some(body),
-                quick: Some(true),
-                ..tilo_agent_runs::Ask::default()
-            };
-            if let Err(error) = self.agent_runs.ask(ask) {
-                tracing::warn!(%error, "a notification was not handed to an agent");
             }
         }
         for id in self.notifications.borrow().take_opening() {

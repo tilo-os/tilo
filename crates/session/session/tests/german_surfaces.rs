@@ -1,8 +1,8 @@
 //! A German desktop reads the surfaces that survive the one shell in German.
 //!
-//! The session publishes its resources — the desk's rows, the agent runs and
-//! the chrome's own actions — with the labels the action catalogue, the search
-//! and an agent read. Each label is resolved through the toolkit's catalogue
+//! The session publishes its resources — the desk's rows, the windows and the
+//! chrome's own actions — with the labels the action catalogue, the search and
+//! an agent read. Each label is resolved through the toolkit's catalogue
 //! when it is published, so a session on a German desktop publishes German:
 //! this walks what it publishes and reads it.
 
@@ -22,18 +22,6 @@ use tilo_actions::door::{ActionDescriptor, survey};
 use tilo_sheets::Seat as _;
 
 use common::{private_home, seeded_session};
-
-/// The action `action` of `resource`, as the person reads it.
-#[track_caller]
-fn label_of<'a>(labels: &'a [(String, String)], resource: &str, action: &str) -> &'a str {
-    labels
-        .iter()
-        .find(|(address, _)| address == &format!("{resource}/{action}"))
-        .map_or_else(
-            || panic!("{resource}/{action} is published; published: {labels:?}"),
-            |(_, label)| label.as_str(),
-        )
-}
 
 /// The words the person reads the actions of `prefix`'s resources by.
 fn labelled<'a>(labels: &'a [(String, String)], prefix: &str) -> Vec<&'a str> {
@@ -107,25 +95,6 @@ fn the_surviving_surfaces_speak_the_persons_language() {
         assert!(
             !desk.contains(&english),
             "a desk row reads `{english}`: {desk:?}"
-        );
-    }
-
-    // The agent runs.
-    assert_eq!(
-        label_of(&labels, "agent-runs", "ask"),
-        "Einen Agenten fragen"
-    );
-    let runs = labelled(&labels, "agent-runs/");
-    for english in [
-        "Ask an agent",
-        "Send a message",
-        "Stop",
-        "Record a step",
-        "Record an answer",
-    ] {
-        assert!(
-            !runs.contains(&english),
-            "a run's action reads `{english}`: {runs:?}"
         );
     }
 

@@ -79,14 +79,6 @@ fn singletons() -> Vec<(ResourceSpec, Option<Declared>)> {
             Some(<DeskEffect as Effect>::declaration),
         ),
         (crate::arrangement::resources().swap_remove(0), None),
-        (
-            tilo_service::offer::<tilo_agent_runs::RunsAction>(ResourceSpec::new(
-                tilo_agent_runs::wire::RESOURCE,
-                tilo_agent_runs::RUNS_KIND,
-                String::new(),
-            )),
-            Some(<tilo_agent_runs::RunsAction as Effect>::declaration),
-        ),
     ]
 }
 
@@ -111,13 +103,6 @@ fn instances() -> Vec<(ResourceSpec, Option<Declared>)> {
     {
         out.push((window, Some(<DeskEffect as Effect>::declaration)));
     }
-    let mut run = ResourceSpec::new(String::new(), tilo_agent_runs::RUN_KIND, String::new());
-    run.actions
-        .extend(<tilo_agent_runs::RunAction as tilo_resource::Effect>::specs());
-    out.push((
-        run,
-        Some(<tilo_agent_runs::RunAction as Effect>::declaration),
-    ));
     out.push((application(), None));
     // What is already arranged: a place, a strip and a row are resources of their own, each with
     // the actions it offers.

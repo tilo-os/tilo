@@ -78,12 +78,6 @@ struct NoticeState {
     /// own state: the shell knows when it closes, the desk's layer when its
     /// own does.
     shell_centre: Cell<bool>,
-    /// The agent a kept notification can be handed to, where one is live in
-    /// the workspace it came from: what the centre's rows offer.
-    taking: RefCell<Option<String>>,
-    /// The notifications the person handed to that agent, waiting for the
-    /// loop that asks them.
-    handed: RefCell<Vec<u64>>,
 }
 
 type OutcomeTap = Rc<dyn Fn(&NotificationOutcome)>;
@@ -180,12 +174,6 @@ impl NotificationHost for NoticeState {
         if self.log.borrow_mut().undo_clear() {
             self.touch();
         }
-    }
-    fn agent_for(&self, _notification: &Notification) -> Option<String> {
-        self.taking.borrow().clone()
-    }
-    fn hand_to_agent(&self, notification: &Notification) {
-        self.handed.borrow_mut().push(notification.id);
     }
     fn changed(&self) {
         self.touch();
@@ -338,39 +326,6 @@ impl DesktopNotifications {
     #[must_use]
     pub fn centre_open(&self) -> bool {
         self.log.centre_open.get() || self.log.shell_centre.get()
-    }
-
-    /// Say which agent a kept notification can be handed to, where one is
-    /// live in the workspace it came from.
-    pub fn set_taking_agent(&self, agent: Option<String>) {
-        *self.log.taking.borrow_mut() = agent;
-    }
-
-    /// Hand notification `id` to the agent that takes one here: what the
-    /// centre's agent button does, and what the loop that asks it waits for.
-    pub fn hand_to_agent(&self, id: u64) {
-        self.log.handed.borrow_mut().push(id);
-    }
-
-    /// The notifications handed to that agent since the last look, as the
-    /// agent's name, the title it is told and the body it reads: one no
-    /// longer kept is not handed on.
-    pub fn take_handed(&self) -> Vec<(String, String, String)> {
-        let ids = std::mem::take(&mut *self.log.handed.borrow_mut());
-        let Some(agent) = self.log.taking.borrow().clone() else {
-            return Vec::new();
-        };
-        let log = self.log.log.borrow();
-        ids.into_iter()
-            .filter_map(|id| {
-                let notification = log.history_entry(id)?;
-                Some((
-                    agent.clone(),
-                    notification.title.clone(),
-                    notification.body.clone(),
-                ))
-            })
-            .collect()
     }
 
     /// Retire every banner still up into the centre: what a surface opening

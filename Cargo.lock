@@ -17222,27 +17222,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-agent-runs"
-version = "0.1.0"
-dependencies = [
- "runtime-collab",
- "serde",
- "serde_json",
- "tilo-action-broker",
- "tilo-action-policy",
- "tilo-actions",
- "tilo-clock",
- "tilo-lock",
- "tilo-reference",
- "tilo-resource",
- "tilo-service",
- "tilo-ui",
- "tracing",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-ai-bench"
 version = "0.1.0"
 dependencies = [
@@ -21368,7 +21347,6 @@ dependencies = [
  "tilo-action-policy",
  "tilo-actions",
  "tilo-activities",
- "tilo-agent-runs",
  "tilo-app",
  "tilo-app-launch",
  "tilo-app-state",
@@ -28146,7 +28124,6 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-agent-models",
  "tilo-agent-participant",
- "tilo-agent-runs",
  "tilo-ai-bench",
  "tilo-app",
  "tilo-app-cli",
@@ -28227,6 +28204,7 @@ dependencies = [
  "tilo-face",
  "tilo-feedback",
  "tilo-feedback-review",
+ "tilo-feedback-transport",
  "tilo-file-provider",
  "tilo-files",
  "tilo-firstboot-files",
@@ -28264,8 +28242,10 @@ dependencies = [
  "tilo-messaging-protocol",
  "tilo-messaging-service",
  "tilo-mime",
+ "tilo-model-abi",
  "tilo-model-client",
  "tilo-model-gateway",
+ "tilo-model-guest",
  "tilo-model-host",
  "tilo-moderation",
  "tilo-native-media",
@@ -28374,6 +28354,8 @@ dependencies = [
  "tilo-vello-encoding",
  "tilo-vello-shaders",
  "tilo-video-render",
+ "tilo-view",
+ "tilo-view-macros",
  "tilo-vision",
  "tilo-vm",
  "tilo-vm-protocol",
@@ -28388,6 +28370,7 @@ dependencies = [
  "tilo-window-share",
  "tilo-winit",
  "tilo-winit-x11",
+ "tilo-workspace-agent",
  "tilo-workspace-directory",
  "tilo-workspace-emoji",
  "tilo-workspace-join",
@@ -28399,6 +28382,7 @@ dependencies = [
  "tilolang-mail",
  "tilolang-runtime",
  "tilolang-tilo",
+ "tilolang-youtube",
  "time",
  "time-core",
  "time-macros",

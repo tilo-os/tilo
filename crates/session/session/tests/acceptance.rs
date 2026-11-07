@@ -22,20 +22,16 @@
 
 mod common;
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Map, json};
-use tilo_agent_runs::AgentRuns;
 use tilo_compositor::OutputConfig;
-use tilo_reference::{ProgramStep, ResourceAt, ResourceRef, StepOutcome};
 use tilo_session::{Options, Session};
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 use common::{
     CANVAS_ENTRY, HEIGHT, MAIL, PERSON, Repl, SUBJECT, WIDTH, on_screen, placed_resources,
-    preset_menu, press, press_sheet, private_home, seeded_session, seeded_session_with, type_text,
-    until,
+    preset_menu, press, press_sheet, private_home, seeded_session, type_text, until,
 };
 
 /// Step 1: the session starts with the tilolang shell as the whole screen — its bar across the
@@ -289,90 +285,6 @@ fn step_5_an_inline_edit_of_a_placed_record_commits() {
     });
     until(&mut session, "the place draws the new title", |session| {
         session.shell_says(edited)
-    });
-}
-
-/// Step 6: asking an agent places the conversation on the canvas, and a reference it printed
-/// opens on press.
-#[test]
-fn step_6_asking_places_the_conversation_and_a_reference_opens_on_press() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let runs = Arc::new(AgentRuns::new(None));
-    let mut session = seeded_session_with(root.path(), Some(Arc::clone(&runs)));
-    until(&mut session, "the runs know the workspace", |_| {
-        !runs.front().is_empty()
-    });
-    let note = seeded_note(&session, "Groceries");
-
-    // The person types a question on the canvas, as its entry sends it: what it finds nothing
-    // for is a question to the agent, and its conversation stands where they typed.
-    session
-        .invoke(
-            "shell:arrangement",
-            "conversation",
-            json!({"line": "Tidy the launch notes", "x": 120, "y": 80})
-                .as_object()
-                .unwrap(),
-        )
-        .expect("the canvas takes the question");
-
-    // Asking places the conversation on the canvas.
-    until(&mut session, "the conversation placed", |session| {
-        session
-            .arrangement()
-            .borrow()
-            .reading()
-            .places
-            .iter()
-            .any(|place| place.record.starts_with("agent-run:"))
-    });
-    let run = session
-        .arrangement()
-        .borrow()
-        .reading()
-        .places
-        .iter()
-        .find_map(|place| place.record.strip_prefix("agent-run:").map(str::to_owned))
-        .expect("the conversation's run");
-    until(&mut session, "the conversation drawn", |session| {
-        session.shell_says("Tidy the launch notes")
-    });
-
-    // Its agent runs a program that prints the note: a reference row.
-    runs.record_step(
-        &run,
-        ProgramStep {
-            program: "find(notes.Note, \"Groceries\")".into(),
-            outcome: StepOutcome::Done,
-            answer: vec!["n1 \"Groceries\"".into()],
-            refs: vec![ResourceAt {
-                app: "so.tilo.lang.notes".into(),
-                record: None,
-                reference: ResourceRef::whole("notes.Note", note.clone(), "Groceries"),
-            }],
-            ..ProgramStep::default()
-        },
-    )
-    .expect("the agent records its step");
-    until(&mut session, "the printed reference", |session| {
-        session.shell_says("Groceries")
-    });
-    assert!(
-        common::places(&session).len() == 1,
-        "only the conversation stands on the canvas yet"
-    );
-
-    // Pressing the reference places the note beside the conversation.
-    press(&mut session, "Groceries");
-    until(&mut session, "the reference's note placed", |session| {
-        session
-            .arrangement()
-            .borrow()
-            .reading()
-            .places
-            .iter()
-            .any(|place| place.record == note)
     });
 }
 

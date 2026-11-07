@@ -577,8 +577,6 @@ notification-center-group-description = { $count } Benachrichtigungen. Eingabe z
 notification-center-dismiss-all = Alle von { $app } verwerfen
 notification-reply = Antworten
 notification-center-dismiss = Verwerfen
-notification-center-hand-to = An { $agent } übergeben
-notification-center-hand-to-description = Übergibt diese Benachrichtigung als Aufgabe an den Agenten des Arbeitsbereichs.
 notification-center-group-count = { $count ->
         [one] { $count } Benachrichtigung
        *[other] { $count } Benachrichtigungen

@@ -97,7 +97,6 @@
 "crates/sdk/ui-core/src/widget/window_group.rs" = 6500
 "crates/session/desktop-surface/src/activity/pane.rs" = 4000
 "crates/session/desktop-surface/src/activity/pane_tests.rs" = 3500
-"crates/session/desktop-surface/src/notifications/center.rs" = 3500
 "crates/session/device-fabric/src/lib.rs" = 5000
 "crates/session/network-actor/src/lib.rs" = 5000
 "crates/session/onboarding-host/src/view.rs" = 7000
