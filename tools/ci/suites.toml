@@ -849,6 +849,7 @@ package = "tilolang-youtube"
 inputs = ["apps/tl/tube/"]
 readers = [
   "crates/platform/tilolang-youtube/tests/origin.rs",
+  "crates/platform/tilolang-youtube/tests/recorded_answer.rs",
 ]
 
 [[cargo]]
