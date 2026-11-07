@@ -39,7 +39,7 @@ fn part() -> (ShellPart, Rc<SessionLink>) {
 /// The canvas's entry, as assistive technology names it: the field is bound to a view state,
 /// whose name in the code (`typed`) is no word a person says, so it is announced by its own
 /// words.
-const CANVAS_ENTRY: &str = "Find something";
+const CANVAS_ENTRY: &str = "Find something, or ask";
 /// The launcher's field, announced the same way: the view's own words for it, not the state's
 /// name in the code (`query`).
 const LAUNCHER_SEARCH: &str = "Search apps, windows, actions and files";

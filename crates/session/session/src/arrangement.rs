@@ -222,6 +222,14 @@ pub struct Surface {
 /// never a search of its own (shell.md §8, "Finding what to place").
 pub type Find = Rc<dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>>;
 
+/// What the canvas does with text that is a question, or that nothing
+/// matches (shell.md §8.1, "Asking from the canvas"): the session posts it as
+/// the person into their ask conversation with the workspace's agent, and
+/// answers the resource that conversation is, so the text typed stands as a
+/// place of it. `None` when the session cannot ask — no agent to ask, no
+/// workspace to ask in — and the text then fails to place as it always did.
+pub type Ask = Rc<dyn Fn(&str) -> Option<String>>;
+
 /// The resource `hit` names, and the name its resource goes by, when a place
 /// can make something of it: an app's own `open` of a resource, or an action
 /// that acts on one. Every other row (a settings section, a file, a window's
@@ -564,9 +572,17 @@ impl Arrangement {
     /// the session publishes now ([`Catalog`]), standing at `at` through
     /// [`ArrangementAction::Place`] — one attributed, undoable change (shell.md §8).
     /// `view` empty shows the resource's primary view; `strip` names the strip it joins
-    /// as a tab, else it takes a strip of its own. Returns the place's id.
+    /// as a tab, else it takes a strip of its own. Returns the place's id, or `None`
+    /// when nothing the text finds is a resource the arrangement can place.
+    ///
+    /// Text that *asks* — a question ([`tilo_desktop_search::answers::question::asks`]),
+    /// or text nothing matches — goes to `ask` instead (shell.md §8.1): what it answers
+    /// is the person's ask conversation, which stands where they typed, as one
+    /// arranging step.
+    ///
     /// # Errors
-    /// Why the place could not be made, or the text found nothing to place.
+    /// Why the place could not be made, or the text found nothing to place
+    /// and nothing answered it.
     pub fn place_found(
         &mut self,
         asked: &str,
@@ -575,17 +591,38 @@ impl Arrangement {
         strip: Option<u64>,
         at: (i64, i64),
         find: &dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>,
+        ask: &dyn Fn(&str) -> Option<String>,
         busy: Busy,
     ) -> Result<Option<u64>, String> {
         let text = text.trim();
         if text.is_empty() {
             return Err("nothing is typed to place".into());
         }
-        let Some(resource) = found(text, find, |resource| {
+        let found_resource = found(text, find, |resource| {
             self.catalog.borrow().get(resource).is_some()
-        }) else {
+        });
+        // A question is answered even when it happens to match something the
+        // search holds: the person asked, so the text they typed is a
+        // message to their agent, not a thing to stand (shell.md §8.1).
+        let asked_agent =
+            tilo_desktop_search::answers::question::asks(text) || found_resource.is_none();
+        let resource = if asked_agent {
+            ask(text)
+        } else {
+            found_resource
+        };
+        let Some(resource) = resource else {
             return Err(format!("nothing matches {text:?}"));
         };
+        // A text that asks brings the conversation it is with forward rather
+        // than standing a second place of it: the same conversation belongs
+        // in one place (shell.md §8.1). Text that finds a resource places it
+        // where the person typed, as it always has — a second place of a note
+        // is the person's to make.
+        if asked_agent && let Some(held) = self.place_of(&resource) {
+            self.ask(asked, ArrangementAction::Activate { place: held }, busy)?;
+            return Ok(Some(held));
+        }
         let surface = self.surface_at_strip(strip)?;
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
@@ -602,6 +639,22 @@ impl Arrangement {
         };
         self.ask(asked, action, busy)?;
         Ok(Some(surface.place))
+    }
+
+    /// The place already showing `resource`, if one stands: what text typed
+    /// again brings forward rather than placing a second time.
+    #[must_use]
+    pub fn place_of(&self, resource: &str) -> Option<u64> {
+        let records = self.records();
+        self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|row| row.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .find(|tab| records.get(&tab.id) == Some(&resource.to_owned()))
+                .map(|tab| tab.id)
+        })
     }
 
     /// The arrangement as a shell's views read it: every workspace, row, strip and place, each
@@ -1909,6 +1962,9 @@ pub struct ArrangementDoor {
     /// The system's `find`, as the palette and an agent's `tilo` tool run it:
     /// what text typed on the canvas places (shell.md §8).
     find: Find,
+    /// What the canvas asks of the session when the text it is given is a
+    /// question, or names nothing (shell.md §8.1).
+    ask: Ask,
 }
 
 impl ArrangementDoor {
@@ -1919,12 +1975,14 @@ impl ArrangementDoor {
         arrangement: std::rc::Rc<RefCell<Arrangement>>,
         busy: std::rc::Rc<dyn Fn() -> Busy>,
         find: Find,
+        ask: Ask,
     ) -> Self {
         Self {
             arrangement,
             busy,
             actor: RefCell::new(String::new()),
             find,
+            ask,
         }
     }
 }
@@ -1990,10 +2048,11 @@ impl Published for ArrangementDoor {
         {
             let spot = (*x, *y);
             let find = Rc::clone(&self.find);
+            let ask = Rc::clone(&self.ask);
             let placed = self
                 .arrangement
                 .borrow_mut()
-                .place_found(&asked, text, view, *strip, spot, &*find, busy);
+                .place_found(&asked, text, view, *strip, spot, &*find, &*ask, busy);
             placed.map_err(|why| tilo_actions::DoorError::Unavailable {
                 code: "nothing_to_place".to_owned(),
                 reason: why,

@@ -40,7 +40,7 @@ use tilolang_tilo::runtime::Principal;
 /// The canvas's entry, as assistive technology names it: a field bound to a view's state takes
 /// the name the view gives it for a person to read, its own words, rather than the state's name
 /// in the code (`typed`).
-pub const CANVAS_ENTRY: &str = "Find something";
+pub const CANVAS_ENTRY: &str = "Find something, or ask";
 /// The launcher's field, announced the same way: the view's own words for it, not the state's
 /// name in the code (`query`).
 pub const LAUNCHER_SEARCH: &str = "Search apps, windows, actions and files";
@@ -307,26 +307,54 @@ pub fn press_at(session: &mut Session, name: &str, width: i32, height: i32) {
     }
 }
 
-/// Type `text` (lower-case letters and spaces) on the keyboard, a key at a time, as the person
-/// does.
+/// Type `text` (lower-case letters, spaces and a question mark) on the keyboard, a key at a
+/// time, as the person does. A question mark is Shift and the slash key.
 pub fn type_text(session: &mut Session, text: &str) {
     const ROWS: [(&str, u32); 3] = [("qwertyuiop", 16), ("asdfghjkl", 30), ("zxcvbnm", 44)];
     const SPACE: u32 = 57;
+    /// Shift, held for the keys whose upper-case character is the one meant.
+    const SHIFT: u32 = 42;
+    const SLASH: u32 = 53;
     for letter in text.chars() {
-        let keycode = if letter == ' ' {
-            SPACE
+        let (keycode, shifted) = if letter == ' ' {
+            (SPACE, false)
+        } else if letter == '?' {
+            (SLASH, true)
         } else {
-            ROWS.iter()
-                .find_map(|(row, first)| {
-                    let at = u32::try_from(row.chars().position(|c| c == letter)?).ok()?;
-                    first.checked_add(at)
-                })
-                .unwrap_or_else(|| panic!("no key types {letter:?}"))
+            (
+                ROWS.iter()
+                    .find_map(|(row, first)| {
+                        let at = u32::try_from(row.chars().position(|c| c == letter)?).ok()?;
+                        first.checked_add(at)
+                    })
+                    .unwrap_or_else(|| panic!("no key types {letter:?}")),
+                false,
+            )
         };
+        if shifted {
+            session
+                .compositor()
+                .input(InputEvent::Key {
+                    keycode: SHIFT,
+                    pressed: true,
+                })
+                .unwrap();
+            session.step(Duration::from_millis(1)).unwrap();
+        }
         for pressed in [true, false] {
             session
                 .compositor()
                 .input(InputEvent::Key { keycode, pressed })
+                .unwrap();
+            session.step(Duration::from_millis(1)).unwrap();
+        }
+        if shifted {
+            session
+                .compositor()
+                .input(InputEvent::Key {
+                    keycode: SHIFT,
+                    pressed: false,
+                })
                 .unwrap();
             session.step(Duration::from_millis(1)).unwrap();
         }

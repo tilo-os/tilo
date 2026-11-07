@@ -220,6 +220,32 @@ impl<P: Resource> WorkspaceRecord<P> {
         )
     }
 
+    /// [`Self::open_at`] of the record `owner` keeps as its own primary one of
+    /// `P::KIND` in the workspace: the record an app keeps as itself (Chat's
+    /// of its chat, `chat.workspace`), which `open_record` cannot open because
+    /// the package's primary id is a sentinel no [`RecordId::parse`] accepts.
+    /// An app's own window opens it this way; so does the session, reading the
+    /// conversations its agents answer in.
+    pub fn open_primary(
+        records: &WorkspaceRecords,
+        owner: &'static str,
+        app: (&'static str, &'static str),
+        permissions: Option<LivePermissions>,
+        wake: Option<WakeHandle>,
+    ) -> Option<Self> {
+        let opened = records.open_primary(owner, P::KIND, &|doc| {
+            P::initialize(doc).map_err(|error| error.to_string())
+        });
+        Self::hold(
+            opened,
+            owner,
+            app,
+            permissions,
+            wake,
+            records.author().0.clone(),
+        )
+    }
+
     /// [`Self::open`]'s record, opened (or not) by the store it is kept in:
     /// brought to the resource's version, read, and followed change by
     /// change.

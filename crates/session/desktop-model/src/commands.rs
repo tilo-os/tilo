@@ -936,9 +936,14 @@ pub fn apply_command(
         DesktopCommand::FloatGroup { group, float } => float_group(workspace, *group, *float)?,
     }
     free_closed_places(workspace);
+    let Workspace {
+        strips,
+        arrangement,
+        ..
+    } = workspace;
+    arrangement.place_missing(strips);
     Ok(())
 }
-
 /// Open `app` into the workspace as `placement` says, under ids `mint` gives
 /// and a title `create` makes the window with.
 fn open_tab(
@@ -1167,6 +1172,16 @@ pub fn move_tab_to_workspace(
     .ok_or("the window could not be moved")?;
     tree.active_strip.insert(to, strip);
     tree.set_active_group(strip, group);
+    // The window's canvas place went with the strip it left, and the workspace it lands in
+    // draws its windows by their places: it takes one there as any other window does.
+    if let Some(destination) = tree.workspaces.iter_mut().find(|held| held.slot == to) {
+        let Workspace {
+            strips,
+            arrangement,
+            ..
+        } = destination;
+        arrangement.place_missing(strips);
+    }
     Ok(())
 }
 

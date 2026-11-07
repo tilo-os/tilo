@@ -309,6 +309,111 @@ impl Conversations {
         self.runs.take_spent()
     }
 
+    /// Chat's record of `workspace`, as this session holds it open: the
+    /// conversations a person asked in and their messages, read through the
+    /// same open record the pass reads turns from — never a second writer on
+    /// the store. `None` where the workspace holds no Chat record here.
+    #[must_use]
+    pub fn chat(&self, workspace: &str) -> Option<chat::Chat> {
+        let open = self.open.borrow();
+        let opened = open.get(workspace)?;
+        Some(opened.chat.as_ref()?.get().as_ref().clone())
+    }
+
+    /// What the canvas asks of the session, made as `person`'s in
+    /// `workspace`: their ask conversation with the agent the workspace
+    /// keeps, the agent making it (shell.md §8.1, "Asking from the canvas").
+    /// The conversation is a Chat channel the agent takes part in, so the
+    /// person's message in it is a turn the broker delivers to that agent,
+    /// and both are made with Chat's own actions on its own record: the
+    /// session invents no record, no conversation and no message.
+    ///
+    /// Returns the resource the conversation is published as
+    /// (`chat.workspace/channels/<id>`), so the canvas places the very
+    /// channel Chat shows, drawn by Chat's own view — never a second chat
+    /// (shell.md §8.1, "The view"). `None` when there is no workspace in
+    /// front to ask in, no agent the workspace keeps, or Chat refused.
+    pub(crate) fn ask(
+        &self,
+        person: &str,
+        workspace: &str,
+        policy: &WorkspacePolicy,
+        agent: &str,
+        text: &str,
+    ) -> Option<String> {
+        let (chat, part) = self.opened_with(
+            &WorkspaceFacts {
+                workspace: workspace.to_owned(),
+                policy: policy.clone(),
+            },
+            person,
+            true,
+        )?;
+        // The conversation is the person's and the agent's, by their keys: a
+        // participant key is what a conversation is with
+        // (`Conversation::participants`), and the agent's answers the
+        // person's messages in it.
+        let participants = vec![
+            chat::record::Participant::person(person).key(),
+            chat::record::Participant::agent(agent).key(),
+        ];
+        // The id a kept conversation with these participants has, derived the
+        // same on every device: a channel id, because the conversation is one
+        // — it is made once and named in the place's address — never a direct
+        // conversation's id, which names its participants and is nothing the
+        // record can hold.
+        let id = chat::record::Chat::conversation_channel_id(
+            participants
+                .iter()
+                .filter_map(|key| chat::record::Participant::parse(key)),
+        );
+        let channel = id.as_str().to_owned();
+        // The conversation is made once, with Chat's own `create-channel-with-id`:
+        // a second ask meets the one that is there, as a step run again does.
+        let name = tilo_resource::NonBlank::parse(&crate::i18n::t("session-ask-conversation"))?;
+        let made = chat.invoke(&chat::Chat::CREATE_CHANNEL_WITH_ID.with(
+            chat::record::chat::CreateChannelWithId {
+                id: channel.clone(),
+                name,
+                category: None,
+                kind: None,
+                topic: None,
+                participants: Some(participants),
+            },
+        ));
+        if let Err(error) = made {
+            tracing::warn!(%error, %workspace, "the ask conversation was not made");
+            return None;
+        }
+        // The person's question, as the post Chat's composer makes: the
+        // message is theirs, so the agent's reply is the one its id derives
+        // (`reply_id`), and the turn is the message's.
+        let posted = part.invoke(&chat::parts::ChatPart::POST.with(
+            chat::messages::chat_part::Post {
+                message: chat::messages::NewMessage {
+                    channel: id.clone(),
+                    text: text.to_owned(),
+                    parent: None,
+                    body: None,
+                    attachments: Vec::new(),
+                    mentions: None,
+                    written: None,
+                },
+            },
+        ));
+        if let Err(error) = posted {
+            tracing::warn!(%error, %workspace, "the person's question was not posted");
+            return None;
+        }
+        // The conversation as Chat publishes a channel: its item resource, so a
+        // place of it is the channel Chat's own window shows, drawn by Chat's
+        // `conversation` view (`chat.workspace/channels/<id>`), never the
+        // record as a whole.
+        Some(tilo_resource::items::item_resource_id::<chat::Chat>(
+            "channels", &id,
+        ))
+    }
+
     /// Read each workspace's conversations as `person`, and hand the turns
     /// they give to the run channel.
     pub(crate) fn feed(&self, person: &str, workspaces: Vec<WorkspaceFacts>) {
@@ -355,6 +460,24 @@ impl Conversations {
         WorkspaceRecord<chat::Chat>,
         WorkspaceRecord<chat::parts::ChatPart>,
     )> {
+        self.opened_with(workspace, person, false)
+    }
+
+    /// [`Self::opened`], and `create`: whether a workspace that holds no Chat
+    /// yet is given one, with the genesis every device derives the same, and
+    /// the first part of its messages. What asking does — a person who never
+    /// opened Chat still has a conversation to ask in (shell.md §8.1, "Asking
+    /// from the canvas") — and reading never does: the pass creates no record
+    /// of an app no one used.
+    fn opened_with(
+        &self,
+        workspace: &WorkspaceFacts,
+        person: &str,
+        create: bool,
+    ) -> Option<(
+        WorkspaceRecord<chat::Chat>,
+        WorkspaceRecord<chat::parts::ChatPart>,
+    )> {
         let mut open = self.open.borrow_mut();
         let id = workspace.workspace.clone();
         let stale = open
@@ -379,6 +502,18 @@ impl Conversations {
         )
         .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
         let chat_id = RecordId::package_primary();
+        if create && opened.chat.is_none() {
+            // The workspace holds no Chat, and the person asked in it: the
+            // record is made here, with the genesis every device derives the
+            // same, so a second device's first ask meets the one this made.
+            opened.chat = WorkspaceRecord::<chat::Chat>::open_primary(
+                &opened.records,
+                CHAT_OWNER,
+                CHAT_APP,
+                Some(LivePermissions::fixed(permissions.clone())),
+                Some(self.wake.handle()),
+            );
+        }
         if opened.chat.is_none() {
             // A workspace whose person never opened Chat holds no record: the
             // reader creates none.
@@ -389,10 +524,9 @@ impl Conversations {
             if !held {
                 return None;
             }
-            opened.chat = WorkspaceRecord::<chat::Chat>::open_at(
+            opened.chat = WorkspaceRecord::<chat::Chat>::open_primary(
                 &opened.records,
                 CHAT_OWNER,
-                chat_id.as_str(),
                 CHAT_APP,
                 Some(LivePermissions::fixed(permissions.clone())),
                 Some(self.wake.handle()),
@@ -405,7 +539,14 @@ impl Conversations {
             .ok()?
             .held_parts(&chat::parts::chain())
             .into_iter()
-            .max()?;
+            .max();
+        // The chain holds no part until one is made: the first ask makes part
+        // 0, whose id every device derives the same, and reads it from then on.
+        let head = match (head, create) {
+            (Some(head), _) => head,
+            (None, true) => 0,
+            (None, false) => return None,
+        };
         if opened.part.as_ref().map(|(held, _)| *held) != Some(head) {
             let part = WorkspaceRecord::<chat::parts::ChatPart>::open_at(
                 &opened.records,
