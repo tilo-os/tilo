@@ -390,10 +390,10 @@ impl Filtered {
         keep: Keep,
         shape: Shape,
         touched: &BTreeSet<String>,
-    ) -> Result<Self, (Merged, Keep)> {
+    ) -> Result<Self, Box<(Merged, Keep)>> {
         let walked = Self::kept_over(old, &base, &shape, &keep, touched);
         let Some((out, held)) = walked else {
-            return Err((base, keep));
+            return Err(Box::new((base, keep)));
         };
         let most = base.len();
         let at = out.len();
@@ -889,7 +889,7 @@ mod tests {
             &old,
             run(&["b", "c", "d"]),
             keeps(&["a", "c"]),
-            shape.clone(),
+            shape,
             &touched(&["a"]),
         )
         .ok()
@@ -966,7 +966,7 @@ mod tests {
                 &old,
                 run(&["a", "b", "d"]),
                 keeps(&["a"]),
-                shape.clone(),
+                shape,
                 &BTreeSet::new()
             )
             .is_err(),

@@ -31,6 +31,10 @@ use crate::schema::{ColumnKind, TypeSchema};
 /// The entries the open writes put into a run, and those they take out of it.
 type Moved = (Vec<super::lists::Entry>, Vec<super::lists::Entry>);
 
+/// The parts of a listing ordered by two keys: one per run of the key before the last, each the
+/// column and the value it is the run of ([`View::order_parts`]).
+type Parts = Vec<Option<(crate::schema::ColumnSchema, String)>>;
+
 /// What a query shows, and the listing it read, when a later change may keep what it checked
 /// ([`Filtered::spliced`]).
 pub struct Answer {
@@ -493,6 +497,48 @@ impl View<'_> {
         )))
     }
 
+    /// A part per run of the key before the last one: a column an item stands in once, whose
+    /// runs follow one another in its values' order. `None` when the key is not such a column, or
+    /// a write the change names may have moved an item between its runs.
+    fn order_parts(
+        &self,
+        (resource, field): (&str, &str),
+        schema: &TypeSchema,
+        before: Option<&Order>,
+        touched: &BTreeSet<String>,
+    ) -> Result<Option<Parts>, StoreError> {
+        let Some(before) = before else {
+            return Ok(Some(vec![None]));
+        };
+        if !touched.is_empty() {
+            return Ok(None);
+        }
+        let Some(column) = schema
+            .column(&before.field)
+            .filter(|column| columns::counted(column))
+        else {
+            return Ok(None);
+        };
+        let list = scope_list(resource, field, &column.name);
+        let mut values: Vec<String> = self
+            .snapshot
+            .counts(&list)
+            .map_err(index_error)?
+            .into_iter()
+            .filter(|(_, count)| *count > 0)
+            .map(|(value, _)| value)
+            .collect();
+        if before.descending {
+            values.reverse();
+        }
+        Ok(Some(
+            values
+                .into_iter()
+                .map(|value| Some((column.clone(), value)))
+                .collect(),
+        ))
+    }
+
     /// [`Self::query`]'s order read from the index's columns: the key the order falls back to
     /// read as its column's runs, in one part per run of the key before it, and the conjuncts
     /// checked as the parts' pages fill ([`Filtered`], [`Partition`]).
@@ -528,39 +574,9 @@ impl View<'_> {
             [one] => Some(*one),
             _ => return Ok(None),
         };
-        // A part per run of the key before it: a column an item stands in once, whose runs
-        // follow one another in its values' order.
-        let mut parts: Vec<Option<(crate::schema::ColumnSchema, String)>> = Vec::new();
-        if let Some(before) = before {
-            if !touched.is_empty() {
-                return Ok(None);
-            }
-            let Some(column) = schema
-                .column(&before.field)
-                .filter(|column| columns::counted(column))
-            else {
-                return Ok(None);
-            };
-            let list = scope_list(resource, field, &column.name);
-            let mut values: Vec<String> = self
-                .snapshot
-                .counts(&list)
-                .map_err(index_error)?
-                .into_iter()
-                .filter(|(_, count)| *count > 0)
-                .map(|(value, _)| value)
-                .collect();
-            if before.descending {
-                values.reverse();
-            }
-            parts.extend(
-                values
-                    .into_iter()
-                    .map(|value| Some((column.clone(), value))),
-            );
-        } else {
-            parts.push(None);
-        }
+        let Some(parts) = self.order_parts((resource, field), schema, before, touched)? else {
+            return Ok(None);
+        };
         // The listing outlives this read: it holds the snapshot and the schema itself, as the
         // check of a run does ([`Self::paged_run`]).
         let Some(keep_schema) = crate::schema::lookup(&schema.id) else {
@@ -680,7 +696,10 @@ impl View<'_> {
         touched.extend(carried.touched.iter().cloned());
         match Filtered::spliced(carried.before, base, keep, shape.clone(), &touched) {
             Ok(spliced) => spliced,
-            Err((base, keep)) => Filtered::new(base, keep).shaped(shape),
+            Err(boxed) => {
+                let (base, keep) = *boxed;
+                Filtered::new(base, keep).shaped(shape)
+            }
         }
     }
 
