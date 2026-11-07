@@ -1,5 +1,5 @@
 /// What the shell's surfaces ask of the session are the session's own actions, published on its
-/// door and read as packages: the desktop's windows, workspaces, arrangement and agent runs as
+/// door and read as packages: the desktop's windows, workspaces and arrangement as
 /// `so.tilo.session` (`apps/tl/session/surface.toml`), the device's resources and the desk as
 /// `so.tilo.device`. A view presses one directly (`session.focus(window(w))`,
 /// `device.show_surface(device.desk, surface: "launcher")`), as the agent and the REPL call it,
@@ -10,11 +10,6 @@
 /// close it.
 fn window(w: Win) -> session.Window {
     return resource("desktop:tab:{w.key}", of: session.Window)
-}
-
-/// The run of the task `key` as the session publishes it, whose own actions steer and stop it.
-fn run(key: Text) -> session.AgentRun {
-    return resource("agent-run:{key}", of: session.AgentRun)
 }
 
 /// The place `key` of the arrangement as the session publishes it, whose own actions pin, close

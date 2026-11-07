@@ -44,7 +44,6 @@ type Desk (origin: session.desk) {
     workspace: Text merge register
     strip: Text merge register
     workspaces: Collection<Workspace>
-    tasks: Collection<Task>
     people: Collection<Person>
     /// The pointer at the top edge, and a window standing where the bar rides: what a bar that
     /// shows only sometimes follows. The session writes them with the rest of the desk; no
@@ -61,50 +60,6 @@ type Desk (origin: session.desk) {
     windows: Collection<Win>
     /// The running applications' tray items, in the order they registered.
     tray: Collection<TrayItem>
-    /// The runs of what the person asked the session's agents, oldest first; each is a
-    /// conversation (`conversation.tl`).
-    runs: Collection<Run>
-    run_entries: Collection<RunEntry>
-    entry_refs: Collection<EntryRef>
-}
-
-/// A run of what the person asked one of the session's agents: the conversation they have in
-/// it.
-type Run (origin: session.run) {
-    key: Text merge register
-    title: Text merge register
-    agent: Text merge register
-    phase: Text merge register
-    active: Bool
-    /// What the agent says now, as the model streams it; empty between turns.
-    live: Text merge register
-}
-
-/// One entry of a run's conversation: what the person or the agent said, or a program either
-/// of them ran.
-type RunEntry (origin: session.run_entry) {
-    key: Text merge register
-    run: Text merge register
-    seq: Int
-    author: Text merge register
-    by_agent: Bool
-    step: Bool
-    /// The words, or the program as it ran.
-    text: Text merge register
-    outcome: Text merge register
-    answer: Text merge register
-}
-
-/// A resource a program in a conversation printed (a reference) or changed (a row to undo).
-type EntryRef (origin: session.entry_ref) {
-    key: Text merge register
-    entry: Text merge register
-    changed: Bool
-    resource: Text merge register
-    app_id: Text merge register
-    type_kind: Text merge register
-    label: Text merge register
-    change: Text merge register
 }
 
 /// A workspace on this device.
@@ -119,13 +74,6 @@ type TrayItem (origin: session.tray_item) {
     key: Text merge register
     title: Text merge register
     menu: Bool
-}
-
-/// A task running for the person: an agent's or a script's.
-type Task (origin: session.task) {
-    key: Text merge register
-    title: Text merge register
-    state: Text merge register
 }
 
 /// Someone else here in the workspace in front.
@@ -348,12 +296,6 @@ view bar_part(d: Desk, part: BarPart) {
     } else if part.slot == .strip {
         if d.strip != "" {
             ui.Button(d.strip, icon: .chevron_right, role: .bar)
-        }
-    } else if part.slot == .tasks {
-        row(gap: .related, align: .center) {
-            for t in d.tasks {
-                ui.Button(t.title, icon: .bot, role: .bar)
-            }
         }
     } else if part.slot == .people {
         row(gap: .related, align: .center) {

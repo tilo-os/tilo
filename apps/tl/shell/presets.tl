@@ -18,7 +18,6 @@ scenario "the default shell on a desk" {
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
-    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
     seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
@@ -51,7 +50,6 @@ scenario "a full dock" {
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
-    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
     seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "a01", title: "Notes", icon: "file-text"))
@@ -102,7 +100,6 @@ scenario "the dock on the left" {
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
-    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
     seed(shell)
     let s = shell
     s.dock_edge = .left
@@ -128,7 +125,6 @@ scenario "the dock on the right" {
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
-    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
     seed(shell)
     let s = shell
     s.dock_edge = .right
@@ -153,7 +149,6 @@ scenario "moving an item on the dock" {
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
-    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
     seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
@@ -177,14 +172,9 @@ scenario "a rearranged bar" {
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
-    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
     seed(shell)
     let s = shell
     if let clock = s.bar_parts.find(p -> p.slot == Slot.clock) { s.bar_parts.move(clock, to: 0) }
-    if let tasks = s.bar_parts.find(p -> p.slot == Slot.tasks),
-        status = s.bar_parts.find(p -> p.slot == Slot.status) {
-        s.bar_parts.move(tasks, after: status)
-    }
     s.tuned = true
     s.based_on = .tilo
 }
@@ -205,7 +195,6 @@ scenario "the Tilo preset" {
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
-    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
     seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
@@ -228,7 +217,6 @@ scenario "the macos preset" {
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
-    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
     seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
@@ -251,7 +239,6 @@ scenario "the windows preset" {
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
-    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
     seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
@@ -274,7 +261,6 @@ scenario "the gnome preset" {
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
-    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
     seed(shell)
     apply(shell, .gnome)
 }
@@ -292,7 +278,6 @@ scenario "the minimal preset" {
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia"))
-    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
     seed(shell)
     apply(shell, .minimal)
 }

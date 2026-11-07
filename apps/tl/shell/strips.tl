@@ -396,14 +396,10 @@ view place_content(p: ArrangementPlace) {
 
 /// A place's content: its resource drawn inline through the view it names, as its own app's code
 /// (shell.md §8, "The canvas composes views"), or the well the app's window shows in when there
-/// is no resource here to draw (a terminal, a legacy window). A run of the session's agent is the
-/// shell's own resource, so its place is the conversation over it (shell.md §8.1), drawn here as
-/// any other view of the shell is; the window's controls are the frame's, in its one bar, outside
-/// it.
+/// is no resource here to draw (a terminal, a legacy window). The window's controls are the
+/// frame's, in its one bar, outside it.
 view place_view(p: ArrangementPlace) {
-    if let r = placed_run(p.record) {
-        conversation(r, fill)
-    } else if let r = placed_resource(p.record) {
+    if let r = placed_resource(p.record) {
         if p.shown_as != "" or meta(r).opens {
             show(r, view: p.shown_as, fill)
         } else {

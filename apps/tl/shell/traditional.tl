@@ -234,15 +234,6 @@ view traditional_bar(d: Desk) {
         }
         action_bar(arrangement, room)
         spacer
-        if room == .roomy {
-            for t in d.tasks {
-                if t.state == "running" {
-                    ui.Button(t.title, icon: .bot, role: .bar) {
-                        on press: device.show_surface(device.desk, surface: "composer")
-                    }
-                }
-            }
-        }
         clock(d)
         if room != .one {
             people_button(d)

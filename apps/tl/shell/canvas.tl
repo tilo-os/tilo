@@ -16,7 +16,6 @@
 /// as tall as its content would show none of it.
 view framed_canvas(a: Arrangement) {
     stack(gap: .related, fill) {
-        canvas_entry(a)
         ui.Map(name: .some("Canvas"), fill) {
             for s in a.strips {
                 if s.placed {
@@ -41,7 +40,6 @@ view framed_canvas(a: Arrangement) {
 /// grouped into the strip's space by nearness.
 view spaces_canvas(a: Arrangement) {
     stack(gap: .related, fill) {
-        canvas_entry(a)
         ui.Map(name: .some("Spaces"), fill) {
             for s in a.strips {
                 if s.placed {
@@ -114,21 +112,6 @@ view space_content(a: Arrangement, p: ArrangementPlace) {
 /// before it kept one stands as tall as a desktop frame does.
 fn pin_height(s: ArrangementStrip) -> Int {
     if s.canvas_height > 0 { s.canvas_height } else { 480 }
-}
-
-/// What the person types on the canvas: a search that becomes a place, or a question to the
-/// agent whose conversation stands where they typed (shell.md §8 and §8.1). `session.converse`
-/// is one action: what the text finds stands at the caret as its primary view, one arranging
-/// step of the person's, attributed to them and undone as one step; text that finds nothing is
-/// a question, and the run it starts places its conversation there instead. `x` and `y` are
-/// where the caret was, in canvas pixels.
-view canvas_entry(a: Arrangement) {
-    state typed: Text = ""
-    ui.TextInput(value: typed, placeholder: "Find something, or ask") {
-        on submit: session
-            .conversation(line: typed, x: here_x(a), y: here_y(a))
-            .then(set(typed, ""))
-    }
 }
 
 /// Where text typed on the canvas puts what it finds: the canvas point the
