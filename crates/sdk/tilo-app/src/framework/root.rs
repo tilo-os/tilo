@@ -149,6 +149,60 @@ pub(crate) struct ResourceRoot {
     native_presentation: crate::runner::Presentation,
     /// The links `share-link` is minting.
     share: super::share_link::ShareLinks,
+    /// Where the resource's state comes from and where its edits go: the
+    /// document the host lends each pass, or the session over the app's one
+    /// connection ([`super::Source`]).
+    source: super::Source,
+}
+
+impl ResourceRoot {
+    /// Adopt the session's newest reading of the resource, when it moved:
+    /// what the view binds follows it as any change does.
+    fn sync_remote_state(&self) {
+        let (Some(resource), Some(connection)) =
+            (self.source.remote_resource(), self.source.connection())
+        else {
+            return;
+        };
+        let Some(reading) = connection.reading(resource) else {
+            // Nothing publishes it yet, or the person may not read it:
+            // denial is absence (`apps.md` §6), and the last state stands.
+            return;
+        };
+        if let Err(error) = self.typed.adopt(&reading) {
+            tracing::warn!(%error, kind = self.resource.kind, "the session's reading is not this resource's state");
+        }
+    }
+
+    fn sync_over(&mut self, state: &AutoCommit, path: &automerge::ObjId) {
+        self.refresh_access();
+        if self.dispatch.take_represent() {
+            self.typed.represent();
+        }
+        let head = self.refresh(state);
+        for (action, reason) in self.dispatch.opener.take_refusals() {
+            self.dispatch.refuse(&action, reason);
+        }
+        self.follow_readability();
+        self.storage.refresh();
+        self.typed
+            .poll_window_jobs(effect_view(&mut self.unreadable, &mut self.content));
+        {
+            let _profile = tilo_resource::profiling::Phase::start("framework.content_sync");
+            self.content.sync(state, path);
+        }
+        self.reveal_launched();
+        self.settle_arrival();
+        self.follow_search();
+        // What the view's sync changed (its bound edits, its availability)
+        // reaches the bindings; the document-owned head is rebuilt only when
+        // the sync moved the state.
+        let head = self.refresh_bindings(Some(head));
+        *self.binding_head.borrow_mut() = Some(head);
+        // The save status says itself in the window's bar.
+        self.save.sync(ui_core::time::now());
+        self.sync_reactions();
+    }
 }
 
 impl ui_core::component_lifecycle::WindowActivation for ResourceRoot {
@@ -369,7 +423,7 @@ impl ResourceRoot {
     }
 
     /// The app's view: what the root asks the view for ([`app_view_in`]).
-    fn app_view(&self) -> &dyn Widget {
+    pub(crate) fn app_view(&self) -> &dyn Widget {
         app_view_in(self.content.as_ref()).unwrap_or_else(|| self.content.as_ref())
     }
 
@@ -421,6 +475,7 @@ impl ResourceRoot {
         let dispatch = env.dispatch.core().clone();
         let typed = Typed {
             live: env.live,
+            reading: std::cell::RefCell::new(None),
             updaters,
             dispatch: env.dispatch,
             bindings,
@@ -505,7 +560,16 @@ impl ResourceRoot {
             ground: true,
             native_presentation,
             share: super::share_link::ShareLinks::default(),
+            source: super::Source::Document,
         }
+    }
+
+    /// Take the source the dispatcher submits over as the root's too, so the
+    /// view syncs from the reading the session publishes when the record is
+    /// the session's ([`super::Source::Connection`]).
+    pub(crate) fn reading_from_source(mut self) -> Self {
+        self.source = self.dispatch.source().clone();
+        self
     }
 
     /// A root whose resource keeps no document state: it publishes no
@@ -944,7 +1008,11 @@ impl ResourceRoot {
     /// this view last synced.
     #[inline(never)]
     fn current_publication(&self, doc: &AutoCommit) -> ResourceSpec {
-        if !self.typed.follows(doc)
+        // The session keeps the record: there is no document here to read
+        // the resource from, so what it publishes is the state the view
+        // syncs from the reading (`one-app-model.md` §4).
+        if !self.source.is_connection()
+            && !self.typed.follows(doc)
             && let Ok(current) = self.typed.read(doc)
         {
             // Publication can run after an edit and before the view syncs.
@@ -1111,7 +1179,12 @@ impl ResourceRoot {
     /// Answers the document-owned head the bindings were refreshed from, for
     /// the refresh after the view synced to reuse.
     fn refresh(&self, doc: &AutoCommit) -> BindingHead {
-        if let Err(error) = self.typed.sync(doc) {
+        // The session keeps the record: the state follows the reading
+        // (`sync_remote_state`), never a document this process lent an empty
+        // pass (`one-app-model.md` §4).
+        if !self.source.is_connection()
+            && let Err(error) = self.typed.sync(doc)
+        {
             tracing::warn!(%error, kind = self.resource.kind, "resource unreadable");
         }
         // Refresh the same declarations the host publishes before rebuilt
@@ -1525,34 +1598,18 @@ impl RootModel for ResourceRoot {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if self.source.is_connection() {
+            // The session keeps the record: the view syncs from the reading
+            // it publishes, and the document the host lends this pass holds
+            // nothing of it (`one-app-model.md` §4). Everything the view
+            // binds is still synced, over the state this root now holds.
+            self.sync_remote_state();
+            let empty = AutoCommit::new();
+            self.sync_over(&empty, &automerge::ROOT);
+            return;
+        }
         let (state, path) = ui_core::doc::document_ref(state, path);
-        self.refresh_access();
-        if self.dispatch.take_represent() {
-            self.typed.represent();
-        }
-        let head = self.refresh(state);
-        for (action, reason) in self.dispatch.opener.take_refusals() {
-            self.dispatch.refuse(&action, reason);
-        }
-        self.follow_readability();
-        self.storage.refresh();
-        self.typed
-            .poll_window_jobs(effect_view(&mut self.unreadable, &mut self.content));
-        {
-            let _profile = tilo_resource::profiling::Phase::start("framework.content_sync");
-            self.content.sync(state, path);
-        }
-        self.reveal_launched();
-        self.settle_arrival();
-        self.follow_search();
-        // What the view's sync changed (its bound edits, its availability)
-        // reaches the bindings; the document-owned head is rebuilt only when
-        // the sync moved the state.
-        let head = self.refresh_bindings(Some(head));
-        *self.binding_head.borrow_mut() = Some(head);
-        // The save status says itself in the window's bar.
-        self.save.sync(ui_core::time::now());
-        self.sync_reactions();
+        self.sync_over(state, path);
     }
 
     fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
@@ -2263,7 +2320,15 @@ impl RootControls for ResourceRoot {
         if let Some((invocation, _)) = &taken {
             self.share.note_view_invocation(invocation);
         }
-        taken
+        let connection_submits = self.source.is_connection();
+        match taken {
+            Some((invocation, None)) if connection_submits => {
+                self.dispatch
+                    .submit_view_control(&invocation.address, invocation.arguments);
+                None
+            }
+            taken => taken,
+        }
     }
     /// An edit this resource's dispatcher submitted was refused, or is held
     /// for the user's confirmation. Nothing changed in the document, so a

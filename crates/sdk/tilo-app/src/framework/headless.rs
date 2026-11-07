@@ -271,6 +271,95 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
+    /// The app as its owner opens it over `answers`, the session's document
+    /// host: no record is opened here, the view reads the reading `answers`
+    /// publishes at `resource`, and everything it submits goes back to
+    /// `answers` (`one-app-model.md` §4).
+    ///
+    /// # Errors
+    /// The profile cannot be made, or the reading does not read as the app's
+    /// resource.
+    pub fn hosted(
+        resource: &str,
+        answers: impl super::Answers + 'static,
+    ) -> Result<Self, LaunchError> {
+        let profile = Rc::new(profile_directory().map_err(operation)?);
+        let person = AUTHOR.to_owned();
+        let author = UserId(person.clone());
+        let permissions = role_permissions(&person, Role::Owner);
+        let (mut host, instance) = profile_host(
+            &Profile::Temporary(
+                Rc::clone(&profile),
+                TEST_WORKSPACE.to_owned(),
+                TEST_DEVICE.to_owned(),
+            ),
+            author,
+            &permissions,
+        )?;
+        let definition = super::app::definition::<A>();
+        let records = host.records_for(definition)?;
+        let mut context = ui_core::application::HostContext::prepare_session_hosted(
+            definition,
+            ui_core::application::HostContextInputs {
+                records: records.clone(),
+                views: host.views().clone(),
+                device_id: TEST_DEVICE.to_owned(),
+                instance_id: instance,
+                permissions: permissions.clone(),
+                author: UserId(person.clone()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
+            resource,
+        )?;
+        context.provide_content(super::app::profile_content(profile.path()));
+        context.provide_connection(super::Connection::in_process(answers));
+        // The launch names the resource the session publishes: the same
+        // variable the session sets on a launch it serves
+        // (`ui::application::HOSTED_RESOURCE_ENV`).
+        let previous = std::env::var_os(ui_core::application::HOSTED_RESOURCE_ENV);
+        // SAFETY: the test binary runs this one app at a time, and the
+        // previous value is put back below.
+        unsafe {
+            std::env::set_var(ui_core::application::HOSTED_RESOURCE_ENV, resource);
+        }
+        let target = ui_core::application::LaunchTarget::Record {
+            checkout: RecordCheckout::new(
+                RecordId::package_primary(),
+                definition.record_kind.clone(),
+            ),
+            reveal: None,
+        };
+        let component =
+            definition.instantiate(context, target, ui_core::application::RestoreInput::None);
+        // SAFETY: as above; the launch's own value is the one that stands
+        // again.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var(ui_core::application::HOSTED_RESOURCE_ENV, value),
+                None => std::env::remove_var(ui_core::application::HOSTED_RESOURCE_ENV),
+            }
+        }
+        let component = component?;
+        let inputs = ui_core::application::ComponentRunnerInputs::from_native_process();
+        let harness = FrameHarness::from_component(component, (1280, 800), inputs)?;
+        Ok(Self {
+            harness: Some(harness),
+            records,
+            checkout: RecordCheckout::new(
+                RecordId::package_primary(),
+                definition.record_kind.clone(),
+            ),
+            instance,
+            profile: Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
+            role: Role::Owner,
+            author: person,
+            last_effect: None,
+            workspace: None,
+            permissions,
+            marker: std::marker::PhantomData,
+        })
+    }
+
     /// The app as `person` (the hex of a root public key) opens it on a
     /// fresh profile: one of that person's devices, whose shared records
     /// ([`RecordEnv::shared_person`](super::RecordEnv::shared_person)) are
@@ -948,6 +1037,49 @@ impl<A: ResourceApp> HeadlessApp<A> {
     #[allow(clippy::expect_used, reason = "closing consumes the TestApp")]
     pub fn harness(&mut self) -> &mut FrameHarness {
         self.harness.as_mut().expect("app is open")
+    }
+
+    /// Every text the window shows now, as assistive technology reads it:
+    /// what the app's view drew of its state.
+    pub fn texts(&mut self) -> Vec<String> {
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| ui_core::a11y::texts(root.app_view()))
+            .unwrap_or_default()
+    }
+
+    /// The records this window's store has open: what the app process opened
+    /// itself, which an app the session serves opens none of.
+    pub fn open_records(&self) -> Vec<RecordId> {
+        self.records
+            .open_records()
+            .into_iter()
+            .map(|checkout| checkout.id)
+            .collect()
+    }
+
+    /// Submit `submit` through the running view's own dispatcher, as a
+    /// control's press or a field's edit hands it over: over the session's
+    /// connection when the app is the session's, into the record here when
+    /// it is not.
+    ///
+    /// # Errors
+    /// The dispatcher's refusal, in its own words.
+    pub fn submit(&mut self, submit: impl super::Submit<A::Resource>) -> Result<(), String> {
+        let refused = self
+            .harness
+            .as_mut()
+            .expect("app is open")
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                let Some(typed) = root.typed::<A::Resource>() else {
+                    return Err("the window's root is another resource type".to_owned());
+                };
+                typed.dispatch.submit(submit);
+                Ok(typed.dispatch.refused().get().map(|refused| refused.reason))
+            })
+            .ok_or_else(|| "the window's root is not reachable".to_owned())?
+            .and_then(|refused| refused.map_or(Ok(()), Err));
+        self.settle();
+        refused
     }
 
     /// Visit the custom surface of type `S` the app's view hosts

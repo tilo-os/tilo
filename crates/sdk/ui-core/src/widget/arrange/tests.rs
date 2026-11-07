@@ -976,6 +976,114 @@ fn an_aspect_layer_in_a_filling_page_keeps_its_width_and_ratio() {
     );
 }
 
+/// The video page's own shape: a canvas page holding a column whose first child is the 16:9
+/// player box, and, in that box, the poster filling the cell and Play centred over it. The box
+/// takes the page content's width and its 16:9 height; Play keeps its own size in the middle
+/// rather than stretching across the box into a tall strip, and the picture takes the box.
+#[test]
+fn the_video_box_is_the_page_contents_width_at_sixteen_by_nine() {
+    use crate::widget::Button;
+    for (width, height) in [(1000.0_f32, 744.0_f32), (320.0, 512.0)] {
+        let theme = Theme::dark();
+        let play = Row::row()
+            .fill_width()
+            .fill_height()
+            .align(Align::Center)
+            .distribute(Distribute::Center)
+            .push(Box::new(Button::new("play", "Play")));
+        let player = Layers::layers()
+            .with_id("player")
+            .push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0))
+            .push_fit(Box::new(play), Fit::fill(1.0));
+        let column = Stack::stack()
+            .fill_width()
+            .push(Box::new(player))
+            .push(Box::new(Stack::stack().fill_width().push(boxed(80.0))));
+        let mut page = Page::full().push(Box::new(column));
+        solve_in(
+            &mut page,
+            &theme,
+            width,
+            taffy::AvailableSpace::Definite(height),
+        );
+        let box_rect = crate::widget::find_test_id(&page, "player")
+            .expect("the player box is laid out")
+            .get_rect();
+        let play = crate::widget::find_test_id(&page, "play")
+            .expect("the play button is laid out")
+            .get_rect();
+        let view = subject_rect(&page);
+        assert!(
+            (box_rect.width() / box_rect.height() - 16.0 / 9.0).abs() < 0.02,
+            "at {width} the player box is {}x{}, not 16:9",
+            box_rect.width(),
+            box_rect.height()
+        );
+        assert!(
+            (view.width() - box_rect.width()).abs() < 1.0,
+            "at {width} the picture is {} wide in a {} box",
+            view.width(),
+            box_rect.width()
+        );
+        assert!(
+            play.width() < box_rect.width() * 0.9 && play.height() < box_rect.height() * 0.9,
+            "at {width} Play is {}x{} in a {}x{} box: it stretches across the picture",
+            play.width(),
+            play.height(),
+            box_rect.width(),
+            box_rect.height()
+        );
+        assert!(
+            (play.center().x - box_rect.center().x).abs() < 1.0,
+            "at {width} Play stands at {} in a box centred at {}",
+            play.center().x,
+            box_rect.center().x
+        );
+    }
+}
+
+/// A canvas page that does not fill keeps its reading gutter beside its content; a filling one
+/// lays its own parts out from the page gutter and drops the side gutters. The video page is a
+/// canvas because its player is wide, not because it fills, so it must keep them.
+#[test]
+fn a_canvas_page_that_does_not_fill_keeps_its_side_gutter() {
+    let theme = Theme::dark();
+    for filling in [false, true] {
+        let player = Layers::layers()
+            .with_id("gutter-box")
+            .push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0));
+        let column = Stack::stack()
+            .fill_width()
+            .push(Box::new(player))
+            .push(Box::new(Stack::stack().fill_width().push(boxed(80.0))));
+        let page = Page::full();
+        let page = if filling { page.filling() } else { page };
+        let mut page = page.push(Box::new(column));
+        solve_in(
+            &mut page,
+            &theme,
+            1000.0,
+            taffy::AvailableSpace::Definite(744.0),
+        );
+        let page_rect = page.get_rect();
+        let box_rect = crate::widget::find_test_id(&page, "gutter-box")
+            .expect("the box is laid out")
+            .get_rect();
+        let inset = box_rect.x0 - page_rect.x0;
+        if filling {
+            assert!(
+                inset < 1.0,
+                "a filling page lays its parts from its own edge: inset {inset}"
+            );
+        } else {
+            assert!(
+                inset > 1.0,
+                "a canvas page keeps its reading gutter, but the box stands at inset {inset}"
+            );
+        }
+    }
+}
+
 /// A layer that fills the cell at an aspect takes the cell's width and the height the ratio
 /// gives, not the whole cell's height: `layers(fill, aspect: 16/9)` is the video box.
 #[test]
@@ -1002,4 +1110,134 @@ fn a_layer_that_fills_at_an_aspect_keeps_its_ratio() {
         (r.width() - 800.0).abs() < 1.0,
         "it takes the cell's width: {r:?}"
     );
+}
+
+/// The page row a virtual list wraps each row in is a page whose slot takes the row's whole
+/// width. In a row beside another child, that `width: 100%` is measured against a width the
+/// row is still deciding, and the page comes out as tall as its content at the narrowest width
+/// it was measured at: the row's own height must not come from that measurement.
+#[test]
+fn a_page_rows_width_does_not_decide_its_height_in_a_row() {
+    let theme = Theme::dark();
+    for container_height in [200.0_f32, 504.0] {
+        let content = Stack::stack()
+            .with_id("page-row-content")
+            .push(boxed(16.0))
+            .push(boxed(35.0))
+            .push(boxed(28.0));
+        let page = Page::full()
+            .row_after(Rhythm::Section)
+            .push(Box::new(content));
+        let mut line = Stack::row()
+            .fill_width()
+            .align(Align::Center)
+            .push(Box::new(page))
+            .push(Box::new(Spacer::fixed(36.0)));
+        solve_in(
+            &mut line,
+            &theme,
+            436.0,
+            taffy::AvailableSpace::Definite(container_height),
+        );
+        let content = crate::widget::find_test_id(&line, "page-row-content")
+            .expect("the row's content is laid out")
+            .get_rect();
+        assert!(
+            content.height() < 120.0,
+            "at a {container_height}-tall container the row's content is {} tall",
+            content.height()
+        );
+    }
+}
+
+/// The same rule for the wrapper a virtual list puts a row in: the row's page
+/// ([`Page::full().row_after`]) holds the row at the row's own height, and a column inside a
+/// row beside a chip takes the row's height, never the list's. This is the chat transcript's
+/// shape: a message's column, a reaction chip trailing it, in a page row inside the list.
+#[test]
+fn a_message_column_in_a_page_row_keeps_the_rows_height() {
+    let theme = Theme::dark();
+    for rows in [1_usize, 12] {
+        let items: Vec<u32> = (0..rows as u32).collect();
+        let model = crate::widget::VecListModel::new(items, |n| *n).expect("a list model");
+        let list = crate::widget::VirtualList::new(model, 40.0, |_, index, _| {
+            let column = Stack::stack()
+                .with_id(format!("msg{index}"))
+                .push(boxed(16.0))
+                .push(boxed(35.0))
+                .push(boxed(28.0));
+            let line = Stack::row()
+                .fill_width()
+                .align(Align::Center)
+                .push(Box::new(column))
+                .push(Box::new(Spacer::fixed(36.0)));
+            Box::new(Page::full().row_after(Rhythm::Section).push(Box::new(line)))
+                as crate::widget::Element
+        });
+        let mut docked = Stack::stack()
+            .fill_width()
+            .fill_height()
+            .push_fit(Box::new(list), Fit::fill(1.0))
+            .push_fit(Box::new(Spacer::fixed(60.0)), Fit::hug());
+        solve_in(
+            &mut docked,
+            &theme,
+            540.0,
+            taffy::AvailableSpace::Definite(504.0),
+        );
+        let column = crate::widget::find_test_id(&docked, "msg0")
+            .expect("the first message is laid out")
+            .get_rect();
+        assert!(
+            column.height() < 120.0,
+            "with {rows} rows the message column is {} tall: it took the list's room, not its \
+             own content's",
+            column.height()
+        );
+    }
+}
+
+/// A row of a list that fills its column keeps its own height, not the column's: a chat
+/// message's row in a transcript is as tall as what it says, however tall the list around it
+/// is. A slot asking for no aspect gets no derived height, so nothing about a ratio may reach
+/// it — the same rule for a row inside a virtual list as for any other slot.
+#[test]
+fn a_rows_slot_keeps_its_own_height_beside_a_foot() {
+    use crate::widget::{Button, VecListModel, VirtualList};
+    let theme = Theme::dark();
+    for rows in [1_usize, 12] {
+        let items: Vec<u32> = (0..rows as u32).collect();
+        let model = VecListModel::new(items, |n| *n).expect("a list model");
+        let list = VirtualList::new(model, 40.0, |_, index, _| {
+            Box::new(
+                Stack::stack()
+                    .fill_width()
+                    .with_id(format!("row{index}"))
+                    .push(boxed(40.0)),
+            ) as crate::widget::Element
+        });
+        let docked = Stack::stack()
+            .fill_width()
+            .fill_height()
+            .push_fit(Box::new(list), Fit::fill(1.0))
+            .push_fit(Box::new(Button::new("send", "Send")), Fit::hug());
+        let mut column = Stack::stack()
+            .fill_width()
+            .fill_height()
+            .push(Box::new(docked));
+        solve_in(
+            &mut column,
+            &theme,
+            540.0,
+            taffy::AvailableSpace::Definite(560.0),
+        );
+        let row = crate::widget::find_test_id(&column, "row0")
+            .expect("the first row is laid out")
+            .get_rect();
+        assert!(
+            row.height() < 120.0,
+            "with {rows} rows the first is {} tall: it took the list's room, not its own",
+            row.height()
+        );
+    }
 }
