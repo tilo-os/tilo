@@ -32,6 +32,7 @@ pub mod feedback_picker;
 pub mod follow_banner;
 pub mod fullscreen_hint;
 pub mod here;
+pub mod host_contract;
 pub mod intents;
 pub mod launchpad;
 pub mod osd;

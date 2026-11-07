@@ -8,8 +8,8 @@ use tilo_actions::ActionAddress;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE};
 use tilo_desktop::desktop_host::{
-    DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, SESSION_LOCK, SESSION_LOG_OUT,
-    SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
+    DELETE_WORKSPACE, DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, SESSION_LOCK,
+    SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
 };
 use tilo_desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
 use tilo_desktop::overlays::{Anchor, Slot};
@@ -72,6 +72,11 @@ impl Shared {
                 // as the keys ask for them.
                 DesktopAsk::Switcher(action) => self.switcher_ask(action),
                 DesktopAsk::LeftWorkspace(name) => workspaces::left_workspace(&self.notices, &name),
+                // A workspace the desk deleted, whoever asked it to: what is
+                // left of it here in this device's record goes too.
+                DesktopAsk::DeletedWorkspace { workspace, name } => {
+                    self.deleted_workspace(workspace, &name);
+                }
                 // A window that stopped answering offers to keep waiting for
                 // its app or to quit it: the same two choices the desk's own
                 // cards make, carried out where the compositor is.
@@ -377,6 +382,7 @@ impl Shared {
                 &self.directory_store,
             ),
             LEAVE_WORKSPACE => self.leave_workspace(),
+            DELETE_WORKSPACE => self.ask_delete_workspace(),
             // The Tilo menu's own rows, and the same effects the power
             // menu's choices are.
             SESSION_LOCK => self.power_effect(PowerEffect::Lock),
@@ -384,6 +390,10 @@ impl Shared {
             SESSION_RESTART => self.power_effect(PowerEffect::Restart),
             SESSION_SHUT_DOWN => self.power_effect(PowerEffect::ShutDown),
             choice => {
+                // The delete banner's own buttons are its answer.
+                if self.answer_delete_workspace(choice) {
+                    return;
+                }
                 // A device another of the person's devices found asks here
                 // to act as them: the banner's own buttons are its answer.
                 if let Some(fabric) = &self.fabric

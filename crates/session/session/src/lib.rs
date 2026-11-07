@@ -173,6 +173,7 @@ mod window_move;
 mod window_share;
 mod window_transfer;
 mod window_warmth;
+mod workspace_delete;
 mod workspace_gate;
 mod workspace_settings;
 mod workspaces;
@@ -1250,6 +1251,7 @@ impl Session {
                     identify: numbers.ask(),
                     invitable: Rc::clone(&invitable),
                 },
+                engine: engine.clone(),
             },
             sync.clone(),
             &overview,

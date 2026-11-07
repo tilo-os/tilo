@@ -42,7 +42,11 @@ fn enabled(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) -> bool {
 /// The settings a scenario stages, shown through a seat as the shell lends
 /// it.
 fn seated(scenario: &str) -> (HeadlessApp<WorkspaceSettingsApp>, WorkspaceSettingsSeat) {
-    let settings = staged_settings(scenario);
+    seated_with(staged_settings(scenario))
+}
+
+/// `settings` shown through a seat, as the shell lends it.
+fn seated_with(settings: Settings) -> (HeadlessApp<WorkspaceSettingsApp>, WorkspaceSettingsSeat) {
     let seat = WorkspaceSettingsSeat::default();
     seat.show(settings);
     seat.presentation().open(false);
@@ -77,6 +81,21 @@ fn the_general_tab_shows_the_workspace_and_what_the_person_may_change() {
     let mut viewer = staged("general-viewer");
     assert!(says(&mut viewer, "Only admins can rename the workspace."));
     assert!(!enabled(&mut viewer, "Create invitation"));
+}
+
+#[test]
+fn one_device_has_no_order_to_choose_between() {
+    let mut settings = staged_settings("general");
+    settings.general.device_rows.truncate(1);
+    settings.general.move_labels = ["Move earlier".to_owned(), "Move later".to_owned()];
+    let (mut app, _seat) = seated_with(settings);
+
+    assert!(!says(&mut app, "Move earlier"));
+    assert!(!says(&mut app, "Move later"));
+    assert!(
+        says(&mut app, "Laptop (this device)"),
+        "the one device's row is still shown"
+    );
 }
 
 #[test]

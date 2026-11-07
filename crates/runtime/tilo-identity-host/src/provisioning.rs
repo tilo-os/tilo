@@ -1135,9 +1135,9 @@ fn ensure_collaboration_identity_in_context(
     let device_owner = claim_device_owner(&paths.user_pubkey, &root_public)?;
 
     let device_label = approved_label.unwrap_or(if device_owner {
-        "Primary device"
+        tilo_user_identity::UNNAMED_PRIMARY_DEVICE
     } else {
-        "Shared device"
+        tilo_user_identity::UNNAMED_SHARED_DEVICE
     });
 
     // The device's certificate for this identity: the owner's is also the

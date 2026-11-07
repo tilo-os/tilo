@@ -341,6 +341,25 @@ impl DeviceCapabilities {
     }
 }
 
+/// The name a certificate carries for a machine the person never named: the
+/// one that set the machine up owns it, and every other account on it
+/// shares it.
+pub const UNNAMED_PRIMARY_DEVICE: &str = "Primary device";
+
+/// The name a certificate carries for a machine another account set up
+/// ([`UNNAMED_PRIMARY_DEVICE`]'s counterpart).
+pub const UNNAMED_SHARED_DEVICE: &str = "Shared device";
+
+/// What the person calls a device whose certificate names it `label`:
+/// `None` when they never named it, since provisioning fills in a stand-in
+/// that is no name of theirs.
+#[must_use]
+pub fn device_name(label: &str) -> Option<&str> {
+    let label = label.trim();
+    (!label.is_empty() && label != UNNAMED_PRIMARY_DEVICE && label != UNNAMED_SHARED_DEVICE)
+        .then_some(label)
+}
+
 /// Signed statement: "the user identity with public key
 /// `user_public_key` recognises `device_public_key` as one of its
 /// devices, with the given `capabilities`."
@@ -1085,5 +1104,24 @@ mod tests {
             assert!(verify_device_cert(&changed).is_err(), "tamper {tamper}");
         }
         verify_device_cert(&cert).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod device_name_tests {
+    use super::{UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, device_name};
+
+    #[test]
+    fn a_name_the_person_gave_is_the_name() {
+        assert_eq!(device_name("  Studio phone "), Some("Studio phone"));
+        assert_eq!(device_name("Laptop"), Some("Laptop"));
+    }
+
+    #[test]
+    fn the_stand_in_provisioning_fills_in_is_no_name() {
+        assert_eq!(device_name(UNNAMED_PRIMARY_DEVICE), None);
+        assert_eq!(device_name(UNNAMED_SHARED_DEVICE), None);
+        assert_eq!(device_name("   "), None);
+        assert_eq!(device_name(""), None);
     }
 }

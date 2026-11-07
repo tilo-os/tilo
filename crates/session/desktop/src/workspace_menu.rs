@@ -93,6 +93,9 @@ pub struct WorkspaceMenuModel {
     pub actions: Vec<WorkspaceAction>,
     pub can_rename: bool,
     pub can_add_strip: bool,
+    /// Deleting the workspace shown: the person owns it and this computer is
+    /// the only one holding it, so nothing of it is left anywhere.
+    pub can_delete: bool,
 }
 
 /// What the person chose.
@@ -205,6 +208,10 @@ impl WorkspaceMenu {
         if model.can_add_strip {
             rows.push(Self::new_strip());
         }
+        if model.can_delete {
+            rows.push(Row::rule());
+            rows.push(Self::delete());
+        }
         rows
     }
 
@@ -275,6 +282,10 @@ impl WorkspaceMenu {
         if !workspace.is_empty() {
             rows.push(Row::submenu(t("workspace-menu-workspace"), workspace));
         }
+        if model.can_delete {
+            rows.push(Row::rule());
+            rows.push(Self::delete());
+        }
         rows
     }
 
@@ -305,6 +316,17 @@ impl WorkspaceMenu {
         Row::new(
             MenuItem::selection(t("workspace-menu-new-strip")).with_icon(Icon::Plus),
             Some(WorkspaceMenuChoice::NewStrip),
+        )
+    }
+
+    /// Deleting the workspace stands last and apart: nothing else is
+    /// reached for on the way to it.
+    fn delete() -> Row {
+        Row::new(
+            MenuItem::destructive_selection(t("workspace-menu-delete")).with_icon(Icon::Trash2),
+            Some(WorkspaceMenuChoice::Action(
+                crate::desktop_host::DELETE_WORKSPACE.to_owned(),
+            )),
         )
     }
 
@@ -537,6 +559,7 @@ mod tests {
             ],
             can_rename: false,
             can_add_strip: true,
+            can_delete: false,
         }
     }
 
@@ -607,6 +630,28 @@ mod tests {
         let mut menu = opened(&model());
         menu.choose("Hosted by tilo.coffee");
         assert_eq!(menu.take_choice(), None);
+    }
+
+    #[test]
+    fn deleting_stands_last_and_after_leaving() {
+        let plain = opened(&model());
+        assert!(
+            !plain
+                .labels()
+                .contains(&Some("Delete workspace".to_owned())),
+            "nothing offers to delete a workspace that stays elsewhere"
+        );
+        let mut menu = opened(&WorkspaceMenuModel {
+            can_delete: true,
+            ..model()
+        });
+        let labels: Vec<String> = menu.labels().into_iter().flatten().collect();
+        assert_eq!(labels.last().map(String::as_str), Some("Delete workspace"));
+        assert!(menu.choose("Delete workspace"));
+        assert_eq!(
+            menu.take_choice(),
+            Some(WorkspaceMenuChoice::Action("delete-workspace".into()))
+        );
     }
 
     #[test]

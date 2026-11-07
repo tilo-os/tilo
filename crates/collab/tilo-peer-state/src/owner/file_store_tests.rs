@@ -178,12 +178,17 @@ fn a_change_writes_only_its_own_workspace_file_and_the_index() {
     let (key, device) = device();
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
-    let first = owner.create_workspace("One", &device, &key, now).unwrap();
-    let second = owner.create_workspace("Two", &device, &key, now).unwrap();
+    let first = owner
+        .create_workspace(WorkspaceId::new(), "One", &device, &key, now)
+        .unwrap();
+    let second = owner
+        .create_workspace(WorkspaceId::new(), "Two", &device, &key, now)
+        .unwrap();
     let before = part_files(&path);
     assert_eq!(before.len(), 2);
 
-    let (created, replaced) = replacements(|| owner.create_workspace("Three", &device, &key, now));
+    let (created, replaced) =
+        replacements(|| owner.create_workspace(WorkspaceId::new(), "Three", &device, &key, now));
     created.unwrap();
     assert_eq!(replaced, 2, "the workspace's file and the index");
 
@@ -224,12 +229,14 @@ fn a_publication_that_stops_before_its_index_leaves_the_record_as_it_was() {
     let (key, device) = device();
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
-    let first = owner.create_workspace("One", &device, &key, now).unwrap();
+    let first = owner
+        .create_workspace(WorkspaceId::new(), "One", &device, &key, now)
+        .unwrap();
     let durable = index_bytes(&path);
 
     // The workspace's file is written; the index that would name it is not.
     let stopped = with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
-        owner.create_workspace("Two", &device, &key, now)
+        owner.create_workspace(WorkspaceId::new(), "Two", &device, &key, now)
     });
     assert!(stopped.is_err());
     assert_eq!(index_bytes(&path), durable);
@@ -249,7 +256,7 @@ fn a_publication_that_stops_before_its_index_leaves_the_record_as_it_was() {
     assert_eq!(reopened.storage().held().count(), 1);
     assert_eq!(part_files(&path).len(), 1);
     reopened
-        .create_workspace("Two", &device, &key, now)
+        .create_workspace(WorkspaceId::new(), "Two", &device, &key, now)
         .unwrap();
     assert_eq!(part_files(&path).len(), 2);
     assert_eq!(read_file(&path).unwrap().held().count(), 2);
@@ -263,7 +270,7 @@ fn a_workspace_costs_its_own_record() {
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
     let founded = owner
-        .create_workspace("Founders", &device, &key, now)
+        .create_workspace(WorkspaceId::new(), "Founders", &device, &key, now)
         .unwrap();
     let record = read_file(&path).unwrap();
     let founded_bytes = part_bytes(record.workspaces.get(&founded).unwrap())
@@ -305,7 +312,9 @@ fn a_split_record_leaves_the_file_it_came_from_for_an_older_build() {
     let (key, device) = device();
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
-    owner.create_workspace("Third", &device, &key, now).unwrap();
+    owner
+        .create_workspace(WorkspaceId::new(), "Third", &device, &key, now)
+        .unwrap();
     drop(owner);
 
     // A build before the split reads the file it wrote, whole, and holds two
@@ -332,7 +341,7 @@ fn a_released_workspace_leaves_no_file_behind() {
     let (key, device) = device();
     let owner = open_file(&path).unwrap();
     let workspace = owner
-        .create_workspace("One", &device, &key, SystemTime::now())
+        .create_workspace(WorkspaceId::new(), "One", &device, &key, SystemTime::now())
         .unwrap();
     assert!(owner.release_workspace(workspace).unwrap());
 
@@ -348,7 +357,7 @@ fn an_index_that_names_a_missing_workspace_file_is_not_a_record() {
     let (key, device) = device();
     let owner = open_file(&path).unwrap();
     owner
-        .create_workspace("One", &device, &key, SystemTime::now())
+        .create_workspace(WorkspaceId::new(), "One", &device, &key, SystemTime::now())
         .unwrap();
     drop(owner);
     let files = part_files(&path);

@@ -5,8 +5,8 @@
     clippy::expect_used,
     reason = "in a test these are the assertion, not a hazard"
 )]
-use crate::owner::open_file;
 use crate::owner::testing;
+use crate::owner::{WorkspaceId, open_file};
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
 
@@ -19,7 +19,7 @@ fn a_founded_workspace_is_held_here_and_restores_from_its_record() {
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
     let workspace = owner
-        .create_workspace("Founders", &device, &key, now)
+        .create_workspace(WorkspaceId::new(), "Founders", &device, &key, now)
         .unwrap();
     let (hosted, workspace_id, name) = owner
         .with_current(workspace, |view| {
@@ -67,13 +67,13 @@ fn a_workspace_is_founded_by_its_own_device_with_a_name() {
     let now = SystemTime::now();
     assert_eq!(
         owner
-            .create_workspace("  ", &device, &key, now)
+            .create_workspace(WorkspaceId::new(), "  ", &device, &key, now)
             .unwrap_err(),
         "workspace name must contain 1–80 characters"
     );
     assert_eq!(
         owner
-            .create_workspace("Founders", &device, &other, now)
+            .create_workspace(WorkspaceId::new(), "Founders", &device, &other, now)
             .unwrap_err(),
         "a workspace is founded with its own device's key"
     );

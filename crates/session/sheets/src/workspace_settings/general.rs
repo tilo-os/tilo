@@ -127,8 +127,9 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
     )
 }
 
-/// The devices that show the workspace, each shown or hidden, and the
-/// buttons that move it up or down their sidebars.
+/// The devices that show the workspace, each shown or hidden, and, with more
+/// than one of them, the buttons that move the workspace up or down their
+/// sidebars.
 fn devices(general: &General, parts: &Parts) -> Element {
     let mut devices: Vec<Element> = general
         .device_rows
@@ -154,19 +155,22 @@ fn devices(general: &General, parts: &Parts) -> Element {
             ) as Element
         })
         .collect();
-    devices.push(buttons(vec![
-        button(parts, "ws-general-move-up", &general.move_labels[0], || {
-            WorkspaceSettingsEffect::Move { step: -1 }
-        })
-        .with_enabled(general.move_enabled[0]),
-        button(
-            parts,
-            "ws-general-move-down",
-            &general.move_labels[1],
-            || WorkspaceSettingsEffect::Move { step: 1 },
-        )
-        .with_enabled(general.move_enabled[1]),
-    ]));
+    // One device has no order to choose between.
+    if general.device_rows.len() > 1 {
+        devices.push(buttons(vec![
+            button(parts, "ws-general-move-up", &general.move_labels[0], || {
+                WorkspaceSettingsEffect::Move { step: -1 }
+            })
+            .with_enabled(general.move_enabled[0]),
+            button(
+                parts,
+                "ws-general-move-down",
+                &general.move_labels[1],
+                || WorkspaceSettingsEffect::Move { step: 1 },
+            )
+            .with_enabled(general.move_enabled[1]),
+        ]));
+    }
     described(&general.devices, devices)
 }
 

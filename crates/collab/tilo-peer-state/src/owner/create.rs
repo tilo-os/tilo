@@ -14,17 +14,20 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::SystemTime;
 
 impl NativeWorkspaceOwner {
-    /// Found a workspace named `name` on `device`, the device whose signing
-    /// key is `key`, and hold it here: the workspace is new, its host is this
-    /// device, and its governance admits any other device the owner
-    /// invites. Nothing of it is its founder's private state: it is the
-    /// workspace's, published like every other change this device makes.
+    /// Found `workspace` — the identity the workspace was made with, before
+    /// anything of it was held here — named `name`, on `device`, the device
+    /// whose signing key is `key`. The workspace is new, its host is this
+    /// device, and its governance admits any other device the owner invites.
+    /// Nothing of it is its founder's private state: it is the workspace's,
+    /// published like every other change this device makes.
     ///
     /// # Errors
-    /// The name is not 1–80 characters, `key` is not `device`'s, `device`
-    /// may not own workspaces, or the record cannot be published.
+    /// The workspace has no identity, the name is not 1–80 characters, `key`
+    /// is not `device`'s, `device` may not own workspaces, or the record
+    /// cannot be published.
     pub fn create_workspace(
         &self,
+        workspace: WorkspaceId,
         name: &str,
         device: &DeviceCert,
         key: &SigningKey,
@@ -37,13 +40,15 @@ impl NativeWorkspaceOwner {
         if !device.capabilities.can_own_workspaces {
             return Err("this device may not own workspaces".into());
         }
+        if workspace.is_nil() {
+            return Err("a founded workspace has a canonical workspace".into());
+        }
         let _turn = self.0.mutation.lock();
-        let workspace = uuid::Uuid::new_v4().hyphenated().to_string();
-        let id = WorkspaceId::parse(&workspace)
-            .ok_or("a founded workspace has a canonical workspace")?;
+        let id = workspace;
         if self.0.authority.read().workspaces.contains_key(&id) {
             return Err("this device holds that workspace already".into());
         }
+        let workspace = id.to_string();
         let workspace_id =
             crate::join::room_workspace_id(&workspace).map_err(|error| error.to_string())?;
         let roster = vec![device.clone()];

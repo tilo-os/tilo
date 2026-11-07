@@ -604,6 +604,22 @@ impl Personal {
         &self.borrowed
     }
 
+    /// Whether this device is the one that made `workspace`: the list names
+    /// this device as its host, or names no host yet for a workspace a pass
+    /// has not listed. A workspace another device of the person's made is
+    /// hosted there, and one this device is entering from there is not its
+    /// to make: neither is founded here.
+    pub(crate) fn made_here(&self, workspace: WorkspaceId) -> bool {
+        if self.entering.contains(&workspace) {
+            return false;
+        }
+        self.hosts
+            .get(&workspace)
+            .copied()
+            .or_else(|| self.agreed.get(&workspace).and_then(|listed| listed.host))
+            .is_none_or(|host| host == self.device)
+    }
+
     /// What this person decided about the community at `site`, as all their
     /// devices hold it: `None` while they decided nothing, which is when
     /// their community is joined for them.
@@ -657,15 +673,15 @@ impl Personal {
         let listed = &inputs.listed;
         let mut complete = true;
         let mut changed = false;
-        let label = self.identity.device_cert.device_label.trim().to_owned();
-        if !label.is_empty() {
+        let named = tilo_user_identity::device_name(&self.identity.device_cert.device_label);
+        if let Some(label) = named {
             let registered = self
                 .directory
                 .devices()
                 .iter()
-                .any(|(device, known)| *device == self.device && known == &label);
+                .any(|(device, known)| *device == self.device && known == label);
             if !registered {
-                if self.directory.register_device(self.device, &label).is_ok() {
+                if self.directory.register_device(self.device, label).is_ok() {
                     changed = true;
                 } else {
                     complete = false;
@@ -926,14 +942,16 @@ impl Personal {
         };
         let mut devices = self.directory.devices();
         if !devices.iter().any(|(device, _)| *device == self.device) {
-            let label = self.identity.device_cert.device_label.trim().to_owned();
+            let label = self.identity.device_cert.device_label.clone();
             devices.push((self.device, label));
         }
         devices
             .into_iter()
             .map(|(device, label)| DeviceChoice {
                 device,
-                label,
+                label: tilo_user_identity::device_name(&label)
+                    .unwrap_or_default()
+                    .to_owned(),
                 shown: shows_on(&entry, &device),
                 here: device == self.device,
             })
@@ -1135,6 +1153,19 @@ impl crate::Shared {
         let mut tree = self.handle.read(Clone::clone);
         let mut changed = false;
         for workspace in &mut tree.workspaces {
+            if let Some(engine) = &self.engine
+                && self
+                    .personal
+                    .as_ref()
+                    .is_some_and(|personal| personal.borrow().made_here(workspace.id()))
+                && !workspace.id().is_nil()
+                && !borrowed.contains(&workspace.id())
+            {
+                // A workspace made on this desk is a workspace from here on,
+                // not only this desk's: its governance is founded in the
+                // workspace it already has an identity for.
+                engine.found(workspace.slot, workspace.id(), &workspace.name);
+            }
             if workspace
                 .owner()
                 .is_some_and(|owner| !self.earlier.contains(owner))
@@ -2105,6 +2136,31 @@ mod tests {
         assert!(
             on_desk(&a).iter().any(|(id, _)| *id == a_id),
             "the device it shows on still has it"
+        );
+    }
+
+    #[test]
+    fn a_device_never_named_shows_no_name() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let a = desk();
+        let a_identity = identity(0x11, 0x21, tilo_user_identity::UNNAMED_PRIMARY_DEVICE);
+        let mut a_list = open(a_identity, Some(state.path()));
+        a_list.publish_local(&a);
+        let held = on_desk(&a);
+        let [(a_id, _)] = held.as_slice() else {
+            panic!("the desk holds one workspace");
+        };
+        let a_id = *a_id;
+
+        let choices = a_list.device_choices(a_id);
+        let here = choices.iter().find(|choice| choice.here).expect("its row");
+        assert_eq!(
+            here.label, "",
+            "the stand-in provisioning fills in is no name of the person's"
+        );
+        assert!(
+            a_list.directory.devices().is_empty(),
+            "and it is no name to list this device by either"
         );
     }
 

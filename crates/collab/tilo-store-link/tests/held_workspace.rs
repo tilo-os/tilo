@@ -238,7 +238,7 @@ async fn a_short_lived_workspace_is_held_by_a_store_device() {
     // anyone else's.
     let a = open_file(&directory.path().join("a.json")).unwrap();
     let workspace_id = a
-        .create_workspace("Launch review", &a_cert, &a_key, now)
+        .create_workspace(WorkspaceId::new(), "Launch review", &a_cert, &a_key, now)
         .unwrap();
     let workspace = workspace_of(&workspace_id.to_string()).unwrap();
     assert!(
@@ -503,7 +503,7 @@ async fn a_shared_app_is_a_workspace_its_guests_write_in() {
     // The sharer founds the workspace and writes what it shares.
     let a = open_file(&directory.path().join("a.json")).unwrap();
     let workspace_id = a
-        .create_workspace("Shared notes", &a_cert, &a_key, now)
+        .create_workspace(WorkspaceId::new(), "Shared notes", &a_cert, &a_key, now)
         .unwrap();
     let workspace = workspace_of(&workspace_id.to_string()).unwrap();
     let record = ApplicationRecord::host(APP, RECORD).unwrap();
