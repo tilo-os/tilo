@@ -241,9 +241,8 @@ struct UnversionedHelloAck {
 
 impl ClientError {
     /// The peer protocol version the other side speaks, when that is why
-    /// this failed: over the relay stream ([`Self::PeerVersion`]) or over
-    /// its HTTPS fallback ([`tilo_relay_client::LinkError::PeerVersion`]),
-    /// so a device behind or ahead is told either way, never only logged.
+    /// this failed: over the relay stream ([`Self::PeerVersion`]), so a
+    /// device behind or ahead is told, never only logged.
     #[must_use]
     pub fn peer_version(&self) -> Option<u32> {
         match self {

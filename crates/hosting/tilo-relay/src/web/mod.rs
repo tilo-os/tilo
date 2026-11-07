@@ -645,22 +645,6 @@ fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Response<Bo
     postcard::from_bytes(bytes).map_err(|_| status(StatusCode::BAD_REQUEST, "malformed body"))
 }
 
-/// The device a workspace join request over HTTPS is bound to: the one it
-/// names, whose signature its proof carries. The iroh exchange binds the
-/// device its transport authenticated; an inspection binds none.
-fn joining_device(request: &tilo_peer_state::join::JoinTransportRequest) -> [u8; 32] {
-    use tilo_peer_state::join::JoinTransportRequest;
-    match request {
-        JoinTransportRequest::Inspect { .. } => [0; 32],
-        JoinTransportRequest::Challenge(request) => request.device_cert.device_public_key,
-        JoinTransportRequest::Complete(request) => request.proof.challenge.device_public_key,
-        JoinTransportRequest::MembershipChallenge(request) => request.device_cert.device_public_key,
-        JoinTransportRequest::MembershipComplete(request) => {
-            request.proof.challenge.device_public_key
-        }
-    }
-}
-
 /// The client's country as the proxy in front of the host names it
 /// ([`WebConfig::country`]): from a trusted peer only, and only a two-letter
 /// code.
@@ -1075,26 +1059,6 @@ async fn route(
                 .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
             let step = decode(&bytes)?;
             Ok(encoded(&workspaces.page_join(step).await))
-        }
-        protocol::WORKSPACE_JOIN_PATH => {
-            use tilo_delivery_protocol::workspace_join::{
-                MAX_WORKSPACE_JOIN_REQUEST_BYTES, WorkspaceJoinService as _,
-            };
-            let workspaces = web
-                .workspaces
-                .as_ref()
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
-            if bytes.len() > MAX_WORKSPACE_JOIN_REQUEST_BYTES {
-                return Err(status(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "workspace join request exceeds the wire limit",
-                ));
-            }
-            let request = decode(&bytes)?;
-            let device = joining_device(&request);
-            Ok(encoded(
-                &workspaces.join_service().handle(device, request).await,
-            ))
         }
         tilo_relay_protocol::directory::DIRECTORY_PATH => {
             let workspaces = web

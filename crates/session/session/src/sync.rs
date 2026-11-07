@@ -2449,10 +2449,7 @@ async fn carry_out(
             })
             .await
             .is_ok(),
-        Outgoing::TakePart(connect) => plane
-            .send(NetCmd::NativeConnect(connect, None))
-            .await
-            .is_ok(),
+        Outgoing::TakePart(connect) => plane.send(NetCmd::NativeConnect(connect)).await.is_ok(),
         Outgoing::Leave(ws) => plane.send(NetCmd::LeaveWorkspace { ws }).await.is_ok(),
         Outgoing::Publish { ws, msg } => {
             plane.send(NetCmd::Publish { ws, msg: *msg }).await.is_ok()

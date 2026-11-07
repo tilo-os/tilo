@@ -84,7 +84,6 @@ impl Routes {
 struct NativeHolder {
     ws: u64,
     endpoint: iroh::Endpoint,
-    https: Option<super::HttpsRoute>,
     local_host: Option<LocalHost>,
     tx: tokio::sync::mpsc::Sender<InternalEvent>,
 }
@@ -93,10 +92,6 @@ impl Holder for NativeHolder {
     fn reach(&self) -> Reach {
         Reach {
             endpoint: self.endpoint.clone(),
-            https: self
-                .https
-                .as_ref()
-                .map(|super::HttpsRoute(http)| Arc::clone(http)),
             own_host: self
                 .local_host
                 .as_ref()
@@ -347,7 +342,7 @@ impl ActorState {
         }
         self.tell_unsynced(ws);
     }
-    pub(super) fn native_connect(&mut self, connect: Connect, https: Option<super::HttpsRoute>) {
+    pub(super) fn native_connect(&mut self, connect: Connect) {
         let ws = crate::workspace_topic_id(connect.workspace());
         if !self.native_routes.contains(ws) && self.native_routes.entries.len() >= 64 {
             return;
@@ -402,7 +397,6 @@ impl ActorState {
         let holder = NativeHolder {
             ws,
             endpoint: self.endpoint.clone(),
-            https,
             local_host: self.local_host.clone(),
             tx: self.internal_tx.clone(),
         };
@@ -481,7 +475,7 @@ impl ActorState {
         let Ok((payload, _)) = IrohWorkspaceHostHintV1::authenticate_transport_hint(via) else {
             return;
         };
-        dial_refused(&self.subscribers, ws, payload.endpoint_addr.id, error);
+        dial_refused(ws, payload.endpoint_addr.id, error);
     }
 
     /// The workspace on topic `ws`'s hold reached a host: its session runs here
@@ -634,12 +628,7 @@ fn drop_unpinned_sessions(
 
 /// What a failed dial of the joined workspace on topic `ws`, whose host is
 /// `host`, tells the person and the shell.
-fn dial_refused(
-    subscribers: &HashMap<u64, tokio::sync::mpsc::Sender<super::NetEvent>>,
-    ws: u64,
-    host: iroh::EndpointId,
-    error: DialError,
-) {
+fn dial_refused(ws: u64, host: iroh::EndpointId, error: DialError) {
     match error {
         // The workspace's host speaks another peer protocol version: the workspace
         // cannot sync until one side updates, which the person is told,
@@ -653,18 +642,6 @@ fn dial_refused(
             );
             crate::services::peer_version(host.to_string(), theirs);
             crate::workspace_sync::other_version(ws, theirs);
-        }
-        // The workspace removed this device's person: dialing again changes
-        // nothing until they join again, which the shell does through the
-        // workspace's door where it has one.
-        DialError::NotAdmitted => {
-            tracing::warn!(
-                ws,
-                "the workspace's host admits this device's person no longer"
-            );
-            if let Some(subscriber) = subscribers.get(&ws) {
-                let _ = subscriber.try_send(super::NetEvent::NotAdmitted { ws });
-            }
         }
         // Anything else did not reach the workspace's host: until a sync with
         // it completes, its apps say it cannot be reached and work on what

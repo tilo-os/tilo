@@ -510,6 +510,11 @@ async fn on_session_bus(
     // A workspace already granting an app what it asks for answers for the
     // person.
     .with_consent_grants(side.grants());
+    // The desktop's selection moves when the person copies outside any
+    // portal ask: the apps holding its clipboard hear of the move, and the
+    // offer a remote session made ends.
+    let clipboards = portal.clipboards().clone();
+    side.follow_selection(move |mimes| clipboards.selection_changed(mimes));
     let portal = match inhibitors {
         Some(registry) => portal.with_inhibitions(registry),
         None => portal,

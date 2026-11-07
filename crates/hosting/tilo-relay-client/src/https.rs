@@ -251,23 +251,6 @@ pub async fn join(
     call(client, "/join", None, encode(step)?).await
 }
 
-/// One request of the host's workspace join exchange
-/// ([`WORKSPACE_JOIN_PATH`](tilo_relay_protocol::web::WORKSPACE_JOIN_PATH)):
-/// `request` is an encoded `JoinTransportRequest`, the answer the encoded
-/// response.
-pub async fn workspace_join(
-    client: &dyn HttpClient,
-    request: Vec<u8>,
-) -> Result<Vec<u8>, LinkError> {
-    call_raw(
-        client,
-        tilo_relay_protocol::web::WORKSPACE_JOIN_PATH,
-        None,
-        request,
-    )
-    .await
-}
-
 /// An authenticated HTTPS session with the host.
 pub struct HttpsLink {
     outbound: mpsc::UnboundedSender<Envelope>,

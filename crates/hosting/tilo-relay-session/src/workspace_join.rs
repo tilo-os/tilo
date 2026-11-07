@@ -1,9 +1,8 @@
 //! The owner-neutral iroh transport for the shared workspace join contract.
 //! The client half reaches a governor over its iroh endpoint. The server half,
 //! [`WorkspaceJoinProtocol`], is how every governor answers on its iroh
-//! endpoint: a relay for the workspaces it governs and a device for its own. The
-//! HTTPS route stays in `tilo-relay`; the messages are
-//! `tilo_workspace_join`'s.
+//! endpoint: a relay for the workspaces it governs and a device for its own.
+//! The messages are `tilo_workspace_join`'s.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -198,8 +197,7 @@ impl WorkspaceJoinClient {
         device_key: &ed25519_dalek::SigningKey,
         request_id: [u8; 32],
     ) -> Result<JoinBootstrap, WorkspaceJoinError> {
-        // The host binds the request to the dialling endpoint, which is the
-        // device the certificate names.
+        // The host binds the request to the dialling endpoint.
         let endpoint_disagrees = match &self.carrier {
             Carrier::Iroh(endpoint) => *endpoint.id().as_bytes() != device_cert.device_public_key,
             Carrier::Local { caller, .. } => *caller != device_cert.device_public_key,

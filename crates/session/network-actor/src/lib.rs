@@ -328,16 +328,6 @@ pub struct HomePeerExpectation {
     pub device_public_key: [u8; 32],
 }
 
-/// The HTTPS routes of a host that publishes no iroh address
-/// ([`NetCmd::NativeConnect`]).
-#[derive(Clone)]
-pub struct HttpsRoute(pub Arc<dyn tilo_relay_client::HttpClient>);
-impl std::fmt::Debug for HttpsRoute {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("HttpsRoute")
-    }
-}
-
 /// A compositor-loop wake handed to the actor ([`NetCmd::SetWake`]).
 #[derive(Clone)]
 pub struct LoopWake(pub Wake);
@@ -377,9 +367,9 @@ pub enum NetCmd {
         ws: WorkspaceId,
         channel: [u8; 32],
     },
-    /// Hold an enrolled workspace's relay session, over its host's HTTPS routes
-    /// when given, else over the iroh endpoint its hint names.
-    NativeConnect(native_ingress::Connect, Option<HttpsRoute>),
+    /// Hold an enrolled workspace's relay session over the iroh endpoint its
+    /// hint names.
+    NativeConnect(native_ingress::Connect),
     /// This device's own workspace host opened: join the workspaces it hosts that
     /// wait for it.
     LocalHostReady,
@@ -579,13 +569,6 @@ pub enum NetEvent {
         cause: PeerDepartureCause,
         membership_epoch: Option<MembershipEpoch>,
     },
-    /// The host of the joined workspace on topic `ws` admits this device's
-    /// person no longer: they were removed (a public workspace prunes guests it
-    /// has not seen for long). The shell joins again through the workspace's
-    /// door, where it has one.
-    NotAdmitted {
-        ws: WorkspaceId,
-    },
     /// A member of `ws` this device reaches through the workspace host
     /// `host` joined (`active`) or left the host's live plane.
     HostMember {
@@ -648,7 +631,6 @@ impl NetEvent {
             Self::Sibling { .. } => "Sibling",
             Self::SiblingLeft { .. } => "SiblingLeft",
             Self::PeerLeft { .. } => "PeerLeft",
-            Self::NotAdmitted { .. } => "NotAdmitted",
             Self::HostMember { .. } => "HostMember",
             Self::HostReady { .. } => "HostReady",
             Self::RecordOpened { .. } => "RecordOpened",
@@ -1544,7 +1526,7 @@ impl ActorState {
             Some(NetCmd::WireTally(reply)) => {
                 let _ = reply.send(Arc::clone(&self.tally));
             }
-            Some(NetCmd::NativeConnect(connect, https)) => self.native_connect(connect, https),
+            Some(NetCmd::NativeConnect(connect)) => self.native_connect(connect),
             Some(NetCmd::LocalHostReady) => self.retry_native_routes(),
             Some(NetCmd::ChannelQueue(queue)) => self.channel_queue = queue,
             Some(NetCmd::NativePublish { ws }) => self.drive_native_publication(ws),
@@ -3315,13 +3297,11 @@ impl ActorState {
     fn stays_local(&self, command: &NetCmd) -> bool {
         let own = self.endpoint.id();
         match command {
-            NetCmd::NativeConnect(connect, None) => {
-                self.host_identity.as_ref().is_some_and(|identity| {
-                    connect.material(identity).is_ok_and(|(hint, cert, _, _)| {
-                        tilo_peer_state::owner::session::hosted_by(&hint, &cert.device_public_key)
-                    })
+            NetCmd::NativeConnect(connect) => self.host_identity.as_ref().is_some_and(|identity| {
+                connect.material(identity).is_ok_and(|(hint, cert, _, _)| {
+                    tilo_peer_state::owner::session::hosted_by(&hint, &cert.device_public_key)
                 })
-            }
+            }),
             NetCmd::WorkspaceGovernance(request) => request.to == own,
             _ => false,
         }
