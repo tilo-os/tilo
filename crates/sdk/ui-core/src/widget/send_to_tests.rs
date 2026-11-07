@@ -332,10 +332,6 @@ fn send_makes_one_request_as_the_person_with_what_the_box_holds() {
     assert_eq!(send_to.recipients()[0].kind, RecipientKind::NewAgent);
     assert_eq!(send_to.subjects().len(), 1, "about what the menu acted on");
 
-    // Nothing typed: Send makes no request.
-    send_to.send();
-    assert!(crate::shared_selection::take_send_to().is_empty());
-
     send_to.text = "Can you look at this?".to_owned();
     send_to.send();
     let requests = crate::shared_selection::take_send_to();
@@ -356,4 +352,34 @@ fn send_makes_one_request_as_the_person_with_what_the_box_holds() {
     send_to.text = "And this too".to_owned();
     send_to.send();
     assert_eq!(crate::shared_selection::take_send_to().len(), 1);
+}
+
+/// What a message sent with no words at all carries: the subject is the
+/// message, so a task handed to someone goes without a sentence, and a box
+/// with neither words nor a subject has nothing to send.
+#[test]
+fn a_subject_alone_is_something_to_send() {
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut send_to = box_beside(Rect::new(40.0, 120.0, 212.0, 320.0), viewport);
+    assert_eq!(send_to.recipients().len(), 1, "the agent a message makes");
+    assert_eq!(send_to.subjects().len(), 1, "about what the menu acted on");
+    assert!(
+        send_to.can_send(),
+        "a task sent to someone is the message: the words are optional"
+    );
+
+    send_to.send();
+    let requests = crate::shared_selection::take_send_to();
+    assert_eq!(requests.len(), 1, "the subject alone sends");
+    assert_eq!(requests[0].text, "", "with no words beside it");
+    assert_eq!(requests[0].about.len(), 1, "and the task it is about");
+    assert!(send_to.take_sent());
+
+    send_to.subjects.clear();
+    assert!(
+        !send_to.can_send(),
+        "a box with neither words nor a subject sends nothing"
+    );
+    send_to.send();
+    assert!(crate::shared_selection::take_send_to().is_empty());
 }

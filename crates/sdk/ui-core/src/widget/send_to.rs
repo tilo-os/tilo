@@ -655,7 +655,7 @@ impl SendToBox {
         if !self.open || !self.rect.contains(at) {
             return false;
         }
-        if self.layout.send.contains(at) && !self.text.trim().is_empty() {
+        if self.layout.send.contains(at) && self.can_send() {
             self.send();
             return true;
         }
@@ -824,13 +824,21 @@ impl SendToBox {
         self.layout = self.build_layout();
     }
 
+    /// Whether the box has something to send: whom it goes to, and either the
+    /// words or what they are about. A subject on its own is the message — a
+    /// task sent to someone says what it is without a sentence beside it.
+    #[must_use]
+    pub fn can_send(&self) -> bool {
+        !self.to.is_empty() && (!self.text.trim().is_empty() || !self.subjects.is_empty())
+    }
+
     /// Send what the box holds: one request the session acts on as the
     /// person.
     pub fn send(&mut self) {
-        let text = self.text.trim();
-        if text.is_empty() || self.to.is_empty() {
+        if !self.can_send() {
             return;
         }
+        let text = self.text.trim();
         let text: String = text
             .chars()
             .take(crate::shared_selection::MAX_SEND_CHARS)
@@ -1210,7 +1218,7 @@ impl SendToBox {
 
         // Send: the accent once there is something to send, a quiet control
         // until then.
-        let ready = !self.to.is_empty() && !self.text.trim().is_empty();
+        let ready = self.can_send();
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -1339,7 +1347,7 @@ impl SendToBox {
                 .with_bounds(self.layout.send)
                 .with_state(AccessState {
                     focusable: true,
-                    disabled: self.to.is_empty() || self.text.trim().is_empty(),
+                    disabled: !self.can_send(),
                     ..Default::default()
                 }),
         ));

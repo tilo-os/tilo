@@ -255,6 +255,44 @@ fn a_box_send_reaches_the_conversation_the_two_already_have() {
     );
 }
 
+/// A box with no words to send but something to send it about — a task
+/// handed to someone — posts the message carrying that, and nothing else.
+#[test]
+fn a_box_send_of_a_subject_alone_posts_the_message_without_words() {
+    use crate::effects::ChatEffect;
+    use ui::floating_surface::{Recipient, RecipientKind};
+
+    const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000d";
+    let ada = "ad".repeat(32);
+    let bob = "b0".repeat(32);
+    let (mut ada_window, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
+    let conversation =
+        Chat::direct_id([Participant::person(ada.clone()), Participant::person(bob)]);
+    let carried = tilo_reference::Attached::Text {
+        text: "#42 Ship the release".into(),
+        from: None,
+    };
+
+    bob_window
+        .effect(&ChatEffect::Send {
+            to: vec![Recipient::found(RecipientKind::Person, ada, "Ada")],
+            attached: vec![carried.clone()],
+            text: String::new(),
+            bounds: None,
+        })
+        .expect("Bob's box sends the task alone");
+
+    deliver_messages(&mut bob_window, &mut ada_window);
+    let rows = crate::testing::mounted_rows(&mut ada_window, &conversation.to_string());
+    assert_eq!(rows.len(), 1, "the message is there");
+    assert_eq!(rows[0].text, "", "with no words beside what it carries");
+    assert_eq!(
+        rows[0].attachments,
+        [carried],
+        "the task the box was about is the message"
+    );
+}
+
 /// A message a box sends to an agent lands in the conversation with that
 /// agent, made as the message arrives: the workspace needs no channel made
 /// first.
