@@ -366,7 +366,7 @@ fn effect_control_ids_of(
 /// Which semantic nodes count as controls.
 struct EffectFilter<'a> {
     include: &'a dyn Fn(&AccessNode) -> bool,
-    /// Count a focusable list or tree item too.
+    /// Count a focusable list, tree or menu item too.
     pressable_items: bool,
 }
 
@@ -398,7 +398,7 @@ fn collect_effect_access_nodes(
                 | Role::TextInput
                 | Role::MultilineTextInput
         ) || (filter.pressable_items
-            && matches!(node.role, Role::ListItem | Role::TreeItem)
+            && matches!(node.role, Role::ListItem | Role::TreeItem | Role::MenuItem)
             && node.state.focusable));
     if effect {
         let identity = node

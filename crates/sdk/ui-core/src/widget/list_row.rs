@@ -1114,7 +1114,21 @@ struct OwnedSwipe {
     icon: Icon,
     label: String,
     destructive: bool,
-    on_activate: Box<dyn FnMut()>,
+    on_activate: Option<Box<dyn FnMut()>>,
+    /// What releasing the swipe past the threshold presses, when the view bound it: the row
+    /// answers for it as it does for its other actions.
+    press: crate::widget::Press,
+}
+
+impl OwnedSwipe {
+    /// Run it: the action the view bound, or the row's own callback.
+    fn run(&mut self) {
+        if !self.press.is_none() {
+            self.press.run();
+        } else if let Some(callback) = &mut self.on_activate {
+            callback();
+        }
+    }
 }
 
 /// Distance past which a released swipe completes, as a share of the row.
@@ -2056,7 +2070,28 @@ impl ListRow {
             icon,
             label: label.into(),
             destructive,
-            on_activate: Box::new(on_activate),
+            on_activate: Some(Box::new(on_activate)),
+            press: crate::widget::Press::default(),
+        });
+        self
+    }
+
+    /// Swiping the row toward its leading edge reveals `icon`; releasing past the threshold runs
+    /// `binding` as its action, as [`Self::action_binding`] runs a trailing action.
+    #[must_use]
+    pub fn swipe_binding(
+        mut self,
+        icon: Icon,
+        label: impl Into<String>,
+        destructive: bool,
+        binding: tilo_actions::ActionBinding<()>,
+    ) -> Self {
+        self.swipe = Some(OwnedSwipe {
+            icon,
+            label: label.into(),
+            destructive,
+            on_activate: None,
+            press: crate::widget::Press::of(crate::component::Event::Action(binding)),
         });
         self
     }
@@ -2614,7 +2649,7 @@ impl ListRow {
                     let committed = touch.phase == TouchPhase::Ended
                         && self.swipe_offset >= self.outer().width() * SWIPE_COMMIT;
                     if committed && let Some(swipe) = &mut self.swipe {
-                        (swipe.on_activate)();
+                        swipe.run();
                     }
                     if self.swipe_offset > 0.0 {
                         *ctx.handled = true;

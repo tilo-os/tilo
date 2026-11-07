@@ -656,6 +656,12 @@ struct NavShared {
     section_actions: HashMap<String, String>,
     view: Option<NavView>,
     selection_actions: HashMap<String, crate::widget::ActionEmitter<()>>,
+    /// The places whose selection the view bound to an action, as it last said.
+    component_places: HashSet<String>,
+    /// Section row key → the action a section's add runs when the view bound it.
+    section_add_actions: HashMap<String, crate::widget::ActionEmitter<()>>,
+    /// The sections whose add the view bound to an action, as it last said.
+    component_adds: HashSet<String>,
     selection_emitted: bool,
     /// What the list's gestures run as published actions ([`NavList::item_action`]
     /// and the rest of `bound.rs`).
@@ -767,6 +773,8 @@ impl NavShared {
         let section = app_id(key).to_owned();
         if let Some(emitter) = self.bound.sections.get_mut(&action) {
             bound::emit(emitter, section);
+        } else if let Some(emitter) = self.section_add_actions.get_mut(key) {
+            let _ = emitter.emit(());
         } else if let Some(callback) = self.on_section_action.as_mut() {
             callback(&section, &action);
         }
@@ -1125,6 +1133,42 @@ impl NavList {
     /// [`Self::on_section_action`] after construction.
     fn set_section_action(&self, f: impl FnMut(&str, &str) + 'static) {
         self.shared.borrow_mut().on_section_action = Some(Box::new(f));
+    }
+
+    /// Bind places' selection and sections' adds to the actions a view bound to them: choosing a
+    /// place or pressing a heading's add runs that action through the list's control door, as a
+    /// destination bound with [`Self::selection_actions`] does. What the view no longer binds
+    /// stops being bound.
+    fn bind_actions(
+        &self,
+        places: &HashMap<String, crate::component::Event>,
+        adds: &HashMap<String, crate::component::Event>,
+    ) {
+        let mut shared = self.shared.borrow_mut();
+        for key in std::mem::take(&mut shared.component_places) {
+            shared.selection_actions.remove(&key);
+        }
+        for (key, event) in places {
+            if let crate::component::Event::Action(binding) = event {
+                shared.selection_actions.insert(
+                    key.clone(),
+                    crate::widget::ActionEmitter::new(binding.clone()),
+                );
+                shared.component_places.insert(key.clone());
+            }
+        }
+        for key in std::mem::take(&mut shared.component_adds) {
+            shared.section_add_actions.remove(&key);
+        }
+        for (key, event) in adds {
+            if let crate::component::Event::Action(binding) = event {
+                shared.section_add_actions.insert(
+                    format!("section:{key}"),
+                    crate::widget::ActionEmitter::new(binding.clone()),
+                );
+                shared.component_adds.insert(format!("section:{key}"));
+            }
+        }
     }
 
     /// Report renames to `f`: how a [`NavFeed`] hears of them.
@@ -2411,6 +2455,9 @@ impl crate::widget::controls::ActionControls for NavList {
         for action in shared.selection_actions.values_mut() {
             let _ = action.install_custody(domain, attachment);
         }
+        for action in shared.section_add_actions.values_mut() {
+            let _ = action.install_custody(domain, attachment);
+        }
         shared.bound.install_custody(domain, attachment);
         if let Some(view) = shared.view.as_mut() {
             view.choice.install_custody(domain, attachment);
@@ -2427,6 +2474,12 @@ impl crate::widget::controls::ActionControls for NavList {
                 .values_mut()
                 .find_map(crate::widget::ActionEmitter::take);
             selection
+                .or_else(|| {
+                    shared
+                        .section_add_actions
+                        .values_mut()
+                        .find_map(crate::widget::ActionEmitter::take)
+                })
                 .or_else(|| shared.bound.take())
                 .or_else(|| shared.view.as_mut().and_then(|view| view.choice.take()))
         };
@@ -2474,6 +2527,18 @@ impl crate::widget::controls::ActionControls for NavList {
                 bindings.push(action);
             }
         }
+        for row in self
+            .list
+            .mounted_rows()
+            .filter_map(|index| model.row(index))
+        {
+            let Some(add) = shared.section_add_actions.get(&row.key) else {
+                continue;
+            };
+            let add = add.metadata(format!("section-action:{}", row.key));
+            bindings.retain(|binding| binding.control_id != add.control_id);
+            bindings.push(add);
+        }
         bindings
     }
 
@@ -2499,6 +2564,8 @@ impl crate::widget::controls::ActionControls for NavList {
                         .is_some_and(|id| shared.selection_actions.contains_key(id))
                 })
         };
+        let adds = !shared.section_add_actions.is_empty()
+            && rows().any(|row| shared.section_add_actions.contains_key(&row.key));
         let bound = shared.bound.is_bound()
             && rows().any(|row| {
                 (shared.checkable.contains(&row.key)
@@ -2508,7 +2575,10 @@ impl crate::widget::controls::ActionControls for NavList {
                         .row_controls(&row.key, &shared, model)
                         .is_empty()
             });
-        selection || bound || crate::widget::controls::has_action_control_bindings(&*self.list)
+        selection
+            || adds
+            || bound
+            || crate::widget::controls::has_action_control_bindings(&*self.list)
     }
 
     fn refresh_control_action_availability(
@@ -2517,6 +2587,9 @@ impl crate::widget::controls::ActionControls for NavList {
     ) {
         let mut shared = self.shared.borrow_mut();
         for action in shared.selection_actions.values_mut() {
+            action.refresh_availability(allowed);
+        }
+        for action in shared.section_add_actions.values_mut() {
             action.refresh_availability(allowed);
         }
         shared.bound.refresh_availability(allowed);

@@ -5,7 +5,7 @@ use crate::icons::Icon;
 
 use super::ChipStyle;
 use super::{Chip, ChipLead};
-use crate::widget::Tone;
+use crate::widget::{Press, Tone};
 
 /// A compact pill for a tag, a filter or a token: what a note is tagged with, a recipient, an
 /// applied filter. Pressing it opens or applies what it names; a chip that can be taken away
@@ -24,22 +24,15 @@ pub struct ChipProps {
     /// Whether the filter it stands for is on; without it the chip is no filter.
     pub selected: Option<bool>,
     /// It was pressed: open or apply what it names.
-    #[component(event)]
+    #[component(event(press))]
     pub press: Event,
     /// Its remove button was pressed: take it away. A chip with this has the button.
-    #[component(event)]
+    #[component(event(press))]
     pub remove: Event,
 }
 
 impl Described for Chip {
     type Props = ChipProps;
-
-    /// A press is the chip's own action: the widget holds the binding, so the press is a route
-    /// an agent's invocation of it lands on, and both run from the door. Removing it uncovers a
-    /// command drawn as its own button.
-    fn press_events() -> &'static [&'static str] {
-        &["press"]
-    }
 
     fn from_props(key: &str, props: ChipProps) -> Self {
         let ChipProps {
@@ -65,9 +58,7 @@ impl Described for Chip {
             Event::Action(binding) => chip.on_action(binding),
             Event::View(intent) => chip.on_view(intent.sender()),
         };
-        if let Some(mut run) = remove.handler() {
-            chip = chip.on_remove_view(move || run());
-        }
+        chip = chip.with_remove_press(Press::of(remove));
         chip
     }
 
@@ -98,12 +89,14 @@ impl Described for Chip {
         self.selectable = selected.is_some();
         self.set_selected(selected.unwrap_or(false));
         self.activation.set_event(press, &label);
-        if let Some(mut run) = remove.handler() {
-            self.set_on_remove_view(move || run());
-        } else {
+        let remove = Press::of(remove);
+        if remove.is_none() {
             self.removable = false;
             self.on_remove = None;
             self.remove_verb = None;
+            self.remove_press = Press::default();
+        } else {
+            self.set_remove_press(remove);
         }
         self.dirty = true;
         true

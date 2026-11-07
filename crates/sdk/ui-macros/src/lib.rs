@@ -129,6 +129,7 @@ enum Part {
     Event {
         value: Option<Box<syn::Type>>,
         at: Option<Box<syn::Type>>,
+        press: bool,
     },
     Bind {
         merge: Tokens,
@@ -206,10 +207,11 @@ fn head_of(attrs: &[Attribute]) -> syn::Result<Head> {
     Ok(head)
 }
 
-/// `event`, `event(value = T)` or `event(value = T, at = U)`: an event, what it carries and
-/// where that lands.
+/// `event`, `event(value = T)`, `event(at = U)` or `event(press)`: an event, what it carries,
+/// where that lands and whether a press of its control runs the action the view bound.
 fn event_part(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Part> {
     let (mut value, mut at) = (None, None);
+    let mut press = false;
     if meta.input.peek(syn::token::Paren) {
         meta.parse_nested_meta(|inner| {
             if inner.path.is_ident("value") {
@@ -218,12 +220,15 @@ fn event_part(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Part> {
             } else if inner.path.is_ident("at") {
                 at = Some(Box::new(inner.value()?.parse::<syn::Type>()?));
                 Ok(())
+            } else if inner.path.is_ident("press") {
+                press = true;
+                Ok(())
             } else {
-                Err(inner.error("an event takes `value = Type` and `at = Type`"))
+                Err(inner.error("an event takes `value = Type`, `at = Type` and `press`"))
             }
         })?;
     }
-    Ok(Part::Event { value, at })
+    Ok(Part::Event { value, at, press })
 }
 
 fn part_of(field: &syn::Field) -> syn::Result<Part> {
@@ -529,7 +534,7 @@ impl Generated {
                         .map_err(|message| #k::Error::value(#name, #key, message))?;
                 });
             }
-            Part::Event { value, at } => {
+            Part::Event { value, at, press } => {
                 let ty = |t: Option<Box<syn::Type>>| {
                     t.map_or_else(
                         || quote!(None),
@@ -543,6 +548,7 @@ impl Generated {
                         doc: #field_doc.into(),
                         value: #value,
                         at: #at,
+                        press: #press,
                     }
                 });
                 // An event is data: the field is an `Event`, never a closure.

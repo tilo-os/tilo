@@ -66,7 +66,7 @@ impl ContextMenu {
                                 id: format!("{CONTROL}.{index}.{inner}"),
                                 label: format!("{label}: {inner_label}"),
                                 path: vec![index, inner],
-                                address: row.action_address().cloned(),
+                                address: row.action_address(),
                             });
                         }
                     }
@@ -75,7 +75,7 @@ impl ContextMenu {
                     id: format!("{CONTROL}.{index}"),
                     label: label.to_owned(),
                     path: vec![index],
-                    address: item.action_address().cloned(),
+                    address: item.action_address(),
                 }),
             }
         }
@@ -165,7 +165,58 @@ impl crate::resources::PublishesResources for ContextMenu {
     }
 }
 
+impl ContextMenu {
+    /// Every press the menu's rows hold, nested rows under their parent.
+    fn presses(&self) -> Vec<crate::widget::Press> {
+        fn collect(items: &[MenuItem], into: &mut Vec<crate::widget::Press>) {
+            for item in items {
+                if let Some(press) = item.press() {
+                    into.push(press.clone());
+                }
+                if let MenuItem::Action {
+                    submenu: Some(nested),
+                    ..
+                } = item
+                {
+                    collect(nested, into);
+                }
+            }
+        }
+        let mut presses = Vec::new();
+        collect(&self.items, &mut presses);
+        presses
+    }
+}
+
 impl crate::widget::controls::ActionControls for ContextMenu {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        for press in self.presses() {
+            press.install_custody(domain, attachment);
+        }
+    }
+
+    /// A row pressed before the menu closed hands its invocation over here.
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.presses().into_iter().find_map(|press| press.take())
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        let mut changed = false;
+        for press in self.presses() {
+            changed |= press.refresh_availability(allowed);
+        }
+        if changed {
+            self.dirty = true;
+        }
+    }
+
     /// Each row is bound to the action it runs, or else to its published
     /// control, under the target its accessibility node names.
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {

@@ -72,7 +72,7 @@ pub struct ButtonProps {
     /// header's menu shows rows of one run together, under the run's own row.
     pub group: Option<String>,
     /// It was pressed (a click, Enter or Space, an assistive technology).
-    #[component(event)]
+    #[component(event(press))]
     pub press: Event,
 }
 
@@ -102,12 +102,6 @@ impl Default for ButtonProps {
 
 impl Described for Button {
     type Props = ButtonProps;
-
-    /// A press is the button's own action: the widget holds the binding, so the press is a route
-    /// an agent's invocation of it lands on, and both run from the door.
-    fn press_events() -> &'static [&'static str] {
-        &["press"]
-    }
 
     fn from_props(key: &str, props: ButtonProps) -> Self {
         let ButtonProps {

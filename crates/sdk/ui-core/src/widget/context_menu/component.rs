@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use crate::component::{Component, Described, Event, OfferedAction, ResourceId, SlotType, Source};
 use crate::icons::Icon;
-use crate::widget::{ButtonRole, MenuEntry};
+use crate::widget::{ButtonRole, MenuEntry, Press};
 
 use super::{MenuButton, MenuItem};
 
@@ -36,28 +36,30 @@ pub struct MenuItemProps {
     #[component(data)]
     pub key: Option<String>,
     /// It was chosen.
-    #[component(event)]
+    #[component(event(press))]
     pub choose: Event,
 }
 
 impl MenuItemProps {
-    /// What choosing it runs, taken out of the props.
-    fn take_run(&mut self) -> Rc<dyn Fn()> {
-        std::mem::take(&mut self.choose)
-            .command()
-            .unwrap_or_else(|| Rc::new(|| {}))
+    /// What choosing it does, taken out of the props: the action the view bound to it, or the
+    /// view's own event, and the command that does it.
+    fn take_run(&mut self) -> (Press, Rc<dyn Fn()>) {
+        let press = Press::of(std::mem::take(&mut self.choose));
+        let run = press.runner();
+        (press, run)
     }
 
     /// The command as a menu row.
     #[must_use]
     pub fn into_item(mut self) -> MenuItem {
-        let run = self.take_run();
+        let (press, run) = self.take_run();
         let props = self;
         let item = if props.destructive {
             MenuItem::destructive_action(props.label, move || run())
         } else {
             MenuItem::action(props.label, move || run())
-        };
+        }
+        .for_press(press);
         let item = match props.icon {
             Some(icon) => item.with_icon(icon),
             None => item,
@@ -86,13 +88,14 @@ impl MenuItemProps {
     /// The command as an entry of a context menu.
     #[must_use]
     pub fn into_entry(mut self) -> MenuEntry {
-        let run = self.take_run();
+        let (press, run) = self.take_run();
         let props = self;
         let entry = if props.destructive {
             MenuEntry::destructive(props.label, move || run())
         } else {
             MenuEntry::new(props.label, move || run())
-        };
+        }
+        .for_press(press);
         let entry = match props.icon {
             Some(icon) => entry.with_icon(icon),
             None => entry,

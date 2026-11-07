@@ -60,7 +60,7 @@ pub struct MediaCardProps {
     /// Whether it is the selected card.
     pub selected: bool,
     /// It was pressed: open what it stands for.
-    #[component(event)]
+    #[component(event(press))]
     pub activate: Event,
     /// The window's pictures, through which a picture loads.
     #[component(skip)]

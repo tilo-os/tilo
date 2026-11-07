@@ -743,8 +743,9 @@ pub fn offered_event(prop: &str, index: usize) -> String {
 }
 
 /// Whether `event` is one an action offered in a prop of the component fires
-/// ([`offered_event`]).
-fn offers(description: &Description, event: &str) -> bool {
+/// ([`offered_event`]): the host binds such an event to the action it runs.
+#[must_use]
+pub fn offers(description: &Description, event: &str) -> bool {
     fn holds_actions(ty: &Type) -> bool {
         match ty {
             Type::Action => true,

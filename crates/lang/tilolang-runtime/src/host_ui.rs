@@ -115,16 +115,16 @@ impl Core {
         let (shown, run) = match &offered {
             Value::Action(reference) => {
                 let action = self.action_ref_value(reference)?;
-                offered_action(&action, &name)?
+                offered_action(&action, &offered_event(&name, 0))?
             }
-            other => offered_action(other, &name)?,
+            other => offered_action(other, &offered_event(&name, 0))?,
         };
         self.with_view(|vs| {
             let n = vs.nodes.get_mut(at).ok_or("unknown ui node")?;
             n.props.insert(name.clone(), shown);
             // A single action is one the component reads by its prop, and its event is the
             // first of the prop's, as a control that offers a list of actions reports one.
-            n.events.insert(format!("{name}.0"), run);
+            n.events.insert(offered_event(&name, 0), run);
             Ok(())
         })?;
         ret_void()

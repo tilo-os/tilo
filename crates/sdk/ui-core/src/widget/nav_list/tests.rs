@@ -555,6 +555,118 @@ fn click_at(h: &mut FrameHarness, x: f64, y: f64) {
     press(h, winit::event::MouseButton::Left);
 }
 
+/// The action a view binds to a place's selection, as the component layer reads it.
+fn published(resource: &str, action: &str) -> tilo_actions::ActionBinding<()> {
+    let mut spec = tilo_actions::ResourceSpec::new(resource, "test.nav", "Places");
+    spec = spec.with_action(
+        tilo_actions::ActionSpec::operation(
+            action,
+            action,
+            tilo_actions::OperationKind::Effect,
+            "test.nav.effect",
+            &action,
+        )
+        .expect("a test action"),
+    );
+    tilo_actions::ActionBinding::unit_for(&spec, action).expect("the places publish it")
+}
+
+/// The places of a list the component layer built, with what choosing one runs.
+fn places(
+    select: crate::component::Event,
+    add: Option<crate::component::OfferedAction>,
+) -> NavList {
+    use crate::component::Described;
+    use crate::widget::{NavEntry, NavItemProps, NavListProps, NavSectionProps};
+    let inbox = NavItemProps {
+        key: "inbox".into(),
+        label: "Inbox".into(),
+        select,
+        ..NavItemProps::default()
+    };
+    NavList::from_props(
+        "places",
+        NavListProps {
+            items: vec![
+                NavEntry::Item(inbox.clone()),
+                NavEntry::Item(NavItemProps {
+                    key: "sent".into(),
+                    label: "Sent".into(),
+                    ..NavItemProps::default()
+                }),
+                NavEntry::Section(NavSectionProps {
+                    title: "Projects".into(),
+                    add,
+                    items: vec![NavItemProps {
+                        key: "project".into(),
+                        label: "Launch".into(),
+                        ..NavItemProps::default()
+                    }],
+                    ..NavSectionProps::default()
+                }),
+            ],
+            ..NavListProps::default()
+        },
+    )
+}
+
+/// Choosing a place the view bound to an action runs that action once, through the list's
+/// control door: the place is a part of the list, and its press is the action's own route.
+#[test]
+fn a_place_bound_to_an_action_runs_it_once_as_the_person_presses_it() {
+    let bound = published("res-inbox", "open");
+    let address = bound.address().clone();
+    let mut list = places(crate::component::Event::Action(bound), None);
+    // The press the inner list reports when a person chooses the row.
+    list.shared.borrow_mut().choose("item:inbox");
+    let taken = crate::widget::controls::take_control_invocation(&mut list);
+    assert_eq!(
+        taken.as_ref().map(|taken| taken.address.clone()),
+        Some(address),
+        "one press runs the place's action once"
+    );
+    assert!(
+        crate::widget::controls::take_control_invocation(&mut list).is_none(),
+        "the press is taken once"
+    );
+}
+
+/// Pressing a section's add the view bound to an action runs it once, through the list's
+/// control door.
+#[test]
+fn a_sections_add_bound_to_an_action_runs_it_once_as_the_person_presses_it() {
+    let bound = published("res-project", "new_project");
+    let address = bound.address().clone();
+    let mut list = places(
+        crate::component::Event::None,
+        Some(crate::component::OfferedAction {
+            label: "New project".into(),
+            run: crate::component::Event::Action(bound),
+            ..crate::component::OfferedAction::default()
+        }),
+    );
+    let model = list.list.model();
+    let section = (0..model.len())
+        .filter_map(|index| model.key_at(index))
+        .find(|key| key.starts_with("section:"))
+        .expect("a section row");
+    // The press a person makes on the heading's add.
+    assert!(
+        list.shared.borrow_mut().run_section_action(&section),
+        "the add answers a press"
+    );
+    let taken = crate::widget::controls::take_control_invocation(&mut list);
+    assert_eq!(
+        taken.as_ref().map(|taken| taken.address.clone()),
+        Some(address),
+        "one press runs the add once"
+    );
+    assert!(
+        crate::widget::controls::take_control_invocation(&mut list).is_none(),
+        "the add is taken once"
+    );
+}
+
 /// The face item `id` paints with, laid out where it paints.
 fn layout_of(list: &NavList, id: &str) -> crate::chrome::NavRowLayout {
     let row = list.row_rect(id).expect("row in view");

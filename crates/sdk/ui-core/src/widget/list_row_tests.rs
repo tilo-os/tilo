@@ -1564,6 +1564,37 @@ fn delete_runs_the_destructive_action_the_row_swipes_to() {
     assert_eq!(ran.get(), 0, "a plain row action is not destructive");
 }
 
+/// The swipe a view bound to an action runs that action once, through the row's control door.
+#[test]
+fn a_swipe_bound_to_an_action_runs_it_once_as_the_person_swipes_to_it() {
+    let mut spec = tilo_actions::ResourceSpec::new("res-milk", "test.errand", "Errand");
+    spec = spec.with_action(
+        tilo_actions::ActionSpec::operation(
+            "delete",
+            "Delete",
+            tilo_actions::OperationKind::Effect,
+            "test.errand.effect",
+            &(),
+        )
+        .expect("a test action"),
+    );
+    let binding = tilo_actions::ActionBinding::unit_for(&spec, "delete").expect("published");
+    let address = binding.address().clone();
+    let mut row =
+        ListRow::new("milk", "Buy milk").swipe_binding(Icon::Trash, "Delete", true, binding);
+    row.swipe.as_mut().expect("a swipe").run();
+    let taken = crate::widget::controls::take_control_invocation(&mut row);
+    assert_eq!(
+        taken.as_ref().map(|taken| taken.address.clone()),
+        Some(address),
+        "one swipe runs the action once"
+    );
+    assert!(
+        crate::widget::controls::take_control_invocation(&mut row).is_none(),
+        "the swipe is taken once"
+    );
+}
+
 #[test]
 fn a_menu_shortcut_runs_where_the_row_has_the_keyboard() {
     let checked = Rc::new(Cell::new(0));
