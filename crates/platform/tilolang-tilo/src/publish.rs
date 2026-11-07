@@ -1500,6 +1500,7 @@ impl Publications {
                 types: &types,
                 schema,
                 doc,
+                partial: self.reached.contains(doc),
             };
             match at.republish(
                 tree,
@@ -1664,6 +1665,9 @@ struct Published<'a> {
     types: &'a ActionTypes,
     schema: &'static crate::schema::TypeSchema,
     doc: &'a str,
+    /// Whether the tree is what a window reaches of the record rather than the whole of it
+    /// ([`Publications::reached`]).
+    partial: bool,
 }
 
 impl Published<'_> {
@@ -1927,8 +1931,8 @@ impl Published<'_> {
 
     /// Bring the children of the resource at `path` in line with the items of its
     /// collections: keep the unchanged ones, build the new and the changed ones (taking them out
-    /// of `nodes`). A tree holds what was reached of a collection, not all of it, so an item it
-    /// did not hold is added only when the change names it.
+    /// of `nodes`). A tree a window reaches holds what it reached of a collection, not all of
+    /// it, so an item it did not hold is added only when the change names it.
     fn membership(
         &self,
         tree: &mut ResourceSpec,
@@ -1972,10 +1976,15 @@ impl Published<'_> {
                         nodes.remove(&item);
                         ordered.extend(self.item(&item));
                     }
-                    // The tree did not hold it: a change names the items it reaches, and the
-                    // tree grows by those rather than by all ten thousand a collection has.
-                    None if nodes.remove(&item) => ordered.extend(self.item(&item)),
-                    None => {}
+                    // A whole record's tree holds every item of its collections. One a window
+                    // reaches holds what it reached of them, and grows by the items a change
+                    // names rather than by all ten thousand a collection has.
+                    None if self.partial => {
+                        if nodes.remove(&item) {
+                            ordered.extend(self.item(&item));
+                        }
+                    }
+                    None => ordered.extend(self.item(&item)),
                 }
             }
         }
