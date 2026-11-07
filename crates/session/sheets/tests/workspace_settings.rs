@@ -321,13 +321,13 @@ fn the_agents_tab_lists_agents_and_bots_apart() {
     for text in [
         "3 agents",
         "Claude",
-        "Yours",
-        "Can read and change, asks before acting outside",
+        "Kept by you",
+        "Kept by Ada",
         "Model: Sonnet from Anthropic",
         "Reviewer",
         "Encrypted backup",
-        "Reads encrypted content",
         "Bots",
+        "Bots run small programs here on their own",
         "Standup",
     ] {
         assert!(says(&mut app, text), "{text:?} is shown");
@@ -340,8 +340,9 @@ fn the_agents_tab_lists_agents_and_bots_apart() {
 fn agent_and_bot_controls_name_what_they_act_on() {
     let (mut app, seat) = seated("agents");
     press(&mut app, "ws-agents-review-claude");
-    // A press with no name asks nothing: there is no agent to make.
-    press(&mut app, "ws-agents-add");
+    // One button opens the form; a press with no name in it asks nothing.
+    press(&mut app, "ws-agents-new");
+    press(&mut app, "ws-agents-create");
     assert_eq!(
         seat.take_asked(),
         [WorkspaceSettingsEffect::ReviewAgent {
@@ -357,16 +358,22 @@ fn agent_and_bot_controls_name_what_they_act_on() {
         .unwrap();
     app.settle();
     assert!(
-        says(&mut app, "Name a new agent"),
-        "the field invites the agent's name"
+        says(&mut app, "Analyst"),
+        "the form holds the name typed into it"
     );
-    press(&mut app, "ws-agents-add");
+    assert!(says(
+        &mut app,
+        "Its colour comes from its name until you pick one."
+    ));
+    press(&mut app, "ws-agents-create");
     press(&mut app, "ws-bots-add");
     assert_eq!(
         seat.take_asked(),
         [
             WorkspaceSettingsEffect::AddAgent {
-                name: "Analyst".to_owned()
+                name: "Analyst".to_owned(),
+                model: String::new(),
+                colour: String::new(),
             },
             WorkspaceSettingsEffect::AddBot,
         ]
@@ -384,7 +391,11 @@ fn a_requested_bot_is_removed_here_and_a_hosts_bot_is_not() {
         .into_iter()
         .filter(|(_, node)| node.label() == Some("Remove"))
         .count();
-    assert_eq!(removes, 1, "only the bot a member asked for has Remove");
+    // One per agent, and one for the only bot a member asked for.
+    assert_eq!(
+        removes, 4,
+        "only the bot a member asked for has a bot's Remove"
+    );
     press(&mut app, "ws-bots-remove-so.tilo.bots.standup");
     assert_eq!(
         seat.take_asked(),
@@ -405,7 +416,7 @@ fn an_agent_review_shows_its_answers_model_and_exceptions() {
         "Set here",
         "Sonnet from Anthropic",
         "Notes: Delete for good",
-        "Retire",
+        "Remove",
     ] {
         assert!(says(&mut app, text), "{text:?} is shown");
     }

@@ -90,6 +90,9 @@ const NEWEST: TableDefinition<&str, &[u8]> = TableDefinition::new("newest");
 pub const TYPE: &str = "$type";
 /// The pseudo-field holding an item's order key.
 pub const KEY: &str = "$key";
+/// The pseudo-field holding the chunk of the record an item's map is stored in: where a read or
+/// a write of the item goes, without a scan of the chunks.
+pub const CHUNK: &str = "$chunk";
 /// The pseudo-field holding the collection an item is in: its holder and field
 /// ([`derive::in_of`]).
 pub const IN: &str = "$in";

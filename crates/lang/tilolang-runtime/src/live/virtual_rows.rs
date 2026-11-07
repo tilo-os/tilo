@@ -464,6 +464,7 @@ impl Live {
                     patches.push(Patch::Remove {
                         parent: keys.clone(),
                         key: child.key,
+                        at: None,
                     });
                 }
             }
@@ -541,6 +542,7 @@ impl Live {
                     Patch::Remove {
                         parent: parent.clone(),
                         key,
+                        at: Some(*index),
                     }
                 }
                 Splice::Insert { at: index, item } => {

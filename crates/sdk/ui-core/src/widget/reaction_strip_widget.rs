@@ -100,13 +100,38 @@ impl ReactionStripWidget {
         self
     }
 
+    /// How a reactor is named, where the strip stands.
+    pub(crate) fn set_names(&mut self, names: impl Fn(&Reactor) -> String + 'static) {
+        self.names = Rc::new(names);
+    }
+
+    /// What a press reports, where the strip stands.
+    pub(crate) fn set_on_toggle(&mut self, toggle: impl FnMut(ReactionToggle) + 'static) {
+        self.on_toggle = Some(Box::new(toggle));
+    }
+
+    /// The reactions shown, where the strip stands: who reacted changes and the strip stays.
+    pub(crate) fn set_groups(&mut self, groups: Vec<ReactionGroup>) {
+        self.groups = groups;
+        self.metrics = None;
+        self.dirty = true;
+        self.layout_dirty = true;
+    }
+
     /// Whether the person may react: without it the pills only show, and
     /// there is no add button.
     #[must_use]
     pub fn can_react(mut self, can: bool) -> Self {
-        self.can_react = can;
-        self.layout_dirty = true;
+        self.set_can_react(can);
         self
+    }
+
+    /// Whether the person may react, where the strip stands.
+    pub(crate) fn set_can_react(&mut self, can: bool) {
+        if self.can_react != can {
+            self.can_react = can;
+            self.layout_dirty = true;
+        }
     }
 
     /// Tell `toggle` each toggle.

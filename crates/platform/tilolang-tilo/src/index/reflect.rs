@@ -458,10 +458,30 @@ impl Ends {
     }
 }
 
+/// The versions an action's change `change` made, each as the resource it is a version of,
+/// what it changed of it and what it did: the resources its action changed, and the resource
+/// it was made from, which the change is a version of too though of no field of its own. A
+/// comment under a task changed that task, for whoever made or read it; the store's versions
+/// note it the same way (`super::super::store::versions`).
+fn made_of(change: &automerge::Change) -> Vec<(String, Vec<String>, VersionKind)> {
+    let mut out: Vec<(String, Vec<String>, VersionKind)> = Vec::new();
+    for version in versions_of(change) {
+        if let Some(from) = &version.from {
+            out.push((from.id_string(), Vec::new(), VersionKind::Changed));
+        }
+        out.push((version.resource, version.fields, version.kind));
+    }
+    out
+}
+
 /// The versions `changes` made of each resource they changed, with the last change of each of
 /// its fields: a package action's (a field's last change), or a step on the record that is no
 /// package's action (an undo, a revert) and changed no field, as it takes a change back
 /// rather than making one. A change the record marks undone made no version.
+///
+/// A resource an action was made from is a version of that change too, of no field of its own:
+/// a comment under a task changed that task, for whoever made or read it. The store's versions
+/// note it the same way (`super::super::store::versions`).
 fn versions_of_changes<'c>(
     changes: impl IntoIterator<Item = &'c automerge::Change>,
     mirror: &Doc,
@@ -474,13 +494,7 @@ fn versions_of_changes<'c>(
             continue;
         }
         let (stamp, wrote) = if let Some((stamp, _)) = stamp_of(change) {
-            (
-                stamp,
-                versions_of(change)
-                    .into_iter()
-                    .map(|version| (version.resource, version.fields, version.kind))
-                    .collect::<Vec<_>>(),
-            )
+            (stamp, made_of(change))
         } else {
             let Some(stamp) = step_stamp(change) else {
                 continue;
@@ -575,7 +589,11 @@ pub fn ends_of<'c>(
             continue;
         };
         match stamp_of(&change) {
-            Some((_, wrote)) => touched.extend(wrote),
+            Some(_) => touched.extend(
+                made_of(&change)
+                    .into_iter()
+                    .map(|(resource, _, _)| resource),
+            ),
             None => touched.extend(
                 stepped(&change, mirror, resources)
                     .into_iter()

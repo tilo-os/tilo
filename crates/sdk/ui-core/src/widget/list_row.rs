@@ -1033,6 +1033,9 @@ enum Leading {
         image: Option<ImageData>,
         square: bool,
         glyph: Option<Icon>,
+        /// The colour it is drawn in where it has one of its own (an agent's
+        /// chosen colour), instead of the one its identity derives.
+        colour: Option<Color>,
     },
     /// The room an avatar takes, left empty ([`RowLeading::AvatarSpace`]).
     AvatarSpace,
@@ -1592,6 +1595,7 @@ impl ListRow {
             image: None,
             square: false,
             glyph: None,
+            colour: None,
         });
         self
     }
@@ -2318,8 +2322,10 @@ impl ListRow {
                     image,
                     square,
                     glyph,
+                    colour,
                 } => {
                     let avatar = AvatarFace::new(name, identity).image(image.as_ref());
+                    let avatar = colour.map_or(avatar, |colour| avatar.presence(colour));
                     let avatar = if *square { avatar.square() } else { avatar };
                     RowLeading::Avatar(match glyph {
                         Some(glyph) => avatar.glyph(*glyph),
@@ -3468,6 +3474,8 @@ use part::RowPart;
 
 mod edge;
 pub use edge::{RowAction, RowChange, SwipeAction};
+
+mod colour;
 
 mod paint;
 pub(crate) use paint::paint_code_badge;

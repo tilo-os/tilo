@@ -263,10 +263,11 @@ impl Described for WindowFrame {
     }
 
     fn set_props(&mut self, props: WindowFrameProps) -> bool {
-        let changed = self.focused != props.focused
-            || self.name != props.name
-            || self.lists_actions != props.lists_actions
-            || self.tabbed != props.tabs.as_deref().is_some_and(holds_tabs);
+        // A window that gains or loses its tabs is another bar and another body: only building
+        // it again shows that.
+        if props.tabs.as_deref().is_some_and(holds_tabs) != self.tabbed {
+            return false;
+        }
         if self.name != props.name {
             // The own bar shows the name: build it again with the new one.
             self.title = None;
@@ -275,7 +276,7 @@ impl Described for WindowFrame {
         self.name = props.name;
         self.focused = props.focused;
         self.lists_actions = props.lists_actions;
-        changed
+        true
     }
 
     fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {

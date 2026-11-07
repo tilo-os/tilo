@@ -134,4 +134,32 @@ impl Described for BarGauge {
         }
         gauge
     }
+
+    /// A fuller or emptier bar fills where it stands, its label and readout with it.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a share from 0 to 1, clamped by the gauge"
+    )]
+    fn set_props(&mut self, props: BarGaugeProps) -> bool {
+        let BarGaugeProps {
+            value,
+            label,
+            readout,
+            neutral,
+            warning,
+            danger,
+            compact,
+        } = props;
+        self.frac = (value as f32).clamp(0.0, 1.0);
+        self.fill = if neutral {
+            Fillcolor::Neutral
+        } else {
+            Fillcolor::Threshold(GaugeThresholds::given(warning, danger))
+        };
+        self.label = label.unwrap_or_default();
+        self.value = readout.unwrap_or_default();
+        self.style.compact_labels = compact;
+        self.dirty = true;
+        true
+    }
 }

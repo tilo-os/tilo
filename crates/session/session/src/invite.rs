@@ -26,10 +26,15 @@ use crate::mount::clipboard::Ask;
 const ON_CLIPBOARD_FOR: Duration = Duration::from_secs(300);
 
 /// What the session keeps of the sheet between passes: the link it last
-/// made, and what became of the last ask.
+/// made, the link being left on its site's shelf, and what became of the last
+/// ask.
 #[derive(Default)]
 pub(crate) struct Made {
     created: Option<sheet::Created>,
+    /// The link made while its invitation is on its way to a site's shelf:
+    /// shown once the site answers, as the short link, or in the invitation's
+    /// own text when the site will not keep it.
+    shelving: Option<sheet::Created>,
     note: Option<sheet::Note>,
 }
 
@@ -71,6 +76,7 @@ impl Shared {
     /// parts this person may hand out and the links that still work all move
     /// under it.
     pub(crate) fn refresh_invite(&self) {
+        self.follow_shelved();
         let Some(seat) = self.invite.as_ref() else {
             return;
         };
@@ -78,6 +84,28 @@ impl Shared {
             return;
         }
         self.show_invite();
+    }
+
+    /// Take what became of the invitations being left on a site's shelf: the
+    /// link the sheet shows becomes the short one, or stays the invitation's
+    /// own text when the site would not keep it.
+    fn follow_shelved(&self) {
+        for (invite, shelved) in self.directory_store.take_shelved() {
+            let mut made = self.invite_made.borrow_mut();
+            let Some(mut created) = made.shelving.take() else {
+                continue;
+            };
+            if created.invite != invite {
+                made.shelving = Some(created);
+                continue;
+            }
+            if let Ok(shelved) = shelved {
+                created.link.clone_from(&shelved.link);
+                created.code = shelved.link.into_bytes();
+            }
+            made.created = Some(created);
+            made.note = None;
+        }
     }
 
     /// Carry out what the person asked for in the sheet, and show what came of
@@ -274,7 +302,9 @@ impl Shared {
             )
         };
         // The code the sheet draws is the invitation itself: its text spells
-        // those bytes out in base64, which is longer than a code fits.
+        // those bytes out in base64, which is longer than a code fits. It is
+        // the fallback until the invitation is on its site's shelf, when the
+        // short link replaces both.
         let code = match tilo_workspace_join::invitation_bytes(link) {
             Ok(code) => code,
             Err(reason) => {
@@ -283,8 +313,24 @@ impl Shared {
                 return;
             }
         };
-        let mut made = self.invite_made.borrow_mut();
-        made.created = Some(sheet::Created {
+        // The person hands over a link, not an invitation's kilobytes: the
+        // signed bytes are sealed under a fresh key and wait on the site this
+        // computer is configured with, under a handle, and the link carries
+        // the key in its fragment. A computer with no site, or one that will
+        // not keep it, shows the invitation's own text instead.
+        let shelving = crate::directory::community_site().is_some_and(|site| {
+            match self
+                .directory_store
+                .shelve(&invite, code.clone(), expires_at_ns, &site)
+            {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::warn!(%error, "the invitation was not left on its site");
+                    false
+                }
+            }
+        });
+        let created = sheet::Created {
             invite,
             link: link.to_owned(),
             code,
@@ -297,8 +343,18 @@ impl Shared {
             copy: t("invite-copy"),
             revoke: t("invite-revoke"),
             alt: t("invite-code-alt"),
+        };
+        let mut made = self.invite_made.borrow_mut();
+        // While the site is being handed the invitation, the sheet waits
+        // rather than drawing a code a whole sheet wide for a link that is
+        // about to be a short one; a site that refuses shows it in its own
+        // text, which every build still takes.
+        made.created = (!shelving).then(|| created.clone());
+        made.shelving = shelving.then_some(created);
+        made.note = shelving.then(|| sheet::Note {
+            text: t("invite-making"),
+            bad: false,
         });
-        made.note = None;
     }
 
     /// The name the workspace in front knows `person` by, when it knows one.
@@ -322,11 +378,18 @@ impl Shared {
             .invoke(DESK_RESOURCE, "cancel-invitation", &arguments)
         {
             Some(Ok(_)) => {
+                // The site's copy goes too: a link handed out before is not
+                // one that waits there to be fetched.
+                self.directory_store.unshelve(invite);
                 let mut made = self.invite_made.borrow_mut();
                 // A link taken back is not a link to hand over: the one this
                 // opening showed goes with it, and another stays.
                 made.created = made
                     .created
+                    .take()
+                    .filter(|created| created.invite != invite);
+                made.shelving = made
+                    .shelving
                     .take()
                     .filter(|created| created.invite != invite);
                 drop(made);

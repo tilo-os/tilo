@@ -24,13 +24,19 @@ use crate::presentation::Presentation;
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.invite";
 
-/// How wide each module of the made link's code is drawn: an invitation's
-/// signed bytes run to about a kilobyte, and a code that dense turns to
-/// speckle unless its squares are counted rather than guessed at. Two pixels
-/// a module make the whole code, quiet zone and all, shorter than the sheet,
-/// so a scanner can take it in at once; the test that scans the sheet's code
-/// draws it at the same width.
+/// The widest the code is drawn, quiet zone and all: room enough for squares
+/// a phone reads across a desk, and no wider than the sheet gives it.
+pub const CODE_MAX_PX: usize = 245;
+
+/// The narrowest each module is drawn: an invitation's own bytes make a code
+/// so dense that its squares are counted rather than guessed at, and below
+/// this they turn to speckle. Two pixels a module make that whole code
+/// shorter than the sheet, so a scanner can take it in at once.
 pub const CODE_MODULE_PX: u32 = 2;
+
+/// The widest each module is drawn: a link is a few dozen modules, and squares
+/// this wide make it conspicuous rather than a stamp.
+pub const CODE_MODULE_MAX_PX: u32 = 5;
 
 /// The sheet's resource: the door its actions are published on. It holds
 /// nothing; the invitations are the workspace's.
@@ -426,10 +432,9 @@ fn made(created: &Created, link: &LocalState<String>, ask: &Ask) -> Vec<Element>
         .with_id("invite-link")
         .with_read_only(true)
         .with_accessible_name(&created.link_label);
-    let code = QrWidget::new(created.code.clone())
-        .with_id("invite-code")
-        .with_module_px(CODE_MODULE_PX)
-        .with_alt(created.alt.clone());
+    let drawn = QrWidget::new(created.code.clone()).with_id("invite-code");
+    let px = module_px(drawn.total_modules());
+    let code = drawn.with_module_px(px).with_alt(created.alt.clone());
     // The code stands on a line of its own, centred: the room its modules
     // need is wider than what is left beside a field.
     vec![
@@ -469,6 +474,18 @@ fn made(created: &Created, link: &LocalState<String>, ask: &Ask) -> Vec<Element>
                 )),
         ),
     ]
+}
+
+/// How wide each module of a code `modules` across is drawn: as wide as
+/// [`CODE_MAX_PX`] allows, between the narrowest and the widest a module
+/// gets. A link's few dozen modules fill the room and read at a glance; an
+/// invitation's own bytes are drawn narrow enough that the whole code still
+/// fits the sheet.
+#[must_use]
+pub fn module_px(modules: usize) -> u32 {
+    u32::try_from(CODE_MAX_PX.checked_div(modules).unwrap_or(CODE_MAX_PX))
+        .unwrap_or(CODE_MODULE_MAX_PX)
+        .clamp(CODE_MODULE_PX, CODE_MODULE_MAX_PX)
 }
 
 /// The links that still work, each with the button that takes it back.
@@ -584,10 +601,12 @@ impl ResourceApp for InviteApp {
             },
             Some("made") => {
                 let mut invite = sample_invite();
+                let link = "https://tilo.coffee/i/abcdefghijklmnop#AAABBBCCCDDDEEEFFFGGG\
+                            HHHIIIJJJKKKLLLMMMNNNO";
                 invite.created = Some(Created {
                     invite: "8f2c".to_owned(),
-                    link: "tilo://join?invite=8f2c…".to_owned(),
-                    code: b"invitation".to_vec(),
+                    link: link.to_owned(),
+                    code: link.as_bytes().to_vec(),
                     link_label: "The link".to_owned(),
                     brings: "Ada Lovelace-Byron joins as an editor.".to_owned(),
                     lasts: "The link works for the next 60 minutes.".to_owned(),

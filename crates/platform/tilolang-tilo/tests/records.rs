@@ -4,6 +4,7 @@ use tilo_actions::{Action, ActionRegistry};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Edit, EditOp, Id, Model, Segment};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit, read_resource, register_actions};
+use tilolang_tilo::chunk::Chunks;
 use tilolang_tilo::record::{DynRecord, DynValue};
 use tilolang_tilo::schema::lookup;
 
@@ -52,7 +53,7 @@ fn a_record_written_and_read_back_is_the_same_record() {
     let ty = &counter.types[0].id;
     let mut doc = AutoCommit::new();
     create(&mut doc, &counter.app, ty, "c1");
-    let record = read_resource(&doc, &counter.app, "c1").unwrap();
+    let record = read_resource(&Chunks::of(doc.clone()), &counter.app, "c1").unwrap();
     assert_eq!(record.schema().name, "Counter");
     let again = DynRecord::from_json(&record.to_json()).unwrap();
     assert_eq!(again, record);
@@ -108,7 +109,7 @@ fn text_collections_and_sets_edit_by_their_merge_kind() {
     .apply(&mut doc)
     .unwrap();
     doc.commit();
-    let read = read_resource(&doc, &todo.app, "t1").unwrap();
+    let read = read_resource(&Chunks::of(doc.clone()), &todo.app, "t1").unwrap();
     assert_eq!(read.get(&title), Some(&DynValue::Text("Shopping".into())));
     let Some(DynValue::Collection(collection)) = read.get(&items) else {
         panic!("no items");
@@ -145,8 +146,11 @@ fn text_collections_and_sets_edit_by_their_merge_kind() {
     other.commit();
     doc.merge_incoming(&mut other).unwrap();
     other.merge_incoming(&mut doc).unwrap();
-    let merged = read_resource(&doc, &todo.app, "t1").unwrap();
-    assert_eq!(merged, read_resource(&other, &todo.app, "t1").unwrap());
+    let merged = read_resource(&Chunks::of(doc.clone()), &todo.app, "t1").unwrap();
+    assert_eq!(
+        merged,
+        read_resource(&Chunks::of(other.clone()), &todo.app, "t1").unwrap()
+    );
     let Some(DynValue::Collection(collection)) = merged.get(&items) else {
         panic!("no items");
     };

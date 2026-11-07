@@ -1340,7 +1340,7 @@ fn plan_dispatch_streams_anthropic_tool_calls_then_the_message_body() {
         "{timing}"
     );
     assert!(
-        timing.contains("cached_tokens=3 cache_write_tokens=- tool_calls=2"),
+        timing.contains("cached_tokens=3 cache_write_tokens=- cost_micros=0 tool_calls=2"),
         "{timing}"
     );
 }

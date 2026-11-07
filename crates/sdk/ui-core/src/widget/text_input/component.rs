@@ -139,4 +139,109 @@ impl Described for TextInput {
         }
         input
     }
+
+    /// The text it edits, what it says and how it behaves change where the field stands: it
+    /// keeps the keyboard, the caret and whatever is being composed into it.
+    fn set_props(&mut self, props: TextInputProps) -> bool {
+        let TextInputProps {
+            value,
+            placeholder,
+            lines,
+            title,
+            enabled,
+            autofocus,
+            changed_by,
+            previous,
+            entry,
+            key: _,
+            submit,
+        } = props;
+        if !self.follows(&value.state) {
+            self.follow(&value.state);
+        }
+        self.path.clone_from(&value.path);
+        self.change = changed_by.map(|by| {
+            let note = change_note(&by, previous.as_deref());
+            (by.identity, note)
+        });
+        let edits = value.clone();
+        self.set_on_change_view(move |text| edits.edited(Value::Text(text.to_owned())));
+        let placeholder = placeholder.unwrap_or_default();
+        let name = if value.name.is_empty() {
+            placeholder.clone()
+        } else {
+            value.name.clone()
+        };
+        self.set_accessible_name(name);
+        self.set_placeholder(&placeholder);
+        self.set_disabled(!enabled);
+        if autofocus {
+            self.focus_wanted = true;
+        }
+        // Room for as many lines as it is given, or the wrapping line of a title.
+        self.set_multiline(title || lines.is_some());
+        self.min_lines = lines.map_or(0, |lines| usize::try_from(lines.max(1)).unwrap_or(1));
+        self.set_text_role(if title {
+            TextRole::LargeTitle
+        } else {
+            TextRole::Body
+        });
+        self.set_plain_chrome(title);
+        self.entry = entry;
+        match submit {
+            Event::None => self.set_on_submit(None),
+            event => self.set_on_submit(Some(Box::new(move |text: &str| {
+                event.fire(Some(Value::Text(text.to_owned())));
+            }))),
+        }
+        self.enter_submits = self.enter_submits || title || entry;
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::Dispatch;
+    use crate::widget::Widget;
+    use vello::kurbo::Rect;
+    use winit::event::WindowEvent;
+
+    /// A field keeps the keyboard, the caret and what is being composed into it when its props
+    /// change: only what it says and the text it edits change.
+    #[test]
+    fn a_field_takes_new_props_keeping_the_keyboard_the_caret_and_the_composition() {
+        let mut field = TextInput::from_props("field", TextInputProps::default());
+        field.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        Widget::set_focus(&mut field, true);
+        let composed = WindowEvent::Ime(winit::event::Ime::Preedit(
+            "漢".into(),
+            Some(("漢".len(), "漢".len())),
+        ));
+        assert!(
+            Dispatch::new().send(&mut field, &composed).handled,
+            "the field takes what is being composed"
+        );
+        assert!(field.is_composing(), "the field is composing");
+        let caret = field.caret_position();
+
+        let props = TextInputProps {
+            placeholder: Some("Search".into()),
+            ..TextInputProps::default()
+        };
+        assert!(
+            field.set_props(props),
+            "the field takes its props where it stands"
+        );
+        assert!(Widget::is_focused(&field), "the field kept the keyboard");
+        assert_eq!(
+            field.caret_position(),
+            caret,
+            "the caret stayed where the person put it"
+        );
+        assert!(
+            field.is_composing(),
+            "what was being composed is still in the field"
+        );
+    }
 }

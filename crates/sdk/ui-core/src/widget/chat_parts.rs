@@ -72,34 +72,7 @@ impl Described for ReactionStripWidget {
     type Props = ReactionsProps;
 
     fn from_props(key: &str, props: ReactionsProps) -> Self {
-        let ReactionsProps {
-            reactions,
-            emoji,
-            by,
-            can_react,
-            toggle,
-        } = props;
-        let mut names = std::collections::HashMap::new();
-        let groups = ReactionsProps::groups(reactions, emoji, by)
-            .into_iter()
-            .enumerate()
-            .map(|(at, (emoji, people))| ReactionGroup {
-                emoji,
-                reactors: people
-                    .into_iter()
-                    .map(|person| {
-                        let reactor = Reactor {
-                            by: person.identity.clone(),
-                            persona: None,
-                            name: None,
-                        };
-                        names.insert(person.identity, person.name);
-                        reactor
-                    })
-                    .collect(),
-                first_at: i64::try_from(at).unwrap_or(i64::MAX),
-            })
-            .collect();
+        let (groups, names, can_react, toggle) = said(props);
         // Who "you" are is the window's own participant, read when it draws.
         Self::new(groups, String::new())
             .with_names(move |reactor: &Reactor| {
@@ -108,10 +81,69 @@ impl Described for ReactionStripWidget {
                     .cloned()
                     .unwrap_or_else(|| reactor.by.clone())
             })
-            .can_react(can_react.unwrap_or(true))
+            .can_react(can_react)
             .on_toggle(move |picked| toggle.fire(Some(Value::Text(picked.emoji))))
             .with_id(key)
     }
+
+    /// Who reacted and what a press does change where the strip stands: the picker it opened
+    /// stays open.
+    fn set_props(&mut self, props: ReactionsProps) -> bool {
+        let (groups, names, can_react, toggle) = said(props);
+        self.set_groups(groups);
+        self.set_can_react(can_react);
+        self.set_names(move |reactor: &Reactor| {
+            names
+                .get(&reactor.by)
+                .cloned()
+                .unwrap_or_else(|| reactor.by.clone())
+        });
+        self.set_on_toggle(move |picked| {
+            toggle.fire(Some(Value::Text(picked.emoji)));
+        });
+        true
+    }
+}
+
+/// The reactions `props` say, as the strip shows them: each emoji with who reacted, how those
+/// people are named, whether the person may react, and what a press reports.
+fn said(
+    props: ReactionsProps,
+) -> (
+    Vec<ReactionGroup>,
+    std::collections::HashMap<String, String>,
+    bool,
+    Event,
+) {
+    let ReactionsProps {
+        reactions,
+        emoji,
+        by,
+        can_react,
+        toggle,
+    } = props;
+    let mut names = std::collections::HashMap::new();
+    let groups = ReactionsProps::groups(reactions, emoji, by)
+        .into_iter()
+        .enumerate()
+        .map(|(at, (emoji, people))| ReactionGroup {
+            emoji,
+            reactors: people
+                .into_iter()
+                .map(|person| {
+                    let reactor = Reactor {
+                        by: person.identity.clone(),
+                        persona: None,
+                        name: None,
+                    };
+                    names.insert(person.identity, person.name);
+                    reactor
+                })
+                .collect(),
+            first_at: i64::try_from(at).unwrap_or(i64::MAX),
+        })
+        .collect();
+    (groups, names, can_react.unwrap_or(true), toggle)
 }
 
 /// A button that opens the emoji picker beside it; the emoji picked is reported (`on pick(e)`).
@@ -127,6 +159,8 @@ pub struct EmojiPickerProps {
 
 /// See [`EmojiPickerProps`].
 pub struct EmojiPickerButton {
+    /// What the button is addressed by.
+    key: String,
     button: Button,
     picker: Popover<EmojiPicker>,
     pressed: Rc<Cell<bool>>,
@@ -142,6 +176,7 @@ impl EmojiPickerButton {
         let button = Button::icon_only(key, crate::icons::Icon::SmilePlus, label)
             .on_view(move || press.set(true));
         Self {
+            key: key.to_owned(),
             button,
             picker: Popover::with_content(EmojiPicker::new())
                 .with_label(crate::i18n::widget_format("emoji-chooser-title", &[])),
@@ -161,11 +196,32 @@ impl Described for EmojiPickerButton {
     type Props = EmojiPickerProps;
 
     fn from_props(key: &str, props: EmojiPickerProps) -> Self {
-        let label = props
-            .label
-            .unwrap_or_else(|| crate::i18n::I18nManager::lookup_plain("emoji-picker-add-reaction"));
-        Self::new(key, &label, props.pick)
+        let (label, pick) = labelled(props);
+        Self::new(key, &label, pick)
     }
+
+    /// What the button is called and what a pick reports change where the button stands, so
+    /// the picker it opened stays open.
+    fn set_props(&mut self, props: EmojiPickerProps) -> bool {
+        let (label, pick) = labelled(props);
+        self.pick = pick;
+        self.button.take_words(&Button::icon_only(
+            &self.key,
+            crate::icons::Icon::SmilePlus,
+            &label,
+        ))
+    }
+}
+
+/// What the picker's button is called, and what it reports: the props' label, "Add reaction"
+/// unless they name it.
+fn labelled(props: EmojiPickerProps) -> (String, Event) {
+    (
+        props
+            .label
+            .unwrap_or_else(|| crate::i18n::I18nManager::lookup_plain("emoji-picker-add-reaction")),
+        props.pick,
+    )
 }
 
 impl Decorator for EmojiPickerButton {
@@ -268,6 +324,8 @@ pub struct QuoteProps {
 
 /// See [`QuoteProps`].
 pub struct Quote {
+    /// What the quote is addressed by.
+    key: String,
     row: crate::widget::arrange::Row,
 }
 
@@ -307,8 +365,17 @@ impl Described for Quote {
             ));
         }
         Self {
+            key: key.to_owned(),
             row: row.with_id(key),
         }
+    }
+
+    /// What is quoted, who wrote it and whether it can be dismissed change where the quote
+    /// stands.
+    fn set_props(&mut self, props: QuoteProps) -> bool {
+        let key = self.key.clone();
+        self.row = Self::from_props(&key, props).row;
+        true
     }
 }
 

@@ -4,7 +4,8 @@ use crate::component::{Bound, Component, Described};
 use crate::icons::Icon;
 use crate::widget::Tone;
 
-use super::EnumField;
+use super::{EnumField, field};
+use crate::widget::binding::derived;
 
 crate::component::part_slot!(EnumOptionProps);
 
@@ -53,5 +54,46 @@ impl Described for EnumField {
         // back through the same binding.
         let state = value.state.clone();
         Self::from_state(key, &state, cases, label, value)
+    }
+
+    /// The value it holds, the cases it offers and the name it is given change where the field
+    /// stands: an open menu stays open on what it shows.
+    fn set_props(&mut self, props: EnumFieldProps) -> bool {
+        let EnumFieldProps {
+            value,
+            cases,
+            label,
+        } = props;
+        let follows = self
+            .source
+            .as_ref()
+            .is_some_and(|state| state.same_state(&value.state));
+        let same_cases = self.cases.len() == cases.len()
+            && self.cases.iter().zip(&cases).all(|(held, given)| {
+                held.name == given.name
+                    && held.label == given.label
+                    && held.icon == given.icon
+                    && held.tone == given.tone
+            });
+        let same_label = self.label == label;
+        if !follows {
+            let (chosen, binding) = derived(&value.state, |name: &String| name.clone());
+            self.source = Some(value.state.clone());
+            self.bound = Some(binding);
+            self.value = chosen;
+        }
+        self.edits = value;
+        if !same_cases || !same_label || !follows {
+            self.cases = cases;
+            self.label = label;
+            self.inner = field(
+                &self.id,
+                &self.value,
+                &self.cases,
+                self.label.as_deref(),
+                &self.edits,
+            );
+        }
+        true
     }
 }

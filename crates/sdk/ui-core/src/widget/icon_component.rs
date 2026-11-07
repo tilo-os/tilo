@@ -62,4 +62,16 @@ impl Described for IconWidget {
             (None, false, false) => widget,
         }
     }
+
+    /// Another glyph, or one inked differently, shows where the icon stands.
+    fn set_props(&mut self, props: IconProps) -> bool {
+        let tint = match (props.tone, props.accent, props.secondary) {
+            (Some(tone), _, _) => super::Tint::Tone(tone),
+            (None, true, _) => super::Tint::Accent,
+            (None, false, true) => super::Tint::Dim,
+            (None, false, false) => super::Tint::Primary,
+        };
+        self.set_glyph(props.icon, props.size.unwrap_or_default(), tint);
+        true
+    }
 }

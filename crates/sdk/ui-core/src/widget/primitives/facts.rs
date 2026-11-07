@@ -217,6 +217,20 @@ pub struct Facts {
 }
 
 impl Facts {
+    /// The facts it shows changed where it stands: the row takes the new ones and keeps its
+    /// place, measuring again for what they say.
+    pub fn set_facts(&mut self, facts: Vec<Fact>) {
+        let same = self.items.len() == facts.len()
+            && self.items.iter().zip(&facts).all(|(was, now)| {
+                was.icon == now.icon && was.text == now.text && was.priority == now.priority
+            });
+        if same {
+            return;
+        }
+        self.items = facts;
+        self.dirty = true;
+    }
+
     #[must_use]
     pub fn new(facts: Vec<Fact>) -> Self {
         Self {
@@ -303,6 +317,11 @@ impl Widget for Facts {
     }
 
     crate::redraw_flag!();
+
+    /// What the facts say decides the room the row takes.
+    fn is_layout_dirty(&self) -> bool {
+        self.dirty
+    }
 
     fn get_rect(&self) -> Rect {
         self.rect

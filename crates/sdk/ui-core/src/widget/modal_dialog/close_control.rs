@@ -46,12 +46,15 @@ impl<C: Widget + 'static> ModalDialog<C> {
     /// scripts close the dialog as a person does.
     #[must_use]
     pub fn on_dismiss<F: FnMut() + 'static>(mut self, f: F) -> Self {
-        self.dismiss = Some(crate::widget::dismissal::Dismissal::published(
-            self.surface_id(),
-            Box::new(f),
-        ));
-        self.laid_out_for = None;
+        self.set_on_dismiss(Some(Box::new(f)));
         self
+    }
+
+    /// [`Self::on_dismiss`] after construction; `None` takes the close control away.
+    pub fn set_on_dismiss(&mut self, f: Option<Box<dyn FnMut()>>) {
+        self.dismiss =
+            f.map(|f| crate::widget::dismissal::Dismissal::published(self.surface_id(), f));
+        self.laid_out_for = None;
     }
 
     /// What the dialog's close control is named after: its test id, else

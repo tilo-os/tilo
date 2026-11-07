@@ -2297,6 +2297,21 @@ impl PlanTiming {
         self.cache_write_tokens = number("/cache_creation_input_tokens");
     }
 
+    /// What the tokens this call counted cost, at the model's price.
+    fn cost_micros(&self, model_id: &str) -> u64 {
+        crate::pricing::cost_micros(
+            model_id,
+            &agent_provider_config::protocol::Usage {
+                input_tokens: self.prompt_tokens.unwrap_or_default(),
+                output_tokens: self.completion_tokens.unwrap_or_default(),
+                total_tokens: 0,
+                cached_input_tokens: self.cached_tokens.unwrap_or_default(),
+                cache_write_tokens: self.cache_write_tokens.unwrap_or_default(),
+                reasoning_tokens: self.reasoning_tokens.unwrap_or_default(),
+            },
+        )
+    }
+
     fn log(&self, call: &PlanCall<'_>, outcome: Result<(), &String>) {
         if std::env::var_os("TILO_MODEL_GATEWAY_TIMING").is_some_and(|value| value == "0") {
             return;
@@ -2313,7 +2328,7 @@ impl PlanTiming {
             "tilo-model-gateway: timing plan trace={trace} profile={} model={} stream={} status={} \
              start_unix_ms={} first_byte_ms={} first_reasoning_ms={} first_token_ms={} first_tool_call_ms={} \
              plan_call_ms={} done_ms={} prompt_tokens={} completion_tokens={} \
-             reasoning_tokens={} cached_tokens={} cache_write_tokens={} tool_calls={} output_allowance={} \
+             reasoning_tokens={} cached_tokens={} cache_write_tokens={} cost_micros={} tool_calls={} output_allowance={} \
              source_context={} runtime_context={} timeout_ms={} {} outcome={}",
             log_token(call.profile_id),
             log_token(call.model_id),
@@ -2332,6 +2347,7 @@ impl PlanTiming {
             count(self.reasoning_tokens),
             count(self.cached_tokens),
             count(self.cache_write_tokens),
+            self.cost_micros(call.model_id),
             self.tool_calls,
             count(self.output_allowance),
             count(self.source_context.map(u64::from)),

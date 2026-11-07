@@ -73,4 +73,10 @@ impl Described for Skeleton {
     fn from_props(_key: &str, props: SkeletonProps) -> Self {
         Self::new(props.shape())
     }
+
+    /// The shape it stands in for changes where it stands, and the space it keeps with it.
+    fn set_props(&mut self, props: SkeletonProps) -> bool {
+        self.set_shape(props.shape());
+        true
+    }
 }

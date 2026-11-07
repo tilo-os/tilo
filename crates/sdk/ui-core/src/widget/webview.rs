@@ -326,6 +326,12 @@ impl WebView {
         self
     }
 
+    /// What the page is called changes where the view stands: a window that shows another
+    /// document.
+    pub fn set_accessible_name(&mut self, name: impl Into<String>) {
+        self.accessible_name = name.into();
+    }
+
     /// Place the view at an explicit logical rect without going through a
     /// taffy layout pass — for hosts that embed the view inside their own
     /// immediate-mode drawing (e.g. an email reader rendering an HTML body

@@ -337,6 +337,49 @@ fn yield_full_width_children(taffy: &mut TaffyTree<()>, children: &[NodeId]) {
     }
 }
 
+/// The row's children are its slot: a component that holds a row takes the views it is given
+/// where they stand, and the row lays them out again.
+impl crate::component::SlotViews for Row {
+    // The row holds its children whole; a slot view is one of them.
+    // (`crate::widget::Element` is the same box.)
+    fn len(&self) -> usize {
+        self.flow.children.len()
+    }
+
+    fn view_mut(&mut self, index: usize) -> Option<&mut crate::widget::Element> {
+        self.flow.children.get_mut(index)
+    }
+
+    fn insert(&mut self, index: usize, view: crate::widget::Element) {
+        let at = index.min(self.flow.children.len());
+        self.flow.children.insert(at, view);
+        self.flow.children_changed();
+    }
+
+    fn remove(&mut self, index: usize) {
+        if index < self.flow.children.len() {
+            self.flow.children.remove(index);
+            self.flow.children_changed();
+        }
+    }
+
+    fn move_view(&mut self, from: usize, to: usize) {
+        let len = self.flow.children.len();
+        if from < len && to < len {
+            let view = self.flow.children.remove(from);
+            self.flow.children.insert(to, view);
+            self.flow.children_changed();
+        }
+    }
+
+    fn replace(&mut self, index: usize, view: crate::widget::Element) {
+        if let Some(slot) = self.flow.children.get_mut(index) {
+            *slot = view;
+            self.flow.children_changed();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

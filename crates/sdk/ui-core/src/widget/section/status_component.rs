@@ -4,7 +4,7 @@ use crate::component::{Component, Described, Person};
 use crate::icons::Icon;
 use crate::widget::list_row::RowStatus;
 
-use super::{ObjectHeader, OwnedStatus, StatusLine};
+use super::{ObjectHeader, ObjectLead, OwnedStatus, StatusLine};
 
 crate::component::choice!(RowStatus<'static>, "RowStatus", {
     Active => "active",
@@ -30,19 +30,33 @@ pub struct StatusLineProps {
     pub who: Option<Person>,
 }
 
+/// What a status line shows: its sentence, and the state it says it in.
+fn said(props: StatusLineProps) -> (OwnedStatus, String) {
+    let StatusLineProps { text, status, who } = props;
+    let status = match (who, status) {
+        (Some(who), _) => OwnedStatus::Presence(who.identity),
+        (None, Some(RowStatus::Warning)) => OwnedStatus::Warning,
+        (None, Some(RowStatus::Error)) => OwnedStatus::Error,
+        (None, Some(RowStatus::Idle)) => OwnedStatus::Idle,
+        (None, Some(RowStatus::Active | RowStatus::Presence(_)) | None) => OwnedStatus::Active,
+    };
+    (status, text)
+}
+
 impl Described for StatusLine {
     type Props = StatusLineProps;
 
     fn from_props(_key: &str, props: StatusLineProps) -> Self {
-        let StatusLineProps { text, status, who } = props;
-        let status = match (who, status) {
-            (Some(who), _) => OwnedStatus::Presence(who.identity),
-            (None, Some(RowStatus::Warning)) => OwnedStatus::Warning,
-            (None, Some(RowStatus::Error)) => OwnedStatus::Error,
-            (None, Some(RowStatus::Idle)) => OwnedStatus::Idle,
-            (None, Some(RowStatus::Active | RowStatus::Presence(_)) | None) => OwnedStatus::Active,
-        };
+        let (status, text) = said(props);
         Self::with(status, text)
+    }
+
+    /// The sentence and the state it says change where the line stands: a live count that
+    /// ticks, a connection that fails.
+    fn set_props(&mut self, props: StatusLineProps) -> bool {
+        let (status, text) = said(props);
+        self.set_owned_status(status, text);
+        true
     }
 }
 
@@ -67,6 +81,29 @@ pub struct ObjectHeaderProps {
 
 impl Described for ObjectHeader {
     type Props = ObjectHeaderProps;
+
+    /// What the header is about: its name, the line under it, and the face or glyph before it.
+    fn set_props(&mut self, props: ObjectHeaderProps) -> bool {
+        let ObjectHeaderProps {
+            title,
+            caption,
+            who,
+            icon,
+            square,
+        } = props;
+        let lead = match (who, icon) {
+            (Some(who), _) => Some(ObjectLead::Avatar {
+                name: who.name,
+                identity: who.identity,
+                image: None,
+                square,
+            }),
+            (None, Some(icon)) => Some(ObjectLead::Icon(icon)),
+            (None, None) => None,
+        };
+        self.set_object(title, caption, lead);
+        true
+    }
 
     fn from_props(_key: &str, props: ObjectHeaderProps) -> Self {
         let ObjectHeaderProps {

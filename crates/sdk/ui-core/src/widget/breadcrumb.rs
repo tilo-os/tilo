@@ -43,6 +43,8 @@ const ELLIPSIS: &str = "...";
 /// `cached_visible` list (not the original `segments`) so the click
 /// hit-test matches what's on screen.
 pub struct Breadcrumb {
+    /// What the host placed this trail as: what its published action answers to.
+    key: String,
     /// All segments, in path order. The rightmost is the active page.
     segments: Vec<String>,
     on_navigate: Option<Box<dyn FnMut(usize)>>,
@@ -83,6 +85,7 @@ impl Breadcrumb {
     pub fn new(segments: Vec<String>) -> Self {
         Self {
             dirty: true,
+            key: String::new(),
             segments,
             on_navigate: None,
             choice: None,

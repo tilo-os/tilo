@@ -1635,6 +1635,7 @@ pub fn justified_rows(aspects: &[f64], width: f64, target_height: f64, gap: f64)
     out
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum GridMode {
     Columns,
     Justified,
@@ -1698,8 +1699,39 @@ impl MediaGrid {
 
     #[must_use]
     pub fn with_size(mut self, size: MediaSize) -> Self {
-        self.size = size;
+        self.set_size(size);
         self
+    }
+
+    /// How large the cards are, where the grid stands.
+    pub(crate) fn set_size(&mut self, size: MediaSize) {
+        if self.size != size {
+            self.size = size;
+            self.dirty = true;
+        }
+    }
+
+    /// Whether the rows are justified at each card's aspect, where the grid stands.
+    pub(crate) fn set_justified(&mut self, justified: bool) {
+        let mode = if justified {
+            GridMode::Justified
+        } else {
+            GridMode::Columns
+        };
+        if self.mode != mode {
+            self.mode = mode;
+            self.dirty = true;
+        }
+    }
+
+    /// The cards the grid shows, where it stands.
+    pub(crate) fn set_cards(&mut self, cards: Vec<MediaCard>) {
+        self.cards = cards
+            .into_iter()
+            .map(|card| Box::new(card) as Element)
+            .collect();
+        self.nodes.clear();
+        self.dirty = true;
     }
 
     /// The card `index`, out of the grid: for a host that places a card itself.
