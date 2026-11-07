@@ -3751,8 +3751,6 @@ fn iroh_link_error(error: tilo_relay_session::ClientError) -> LinkError {
             LinkError::Unavailable("host does not speak tilo-relay/1".into())
         }
         ClientError::Iroh(reason) => LinkError::Unavailable(reason),
-        // An iroh dial never produces it; the HTTPS carrier's own reason.
-        ClientError::Https(error) => error,
         ClientError::Sign(reason) => LinkError::Sign(reason),
         ClientError::Codec(reason) => LinkError::Malformed(reason),
         ClientError::PeerVersion { theirs } => LinkError::PeerVersion { theirs },

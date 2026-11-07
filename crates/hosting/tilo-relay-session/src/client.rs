@@ -31,7 +31,7 @@ mod handshake;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::session_carrier::StreamCarrier;
-use crate::session_carrier::{CarrierHandle, HttpsCarrier, IrohCarrier, SessionChannels};
+use crate::session_carrier::{CarrierHandle, IrohCarrier, SessionChannels};
 use handshake::authenticate_server;
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
 
@@ -157,9 +157,6 @@ pub enum ClientError {
     /// Iroh dial / bi-stream.
     #[error("iroh: {0}")]
     Iroh(String),
-    /// The HTTPS carrier did not reach the host, or the host refused it.
-    #[error("https: {0}")]
-    Https(tilo_relay_client::LinkError),
     /// Postcard encode/decode.
     #[error("codec: {0}")]
     Codec(String),
@@ -250,8 +247,7 @@ impl ClientError {
     #[must_use]
     pub fn peer_version(&self) -> Option<u32> {
         match self {
-            Self::PeerVersion { theirs }
-            | Self::Https(tilo_relay_client::LinkError::PeerVersion { theirs }) => Some(*theirs),
+            Self::PeerVersion { theirs } => Some(*theirs),
             _ => None,
         }
     }
@@ -654,46 +650,6 @@ impl RelayClient {
             },
         )
         .await
-    }
-
-    /// Connect to the host behind `http`, a host that publishes no iroh
-    /// address, over its HTTPS routes. The host must present `host_device`
-    /// (pinned from its `/host` answer or a membership kept for it), under any
-    /// person's root: the host of a workspace this device joined. The session
-    /// carries state envelopes only; it has no private action channel.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClientError::Https`] when the host is not reached, presents
-    /// another device, or refuses this device.
-    pub async fn connect_https(
-        http: Arc<dyn tilo_relay_client::HttpClient>,
-        host_device: [u8; 32],
-        own_cert: DeviceCert,
-        signer: &dyn DeviceSigner,
-        revocations: RevocationList,
-    ) -> Result<Self, ClientError> {
-        if signer.device_public_key() != own_cert.device_public_key {
-            return Err(ClientError::Sign(
-                "signer does not hold the certified device key".into(),
-            ));
-        }
-        let link = tilo_relay_client::HttpsLink::connect(
-            http,
-            &own_cert,
-            host_device,
-            &revocations,
-            signer,
-        )
-        .await
-        .map_err(ClientError::Https)?;
-        let relay_peer = link.host().clone();
-        let (carrier, channels) = HttpsCarrier::start(link);
-        Ok(Self::from_authenticated_session(
-            relay_peer,
-            channels,
-            Box::new(carrier),
-        ))
     }
 
     async fn connect_with_server_trust(

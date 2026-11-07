@@ -178,10 +178,10 @@ async fn once(
         }
     };
     link.establishing.store(true, Ordering::Release);
-    // Over iroh a host from before versioned handshakes closes the stream on
-    // this device's hello without a word, as a refusal does: after a few,
-    // ask it the way such a host reads.
-    let probe = reach.https.is_none() && *unanswered >= UNANSWERED_BEFORE_PROBE;
+    // A host from before versioned handshakes closes the stream on this
+    // device's hello without a word, as a refusal does: after a few, ask it
+    // the way such a host reads.
+    let probe = *unanswered >= UNANSWERED_BEFORE_PROBE;
     let governor = dial(hint.clone(), reach.clone(), probe).await;
     *unanswered = match &governor {
         Err(DialError::NoAnswer(_)) => unanswered.saturating_add(1),
@@ -196,14 +196,11 @@ async fn once(
                 DialError::NoAnswer(_) | DialError::Failed(_) => {
                     connect.next_host(&own, None).ok().flatten()
                 }
-                DialError::PeerVersion { .. } | DialError::NotAdmitted => None,
+                DialError::PeerVersion { .. } => None,
             };
             link.establishing.store(next.is_some(), Ordering::Release);
             holder.dial_failed(hint.clone(), true, error).await;
-            let stand_in = Reach {
-                https: None,
-                ..reach.clone()
-            };
+            let stand_in = reach.clone();
             let Some(dialled) = fail_over(connect, holder, link, (own, next), |via| {
                 dial(via, stand_in.clone(), false)
             })

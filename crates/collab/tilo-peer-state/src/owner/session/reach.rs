@@ -1,7 +1,6 @@
-//! Reaching a workspace's host: this device's own host in process, a host's
-//! HTTPS routes, or its iroh endpoint. Every holder of a workspace's session
-//! reaches its host, and renews this device's membership with it, through
-//! [`Reach`].
+//! Reaching a workspace's host: this device's own host in process, or a
+//! host's iroh endpoint. Every holder of a workspace's session reaches its
+//! host, and renews this device's membership with it, through [`Reach`].
 use super::{Connect, DialError};
 use crate::join::TransportHint;
 use ed25519_dalek::SigningKey;
@@ -35,24 +34,22 @@ pub trait OwnHost: Send + Sync {
 pub struct Reach {
     /// This device's endpoint, keyed by its device key.
     pub endpoint: iroh::Endpoint,
-    /// The host's HTTPS routes, for a host that publishes no iroh address.
-    pub https: Option<Arc<dyn tilo_relay_client::HttpClient>>,
     /// This device's own host, once it runs.
     pub own_host: Option<Arc<dyn OwnHost>>,
 }
 
 impl Reach {
     /// Join workspace `ws`'s co-edit session at `via` as `cert`: in process
-    /// when `via` is this device's own host, over HTTPS when the host is
-    /// reached so, and dialled otherwise. With `probe`, a host that closes
-    /// the stream without answering is asked which peer protocol it speaks.
+    /// when `via` is this device's own host, and dialled otherwise. With
+    /// `probe`, a host that closes the stream without answering is asked
+    /// which peer protocol it speaks.
     ///
     /// # Errors
     /// The hint does not authenticate for `ws`, the host authenticates as
     /// another certificate or speaks another peer protocol version
     /// ([`DialError::PeerVersion`]), the connection fails or takes over 10
-    /// seconds, only a certified host is reached over HTTPS, and a workspace
-    /// hosted here fails while this device's host does not run.
+    /// seconds, and a workspace hosted here fails while this device's host
+    /// does not run.
     pub async fn session(
         &self,
         ws: u64,
@@ -75,25 +72,12 @@ impl Reach {
                 .ok_or("this device's workspace host is not running")?;
             host.connect_local(cert, key, revocations).await?
         } else {
-            let probing = (probe && self.https.is_none()).then(|| cert.clone());
+            let probing = probe.then(|| cert.clone());
             let addr = payload.endpoint_addr.clone();
             let host = via.host.clone();
             let connect = async {
-                match (&self.https, trust) {
-                    (Some(http), WorkspaceHostTrust::CertifiedHost) => {
-                        RelayClient::connect_https(
-                            Arc::clone(http),
-                            host.device_public_key,
-                            cert,
-                            &key,
-                            revocations,
-                        )
-                        .await
-                    }
-                    (Some(_), WorkspaceHostTrust::InteractiveOwner(_)) => {
-                        return Err("only a certified host is reached over HTTPS".into());
-                    }
-                    (None, WorkspaceHostTrust::CertifiedHost) => {
+                match trust {
+                    WorkspaceHostTrust::CertifiedHost => {
                         RelayClient::connect_v2_to_enrolled_home_peer(
                             self.endpoint.clone(),
                             addr,
@@ -105,7 +89,7 @@ impl Reach {
                         )
                         .await
                     }
-                    (None, WorkspaceHostTrust::InteractiveOwner(trust)) => {
+                    WorkspaceHostTrust::InteractiveOwner(trust) => {
                         RelayClient::connect_v2_to_interactive_workspace_owner(
                             self.endpoint.clone(),
                             addr,
@@ -142,18 +126,15 @@ impl Reach {
 
     /// The workspace-join exchange with a workspace's host as this device,
     /// `own`: with this device's own host in process when it is the host
-    /// (`hosted_here`), else over HTTPS or iroh. `None` for a workspace hosted
-    /// here while this device's host does not run.
+    /// (`hosted_here`), else over iroh. `None` for a workspace hosted here
+    /// while this device's host does not run.
     #[must_use]
     pub fn join_client(&self, hosted_here: bool, own: [u8; 32]) -> Option<WorkspaceJoinClient> {
         if hosted_here {
             let host = self.own_host.as_ref()?;
             return Some(WorkspaceJoinClient::local(host.join_service(), own));
         }
-        Some(match &self.https {
-            Some(http) => WorkspaceJoinClient::https(Arc::clone(http), None),
-            None => WorkspaceJoinClient::new(self.endpoint.clone()),
-        })
+        Some(WorkspaceJoinClient::new(self.endpoint.clone()))
     }
 
     /// Prove this device's membership of `connect`'s workspace with the renewal
