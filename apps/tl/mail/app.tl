@@ -817,7 +817,7 @@ view conversation(t: Thread) {
     state draft: Text
     ui.NavShell(content_kind: .page, title: t.subject) {
         content: {
-            ui.Docked {
+            ui.Docked(page_column: true) {
                 foot: {
                     row {
                         ui.TextInput(value: draft, placeholder: "Reply to {t.subject}", fill) {
@@ -853,7 +853,7 @@ view message(m: Message) {
     stack(gap: .related) {
         row(gap: .related, align: .center) {
             ui.Text(if m.from_name == "" { m.from } else { m.from_name }, role: .subheading)
-            ui.Time(m.received, role: .caption, secondary: true)
+            ui.Time(m.received, role: .caption, past: true, secondary: true)
             spacer()
             ui.HoverToolbar {
                 ui.Button("Reply", icon: .reply, icon_only: true) {
@@ -965,7 +965,7 @@ scenario "a busy inbox" -> Thread {
             key: "launch@rivera.example",
             account: a.key,
             subject: "Launch plan for the autumn release",
-            latest: 2026-06-30T13:40,
+            latest: 2026-06-30T10:34,
             snippet: "Agreed on the twelfth. I will tell support today so they can prepare the help pages.",
             senders: "Ada Lovelace, Grace Hopper",
             count: 3,
@@ -981,7 +981,7 @@ scenario "a busy inbox" -> Thread {
             from: "grace@hopper.example",
             from_name: "Grace Hopper",
             to: "sam@rivera.example, ada@analytical.example",
-            received: 2026-06-30T09:12,
+            received: 2026-06-30T08:20,
             snippet: "Here is the draft plan.",
             body: "Hi both,\n\nHere is the draft plan for the autumn release. The beta goes out on the fifth, the release on the twelfth if nothing turns up.\n\nCould you each look at your part by Wednesday?\n\nGrace",
             message_id: "launch@rivera.example",
@@ -996,7 +996,7 @@ scenario "a busy inbox" -> Thread {
             from: "sam@rivera.example",
             from_name: "Sam Rivera",
             to: "grace@hopper.example, ada@analytical.example",
-            received: 2026-06-30T11:02,
+            received: 2026-06-30T09:40,
             snippet: "The fifth works for the beta.",
             body: "The fifth works for the beta. I would move the release to the fourteenth so the docs can catch up.\n\nSam",
             message_id: "launch-2@rivera.example",
@@ -1012,7 +1012,7 @@ scenario "a busy inbox" -> Thread {
             from: "ada@analytical.example",
             from_name: "Ada Lovelace",
             to: "sam@rivera.example, grace@hopper.example",
-            received: 2026-06-30T13:40,
+            received: 2026-06-30T10:34,
             snippet: "Agreed on the twelfth.",
             body: "Agreed on the twelfth. I will tell support today so they can prepare the help pages.\n\nAda",
             message_id: "launch-3@rivera.example",
