@@ -117,17 +117,21 @@ impl Inner {
     pub(super) fn touch(&mut self, write: &LocalWrite) {
         let mut reached: std::collections::BTreeMap<DocId, Vec<FieldKey>> =
             std::collections::BTreeMap::new();
-        for key in write
-            .touched
-            .iter()
-            .chain(write.items.iter().map(|(key, _)| key))
-        {
+        let mut items: ItemTouches = ItemTouches::new();
+        for (key, id) in &write.items {
+            reached
+                .entry(key.doc().to_owned())
+                .or_default()
+                .push(key.clone());
+            items.entry(key.clone()).or_default().insert(id.clone());
+        }
+        for key in &write.touched {
             reached
                 .entry(key.doc().to_owned())
                 .or_default()
                 .push(key.clone());
         }
-        self.changed_within(&reached);
+        self.changed_within(&reached, &items);
     }
 
     /// Derive one write into the overlay, naming what it derived to whoever reads: a field may
@@ -389,6 +393,13 @@ impl Inner {
         };
         write.versions = Some(ends.clone());
         let items = write.items.clone();
+        let touched_items: ItemTouches = {
+            let mut touched = ItemTouches::new();
+            for (key, id) in &items {
+                touched.entry(key.clone()).or_default().insert(id.clone());
+            }
+            touched
+        };
         if let (true, Some(held)) = (
             self.chunks.has_record(),
             self.apps.get(app).filter(|held| held.ready()),
@@ -404,7 +415,7 @@ impl Inner {
             }
             derive_removed(&mut derive, &mut sink, app, &ends, &items);
         }
-        self.changed_within(&reached);
+        self.changed_within(&reached, &touched_items);
         reached
     }
 

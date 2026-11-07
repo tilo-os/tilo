@@ -133,7 +133,7 @@ impl TiloStore {
         if changed.unplaced || changed.layout {
             inner.changed();
         } else {
-            inner.changed_within(&docs);
+            inner.changed_within(&docs, &items);
         }
         let mut listings = inner.splices_since(&old_snapshots, &old_overlay, &items);
         let mut collections = collections_by_doc(items.keys());

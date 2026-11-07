@@ -71,6 +71,7 @@ use crate::chunk::{self, ChunkNo, Chunks, Stamps};
 use crate::index::derive::{Derive, DocReads, Reached, linked_list, split_link};
 use crate::index::lists::Entry;
 use crate::index::overlay::{ListState, Overlay};
+use crate::index::select::Carried;
 use crate::index::view::{self, View};
 use crate::index::{self as idx, Index, IndexError, IndexReads};
 use crate::items::Nested;
@@ -292,40 +293,8 @@ pub struct ReadStats {
     pub versions: u64,
 }
 
-/// A listing read once in this state of the store: until anything changes, a view's rows read
-/// it again rather than the index.
-struct ListedOnce {
-    resource: String,
-    field: String,
-    pred: Option<Pred>,
-    order: Option<tilolang_runtime::query::Order>,
-    listing: Rc<Listing>,
-}
-
-impl ListedOnce {
-    /// Whether a change of `key` may change this listing: its collection, the resource holding
-    /// it as a whole, or, for a filtered or sorted listing, the field of an item of its record
-    /// that the filter or order reads (any item: one in another collection may move into this
-    /// one). An item's other fields leave which items it lists, and their order, as they were.
-    fn reached_by(&self, key: &FieldKey) -> bool {
-        let item = key.resource.contains('/') && key.doc() == doc_of(&self.resource);
-        let filtered_on = |field: &str| {
-            let reads = |id: &str| id == field;
-            field == ANY_FIELD
-                || self
-                    .pred
-                    .as_ref()
-                    .is_some_and(|pred| pred.fields().iter().any(|read| reads(&read.spec.id)))
-                || self.order.as_ref().is_some_and(|order| {
-                    // Any change of an item is its last version.
-                    reads(&order.field) || order.field == idx::reflect::UPDATED
-                })
-        };
-        (key.resource == self.resource && (key.field == self.field || key.field == ANY_FIELD))
-            || (item && (self.pred.is_some() || self.order.is_some()) && filtered_on(&key.field))
-    }
-}
-
+mod listed;
+use listed::ListedOnce;
 mod scoped;
 mod sync;
 use scoped::{Changing, Held};
@@ -1693,13 +1662,31 @@ impl Inner {
     /// [`Self::changed`], for a change that reached only `fields` (per record; an empty list
     /// for a record changed as a whole): the listings of collections it did not reach are
     /// still what they were, and are kept.
-    fn changed_within(&mut self, fields: &BTreeMap<DocId, Vec<FieldKey>>) {
+    fn changed_within(&mut self, fields: &BTreeMap<DocId, Vec<FieldKey>>, items: &ItemTouches) {
         self.snapshot = std::sync::Weak::new();
-        self.listed.borrow_mut().retain(|held| {
-            match fields.get(tilolang_runtime::store::doc_of(&held.resource)) {
-                None => true,
-                Some(keys) => !keys.is_empty() && !keys.iter().any(|key| held.reached_by(key)),
+        self.listed.borrow_mut().retain_mut(|held| {
+            let Some(keys) = fields.get(tilolang_runtime::store::doc_of(&held.resource)) else {
+                return true;
+            };
+            if keys.is_empty() {
+                return false;
             }
+            let mut carry = held.carry.clone().unwrap_or_default();
+            let mut reached = false;
+            for key in keys {
+                if !held.reached_by(key) {
+                    continue;
+                }
+                reached = true;
+                let Some(ids) = held.touched_by(key, items) else {
+                    return false;
+                };
+                carry.extend(ids);
+            }
+            if reached {
+                held.carry = Some(carry);
+            }
+            true
         });
     }
 
@@ -2075,15 +2062,32 @@ impl Inner {
     ) -> Result<Rc<Listing>, StoreError> {
         let pred = query.and_then(|(_, p)| p);
         let resource = at.id_string();
-        if let Some(held) = self.listed.borrow().iter().find(|held| {
+        let same = |held: &ListedOnce| {
             held.resource == resource
                 && held.field == field
                 && held.pred.as_ref() == pred
                 && held.order.as_ref() == order
-        }) {
-            return Ok(Rc::clone(&held.listing));
-        }
+        };
+        // What it read before a change, and the items the change wrote: what it keeps of its
+        // checks rather than checking the whole run again.
+        let (before, carried) = {
+            let listed = self.listed.borrow();
+            match listed.iter().position(same) {
+                Some(before) => match listed.get(before) {
+                    Some(held) if held.carry.is_none() => {
+                        return Ok(Rc::clone(&held.listing));
+                    }
+                    Some(held) => (Some(before), held.filtered.clone().zip(held.carry.clone())),
+                    None => (Some(before), None),
+                },
+                None => (None, None),
+            }
+        };
+        let carried = carried
+            .as_ref()
+            .map(|(before, touched)| Carried { before, touched });
         let (app, ty) = self.locate(at)?;
+        let mut kept = None;
         let listing = match self.view(&app) {
             Some(view) => {
                 let ty = view
@@ -2104,12 +2108,14 @@ impl Inner {
                             .and_then(lookup)
                             .or_else(|| lookup(item))
                             .ok_or_else(|| not_found(format!("type {item}")))?;
-                        view.query(
+                        let answer = view.query(
                             (&resource, field),
                             item_schema,
                             (pred, order),
-                            &self.evaluated,
-                        )?
+                            (carried.as_ref(), &self.evaluated),
+                        )?;
+                        kept = answer.carry;
+                        answer.listing
                     }
                 }
             }
@@ -2123,13 +2129,20 @@ impl Inner {
             None => Listing::default(),
         };
         let listing = Rc::new(listing);
-        self.listed.borrow_mut().push(ListedOnce {
+        let held = ListedOnce {
             resource,
             field: field.to_owned(),
             pred: pred.cloned(),
             order: order.cloned(),
             listing: Rc::clone(&listing),
-        });
+            filtered: kept,
+            carry: None,
+        };
+        let mut listed = self.listed.borrow_mut();
+        match before.and_then(|at| listed.get_mut(at)) {
+            Some(entry) => *entry = held,
+            None => listed.push(held),
+        }
         Ok(listing)
     }
 }

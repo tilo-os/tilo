@@ -1342,6 +1342,9 @@ fn steps_costs(n: usize) -> (Vec<(&'static str, Done)>, u64) {
                 .press_key(ui::winit::keyboard::NamedKey::Enter);
         }),
     ));
+    // The rows the window shows, read along the top of the list: a scroll is a fraction of one,
+    // so it lays out a row more or less by where it lands rather than by what the workspace holds.
+    let rows = rows_shown(&mut session);
     let first = top_title(&mut session);
     let at = shown_at(&mut session, &first);
     session.window.move_to(at.0, at.1);
@@ -1350,17 +1353,8 @@ fn steps_costs(n: usize) -> (Vec<(&'static str, Done)>, u64) {
         "scroll",
         step(&mut session, |session| session.window.scroll(0.0, -3.0)),
     ));
-    (out, rows_shown(&mut session))
+    (out, rows)
 }
-
-/// What a step still does for each task the workspace holds grows with the workspace: where the
-/// workspace is larger, the step does `per_task` more of `count` for every task more.
-///
-/// The loop left is a filter over the collection a change did not narrow, read through the
-/// index rather than item by item, so it does not gather the workspace's items to answer:
-/// - `entry enter` adds a task, which rejoins the place's filter: the filtered listing is read
-///   again from the collection, its predicate's remaining fields read on every item it may hold.
-const KNOWN_PER_TASK: &[(&str, &str, u64)] = &[("entry enter", "index_fields", 3)];
 
 /// A step of the window costs what it changed and what the window shows, never the size of the
 /// workspace: checking a task off, switching the sidebar's place, a keystroke in the entry, the
@@ -1368,8 +1362,7 @@ const KNOWN_PER_TASK: &[(&str, &str, u64)] = &[("entry enter", "index_fields", 3
 /// in a thousand. What would grow with the workspace is a loop over the collection, a filter no
 /// index answers, a publication of rows the window cannot show or a layout of rows off screen.
 /// An index reads a tree whose depth is the logarithm of what it holds, so ten times the
-/// workspace must not make a step do twice the work: what a step costs is what it changed, and
-/// of the collection only what [`KNOWN_PER_TASK`] names.
+/// workspace must not make a step do twice the work: what a step costs is what it changed.
 #[test]
 fn a_step_costs_what_it_changes_not_the_workspace() {
     let _motion = ui::motion::testing::settled();
@@ -1384,7 +1377,6 @@ fn a_step_costs_what_it_changes_not_the_workspace() {
         "{:<18} {:>12} {:>8} {:>8}",
         "step", "count", SMALL, SEEDED
     )];
-    let more = u64::try_from(SEEDED - SMALL).unwrap_or(0);
     for ((label, at_large), (_, at_small)) in large.iter().zip(&small) {
         for ((name, at_large), (_, at_small)) in
             at_large.counts().into_iter().zip(at_small.counts())
@@ -1392,14 +1384,7 @@ fn a_step_costs_what_it_changes_not_the_workspace() {
             table.push(format!(
                 "{label:<18} {name:>12} {at_small:>8} {at_large:>8}"
             ));
-            let known = KNOWN_PER_TASK
-                .iter()
-                .find(|(step, count, _)| step == label && count == &name)
-                .map_or(0, |(_, _, per_task)| per_task * more);
-            let allowed = at_small
-                .saturating_mul(2)
-                .saturating_add(8)
-                .saturating_add(known);
+            let allowed = at_small.saturating_mul(2).saturating_add(8);
             if at_large > allowed {
                 grew.push(format!(
                     "{label} {name}: {at_large} at {SEEDED} tasks, {at_small} at {SMALL}"

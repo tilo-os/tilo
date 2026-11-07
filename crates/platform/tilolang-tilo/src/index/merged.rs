@@ -2,6 +2,7 @@
 //! writes added and removed, read page by page as the list it stands for.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use tilolang_runtime::store::PagedItems;
@@ -297,6 +298,10 @@ impl PagedItems for Merged {
 /// Whether an entry of a run is kept: read as the listing fills its pages.
 pub type Keep = Box<dyn Fn(&str) -> bool>;
 
+/// What a listing read: the run and the checks it was made of, named. A listing read the same
+/// way again after a change keeps the checks it made ([`Filtered::spliced`]).
+pub type Shape = Rc<str>;
+
 /// One entry of a run as [`Filtered`] holds it, kept or not.
 struct Scanned {
     id: Rc<str>,
@@ -331,6 +336,9 @@ pub struct Filtered {
     kept: Cell<usize>,
     /// Finds an item's entries in the run, when the run was given the means.
     locate: Option<Locate>,
+    /// The read this listing is of, when it can be read again the same way: what a change
+    /// leaves of it is kept ([`Self::spliced`]).
+    shape: Option<Shape>,
 }
 
 impl std::fmt::Debug for Filtered {
@@ -358,7 +366,101 @@ impl Filtered {
             at: Cell::new(0),
             kept: Cell::new(0),
             locate: None,
+            shape: None,
         }
+    }
+
+    /// The listing is of the read `shape`, so a listing read the same way again after a change
+    /// may keep what this one checked ([`Self::spliced`]).
+    #[must_use]
+    pub fn shaped(mut self, shape: Shape) -> Self {
+        self.shape = Some(shape);
+        self
+    }
+
+    /// The listing `old` was, over the run `base` as the change left it: the items `touched`
+    /// checked again as they stand now, and every other entry of the run keeping what `old`
+    /// found of it and where it stood.
+    ///
+    /// `Err` with the run and its check when `old` is of another read, has not checked its run
+    /// whole, or the run moved in a way the change did not name: the caller reads it anew.
+    pub fn spliced(
+        old: &Self,
+        base: Merged,
+        keep: Keep,
+        shape: Shape,
+        touched: &BTreeSet<String>,
+    ) -> Result<Self, (Merged, Keep)> {
+        let walked = Self::kept_over(old, &base, &shape, &keep, touched);
+        let Some((out, held)) = walked else {
+            return Err((base, keep));
+        };
+        let most = base.len();
+        Ok(Self {
+            most,
+            base,
+            keep,
+            known: None,
+            scanned: RefCell::new(out),
+            at: Cell::new(most),
+            kept: Cell::new(held),
+            locate: None,
+            shape: Some(shape),
+        })
+    }
+
+    /// What [`Self::spliced`] keeps of `old` over the run `base`: each entry of the run and
+    /// whether it is kept, and how many are. `None` when `old` says nothing of the run.
+    fn kept_over(
+        old: &Self,
+        base: &Merged,
+        shape: &Shape,
+        keep: &Keep,
+        touched: &BTreeSet<String>,
+    ) -> Option<(Vec<Scanned>, usize)> {
+        if old.shape.as_ref() != Some(shape) || !old.exact() {
+            return None;
+        }
+        let scanned = old.scanned.borrow();
+        let mut out: Vec<Scanned> = Vec::with_capacity(base.len());
+        let mut kept = 0usize;
+        let (mut before, mut now) = (0usize, 0usize);
+        loop {
+            let old_id = old.base.get(before);
+            let new_id = base.get(now);
+            match (old_id, new_id) {
+                (None, None) => break,
+                (Some(old_id), Some(new_id)) if old_id == new_id && !touched.contains(&*old_id) => {
+                    let holds = scanned.get(before)?.kept;
+                    if holds {
+                        kept = kept.saturating_add(1);
+                    }
+                    out.push(Scanned {
+                        id: new_id,
+                        kept: holds,
+                    });
+                    before = before.saturating_add(1);
+                    now = now.saturating_add(1);
+                }
+                // Gone from the run, or moved: where it is now is checked there.
+                (Some(old_id), _) if touched.contains(&*old_id) => {
+                    before = before.saturating_add(1);
+                }
+                (_, Some(new_id)) if touched.contains(&*new_id) => {
+                    let holds = keep(&new_id);
+                    if holds {
+                        kept = kept.saturating_add(1);
+                    }
+                    out.push(Scanned {
+                        id: new_id,
+                        kept: holds,
+                    });
+                    now = now.saturating_add(1);
+                }
+                _ => return None,
+            }
+        }
+        Some((out, kept))
     }
 
     /// The listing whose kept count is `count`, answered from the index's counts rather than
@@ -670,5 +772,180 @@ mod tests {
         let filtered = Filtered::new(numbered(200), Box::new(even));
         assert_eq!(filtered_ids(&filtered, 200).len(), 100);
         assert_eq!(filtered.len(), 100, "the count once every entry is checked");
+    }
+
+    /// A run of the items `ids`, in the order given.
+    fn run(ids: &[&str]) -> Merged {
+        let held: Vec<(String, Rc<str>)> = ids
+            .iter()
+            .map(|id| ((*id).to_owned(), Rc::<str>::from(*id)))
+            .collect();
+        Merged::new(Base::Held(held), Vec::new(), &[])
+    }
+
+    /// Keeps the items `ids`: the run's items with a field of their own.
+    fn keeps(ids: &[&str]) -> Keep {
+        let kept: BTreeSet<String> = ids.iter().map(|id| (*id).to_owned()).collect();
+        Box::new(move |id: &str| kept.contains(id))
+    }
+
+    fn touched(ids: &[&str]) -> BTreeSet<String> {
+        ids.iter().map(|id| (*id).to_owned()).collect()
+    }
+
+    fn read_all(filtered: &Filtered) -> Vec<String> {
+        filtered_ids(filtered, filtered.len())
+    }
+
+    #[test]
+    fn a_spliced_listing_reads_as_the_one_read_anew() {
+        let shape: Shape = Rc::from("the run of a column");
+        let old =
+            Filtered::new(run(&["a", "b", "c", "d"]), keeps(&["a", "c"])).shaped(shape.clone());
+        assert_eq!(read_all(&old), ["a", "c"]);
+        let after = [&["a", "b", "c", "d", "e"][..], &["a", "b", "c", "d"][..]];
+        // An item put in: checked, the rest as they were.
+        let spliced = Filtered::spliced(
+            &old,
+            run(after[0]),
+            keeps(&["a", "c", "e"]),
+            shape.clone(),
+            &touched(&["e"]),
+        )
+        .ok()
+        .expect("the run only gained an item");
+        assert_eq!(
+            read_all(&spliced),
+            read_all(&Filtered::new(run(after[0]), keeps(&["a", "c", "e"])))
+        );
+        // An item made to be of the listing: checked, the rest as they were.
+        let spliced = Filtered::spliced(
+            &old,
+            run(after[1]),
+            keeps(&["a", "b", "c"]),
+            shape.clone(),
+            &touched(&["b"]),
+        )
+        .ok()
+        .expect("the run is as it was");
+        assert_eq!(
+            read_all(&spliced),
+            read_all(&Filtered::new(run(after[1]), keeps(&["a", "b", "c"])))
+        );
+        // An item made not to be of it.
+        let spliced = Filtered::spliced(
+            &old,
+            run(after[1]),
+            keeps(&["c"]),
+            shape.clone(),
+            &touched(&["a"]),
+        )
+        .ok()
+        .expect("the run is as it was");
+        assert_eq!(
+            read_all(&spliced),
+            read_all(&Filtered::new(run(after[1]), keeps(&["c"])))
+        );
+        // An item taken out: it is not checked again, and the rest stay.
+        let spliced = Filtered::spliced(
+            &old,
+            run(&["b", "c", "d"]),
+            keeps(&["a", "c"]),
+            shape.clone(),
+            &touched(&["a"]),
+        )
+        .ok()
+        .expect("the run only lost an item");
+        assert_eq!(
+            read_all(&spliced),
+            read_all(&Filtered::new(run(&["b", "c", "d"]), keeps(&["a", "c"])))
+        );
+    }
+
+    #[test]
+    fn a_spliced_listing_checks_the_items_the_change_wrote() {
+        let shape: Shape = Rc::from("the run of a column");
+        let old = Filtered::new(numbered(200), Box::new(even)).shaped(shape.clone());
+        assert_eq!(read_all(&old).len(), 100, "the run read whole");
+        let checks = Rc::new(Cell::new(0usize));
+        let counted = {
+            let checks = Rc::clone(&checks);
+            Box::new(move |id: &str| {
+                checks.set(checks.get().saturating_add(1));
+                even(id)
+            })
+        };
+        let spliced = Filtered::spliced(
+            &old,
+            numbered(200),
+            counted,
+            shape.clone(),
+            &BTreeSet::new(),
+        )
+        .ok()
+        .expect("the run is as it was");
+        assert_eq!(checks.get(), 0, "nothing was written: nothing is read");
+        assert_eq!(read_all(&spliced), read_all(&old));
+        let checks = Rc::new(Cell::new(0usize));
+        let counted = {
+            let checks = Rc::clone(&checks);
+            Box::new(move |id: &str| {
+                checks.set(checks.get().saturating_add(1));
+                even(id)
+            })
+        };
+        let spliced = Filtered::spliced(
+            &old,
+            numbered(200),
+            counted,
+            shape,
+            &touched(&["0003", "0100"]),
+        )
+        .ok()
+        .expect("the run is as it was");
+        assert_eq!(checks.get(), 2, "only the items the change wrote are read");
+        assert_eq!(read_all(&spliced), read_all(&old));
+    }
+
+    #[test]
+    fn a_listing_is_read_anew_when_the_change_does_not_explain_the_run() {
+        let shape: Shape = Rc::from("the run of a column");
+        let old = Filtered::new(run(&["a", "b", "c"]), keeps(&["a"])).shaped(shape.clone());
+        assert_eq!(read_all(&old), ["a"]);
+        assert!(
+            Filtered::spliced(
+                &old,
+                run(&["a", "b", "c"]),
+                keeps(&["a"]),
+                Rc::from("another run"),
+                &BTreeSet::new()
+            )
+            .is_err(),
+            "a listing of another read is not the same listing"
+        );
+        assert!(
+            Filtered::spliced(
+                &old,
+                run(&["a", "b", "d"]),
+                keeps(&["a"]),
+                shape.clone(),
+                &BTreeSet::new()
+            )
+            .is_err(),
+            "an entry no change names went"
+        );
+        let partial = Filtered::new(numbered(200), Box::new(even)).shaped(shape.clone());
+        assert_eq!(partial.get(0).as_deref(), Some("0000"));
+        assert!(
+            Filtered::spliced(
+                &partial,
+                numbered(200),
+                Box::new(even),
+                shape,
+                &BTreeSet::new()
+            )
+            .is_err(),
+            "a run not checked whole has nothing to keep"
+        );
     }
 }

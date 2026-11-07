@@ -268,6 +268,21 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
             cases,
         });
     }
+    // When each field of a resource last changed, by its time: what a list sorts or filters by
+    // when it reads `changed(r, .field)`. A field of a collection changes with the items in it,
+    // which the ends of the items' versions name.
+    for field in fields {
+        let id = crate::index::reflect::changed_field(&field.id);
+        out.push(ColumnSchema {
+            name: id.clone(),
+            field: Some(id),
+            kind: ColumnKind::Time,
+            many: false,
+            pred: None,
+            filter: false,
+            cases: Vec::new(),
+        });
+    }
     // Every resource's first and last versions, by their time: what a list sorts or filters
     // by when it reads `created(r)` or `updated(r)`.
     for reflected in [

@@ -1009,33 +1009,41 @@ impl<'d> Derive<'d> {
                     let scope = placed
                         .as_ref()
                         .map(|(holder, coll, key)| (holder.as_str(), coll.as_str(), key.as_str()));
-                    for field in [CREATED, UPDATED] {
+                    let mut moved = vec![CREATED.to_owned(), UPDATED.to_owned()];
+                    moved.extend(
+                        schema
+                            .fields
+                            .iter()
+                            .map(|field| reflect::changed_field(&field.id)),
+                    );
+                    for field in &moved {
                         self.index_columns(sink, resource, schema, scope, Some(field))?;
                     }
                 }
                 continue;
             }
-            let mut moved = Vec::new();
+            let mut moved: Vec<String> = Vec::new();
             if held(sink, CREATED)?.is_none_or(|held| end.first.before(&held)) {
                 sink.put_field(resource, CREATED, &end.first.value())?;
-                moved.push(CREATED);
+                moved.push(CREATED.to_owned());
             }
             if held(sink, UPDATED)?.is_none_or(|held| held.before(&end.last)) {
                 sink.put_field(resource, UPDATED, &end.last.value())?;
-                moved.push(UPDATED);
+                moved.push(UPDATED.to_owned());
             }
             // When each field last changed, which a list groups or sorts by.
             for (field, stamp) in &end.fields {
                 let id = reflect::changed_field(field);
                 if held(sink, &id)?.is_none_or(|held| held.before(stamp)) {
                     sink.put_field(resource, &id, &stamp.value())?;
+                    moved.push(id);
                 }
             }
             if moved.is_empty() {
                 continue;
             }
             // A resource made from another links to it from its first version on.
-            if moved.contains(&CREATED) {
+            if moved.iter().any(|field| field == CREATED) {
                 self.links(sink, resource, schema)?;
             }
             if !sink.keeps_columns() {
@@ -1045,7 +1053,7 @@ impl<'d> Derive<'d> {
             let scope = placed
                 .as_ref()
                 .map(|(holder, coll, key)| (holder.as_str(), coll.as_str(), key.as_str()));
-            for field in moved {
+            for field in &moved {
                 self.index_columns(sink, resource, schema, scope, Some(field))?;
             }
         }
