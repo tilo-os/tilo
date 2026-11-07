@@ -9,46 +9,8 @@ use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::profiling::observe;
 
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", "work-draft = Next task\nwork-done = Completed\n")],
-);
-
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-/// One task.
-pub struct Task {
-    pub title: String,
-    pub done: bool,
-}
-
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-/// The draft and the tasks.
-pub struct Checklist {
-    pub draft: String,
-    pub tasks: Collection<Task>,
-}
-
-#[resource(
-    kind = "test.add-item-work",
-    label = "Checklist",
-    app = "so.tilo.test-add-item-work"
-)]
-impl Checklist {
-    /// Add `count` tasks at the end.
-    #[action]
-    pub fn seed(&mut self, cx: &mut ActionCx, count: u32) {
-        for _ in 0..count {
-            let index = self.tasks.len();
-            self.tasks.push(
-                cx.id(),
-                Task {
-                    title: format!("Task {index}"),
-                    done: false,
-                },
-            );
-        }
-    }
-}
+use crate::support_checklist;
+use crate::support_checklist::Checklist;
 
 /// The checklist with its rows outside a scroll view: every row mounted,
 /// about seven widgets an item.
@@ -60,7 +22,7 @@ impl ResourceApp for Mounted {
     const TITLE: &'static str = "Checklist";
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(&support_checklist::CATALOG)
     }
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
@@ -74,7 +36,7 @@ impl ResourceApp for Mounted {
                 let done = row.paths().done;
                 Box::new(tilo_app::row![
                     row.text(|task| task.title.clone()),
-                    row.checkbox("work-done", done),
+                    row.checkbox(support_checklist::DONE, done),
                 ]) as Element
             },
         );
