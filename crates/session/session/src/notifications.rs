@@ -9,6 +9,12 @@
 //! the centre over the same log. What the person does reaches the sending
 //! app through the daemon: an action or a reply as they choose it, and the
 //! close once the banner leaves (dismissed, chosen or run out).
+//!
+//! A notification an app sent also continues on the person's other devices
+//! ([`mirror`]): each is projected to the ones online, shown there named
+//! after this device, and dismissed or acted on together.
+
+mod mirror;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,10 +28,14 @@ use settings_store::notification_policy::{EffectiveNotificationPolicy, Notificat
 use settings_store::system_sounds::{QuietState, SystemSoundEvent};
 use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
 use tilo_desktop_surface::notifications::{
-    self, Addressed, BannerAsk, DEFAULT_DISMISS_AFTER, Notification, NotificationPerson,
-    NotificationSeverity, PERSISTENT_DISMISS, QuietReason, ScheduledNotificationTarget,
+    self, Addressed, BannerAsk, ContinuityNotificationId, DEFAULT_DISMISS_AFTER, Notification,
+    NotificationPerson, NotificationSeverity, PERSISTENT_DISMISS, QuietReason,
+    RemoteNotificationRoute, ScheduledNotificationTarget,
 };
 use tilo_desktop_surface::{DesktopNotifications, NotificationOutcome};
+use tilo_device_fabric::link::SharedLink;
+use tilo_device_fabric::notification::ContinuityNotificationProjection;
+use tilo_device_fabric::{DeviceId, PersonalFabricAction};
 use tilo_lock::MutexRecover as _;
 use tilo_notification_banners::{Ask, Link};
 use tilo_notifications_service::{Arrival, Caller, Callers, CloseReason, Notifications, Sender};
@@ -35,7 +45,7 @@ use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_session_power::PowerLink;
 
 use crate::app_icons;
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 use crate::portal_link::PortalSide;
 use crate::system_sounds::SystemSounds;
 
@@ -412,6 +422,9 @@ pub(crate) struct SessionNotifications {
     /// Where what the centre keeps is written between sessions; a session
     /// with nowhere to write it keeps the centre in memory only.
     history: Option<std::path::PathBuf>,
+    /// What continues on the person's other devices, and what they showed
+    /// here.
+    mirror: Rc<mirror::Mirroring>,
 }
 
 impl SessionNotifications {
@@ -430,29 +443,50 @@ impl SessionNotifications {
         let choosing = Rc::clone(&opened);
         let chosen: Chosen = Rc::default();
         let answering = Rc::clone(&chosen);
-        desktop.on_outcome(move |outcome| {
-            let NotificationOutcome::Activated {
+        let mirror = mirror::Mirroring::new();
+        let answered = Rc::clone(&mirror);
+        desktop.on_outcome(move |outcome| match outcome {
+            NotificationOutcome::Activated {
                 notification,
                 action,
-            } = outcome
-            else {
-                return;
-            };
-            // Choosing a scheduled notification opens what it rang for, in
-            // the workspace that scheduled it.
-            if let Some(target) = notification
-                .scheduled_target
-                .as_ref()
-                .filter(|target| target.valid())
-            {
-                choosing
-                    .borrow_mut()
-                    .push((target.workspace.clone(), target.uri.clone()));
+            } => {
+                // A notification another device projected is answered there:
+                // the action the person chose, or the end of it here when
+                // they only opened it. The origins that device's id names
+                // are the only ones it can reach.
+                if let Some(route) = notification.remote_route.clone() {
+                    let chosen = action.as_deref().filter(|key| {
+                        notification
+                            .actions
+                            .iter()
+                            .any(|(offered, _)| offered == key)
+                    });
+                    answered.answer_route(&route, chosen);
+                }
+                // Choosing a scheduled notification opens what it rang for,
+                // in the workspace that scheduled it.
+                if let Some(target) = notification
+                    .scheduled_target
+                    .as_ref()
+                    .filter(|target| target.valid())
+                {
+                    choosing
+                        .borrow_mut()
+                        .push((target.workspace.clone(), target.uri.clone()));
+                }
+                // Choosing answers the sender, with a token its app may raise
+                // its window by: the loop mints it.
+                if let Some(sender) = notification.sender_id {
+                    answering.borrow_mut().push((sender, action.clone()));
+                }
             }
-            // Choosing answers the sender, with a token its app may raise
-            // its window by: the loop mints it.
-            if let Some(sender) = notification.sender_id {
-                answering.borrow_mut().push((sender, action.clone()));
+            NotificationOutcome::Dismissed { id } => {
+                // Dismissing another device's notification here dismisses it
+                // there too: the app's notification closes, and every other
+                // copy goes with it.
+                answered.answer(*id, |_, id| PersonalFabricAction::NotificationDismiss {
+                    id,
+                });
             }
         });
         Self {
@@ -475,6 +509,7 @@ impl SessionNotifications {
             generation: 0,
             quiet_changed: Cell::new(None),
             history,
+            mirror,
         }
     }
 
@@ -560,6 +595,130 @@ impl SessionNotifications {
     /// kept behind them.
     pub(crate) fn desktop(&self) -> DesktopNotifications {
         self.desktop.clone()
+    }
+
+    /// Carry this device's notifications to the person's other devices over
+    /// `link` from now on, and show what they carry here.
+    pub(crate) fn attach_fabric(&self, link: SharedLink) {
+        self.mirror.attach(link);
+    }
+
+    /// Show what another of the person's devices projected: a notification
+    /// an app sent there, named after that device, unless the person turned
+    /// this app's notifications off from their other devices.
+    pub(crate) fn remote_project(
+        &self,
+        source: &DeviceId,
+        source_label: &str,
+        projection: &ContinuityNotificationProjection,
+    ) {
+        let now = tilo_clock::unix_now_ms();
+        if !projection.validate_at(now) {
+            return;
+        }
+        let effective = self.effective(Some(projection.app_id.as_str()), false);
+        if !effective.cross_device {
+            return;
+        }
+        let route = RemoteNotificationRoute {
+            source_device: source.as_str().to_owned(),
+            source_label: source_label.to_owned(),
+            notification_id: projection.id,
+        };
+        let mut notification = Notification::new(
+            projection.title.clone(),
+            if projection.body_redacted {
+                String::new()
+            } else {
+                projection.body.clone()
+            },
+        );
+        notification.severity = if projection.urgency == 2 {
+            NotificationSeverity::Error
+        } else {
+            NotificationSeverity::Info
+        };
+        notification.dismiss_after = if projection.urgency == 2 {
+            PERSISTENT_DISMISS
+        } else {
+            Duration::from_millis(projection.expires_unix_ms.saturating_sub(now))
+        };
+        // The app's own name beside the device it was told on: a row here
+        // says what was told, and whose device told it.
+        notification.app_name = Some(match projection.app_name.trim() {
+            "" => t_args(
+                "notification-from-device-only",
+                &[("device", source_label.into())],
+            ),
+            app => t_args(
+                "notification-from-device",
+                &[("app", app.into()), ("device", source_label.into())],
+            ),
+        });
+        notification.app_id = Some(projection.app_id.clone());
+        notification.actions.clone_from(&projection.actions);
+        notification.remote_route = Some(route.clone());
+        // A device's notification never expands what the lock screen says
+        // here, and its text only shows when previews may.
+        notification.show_on_lock_screen = false;
+        notification.show_preview = !projection.body_redacted;
+        let id = if let Some(existing) = self.desktop.replace_remote(&notification) {
+            existing
+        } else if effective.banners && !self.presenting() && !self.desktop.centre_open() {
+            self.desktop.post(notification)
+        } else {
+            self.desktop.post_quiet(notification)
+        };
+        self.mirror.shown(id, route);
+    }
+
+    /// Take away what another of the person's devices projected: it is done
+    /// with the notification, or its window on this desk ran out.
+    pub(crate) fn remote_retire(&self, source: &DeviceId, id: ContinuityNotificationId) {
+        self.mirror.retire_shown(source, id);
+        self.desktop.retire_remote(source.as_str(), id);
+    }
+
+    /// Answer what another of the person's devices asked of the notification
+    /// this one projected to it: `action` the person there chose, or `None`
+    /// for being done with it. The app's notification closes here, and every
+    /// other copy goes with it on this pass.
+    pub(crate) fn answer_local(&mut self, daemon_id: u32, action: Option<&str>) {
+        if let Some(daemon) = &self.daemon {
+            if let Some(key) = action {
+                daemon.action_invoked(daemon_id, key, None);
+            }
+            daemon.closed(daemon_id, CloseReason::Dismissed);
+        }
+        if let Some(id) = self.by_sender.remove(&daemon_id) {
+            self.desktop.withdraw(id);
+            self.transient.remove(&id);
+        }
+        self.up.remove(&daemon_id);
+        self.mirror.retire(daemon_id);
+    }
+
+    /// Carry out a choice another of the person's devices made on a
+    /// notification this one projected to it: the app's notification closes
+    /// here, and every other copy goes with it. Returns whether it named one
+    /// this device projected along with an action the app offered.
+    pub(crate) fn answered(&mut self, action: &PersonalFabricAction) -> bool {
+        let Some((daemon_id, chosen)) = self.mirror.answered(action) else {
+            return false;
+        };
+        self.answer_local(daemon_id, chosen.as_deref());
+        true
+    }
+
+    /// The notifications the desk shows now, live or kept: what this device
+    /// still has of what it projected.
+    fn shown_ids(&self) -> BTreeSet<u64> {
+        let log = self.desktop.log();
+        log.active()
+            .iter()
+            .chain(log.history().iter())
+            .map(|notification| notification.id)
+            .collect()
     }
 
     /// The targets of scheduled notifications the person chose since the
@@ -689,6 +848,10 @@ impl SessionNotifications {
         }
         self.answer_chosen(token);
         self.settle(CloseReason::Dismissed);
+        // What the desk no longer shows of this device's notifications leaves
+        // the person's other devices with it.
+        let shown = self.shown_ids();
+        self.mirror.prune(&shown, tilo_clock::unix_now_ms());
         // Every banner the desk puts up passes through its log, whether an
         // app sent it or the session raised it: a new one there is what the
         // person was just told.
@@ -735,6 +898,22 @@ impl SessionNotifications {
                 let mut notification = shown(sent, self.generation);
                 notification.show_preview = effective.previews;
                 notification.show_on_lock_screen = effective.lock_screen;
+                // What the person's other devices show of it, judged by the
+                // same policy: their own rules decide whether it is shown
+                // there, and its text leaves this device only when previews
+                // may.
+                if effective.cross_device {
+                    self.mirror.project(
+                        sender,
+                        (
+                            notification.app_id.as_deref().unwrap_or_default(),
+                            notification.app_name.as_deref().unwrap_or_default(),
+                        ),
+                        &notification,
+                        effective.previews,
+                        tilo_clock::unix_now_ms(),
+                    );
+                }
                 // Held banners go straight to the centre, unread: quiet
                 // asks for calm, not to be kept uninformed. Presenting is
                 // held whatever the sender's own rule says, and so is a

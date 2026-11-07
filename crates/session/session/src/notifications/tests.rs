@@ -933,3 +933,385 @@ fn a_critical_arrival_gets_the_error_sound_and_a_silenced_one_none() {
     silenced.suppress_sound = true;
     assert_eq!(sound_event(&silenced), None, "a sender may ask for none");
 }
+
+// ---- Notifications that continue on the person's other devices ----
+
+/// What this session asked the person's other devices to show, and what it
+/// told them.
+struct FakeFabric {
+    local: DeviceId,
+    online: BTreeSet<DeviceId>,
+    permitted: std::sync::atomic::AtomicBool,
+    sent: Mutex<Vec<(DeviceId, PersonalFabricAction)>>,
+}
+
+impl FakeFabric {
+    /// This desktop, with `laptop` as the person's other device online.
+    fn new(permitted: bool) -> Arc<Self> {
+        let Ok(local) = DeviceId::new("desk".to_owned()) else {
+            panic!("desk is a device id");
+        };
+        let Ok(laptop) = DeviceId::new("laptop".to_owned()) else {
+            panic!("laptop is a device id");
+        };
+        Arc::new(Self {
+            online: BTreeSet::from([local.clone(), laptop]),
+            local,
+            permitted: std::sync::atomic::AtomicBool::new(permitted),
+            sent: Mutex::default(),
+        })
+    }
+
+    /// The actions it was asked to send since the last look.
+    fn sent(&self) -> Vec<(DeviceId, PersonalFabricAction)> {
+        std::mem::take(&mut *self.sent.lock().unwrap())
+    }
+
+    /// What it projected since the last look.
+    fn projected(&self) -> Vec<ContinuityNotificationProjection> {
+        self.sent()
+            .into_iter()
+            .filter_map(|(_, action)| match action {
+                PersonalFabricAction::NotificationProject {
+                    notification: projection,
+                } => Some(projection),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+impl tilo_device_fabric::link::FabricLink for FakeFabric {
+    fn device_fabric(&self) -> tilo_device_fabric::DeviceFabric {
+        tilo_device_fabric::DeviceFabric::default()
+    }
+
+    fn online_device_ids(&self) -> BTreeSet<DeviceId> {
+        self.online.clone()
+    }
+
+    fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
+        Some((self.local.clone(), "Desk".to_owned()))
+    }
+
+    fn send_personal_fabric_action(
+        &self,
+        target: &DeviceId,
+        action: PersonalFabricAction,
+    ) -> Result<[u8; 16], String> {
+        self.sent.lock().unwrap().push((target.clone(), action));
+        Ok([7; 16])
+    }
+
+    fn try_send_personal_fabric_action(
+        &self,
+        target: &DeviceId,
+        action: PersonalFabricAction,
+    ) -> Result<[u8; 16], tilo_device_fabric::link::PersonalFabricSendError> {
+        self.sent.lock().unwrap().push((target.clone(), action));
+        Ok([7; 16])
+    }
+
+    fn require_media(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn notifications_permitted(&self) -> bool {
+        self.permitted.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// A rig on the person's fabric, with `laptop` as the other device online.
+fn rig_on_fabric(permitted: bool) -> (Rig, Arc<FakeFabric>) {
+    let rig = rig();
+    let fabric = FakeFabric::new(permitted);
+    let link: tilo_device_fabric::link::SharedLink = fabric.clone();
+    rig.bridge.borrow().attach_fabric(link);
+    (rig, fabric)
+}
+
+/// What another of the person's devices projected: a mail to Ada, with its
+/// archive action.
+fn projection() -> ContinuityNotificationProjection {
+    ContinuityNotificationProjection {
+        id: ContinuityNotificationId {
+            epoch: [1; 16],
+            token: [2; 16],
+        },
+        app_id: "so.tilo.mail".into(),
+        app_name: "Mail".into(),
+        title: "New mail".into(),
+        body: "From Ada".into(),
+        body_redacted: false,
+        actions: vec![("archive".into(), "Archive".into())],
+        urgency: 0,
+        expires_unix_ms: tilo_clock::unix_now_ms().saturating_add(60_000),
+    }
+}
+
+fn laptop() -> DeviceId {
+    let Ok(laptop) = DeviceId::new("laptop".to_owned()) else {
+        panic!("laptop is a device id");
+    };
+    laptop
+}
+
+#[test]
+fn an_apps_notification_continues_on_the_persons_other_devices() {
+    let (rig, fabric) = rig_on_fabric(true);
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
+    rig.step();
+
+    let projections = fabric.projected();
+    assert_eq!(projections.len(), 1, "sent to the laptop alone");
+    let projected = &projections[0];
+    assert_eq!(projected.title, "New mail");
+    assert_eq!(projected.body, "From Ada");
+    assert_eq!(projected.app_id, "so.tilo.mail");
+    assert_eq!(projected.app_name, "Mail");
+    assert_eq!(projected.urgency, 0, "nothing asks for alarm treatment");
+    assert!(projected.actions.is_empty(), "the app offered none");
+    assert!(
+        projected.expires_unix_ms > tilo_clock::unix_now_ms(),
+        "it has a window to be shown in"
+    );
+}
+
+#[test]
+fn with_previews_off_the_text_stays_on_the_device_it_was_told() {
+    let (rig, fabric) = rig_on_fabric(true);
+    rig.policy.lock().unwrap().show_previews = false;
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
+    rig.step();
+
+    let projected = fabric.projected();
+    assert_eq!(projected.len(), 1);
+    assert!(projected[0].body_redacted);
+    assert!(projected[0].body.is_empty(), "the text never leaves here");
+}
+
+#[test]
+fn notifications_stay_where_they_are_when_the_person_turns_this_off() {
+    let (rig, fabric) = rig_on_fabric(false);
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
+    rig.step();
+    assert!(fabric.projected().is_empty());
+
+    let (rig, fabric) = rig_on_fabric(true);
+    rig.policy.lock().unwrap().cross_device = false;
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
+    rig.step();
+    assert!(
+        fabric.projected().is_empty(),
+        "the person's own switch holds them here"
+    );
+}
+
+#[test]
+fn a_notification_from_the_persons_other_device_is_named_after_it() {
+    let rig = rig();
+    rig.bridge
+        .borrow()
+        .remote_project(&laptop(), "Laptop", &projection());
+
+    let shown = rig.banner();
+    assert_eq!(shown.title, "New mail");
+    assert_eq!(shown.body, "From Ada");
+    assert_eq!(shown.app_name.as_deref(), Some("Mail · From Laptop"));
+    assert_eq!(shown.app_id.as_deref(), Some("so.tilo.mail"));
+    assert_eq!(
+        shown.actions,
+        [("archive".to_owned(), "Archive".to_owned())]
+    );
+    assert_eq!(
+        shown.remote_route,
+        Some(RemoteNotificationRoute {
+            source_device: "laptop".into(),
+            source_label: "Laptop".into(),
+            notification_id: projection().id,
+        })
+    );
+    assert!(
+        !shown.show_on_lock_screen,
+        "the laptop's text stays off this lock screen"
+    );
+}
+
+#[test]
+fn without_previews_the_other_devices_text_arrives_redacted() {
+    let rig = rig();
+    let mut redacted = projection();
+    redacted.body_redacted = true;
+    redacted.body = String::new();
+    rig.bridge
+        .borrow()
+        .remote_project(&laptop(), "Laptop", &redacted);
+    assert!(rig.banner().body.is_empty());
+    assert!(!rig.banner().show_preview);
+}
+
+#[test]
+fn the_same_projection_updates_its_row_in_place() {
+    let rig = rig();
+    rig.bridge
+        .borrow()
+        .remote_project(&laptop(), "Laptop", &projection());
+    let first = rig.banner().id;
+    let mut update = projection();
+    update.title = "Two new mails".into();
+    rig.bridge
+        .borrow()
+        .remote_project(&laptop(), "Laptop", &update);
+    assert_eq!(rig.desktop.log().active().len(), 1, "one row, not two");
+    assert_eq!(rig.banner().id, first, "the same row shows the update");
+    assert_eq!(rig.banner().title, "Two new mails");
+}
+
+#[test]
+fn dismissing_the_other_devices_notification_answers_it_there() {
+    let (rig, fabric) = rig_on_fabric(true);
+    rig.bridge
+        .borrow()
+        .remote_project(&laptop(), "Laptop", &projection());
+    let id = rig.banner().id;
+    rig.desktop.dismiss_history(id);
+    assert_eq!(
+        fabric.sent(),
+        [(
+            laptop(),
+            PersonalFabricAction::NotificationDismiss {
+                id: projection().id
+            }
+        )]
+    );
+}
+
+#[test]
+fn choosing_an_action_answers_the_device_it_came_from() {
+    let (rig, fabric) = rig_on_fabric(true);
+    rig.bridge
+        .borrow()
+        .remote_project(&laptop(), "Laptop", &projection());
+    let id = rig.banner().id;
+    rig.desktop.invoke_action(id, "archive");
+    assert_eq!(
+        fabric.sent(),
+        [(
+            laptop(),
+            PersonalFabricAction::NotificationInvoke {
+                id: projection().id,
+                action_key: "archive".into(),
+            }
+        )]
+    );
+}
+
+#[test]
+fn an_action_the_app_never_offered_is_not_run() {
+    let (rig, fabric) = rig_on_fabric(true);
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
+    rig.step();
+    let projected = fabric.projected();
+    assert_eq!(projected.len(), 1);
+    // An action it never offered, under the id it did project: refused.
+    let asked = PersonalFabricAction::NotificationInvoke {
+        id: projected[0].id,
+        action_key: "wipe".into(),
+    };
+    assert!(!rig.bridge.borrow_mut().answered(&asked));
+    assert!(rig.live(id), "the app's notification is untouched");
+    assert!(fabric.sent().is_empty());
+}
+
+#[test]
+fn a_choice_made_elsewhere_closes_the_apps_notification_here() {
+    let (rig, fabric) = rig_on_fabric(true);
+    let id = rig.daemon.alloc_id();
+    let mut notification = from_app(sent(id), "so.tilo.mail");
+    notification.actions = vec![("archive".into(), "Archive".into())];
+    rig.daemon.push(notification);
+    rig.step();
+    let projected = fabric.projected();
+    assert_eq!(projected.len(), 1);
+    assert!(!rig.feed().banners.is_empty());
+
+    let chosen = PersonalFabricAction::NotificationInvoke {
+        id: projected[0].id,
+        action_key: "archive".into(),
+    };
+    assert!(rig.bridge.borrow_mut().answered(&chosen));
+    assert_eq!(rig.heard(), [(id, "action archive".into())]);
+    assert!(!rig.live(id), "the app is told it was dismissed");
+    assert!(rig.desktop.log().active().is_empty());
+    rig.step();
+    assert!(rig.feed().banners.is_empty());
+    assert_eq!(
+        fabric.sent(),
+        [(
+            laptop(),
+            PersonalFabricAction::NotificationRetire {
+                id: projected[0].id
+            }
+        )],
+        "every other copy goes with it"
+    );
+}
+
+#[test]
+fn dismissing_it_here_takes_it_away_on_the_other_devices() {
+    let (rig, fabric) = rig_on_fabric(true);
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
+    rig.step();
+    let projected = fabric.projected();
+    assert_eq!(projected.len(), 1);
+
+    // The person here is done with it: it leaves the centre.
+    let shown = rig.banner().id;
+    rig.ask(Ask::Banner(BannerAsk::Dismiss(shown)));
+    rig.step();
+    rig.desktop.dismiss_history(shown);
+    rig.step();
+    assert_eq!(
+        fabric.sent(),
+        [(
+            laptop(),
+            PersonalFabricAction::NotificationRetire {
+                id: projected[0].id
+            }
+        )]
+    );
+}
+
+#[test]
+fn a_retire_from_the_other_device_takes_its_copy_away() {
+    let rig = rig();
+    rig.bridge
+        .borrow()
+        .remote_project(&laptop(), "Laptop", &projection());
+    assert_eq!(rig.desktop.log().active().len(), 1);
+    rig.bridge
+        .borrow()
+        .remote_retire(&laptop(), projection().id);
+    assert!(rig.desktop.log().active().is_empty());
+    assert!(
+        rig.desktop.log().history().is_empty(),
+        "the centre keeps no copy either"
+    );
+}
+
+#[test]
+fn an_expired_projection_is_never_shown() {
+    let rig = rig();
+    let mut stale = projection();
+    stale.expires_unix_ms = tilo_clock::unix_now_ms().saturating_sub(1);
+    rig.bridge
+        .borrow()
+        .remote_project(&laptop(), "Laptop", &stale);
+    assert!(rig.desktop.log().active().is_empty());
+}

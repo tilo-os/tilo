@@ -213,6 +213,10 @@ session-notifications-clear = Clear the notification centre
 session-notifications-undo-clear = Bring back the cleared notifications
 session-notifications-open = Open the notification
 session-notifications-hand-to-agent = Hand the notification to an agent
+## A notification another of the person's devices projected here: the app it
+## came from and the device that showed it first.
+notification-from-device = { $app } · From { $device }
+notification-from-device-only = From { $device }
 session-apps = Apps
 session-apps-uninstall = Uninstall an app
 session-param-app = The app's name

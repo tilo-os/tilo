@@ -1777,18 +1777,26 @@ impl Session {
             here_at: Cell::new(0),
             here_seen: Cell::new(0),
             places_seen: RefCell::default(),
-            notifications: Rc::new(RefCell::new(notifications::SessionNotifications::new(
-                options
-                    .desktop
-                    .as_ref()
-                    .map(|desktop| desktop.notifications().clone()),
-                notices,
-                banners.clone(),
-                notification_policy,
-                notice_signals,
-                options.power.clone(),
-                notice_history,
-            ))),
+            notifications: {
+                let notifications = notifications::SessionNotifications::new(
+                    options
+                        .desktop
+                        .as_ref()
+                        .map(|desktop| desktop.notifications().clone()),
+                    notices,
+                    banners.clone(),
+                    notification_policy,
+                    notice_signals,
+                    options.power.clone(),
+                    notice_history,
+                );
+                // Notifications continue on the person's other devices, when
+                // this session runs as one of them.
+                if let Some(link) = &fabric {
+                    notifications.attach_fabric(std::sync::Arc::clone(link));
+                }
+                Rc::new(RefCell::new(notifications))
+            },
             asker,
             agent_door: RefCell::new(agent_door),
             session_doors,

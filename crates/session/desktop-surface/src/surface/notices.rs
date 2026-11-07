@@ -20,9 +20,9 @@ use ui::widget::Widget;
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::notifications::{
-    BannerFeed, CenterLayout, CenterMetrics, CenterOutcome, CentreApi, HistoryActivation,
-    NOTIFICATION_CENTRE, Notification, NotificationHost, NotificationLog, NotificationSeverity,
-    NotificationStack,
+    BannerFeed, CenterLayout, CenterMetrics, CenterOutcome, CentreApi, ContinuityNotificationId,
+    HistoryActivation, NOTIFICATION_CENTRE, Notification, NotificationHost, NotificationLog,
+    NotificationSeverity, NotificationStack,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -284,6 +284,56 @@ impl DesktopNotifications {
         self.log.log.borrow_mut().retain(notification);
         self.log.touch();
         id
+    }
+
+    /// Replace the banner or centre row the same origin as `notification`
+    /// showed before, keeping its local id so hit targets and centre
+    /// selection survive: what another device's notification update is.
+    /// Returns the id it shows under; `None` when the desk showed none from
+    /// that origin yet.
+    pub fn replace_remote(&self, notification: &Notification) -> Option<u64> {
+        let route = notification.remote_route.as_ref()?;
+        let existing = {
+            let log = self.log.log.borrow();
+            log.active()
+                .iter()
+                .chain(log.history().iter())
+                .find(|shown| shown.remote_route.as_ref() == Some(route))
+                .map(|shown| shown.id)?
+        };
+        self.log.log.borrow_mut().replace_remote(notification);
+        self.log.unread.borrow_mut().insert(existing);
+        self.log.touch();
+        Some(existing)
+    }
+
+    /// Take every copy of the notification `id` another device projected,
+    /// live or retained: its origin is done with it. Returns whether the desk
+    /// showed any.
+    pub fn retire_remote(&self, source_device: &str, id: ContinuityNotificationId) -> bool {
+        let gone: Vec<u64> = {
+            let log = self.log.log.borrow();
+            log.active()
+                .iter()
+                .chain(log.history().iter())
+                .filter(|shown| {
+                    shown.remote_route.as_ref().is_some_and(|route| {
+                        route.source_device == source_device && route.notification_id == id
+                    })
+                })
+                .map(|shown| shown.id)
+                .collect()
+        };
+        let retired = self.log.log.borrow_mut().retire_remote(source_device, id);
+        if retired {
+            let mut unread = self.log.unread.borrow_mut();
+            for id in gone {
+                unread.remove(&id);
+            }
+            drop(unread);
+            self.log.touch();
+        }
+        retired
     }
 
     /// Why fresh banners are held now, for the bar's silenced bell and the
@@ -1209,7 +1259,7 @@ fn overlay_style() -> ui::taffy::Style {
 mod tests {
     use super::*;
 
-    use crate::notifications::RowShape;
+    use crate::notifications::{RemoteNotificationRoute, RowShape};
 
     fn layer_with(count: usize) -> (NotificationLayer, DesktopNotifications) {
         let notifications = DesktopNotifications::default();
@@ -1272,6 +1322,51 @@ mod tests {
         assert_eq!(notifications.unread(), 1, "a new one is unread");
         assert!(notifications.withdraw(fresh));
         assert_eq!(notifications.unread(), 0, "a withdrawn one is not news");
+    }
+
+    /// A notification another of the person's devices projected updates the
+    /// row it already shows, and its live and kept copies go together when
+    /// that device is done with it.
+    #[test]
+    fn another_devices_projection_updates_in_place_and_retires_together() {
+        let notifications = DesktopNotifications::default();
+        let id = ContinuityNotificationId {
+            epoch: [3; 16],
+            token: [4; 16],
+        };
+        let route = RemoteNotificationRoute {
+            source_device: "laptop".into(),
+            source_label: "Laptop".into(),
+            notification_id: id,
+        };
+        let mut first =
+            Notification::new("New mail", "From Ada").with_app_name("Mail · From Laptop");
+        first.remote_route = Some(route.clone());
+        let shown = notifications.post(first);
+        let mut update = Notification::new("Two new mails", "From Ada and Grace")
+            .with_app_name("Mail · From Laptop");
+        update.remote_route = Some(route);
+        assert_eq!(
+            notifications.replace_remote(&update),
+            Some(shown),
+            "the row it already shows takes the update"
+        );
+        assert_eq!(notifications.counts(), (1, 0), "one row, not two");
+        assert_eq!(notifications.log().active()[0].title, "Two new mails");
+
+        notifications.host().dismiss(shown);
+        assert_eq!(notifications.counts(), (0, 1));
+        assert!(notifications.retire_remote("laptop", id));
+        assert_eq!(notifications.counts(), (0, 0), "the kept copy goes too");
+        assert!(!notifications.is_unread(shown));
+        assert!(
+            !notifications.retire_remote("laptop", id),
+            "nothing left to take away"
+        );
+        assert!(
+            !notifications.retire_remote("desk", id),
+            "another device's id is not this one's"
+        );
     }
 
     /// Escape closes the centre the way a press outside does, and arrivals

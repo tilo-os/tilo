@@ -88,6 +88,10 @@ pub trait FabricLink {
     fn require_wifi_settings(&self) -> Result<(), String> {
         Ok(())
     }
+    /// Whether the person lets notifications continue between their devices.
+    fn notifications_permitted(&self) -> bool {
+        false
+    }
     /// The passphrase this device holds for `ssid` with `security`, opened for
     /// this device's key: what one of the person's devices shared here.
     fn wifi_password(&self, ssid: &str, security: os_actions::WifiSecurity) -> Option<String> {
@@ -244,6 +248,10 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
 
     fn require_wifi_settings(&self) -> Result<(), String> {
         (**self).require_wifi_settings()
+    }
+
+    fn notifications_permitted(&self) -> bool {
+        (**self).notifications_permitted()
     }
 
     fn wifi_password(&self, ssid: &str, security: os_actions::WifiSecurity) -> Option<String> {

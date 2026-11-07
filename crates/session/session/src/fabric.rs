@@ -31,6 +31,7 @@ pub struct Continuity {
     media: Arc<AtomicBool>,
     wifi_settings: Arc<AtomicBool>,
     file_transfer: Arc<AtomicBool>,
+    notifications: Arc<AtomicBool>,
 }
 
 impl Continuity {
@@ -52,6 +53,8 @@ impl Continuity {
             .store(enabled && on("wifi_settings"), Ordering::Relaxed);
         self.file_transfer
             .store(enabled && on("file_transfer"), Ordering::Relaxed);
+        self.notifications
+            .store(enabled && on("notifications"), Ordering::Relaxed);
     }
 
     fn media_permitted(&self) -> bool {
@@ -60,6 +63,10 @@ impl Continuity {
 
     fn wifi_settings_permitted(&self) -> bool {
         self.wifi_settings.load(Ordering::Relaxed)
+    }
+
+    fn notifications_permitted(&self) -> bool {
+        self.notifications.load(Ordering::Relaxed)
     }
 
     /// Whether the person lets files they send move to their other devices.
@@ -377,6 +384,10 @@ impl FabricLink for SessionFabric {
             .ok_or_else(|| "Wi-Fi continuity is turned off in this device's settings".to_owned())
     }
 
+    fn notifications_permitted(&self) -> bool {
+        self.continuity.notifications_permitted()
+    }
+
     fn wifi_password(&self, ssid: &str, security: os_actions::WifiSecurity) -> Option<String> {
         if self.require_wifi_settings().is_err() || !security.supports_portable_passphrase() {
             return None;
@@ -480,36 +491,35 @@ impl crate::Session {
         envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
     ) {
         use tilo_device_fabric::PersonalFabricAction;
-        if self
-            .shared
-            .bluetooth
-            .arrived(&self.shared, fabric, envelope)
-        {
-            return;
-        }
-        if self
-            .shared
-            .waking
-            .handle_action(&self.shared, fabric, envelope)
-        {
-            return;
-        }
-        if crate::certification::handle_action(fabric, envelope) {
-            return;
-        }
-        if tilo_speaker_service::remote_audio::handle_action(fabric.as_ref(), envelope)
-            || tilo_speaker_service::groups::handle_action(fabric.as_ref(), envelope)
-        {
+        if self.service_took(fabric, envelope) {
             return;
         }
         match &envelope.action {
             PersonalFabricAction::ResumeMedia { .. } => self.offer_media(fabric, envelope),
+            // A notification an app sent on another of the person's devices
+            // is shown here named after that device; what the person does
+            // with one shown here goes back to where it came from.
+            PersonalFabricAction::NotificationProject { notification } => {
+                self.show_remote_notification(fabric, envelope, notification);
+            }
+            PersonalFabricAction::NotificationRetire { id } => {
+                self.shared
+                    .notifications
+                    .borrow()
+                    .remote_retire(&envelope.source, *id);
+            }
+            // A choice on one this device projected: the app's notification
+            // closes here, and every copy goes with it.
+            PersonalFabricAction::NotificationDismiss { .. }
+            | PersonalFabricAction::NotificationInvoke { .. } => {
+                self.shared.notifications.borrow_mut().answered(&envelope.action);
+            }
             // Nothing on this session holds a media offer, and what the
             // person's devices send each other that no service here carries —
-            // placement, input, accessories, files, notifications, calls,
-            // displays, wake — is dropped rather than half-acted on. The
-            // speaker services and the certification above answer for theirs;
-            // the rest reach here only when their own preconditions refuse.
+            // placement, input, accessories, files, calls, displays, wake —
+            // is dropped rather than half-acted on. The speaker services and
+            // the certification above answer for theirs; the rest reach here
+            // only when their own preconditions refuse.
             PersonalFabricAction::MediaAccepted { .. }
             | PersonalFabricAction::MediaRejected { .. }
             | PersonalFabricAction::MediaCancelled { .. }
@@ -530,10 +540,6 @@ impl crate::Session {
             | PersonalFabricAction::NearbyTransferCancel { .. }
             | PersonalFabricAction::NearbyTransferRestart { .. }
             | PersonalFabricAction::NearbyTransferResult { .. }
-            | PersonalFabricAction::NotificationProject { .. }
-            | PersonalFabricAction::NotificationRetire { .. }
-            | PersonalFabricAction::NotificationDismiss { .. }
-            | PersonalFabricAction::NotificationInvoke { .. }
             // A move of a Bluetooth accessory between devices that was not
             // addressed to this session's person ([`Shared::bluetooth`]
             // answers for those) is somebody else's to carry.
@@ -590,6 +596,48 @@ impl crate::Session {
             | PersonalFabricAction::RemoteAudioCancel { .. }
             | PersonalFabricAction::RemoteAudioKeepalive { .. } => {}
         }
+    }
+
+    /// Whether one of this session's services took `envelope`'s action:
+    /// a Bluetooth accessory's move, a device to wake, a certification, a
+    /// speaker service's. What they did not take is the session's own.
+    fn service_took(
+        &self,
+        fabric: &tilo_device_fabric::link::SharedLink,
+        envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
+    ) -> bool {
+        self.shared
+            .bluetooth
+            .arrived(&self.shared, fabric, envelope)
+            || self
+                .shared
+                .waking
+                .handle_action(&self.shared, fabric, envelope)
+            || crate::certification::handle_action(fabric, envelope)
+            || tilo_speaker_service::remote_audio::handle_action(fabric.as_ref(), envelope)
+            || tilo_speaker_service::groups::handle_action(fabric.as_ref(), envelope)
+    }
+
+    /// Show the notification another of the person's devices projected,
+    /// named after that device.
+    fn show_remote_notification(
+        &self,
+        fabric: &tilo_device_fabric::link::SharedLink,
+        envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
+        notification: &tilo_device_fabric::notification::ContinuityNotificationProjection,
+    ) {
+        let label = fabric
+            .device_fabric()
+            .snapshots()
+            .get(&envelope.source)
+            .map_or_else(
+                || envelope.source.as_str().to_owned(),
+                |snapshot| snapshot.presence.label.clone(),
+            );
+        self.shared
+            .notifications
+            .borrow()
+            .remote_project(&envelope.source, &label, notification);
     }
 
     /// Offer what another device was playing as the now-playing card, so the
