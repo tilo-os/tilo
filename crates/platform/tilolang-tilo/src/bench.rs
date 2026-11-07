@@ -1028,7 +1028,7 @@ impl Workspace {
         .map_err(|e| e.to_string())?;
         // Every change is made at one recorded time, so what a window shows of when things
         // changed (`updated(r)`) is the same in every run, whatever the wall clock reads.
-        host.runtime().set_clock(|| BENCH_TIME.to_owned());
+        host.set_clock(|| BENCH_TIME.to_owned());
         host.runtime().engine().profile(profile);
         host.runtime().record_costs(costs);
         let hosted = Instant::now();

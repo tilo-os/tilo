@@ -233,6 +233,7 @@ impl Inner {
             let old = View {
                 snapshot: old,
                 overlay,
+                clock: self.clock.read(),
             };
             if let Ok(splices) = view::splices(&old, &new, key, ids) {
                 record_splices(out.entry(key.doc().to_owned()).or_default(), key, splices);

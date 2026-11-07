@@ -474,11 +474,13 @@ impl View<'_> {
         let resource = resource.to_owned();
         let snapshot = std::sync::Arc::clone(self.snapshot);
         let overlay = std::sync::Arc::clone(self.overlay);
+        let clock = self.clock;
         let keep: Keep = Box::new(move |id: &str| {
             evaluated.set(evaluated.get().saturating_add(1));
             let view = View {
                 snapshot: &snapshot,
                 overlay: &overlay,
+                clock,
             };
             view.holds(&child(&resource, id), keep_schema, &residual)
                 .unwrap_or(false)
@@ -747,11 +749,13 @@ impl View<'_> {
         let part = part.cloned();
         let snapshot = std::sync::Arc::clone(self.snapshot);
         let overlay = std::sync::Arc::clone(self.overlay);
+        let clock = self.clock;
         Box::new(move |id: &str| {
             evaluated.set(evaluated.get().saturating_add(1));
             let view = View {
                 snapshot: &snapshot,
                 overlay: &overlay,
+                clock,
             };
             let path = child(&resource, id);
             if let Some((column, value)) = &part

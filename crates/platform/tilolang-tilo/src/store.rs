@@ -298,6 +298,8 @@ use listed::ListedOnce;
 mod scoped;
 mod sync;
 use scoped::{Changing, Held};
+mod clock;
+use clock::ClockSource;
 
 mod index_build;
 mod loading;
@@ -362,6 +364,9 @@ struct Inner {
     evaluated: std::cell::Cell<u64>,
     /// Times the versions of every resource were derived from the log.
     versions_built: std::cell::Cell<u64>,
+    /// How `now` reads and where the person is, as the host names them: the time the columns that
+    /// read the clock are written at ([`crate::index::Clock`]).
+    clock: ClockSource,
     listed: RefCell<Vec<ListedOnce>>,
     /// What each change wrote to the fields of each resource it changed, by the change and the
     /// resource, as [`Store::written`] read it: a change never changes, so it is read once.
@@ -426,6 +431,9 @@ pub struct Snapshot {
     /// The schemas of the store it was taken from: what its reads resolve a record's type by,
     /// wherever it is read (an index build on a thread of its own reads a snapshot).
     schemas: Arc<crate::schema::Schemas>,
+    /// The time it was taken at: what a column reading the clock holds of an item the open
+    /// writes changed ([`crate::index::Clock`]).
+    clock: crate::index::Clock,
 }
 
 impl Snapshot {
@@ -449,6 +457,7 @@ impl Snapshot {
         Some(View {
             snapshot: self.apps.get(app)?,
             overlay: &self.overlay,
+            clock: self.clock,
         })
     }
 
@@ -673,6 +682,7 @@ impl TiloStore {
                 doc_reads: std::cell::Cell::default(),
                 evaluated: std::cell::Cell::new(0),
                 versions_built: std::cell::Cell::new(0),
+                clock: ClockSource::default(),
                 listed: RefCell::default(),
                 txns: HashMap::new(),
                 next_txn: 1,
@@ -1255,7 +1265,9 @@ impl TiloStore {
         if let Some(taken) = inner.snapshot.upgrade() {
             return taken;
         }
+        let clock = inner.clock.read();
         let taken = Arc::new(Snapshot {
+            clock,
             index: inner.index.clone(),
             apps: inner
                 .apps
@@ -1741,7 +1753,7 @@ impl Inner {
             };
             let nested = &self.nested;
             let written = index.write(|writer| {
-                let mut derive = Derive::new(&self.chunks, docs, nested);
+                let mut derive = Derive::new(&self.chunks, docs, nested, self.clock.read());
                 derive.removed_before(writer, &app, ends, placed)?;
                 derive.changes(writer, &app, reached)?;
                 derive.versions(writer, &app, ends)?;
@@ -1820,13 +1832,16 @@ impl Inner {
             for (key, id) in &items {
                 moved.entry(key.clone()).or_default().insert(id.clone());
             }
+            let clock = self.clock.read();
             let old = View {
                 snapshot: &held.snapshot,
                 overlay: &before,
+                clock,
             };
             let new = View {
                 snapshot: &held.snapshot,
                 overlay: &self.overlay,
+                clock,
             };
             for (key, ids) in &moved {
                 if let Ok(splices) = view::splices(&old, &new, key, ids) {

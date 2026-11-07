@@ -251,6 +251,7 @@ impl Inner {
         Some(View {
             snapshot: &held.snapshot,
             overlay: &self.overlay,
+            clock: self.clock.read(),
         })
     }
 
@@ -400,9 +401,10 @@ impl Inner {
         let heads = chunks.heads();
         let app_id = app.to_owned();
         let schemas = Arc::clone(&self.schemas);
+        let clock = self.clock.read();
         let pending = Pending::start(
             move || {
-                let reads = build(&index, &chunks, &docs, &app_id, &heads, &schemas)?;
+                let reads = build(&index, &chunks, &docs, &app_id, &heads, &schemas, clock)?;
                 Ok((heads, reads))
             },
             self.wake.clone(),
@@ -422,9 +424,18 @@ impl Inner {
             return;
         };
         let schemas = Arc::clone(&self.schemas);
-        let built = index
-            .clear_for_build()
-            .and_then(|()| build(&index, &self.chunks, &self.index, app, &heads, &schemas));
+        let clock = self.clock.read();
+        let built = index.clear_for_build().and_then(|()| {
+            build(
+                &index,
+                &self.chunks,
+                &self.index,
+                app,
+                &heads,
+                &schemas,
+                clock,
+            )
+        });
         if let Ok(reads) = built {
             self.count(reads);
             self.stats.builds = self.stats.builds.saturating_add(1);
@@ -503,7 +514,7 @@ impl Inner {
         let docs = self.index.clone();
         let nested = &self.nested;
         let written = index.write(|writer| {
-            let mut derive = Derive::new(&self.chunks, &docs, nested);
+            let mut derive = Derive::new(&self.chunks, &docs, nested, self.clock.read());
             derive.removed_before(writer, app, &ends, &placed)?;
             derive.changes(writer, app, &reached)?;
             derive.versions(writer, app, &ends)?;

@@ -54,6 +54,19 @@ pub fn scope_prefix(parent: &str, field: &str) -> String {
     format!("c\u{1}{parent}\u{1}{field}\u{1}")
 }
 
+/// What starts the names of the columns of the items of every collection.
+pub const SCOPE: &str = "c\u{1}";
+
+/// The holder, the collection and the column a scope list's name is of ([`scope_list`]).
+#[must_use]
+pub fn scope_of(list: &str) -> Option<(&str, &str, &str)> {
+    let mut parts = list.strip_prefix(SCOPE)?.split('\u{1}');
+    let parent = parts.next()?;
+    let field = parts.next()?;
+    let column = parts.next()?;
+    Some((parent, field, column))
+}
+
 /// The list of the column `column` of every resource of the type `ty`.
 #[must_use]
 pub fn type_list(ty: &str, column: &str) -> String {
@@ -83,6 +96,32 @@ pub fn type_entry(value: &str, path: &str) -> Entry {
 #[must_use]
 pub fn after_value(key: &str) -> &str {
     key.split_once(SEP).map_or(key, |(_, rest)| rest)
+}
+
+/// Where the run of the value `value` starts: its entries and every one after them.
+#[must_use]
+pub fn at_value(value: &str) -> String {
+    format!("{value}{SEP}")
+}
+
+/// Where the run of the value `value` ends: its entries and every one before them.
+#[must_use]
+pub fn past_value(value: &str) -> String {
+    format!("{value}{AFTER}")
+}
+
+/// The value a column of `kind` writes for the clock at the instant `at` (`day` for the person's
+/// day in `zone`): where the run of the items the clock passed starts and ends.
+#[must_use]
+pub fn clock_value(kind: ColumnKind, at: i64, day: bool, zone: i64) -> Option<String> {
+    let lit = if day {
+        Lit::Date(tilolang::calendar::day_text(
+            at.saturating_add(zone).div_euclid(86_400),
+        ))
+    } else {
+        Lit::Time(tilolang::calendar::time_text(at))
+    };
+    write(kind, &lit)
 }
 
 /// Whether an entry holds no value: the empty value the columns write for an item without one
@@ -160,16 +199,27 @@ pub fn lit(field: &FieldSchema, value: FieldValue) -> Lit {
 
 /// The values the column holds of a resource of the type `schema` whose fields `value` reads
 /// (as the index holds them, a collection as the [`FieldValue::Counter`] of its items): one
-/// per member of a set, the empty value for none.
+/// per member of a set, the empty value for none. `clock` is the time the column is written at,
+/// which a filter reading the time reads ([`super::Clock`]).
 ///
 /// # Errors
 /// A field cannot be read.
 pub fn values(
     column: &ColumnSchema,
     schema: &TypeSchema,
+    clock: super::Clock,
     value: &mut dyn FnMut(&FieldSchema) -> Result<FieldValue, IndexError>,
 ) -> Result<Vec<String>, IndexError> {
     if let Some(pred) = &column.pred {
+        // A filter reading the time holds of an item at the instant it is asked at: it is
+        // written as the filter that same filter is with the read answered.
+        let bound;
+        let pred = if pred.reads_clock() {
+            bound = pred.at(clock.now, clock.zone);
+            &bound
+        } else {
+            pred
+        };
         let mut failed = None;
         let holds = pred.eval(&mut |id: &String| -> Result<Lit, String> {
             let Some(field) = schema.field(id) else {
@@ -296,18 +346,51 @@ fn flip(op: CmpOp) -> CmpOp {
 /// predicate is no named filter's.
 #[must_use]
 pub fn named<F>(schema: &TypeSchema, pred: &Pred<F>, id: &dyn Fn(&F) -> String) -> Option<Access> {
+    let mapped = pred.resolve(&mut |f: &F| Some(id(f)))?;
     for column in schema.columns.iter().filter(|c| c.pred.is_some()) {
-        let mapped = pred.resolve(&mut |f: &F| Some(id(f)));
-        if mapped.as_ref() == column.pred.as_ref() {
+        let Some(declared) = &column.pred else {
+            continue;
+        };
+        if asked_as(declared, &mapped) {
             return Some(run(column, one_value("1"), true));
         }
-        if let Some(Pred::Not(inner)) = &mapped
-            && Some(&**inner) == column.pred.as_ref()
+        if let Pred::Not(inner) = &mapped
+            && asked_as(declared, inner)
         {
             return Some(run(column, one_value("0"), true));
         }
     }
     None
+}
+
+/// Whether `asked`, a predicate a query is answered at, is `declared`, the predicate a filter
+/// declares, with each read of the clock the declaration makes answered by the operand the query
+/// carries there: the filter a query names, whatever instant it is asked at.
+fn asked_as(declared: &Pred<String>, asked: &Pred<String>) -> bool {
+    match (declared, asked) {
+        (Pred::And(one), Pred::And(other)) | (Pred::Or(one), Pred::Or(other)) => {
+            one.len() == other.len() && one.iter().zip(other).all(|(a, b)| asked_as(a, b))
+        }
+        (Pred::Not(one), Pred::Not(other)) => asked_as(one, other),
+        (Pred::Present(one), Pred::Present(other)) => one == other,
+        (Pred::Like(one, a), Pred::Like(other, b)) | (Pred::Text(one, a), Pred::Text(other, b)) => {
+            one == other && a == b
+        }
+        (Pred::Has(one, a), Pred::Has(other, b)) => one == other && a == b,
+        (Pred::Cmp(op, a, b), Pred::Cmp(also, c, d)) => {
+            op == also && asked_side(a, c) && asked_side(b, d)
+        }
+        _ => declared == asked,
+    }
+}
+
+/// Whether the operand `asked` answers the operand `declared` of a filter's predicate.
+fn asked_side(declared: &Operand<String>, asked: &Operand<String>) -> bool {
+    match declared {
+        // The clock a declaration reads is answered at the instant the query is asked at.
+        Operand::Clock { .. } => matches!(asked, Operand::Lit(_)),
+        _ => declared == asked,
+    }
 }
 
 /// How `pred` is answered from the columns of `schema` (`id` naming the field of each of its

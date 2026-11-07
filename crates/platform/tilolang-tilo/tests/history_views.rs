@@ -146,9 +146,7 @@ fn two_people() -> (Replica, Value, Value) {
             (TASKS, TASKS_IDS),
         ],
     );
-    ada.host
-        .runtime()
-        .set_clock(|| "2026-10-30T09:00:00Z".to_owned());
+    ada.host.set_clock(|| "2026-10-30T09:00:00Z".to_owned());
     let notes = Value::resource(&ada.host.root_of(NOTES_APP).unwrap());
     let tasks = Value::resource(&ada.host.root_of(TASKS_APP).unwrap());
     ada.commit();

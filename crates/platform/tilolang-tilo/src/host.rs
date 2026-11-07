@@ -972,9 +972,27 @@ impl Host {
     }
 
     /// Replace what `now` reads (the system time until then): tests and captures fix it. The
-    /// clock answers ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`.
+    /// clock answers ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. The store reads it too, so a list
+    /// whose filter reads the clock is written again when it passes what its items hold
+    /// ([`TiloStore::set_now`]).
     pub fn set_clock(&self, clock: impl Fn() -> String + 'static) {
-        self.inner.runtime.set_clock(clock);
+        let clock = Rc::new(clock);
+        self.inner.store.set_now({
+            let clock = Rc::clone(&clock);
+            move || clock()
+        });
+        self.inner.runtime.set_clock(move || clock());
+    }
+
+    /// Where the person is, in seconds east of UTC (until then: 0): what `today` reads, and the
+    /// day the store writes the columns that read the clock for ([`TiloStore::set_zone`]).
+    pub fn set_zone(&self, zone: impl Fn() -> i64 + 'static) {
+        let zone = Rc::new(zone);
+        self.inner.store.set_zone({
+            let zone = Rc::clone(&zone);
+            move || zone()
+        });
+        self.inner.runtime.set_zone(move || zone());
     }
 
     /// Where the words packages and the platform show come from, in the person's language

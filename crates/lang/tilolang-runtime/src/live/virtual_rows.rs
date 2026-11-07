@@ -146,33 +146,36 @@ impl Rows {
         }
     }
 
-    /// Whether these are the same rows as `other`, item for item.
-    fn same(&self, other: &Self) -> bool {
+    /// Whether these are the same rows as `other` for the rows `built` (the ones the host
+    /// holds, by index): the same collection, the same rows kept for the viewer, and at each
+    /// of those indexes the same item.
+    ///
+    /// A row nobody holds need not be compared: a virtual list is read one screen at a time,
+    /// so saying every item of the room stood where it stood would read every page of it each
+    /// time the room changed at all.
+    fn same(&self, other: &Self, built: &[(usize, BoundId)]) -> bool {
         match (self, other) {
             (
                 Self::Coll {
                     coll: mine_coll,
-                    listing: mine_listing,
                     kept: kept_coll_mine,
+                    ..
                 },
                 Self::Coll {
                     coll: theirs_coll,
-                    listing: theirs_listing,
                     kept: kept_coll_theirs,
+                    ..
                 },
             ) => {
                 mine_coll == theirs_coll
                     && kept_coll_mine == kept_coll_theirs
-                    && (Rc::ptr_eq(mine_listing, theirs_listing)
-                        // A listing that checks its items as it reads them knows only the most
-                        // it can have: as many rows as before, and not sure it has them all,
-                        // keeps the rows built and lets the host ask, rather than read them
-                        // all to say they are the same.
-                        || (!mine_listing.len_is_exact()
-                            && mine_listing.len() == theirs_listing.len())
-                        || (mine_listing.len_is_exact()
-                            && theirs_listing.len_is_exact()
-                            && mine_listing == theirs_listing))
+                    && built.iter().all(|(index, _)| {
+                        match (self.coll_row(*index), other.coll_row(*index)) {
+                            (Some(mine), Some(theirs)) => mine == theirs,
+                            (None, None) => true,
+                            _ => false,
+                        }
+                    })
             }
             (
                 Self::List {
@@ -1113,7 +1116,7 @@ impl Builder<'_> {
             );
             return Ok(Vec::new());
         };
-        let same = before.rows.same(&rows)
+        let same = before.rows.same(&rows, &before.built)
             && before.len == rows.len()
             && before.template.makes_as(&template);
         let (steps, (built, children)): (Vec<RowStep>, BuiltRows) = if same {

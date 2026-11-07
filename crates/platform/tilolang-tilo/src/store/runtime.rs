@@ -425,6 +425,7 @@ impl Store for TiloStore {
         item: &TypeId,
         pred: &Pred,
     ) -> Result<Rc<Listing>, StoreError> {
+        self.refresh(item);
         self.held().listed(at, &field.id, Some((item, pred)))
     }
 
@@ -436,6 +437,7 @@ impl Store for TiloStore {
         pred: Option<&Pred>,
         order: Option<&tilolang_runtime::query::Order>,
     ) -> Result<Rc<Listing>, StoreError> {
+        self.refresh(item);
         self.held()
             .listed_in(at, &field.id, Some((item, pred)), order)
     }
@@ -446,6 +448,7 @@ impl Store for TiloStore {
         pred: &Pred,
         order: Option<&tilolang_runtime::query::Order>,
     ) -> Result<Vec<ResourceRef>, StoreError> {
+        self.refresh(ty);
         let inner = self.held();
         let schema = lookup(ty).ok_or_else(|| not_found(format!("type {ty}")))?;
         let Some(view) = inner.view(&schema.app) else {
@@ -470,6 +473,7 @@ impl Store for TiloStore {
         pred: &Pred,
         order: Option<&tilolang_runtime::query::Order>,
     ) -> Result<Option<ResourceRef>, StoreError> {
+        self.refresh(ty);
         let inner = self.held();
         let schema = lookup(ty).ok_or_else(|| not_found(format!("type {ty}")))?;
         let Some(view) = inner.view(&schema.app) else {
