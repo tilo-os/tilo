@@ -667,10 +667,13 @@ impl View<'_> {
         if !a.exact || a.repeats {
             return Ok(None);
         }
+        // The items the open writes moved into the run, checked against the conjunct it
+        // answers: a run read without one takes every item they wrote, which is the most it
+        // can hold rather than how many it does.
         let run = self.run_as_written(
             (resource, field),
             schema,
-            (&a.column, None),
+            (&a.column, Some(*one)),
             run,
             false,
             touched,
