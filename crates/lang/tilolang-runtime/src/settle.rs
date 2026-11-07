@@ -569,8 +569,11 @@ impl Core {
         // journal, so the calls it already made are not made again. A call recorded before it
         // started has no run, and a run its record reached another replica from is not this
         // one's to go on from: those run their action now.
+        // The effects an approval queues are keyed by the invocation, which every replica reads
+        // the suggestion from: one key on each, so each is carried out once.
+        let keyed = format!("invocation:{origin}");
         if !rec.run.is_empty() {
-            match self.resolve(&rec.run, approver, Resolution::Approve) {
+            match self.resolve_under(&rec.run, approver, Resolution::Approve, keyed.clone()) {
                 Ok(RunOutcome::Done(value)) => {
                     return Ok(("done".to_owned(), self.result_text(&value), String::new()));
                 }
@@ -598,7 +601,7 @@ impl Core {
             chain: vec![identity.clone()],
             approved_by: Some(approver.clone()),
             suggested_by,
-            origin: Some(format!("invocation:{origin}")),
+            origin: Some(keyed),
             from: None,
             at: None,
         };

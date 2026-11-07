@@ -224,6 +224,10 @@ pub struct Journal {
     /// each of them once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// How many outside effects the run has queued under `origin`: the next one's key counts
+    /// from it, so a run that goes on after a wait queues none under a key it used.
+    #[serde(default)]
+    pub effects: u32,
     /// The run this one is a step of, when it was invoked from another run: its result goes
     /// back there and it goes on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -241,6 +245,18 @@ pub struct Journal {
 pub enum RunOutcome {
     Done(Value),
     Suspended(Suggestion),
+}
+
+impl Journal {
+    /// The key the next outside effect is queued under: the run's origin and how many effects
+    /// it queued already, so every replica approving the same suggestion queues each of them
+    /// once, and a run resumed after a wait carries on counting.
+    pub(crate) fn next_origin(&mut self) -> Option<String> {
+        let base = self.origin.clone()?;
+        let count = self.effects;
+        self.effects = count.saturating_add(1);
+        Some(format!("{base}:{count}"))
+    }
 }
 
 /// A person's answer to a suggestion.

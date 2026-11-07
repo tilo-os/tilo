@@ -665,6 +665,7 @@ impl Core {
                     finished: false,
                     approved_by: None,
                     origin: None,
+                    effects: 0,
                     parent: None,
                     invocation: run.clone(),
                 };
@@ -698,6 +699,7 @@ impl Core {
                 finished: false,
                 approved_by: ctx.approved_by.clone(),
                 origin: ctx.origin.clone(),
+                effects: 0,
                 parent: None,
                 invocation: run.clone(),
             },
@@ -887,6 +889,7 @@ impl Core {
                     finished: false,
                     approved_by: None,
                     origin: None,
+                    effects: 0,
                     parent: None,
                     invocation: run.clone(),
                 };
@@ -975,6 +978,7 @@ impl Core {
             finished: false,
             approved_by: ctx.approved_by.clone(),
             origin: ctx.origin.clone(),
+            effects: 0,
             parent: None,
             invocation: run.clone(),
         };
@@ -1376,6 +1380,7 @@ impl Core {
             finished: false,
             approved_by: ctx.approved_by.clone(),
             origin: ctx.origin.clone(),
+            effects: 0,
             parent: Some(run.clone()),
             invocation: journal.invocation.clone(),
         };
@@ -1413,7 +1418,24 @@ impl Core {
         approver: &Principal,
         resolution: Resolution,
     ) -> Result<RunOutcome, RuntimeError> {
-        self.resolve_run(run, approver, resolution)
+        self.resolve_run(run, approver, resolution, None)
+    }
+
+    /// Answer a suggestion of an invocation `origin` names, as [`Self::resolve`]: the effects
+    /// the answer queues are keyed by the invocation, so that approving the same suggestion on
+    /// two devices queues each of them once.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::resolve`].
+    pub(crate) fn resolve_under(
+        &self,
+        run: &RunId,
+        approver: &Principal,
+        resolution: Resolution,
+        origin: String,
+    ) -> Result<RunOutcome, RuntimeError> {
+        self.resolve_run(run, approver, resolution, Some(origin))
     }
 
     fn resolve_run(
@@ -1421,6 +1443,7 @@ impl Core {
         run: &RunId,
         approver: &Principal,
         resolution: Resolution,
+        origin: Option<String>,
     ) -> Result<RunOutcome, RuntimeError> {
         let mut journal = self
             .store
@@ -1439,14 +1462,17 @@ impl Core {
         // The wait split the run: what it wrote before the call was one action, and what it does
         // on from the answer is another, under an invocation of its own.
         journal.invocation = self.store.borrow_mut().fresh_id("i");
+        // The key its outside effects are queued under, so that approving the same suggestion on
+        // two devices queues them once: the invocation, which both devices read, else the run
+        // and the step it goes on from, which only the device that holds its journal has.
+        let origin = origin.unwrap_or_else(|| format!("{run}:{}", journal.entries.len()));
+        journal.origin = Some(origin.clone());
         let ctx = ExecCtx {
             invoker: suggestion.invoker.clone(),
             chain: suggestion.chain.clone(),
             approved_by: Some(approver.clone()),
             suggested_by: journal.suggested_by.clone().map(Principal),
-            // The key its outside effects are queued under, so that approving the same
-            // suggestion on two devices queues them once.
-            origin: Some(format!("{run}:{}", journal.entries.len())),
+            origin: Some(origin),
             from: journal.from.clone(),
             at: journal.at.clone(),
         };
@@ -1889,13 +1915,20 @@ impl Core {
             None => None,
         };
         let (txn, action, primary, origin) = {
-            let frames = self.frames.borrow();
-            match &frames.top()?.kind {
+            let mut frames = self.frames.borrow_mut();
+            let (txn, action, primary, origin) = match &frames.top()?.kind {
                 FrameKind::Action(a) => {
                     (a.txn, a.action.clone(), a.primary.clone(), a.origin.clone())
                 }
                 _ => return trap("outside is only available in actions"),
-            }
+            };
+            // One key per effect, counted on the run the action belongs to: the same approval on
+            // two devices queues each of them under the same key, and carries out one.
+            let key = match frames.run_mut() {
+                Some(run) => run.journal.next_origin(),
+                None => origin,
+            };
+            (txn, action, primary, key)
         };
         let class = self
             .registry
