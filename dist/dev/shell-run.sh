@@ -303,8 +303,22 @@ fi
 
 door=$runtime/agent.sock
 control=$runtime/test-control.sock
+# The session's own private session bus (dist/dev/session-bus.sh), as a dev
+# image has one and `dist/dev/nested-session.sh` gives its sessions: a Rust app
+# reaches its host through the bus (`so.tilo.chat` and every other native app
+# does), and a session with none cannot start one. Tilo OS hosts have no
+# dbus-daemon of their own, so the build carries the build environment's.
+session_bus=$repo_root/dist/dev/session-bus.sh
+dbus_daemon=$(command -v dbus-daemon || true)
+if [[ -z $dbus_daemon ]]; then
+    for candidate in "$bin/nested-session-bus" "$bin/dbus-daemon"; do
+        [[ -x $candidate ]] && { dbus_daemon=$candidate; break; }
+    done
+fi
+[[ -n $dbus_daemon ]] || die "no dbus-daemon on PATH and none in $bin (run without --no-build)"
 # Start tilo-session headless with the arguments given, its output in $log, and
-# wait until it printed its control socket, which it does last.
+# wait until it printed its control socket, which it does last. It runs on the
+# private bus, which goes when the session does.
 start_session() {
     env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
         HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \
@@ -316,8 +330,9 @@ start_session() {
         TILO_LAUNCHER_BIN="$bin/tilo-launcher" \
         TILO_SYSTEM_INTERFACES="$repo_root/os/usr/share/tilo/system-interfaces.toml" \
         TILO_AGENT_DOOR="$door" \
-        setsid "$bin/tilo-session" --backend headless --size "$size" --no-x11 \
-        --session-bus none --system-bus none --test-control "$control" "$@" \
+        setsid "$session_bus" "$dbus_daemon" \
+        "$bin/tilo-session" --backend headless --size "$size" --no-x11 \
+        --system-bus none --test-control "$control" "$@" \
         > "$log" 2>&1 &
     session_pid=$!
     group=$session_pid
