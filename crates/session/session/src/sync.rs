@@ -1074,6 +1074,11 @@ impl Client {
         // device, a device that is gone: the person's other devices hear so
         // on the same pass.
         self.announce_fabric();
+        // The clock of every peer something holds in sync: its probes leave
+        // here, so the audio timed against them can play in time.
+        if let Some(fabric) = &self.fabric {
+            fabric.pump_clock();
+        }
         // What no device acknowledged of a send this device made is offered
         // again, and what the person's devices offered here waits for their
         // answer.
@@ -1208,8 +1213,13 @@ impl Client {
                     ..
                 } => fabric.sibling(*peer, certs, revocations),
                 NetEvent::SiblingLeft { peer, .. } => fabric.sibling_left(*peer),
-                NetEvent::PersonalFabric { peer, payload, .. } => {
-                    fabric.arrived(*peer, payload);
+                NetEvent::PersonalFabric {
+                    peer,
+                    payload,
+                    received,
+                    ..
+                } => {
+                    fabric.arrived(*peer, payload, *received);
                 }
                 _ => {}
             }

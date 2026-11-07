@@ -547,6 +547,9 @@ pub enum NetEvent {
         membership_epoch: MembershipEpoch,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
+        /// When the frame reached this device, read where it was taken off
+        /// the wire: a clock exchange is only worth what its timestamps are.
+        received: Instant,
     },
     NearbyTransferProgress {
         target: EndpointId,
@@ -698,6 +701,9 @@ enum InternalEvent {
         epoch: MembershipEpoch,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
+        /// When the frame reached this device, read where it was taken off
+        /// the wire: a clock exchange is only worth what its timestamps are.
+        received: Instant,
     },
     /// A file this device's identity material is read from changed.
     IdentityMaterialChanged,
@@ -991,12 +997,16 @@ fn read_personal_fabric(
                 tracing::warn!(peer = %peer, "personal fabric frame has trailing data");
                 continue;
             }
+            // Read here, off the wire, before anything queues behind it: a
+            // clock report's delay is measured from this moment.
+            let received = Instant::now();
             if tx
                 .send(InternalEvent::PersonalFabric {
                     peer,
                     epoch,
                     user_public_key: frame.user_public_key,
                     payload: frame.payload,
+                    received,
                 })
                 .await
                 .is_err()
@@ -2460,8 +2470,9 @@ impl ActorState {
                 epoch,
                 user_public_key,
                 payload,
+                received,
             }) => {
-                self.handle_personal_fabric(peer, epoch, user_public_key, payload)
+                self.handle_personal_fabric(peer, epoch, user_public_key, payload, received)
                     .await;
             }
             Some(InternalEvent::IdentityMaterialChanged) => {
@@ -2617,6 +2628,7 @@ impl ActorState {
         epoch: MembershipEpoch,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
+        received: Instant,
     ) {
         self.tally.note("PersonalFabric");
         if self
@@ -2634,6 +2646,7 @@ impl ActorState {
                     membership_epoch: epoch,
                     user_public_key,
                     payload,
+                    received,
                 })
                 .await;
         }

@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tilo_device_fabric::clock::{ClockSyncState, fabric_monotonic_us, hold_fabric_clock_sync};
 use tilo_device_fabric::link::{FabricLink as _, SharedLink};
 use tilo_device_fabric::{
     ClipboardEntry, ClipboardPayload, DeviceId, FabricStamp, PersonalFabricAction,
@@ -57,6 +58,17 @@ fn person() -> ed25519_dalek::SigningKey {
     ed25519_dalek::SigningKey::from_bytes(&[21; 32])
 }
 
+/// The person's continuity switches as their settings leave them: nothing
+/// turned off, so media moves between their devices.
+fn permitted() -> Continuity {
+    let continuity = Continuity::default();
+    let document: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_value(serde_json::json!({"continuity": {"enabled": true, "media": true}}))
+            .expect("a settings document");
+    continuity.read(&document);
+    continuity
+}
+
 /// One of the person's devices, certified by `person`, on its own key.
 fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
     let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
@@ -81,7 +93,7 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
             }),
             own: OwnPresence::default(),
             hosts: Vec::new(),
-            continuity: Continuity::default(),
+            continuity: permitted(),
             wake: Arc::new(|| {}),
         },
         None,
@@ -124,6 +136,48 @@ fn until(devices: &[&Device], mut done: impl FnMut() -> bool) -> bool {
 fn both_online(here: &Device, there: &Device) -> bool {
     here.fabric().online_device_ids().contains(&there.id)
         && there.fabric().online_device_ids().contains(&here.id)
+}
+
+#[test]
+fn a_remote_audio_route_gets_the_clock_it_plays_the_other_device_by() {
+    let person = person();
+    let laptop = device(&person, 1, "Laptop");
+    let desk = device(&person, 2, "Desk");
+    laptop.client.connect(desk.client.endpoint_addr());
+    assert!(
+        until(&[&laptop, &desk], || both_online(&laptop, &desk)),
+        "the two devices' sessions came up"
+    );
+
+    // What a route playing the desk's sound holds while it runs: until the
+    // desk answers, its audio may not start.
+    let clock = hold_fabric_clock_sync(desk.id.clone());
+    assert_eq!(
+        clock.state(),
+        ClockSyncState::Syncing,
+        "nothing is known of the desk's clock yet"
+    );
+    assert!(
+        until(&[&laptop, &desk], || clock.state() == ClockSyncState::Ready),
+        "the desk answered a probe, so the route left its syncing clock"
+    );
+    assert!(
+        until(&[&laptop, &desk], || {
+            clock.estimate().is_some_and(|estimate| estimate.synced)
+        }),
+        "enough round trips to follow the desk's clock"
+    );
+    // Both sessions run on this machine, so the desk's clock is this one's,
+    // and what plays there is scheduled from the same line.
+    let now_us = fabric_monotonic_us();
+    let offset_us = clock
+        .estimate()
+        .and_then(|estimate| estimate.offset_us(now_us))
+        .expect("an estimate of the desk's clock");
+    assert!(
+        offset_us.abs() < 1_000,
+        "the desk's clock is this device's: {offset_us} us off"
+    );
 }
 
 #[test]

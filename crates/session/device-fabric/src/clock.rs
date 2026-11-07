@@ -23,8 +23,9 @@
 //! appears to jump. Several consistent low-delay round trips that disagree
 //! with the model restart the window instead of being averaged in.
 //!
-//! Everything here is deterministic and free of I/O; the fabric runtime reads
-//! the clock, sends the probes and feeds the reports in.
+//! Everything here is deterministic and free of I/O; [`pump`] sends the probes
+//! the session's loop owes and [`arrived`] answers a peer's probe, or feeds
+//! its report in, at the moment the frame reached this device.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
@@ -34,6 +35,7 @@ use ui::num::f64_of_i64;
 use serde::{Deserialize, Serialize};
 
 use crate::PersonalFabricAction;
+use crate::link::FabricLink;
 use tilo_network_actor::fabric::DeviceId;
 
 /// Probe cadence toward a peer while something holds its clock in sync.
@@ -172,12 +174,6 @@ pub struct ClockMapping {
 }
 
 impl ClockEstimate {
-    /// Peer clock rate relative to this device, in parts per million.
-    #[must_use]
-    pub fn skew_ppm(&self) -> f64 {
-        self.skew * 1e6
-    }
-
     /// How far the peer clock is ahead of this device at `local_us`.
     #[must_use]
     pub fn offset_us(&self, local_us: u64) -> Option<i64> {
@@ -335,11 +331,6 @@ impl PeerClockEstimator {
             newest_sample_local_us: fit.newest_local_us,
             synced,
         })
-    }
-
-    #[must_use]
-    pub fn samples(&self) -> usize {
-        self.window.len()
     }
 
     fn fit(&self) -> Option<Fit> {
@@ -525,11 +516,6 @@ impl FabricClockCore {
         self.enabled = enabled;
     }
 
-    #[must_use]
-    pub const fn enabled(&self) -> bool {
-        self.enabled
-    }
-
     /// Start (or count one more reason for) keeping `peer` in sync. The
     /// next [`Self::due_probes`] probes at once.
     pub fn hold(&mut self, peer: DeviceId, now: Instant) {
@@ -553,11 +539,6 @@ impl FabricClockCore {
             self.pending.remove(peer);
             self.clocks.remove(peer);
         }
-    }
-
-    #[must_use]
-    pub fn is_held(&self, peer: &DeviceId) -> bool {
-        self.held.contains_key(peer)
     }
 
     /// The probes due at `now` (`now_us` on the local monotonic clock): one
@@ -756,6 +737,84 @@ pub fn with_fabric_clock<T>(apply: impl FnOnce(&mut FabricClockCore) -> T) -> T 
     apply(&mut core)
 }
 
+/// `received` as microseconds on the monotonic clock `now_us` was read from,
+/// for a frame the transport took at `received` and this reached later.
+fn arrived_us(now_us: u64, received: Instant) -> u64 {
+    let late = u64::try_from(received.elapsed().as_micros()).unwrap_or(u64::MAX);
+    now_us.saturating_sub(late)
+}
+
+/// Probe the clock of every peer something holds in sync, once per
+/// [`CLOCK_SYNC_PROBE_INTERVAL`], while Media continuity is on. The session's
+/// loop calls this every pass: nothing else starts the fabric clock, and with
+/// Media continuity off every estimate is forgotten.
+pub fn pump(network: &dyn FabricLink, media_enabled: bool) {
+    let now = Instant::now();
+    let now_us = fabric_monotonic_us();
+    let waiting = with_fabric_clock(|core| {
+        core.set_enabled(media_enabled, now);
+        media_enabled && !core.held.is_empty()
+    });
+    // Nothing holds a peer, or Media continuity is off: the pass costs the
+    // clock one lock and the fabric nothing.
+    if !waiting {
+        return;
+    }
+    let local = network
+        .local_device_fabric_identity()
+        .map(|(device, _)| device);
+    let online = network.online_device_ids();
+    let probes = with_fabric_clock(|core| {
+        core.due_probes(
+            |peer| local.as_ref() != Some(peer) && online.contains(peer),
+            now,
+            now_us,
+            crate::random::nonzero::<16>,
+        )
+    });
+    for (peer, probe) in probes {
+        let PersonalFabricAction::FabricClockProbe { nonce, .. } = &probe else {
+            continue;
+        };
+        let nonce = *nonce;
+        if network
+            .try_send_personal_fabric_action(&peer, probe)
+            .is_err()
+        {
+            with_fabric_clock(|core| core.abandon(&peer, nonce));
+        }
+    }
+}
+
+/// Take one clock action `peer` sent, at the moment its frame arrived: answer
+/// a probe with this device's clock, or feed a report into the estimate of
+/// `peer`. Returns whether `action` was the clock's.
+pub fn arrived(
+    network: &dyn FabricLink,
+    peer: &DeviceId,
+    action: &PersonalFabricAction,
+    received: Instant,
+) -> bool {
+    let now_us = fabric_monotonic_us();
+    let received_us = arrived_us(now_us, received);
+    match action {
+        PersonalFabricAction::FabricClockProbe { nonce, sent_us } => {
+            let reply = with_fabric_clock(|core| {
+                core.answer(*nonce, *sent_us, received_us, fabric_monotonic_us())
+            });
+            if let Some(reply) = reply {
+                let _ = network.try_send_personal_fabric_action(peer, reply);
+            }
+            true
+        }
+        PersonalFabricAction::FabricClockReport { report } => {
+            with_fabric_clock(|core| core.accept(peer, *report, Instant::now(), received_us));
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Keeps one peer's clock estimate fresh: the fabric clock probes a peer
 /// only while a handle for it is alive, at
 /// [`CLOCK_SYNC_PROBE_INTERVAL`](CLOCK_SYNC_PROBE_INTERVAL),
@@ -913,7 +972,7 @@ mod tests {
                         error < 500.0,
                         "offset error {error} us, seed {seed} skew {skew_ppm} round {round}"
                     );
-                    let skew_error = (estimate.skew_ppm() - skew_ppm).abs();
+                    let skew_error = (estimate.skew * 1e6 - skew_ppm).abs();
                     assert!(
                         skew_error < 5.0,
                         "skew error {skew_error} ppm, seed {seed} skew {skew_ppm} round {round}"
@@ -955,7 +1014,7 @@ mod tests {
         let now = (START_US + 8.0 * PERIOD_US) as u64;
         let early = estimator.estimate(now).expect("estimate");
         assert!(!early.synced);
-        assert!(early.skew_ppm().abs() < f64::EPSILON);
+        assert!(early.skew.abs() < f64::EPSILON);
         for round in 8..200_u32 {
             estimator.observe(net.round_trip(START_US + f64::from(round) * PERIOD_US));
         }
@@ -988,7 +1047,7 @@ mod tests {
             t1: u64::MAX,
             ..valid
         }));
-        assert_eq!(estimator.samples(), 0);
+        assert_eq!(estimator.window.len(), 0);
         assert!(estimator.observe(valid));
         let estimate = estimator.estimate(2_100).expect("estimate");
         // offset = ((9_000_500 - 1_000) + (9_000_600 - 2_100)) / 2; the 1 ms
@@ -1015,7 +1074,7 @@ mod tests {
             let sample = shifted(net.round_trip(START_US + f64::from(round) * PERIOD_US));
             assert!(estimator.observe(sample));
         }
-        assert_eq!(estimator.samples(), STEP_CONFIRMATIONS);
+        assert_eq!(estimator.window.len(), STEP_CONFIRMATIONS);
         for round in 203..300_u32 {
             estimator.observe(shifted(
                 net.round_trip(START_US + f64::from(round) * PERIOD_US),
@@ -1191,9 +1250,9 @@ mod tests {
             ClockSyncState::Failed(ClockSyncFailure::NoReply)
         );
         core.release(&speaker);
-        assert!(core.is_held(&speaker), "one hold is still alive");
+        assert!(core.held.contains_key(&speaker), "one hold is still alive");
         core.release(&speaker);
-        assert!(!core.is_held(&speaker));
+        assert!(!core.held.contains_key(&speaker));
     }
 
     #[test]
@@ -1239,7 +1298,7 @@ mod tests {
     #[test]
     fn clock_sync_handles_are_counted_until_the_last_is_dropped() {
         let peer = DeviceId::new("clock-handle-peer").unwrap();
-        let held = || with_fabric_clock(|core| core.is_held(&peer));
+        let held = || with_fabric_clock(|core| core.held.contains_key(&peer));
         let first = hold_fabric_clock_sync(peer.clone());
         let second = hold_fabric_clock_sync(peer.clone());
         assert!(held());
