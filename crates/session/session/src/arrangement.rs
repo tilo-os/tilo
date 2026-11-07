@@ -567,18 +567,23 @@ impl Arrangement {
         Ok(id)
     }
 
-    /// Place the resource a text typed at `at` finds on the canvas, as `asked`'s: the
-    /// top result of the system's `find` that a place can show, resolved against what
-    /// the session publishes now ([`Catalog`]), standing at `at` through
-    /// [`ArrangementAction::Place`] — one attributed, undoable change (shell.md §8).
-    /// `view` empty shows the resource's primary view; `strip` names the strip it joins
-    /// as a tab, else it takes a strip of its own. Returns the place's id, or `None`
-    /// when nothing the text finds is a resource the arrangement can place.
+    /// Place the resource a text typed at `at` finds on the canvas, as `asked`'s:
+    /// the top result of the system's `find` (`find`) that a place can show,
+    /// resolved against what the session publishes now ([`Catalog`]), standing at
+    /// `at` through the arranging action [`ArrangementAction::Place`] — one
+    /// attributed, undoable change of the person's record (shell.md §8). `view`
+    /// empty shows the resource's primary view. `strip` names the strip the
+    /// found resource joins as a tab (a strip id on the desk), else it takes a
+    /// strip of its own.
+    ///
+    /// Returns the place's id, or `None` when nothing the text finds is a
+    /// resource the arrangement can place.
     ///
     /// Text that *asks* — a question ([`tilo_desktop_search::answers::question::asks`]),
-    /// or text nothing matches — goes to `ask` instead (shell.md §8.1): what it answers
-    /// is the person's ask conversation, which stands where they typed, as one
-    /// arranging step.
+    /// or text nothing matches — goes to `ask` instead (shell.md §8.1,
+    /// "Asking from the canvas"): what it answers is the resource to place,
+    /// the person's ask conversation, so the text typed stands as a place of
+    /// that conversation, where they typed it, as one arranging step.
     ///
     /// # Errors
     /// Why the place could not be made, or the text found nothing to place
