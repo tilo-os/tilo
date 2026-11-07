@@ -673,6 +673,12 @@ pub struct Publications {
     /// what a reader that keeps one entry per resource (the search index) replaces, and what it
     /// drops, instead of reading every record again.
     text_moves: std::collections::VecDeque<(u64, TextMoves)>,
+    /// The published records that are what a window reaches of them, each with only the
+    /// resources it reaches ([`Self::reached`]): every other record in [`Self::trees`] is whole.
+    reached: std::collections::BTreeSet<String>,
+    /// What the window showed when the reached trees were read, and the snapshot they were read
+    /// from: a frame that shows the same reads nothing.
+    shown: Option<(Arc<crate::store::Snapshot>, Vec<String>)>,
 }
 
 /// A record built whole off the frame: its tree and the resource whose text names it.
@@ -690,8 +696,56 @@ struct Whole {
     type_id: String,
 }
 
+/// What a window reaches of a record, by the resource holding it: the resources under it the
+/// window shows, each by its path. A read without one reaches every item of every record.
+type Reached = std::collections::BTreeMap<String, std::collections::BTreeSet<String>>;
+
+/// What `shown` reaches, by the record it is in: each record with the paths of the resources
+/// under it that `shown` names, and the path each of them is reached by from the record down.
+fn reached_by_doc(app: &str, shown: &[String]) -> std::collections::BTreeMap<String, Reached> {
+    let prefix = resource_id(app, "");
+    let mut out: std::collections::BTreeMap<String, Reached> = std::collections::BTreeMap::new();
+    for id in shown {
+        let Some(path) = id.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        let doc = path.split('/').next().unwrap_or(path);
+        let reached = out.entry(doc.to_owned()).or_default();
+        // Every step from the record down to what is shown: the route the window reaches it by.
+        let mut at = path;
+        while let Some((parent, _)) = at.rsplit_once('/') {
+            reached
+                .entry(parent.to_owned())
+                .or_default()
+                .insert(at.to_owned());
+            at = parent;
+        }
+    }
+    out
+}
+
+/// What `tree`, the published `doc` of a record, reaches of it: every resource in it, each under
+/// the one that holds it — the reach a change to the whole record is read again with.
+fn reach_of(tree: &ResourceSpec, doc: &str) -> Reached {
+    // A resource's path is its published id without the prefix [`resource_id`] puts the record
+    // under.
+    let width = tree.id.as_str().len().saturating_sub(doc.len());
+    let mut out = Reached::new();
+    collect_reached(tree, width, &mut out);
+    out
+}
+
+/// Each resource under `spec`, by its path, inserted under the path of the resource holding it.
+fn collect_reached(spec: &ResourceSpec, width: usize, out: &mut Reached) {
+    let of = |spec: &ResourceSpec| spec.id.as_str().get(width..).unwrap_or_default().to_owned();
+    for child in &spec.children {
+        out.entry(of(spec)).or_default().insert(of(child));
+        collect_reached(child, width, out);
+    }
+}
+
 impl Whole {
-    fn build(&self, snapshot: &crate::store::Snapshot) -> Built {
+    fn build(&self, snapshot: &crate::store::Snapshot, reached: Option<&Reached>) -> Built {
         // This record is published by the package version the snapshot's store was taken from.
         let _schemas = snapshot.scoped();
         let root = tilolang_runtime::value::ResourceRef::root(&self.doc, self.type_id.clone());
@@ -711,7 +765,7 @@ impl Whole {
             .and_then(|(app, _)| snapshot.view(app));
         let mut tree = publish_record(&self.types, &self.type_name, &self.doc, &label);
         if let (Some(view), Some(schema)) = (view, schema) {
-            for child in indexed_items(&self.types, &view, snapshot, &self.doc, schema) {
+            for child in indexed_items(&self.types, &view, snapshot, &self.doc, schema, reached) {
                 tree = tree.with_child(child);
             }
         }
@@ -731,7 +785,18 @@ fn indexed_items(
     reader: &crate::store::Snapshot,
     parent: &str,
     schema: &crate::schema::TypeSchema,
+    reached: Option<&Reached>,
 ) -> Vec<ResourceSpec> {
+    // What a window reaches: the items it shows, read by their paths, not the ten thousand the
+    // record holds.
+    if let Some(reached) = reached {
+        return reached
+            .get(parent)
+            .into_iter()
+            .flatten()
+            .filter_map(|path| indexed_item(types, view, reader, path, None, Some(reached)))
+            .collect();
+    }
     let mut out = Vec::new();
     for field in schema
         .fields
@@ -746,7 +811,9 @@ fn indexed_items(
                 break;
             };
             let path = crate::index::view::child(parent, &id);
-            if let Some(item) = indexed_item(types, view, reader, &path, field.record.as_deref()) {
+            if let Some(item) =
+                indexed_item(types, view, reader, &path, field.record.as_deref(), None)
+            {
                 out.push(item);
             }
         }
@@ -764,6 +831,7 @@ fn indexed_item(
     reader: &crate::store::Snapshot,
     path: &str,
     item_type: Option<&str>,
+    reached: Option<&Reached>,
 ) -> Option<ResourceSpec> {
     let ty = view.type_of(path).ok().flatten();
     let schema = ty
@@ -777,7 +845,7 @@ fn indexed_item(
         .and_then(|(text, _)| reader.said(path, text))
         .unwrap_or_else(|| schema.name.clone());
     let mut resource = types.resource(&schema.name, path, label);
-    for child in indexed_items(types, view, reader, path, schema) {
+    for child in indexed_items(types, view, reader, path, schema, reached) {
         resource = resource.with_child(child);
     }
     Some(resource)
@@ -805,6 +873,8 @@ impl Publications {
             moved: 0,
             motions: std::collections::VecDeque::new(),
             text_moves: std::collections::VecDeque::new(),
+            reached: std::collections::BTreeSet::new(),
+            shown: None,
         }
     }
 
@@ -911,6 +981,10 @@ impl Publications {
     /// without frames.
     pub fn settle(&mut self, host: &crate::host::Host, planner: &Arc<dyn Planner>) -> Vec<String> {
         let mut touched = self.update(host, planner);
+        // A host without frames has no window to bound what it publishes by: every record is
+        // published, read off the frame.
+        let mut relabels = Some(Vec::new());
+        self.publish_everything(host, planner, &mut relabels, &mut touched);
         while let Some((docs, building)) = self.building.take() {
             self.take_in(host, planner, &docs, building.wait(), &mut touched);
             touched.extend(self.update(host, planner));
@@ -918,6 +992,98 @@ impl Publications {
         touched.sort();
         touched.dedup();
         touched
+    }
+
+    /// Every record of the workspace, published whole: what a caller that asks about the whole
+    /// workspace (the directory) reads. Nothing of it is what a window shows: a window's surface
+    /// holds what it reaches ([`Self::reached`]), and the whole workspace is never published to
+    /// it.
+    pub fn everything(
+        &mut self,
+        host: &crate::host::Host,
+        planner: &Arc<dyn Planner>,
+    ) -> Vec<Rc<ResourceSpec>> {
+        let snapshot = host.store().snapshot();
+        let docs: Vec<String> = host
+            .records()
+            .iter()
+            .map(|(_, _, doc)| doc.clone())
+            .collect();
+        docs.iter()
+            .filter_map(|doc| self.whole_of(host, planner, doc))
+            .map(|whole| Rc::new(whole.build(&snapshot, None).tree))
+            .collect()
+    }
+
+    /// What the window's surface publishes: the records `shown` reaches, each with the
+    /// resources under it `shown` names, read from the store as it is now. A record the window
+    /// shows nothing of is not published: a workspace of ten thousand publishes the rows on
+    /// screen.
+    ///
+    /// The answer stands while the store holds what it was read from and the window shows what
+    /// it showed: a frame that changed neither publishes without reading anything.
+    pub fn reached(
+        &mut self,
+        host: &crate::host::Host,
+        planner: &Arc<dyn Planner>,
+        app: &str,
+        shown: &[String],
+    ) -> Vec<Rc<ResourceSpec>> {
+        let snapshot = host.store().snapshot();
+        let stands = self
+            .shown
+            .as_ref()
+            .is_some_and(|(at, ids)| Arc::ptr_eq(at, &snapshot) && ids.as_slice() == shown);
+        let reach = reached_by_doc(app, shown);
+        if !stands {
+            // What the window no longer reaches is no longer published: a window scrolled away
+            // from a record holds no part of it.
+            let held: std::collections::BTreeSet<&str> = reach.keys().map(String::as_str).collect();
+            let dropped: Vec<String> = self
+                .reached
+                .iter()
+                .filter(|doc| !held.contains(doc.as_str()))
+                .cloned()
+                .collect();
+            for doc in dropped {
+                self.unpublish(&doc);
+            }
+            for (doc, this) in &reach {
+                let Some(whole) = self.whole_of(host, planner, doc) else {
+                    continue;
+                };
+                let built = whole.build(&snapshot, Some(this));
+                self.trees.insert(doc.clone(), Rc::new(built.tree));
+                self.named_by.insert(doc.clone(), built.named_by);
+                self.reached.insert(doc.clone());
+                self.visited = self.visited.saturating_add(1);
+            }
+            // The revision counts what a reader of the whole workspace saw: a reached tree is
+            // read for the frame that reached it, so what moved here is the window's, which the
+            // surface holds by the ids it shows.
+            self.shown = Some((snapshot, shown.to_vec()));
+        }
+        reach
+            .keys()
+            .filter_map(|doc| self.trees.get(doc).cloned())
+            .collect()
+    }
+
+    /// The record of the resource `address` names, published down to it: what an invocation is
+    /// resolved against when the window shows nothing of it. `None` when the address is no
+    /// resource of `app`.
+    pub fn addressed(
+        &mut self,
+        host: &crate::host::Host,
+        planner: &Arc<dyn Planner>,
+        app: &str,
+        address: &str,
+    ) -> Option<Rc<ResourceSpec>> {
+        let reached = reached_by_doc(app, &[address.to_owned()]);
+        let (doc, reached) = reached.into_iter().next()?;
+        let whole = self.whole_of(host, planner, &doc)?;
+        let snapshot = host.store().snapshot();
+        Some(Rc::new(whole.build(&snapshot, Some(&reached)).tree))
     }
 
     /// Take in records built off the frame; all of them are built here if the building was
@@ -936,7 +1102,7 @@ impl Publications {
                 let snapshot = host.store().snapshot();
                 self.wholes(host, planner, docs)
                     .iter()
-                    .map(|whole| whole.build(&snapshot))
+                    .map(|whole| whole.build(&snapshot, None))
                     .collect()
             }
         };
@@ -948,11 +1114,40 @@ impl Publications {
         {
             self.trees.insert(doc.clone(), Rc::new(tree));
             self.named_by.insert(doc.clone(), named_by);
+            self.reached.remove(&doc);
             touched.push(doc);
             self.revision = self.revision.wrapping_add(1);
             self.structural = self.revision;
             self.visited = self.visited.saturating_add(1);
         }
+    }
+
+    /// Publish nothing of `doc` any more: a record the window scrolled away from holds no part
+    /// of it, and one the workspace no longer has is gone.
+    fn unpublish(&mut self, doc: &str) {
+        self.reached.remove(doc);
+        self.named_by.remove(doc);
+        if self.trees.remove(doc).is_some() {
+            self.revision = self.revision.wrapping_add(1);
+            self.structural = self.revision;
+        }
+    }
+
+    /// Publish what the window reached of `doc` again: the same resources, read from the store as
+    /// it is now, after a change to the whole record. Whether `doc` was published as reached.
+    fn reread(&mut self, host: &crate::host::Host, planner: &Arc<dyn Planner>, doc: &str) -> bool {
+        let reach = self.trees.get(doc).map(|at| reach_of(at, doc));
+        let (Some(reach), Some(whole)) = (reach, self.whole_of(host, planner, doc)) else {
+            return false;
+        };
+        let snapshot = host.store().snapshot();
+        let built = whole.build(&snapshot, Some(&reach));
+        self.trees.insert(doc.to_owned(), Rc::new(built.tree));
+        self.named_by.insert(doc.to_owned(), built.named_by);
+        self.visited = self.visited.saturating_add(1);
+        self.revision = self.revision.wrapping_add(1);
+        self.structural = self.revision;
+        true
     }
 
     /// How many records the updates so far have looked at, one per record per turn: what
@@ -1146,7 +1341,11 @@ impl Publications {
         let reloaded = std::mem::replace(&mut self.packages, host.package_ids()) != self.packages;
         let all = std::mem::take(&mut self.fresh) || reworded || reloaded || changes.everything;
         if all {
-            self.publish_everything(host, planner, relabels, &mut touched);
+            // Nothing is published up front: what a window reaches is published when it reaches
+            // it ([`Self::reached`]), and a caller that reads the whole workspace asks for it
+            // ([`Self::everything`]). A workspace of ten thousand costs an open what it shows.
+            *relabels = None;
+            self.forget(&mut touched);
         } else {
             // Nothing changed: no record is looked at, whether the workspace holds one or ten
             // thousand.
@@ -1218,11 +1417,19 @@ impl Publications {
         for doc in docs {
             if !host.store().contains(doc) {
                 // The resource is gone: so is everything published of it.
-                if self.trees.remove(doc).is_some() {
+                if self.trees.contains_key(doc) {
                     *relabels = None;
                     touched.push(doc.to_owned());
                 }
-                self.named_by.remove(doc);
+                self.unpublish(doc);
+                continue;
+            }
+            // Nothing of it is published: what a window reaches of it is built when it reaches
+            // it ([`Self::reached`]), so a change to a record no one published reads no more of
+            // it than the surface of what the window shows, which is published again.
+            if !self.trees.contains_key(doc) {
+                touched.push(doc.to_owned());
+                *relabels = None;
                 continue;
             }
             // The versions of a resource name no value a record is published as: marks and
@@ -1235,14 +1442,21 @@ impl Publications {
                     .collect()
             });
             let whole = changes.whole.contains(doc)
-                || !self.trees.contains_key(doc)
                 || fields.as_ref().is_some_and(|fields| {
                     fields
                         .iter()
                         .any(|key| key.resource == doc && key.field == ANY_FIELD)
                 });
             if whole {
-                whole_docs.extend(self.whole_of(host, planner, doc));
+                // A record the window reaches is read again down to what it shows: a change to
+                // the whole of it does not publish ten thousand items to a window showing ten.
+                if self.reached.contains(doc) {
+                    if self.reread(host, planner, doc) {
+                        *relabels = None;
+                    }
+                } else {
+                    whole_docs.extend(self.whole_of(host, planner, doc));
+                }
                 continue;
             }
             let (Some(fields), Some((types, schema))) =
@@ -1286,8 +1500,25 @@ impl Publications {
         }
     }
 
-    /// Publish every record in full: the first update, and a turn that changed what every
-    /// record is published as (the words, or the packages loaded).
+    /// Publish nothing, forgetting what was published: what a turn that changed what every record
+    /// is published as costs (the words, or the packages loaded) — every record's tree is read
+    /// again when something reaches it.
+    fn forget(&mut self, touched: &mut Vec<String>) {
+        self.shown = None;
+        self.reached.clear();
+        if self.trees.is_empty() {
+            return;
+        }
+        for doc in std::mem::take(&mut self.trees).into_keys() {
+            touched.push(doc);
+        }
+        self.named_by.clear();
+        self.revision = self.revision.wrapping_add(1);
+        self.structural = self.revision;
+    }
+
+    /// Publish every record in full: what a caller that reads the whole workspace asks for (the
+    /// directory, a host without frames), read off the frame.
     fn publish_everything(
         &mut self,
         host: &crate::host::Host,
@@ -1297,7 +1528,6 @@ impl Publications {
     ) {
         use std::collections::BTreeSet;
 
-        self.sweeps = self.sweeps.saturating_add(1);
         let records = host.records();
         let now: BTreeSet<&str> = records.iter().map(|(_, _, doc)| doc.as_str()).collect();
         let gone: Vec<String> = self
@@ -1306,20 +1536,34 @@ impl Publications {
             .filter(|doc| !now.contains(doc.as_str()))
             .cloned()
             .collect();
-        self.visited = self
-            .visited
-            .saturating_add(records.len() as u64)
-            .saturating_add(gone.len() as u64);
+        let gone_count = gone.len() as u64;
         for doc in gone {
-            self.trees.remove(&doc);
-            self.named_by.remove(&doc);
+            self.unpublish(&doc);
             touched.push(doc);
             *relabels = None;
         }
-        let whole_docs: Vec<Whole> = records
+        // What is published whole already stays: a caller that asks for the workspace again
+        // reads what it did not read whole before — a record a window reached is read whole.
+        let missing: Vec<&String> = records
             .iter()
-            .filter_map(|(_, _, doc)| self.whole_of(host, planner, doc))
+            .map(|(_, _, doc)| doc)
+            .filter(|doc| {
+                !self.trees.contains_key(doc.as_str()) || self.reached.contains(doc.as_str())
+            })
             .collect();
+        // A read of every record in full is a sweep; what is published already is not read
+        // again.
+        if missing.len() == records.len() {
+            self.sweeps = self.sweeps.saturating_add(1);
+        }
+        let whole_docs: Vec<Whole> = missing
+            .into_iter()
+            .filter_map(|doc| self.whole_of(host, planner, doc))
+            .collect();
+        self.visited = self
+            .visited
+            .saturating_add(whole_docs.len() as u64)
+            .saturating_add(gone_count);
         if !whole_docs.is_empty() {
             self.build_off_frame(host, whole_docs);
         }
@@ -1336,7 +1580,7 @@ impl Publications {
                 move || {
                     whole_docs
                         .iter()
-                        .map(|whole| whole.build(&snapshot))
+                        .map(|whole| whole.build(&snapshot, None))
                         .collect()
                 },
                 self.wake.clone(),
@@ -1917,7 +2161,7 @@ impl Published<'_> {
         let _schemas = snapshot.scoped();
         let schema = self.schema_at(path)?;
         let view = snapshot.view(&self.types.meta().app)?;
-        indexed_item(self.types, &view, &snapshot, path, Some(&schema.id))
+        indexed_item(self.types, &view, &snapshot, path, Some(&schema.id), None)
     }
 }
 

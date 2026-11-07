@@ -622,7 +622,8 @@ impl Session {
         while quiet < 20 {
             let changed = self.host.turn();
             self.window.frame();
-            let waiting = !self.index_ready() && std::time::Instant::now() < deadline;
+            let waiting = (!self.index_ready() || self.search_index_pending())
+                && std::time::Instant::now() < deadline;
             if changed || waiting {
                 quiet = 0;
             } else {
@@ -642,6 +643,15 @@ impl Session {
             .next()
             .and_then(|hosted| hosted.instance().host())
             .is_some_and(|host| host.index_ready())
+    }
+
+    /// Whether the instance is still reading the whole of the workspace's search index off the
+    /// frame: what it publishes once it is read.
+    fn search_index_pending(&self) -> bool {
+        self.host
+            .instances()
+            .next()
+            .is_some_and(Hosted::index_pending)
     }
 
     /// The window's frames until its instance reads the workspace's indexes: what its load
