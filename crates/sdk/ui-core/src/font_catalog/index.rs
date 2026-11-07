@@ -269,10 +269,12 @@ pub(crate) fn store(path: &Path, roots: &[PathBuf], root: &Path, db: &fontdb::Da
     let Ok(bytes) = serde_json::to_vec(&index) else {
         return;
     };
+    let dir = path.parent().unwrap_or(Path::new("."));
     if let Err(error) = tilo_files::native::atomic::write_creating_parent(path, &bytes) {
-        // Read-only where the launch reads it (an app's sandbox), which is
-        // the ordinary case: the session records, the apps read.
-        tracing::debug!(%error, path = %path.display(), "font index not recorded");
+        // Where the index lives cannot be written: another launch of this
+        // device records it instead, and until one does every launch builds
+        // the database again.
+        tracing::debug!(%error, dir = %dir.display(), "font index not recorded");
     }
 }
 
@@ -481,8 +483,7 @@ mod tests {
         std::os::unix::fs::symlink(&fonts, &link).unwrap();
         let index_path = dir.path().join("index.json");
         store(&index_path, std::slice::from_ref(&link), &link, &db);
-        let recorded: Index =
-            serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+        let recorded: Index = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
         assert_eq!(recorded.roots, vec![fonts.canonicalize().unwrap()]);
         assert!(
             load(&index_path, std::slice::from_ref(&fonts)).is_some(),
