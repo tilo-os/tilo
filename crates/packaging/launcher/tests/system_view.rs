@@ -32,8 +32,10 @@ use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use launcher::capabilities::CapabilityPlan;
-use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox};
+use launcher::manifest::ManifestView;
 use launcher::sandbox_view::{SystemView, Variant, view_read_paths};
+
+use crate::support::bwrap;
 
 const INNER_ENV: &str = "TILO_SYSTEM_VIEW_INNER";
 const LIST_ENV: &str = "TILO_SYSTEM_VIEW_LIST";
@@ -417,49 +419,5 @@ fn a_file_inside_the_profile() -> Option<String> {
 }
 
 fn manifest(net: &str) -> ManifestView {
-    ManifestView {
-        package_id: "so.tilo.viewtest".to_string(),
-        name: None,
-        localized_names: BTreeMap::default(),
-        keywords: Vec::new(),
-        category: None,
-        icon: None,
-        version: "0.0.0".to_string(),
-        kind: "app".to_string(),
-        runtime: None,
-        required_runtimes: Vec::new(),
-        entrypoint: Entrypoint {
-            bin: "bin/app".to_string(),
-            r#type: launcher::manifest::EntrypointType::Gui,
-            gui_bin: None,
-            cli_bin: None,
-            runtime: None,
-            origins: Vec::new(),
-        },
-        sandbox: Sandbox {
-            net: Net {
-                mode: net.to_string(),
-                ..Net::default()
-            },
-            fs: Fs::default(),
-            services: BTreeMap::new(),
-            portals: BTreeMap::new(),
-            ..Sandbox::default()
-        },
-        cli_commands: Vec::new(),
-        opens_ext: Vec::new(),
-        opens_mime: Vec::new(),
-        opens_schemes: Vec::new(),
-        opens_secondary: false,
-        continuity: launcher::manifest::ContinuityContract::default(),
-        capabilities: Vec::new(),
-    }
-}
-
-fn bwrap() -> PathBuf {
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("bwrap"))
-        .find(|candidate| candidate.is_file())
-        .expect("bwrap is how a Tilo app runs; a host without it cannot run this test")
+    crate::support::manifest("so.tilo.viewtest", "bin/app", net)
 }

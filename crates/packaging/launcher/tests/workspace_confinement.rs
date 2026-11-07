@@ -17,72 +17,15 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use launcher::appdir;
-use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox};
+use launcher::manifest::ManifestView;
 use launcher::run::{RunError, RunOptions, run_with_captured};
 
-use crate::support::{isolated_options, workspacetest_payload};
+use crate::support::{bwrap, isolated_options, manifest, workspacetest_payload};
 
 const PACKAGE: &str = "so.tilo.workspacetest";
-
-fn manifest() -> ManifestView {
-    ManifestView {
-        package_id: PACKAGE.to_string(),
-        name: None,
-        localized_names: BTreeMap::default(),
-        keywords: Vec::new(),
-        category: None,
-        icon: None,
-        version: "0.0.0".to_string(),
-        // Confinement is a property of every package the launcher runs, but
-        // this fixture is the kind a user opens: a writable directory is
-        // expected at all.
-        kind: "app".to_string(),
-        runtime: None,
-        required_runtimes: Vec::new(),
-        entrypoint: Entrypoint {
-            bin: "bin/workspacetest".to_string(),
-            r#type: launcher::manifest::EntrypointType::Gui,
-            gui_bin: None,
-            cli_bin: None,
-            runtime: None,
-            origins: Vec::new(),
-        },
-        sandbox: Sandbox {
-            net: Net {
-                mode: "off".to_string(),
-                ..Net::default()
-            },
-            fs: Fs::default(),
-            services: BTreeMap::new(),
-            portals: BTreeMap::new(),
-            // Inherit the shipped syscall-filter default rather than naming one
-            // here, or a confinement fixture pinning its own profile stops
-            // tracking what an installed app actually gets.
-            ..Sandbox::default()
-        },
-        cli_commands: Vec::new(),
-        opens_ext: Vec::new(),
-        opens_mime: Vec::new(),
-        opens_schemes: Vec::new(),
-        opens_secondary: false,
-        continuity: launcher::manifest::ContinuityContract::default(),
-        capabilities: Vec::new(),
-    }
-}
-
-fn bwrap() -> PathBuf {
-    let p = PathBuf::from("/usr/bin/bwrap");
-    assert!(
-        p.exists(),
-        "bwrap is not installed. It is how a Tilo app runs, so this is a \
-         broken environment rather than a reason to skip the test."
-    );
-    p
-}
 
 /// Run the fixture in `workspace` with `argv`, returning its stdout.
 fn run_in_workspace(data: &DataHome, workspace: Option<&str>, argv: &[&str]) -> String {
@@ -107,8 +50,12 @@ fn run_in_workspace_with_landlock(
         },
         ..isolated_options(&data.path)
     };
-    let (status, out) =
-        run_with_captured(&manifest(), workspacetest_payload(), &opts).expect("launch");
+    let (status, out) = run_with_captured(
+        &manifest(PACKAGE, "bin/workspacetest", "off"),
+        workspacetest_payload(),
+        &opts,
+    )
+    .expect("launch");
     let text = String::from_utf8_lossy(&out).trim().to_string();
     assert!(
         status.success(),
@@ -439,7 +386,7 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
             ("write", &victim.display().to_string() as &str),
             ("read", "/etc/shadow"),
         ] {
-            let mut m = manifest();
+            let mut m = manifest(PACKAGE, "bin/workspacetest", "off");
             match field {
                 "write" => m.sandbox.fs.write.push(entry.to_string()),
                 _ => m.sandbox.fs.read.push(entry.to_string()),
@@ -529,8 +476,12 @@ fn run_with_grants(
         },
         ..isolated_options(&data.path)
     };
-    let (status, out) =
-        run_with_captured(&manifest(), workspacetest_payload(), &opts).expect("launch");
+    let (status, out) = run_with_captured(
+        &manifest(PACKAGE, "bin/workspacetest", "off"),
+        workspacetest_payload(),
+        &opts,
+    )
+    .expect("launch");
     let text = String::from_utf8_lossy(&out).trim().to_string();
     assert!(
         status.success(),
@@ -685,7 +636,7 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
 fn run_as_settings(data: &DataHome, argv: &[&str]) -> String {
     let manifest = ManifestView {
         package_id: "so.tilo.settings".to_string(),
-        ..manifest()
+        ..manifest(PACKAGE, "bin/workspacetest", "off")
     };
     let opts = RunOptions {
         no_services: true,
