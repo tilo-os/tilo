@@ -156,12 +156,22 @@ pub fn find(input: &str) -> Result<Query, String> {
     Ok(query)
 }
 
+/// A field a query compared with the clock: the field, whether it is compared with the
+/// person's day (`today`) or the instant (`now`), and by how many seconds the clock is offset
+/// (`-7d`). The store keeps these fields' values sorted, so it can name the first one after now
+/// and the view wakes there ([`crate::store::Store::next_clock_change`]).
+pub type ClockField = (String, bool, i64);
+
 /// What a store answers a query with: the predicate over a resource's fields (by field id)
 /// and the order, a field and whether the latest or last comes first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resolved {
     pub pred: Pred<String>,
     pub order: Option<Order>,
+    /// The fields the query compared with the clock, and whether each reads the person's day,
+    /// and the offset it read the clock by: what decides when what it answers next changes
+    /// ([`crate::store::Store::next_clock_change`]).
+    pub clock: Vec<ClockField>,
 }
 
 /// An order of a query's results.
@@ -225,6 +235,26 @@ pub fn store_pred(pred: &Pred<String>, ty: &TypeMeta, app: &str) -> Option<crate
 /// reads the same throughout one; a view that read the instant runs again at the next minute.
 pub const INSTANT_GRAIN: i64 = 60;
 
+/// The first instant after `now` on the clock's grain: when what an instant read answers next
+/// changes for a store that cannot tell.
+fn next_instant(now: i64) -> i64 {
+    now.div_euclid(INSTANT_GRAIN)
+        .saturating_add(1)
+        .saturating_mul(INSTANT_GRAIN)
+}
+
+/// When what a query read of the clock next reads differently, as the store that keeps the
+/// values it compares knows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NextChange {
+    /// The answer changes at this instant: a value the query compared lies there.
+    At(i64),
+    /// The answer does not change as the clock runs: no value it compared lies after now.
+    Never,
+    /// The store cannot tell: the clock's grain wakes the view instead ([`INSTANT_GRAIN`]).
+    Unknown,
+}
+
 /// The time a query is answered at, which `today`, `now` and `-7d` are read against, and when
 /// what was read of it next reads differently ([`Self::changes_at`]).
 #[derive(Clone, Debug)]
@@ -234,8 +264,17 @@ pub struct Clock {
     /// How many seconds the person's clock is ahead of UTC: the zone `today` and a day such as
     /// `2026-10-24` are days in.
     zone: i64,
-    /// The first instant after `now` at which what was read of the clock reads differently.
-    changes: Cell<Option<i64>>,
+    /// The first instant after `now` at which a day that was read reads differently: the
+    /// person's next midnight.
+    day: Cell<Option<i64>>,
+    /// The first instant after `now` at which an instant that was read reads differently: the
+    /// next minute until the store names the value ([`Self::instants`]).
+    instant: Cell<Option<i64>>,
+    /// Whether an instant was read for a field the query named, which the store can place.
+    named_instant: Cell<bool>,
+    /// Whether an instant was read where the store cannot place it (`received:-7d`, whose
+    /// boundary moves with every value the field holds): the clock's grain stands for it.
+    moving_instant: Cell<bool>,
 }
 
 impl Clock {
@@ -247,23 +286,46 @@ impl Clock {
         Ok(Self {
             now: instant(now).ok_or_else(|| format!("`{now}` is not a time"))?,
             zone: 0,
-            changes: Cell::new(None),
+            day: Cell::new(None),
+            instant: Cell::new(None),
+            named_instant: Cell::new(false),
+            moving_instant: Cell::new(false),
         })
     }
 
     /// The first instant after its time at which what was read of it reads differently, in
-    /// seconds since 1970 (UTC): the person's next midnight for `today`, the next minute for
-    /// `now` ([`INSTANT_GRAIN`]). `None` while nothing read it: an answer that read no time
-    /// holds whenever it is asked.
+    /// seconds since 1970 (UTC): the person's next midnight for `today`, the next value a
+    /// comparison names for `now`, or the next minute when the store cannot tell
+    /// ([`INSTANT_GRAIN`]). `None` while nothing read it, or when nothing it compared lies
+    /// ahead: an answer that read no time holds whenever it is asked.
     #[must_use]
     pub fn changes_at(&self) -> Option<i64> {
-        self.changes.get()
+        match (self.day.get(), self.instant.get()) {
+            (Some(day), Some(instant)) => Some(day.min(instant)),
+            (day, instant) => day.or(instant),
+        }
     }
 
-    fn changes_by(&self, at: i64) {
+    /// What the store says of when the instants the query compared next move
+    /// ([`NextChange`]): a store that keeps the values wakes the view at the value itself,
+    /// and one that cannot tell leaves the clock reading to the minute.
+    pub fn instants(&self, change: NextChange) {
+        // Nothing read an instant, or something read one the store cannot place: the grain and
+        // the day are all there is to wake for.
+        if self.instant.get().is_none() || self.moving_instant.get() || !self.named_instant.get() {
+            return;
+        }
+        match change {
+            NextChange::At(at) => self.instant.set(Some(at.max(self.now.saturating_add(1)))),
+            NextChange::Never => self.instant.set(None),
+            NextChange::Unknown => {}
+        }
+    }
+
+    fn changes_by_day(&self, at: i64) {
         let at = at.max(self.now.saturating_add(1));
-        self.changes
-            .set(Some(self.changes.get().map_or(at, |seen| seen.min(at))));
+        self.day
+            .set(Some(self.day.get().map_or(at, |seen| seen.min(at))));
     }
 
     /// Read the person's day of the instant `offset` seconds from now: it reads differently once
@@ -274,17 +336,28 @@ impl Clock {
             .saturating_add(1)
             .saturating_mul(DAY)
             .saturating_sub(self.zone);
-        self.changes_by(next_midnight.saturating_sub(offset));
+        self.changes_by_day(next_midnight.saturating_sub(offset));
     }
 
-    /// Read the instant itself (`now`, `now - 7d`): it reads differently at the next minute.
+    /// Read the instant itself (`now`, `now - 7d`): it reads differently at the next minute,
+    /// until the store names the value it compared ([`Self::instants`]).
     fn read_instant(&self) {
-        let next = self
-            .now
-            .div_euclid(INSTANT_GRAIN)
-            .saturating_add(1)
-            .saturating_mul(INSTANT_GRAIN);
-        self.changes_by(next);
+        self.instant.set(Some(next_instant(self.now)));
+    }
+
+    /// Read the instant for a field the query named (`snoozed_until <= now`): not the first
+    /// minute, but the value the store keeps that comes next.
+    fn read_named_instant(&self) {
+        self.read_instant();
+        self.named_instant.set(true);
+    }
+
+    /// Read the instant as one that moves with every value (`received: -7d`, which asks of a
+    /// field a span that slides): the store keeps no value that says when that boundary crosses
+    /// one, so the clock's grain stands for it.
+    fn read_moving_instant(&self) {
+        self.read_instant();
+        self.moving_instant.set(true);
     }
 
     /// The same clock read by someone whose clock is `zone` seconds ahead of UTC: where their
@@ -314,12 +387,13 @@ pub fn resolve(
     viewer: Option<&str>,
 ) -> Result<Resolved, String> {
     let mut all = Vec::new();
+    let mut clocked = Vec::new();
     // Free text finds the type's own `Text` fields: each word must appear inside one of them.
     if !query.text.is_empty() {
         all.push(text_pred(&query.text, ty));
     }
     for term in &query.terms {
-        all.push(term_pred(term, ty, enums, clock, viewer)?);
+        all.push(term_pred(term, ty, enums, clock, viewer, &mut clocked)?);
     }
     let order = match &query.sort {
         Some(sort) => Some(order_of(sort, ty)?),
@@ -330,7 +404,11 @@ pub fn resolve(
         1 => all.remove(0),
         _ => Pred::And(all),
     };
-    Ok(Resolved { pred, order })
+    Ok(Resolved {
+        pred,
+        order,
+        clock: clocked,
+    })
 }
 
 /// Free text as a predicate over the type's text fields: the conjunction of each word being
@@ -379,6 +457,7 @@ fn term_pred(
     enums: &[EnumMeta],
     clock: &Clock,
     viewer: Option<&str>,
+    clocked: &mut Vec<ClockField>,
 ) -> Result<Pred<String>, String> {
     let Some(key) = &term.key else {
         // A word alone is an identifier where the type holds one (`jane@x.com`), text where it
@@ -395,7 +474,7 @@ fn term_pred(
         return Ok(text_pred(std::slice::from_ref(&term.value), ty));
     };
     if let Some(filter) = ty.search.filter(key) {
-        return filter_pred(filter, &term.value, enums, clock, viewer)
+        return filter_pred(filter, &term.value, enums, clock, viewer, clocked)
             .map_err(|why| format!("`{key}:{}`: {why}", term.value));
     }
     // `discord:janedoe`, `mailto:jane@x.com`: an identifier, not a filter, where the type
@@ -495,6 +574,7 @@ fn predicate_value(
     value: &str,
     clock: &Clock,
     viewer: Option<&str>,
+    clocked: &mut Vec<ClockField>,
 ) -> Result<Pred<String>, String> {
     let reads = declared.clock_reads();
     if reads.day {
@@ -502,8 +582,15 @@ fn predicate_value(
         clock.read_day(0);
     }
     if reads.instant {
-        clock.read_instant();
+        clock.read_named_instant();
     }
+    // What the store must watch for this filter to move: the values the clock is compared with.
+    clocked.extend(
+        declared
+            .clock_fields()
+            .into_iter()
+            .map(|(field, day, offset)| (field.clone(), day, offset)),
+    );
     let pred = declared.at(clock.now, clock.zone);
     let pred = if pred.reads_viewer() {
         let who = viewer.ok_or("`workspace.me` is only known where someone is looking")?;
@@ -524,10 +611,11 @@ fn filter_pred(
     enums: &[EnumMeta],
     clock: &Clock,
     viewer: Option<&str>,
+    clocked: &mut Vec<ClockField>,
 ) -> Result<Pred<String>, String> {
     if f.kind == FilterKind::Predicate {
         let declared = f.pred.as_ref().ok_or("the filter has no predicate")?;
-        return predicate_value(declared, value, clock, viewer);
+        return predicate_value(declared, value, clock, viewer, clocked);
     }
     let field = f.field.as_deref().ok_or("the filter is on no field")?;
     if f.optional {
@@ -691,7 +779,7 @@ fn span_of(text: &str, day: bool, clock: &Clock) -> Result<Span, String> {
             clock.read_day(0);
             clock.read_day(secs);
         } else {
-            clock.read_instant();
+            clock.read_moving_instant();
         }
         return Ok(if day {
             (
@@ -725,7 +813,7 @@ fn span_of(text: &str, day: bool, clock: &Clock) -> Result<Span, String> {
         } else if day {
             clock.read_day(offset);
         } else {
-            clock.read_instant();
+            clock.read_moving_instant();
         }
         return Ok(match (day, whole_day) {
             (true, _) => {

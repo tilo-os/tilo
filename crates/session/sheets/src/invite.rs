@@ -20,6 +20,7 @@ use ui::widget::{
 };
 
 use crate::presentation::{Presentation, Seat, presented};
+use crate::{word, words};
 
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.invite";
@@ -185,6 +186,275 @@ impl Invite {
     }
 }
 
+/// What a host keeps of the sheet between passes: the link it last made, the
+/// link whose invitation is still on its way to a site's shelf, and what
+/// became of the last ask. The session's desk and a page's host replica keep
+/// this the same way, so a link is handed over the same way wherever the
+/// sheet is shown: in the invitation's own bytes until its site answers, and
+/// as the short link once it does.
+#[derive(Clone, Debug, Default)]
+pub struct Making {
+    created: Option<Created>,
+    shelving: Option<Created>,
+    note: Option<Note>,
+}
+
+impl Making {
+    /// The link this opening shows, if any.
+    #[must_use]
+    pub fn made(&self) -> Option<Created> {
+        self.created.clone()
+    }
+
+    /// Whether the link shown is still on its way to its site's shelf.
+    #[must_use]
+    pub fn making(&self) -> bool {
+        self.shelving.is_some()
+    }
+
+    /// What became of the last ask.
+    #[must_use]
+    pub fn note(&self) -> Option<Note> {
+        self.note.clone()
+    }
+
+    /// Show `created` now; when `shelving`, its invitation waits for a site's
+    /// shelf, and [`Self::shelved`] replaces the link with the short one.
+    pub fn show(&mut self, created: Created, shelving: bool) {
+        self.created = (!shelving).then(|| created.clone());
+        self.shelving = shelving.then_some(created);
+        self.note = None;
+    }
+
+    /// The site answered for `invite`: its short link when it kept the
+    /// invitation, the invitation's own text when it did not.
+    pub fn shelved(&mut self, invite: &str, link: Option<String>) {
+        let Some(mut created) = self.shelving.take() else {
+            return;
+        };
+        if created.invite != invite {
+            self.shelving = Some(created);
+            return;
+        }
+        if let Some(link) = link {
+            created.code = link.clone().into_bytes();
+            created.link = link;
+        }
+        self.created = Some(created);
+        self.note = None;
+    }
+
+    /// An invitation was taken back: no link of this opening shows it.
+    pub fn revoked(&mut self, invite: &str) {
+        self.created = self
+            .created
+            .take()
+            .filter(|created| created.invite != invite);
+        self.shelving = self
+            .shelving
+            .take()
+            .filter(|created| created.invite != invite);
+    }
+
+    /// Say in the sheet what became of the last ask.
+    pub fn say(&mut self, text: String, bad: bool) {
+        self.note = Some(Note { text, bad });
+    }
+
+    /// The person put the note away.
+    pub fn clear(&mut self) {
+        self.note = None;
+    }
+
+    /// The sheet opened afresh: no link of an earlier opening shows.
+    pub fn opening(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// What the sheet shows of the link it just made: the invitation's own text
+/// and bytes, the words around it, and how long it works.
+#[must_use]
+pub fn made(
+    invite: &str,
+    link: &str,
+    code: Vec<u8>,
+    brings: String,
+    expires_at_ns: u64,
+) -> Created {
+    Created {
+        invite: invite.to_owned(),
+        link: link.to_owned(),
+        code,
+        link_label: word("invite-link-label"),
+        brings,
+        lasts: words(
+            "invite-created-lasts",
+            &[("minutes", &minutes_left(expires_at_ns).to_string())],
+        ),
+        copy: word("invite-copy"),
+        revoke: word("invite-revoke"),
+        alt: word("invite-code-alt"),
+    }
+}
+
+/// Who a link brings in, in the sheet's words: the part it brings them in at,
+/// and the person it names when it names one.
+#[must_use]
+pub fn brings(role: &str, name: Option<&str>) -> String {
+    match name {
+        Some(name) => words("invite-created-for", &[("name", name), ("role", role)]),
+        None => words("invite-created-anyone", &[("role", role)]),
+    }
+}
+
+/// An invitation that still works, in the sheet's words. `invitee` is how the
+/// invitation names the person it is for, and `bound` whether it names one at
+/// all: an invitation naming nobody is for whoever holds it.
+#[must_use]
+pub fn pending(
+    key: &str,
+    role: &str,
+    invitee: Option<&str>,
+    bound: bool,
+    expires_at_ns: u64,
+) -> Pending {
+    Pending {
+        key: key.to_owned(),
+        title: role.to_owned(),
+        whose: match (invitee, bound) {
+            (Some(name), _) => words("invite-for-person", &[("name", name)]),
+            (None, true) => word("invite-for-someone"),
+            (None, false) => word("invite-for-anyone"),
+        },
+        lasts: words(
+            "invite-lasts",
+            &[("minutes", &minutes_left(expires_at_ns).to_string())],
+        ),
+        revoke: word("invite-revoke"),
+    }
+}
+
+/// How long a link has left, in the whole minutes the sheet says.
+#[must_use]
+pub fn minutes_left(expires_at_ns: u64) -> usize {
+    let now_ns = ui::time::unix_now_ns();
+    let left = expires_at_ns.saturating_sub(now_ns);
+    usize::try_from(left / 60_000_000_000).unwrap_or(usize::MAX)
+}
+
+/// What the sheet asks of whoever makes its invitations: the session's desk,
+/// which keeps them in the workspace's governance, and a page's host
+/// replica, which asks its host. Both answer the same facts and carry out the
+/// same presses, so the sheet is the same wherever it stands.
+pub trait Invitations {
+    /// Whether this person may make a link here.
+    fn may_invite(&self) -> bool;
+    /// The parts they may hand out, least first.
+    fn roles(&self) -> Vec<Role> {
+        Vec::new()
+    }
+    /// The people a link can be made for; empty when every link is for
+    /// whoever holds it.
+    fn people(&self) -> Vec<Person> {
+        Vec::new()
+    }
+    /// The links that still work.
+    fn pending(&self) -> Vec<Pending> {
+        Vec::new()
+    }
+    /// The link this opening made.
+    fn made(&self) -> Option<Created> {
+        None
+    }
+    /// Whether the link made is still on its way to its site's shelf.
+    fn making(&self) -> bool {
+        false
+    }
+    /// What became of the last ask.
+    fn note(&self) -> Option<Note> {
+        None
+    }
+    /// Make a link: the part it brings someone in at, and the person whose
+    /// device alone redeems it (empty: anyone holding it).
+    fn create(&self, role: &str, recipient: &str);
+    /// Take a link back: it admits nobody from now on.
+    fn revoke(&self, invite: &str);
+    /// Put a link on the clipboard.
+    fn copy(&self, link: &str);
+    /// The person put the note away.
+    fn clear_note(&self);
+}
+
+/// The sheet's data, as whoever makes its invitations stands: the words are
+/// this crate's catalog, so the session's window and a browser page show the
+/// same sheet in the same person's language.
+#[must_use]
+pub fn view(invitations: &dyn Invitations) -> Invite {
+    let may_invite = invitations.may_invite();
+    Invite {
+        title: word("invite-title"),
+        description: word("invite-description"),
+        close: word("invite-close"),
+        may_invite,
+        refusal: word("invite-refusal"),
+        role_label: word("invite-role-label"),
+        roles: if may_invite {
+            invitations.roles()
+        } else {
+            Vec::new()
+        },
+        for_label: word("invite-for-label"),
+        people: if may_invite {
+            invitations.people()
+        } else {
+            Vec::new()
+        },
+        anyone: word("invite-anyone"),
+        create: word("invite-create"),
+        created: invitations.made(),
+        pending_title: word("invite-pending-title"),
+        pending: if may_invite {
+            invitations.pending()
+        } else {
+            Vec::new()
+        },
+        pending_empty: word("invite-pending-empty"),
+        note: invitations.note().or_else(|| {
+            invitations.making().then(|| Note {
+                text: word("invite-making"),
+                bad: false,
+            })
+        }),
+    }
+}
+
+/// Carry out what the person pressed since it was last shown: whoever makes
+/// the invitations takes the presses the same way wherever the sheet stands.
+/// Closing is the host's to do: the sheet put itself away as it asked, and
+/// its presentation says so.
+pub fn answer(asked: &[InviteEffect], invitations: &dyn Invitations) {
+    for effect in asked {
+        match effect {
+            InviteEffect::Create { role, recipient } => invitations.create(role, recipient),
+            InviteEffect::Revoke { invite } => invitations.revoke(invite),
+            InviteEffect::Copy { link } => invitations.copy(link),
+            InviteEffect::ClearNote => invitations.clear_note(),
+            InviteEffect::Done => {}
+        }
+    }
+}
+
+/// Carry out what the person pressed in the sheet since it was last shown,
+/// and say how many presses there were, so that a host shows the sheet again
+/// only when something was asked.
+pub fn drive(seat: &InviteSeat, invitations: &dyn Invitations) -> usize {
+    let asked = seat.take_asked();
+    let presses = asked.len();
+    answer(&asked, invitations);
+    presses
+}
+
 /// What the person picked in the sheet: the part to bring someone in at, and
 /// whose device may redeem the link. `None` is nobody's choice yet, and shows
 /// the defaults.
@@ -274,7 +544,7 @@ pub fn sheet(
     }
     body = body.push(composing(invite, choosing, ask));
     if invite.may_invite {
-        body = body.push(pending(invite, ask));
+        body = body.push(pending_rows(invite, ask));
     }
     let dismissed = ask.clone();
     let escaped = ask.clone();
@@ -367,7 +637,7 @@ fn composing(invite: &Invite, choosing: &LocalState<Choosing>, ask: &Ask) -> Ele
 
 /// The link last made, standing on its own: the thing the person hands over.
 fn handover(created: &Created, link: &LocalState<String>, ask: &Ask) -> Element {
-    Box::new(Section::new(made(created, link, ask)))
+    Box::new(Section::new(handover_parts(created, link, ask)))
 }
 
 /// The parts on offer, the one the person may bring someone in at chosen.
@@ -421,7 +691,7 @@ fn whose(invite: &Invite, choosing: &LocalState<Choosing>, picked: &Choosing) ->
 
 /// The link last made: what it brings someone in at, how long it works, the
 /// code to scan and the button that copies the text.
-fn made(created: &Created, link: &LocalState<String>, ask: &Ask) -> Vec<Element> {
+fn handover_parts(created: &Created, link: &LocalState<String>, ask: &Ask) -> Vec<Element> {
     if link.get() != created.link {
         link.set(created.link.clone());
     }
@@ -490,7 +760,7 @@ pub fn module_px(modules: usize) -> u32 {
 }
 
 /// The links that still work, each with the button that takes it back.
-fn pending(invite: &Invite, ask: &Ask) -> Element {
+fn pending_rows(invite: &Invite, ask: &Ask) -> Element {
     let mut items: Vec<Element> = Vec::new();
     if invite.pending.is_empty() {
         items.push(caption(&invite.pending_empty));
@@ -560,6 +830,9 @@ impl ResourceApp for InviteApp {
         let link = cx.local(String::new());
         if let Some(seat) = &seat {
             *seat.shown.borrow_mut() = Some(shown.clone());
+            // The sheet follows what the shell says of its presentation: being
+            // opened, taken down, put on another display.
+            seat.presentation.wake_with(cx.waker());
         }
         let asking = seat.clone();
         let presentation = seat.as_ref().map(|seat| seat.presentation().clone());
@@ -694,4 +967,100 @@ fn sample_invite() -> Invite {
 /// The app's definition, which the shell mounts.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(InviteApp)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a failed step in a test is the assertion"
+    )]
+
+    use super::*;
+
+    const INVITE: &str = "49a289c86314e68b618e01abca086915354cdb16fd11fdd45746a95161ee71f8";
+    const LONG: &str = "tilo-invitation-v1:the invitation's own text";
+    const SHORT: &str = "https://tilo.coffee/#/@https:rooms.example/w/1?invite=abcdefghijklmnop";
+
+    fn made_link() -> Created {
+        made(
+            INVITE,
+            LONG,
+            LONG.as_bytes().to_vec(),
+            brings("Editor", None),
+            0,
+        )
+    }
+
+    #[test]
+    fn a_link_waits_for_its_site_and_then_shows_the_short_one() {
+        let mut making = Making::default();
+        making.show(made_link(), true);
+        assert!(making.making(), "the site has not answered yet");
+        assert!(
+            making.made().is_none(),
+            "a link is handed over once it is the one the site keeps"
+        );
+
+        making.shelved(INVITE, Some(SHORT.to_owned()));
+        assert!(!making.making());
+        let shown = making.made().unwrap();
+        assert_eq!(shown.link, SHORT);
+        assert_eq!(
+            shown.code,
+            SHORT.as_bytes(),
+            "the code to scan is the link that is handed over"
+        );
+        assert_eq!(shown.link_label, word("invite-link-label"));
+        assert_eq!(shown.alt, word("invite-code-alt"));
+    }
+
+    #[test]
+    fn a_site_that_keeps_nothing_hands_over_the_invitations_own_text() {
+        let mut making = Making::default();
+        making.show(made_link(), false);
+        let shown = making.made().unwrap();
+        assert!(!making.making());
+        assert_eq!(shown.link, LONG);
+        assert_eq!(shown.code, LONG.as_bytes());
+
+        // An answer that never came for this opening's own link changes nothing.
+        let mut waiting = Making::default();
+        waiting.show(made_link(), true);
+        waiting.shelved("another invitation", Some(SHORT.to_owned()));
+        assert!(waiting.making(), "still waiting for its own site");
+        assert!(waiting.made().is_none());
+    }
+
+    #[test]
+    fn a_link_taken_back_leaves_nothing_of_this_opening_behind() {
+        let mut making = Making::default();
+        making.show(made_link(), false);
+        assert!(making.made().is_some());
+
+        making.revoked("another invitation");
+        assert!(making.made().is_some(), "another link is not this one");
+
+        making.revoked(INVITE);
+        assert!(making.made().is_none());
+        assert!(!making.making());
+
+        // A link still on its way to the site is taken back the same way.
+        making.show(made_link(), true);
+        making.revoked(INVITE);
+        assert!(!making.making());
+        assert!(making.made().is_none());
+    }
+
+    #[test]
+    fn opening_the_sheet_again_forgets_the_link_of_the_earlier_opening() {
+        let mut making = Making::default();
+        making.show(made_link(), false);
+        making.say("Copied".to_owned(), false);
+        making.opening();
+        assert!(making.made().is_none());
+        assert!(making.note().is_none());
+        assert!(!making.making());
+    }
 }

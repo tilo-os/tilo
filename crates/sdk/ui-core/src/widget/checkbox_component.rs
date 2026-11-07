@@ -22,7 +22,7 @@ pub struct CheckboxProps {
     pub enabled: bool,
     /// It was pressed: what a mark is, in the app's words. A task and every step under it are
     /// done in one thing to undo; with no `check`, a press changes the bound value.
-    #[component(event)]
+    #[component(event(press))]
     pub check: Event,
     /// The pace its mark plays at: the theme's unless it says otherwise.
     pub motion: crate::motion::Feel,
@@ -43,12 +43,6 @@ impl Default for CheckboxProps {
 
 impl Described for Checkbox {
     type Props = CheckboxProps;
-
-    /// A mark is the box's own action: the widget holds the binding, so the press is a route
-    /// an agent's invocation of it lands on, and both run from the door.
-    fn press_events() -> &'static [&'static str] {
-        &["check"]
-    }
 
     fn from_props(key: &str, props: CheckboxProps) -> Self {
         let CheckboxProps {

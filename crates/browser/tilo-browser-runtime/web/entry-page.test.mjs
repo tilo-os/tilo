@@ -5,13 +5,16 @@ import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost, rememb
 import {AdmissionError} from './admission.mjs';
 
 const USER = 'aa'.repeat(32);
+/** The short link the page's site keeps an invitation under. */
+const SEALED = 'https://web.example/i/AbCdEfGhIjKlMnOp#s3cr3tKeyS3cr3tKeyS3cr3tKeyS3cr3tKeyS3cr';
 const ORIGIN = 'https://node.example';
 const tick = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 
 class Element {
-  constructor(tag) { this.tag = tag; this.children = []; this.listeners = new Map(); this.dataset = {}; }
+  constructor(tag) { this.tag = tag; this.children = []; this.listeners = new Map(); this.dataset = {}; this.style = {}; }
   append(...nodes) { this.children.push(...nodes); }
   prepend(...nodes) { this.children.unshift(...nodes); }
+  replaceChildren(...nodes) { this.children = nodes; }
   setAttribute() {}
   addEventListener(type, listener) { this.listeners.set(type, listener); }
   focus() {}
@@ -21,7 +24,7 @@ class Element {
 
 // Run the real page wiring and workspace actions. Replace only the booted
 // WASM/GPU peer, arrival animation, and root custody with fixtures.
-async function fixture({boot, remembered = [], own = false, search = '', session = {}} = {}) {
+async function fixture({boot, remembered = [], own = false, search = '', session = {}, member = null} = {}) {
   const values = new Map();
   const stored = new Map(Object.entries(session));
   const listeners = [];
@@ -47,14 +50,29 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     membership: {list: async () => ({name: 'Current', members: []}), requests: async () => { throw new Error('only the owner sees who asks'); }},
     workspaces: {create: async name => ({room: 'created', name}), enter: async () => calls.push('enter')},
     dispose: async () => calls.push('dispose')};
-  const page = {peer: own ? null : peer, entry: {base: 'https://web.example/'},
+  const page = {peer: own ? null : {...peer, ...member}, entry: {base: 'https://web.example/'},
     mount: {setHostActions: actions => shown.push(actions), setOwnPerson: person => calls.push(['own', person]), flush: async () => calls.push('flush'), cleanup: async () => calls.push('cleanup')},
     router: {route: {target: {scope: own ? {kind: 'own'} : {kind: 'room', host: ORIGIN, room: 'current'}}}, stop: () => calls.push('stop')},
     link: {format: route => `https://web.example/#/${route.target.scope.room}`}};
   const prepared = [];
-  globalThis.__entryPageFixture = {page, mounted: [], identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
+  const runtime = {
+    presenceColor: id => {
+      calls.push(['colour', id]);
+      return '#ffd166';
+    },
+    sealedInvitationLink: async (base, host, invitation) => {
+      calls.push(['sealed', base, host, invitation]);
+      return SEALED;
+    },
+  };
+  globalThis.__entryPageFixture = {page, runtime, mounted: [], identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
     joinViaHost,
-    boot: async options => { diagnostics = options.diagnostics; return boot ? boot(options, page) : page; }};
+    boot: async options => {
+      diagnostics = options.diagnostics;
+      // The page loads its runtime as boot starts; the fixture's is the stub above.
+      await options.deps.loadRuntime();
+      return boot ? boot(options, page) : page;
+    }};
   rememberEntered({origin: ORIGIN, room: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'});
   // Workspaces an earlier visit kept as they were stored, whichever host held them.
   if (remembered.length) {
@@ -63,12 +81,12 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   let source = await readFile(new URL('./entry-page.mjs', import.meta.url), 'utf8');
   source = source
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot;')
-    .replace("import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';", 'const loadRuntime = async () => ({}), mountDesktop = (...args) => globalThis.__entryPageFixture.mounted.push(args), prefetchApplication = () => {}, prepareGpu = () => globalThis.__entryPageFixture.prepareGpu();')
+    .replace("import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';", 'const loadRuntime = async () => globalThis.__entryPageFixture.runtime, mountDesktop = (...args) => globalThis.__entryPageFixture.mounted.push(args), prefetchApplication = () => {}, prepareGpu = () => globalThis.__entryPageFixture.prepareGpu();')
     .replace("import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';", "const startArrival = () => {}, failureMessage = error => error.message, STOPPED_DRAWING = 'stopped';")
     .replace("import {servedVersion, watchForUpdate} from './bundle-update.mjs';", "import {servedVersion} from './bundle-update.mjs';\nconst watchForUpdate = () => {};")
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
     .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;')
-    .replace('isPublicHome, joinGranted, joinViaHost,', 'isPublicHome, joinGranted,')
+    .replace('hostToReconnect, joinGranted, joinViaHost,', 'hostToReconnect, joinGranted,')
     .replace('const PAGE_BUILD', 'const joinViaHost = (...args) => globalThis.__entryPageFixture.joinViaHost(...args);\nconst PAGE_BUILD')
     .replace(/from '(\.\/[^']+)'/g, (_all, path) => `from '${new URL(path, import.meta.url).href}'`);
   // A fresh module per fixture; the nonce rides in the source since Bun refuses a fragment on a base64 data URL.
@@ -124,6 +142,79 @@ test('the account choice says it is the account choice, and resolves to the acco
   assert.equal(document.body.children.filter(form => form.dataset.card === 'accounts').length, 0, 'taking an account closes the choice');
 });
 
+test('the invitation a link opens says who invited them, to what and as what, before they join', async () => {
+  const cards = () => document.body.children.filter(form => form.dataset.card === 'invite');
+  const text = node => typeof node === 'string' ? node : node.textContent ?? null;
+  const shape = card => ({face: card.children[0].children[0].style, who: card.children[0].children.map(text), lead: text(card.children[1]),
+    place: card.children[2].children.map(text), role: card.children[3].children.map(text),
+    actions: card.children[4].children.map(button => button.textContent),
+    primary: card.children[4].children[0].className});
+  let offered;
+  let answered;
+  let declined;
+  let notNow;
+  const {failure} = await fixture({boot: async ({deps}, page) => {
+    const answer = deps.confirmInvitation({workspaceName: 'Lounge', role: 'commenter', members: 4,
+      inviter: {name: 'Nimble Panda', userPublicKey: USER}});
+    offered = shape(cards()[0]);
+    cards()[0].children[4].children[0].listeners.get('click')();
+    answered = await answer;
+    const other = deps.confirmInvitation({workspaceName: 'Commons', role: 'viewer', members: 1, inviter: null});
+    declined = shape(cards()[0]);
+    cards()[0].children[4].children[1].listeners.get('click')();
+    notNow = await other;
+    return page;
+  }});
+  assert.equal(failure, null);
+  // Who asked them: their initial, in the colour presence gives them, and
+  // their name as the host verified it.
+  assert.deepEqual(offered.face, {background: '#ffd166', color: '#101114'},
+    'the monogram is drawn in the inviter’s presence colour, dark on a light one');
+  assert.deepEqual(offered.who, ['N', 'Nimble Panda']);
+  assert.equal(offered.lead, 'invites you to');
+  // Where, and how many people are already in it.
+  assert.deepEqual(offered.place, ['Lounge', '4 people']);
+  // As what, in the words a person reads: the part, then what it lets them do.
+  assert.deepEqual(offered.role, ['Commenter', ' — you can add comments, but not edit shared work.']);
+  assert.deepEqual(offered.actions, ['Join', 'Not now']);
+  assert.equal(offered.primary, 'tilo-entry-primary', 'Join is the primary action');
+  assert.equal(answered, true, 'Join joins');
+  // A link that names no one, to a workspace of one: the card says so rather
+  // than leaving the field out.
+  assert.deepEqual(declined.who, ['S', 'Someone']);
+  assert.deepEqual(declined.face, {}, 'a link that names no person falls back to the card’s own face');
+  assert.deepEqual(declined.place, ['Commons', '1 person']);
+  assert.deepEqual(declined.role, ['Viewer', ' — you can view shared work, but not comment or edit it.']);
+  assert.equal(notNow, false, 'Not now does not join');
+  assert.equal(cards().length, 0, 'either answer closes the card');
+});
+
+test('a wait-list invitation is the short link its site keeps, not the invitation’s text', async () => {
+  const ed = {requestId: '05'.repeat(32), contact: 'ed@example.org', addedAtMs: 1_000};
+  const {calls, diagnostics} = await fixture({member: {
+    createInvitation: async () => 'SIGNED-invitation',
+    membership: {list: async () => ({name: 'Current', members: []}), requests: async () => [],
+      waitList: async () => [ed], mailInvite: async () => { throw new Error('this door sends no mail'); }},
+  }});
+  diagnostics.onHostAction('waiting-to-join');
+  await tick();
+  const waiting = document.body.children.find(form => form.dataset.card === 'waiting');
+  assert.ok(waiting, 'the wait list is shown');
+  // The listed section’s rows: one per address, each Invite then Remove.
+  const row = waiting.children[2].children[2].children[0];
+  assert.equal(row.children[1].textContent, 'Invite');
+  row.children[1].listeners.get('click')();
+  await tick();
+  assert.deepEqual(calls.filter(call => Array.isArray(call) && call[0] === 'sealed'),
+    [['sealed', 'https://web.example/', ORIGIN, 'SIGNED-invitation']],
+    'the invitation is sealed onto the page’s own site, naming the host it admits into');
+  const share = document.body.children.find(form => form.dataset.card === 'share');
+  assert.ok(share, 'a door that sends no mail shares the link instead');
+  assert.equal(share.children.find(child => child.name === 'link').value, SEALED,
+    'what the inviter sends is the short link, not the invitation’s text');
+  assert.match(share.children[1].textContent, /as an editor/);
+});
+
 test('workspaces another host held at the origin of the page host are no longer offered', async () => {
   // The host at ORIGIN was set up again on fresh state twice since this
   // browser entered workspaces there; both workspaces went with the hosts before.
@@ -132,24 +223,17 @@ test('workspaces another host held at the origin of the page host are no longer 
     {origin: ORIGIN, room: 'gone-2', hostDevice: 'e2'.repeat(32), name: 'Other'},
     {origin: 'https://elsewhere.example', room: 'away', hostDevice: 'e3'.repeat(32), name: 'Away'},
   ]});
-  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'Join a workspace', 'Invite someone']);
+  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'Join a workspace']);
   assert.deepEqual(enteredWorkspaces().map(entry => entry.room), ['current', 'other', 'away']);
 });
 
-test('the page keeps switch and invitation actions together and dispatches both', async () => {
+test('the page keeps switch actions together and dispatches them', async () => {
   const {calls, shown, diagnostics} = await fixture();
   const actions = shown.at(-1);
-  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'New workspace', 'Join a workspace', 'Invite someone']);
-  diagnostics.onHostAction('invite-someone');
-  await tick();
-  assert.deepEqual(calls, ['invite']);
-  const share = document.body.children.find(form => form.dataset.card === 'share');
-  assert.ok(share);
-  assert.equal(share.children.find(child => child.name === 'link').value, 'https://web.example/#/current?invite=signed-secret');
-  share.listeners.get('submit')({preventDefault() {}});
+  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'New workspace', 'Join a workspace']);
   diagnostics.onHostAction(actions.find(action => action.title === 'Open Other').id);
   await tick();
-  assert.deepEqual(calls, ['invite', 'flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
+  assert.deepEqual(calls, ['flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
   assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, room: 'other'});
 });
 
@@ -235,12 +319,17 @@ test('the home workspace’s peer that carries reports from another workspace as
   await assert.rejects(joined[0].wait({attempt: 0}), /did not let this device in/, 'it never waits at the door');
 });
 
-test('an embedded workspace offers no Invite it could not carry out', async () => {
+test('an embedded workspace offers no invite sheet it could not carry out', async () => {
   let deps;
   await fixture({search: '?embed=1', boot: async (options, page) => { deps = options.deps; return page; }});
-  assert.equal(deps.onInvite, undefined);
+  const embedded = deps;
+  const joining = {workspace: 'current', origin: ORIGIN, userPublicKey: USER};
+  assert.equal(embedded.invite({peer: joining, entry: {base: 'https://web.example/'}}), null);
   await fixture({boot: async (options, page) => { deps = options.deps; return page; }});
-  assert.equal(typeof deps.onInvite, 'function');
+  // Named no earlier than admission names the person; the sheet makes the
+  // link either way, and says who made it once there is a name.
+  assert.deepEqual(deps.invite({peer: joining, entry: {base: 'https://web.example/'}}),
+    {base: 'https://web.example/', origin: ORIGIN, workspace: 'current', name: '', user: USER});
 });
 
 const LOUNGE = {name: 'Lounge', host: {origin: 'https://home.example'}, admission: 'https://home.example/peer/v1/directory/lounge/'};

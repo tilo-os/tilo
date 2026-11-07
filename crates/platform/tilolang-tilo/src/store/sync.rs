@@ -10,7 +10,7 @@ use tilolang_runtime::ids::{AppId, DocId, TypeId};
 use tilolang_runtime::store::{ChangeSummary, FieldKey, ListingChange};
 
 use super::{
-    Doc, Ends, Inner, ItemTouches, TiloStore, changed_by, collections_by_doc, everything,
+    Chunks, Doc, Ends, Inner, ItemTouches, TiloStore, changed_by, collections_by_doc, everything,
     mirror_of, name_version_changes, note_derived, note_versions, record_splices,
     write_as_a_known_actor,
 };
@@ -22,22 +22,56 @@ use crate::index::{self as idx};
 use crate::reads::Changed;
 
 impl TiloStore {
-    /// Bring the store up to date with the workspace record: when the record's heads moved, the
-    /// store's own saved writes are dropped from the mirror and the overlay (the record holds
-    /// them now, or will) — the ones an origin derives stay, as the record never holds them —
-    /// the record's new changes are applied to the mirror and derived into each index, and each
-    /// subscriber is told which fields of which resources changed. A store without the record
-    /// takes it, and catches each index up from its heads. Returns whether the record had
-    /// moved.
-    pub fn sync_from(&self, record: &Doc) -> bool {
-        self.sync_document(chunk::FIRST, record)
+    /// Bring the store up to date with the workspace record: when a chunk's heads moved, the
+    /// store's own saved writes to it are dropped from the mirror and the overlay (the record
+    /// holds them now, or will) — the ones an origin derives stay, as the record never holds
+    /// them — the chunk's new changes are applied to the mirror and derived into each index, and
+    /// each subscriber is told which fields of which resources changed. A store without the
+    /// record takes its own chunk from it, and catches each index up from its heads. Returns
+    /// whether any chunk had moved.
+    ///
+    /// Every chunk the record holds is taken in, so a write the store routed to any of them
+    /// settles as one routed to the record's own: the chunk's change is in the set the sync
+    /// applies, and its write leaves the store with it. The chunks above the record go first:
+    /// what they hold is already theirs when the record's own change derives over it.
+    pub fn sync(&self, record: &Chunks) -> bool {
+        let mut moved = false;
+        for (chunk, doc) in record.docs() {
+            if chunk != chunk::FIRST {
+                moved |= self.sync_document(chunk, doc);
+            }
+        }
+        if let Some(record) = record.first() {
+            moved |= self.sync_document(chunk::FIRST, record);
+        }
+        moved
     }
 
-    /// [`Self::sync_from`] for the chunk `chunk` of the record ([`crate::chunk`]): the store
-    /// holds its document beside the record's, reading and writing there the resources the
-    /// record's manifest places in it. Returns whether that chunk had moved.
-    pub fn sync_chunk(&self, chunk: ChunkNo, doc: &Doc) -> bool {
-        self.sync_document(chunk, doc)
+    /// [`Self::sync`] of the chunks the store already holds of `record`: a chunk it was not
+    /// sent is left out, and is read from the chunk loader when a read or a write reaches it
+    /// ([`TiloStore::set_chunk_loader`]). Returns whether any chunk had moved.
+    pub fn sync_held(&self, record: &Chunks) -> bool {
+        let held: Vec<ChunkNo> = self.held().chunks.numbers().collect();
+        let mut moved = false;
+        for chunk in held.into_iter().filter(|chunk| *chunk != chunk::FIRST) {
+            if let Some(doc) = record.mirror(chunk) {
+                moved |= self.sync_document(chunk, doc);
+            }
+        }
+        if self.held().chunks.has_record()
+            && let Some(doc) = record.first()
+        {
+            moved |= self.sync_document(chunk::FIRST, doc);
+        }
+        moved
+    }
+
+    /// [`Self::sync`] of a record the caller hands over as one document: the store takes it as
+    /// chunk [`chunk::FIRST`]. A record whose manifest names chunks above it is synced through
+    /// [`Self::sync`] instead, which takes those chunks in too; a write the store routed to one
+    /// of them stays pending here until its chunk is had. Returns whether it had moved.
+    pub fn sync_from(&self, record: &Doc) -> bool {
+        self.sync_document(chunk::FIRST, record)
     }
 
     fn sync_document(&self, chunk: ChunkNo, doc: &Doc) -> bool {
@@ -96,6 +130,12 @@ impl TiloStore {
             return true;
         };
         inner.stats.incremental_syncs = inner.stats.incremental_syncs.saturating_add(1);
+        if chunk == chunk::FIRST {
+            // The record's manifest is where every other chunk's resources are placed: the
+            // record's changes may have started a run in a chunk, and a read or a write there
+            // routes by what it says now.
+            inner.chunks.reread_placement();
+        }
         // The record's new changes are on the mirror; what an origin derives is written onto
         // them again, as the rollback took it out.
         inner.reapply_derived(chunk);
@@ -114,9 +154,11 @@ impl TiloStore {
             }
         };
         let (moved, wholes, notified) = inner.derive_all(&reached, Some((&from, &ends, &placed)));
-        // A write of another chunk's that stays pending is the record's once the change above
-        // tells the versions its action made: the index holds what it wrote, and the write keeps
-        // its edits for that chunk's record alone.
+        // A write routed to a chunk above the record whose document this sync does not carry —
+        // a record kept as one document that the store also routes by its manifest, or a caller
+        // handing over the record alone ([`Self::sync_from`]) — stays in `local`; the change
+        // above tells the versions it made, and the index holds them. Keep deriving that write
+        // without them ([`Inner::settle_versions`]).
         inner.settle_versions(&ends);
         // The overlay was the old transaction's, and what an origin derives was written onto
         // the mirror again: derive it over the indexes as the record's changes left them, so a
@@ -216,6 +258,7 @@ impl Inner {
             let old = View {
                 snapshot: old,
                 overlay,
+                clock: self.clock.read(),
             };
             if let Ok(splices) = view::splices(&old, &new, key, ids) {
                 record_splices(out.entry(key.doc().to_owned()).or_default(), key, splices);

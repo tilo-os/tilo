@@ -223,7 +223,7 @@ session-notifications-open = Die Benachrichtigung öffnen
 session-notifications-hand-to-agent = Die Benachrichtigung an einen Agenten übergeben
 ## A notification another of the person's devices projected here: the app it
 ## came from and the device that showed it first.
-notification-from-device = { $app } · Von { $device }
+notification-from-device = { $app } von { $device }
 notification-from-device-only = Von { $device }
 session-apps = Apps
 session-apps-uninstall = Eine App deinstallieren

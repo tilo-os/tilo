@@ -122,6 +122,11 @@ struct State {
     /// workspace and id: what each was started with, and the launch running
     /// it while one does.
     agents: BTreeMap<(String, String), AgentProcess>,
+    /// The session's services, once it lent them: a launch asks them whether
+    /// one runs the app's model, and if so names the resource it publishes
+    /// for the app, so the app launches hosted
+    /// (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4).
+    services: Option<Rc<RefCell<crate::Services>>>,
 }
 
 /// An agent this device started, as the record of it the launch pass keeps.
@@ -188,6 +193,7 @@ impl Apps {
                 broker: None,
                 wake,
                 agents: BTreeMap::new(),
+                services: None,
             }),
         }
     }
@@ -227,6 +233,22 @@ impl Apps {
     /// admitted for the launch that made it.
     pub fn lend_launches(&self, launches: std::sync::Arc<crate::Launches>) {
         self.state.borrow_mut().launches = Some(launches);
+    }
+
+    /// The session's services: from here on a launch asks them whether one
+    /// runs the app's model, and names the resource it publishes for the app
+    /// where one does, so the app launches hosted
+    /// (`docs/architecture/apps.md` §8 step 2).
+    pub fn lend_services(&self, services: Rc<RefCell<crate::Services>>) {
+        self.state.borrow_mut().services = Some(services);
+    }
+
+    /// The resource address the session's document host publishes `app`'s
+    /// record at, when a service runs its model: whether this launch is
+    /// hosted follows from that, and no per-app code says otherwise.
+    fn hosted(&self, app: &str) -> Option<String> {
+        let services = self.state.borrow().services.clone()?;
+        services.borrow().hosted(app)
     }
 
     /// The session's action broker: from here on an action an app publishes
@@ -321,7 +343,7 @@ impl Apps {
             .connection(app, origin, &workspace.id, &|origin| {
                 self.plan_connector(app, origin, workspace)
             })
-            .map_err(|error| DoorError::Failed(error.to_string()))?;
+            .map_err(DoorError::Failed)?;
         // The connection is the caller's to read: here nothing does, since the reader that
         // needed it attached through its own call. Dropped, it is the connector's alone.
         drop(connection);
@@ -334,7 +356,7 @@ impl Apps {
     /// # Errors
     /// The package is not installed here, its manifest does not declare `origin`, or no
     /// launcher can start it.
-    pub(crate) fn plan_connector(
+    pub fn plan_connector(
         &self,
         app: &str,
         origin: &str,
@@ -360,10 +382,13 @@ impl Apps {
             new_window: false,
             continuity_instance: None,
             connector: Some(origin),
+            // A connector reads the origin outside, not a record the session
+            // serves: it is never the document host's launch.
+            hosted: None,
         };
         let planned = Planned::of(
             &Launch::Package {
-                app: installed.package_id.clone(),
+                app: installed.package_id,
                 open: None,
             },
             &context,
@@ -632,6 +657,18 @@ impl Apps {
                 continue;
             }
             tracing::warn!(app = %event.app, end = %event.end, "an app stopped");
+            // What the app itself said before it ended, at warn beside the
+            // end: a launch that never opened is otherwise a warning with no
+            // reason in it, and the app's own account is the only one there is.
+            for said in &event.said.stderr {
+                tracing::warn!(
+                    target: tilo_startup_metrics::APP_OUTPUT_TARGET,
+                    app = %event.app,
+                    stream = "stderr",
+                    "{}",
+                    tilo_app_launch::output::line(&event.app, "stderr", said)
+                );
+            }
             // Reopen asks for the app the way it was asked for this time: a
             // host app by its desktop id, a Tilo app by its package id.
             let asked = self.state.borrow_mut().running.remove(&event.id);
@@ -935,6 +972,7 @@ impl Apps {
                 new_window: false,
                 continuity_instance: None,
                 connector: None,
+                hosted: None,
             };
             Planned::of(&launch, &context)
         };
@@ -996,6 +1034,12 @@ impl Apps {
     ) -> Result<bool, DoorError> {
         let authored = self.authored(launch, workspace);
         let workspace = &authored;
+        // A service running this app's model serves its record: the launch
+        // names the resource the session publishes, so the app opens no
+        // record of its own (`docs/architecture/apps.md` §8 step 2).
+        let hosted = matches!(launch, Launch::Record { .. } | Launch::Package { .. })
+            .then(|| self.hosted(launch.app()))
+            .flatten();
         let planned = {
             let state = self.state.borrow();
             // The workspace's own X11 display: an app started there connects
@@ -1017,6 +1061,7 @@ impl Apps {
                 new_window,
                 continuity_instance: instance,
                 connector: None,
+                hosted: hosted.as_deref(),
             };
             Planned::of(launch, &context)
         };
@@ -1420,6 +1465,7 @@ fn unix_seconds() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_app_launch::output::OutputTail;
     use tilo_app_launch::{End, Event};
 
     const WORKSPACE: &str = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
@@ -1544,6 +1590,7 @@ mod tests {
             app: "so.tilo.agent".to_owned(),
             title: "Agent".to_owned(),
             end: End::exited(1),
+            said: OutputTail::default(),
         });
         apps.follow();
         assert!(
@@ -1587,6 +1634,7 @@ mod tests {
             app: "example.Canvas".to_owned(),
             title: "Canvas".to_owned(),
             end,
+            said: OutputTail::default(),
         });
         apps.follow();
         desktop.with_widgets(|widgets| {

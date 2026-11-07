@@ -206,6 +206,25 @@ impl Published for Banners {
         self.host.accessible_labels()
     }
 
+    /// The controls a banner on screen shows by name, where they stand on the
+    /// desk, and the press of one: a banner's buttons answer the control
+    /// socket as any window's do.
+    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+        Published::controls(&mut self.host)
+    }
+
+    fn press(&mut self, name: &str) -> Result<(), String> {
+        Published::press(&mut self.host, name)
+    }
+
+    fn press_action(
+        &mut self,
+        name: &str,
+        action: ui::window_targets::TargetAction,
+    ) -> Result<(), String> {
+        Published::press_action(&mut self.host, name, action)
+    }
+
     fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
         self.host.a11y_tree()
     }
@@ -444,6 +463,25 @@ impl Published for ActivityLayer {
 
     fn accessible_labels(&mut self) -> Vec<String> {
         self.host.accessible_labels()
+    }
+
+    /// The controls a card on screen shows by name, where they stand on the
+    /// desk, and the press of one: a card's buttons answer the control socket
+    /// as any window's do.
+    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+        Published::controls(&mut self.host)
+    }
+
+    fn press(&mut self, name: &str) -> Result<(), String> {
+        Published::press(&mut self.host, name)
+    }
+
+    fn press_action(
+        &mut self,
+        name: &str,
+        action: ui::window_targets::TargetAction,
+    ) -> Result<(), String> {
+        Published::press_action(&mut self.host, name, action)
     }
 
     fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {

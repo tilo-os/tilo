@@ -532,7 +532,12 @@ impl<C: Widget> Popover<C> {
             // Against the window's bottom edge, as wide as the window: the
             // anchor is where it came from, not where it stands.
             let h = h.min(viewport.height());
-            self.rect = Rect::new(viewport.x0, viewport.y1 - h, viewport.x1, viewport.y1);
+            self.rect = floating_surface::on_device_pixels(Rect::new(
+                viewport.x0,
+                viewport.y1 - h,
+                viewport.x1,
+                viewport.y1,
+            ));
             self.resolved_side = PopoverSide::Below;
             if self.options.is_none() && self.host_content.is_none() {
                 self.place_content(tr, theme);
@@ -599,7 +604,7 @@ impl<C: Widget> Popover<C> {
                 chosen = least.1;
             }
         }
-        self.rect = chosen.0;
+        self.rect = floating_surface::on_device_pixels(chosen.0);
         self.resolved_side = chosen.1;
         if self.options.is_none() && self.host_content.is_none() {
             self.place_content(tr, theme);

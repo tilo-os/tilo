@@ -22,18 +22,12 @@ pub struct EmptyStateProps {
     /// Sit within the content, as a list without rows, rather than fill the window.
     pub inline: bool,
     /// The action was pressed.
-    #[component(event)]
+    #[component(event(press))]
     pub act: Event,
 }
 
 impl Described for EmptyState {
     type Props = EmptyStateProps;
-
-    /// The action button is the state's own action: the widget holds the binding, so the press
-    /// is a route an agent's invocation of it lands on, and both run from the door.
-    fn press_events() -> &'static [&'static str] {
-        &["act"]
-    }
 
     fn from_props(key: &str, props: EmptyStateProps) -> Self {
         let EmptyStateProps {

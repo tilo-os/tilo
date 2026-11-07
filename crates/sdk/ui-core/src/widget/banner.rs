@@ -675,6 +675,9 @@ pub struct Banner {
     /// Set by the dismiss control's action; read on the next sync.
     dismiss_requested: Rc<Cell<bool>>,
     on_dismiss: Option<Box<dyn FnMut()>>,
+    /// What the view bound to the dismiss control: run when the person presses it, through the
+    /// same door as the banner's own controls.
+    dismiss_press: crate::widget::Press,
     /// The body's node, then one per button, in [`Widget::children`] order.
     nodes: Vec<NodeId>,
     rect: Rect,
@@ -733,6 +736,7 @@ impl Banner {
             dismiss_fired: false,
             dismiss_requested: Rc::new(Cell::new(false)),
             on_dismiss: None,
+            dismiss_press: crate::widget::Press::default(),
             nodes: Vec::new(),
             rect: Rect::ZERO,
             layout_dirty: true,
@@ -832,6 +836,22 @@ impl Banner {
         self
     }
 
+    /// What pressing the dismiss control does: the action the view bound to it, run through
+    /// the banner's own control door. Implies [`Self::dismissible`].
+    #[must_use]
+    pub fn with_dismiss_press(mut self, press: crate::widget::Press) -> Self {
+        if self.dismiss.is_none() {
+            self = self.dismissible();
+        }
+        self.dismiss_press = press;
+        self
+    }
+
+    /// The dismiss control's name in the control inventory, as the one the button carries.
+    fn dismiss_control_id(&self) -> String {
+        format!("{}.dismiss", self.id.as_deref().unwrap_or("banner"))
+    }
+
     /// Run `f` once when the person dismisses the banner. Implies
     /// [`Self::dismissible`].
     #[must_use]
@@ -916,6 +936,9 @@ impl Banner {
         }
         self.dismissed = true;
         self.dismiss_fired = true;
+        if !self.dismiss_press.is_none() {
+            self.dismiss_press.run();
+        }
         if let Some(f) = &mut self.on_dismiss {
             f();
         }
@@ -1050,7 +1073,10 @@ fn button_size(button: &mut Button, text: &mut TextRenderer) -> (f64, f64) {
 impl Widget for Banner {
     crate::described!();
 
-    crate::provides!(dyn crate::widget::ResourceOperations);
+    crate::provides!(
+        dyn crate::widget::ResourceOperations,
+        dyn crate::widget::controls::ActionControls
+    );
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let before = self.visible();
         self.poll_source();
@@ -1405,3 +1431,50 @@ impl Banner {
 
 #[cfg(test)]
 mod tests;
+
+/// The dismiss control is a part of the banner: what the view bound to it is carried out here,
+/// where the banner's controls answer for it.
+impl crate::widget::controls::ActionControls for Banner {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        self.dismiss_press.install_custody(domain, attachment);
+        for child in Widget::children_mut(self) {
+            crate::widget::controls::install_control_custody(child, domain, attachment);
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.dismiss_press.take().or_else(|| {
+            Widget::children_mut(self)
+                .into_iter()
+                .find_map(crate::widget::controls::take_control_invocation)
+        })
+    }
+
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings: Vec<_> = self
+            .dismiss_press
+            .metadata(self.dismiss_control_id())
+            .into_iter()
+            .collect();
+        for child in Widget::children(self) {
+            bindings.extend(crate::widget::controls::control_action_bindings(child));
+        }
+        bindings
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if self.dismiss_press.refresh_availability(allowed) {
+            self.dirty = true;
+        }
+        for child in Widget::children_mut(self) {
+            crate::widget::controls::refresh_control_action_availability(child, allowed);
+        }
+    }
+}

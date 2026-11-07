@@ -32,6 +32,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 
+use crate::output::AppOutput;
+
 use tilo_lock::MutexRecover as _;
 
 use crate::doors::HeldDoor;
@@ -136,6 +138,9 @@ pub struct Event {
     /// The name the app was shown by.
     pub title: String,
     pub end: End,
+    /// The last of what the app wrote, when this session read its streams.
+    /// Empty for an ending reported by someone who started nothing.
+    pub said: crate::output::OutputTail,
 }
 
 /// A launched app.
@@ -258,31 +263,34 @@ impl Spawner {
             .env_clear()
             .envs(&planned.env)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            // Both streams are read back into the session's log: what an app
+            // says is the only account of a launch that failed inside it.
+            // Nothing the app writes ever reaches the session's own streams.
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         // Where an app's own diagnostics go when the session's desk names a
         // directory for them (`TILO_APP_STDERR_DIR`): a headless acceptance
-        // drives the app itself, so what it says is the only account of a
-        // step that failed inside it. Without one the app's stderr is dropped,
-        // as a desktop's is.
-        if let Some(dir) = std::env::var_os("TILO_APP_STDERR_DIR") {
+        // reads them there, and the log keeps them too.
+        let diagnostics = std::env::var_os("TILO_APP_STDERR_DIR").and_then(|dir| {
             let path = std::path::Path::new(&dir).join(format!("{}.log", planned.app));
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
             if let Ok(file) = std::fs::File::create(&path) {
-                command.stderr(Stdio::from(file));
+                // The app's own startup timeline, one file per app: which of
+                // its steps (loader, fonts, records, first layout) the open
+                // was spent in, and the launcher's marks before it. It is
+                // written inside the app's own directory, the one place the
+                // sandbox lets it write; a measured session reads it from
+                // there. An app started any other way writes none.
+                let timeline =
+                    std::path::Path::new(launcher::appdir::SANDBOX_APP_DIR).join("startup.json");
+                command.env("TILO_STARTUP_METRICS_PATH", timeline);
+                return Some(file);
             }
-            // The app's own startup timeline, one file per app: which of its
-            // steps (loader, fonts, records, first layout) the open was spent
-            // in, and the launcher's marks before it. It is written inside the
-            // app's own directory, the one place the sandbox lets it write; a
-            // measured session reads it from there. An app started any other
-            // way writes none.
-            let timeline =
-                std::path::Path::new(launcher::appdir::SANDBOX_APP_DIR).join("startup.json");
-            command.env("TILO_STARTUP_METRICS_PATH", timeline);
-        }
+            None
+        });
+        let output = Arc::new(AppOutput::new(planned.app.clone(), diagnostics));
         let gate = match door {
             Some(_) => match launcher::registration_gate::install(&mut command) {
                 Ok(gate) => Some(gate),
@@ -297,11 +305,20 @@ impl Spawner {
             },
             None => None,
         };
-        let child = command.spawn().map_err(|error| SpawnError {
+        let mut child = command.spawn().map_err(|error| SpawnError {
             app: planned.app.clone(),
             reason: error.to_string(),
         })?;
         drop(command);
+        // Both pipes are read on threads of their own, so an app that writes
+        // more than a pipe holds never waits for the session, and a session
+        // that has stopped reading never holds the app.
+        if let Some(stdout) = child.stdout.take() {
+            output.relay_stdout(stdout);
+        }
+        if let Some(stderr) = child.stderr.take() {
+            output.relay_stderr(stderr);
+        }
         let id = self.next;
         self.next = self.next.wrapping_add(1);
         let started = Started {
@@ -333,6 +350,11 @@ impl Spawner {
             .name(format!("app-{}", planned.app))
             .spawn(move || {
                 let end = ended(child, &ends);
+                // What the app said before it ended, which the session keeps
+                // for the report it makes of a launch that never opened: its
+                // readers finish as the pipes close, which they have by the
+                // time the child is reaped.
+                let said = output.tail();
                 running(&still_running).remove(&id);
                 // A session that has stopped listening is going away; its
                 // apps' endings are nobody's business then.
@@ -341,6 +363,7 @@ impl Spawner {
                     app,
                     title,
                     end,
+                    said,
                 });
                 if let Some(wake) = wake {
                     wake();

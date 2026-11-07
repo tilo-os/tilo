@@ -1171,7 +1171,7 @@ fn a_notification_from_the_persons_other_device_is_named_after_it() {
     let shown = rig.banner();
     assert_eq!(shown.title, "New mail");
     assert_eq!(shown.body, "From Ada");
-    assert_eq!(shown.app_name.as_deref(), Some("Mail · From Laptop"));
+    assert_eq!(shown.app_name.as_deref(), Some("Mail from Laptop"));
     assert_eq!(shown.app_id.as_deref(), Some("so.tilo.mail"));
     assert_eq!(
         shown.actions,

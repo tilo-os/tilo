@@ -119,6 +119,14 @@ impl NavBindings {
     /// Whether `target` is a row's or a section header's button bound to an
     /// unavailable action.
     pub(super) fn unavailable_button(&self, target: &str, shared: &NavShared) -> bool {
+        if let Some(key) = target.strip_prefix("section-action:")
+            && shared
+                .section_add_actions
+                .get(key)
+                .is_some_and(|emitter| !emitter.is_available())
+        {
+            return true;
+        }
         self.button_emitter(target, shared)
             .is_some_and(|emitter| !emitter.is_available())
     }
@@ -141,13 +149,15 @@ impl NavBindings {
         shared: &NavShared,
         model: &NavModel,
     ) -> Vec<ControlBindingMetadata> {
-        if let Some(action) = shared.section_actions.get(node) {
-            return self
-                .sections
-                .get(action)
-                .map(|emitter| emitter.metadata(format!("section-action:{node}")))
-                .into_iter()
-                .collect();
+        if let Some(action) = shared
+            .section_actions
+            .get(node)
+            .and_then(|action| self.sections.get(action))
+        {
+            return vec![action.metadata(format!("section-action:{node}"))];
+        }
+        if let Some(action) = shared.section_add_actions.get(node) {
+            return vec![action.metadata(format!("section-action:{node}"))];
         }
         if self.items.is_empty() || !model.shows_row_actions(node) {
             return Vec::new();

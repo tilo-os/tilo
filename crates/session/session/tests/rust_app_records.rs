@@ -40,7 +40,8 @@ const APP: &str = "so.tilo.tasks";
 /// The tracker's model module: `tasks-model` built for wasm32 by `tilo-model-host`'s build
 /// script, which is the same code the app ships as its module.
 fn wasm() -> Vec<u8> {
-    tilo_model_host::fixture_module().expect("tilo-model-host's build script built the module")
+    tilo_model_host::fixture_module("tasks-model")
+        .expect("tilo-model-host's build script built the module")
 }
 
 /// A Rust app's records as the session publishes them: the tracker, its model running in the

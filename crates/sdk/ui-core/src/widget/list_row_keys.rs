@@ -60,7 +60,7 @@ impl ListRow {
             // Undo as every destructive action does.
             Key::Named(NamedKey::Delete) => match &mut self.swipe {
                 Some(swipe) if swipe.destructive => {
-                    (swipe.on_activate)();
+                    swipe.run();
                     true
                 }
                 _ => false,

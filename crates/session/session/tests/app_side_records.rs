@@ -180,12 +180,17 @@ fn on_runner(app: &Path) -> bool {
 }
 
 /// Whether `app` declares that it joins no runtime of its own, because the session's document
-/// host keeps its records: `ResourceApp::ATTACHES_RUNTIME = false`, the one flag the runner
-/// already reads (`framework/app.rs`'s `launch_spec`), which disables its collaboration
-/// manager — no join proof, no content keys, no sync.
+/// host keeps its records: `ResourceApp::ATTACHES_RUNTIME = false` (with or without a type
+/// annotation), the one flag the runner already reads (`framework/app.rs`'s `launch_spec`),
+/// which disables its collaboration manager — no join proof, no content keys, no sync.
 fn hosted(app: &Path) -> bool {
-    text_of(app).contains("ATTACHES_RUNTIME = false")
-        || text_of(app).contains("ATTACHES_RUNTIME = false;")
+    let text = text_of(app);
+    text.match_indices("ATTACHES_RUNTIME").any(|(at, _)| {
+        text[at..]
+            .split([';', '\n'])
+            .next()
+            .is_some_and(|declaration| declaration.trim_end().ends_with("false"))
+    })
 }
 
 /// What `app` still does for itself, as the slices name it.

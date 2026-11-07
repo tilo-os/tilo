@@ -313,9 +313,10 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
 # upstream's composefs space check counted the whole image, so a laptop with
 # most of the new image's layers already stored refused to upgrade.
 # The frozen snapshot carries no ostree-devel, so this builds in the pinned
-# builder image as os/Containerfile.bootc-helper does, with that image's own
-# Fedora repositories (BOOTC_BUILD_PACKAGES are no snapshot input). Nothing of
-# it ships but the binary: the rootfs checks it runs against the base's own
+# builder image as os/Containerfile.bootc-helper does, from that image's own
+# Fedora repositories, which os/dev/configure-fedora-mirrors.sh points at two
+# current mirrors (BOOTC_BUILD_PACKAGES are no snapshot input). Nothing of it
+# ships but the binary: the rootfs checks it runs against the base's own
 # libraries and reports the base's bootc version.
 FROM ${BOOTC_BUILD_IMAGE} AS bootc-builder
 # v1.16.13, the base's bootc release.
@@ -330,8 +331,13 @@ COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
 # bootc's build onto it): the release emits them in HashMap order, so no two
 # bootc builds matched and the image was not reproducible.
 COPY vendor/zlink-macros /tilo-vendor/zlink-macros
-RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
-    dnf install -y ${BOOTC_BUILD_PACKAGES} \
+COPY os/dev/configure-fedora-mirrors.sh /usr/local/bin/configure-fedora-mirrors
+# Fetches from the internet, so it runs in the build job's own network: podman hands a
+# nested build container public resolvers (the job's /etc/resolv.conf names only its own),
+# and the CI runners' egress serves those unreliably.
+RUN --network=host --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    configure-fedora-mirrors \
+    && dnf install -y ${BOOTC_BUILD_PACKAGES} \
     && dnf clean all \
     && echo "${BOOTC_SHA256}  /tilo-assets/${BOOTC_SOURCE}" | sha256sum -c - \
     && mkdir "/bootc-${BOOTC_VERSION}" \
@@ -357,7 +363,7 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
 # os/external-assets/xwayland-satellite/ that keeps a paste in flight while the
 # clipboard manager takes over an X11 selection. Fedora's 0.8.2 package drops
 # it. CI builders install the same build through the same script. Built in the
-# pinned builder image like bootc, with that image's own Fedora repositories for
+# pinned builder image like bootc, from that image's own Fedora repositories for
 # the build headers; only the binary ships, and the rootfs checks it resolves
 # against the base's libraries. Once a satellite
 # release contains https://github.com/Supreeeme/xwayland-satellite/pull/527,
@@ -367,8 +373,13 @@ ARG XWAYLAND_SATELLITE_BUILD_PACKAGES="xcb-util-cursor-devel"
 COPY os/external-assets/xwayland-satellite/0001-drain-pending-conversions-before-takeover.patch /patches/
 COPY os/external-assets/github-assets.tsv /tilo-assets.tsv
 COPY tools/ci/install-xwayland-satellite.sh /install-xwayland-satellite.sh
-RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
-    dnf install -y ${XWAYLAND_SATELLITE_BUILD_PACKAGES} \
+COPY os/dev/configure-fedora-mirrors.sh /usr/local/bin/configure-fedora-mirrors
+# Fetches from the internet, so it runs in the build job's own network: podman hands a
+# nested build container public resolvers (the job's /etc/resolv.conf names only its own),
+# and the CI runners' egress serves those unreliably.
+RUN --network=host --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    configure-fedora-mirrors \
+    && dnf install -y ${XWAYLAND_SATELLITE_BUILD_PACKAGES} \
     && dnf clean all \
     && bash /install-xwayland-satellite.sh /tilo-assets /out/usr /tilo-assets.tsv /patches
 
@@ -1073,6 +1084,7 @@ COPY --chmod=0755 os/usr/lib/systemd/system-generators/tilo-esp-generator /usr/l
 COPY \
     os/usr/lib/systemd/system/tilo-boot-entries.service \
     os/usr/lib/systemd/system/tilo-boot-entries.timer \
+    os/usr/lib/systemd/system/tilo-deployment-finalize.service \
     os/usr/lib/systemd/system/tilo-esp-write@.service \
     os/usr/lib/systemd/system/tilo-boot-health.service \
     os/usr/lib/systemd/system/tilo-boot-fallback.service \
@@ -1103,6 +1115,8 @@ COPY \
     /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/
 COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/05-tilo-composefs.conf \
     /usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/05-tilo-composefs.conf
+COPY os/usr/lib/systemd/system/bootc-finalize-staged.service.d/10-tilo-finalize.conf \
+    /usr/lib/systemd/system/bootc-finalize-staged.service.d/10-tilo-finalize.conf
 COPY os/usr/lib/systemd/system/systemd-bless-boot.service.d/10-tilo-writable-esp.conf \
     /usr/lib/systemd/system/systemd-bless-boot.service.d/10-tilo-writable-esp.conf
 COPY os/usr/lib/systemd/system/tilo-update-policy@.service /usr/lib/systemd/system/tilo-update-policy@.service

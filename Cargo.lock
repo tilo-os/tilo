@@ -16761,7 +16761,9 @@ dependencies = [
  "tasks",
  "tasks-model",
  "tilo-app",
+ "tilo-model-host",
  "tilo-rich-text",
+ "tilo-service",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -17414,9 +17416,11 @@ dependencies = [
  "tilo-paths",
  "tilo-resource",
  "tilo-service",
+ "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "workspace-hack",
 ]
@@ -17858,6 +17862,7 @@ dependencies = [
  "collab-types",
  "durable-store",
  "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
  "hex",
  "js-sys",
  "neighbour-wire",
@@ -17892,6 +17897,7 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "tilo-workspace-directory",
+ "tilo-workspace-join",
  "tokio",
  "tracing",
  "url",
@@ -19807,6 +19813,7 @@ dependencies = [
  "tilo-service",
  "tilolang-runtime",
  "tracing",
+ "tube-model",
  "workspace-hack",
 ]
 
@@ -20614,7 +20621,6 @@ dependencies = [
  "atspi-proxies",
  "image",
  "os-actions",
- "parking_lot",
  "serde",
  "serde_json",
  "settings-store",
@@ -21381,6 +21387,7 @@ dependencies = [
  "libc",
  "neighbour-wire",
  "os-actions",
+ "package-store",
  "pollster",
  "postcard",
  "rand_core 0.10.0",
@@ -21406,6 +21413,7 @@ dependencies = [
  "tilo-activities",
  "tilo-app",
  "tilo-app-launch",
+ "tilo-app-package",
  "tilo-app-state",
  "tilo-audio-service",
  "tilo-auth",
@@ -21468,7 +21476,6 @@ dependencies = [
  "tilo-power-mgmt",
  "tilo-projector",
  "tilo-quick-settings",
- "tilo-reference",
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
@@ -21500,6 +21507,7 @@ dependencies = [
  "tilo-window-share",
  "tilo-workspace-directory",
  "tilo-workspace-join",
+ "tilolang-cli",
  "tilolang-host",
  "tilolang-mail",
  "tilolang-runtime",
@@ -21620,7 +21628,6 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-test-env",
- "tracing",
  "workspace-hack",
  "zeroize",
 ]
@@ -22819,6 +22826,7 @@ dependencies = [
  "tilolang-tilo",
  "tilolang-youtube",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "workspace-hack",
 ]
@@ -23608,8 +23616,10 @@ dependencies = [
  "tilo-files",
  "tilo-innertube",
  "tilo-media",
+ "tilo-model-host",
  "tilo-net",
  "tilo-secrets",
+ "tilo-service",
  "tilo-test-env",
  "tilo-vello",
  "tilo-vello-encoding",
@@ -23620,10 +23630,22 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tube",
+ "tube-model",
  "uuid",
  "wire-frame",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tube-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tilo-actions",
+ "tilo-model-guest",
+ "tilo-resource",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -26799,6 +26821,7 @@ dependencies = [
  "hayro-interpret",
  "hayro-syntax",
  "hex",
+ "hickory-proto",
  "hmac 0.12.1",
  "hpke-rs",
  "hpke-rs-rust-crypto",
@@ -26915,6 +26938,7 @@ dependencies = [
  "subtle",
  "syn 2.0.117",
  "syn 3.0.9",
+ "sync_wrapper",
  "syntect",
  "sysinfo",
  "tantivy",

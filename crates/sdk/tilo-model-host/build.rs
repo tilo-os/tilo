@@ -1,5 +1,5 @@
-//! The model module a host test runs: `tasks-model` built for `wasm32-unknown-unknown`, in
-//! this crate's `OUT_DIR`.
+//! The model modules a host test runs: each app's model crate built for
+//! `wasm32-unknown-unknown`, in this crate's `OUT_DIR`.
 //!
 //! `docs/architecture/apps.md` §1 makes an app's model and verbs a WebAssembly module the
 //! document host runs. A test that proved the host on a linked-in model would prove nothing
@@ -16,21 +16,26 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The app model crates a host test runs, each built as the module an app ships: Tasks and
+/// Tube, the two apps the storage migration moves first (`one-app-model.md` §6).
+const MODELS: &[&str] = &["tasks-model", "tube-model"];
+
 fn main() -> Result<(), String> {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let model = manifest.join("../../../apps/tasks-model");
-    // The guest crate the module is built with, and the ABI it is built against: a module of an
-    // older guest is not the module this host reads.
-    let sources = [
-        model.join("src"),
-        model.join("Cargo.toml"),
+    let out =
+        PathBuf::from(std::env::var_os("OUT_DIR").ok_or("cargo sets OUT_DIR for build scripts")?);
+    // The crate reads this build's `OUT_DIR` to find the modules, or nothing when there are
+    // none; it is set before any path that might return.
+    println!("cargo::rustc-env=TILO_MODEL_FIXTURE_DIR={}", out.display());
+    println!("cargo::rerun-if-env-changed=TILO_MODEL_FIXTURE_OFFLINE");
+    // The guest crate the modules are built with, and the ABI they are built against: a module
+    // of an older guest is not the module this host reads.
+    let shared = [
         manifest.join("../tilo-model-guest/src"),
         manifest.join("../tilo-model-guest/Cargo.toml"),
         manifest.join("../tilo-model-abi/src"),
     ];
-    let out =
-        PathBuf::from(std::env::var_os("OUT_DIR").ok_or("cargo sets OUT_DIR for build scripts")?);
-    // Where the module is built: beside `OUT_DIR`, in this build's own directory, never in the
+    // Where the modules are built: beside `OUT_DIR`, in this build's own directory, never in the
     // tree the cache keeps (the module's documentation above says why).
     let target = out
         .parent()
@@ -39,29 +44,32 @@ fn main() -> Result<(), String> {
     // A build before this kept its target directory in `OUT_DIR`; nothing reads it now, and its
     // size is what kept this run out of every cache.
     let _ = std::fs::remove_dir_all(out.join("target"));
-    let module = out.join("tasks_model.wasm");
-    // Every source the module is built from: cargo watches a directory's own entry only, so a
-    // file changed under it is not seen.
-    for watched in sources.iter().chain(std::iter::once(&module)) {
-        println!("cargo::rerun-if-changed={}", watched.display());
-    }
-    println!("cargo::rerun-if-env-changed=TILO_MODEL_FIXTURE_OFFLINE");
-    // The crate reads this build's `OUT_DIR` to find the module, or nothing when there is
-    // none; it is set before any path that might return.
-    println!("cargo::rustc-env=TILO_MODEL_FIXTURE_DIR={}", out.display());
-    if sources.iter().all(|source| fresh(&module, source)) {
-        return Ok(());
-    }
-    if let Err(error) = build(&model, &target, &module) {
-        // A host that cannot be tested without a module still builds; the test that needs one
-        // says so itself, rather than every build of this crate failing on a wasm toolchain.
-        println!("cargo::warning=the model module fixture was not built: {error}");
+    for model_crate in MODELS {
+        let model = manifest.join("../../../apps").join(model_crate);
+        let module = out.join(format!("{}.wasm", model_crate.replace('-', "_")));
+        let mut sources: Vec<PathBuf> = shared.to_vec();
+        sources.push(model.join("src"));
+        sources.push(model.join("Cargo.toml"));
+        // Every source the module is built from: cargo watches a directory's own entry only, so
+        // a file changed under it is not seen.
+        for watched in sources.iter().chain(std::iter::once(&module)) {
+            println!("cargo::rerun-if-changed={}", watched.display());
+        }
+        if sources.iter().all(|source| fresh(&module, source)) {
+            continue;
+        }
+        if let Err(error) = build(&model, model_crate, &target, &module) {
+            // A host that cannot be tested without a module still builds; the test that needs
+            // one says so itself, rather than every build of this crate failing on a wasm
+            // toolchain.
+            println!("cargo::warning=the {model_crate} module fixture was not built: {error}");
+        }
     }
     Ok(())
 }
 
 /// Build `model` for `wasm32-unknown-unknown` into `target`, and copy the module to `module`.
-fn build(model: &Path, target: &Path, module: &Path) -> Result<(), String> {
+fn build(model: &Path, name: &str, target: &Path, module: &Path) -> Result<(), String> {
     // A toolchain that can build a module, not whatever `cargo` is first on PATH: a wrapper may
     // hand the build to another machine, which cannot build one here, and a system Rust may
     // have no wasm32 target installed.
@@ -81,7 +89,7 @@ fn build(model: &Path, target: &Path, module: &Path) -> Result<(), String> {
     command
         .arg("build")
         .arg("--package")
-        .arg("tasks-model")
+        .arg(name)
         // The module's own side: its export and the host imports under it, which the crate
         // leaves out of a build an app links for its types.
         .arg("--features")
@@ -125,10 +133,11 @@ fn build(model: &Path, target: &Path, module: &Path) -> Result<(), String> {
             errors.join("\n")
         });
     }
+    let wasm_name = format!("{}.wasm", name.replace('-', "_"));
     let built = target
         .join("wasm32-unknown-unknown")
         .join("debug")
-        .join("tasks_model.wasm");
+        .join(&wasm_name);
     std::fs::copy(&built, module)
         .map_err(|error| format!("could not copy {}: {error}", built.display()))?;
     Ok(())

@@ -40,6 +40,13 @@ const FORWARDED: &[&str] = &[
     "TILO_APPS_SYSTEM_PAYLOAD_DIR",
     "TILO_RUNTIME_BUNDLE_DIR",
     "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
+    // The interfaces this session's tree serves. A session started from a
+    // build under test runs the apps that build made, which speak the
+    // interfaces beside the code; without this the launcher judges them
+    // against the host image's declaration instead, and refuses every app
+    // built for a newer Tilo than the machine underneath. Absent from an
+    // installed session, where the image's own declaration is the truth.
+    "TILO_SYSTEM_INTERFACES",
     // Their account and shell.
     "HOME",
     "USER",
@@ -53,6 +60,9 @@ const FORWARDED: &[&str] = &[
     "LC_CTYPE",
     "LC_MESSAGES",
     "TZ",
+    // How much an app (and the connector the system runs for one) logs, as the session's own
+    // log says: a development session's log is all a connector without a window has.
+    "RUST_LOG",
     "XDG_DATA_HOME",
     "XDG_CONFIG_HOME",
     "XDG_CACHE_HOME",
@@ -195,6 +205,11 @@ mod tests {
             "TILO_IDENTITY_ROOT" => Some("/home/you/.local/share/tilo/identity".into()),
             "TILO_WORKSPACE_ROOTS" => Some("/home/you/.local/state/tilo/files/mount".into()),
             "TILO_HOME_PEERS_PATH" => Some("/run/user/1000/tilo/peers".into()),
+            // A session started from a build under test: the tree's own
+            // declaration, which the launcher judges its launches against.
+            "TILO_SYSTEM_INTERFACES" => {
+                Some("/src/tilo/os/usr/share/tilo/system-interfaces.toml".into())
+            }
             "HOME" => Some("/home/you".into()),
             // Not on the allowlist: it describes the session's own
             // confinement, not the person.
@@ -219,6 +234,10 @@ mod tests {
                 "/home/you/.local/state/tilo/files/mount",
             ),
             ("TILO_HOME_PEERS_PATH", "/run/user/1000/tilo/peers"),
+            (
+                "TILO_SYSTEM_INTERFACES",
+                "/src/tilo/os/usr/share/tilo/system-interfaces.toml",
+            ),
             ("HOME", "/home/you"),
             ("WAYLAND_DISPLAY", "wayland-2"),
             ("XDG_RUNTIME_DIR", "/run/user/1000"),

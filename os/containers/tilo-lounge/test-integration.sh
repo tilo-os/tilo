@@ -20,9 +20,11 @@
 # WORK is where it keeps what it found — each page's snapshot and console, the
 # site's and the Lounge's logs — which a failing run hands over as artifacts;
 # by default a directory of its own under the scratch directory.
-# Needs buildah, node, chromium (CHROME or Playwright's cache), openssl and
-# curl. It runs as root in the buildah image in a micro-VM step, without a
-# daemon, and as any user with buildah locally.
+# Needs buildah, node, chromium (CHROME or Playwright's cache), curl and a
+# Rust toolchain for the image's own tilo-crypto, which mints the site's
+# certificate (TILO_CRYPTO_BIN names a built one instead). It runs as root in
+# the buildah image in a micro-VM step, without a daemon, and as any user with
+# buildah locally.
 set -euo pipefail
 usage='usage: test-integration.sh IMAGE BUNDLE [WORK]'
 . "$(dirname -- "${BASH_SOURCE[0]}")/../../../tools/ci/publish/lib.sh"
@@ -64,11 +66,17 @@ site_origin=https://127.0.0.1:$site_port
 python3 -I "$repo_root/crates/browser/tilo-browser-runtime/container/layout.py" "$2" "$work/site"
 
 # A certificate for this machine's loopback, which the site is reached at: the
-# page harness ignores certificate errors, as it does for the image's own.
-certificate=(req -x509 -newkey rsa:2048 -nodes -days 2 -subj '/CN=127.0.0.1'
-  -addext 'subjectAltName=IP:127.0.0.1,DNS:localhost'
-  -keyout "$work/site.key" -out "$work/site.crt")
-openssl "${certificate[@]}" >/dev/null 2>&1 || fail 'no certificate for the site'
+# page harness ignores certificate errors, as it does for the image's own. The
+# image's own tool mints it, so the gate needs no OpenSSL; a build of it may be
+# handed in as TILO_CRYPTO_BIN.
+crypto=${TILO_CRYPTO_BIN:-}
+if [[ -z $crypto ]]; then
+  cargo build --quiet --locked --manifest-path "$repo_root/Cargo.toml" -p tilo-crypto \
+    --bin tilo-crypto || fail 'could not build the certificate mint'
+  crypto=${CARGO_TARGET_DIR:-$repo_root/target}/debug/tilo-crypto
+fi
+"$crypto" generate-tls-fixture 127.0.0.1 "$work/site.ca.crt" "$work/site.key" "$work/site.crt" \
+  || fail 'no certificate for the site'
 
 # The image's own files, mounted once.
 containers=() image_pid= site_pid= ingress_pid=
@@ -173,6 +181,7 @@ start_image() {
     TILO_ROOMS_WEB_ENTRY="$site_origin/" \
     TILO_ROOMS_SITE_ORIGINS="$site_origin" \
     TILO_ROOMS_ROOT_FILE=/run/tilo-rooms/secrets/room-root \
+    TILO_ROOMS_ROLES_FILE=/run/tilo-rooms/roles.json \
     TILO_ROOMS_FETCH_PROXY=0 \
     TILO_ROOMS_CHAT_CHANNELS=general \
     /usr/local/bin/tilo-lounge >> "$log" 2>&1 &
@@ -334,11 +343,15 @@ start_site "$minted"
 # Two people: real browsers on the web entry, each its own person, both
 # joining the Lounge through its door, chatting, sharing a desk and seeing
 # each other present through the live plane their pages join at the ingress's
-# host.
+# host. One of them is made someone the workspace lets invite while their
+# page is open, invites a third person from the page's own sheet, and that
+# person arrives from the link the sheet handed over, with no one letting
+# them in.
 node "$here/integration/people.mjs" "$site_url" "$relay_origin" "$relay_origin" "$work/people" \
-  "$live_host" \
+  "$live_host" "$state_root/roles.json" \
   || fail 'two people did not meet in the Lounge'
 echo 'ok: two people joined, chatted, shared a desk and saw each other present'
+echo 'ok: a person invited from the page arrived from the link as the role it named'
 
 # The live plane taken away: a page says in its members' place that it cannot
 # reach live presence, and says it once in its console. A page that retried

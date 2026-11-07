@@ -1637,14 +1637,14 @@ fn retained_panes_remeasure_theme_resize_replacement_and_edits_beside_a_drawer()
 
 #[test]
 fn the_navigation_list_keeps_its_typed_identity_and_selected_activation_opens_content() {
-    let changes = SharedRc::new(Cell::new(0));
-    let seen = SharedRc::clone(&changes);
+    let chosen = SharedRc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = SharedRc::clone(&chosen);
     let list = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
         "places",
         vec![crate::widget::NavItem::new("inbox", "Inbox")],
     )])
     .selected("inbox")
-    .on_view("places", move |_| seen.set(seen.get() + 1));
+    .on_view("places", move |id| seen.borrow_mut().push(id));
     assert!(
         Widget::as_any(&list)
             .unwrap()
@@ -1676,9 +1676,9 @@ fn the_navigation_list_keeps_its_typed_identity_and_selected_activation_opens_co
     settle(&mut h, 360, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
     assert_eq!(
-        changes.get(),
-        0,
-        "activation does not invent a selection change"
+        chosen.borrow().as_slice(),
+        ["inbox"],
+        "activation answers through the view action, as a press does"
     );
 }
 

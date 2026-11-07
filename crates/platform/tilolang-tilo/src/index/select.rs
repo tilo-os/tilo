@@ -146,6 +146,26 @@ fn rest(conj: &[&Pred], skip: Option<usize>) -> Option<Pred> {
     }
 }
 
+/// The conjunct of a query that names the fewest items: its place in the predicate, the runs
+/// that read it, and how many items they hold ([`View::narrowest`]).
+type Fewest = (usize, Vec<Access>, usize);
+/// The conjunct a query reads page by page: its place in the predicate and the runs that read it
+/// ([`choose`]).
+type Chosen = (usize, Vec<Access>);
+
+/// The fields a query reads: those its conjuncts compare, and those its order sorts by.
+fn read_fields(conj: &[&Pred], order: Option<&Order>) -> Vec<String> {
+    conj.iter()
+        .flat_map(|c| c.fields())
+        .map(|f| f.spec.id.clone())
+        .chain(
+            order
+                .into_iter()
+                .flat_map(|o| o.levels().into_iter().map(|level| level.field.clone())),
+        )
+        .collect()
+}
+
 /// Where a run starts and ends in `pages`.
 fn bounds(pages: &Pages<Snapshot>, (from, to): &(String, String)) -> (usize, usize) {
     let (start, _) = pages.rank(from, "");
@@ -210,16 +230,7 @@ impl View<'_> {
                 None => conj,
             };
         let member = member_list(resource, field);
-        let read: Vec<String> = conj
-            .iter()
-            .flat_map(|c| c.fields())
-            .map(|f| f.spec.id.clone())
-            .chain(
-                order
-                    .into_iter()
-                    .flat_map(|o| o.levels().into_iter().map(|level| level.field.clone())),
-            )
-            .collect();
+        let read = read_fields(&conj, order);
         let named = self.overlay.touched_reading(
             &member,
             &|path| self.is_item_of(path, (resource, field)),
@@ -257,6 +268,16 @@ impl View<'_> {
                     (&touched, evaluated),
                 )
                 .map(Answer::shown);
+        }
+        let fewest = (narrow.as_ref(), chosen.as_ref());
+        if let Some(answer) = self.narrowed(
+            (resource, field),
+            schema,
+            (&conj, order),
+            fewest,
+            (&touched, evaluated),
+        )? {
+            return Ok(answer);
         }
         let chosen = narrow.map(|(at, access, _)| (at, access)).or(chosen);
         let order_column = order.and_then(|o| schema.column(&o.field));
@@ -309,6 +330,77 @@ impl View<'_> {
             (&touched, evaluated),
         )
         .map(Answer::shown)
+    }
+
+    /// The answer of a query ordered by a column, when the run that names the fewest of its
+    /// items names fewer than that column holds: read whole and put in the order, so a place of
+    /// the day's work costs those tasks and not the collection. `None` when the order is read
+    /// cheaper than the run ([`Self::ordered_listing`]), or cannot be read at all ([`Self::scanned`]).
+    fn narrowed(
+        &self,
+        (resource, field): (&str, &str),
+        schema: &TypeSchema,
+        (conj, order): (&[&Pred], Option<&Order>),
+        (narrow, chosen): (Option<&Fewest>, Option<&Chosen>),
+        (touched, evaluated): (&std::collections::BTreeSet<String>, &Cell<u64>),
+    ) -> Result<Option<Answer>, StoreError> {
+        let Some(order) = order.filter(|order| order.then.is_none()) else {
+            return Ok(None);
+        };
+        let fewest = match narrow {
+            Some((at, access, count)) => Some((*at, access.clone(), *count)),
+            None => match chosen {
+                Some((at, access)) => self
+                    .bound_of(
+                        (resource, field),
+                        schema,
+                        conj.get(*at).copied().unwrap_or(&Pred::Const(false)),
+                        touched,
+                    )?
+                    .map(|count| (*at, access.clone(), count)),
+                None => None,
+            },
+        };
+        let (Some((at, access, count)), Some(scan)) =
+            (fewest, self.scanned((resource, field), schema, order))
+        else {
+            return Ok(None);
+        };
+        if count >= scan {
+            return Ok(None);
+        }
+        self.read_whole(
+            (resource, field),
+            schema,
+            (conj, Some(&(at, access))),
+            Some(order),
+            (touched, evaluated),
+        )
+        .map(|listing| Some(Answer::shown(listing)))
+    }
+
+    /// How many entries the column `order` is read from holds: the items an order read from the
+    /// index is read over, whether the query holds of them or not. `None` when the order is not
+    /// read that way, so what it costs to read it whole is not known ([`Self::ordered_listing`]
+    /// decides both); a read the index refuses is left to the read that answers the query.
+    fn scanned(
+        &self,
+        (resource, field): (&str, &str),
+        schema: &TypeSchema,
+        order: &Order,
+    ) -> Option<usize> {
+        let scan = *order.levels().last()?;
+        if scan.absent_last && scan.descending {
+            return None;
+        }
+        let column = schema
+            .column(&scan.field)
+            .filter(|column| !column.many && ordered_or_text(column.kind))?;
+        let pages = self
+            .snapshot
+            .pages(&scope_list(resource, field, &column.name))
+            .ok()?;
+        Some(pages.len())
     }
 
     /// The items of the collection `field` of `resource` under the item `node` (above it, for
@@ -474,11 +566,13 @@ impl View<'_> {
         let resource = resource.to_owned();
         let snapshot = std::sync::Arc::clone(self.snapshot);
         let overlay = std::sync::Arc::clone(self.overlay);
+        let clock = self.clock;
         let keep: Keep = Box::new(move |id: &str| {
             evaluated.set(evaluated.get().saturating_add(1));
             let view = View {
                 snapshot: &snapshot,
                 overlay: &overlay,
+                clock,
             };
             view.holds(&child(&resource, id), keep_schema, &residual)
                 .unwrap_or(false)
@@ -667,10 +761,13 @@ impl View<'_> {
         if !a.exact || a.repeats {
             return Ok(None);
         }
+        // The items the open writes moved into the run, checked against the conjunct it
+        // answers: a run read without one takes every item they wrote, which is the most it
+        // can hold rather than how many it does.
         let run = self.run_as_written(
             (resource, field),
             schema,
-            (&a.column, None),
+            (&a.column, Some(*one)),
             run,
             false,
             touched,
@@ -744,11 +841,13 @@ impl View<'_> {
         let part = part.cloned();
         let snapshot = std::sync::Arc::clone(self.snapshot);
         let overlay = std::sync::Arc::clone(self.overlay);
+        let clock = self.clock;
         Box::new(move |id: &str| {
             evaluated.set(evaluated.get().saturating_add(1));
             let view = View {
                 snapshot: &snapshot,
                 overlay: &overlay,
+                clock,
             };
             let path = child(&resource, id);
             if let Some((column, value)) = &part
@@ -774,9 +873,9 @@ impl View<'_> {
         schema: &TypeSchema,
         conj: &[&Pred],
         touched: &std::collections::BTreeSet<String>,
-    ) -> Result<Option<(usize, Vec<Access>, usize)>, StoreError> {
+    ) -> Result<Option<Fewest>, StoreError> {
         let id = |f: &FieldRead| f.spec.id.clone();
-        let mut best: Option<(usize, Vec<Access>, usize)> = None;
+        let mut best: Option<Fewest> = None;
         for (at, c) in conj.iter().enumerate() {
             let Some(access) = columns::access(schema, c, &id, false) else {
                 continue;
@@ -981,10 +1080,14 @@ impl View<'_> {
         if chosen.is_some() {
             kept.sort_by(|(a, ai, _), (b, bi, _)| (a.as_str(), &**ai).cmp(&(b.as_str(), &**bi)));
         }
+        // A read whole carries the key each item stands at in the column its run was read
+        // from; the read of the collection's list does not.
+        let keys = chosen.is_some();
         let items = match order {
             None => kept.into_iter().map(|(_, id, _)| id).collect(),
             Some(order) => self.ordered(
-                kept.into_iter().map(|(_, id, path)| (id, path)),
+                kept.into_iter()
+                    .map(|(key, id, path)| (id, path, keys.then_some(key))),
                 schema,
                 order,
             )?,
@@ -1023,25 +1126,36 @@ impl View<'_> {
         Ok(out)
     }
 
-    /// `items` (id and path) in `order`, by the fields' values as the index holds them: each key
-    /// after the one before it, and the order the items came in for those it cannot tell apart.
+    /// `items` (id, path and the key the item stands at in the column it was read from) in
+    /// `order`, by the fields' values as the index holds them: each key after the one before it,
+    /// and those it cannot tell apart in the order of the keys, as the column keeps them, or the
+    /// order the items came in where they have none.
     fn ordered<T: Clone>(
         &self,
-        items: impl Iterator<Item = (T, String)>,
+        items: impl Iterator<Item = (T, String, Option<String>)>,
         schema: &TypeSchema,
         order: &Order,
     ) -> Result<Vec<T>, StoreError> {
         let levels = order.levels();
+        // The column's keys are read the way its last level is: the items one value holds stand
+        // in it by them, last first where the level descends.
+        let descending = levels.last().is_some_and(|level| level.descending);
         let mut keyed = Vec::new();
-        for (item, path) in items {
+        for (item, path, key) in items {
             let mut keys = Vec::with_capacity(levels.len());
             for level in &levels {
                 keys.push(self.lit_of_field(&path, schema, &level.field)?);
             }
-            keyed.push((keys, item));
+            keyed.push((keys, key, item));
         }
-        keyed.sort_by(|(a, _), (b, _)| ordered_cmp(order, a, b));
-        Ok(keyed.into_iter().map(|(_, item)| item).collect())
+        keyed.sort_by(|(a, ak, _), (b, bk, _)| {
+            ordered_cmp(order, a, b).then_with(|| match (ak, bk) {
+                (Some(a), Some(b)) if descending => b.cmp(a),
+                (Some(a), Some(b)) => a.cmp(b),
+                _ => std::cmp::Ordering::Equal,
+            })
+        });
+        Ok(keyed.into_iter().map(|(_, _, item)| item).collect())
     }
 
     /// The value of the field `field` at `path`, of the type `schema`, as the index holds it, as
@@ -1216,7 +1330,11 @@ impl View<'_> {
         kept.sort();
         match order {
             None => Ok(kept),
-            Some(order) => self.ordered(kept.into_iter().map(|p| (p.clone(), p)), schema, order),
+            Some(order) => self.ordered(
+                kept.into_iter().map(|p| (p.clone(), p, None)),
+                schema,
+                order,
+            ),
         }
     }
 

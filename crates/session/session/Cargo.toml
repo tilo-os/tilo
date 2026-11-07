@@ -94,6 +94,9 @@ app-catalogue = { path = "../../packaging/app-catalogue" }
 # What the session binary's search reads of the device: the installed apps,
 # the machine's own, the person's search choices.
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
+# The session's own app store, read as the launcher reads it: a development session seeds the
+# tilolang apps it installed (`crate::seeded_apps`).
+package-store = { path = "../../packaging/package-store" }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 # The pictures the desk shows: the image's own, and the person's.
@@ -190,8 +193,6 @@ tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 # A host's own questions to a member, asked on the collaboration endpoint:
 # what an agent asks before it acts on a workspace, answered by the person.
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
-# The web grammar of a workspace link, which says what a pasted link joins.
-tilo-reference = { path = "../../collab/reference" }
 # This device's relays wait in the collaboration endpoint until a workspace
 # it shows has someone else in it, and its key is published only then.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
@@ -359,6 +360,11 @@ workspace-hack = { version = "0.1" }
 # A Rust app's views, drawn by the shell as it draws a tilolang app's (one-app-model.md §2):
 # the sample catalogue's channels and videos, never the live worker.
 tube = { path = "../../../apps/tube", default-features = false, features = ["samples"] }
+# A development session's tilolang apps, built into signed `.tapp`s the tests install into
+# their own app store: the same packages `dist/dev/shell-run.sh` installs.
+tilolang-cli = { path = "../../lang/tilolang-cli" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
+package-store = { path = "../../packaging/package-store", features = ["store"] }
 # The events the actor hands the session, which its own tests hand the sync
 # directly: the membership epoch on them is the actor's to mint.
 tilo-network-actor = { path = "../network-actor", features = ["test-support"] }

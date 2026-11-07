@@ -3,7 +3,7 @@
 //! reflects, and putting a fresh one in place of a broken one. What is built here is what the
 //! store's reads answer from ([`Inner::view`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -189,7 +189,49 @@ impl TiloStore {
             inner.changed();
             inner.notify_all();
         }
+        // An index built over fewer chunks than the manifest names answers no row in the ones
+        // it does not, and a window would show a list shorter than the workspace's.
+        drop(inner);
+        self.load_short();
         any
+    }
+
+    /// Read every chunk the record's manifest names that no index read from reflects: an index
+    /// built over fewer chunks answers no row in the missing ones, and a window would show a
+    /// list shorter than the workspace's. A store that can load them loads them, as one that
+    /// was sent every chunk opens; an index kept from an open over all of them needs none.
+    /// Returns whether a chunk was read.
+    pub fn load_short(&self) -> bool {
+        let short: Vec<ChunkNo> = {
+            let held = self.held();
+            let reflected: BTreeSet<ChunkNo> = held
+                .apps
+                .values()
+                .filter(|app| app.ready())
+                .flat_map(|app| app.heads.keys().copied())
+                .collect();
+            if held.chunk_loader.is_none() || !held.chunks.has_record() {
+                Vec::new()
+            } else {
+                held.chunks
+                    .placement()
+                    .chunks()
+                    .iter()
+                    .copied()
+                    .filter(|chunk| !reflected.contains(chunk))
+                    .collect()
+            }
+        };
+        let mut loaded = false;
+        for chunk in short {
+            match self.load_chunk(chunk) {
+                Ok(()) => loaded = true,
+                Err(error) => {
+                    tracing::warn!(%error, chunk, "a chunk the index does not reflect is not loaded");
+                }
+            }
+        }
+        loaded
     }
 
     /// Everything the index of `app` holds now (the store's open writes apart): what tests
@@ -221,6 +263,7 @@ impl Inner {
         Some(View {
             snapshot: &held.snapshot,
             overlay: &self.overlay,
+            clock: self.clock.read(),
         })
     }
 
@@ -370,9 +413,10 @@ impl Inner {
         let heads = chunks.heads();
         let app_id = app.to_owned();
         let schemas = Arc::clone(&self.schemas);
+        let clock = self.clock.read();
         let pending = Pending::start(
             move || {
-                let reads = build(&index, &chunks, &docs, &app_id, &heads, &schemas)?;
+                let reads = build(&index, &chunks, &docs, &app_id, &heads, &schemas, clock)?;
                 Ok((heads, reads))
             },
             self.wake.clone(),
@@ -392,9 +436,18 @@ impl Inner {
             return;
         };
         let schemas = Arc::clone(&self.schemas);
-        let built = index
-            .clear_for_build()
-            .and_then(|()| build(&index, &self.chunks, &self.index, app, &heads, &schemas));
+        let clock = self.clock.read();
+        let built = index.clear_for_build().and_then(|()| {
+            build(
+                &index,
+                &self.chunks,
+                &self.index,
+                app,
+                &heads,
+                &schemas,
+                clock,
+            )
+        });
         if let Ok(reads) = built {
             self.count(reads);
             self.stats.builds = self.stats.builds.saturating_add(1);
@@ -473,7 +526,7 @@ impl Inner {
         let docs = self.index.clone();
         let nested = &self.nested;
         let written = index.write(|writer| {
-            let mut derive = Derive::new(&self.chunks, &docs, nested);
+            let mut derive = Derive::new(&self.chunks, &docs, nested, self.clock.read());
             derive.removed_before(writer, app, &ends, &placed)?;
             derive.changes(writer, app, &reached)?;
             derive.versions(writer, app, &ends)?;

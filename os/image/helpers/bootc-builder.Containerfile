@@ -8,9 +8,10 @@
 # upstream's composefs space check counted the whole image, so a laptop with
 # most of the new image's layers already stored refused to upgrade.
 # The frozen snapshot carries no ostree-devel, so this builds in the pinned
-# builder image as os/Containerfile.bootc-helper does, with that image's own
-# Fedora repositories (BOOTC_BUILD_PACKAGES are no snapshot input). Nothing of
-# it ships but the binary: the rootfs checks it runs against the base's own
+# builder image as os/Containerfile.bootc-helper does, from that image's own
+# Fedora repositories, which os/dev/configure-fedora-mirrors.sh points at two
+# current mirrors (BOOTC_BUILD_PACKAGES are no snapshot input). Nothing of it
+# ships but the binary: the rootfs checks it runs against the base's own
 # libraries and reports the base's bootc version.
 FROM ${BOOTC_BUILD_IMAGE} AS bootc-builder
 # v1.16.13, the base's bootc release.
@@ -25,8 +26,13 @@ COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
 # bootc's build onto it): the release emits them in HashMap order, so no two
 # bootc builds matched and the image was not reproducible.
 COPY vendor/zlink-macros /tilo-vendor/zlink-macros
-RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
-    dnf install -y ${BOOTC_BUILD_PACKAGES} \
+COPY os/dev/configure-fedora-mirrors.sh /usr/local/bin/configure-fedora-mirrors
+# Fetches from the internet, so it runs in the build job's own network: podman hands a
+# nested build container public resolvers (the job's /etc/resolv.conf names only its own),
+# and the CI runners' egress serves those unreliably.
+RUN --network=host --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    configure-fedora-mirrors \
+    && dnf install -y ${BOOTC_BUILD_PACKAGES} \
     && dnf clean all \
     && echo "${BOOTC_SHA256}  /tilo-assets/${BOOTC_SOURCE}" | sha256sum -c - \
     && mkdir "/bootc-${BOOTC_VERSION}" \

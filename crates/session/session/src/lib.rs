@@ -400,7 +400,7 @@ struct Shared {
     /// Inviting people: the sheet a link into the workspace in front is made
     /// from, and what it made in this opening.
     invite: Option<InviteSeat>,
-    invite_made: RefCell<invite::Made>,
+    invite_made: RefCell<tilo_sheets::invite::Making>,
     /// The question deleting a workspace asks, and the workspace it is about.
     delete_workspace: Option<DeleteWorkspaceSeat>,
     delete_workspace_ask: RefCell<Option<tilo_desktop_model::WorkspaceSlot>>,
@@ -1649,6 +1649,13 @@ impl Session {
             service.seated(&options.person, &seat.earlier);
         }
         let services = mount_services(&mut doors, started);
+        // A launch asks the services whether one runs the app's model, and
+        // where one does names the resource it publishes, so the app launches
+        // hosted and opens no record of its own
+        // (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4).
+        if let Some(launch) = &options.launch {
+            launch.lend_services(Rc::clone(&services));
+        }
         // The session's own controls, served beside its services: an app
         // reads what they are now and invokes what changes them the way it
         // does every other resource of this device's.
@@ -2024,7 +2031,7 @@ impl Session {
         };
         session.watch_sockets()?;
         session.shared.directory_store.waking(options.wake.handle());
-        mount::connectors::start_all(&mut session);
+        mount::connectors::start_all(&session);
         if starts_locked {
             session.compositor.lock_now()?;
         }

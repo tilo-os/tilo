@@ -11,8 +11,10 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 use collaboration::{CollabEvent, CollabRequest, CollaborationManager, PeerTransport, RouteSpec};
@@ -20,15 +22,17 @@ use serde_json::json;
 use tilo_actions::ActionInvoker;
 use tilo_render_protocol::patch::local::{End, pair};
 use tilo_resource::{Edit, EditOp, Model as _, Segment};
-use tilolang_runtime::meta::Meta;
+use tilolang_runtime::meta::{FieldKind, Meta};
 use tilolang_runtime::place::{Place, Placement};
+use tilolang_runtime::store::{FieldSpec, Pred, Store as _};
+use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::chunk::{self, ChunkNo, Chunks};
-use tilolang_tilo::host::{Host, RootView};
+use tilolang_tilo::host::{Host, Opening, RootView};
 use tilolang_tilo::instance::record::InstanceRecord;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::items::Items;
-use tilolang_tilo::record::DynRecord;
+use tilolang_tilo::record::{DynRecord, DynValue};
 use tilolang_tilo::runtime::{MemorySink, NameHost, Principal};
 use tilolang_tilo::schema::{TypeSchema, lookup};
 
@@ -513,6 +517,14 @@ fn a_retitle_writes_and_syncs_the_card_s_chunk_alone() {
     let host = ada.instance.host().unwrap();
     let field = field_id(&meta, "Board", "left");
     assert_eq!(left(&host, &root, &field), inserted);
+    // The index reads the card's fields from the chunk that holds it: a retitle in a chunk
+    // above the record's is the card's new text, not an empty one read from the record.
+    let card_at =
+        ResourceRef::root(&root, board_schema(&meta).id).item(&inserted[4150], card_type(&meta));
+    assert_eq!(
+        host.store().first_text(&card_at).map(|(text, _)| text),
+        Some("changed".to_owned()),
+    );
 }
 
 #[test]
@@ -912,4 +924,427 @@ fn a_part_the_workspace_refuses_takes_back_the_chunks_it_wrote_before_it() {
         !String::from_utf8_lossy(&written).contains("written"),
         "the chunk the refused part's action wrote first holds none of it"
     );
+}
+
+/// A directory that goes with the test: where a store keeps an index a later open finds.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(name: &str) -> Self {
+        let dir =
+            std::env::temp_dir().join(format!("tilolang-chunks-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A host opened over the record `docs` holds, its indexes kept in `dir`, with the board loaded
+/// from the package lock `ids`. Every chunk not `sent` comes from its chunk loader, which records
+/// the numbers it was asked for.
+fn opened(docs: &mut Docs, dir: &Path, ids: &str, sent: bool) -> (Host, Rc<RefCell<Vec<ChunkNo>>>) {
+    let record = docs.doc(chunk::FIRST).clone();
+    let host = Host::open(
+        Opening {
+            record: Some(&record),
+            index_dir: Some(dir.to_owned()),
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    let asked: Rc<RefCell<Vec<ChunkNo>>> = Rc::default();
+    let chunks = docs.chunks();
+    let recorder = Rc::clone(&asked);
+    host.set_chunk_loader(Box::new(move |number| {
+        recorder.borrow_mut().push(number);
+        chunks.mirror(number).cloned()
+    }));
+    host.load_builtin(BOARD, ids).unwrap();
+    if sent {
+        docs.sync(&host);
+    } else {
+        host.sync_from(&record);
+    }
+    host.wait_index();
+    assert!(host.index_ready(), "the board's index is ready");
+    (host, asked)
+}
+
+/// The chunks `host` holds, in order.
+fn holding(host: &Host) -> Vec<ChunkNo> {
+    host.store()
+        .held_chunks()
+        .into_iter()
+        .map(|(number, _, _)| number)
+        .collect()
+}
+
+/// The card `id` of the board `root`, as a window reads it, and the chunk its map is in: the
+/// cards are written in order, a chunk of [`chunk::ITEMS`] each from the record's own chunk on.
+fn card_at(meta: &Meta, root: &str, board: &str, id: &str, at: usize) -> (ResourceRef, ChunkNo) {
+    let per = usize::try_from(chunk::ITEMS).unwrap();
+    let number = ChunkNo::try_from(at / per).unwrap();
+    (
+        ResourceRef::root(root, board).item(id, card_type(meta)),
+        number,
+    )
+}
+
+/// The cards the board `root` lists, in order, as the index answers them.
+fn listed(host: &Host, meta: &Meta, root: &str) -> Vec<String> {
+    let field = FieldSpec {
+        id: field_id(meta, "Board", "left"),
+        kind: FieldKind::Collection,
+    };
+    let at = ResourceRef::root(root, board_schema(meta).id);
+    host.store()
+        .listing(&at, &field)
+        .unwrap()
+        .ids()
+        .iter()
+        .map(|id| id.as_str().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_window_opens_over_the_manifest_and_its_index_and_reads_only_the_chunks_it_shows() {
+    let (_host, mut docs, meta, root, ids) = board();
+    let inserted = bulk(&mut docs, &meta, &root, 10_000);
+    let dir = TempDir::new("index-first");
+
+    // A load that was sent every chunk, keeping its index where the next open finds it.
+    let (whole, asked_whole) = opened(&mut docs, dir.path(), &ids, true);
+    let chunks = holding(&whole).len();
+    assert!(
+        chunks > 4,
+        "the cards are spread over their chunks: {chunks}"
+    );
+    let kept = whole.store().index_contents(BOARD_APP).unwrap();
+    assert!(asked_whole.borrow().is_empty(), "nothing had to be loaded");
+    whole.persist_index();
+    drop(whole);
+
+    // Opened over the manifest and that index: the lists and queries answer as a full load
+    // does, and no chunk is read for them.
+    let (lazy, asked) = opened(&mut docs, dir.path(), &ids, false);
+    assert_eq!(holding(&lazy), [chunk::FIRST]);
+    assert_eq!(
+        lazy.store().stats().builds,
+        0,
+        "the index was kept, not built"
+    );
+    assert_eq!(
+        listed(&lazy, &meta, &root),
+        inserted,
+        "every card, in order"
+    );
+    let found = lazy
+        .store()
+        .select(&card_type(&meta), &Pred::Const(true), None)
+        .unwrap();
+    assert_eq!(found.len(), 10_000, "the index counts them all");
+    assert!(
+        asked.borrow().is_empty(),
+        "the index answered without a chunk: {:?}",
+        asked.borrow()
+    );
+    assert_eq!(
+        lazy.store().index_contents(BOARD_APP).unwrap(),
+        kept,
+        "what it holds is what a full load derived"
+    );
+
+    // A row a window shows reads its own chunk, and only that one.
+    let board = board_schema(&meta).id;
+    let (card, number) = card_at(&meta, &root, &board, &inserted[5_000], 5_000);
+    assert!(lazy.store().record_at(&card).is_ok());
+    assert_eq!(*asked.borrow(), [number], "one chunk, the row's own");
+    let (card, number) = card_at(&meta, &root, &board, &inserted[9_999], 9_999);
+    assert!(lazy.store().record_at(&card).is_ok());
+    assert_eq!(
+        *asked.borrow(),
+        [2, number],
+        "one more chunk, the row's own"
+    );
+
+    // A write addressed to a chunk the store was not sent loads it, and only it.
+    let (edited, edited_chunk) = card_at(&meta, &root, &board, &inserted[7_000], 7_000);
+    assert!(!asked.borrow().contains(&edited_chunk));
+    let retitle = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "retitle")
+        .unwrap()
+        .id
+        .clone();
+    lazy.runtime()
+        .invoke_action(
+            &Principal::new("ada"),
+            (
+                retitle.as_str(),
+                vec![Value::resource(&edited), Value::Text("changed".into())],
+            ),
+        )
+        .unwrap();
+    let after = asked.borrow().clone();
+    assert_eq!(after.len(), 3, "the write loaded its own chunk: {after:?}");
+    assert_eq!(after[2], edited_chunk);
+    let text = field_id(&meta, "Card", "text");
+    assert_eq!(
+        lazy.store().record_at(&edited).unwrap().get(&text).cloned(),
+        Some(DynValue::Text("changed".into()))
+    );
+}
+
+/// A workspace of `cards` cards over its chunks, in a directory of its own: what its first open
+/// reads, and what an open over the index that first one keeps reads.
+fn opens_at(cards: usize) -> (usize, usize, Duration, Duration, Vec<ChunkNo>, Vec<ChunkNo>) {
+    let (_host, mut docs, meta, root, ids) = board();
+    bulk(&mut docs, &meta, &root, cards);
+    let filled = usize::try_from(u64::try_from(cards).unwrap().div_ceil(chunk::ITEMS)).unwrap();
+    assert_eq!(
+        docs.chunks().numbers().count(),
+        filled,
+        "the first run is written in the record's own chunk, the rest above it"
+    );
+    let dir = TempDir::new(&format!("open-{cards}"));
+
+    // With no index kept over its chunks, a window reads every one of them: the workspace is
+    // derived whole, as a store sent them all would have it, and keeps that index for the next
+    // open.
+    let first = Instant::now();
+    let (cold, asked) = opened(&mut docs, dir.path(), &ids, false);
+    let cold_open = first.elapsed();
+    let cold_held = holding(&cold);
+    let loaded = asked.borrow().len();
+    assert_eq!(cold_held.len(), filled, "every chunk the manifest names");
+    assert_eq!(loaded, filled - 1, "the record was opened with");
+    cold.persist_index();
+    drop(cold);
+
+    // With one, it opens over the record and the index, reading a chunk as a row shows it.
+    let warm = Instant::now();
+    let (lazy, asked) = opened(&mut docs, dir.path(), &ids, false);
+    let warm_open = warm.elapsed();
+    let held = holding(&lazy);
+    assert_eq!(
+        held,
+        [chunk::FIRST],
+        "the window opened over the record alone"
+    );
+    assert!(asked.borrow().is_empty(), "no chunk was read");
+    assert_eq!(lazy.store().stats().attaches, 1, "the record, once");
+    assert_eq!(
+        lazy.store().stats().builds,
+        0,
+        "the index was kept, not built"
+    );
+    assert!(
+        lazy.store().record(&root).is_ok(),
+        "the board reads from the index"
+    );
+    // A row far down the board reads its own chunk, and only that one.
+    let board = board_schema(&meta).id;
+    if cards > usize::try_from(chunk::ITEMS).unwrap() {
+        let (card, number) = card_at(&meta, &root, &board, &ids_of(cards, cards - 1), cards - 1);
+        assert!(lazy.store().record_at(&card).is_ok());
+        assert_eq!(*asked.borrow(), [number], "the row's chunk alone");
+    }
+    (filled, loaded, cold_open, warm_open, cold_held, held)
+}
+
+/// The id `bulk` gives the card at `at`.
+fn ids_of(_cards: usize, at: usize) -> String {
+    format!("c{at}")
+}
+
+#[test]
+fn a_workspace_opens_with_the_same_chunks_at_a_thousand_and_ten_thousand_cards() {
+    for cards in [1_000_usize, 10_000] {
+        let (filled, loaded, cold, warm, _, held) = opens_at(cards);
+        println!(
+            "{cards} cards over {filled} chunks: first open read {loaded} chunks in {cold:?}, \
+             opened over the index in {warm:?} holding {held:?}"
+        );
+        // What a window shows is the record and the chunks its rows are in, which it reads as
+        // they scroll: an open that read every chunk took minutes at ten thousand.
+        assert!(
+            warm < Duration::from_secs(10),
+            "{cards} cards opened in {warm:?}"
+        );
+    }
+}
+
+/// The record a replica opens from the copies it keeps on disk, on the route `route`.
+fn opened_from_disk(
+    route: &RouteSpec,
+    documents: &Rc<dyn durable_store::DurableStore>,
+    me: &str,
+) -> InstanceRecord {
+    let mut manager = CollaborationManager::with_peer_transport(Routed {
+        me: me.to_owned(),
+        wire: Wire::default(),
+        mine: Rc::default(),
+        primary: None,
+        answer: None,
+    });
+    assert!(manager.send(CollabRequest::Hello {
+        app_id: route.app_id.clone(),
+        cluster_id: route.cluster_id,
+        record: route.record.clone(),
+        record_kind: None,
+        handle: Some(me.to_owned()),
+    }));
+    let _ = manager.poll();
+    InstanceRecord::open(manager, documents, me).unwrap()
+}
+
+#[test]
+fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() {
+    let (_host, _docs, meta, root, ids) = board();
+    let field = field_id(&meta, "Board", "left");
+    let schema = board_schema(&meta);
+    let route = RouteSpec::app(BOARD_APP, uuid::Uuid::new_v4());
+    let profile = tempfile::tempdir().unwrap();
+    let documents: Rc<dyn durable_store::DurableStore> =
+        Rc::new(app_state::FsStore::new(profile.path()));
+    let mut record = opened_from_disk(&route, &documents, "ada");
+
+    // The board's root in the record's own chunk, then one card into chunk 2, as the door writes
+    // them: nothing of this reaches another replica.
+    let board_ty = meta
+        .types
+        .iter()
+        .find(|declared| declared.name == "Board")
+        .unwrap()
+        .id
+        .clone();
+    let root_action = DynAction {
+        app: BOARD_APP.to_owned(),
+        kind: board_ty.clone(),
+        action_id: "create".to_owned(),
+        args: json!({}),
+        authorship: Authorship::default(),
+        edits: vec![DynEdit::Create {
+            id: root.clone(),
+            record: DynRecord::empty(lookup(&board_ty).unwrap())
+                .unwrap()
+                .to_json(),
+        }],
+    };
+    record
+        .apply_change(&root_action, &ActionInvoker::actor("ada"), None)
+        .unwrap();
+    let card_ty = card_type(&meta);
+    let card = "c0".to_owned();
+    let put = DynAction {
+        app: BOARD_APP.to_owned(),
+        kind: card_ty.clone(),
+        action_id: "add".to_owned(),
+        args: json!({}),
+        authorship: Authorship::default(),
+        edits: vec![
+            DynEdit::RunChunk {
+                holder: root.clone(),
+                field: field.clone(),
+                chunk: 2,
+                last: "0000000000".to_owned(),
+                len: 1,
+            },
+            DynEdit::Insert {
+                id: root.clone(),
+                item: card.clone(),
+                record: DynRecord::empty(lookup(&card_ty).unwrap())
+                    .unwrap()
+                    .to_json(),
+                at: Placement::At {
+                    place: Place {
+                        parent: None,
+                        field: field.clone(),
+                        key: "0000000000".to_owned(),
+                    },
+                    was: None,
+                }
+                .encode(),
+            }
+            .in_chunk(2),
+        ],
+    };
+    record
+        .apply_change(&put, &ActionInvoker::actor("ada"), None)
+        .unwrap();
+    assert!(
+        record.chunk(2).is_some(),
+        "the record holds the chunk it wrote"
+    );
+    record.flush();
+    assert_eq!(
+        record.save_status(),
+        collaboration::record::RecordSaveStatus::Saved
+    );
+    drop(record);
+
+    // Opened again from the same copies, with no change from anyone: the chunk comes with the
+    // record, and the card is where it was written.
+    let reopened = opened_from_disk(&route, &documents, "ada");
+    assert!(
+        reopened.chunk(2).is_some(),
+        "the chunk's own copy was opened with the record"
+    );
+    assert_eq!(held_in(reopened.chunks(), 2, &root, &schema), 1);
+    assert_eq!(
+        Items::across(reopened.chunks(), BOARD_APP, &root, &schema)
+            .resolve(&schema)
+            .items(None, &field),
+        vec![card.clone()]
+    );
+
+    // And a window over it reads the card through the record's change.
+    let platform = Rc::new(Board {
+        ids: RefCell::new(ids),
+    });
+    let (app_end, _patches) = pair();
+    let mut instance = Instance::new(
+        Config {
+            app: BOARD_APP.to_owned(),
+            me: "ada".to_owned(),
+            mode: Mode::Live,
+            device: None,
+            index_dir: None,
+            record_loader: None,
+            root: RootView::default(),
+            sink: Some(Box::new(MemorySink::new())),
+        },
+        Rc::clone(&platform) as Rc<dyn Platform>,
+        Rc::new(Alone),
+        Box::new(app_end),
+    );
+    instance.sync_chunks(reopened.chunks());
+    instance.update();
+    assert_eq!(left(&instance.host().unwrap(), &root, &field), [card]);
+}
+
+/// The same at a hundred thousand cards: minutes under a debug build, seconds under a release
+/// one.
+#[test]
+#[ignore = "a hundred thousand cards take minutes to derive under a debug build"]
+fn a_hundred_thousand_cards_open_over_their_index() {
+    let (filled, loaded, cold, warm, _, held) = opens_at(100_000);
+    println!(
+        "100000 cards over {filled} chunks: first open read {loaded} chunks in {cold:?}, \
+         opened over the index in {warm:?} holding {held:?}"
+    );
+    assert!(warm < Duration::from_secs(10), "opened in {warm:?}");
 }

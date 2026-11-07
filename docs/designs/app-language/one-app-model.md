@@ -119,6 +119,14 @@ document host, a capture's fixture — supplies its own connection instead
 (`HostContext::provide_connection`), and the same root, the same views and the
 same submissions run.
 
+**Whether a launch is hosted follows from the session, not the app.** The
+session asks its services whether one runs the app's model
+(`Service::hosted`) and names the address that service publishes the record
+at; the launcher hands it across the sandbox's cleared environment
+(`TILO_HOSTED_RESOURCE`) as the plan carries it. So an app the session serves
+opens no document with no code of its own saying so, and the same binary on a
+device with no session keeps its record as it always did.
+
 ## 5. What a Rust developer writes
 
 ```rust

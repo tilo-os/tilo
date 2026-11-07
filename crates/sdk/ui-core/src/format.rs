@@ -536,6 +536,45 @@ pub fn money(micros: u64) -> String {
     Formats::current().money(micros)
 }
 
+/// The millionths of the currency an amount a person typed names: `5`,
+/// `0.50`, `12.5` or `$5`, read the way [`money`] writes them.
+///
+/// `None` where the text names no amount, so the caller says what it wanted
+/// instead of taking a guess.
+///
+/// ```
+/// use tilo_ui::format::parse_money;
+/// assert_eq!(parse_money("5"), Some(5_000_000));
+/// assert_eq!(parse_money("0.50"), Some(500_000));
+/// assert_eq!(parse_money("twelve"), None);
+/// ```
+#[must_use]
+pub fn parse_money(text: &str) -> Option<u64> {
+    let text = text.trim();
+    let text = text.strip_prefix('$').unwrap_or(text).trim();
+    let digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
+    let (units, hundredths) = match text.split_once('.') {
+        Some((units, hundredths)) => (units, Some(hundredths)),
+        None => (text, None),
+    };
+    if units.is_empty() || !digits(units) {
+        return None;
+    }
+    let hundredths = match hundredths {
+        None => 0,
+        Some(placed) if placed.is_empty() || placed.len() > 2 || !digits(placed) => return None,
+        Some(placed) => {
+            let value: u64 = placed.parse().ok()?;
+            if placed.len() == 1 { value * 10 } else { value }
+        }
+    };
+    units
+        .parse::<u64>()
+        .ok()?
+        .checked_mul(1_000_000)?
+        .checked_add(hundredths * 10_000)
+}
+
 /// A count of things: `12 items`. See [`Formats::items`].
 #[must_use]
 pub fn items(n: u64) -> String {

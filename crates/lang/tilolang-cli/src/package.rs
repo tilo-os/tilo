@@ -89,22 +89,54 @@ fn toml_string(value: &str) -> String {
     toml::Value::String(value.to_owned()).to_string()
 }
 
+/// The outside origins a package's types hold, each once, in a fixed order: `imap`, `youtube`.
+///
+/// A type names the kind of an outside service's resource it holds (`type Message (origin:
+/// imap.message)`), and the system runs a connector process for the origin its manifest
+/// declares ([`tilolang::origin`]). The manifest's `[entrypoint] origins` is what the launcher
+/// admits a connector with, so a package whose manifest leaves one out is refused the connector
+/// it needs.
+#[must_use]
+pub fn origins_of(meta: &PackageMeta) -> Vec<&'static str> {
+    let mut origins: Vec<&'static str> = Vec::new();
+    for ty in &meta.types {
+        let Some(origin) = ty.origin.as_deref().and_then(|kind| kind.split('.').next()) else {
+            continue;
+        };
+        // Only the origins the platform runs a connector for: the session's own kinds
+        // (`session.desk`) are written by the session, never by a process.
+        let connector = ["imap", "youtube"].into_iter().find(|name| *name == origin);
+        if let Some(name) = connector
+            && !origins.contains(&name)
+        {
+            origins.push(name);
+        }
+    }
+    origins.sort_unstable();
+    origins
+}
+
 /// The manifest of the app `meta` is, signed by `publisher` (hex Ed25519 key).
 #[must_use]
 pub fn manifest_text(meta: &PackageMeta, options: &BuildOptions, publisher: &str) -> String {
     let category = meta.category.as_deref().map_or("Utility", menu_category);
-    // A package whose types hold a mail server's resources runs the mail origin: the
-    // connector reaches the account's servers and reads its credentials from custody, both in
-    // the runtime's native code, never the package's.
-    let mail = meta
-        .types
-        .iter()
-        .any(|t| t.origin.as_deref().is_some_and(|o| o.starts_with("imap.")));
-    let (capabilities, namespaces, net) = if mail {
+    // A package whose types hold an outside service's resources runs that origin's connector:
+    // it reaches the service and reads the credentials from custody, both in the runtime's
+    // native code, never the package's. The origins are the ones the platform runs a connector
+    // for; a package with none opens no socket of its own.
+    let origins = origins_of(meta);
+    // The mail origin also reads the account's credentials from custody; the others hold none.
+    let mail = origins.contains(&"imap");
+    let (capabilities, namespaces, net) = if !origins.is_empty() {
         (
-            "required = [\"network.http\"]\noptional = [\"secrets\"]",
+            if mail {
+                "required = [\"network.http\"]\noptional = [\"secrets\"]"
+            } else {
+                "required = [\"network.http\"]\noptional = []"
+            },
             "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]",
-            "# The mail origin speaks IMAP and SMTP to the hosts the account's settings name.\nmode = \"host\"",
+            "# Each origin's connector speaks to the hosts its service names, in the sandbox\n\
+             # the launcher runs it in.\nmode = \"host\"",
         )
     } else {
         (
@@ -199,8 +231,14 @@ ext = []
         capabilities = capabilities,
         namespaces = namespaces,
         net = net,
-        // The system runs the mail connector for the app, in this sandbox, window or not.
-        origins = if mail { "origins = [\"imap\"]\n" } else { "" },
+        // The system runs one connector per outside origin the app's types hold, in this
+        // sandbox, window or not.
+        origins = if origins.is_empty() {
+            String::new()
+        } else {
+            let list: Vec<String> = origins.iter().map(|origin| toml_string(origin)).collect();
+            format!("origins = [{}]\n", list.join(", "))
+        },
     )
 }
 

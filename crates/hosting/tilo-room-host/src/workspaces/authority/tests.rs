@@ -383,26 +383,22 @@ async fn the_address_is_invited_and_mailed(
     signed_invitation
 }
 
-/// Someone joins with the mailed invitation — asks, proves, and the owner lets
-/// them in — which takes the address off the list.
+/// Someone joins with the mailed invitation — asks and proves — which admits
+/// them by the invitation's own grant and takes the address off the list.
 async fn joining_takes_it_off_the_list(
     workspaces: &Workspaces,
     owner: &DeviceCert,
     workspace: &str,
     invitation: Vec<u8>,
 ) {
-    let ask = |request| workspaces.page_rooms(owner, request);
     let listed = || read_wait_list(workspaces, owner, workspace);
-    let request_id = ask_to_join(workspaces, invitation).await;
-    assert_eq!(listed().await.len(), 2, "asking is not joining");
-    assert!(matches!(
-        ask(WorkspacesRequest::Admit {
-            workspace: workspace.to_owned(),
-            request_id,
-        })
-        .await,
-        WorkspacesReply::Workspace(_)
-    ));
+    assert!(
+        matches!(
+            ask_to_join(workspaces, invitation).await,
+            JoinReply::Admitted { .. }
+        ),
+        "the mailed invitation admits the person who holds it"
+    );
     assert_eq!(
         listed()
             .await
@@ -666,9 +662,8 @@ async fn read_wait_list(
     listed
 }
 
-/// A new device asks to join with `invitation` and proves it holds its key:
-/// it waits to be let in, under the request id this returns.
-async fn ask_to_join(workspaces: &Workspaces, invitation: Vec<u8>) -> [u8; 32] {
+/// A new device asks to join with `invitation` and proves it holds its key.
+async fn ask_to_join(workspaces: &Workspaces, invitation: Vec<u8>) -> JoinReply {
     let (guest_key, guest) = guest_device();
     let request_id = rand::random();
     let JoinReply::Challenge { challenge } = workspaces
@@ -682,15 +677,13 @@ async fn ask_to_join(workspaces: &Workspaces, invitation: Vec<u8>) -> [u8; 32] {
         panic!("no challenge");
     };
     let signature = guest_key.sign(&join_proof_digest(&challenge)).to_bytes();
-    let waiting = workspaces
+    workspaces
         .page_join(JoinStep::Prove {
             challenge,
             signature,
             name: "Bo".into(),
         })
-        .await;
-    assert_eq!(waiting, JoinReply::Waiting);
-    request_id
+        .await
 }
 
 /// Secrets for a door that sends no mail, which lists an address at once.

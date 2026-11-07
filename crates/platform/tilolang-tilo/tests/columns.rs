@@ -692,6 +692,9 @@ fn inbox_workspace_of(
     use tilolang_tilo::record::{DynRecord, DynValue};
 
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(source, "")]);
+    // The index writes what the filters that read the clock hold at the workspace's clock: a
+    // query that answers from it is asked at the same time.
+    ada.host.set_clock(|| NOW.to_owned());
     let meta = packages[0].meta.clone();
     let mail = ada.host.root_of(INBOX_APP).unwrap();
     ada.commit();
@@ -800,20 +803,27 @@ fn a_filter_of_a_run_and_a_clock_conjunct_pages_at_the_first_page_and_lists_what
         "filling the first page checked {checked} of 10,000"
     );
     // Every third conversation is muted (3,334) and every fifth snoozed (2,000), 667 of them
-    // both: 4,667 out of the inbox's 10,000, which leaves 5,333. The listing is sized by the
-    // fewest items any one conjunct can name — here the snoozed run's 6,666 — so its length is
-    // an upper bound on what it holds; read to its end, the listing says it is exactly that.
+    // both: 4,667 out of the inbox's 10,000, which leaves 5,333. The filter is a column like
+    // any other, written at the clock it is asked at, so the listing is sized by its count:
+    // it is that many, and a badge reads that without reading the workspace.
     let listing = inbox_listing(&ada, &meta, &mail);
-    assert_eq!(listing.len(), 6_666);
-    assert!(
-        !listing.len_is_exact(),
-        "the list says its length is up to that many"
-    );
-    let kept = (0..listing.len())
-        .filter_map(|index| listing.get(index))
-        .count();
-    assert_eq!(kept, 5_333);
-    assert!(listing.len_is_exact(), "every entry is checked now");
+    assert_eq!(listing.len(), 5_333);
+    assert!(listing.len_is_exact(), "the list says how many it holds");
+    assert_eq!(listing.count(), 5_333);
+}
+
+#[test]
+fn a_clock_filtered_count_is_exact_at_every_size() {
+    // The same inbox at 1k and at 10k, its count read from the filter's column: the
+    // conversations neither muted (every third) nor snoozed (every fifth).
+    for n in [1_000usize, 10_000] {
+        let held = (0..n).filter(|i| i % 3 != 0 && i % 5 != 0).count();
+        let (ada, meta, mail) = inbox_workspace(n);
+        let listing = inbox_listing(&ada, &meta, &mail);
+        assert_eq!(listing.len(), held, "{n} conversations");
+        assert!(listing.len_is_exact(), "{n} conversations");
+        assert_eq!(listing.count(), held, "{n} conversations");
+    }
 }
 
 /// The view that lists the inbox the way the Mail window does: `threads.matching("is:inbox")`.
@@ -871,7 +881,7 @@ fn a_snooze_ending_moves_its_thread_into_the_inbox_without_reading_the_workspace
 
     // A workspace of 1,000 conversations in the inbox, the first snoozed until 2027: the view
     // starts with the other 999.
-    let clock = Rc::new(RefCell::new("2026-06-29T09:00:00Z".to_owned()));
+    let clock = Rc::new(RefCell::new(NOW.to_owned()));
     let read = Rc::clone(&clock);
     let (ada, _meta, _mail) = inbox_workspace_of(INBOX_VIEW, 1_000, |i, item, meta| {
         use serde_json::json;
@@ -884,18 +894,19 @@ fn a_snooze_ending_moves_its_thread_into_the_inbox_without_reading_the_workspace
             snoozed.clone_from(&json!("2027-01-01T00:00:00Z"));
         }
     });
-    ada.host.runtime().set_clock(move || read.borrow().clone());
+    ada.host.set_clock(move || read.borrow().clone());
     let mut view = ada.view(INBOX_APP);
     assert_eq!(texts(view.tree()).len(), 999);
-    // A query reads the running clock to the minute: the view waits for the next one.
-    assert_eq!(
-        view.wakes_at(),
-        tilolang::calendar::instant("2026-06-29T09:01:00Z")
-    );
+    // An idle view waits for the instant the snooze ends, not for the next minute: nothing reads
+    // it in between, and it wakes exactly there.
+    let ends = tilolang::calendar::instant("2027-01-01T00:00:00Z").unwrap();
+    assert_eq!(view.wakes_at(), Some(ends));
+    *clock.borrow_mut() = "2026-12-31T23:59:00Z".to_owned();
+    assert!(!view.is_stale(), "the view woke before the snooze ended");
 
     // The clock reaches the snooze's end: the view runs again, and the conversation moves in,
     // its row built (one item read), not the workspace read again.
-    *clock.borrow_mut() = "2027-06-01T00:00:00Z".to_owned();
+    *clock.borrow_mut() = "2027-01-01T00:00:00Z".to_owned();
     assert!(view.is_stale(), "the snooze's end opened the inbox");
     let before = ada.host.store().read_stats().evaluated;
     view.poll_patches().unwrap();
@@ -909,6 +920,13 @@ fn a_snooze_ending_moves_its_thread_into_the_inbox_without_reading_the_workspace
         .evaluated
         .saturating_sub(before);
     assert!(filled <= 2, "the change checked {filled} items");
+    // No value the filter compares lies after it: the view has nothing to wait for, and no
+    // minute of the clock wakes it again.
+    assert_eq!(
+        view.wakes_at(),
+        None,
+        "the inbox waits for no time it reads"
+    );
 }
 
 /// A list filtered by a set's member and more, of conversations the person's device has just

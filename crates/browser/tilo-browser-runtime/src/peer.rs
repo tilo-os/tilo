@@ -461,9 +461,11 @@ fn join_reply_json(reply: tilo_relay_protocol::workspaces::JoinReply) -> serde_j
             role,
             expires_at_ns,
             inviter,
+            members,
         } => serde_json::json!({
             "kind": "invitation", "room": workspace, "workspaceId": workspace_id.to_string(),
             "name": name, "role": role, "expiresAtNs": expires_at_ns.to_string(),
+            "members": members,
             "inviter": inviter.map(|inviter| serde_json::json!({
                 "name": inviter.name, "userPublicKey": hex::encode(inviter.user_public_key),
             })),
@@ -489,6 +491,68 @@ fn request_id(text: &str) -> Result<[u8; 32], JsError> {
         .map_err(js_error)?
         .try_into()
         .map_err(|_| js_error("request id must be 32 bytes"))
+}
+
+/// The short link of `invitation` (its signed text, as the host made it) for
+/// the page at `base`: the invitation sealed under a key the link alone
+/// carries and left on that site's shelf. `host` is the origin of the host
+/// it admits into, which the link names so whoever follows it knows where the
+/// workspace is. Resolves to `https://<site>/i/<handle>#<key>`.
+///
+/// # Errors
+///
+/// `base` is not a web address, `invitation` does not verify, or the site
+/// could not be reached to keep it — the invitation's own text still works
+/// then, which the caller hands over instead.
+#[wasm_bindgen(js_name = sealedInvitationLink)]
+pub async fn sealed_invitation_link(
+    base: String,
+    host: String,
+    invitation: String,
+) -> Result<String, JsError> {
+    let origin = base.trim().trim_end_matches('/');
+    let site = tilo_workspace_directory::web_origin(&format!("{origin}/")).map_err(js_error)?;
+    let join = tilo_workspace_join::decode_and_verify_invitation_text(
+        &invitation,
+        None,
+        &RevocationList::new(),
+        ui::time::unix_now_ns(),
+    )
+    .map_err(js_error)?;
+    // The shelf this leaves it on lives as long as the invitation: the link
+    // is used, not kept, so no caller takes it back from here.
+    let store = tilo_workspace_directory::Store::default();
+    store
+        .shelve_soon(
+            &hex::encode(join.invite_id()),
+            join.signed_invitation().to_vec(),
+            join.grant().expires_at_ns,
+            &site,
+            Some(&host),
+        )
+        .await
+        .map(|shelved| shelved.link)
+        .map_err(js_error)
+}
+
+/// The invitation the link's `secret` names (its handle and the key in the
+/// link's fragment), as the page takes it: fetched from the shelf of `site`
+/// and opened with that key. An invitation's own text is answered as it came,
+/// so every build's links join the same way. Resolves to JSON:
+/// `{invitation, host?}`, the invitation's text as [`inspect_invitation`] and
+/// [`ask_to_join`] take it, and the origin of the host it admits into where
+/// the device that left it named one.
+///
+/// # Errors
+///
+/// The shelf could not be reached, holds nothing under the handle any more,
+/// or the key does not open what it answered with.
+#[wasm_bindgen(js_name = redeemInvitation)]
+pub async fn redeem_invitation(site: String, secret: String) -> Result<String, JsError> {
+    let sealed = tilo_workspace_directory::sealed_invitation(&site, &secret)
+        .await
+        .map_err(js_error)?;
+    serde_json::to_string(&sealed).map_err(|error| js_error(error.to_string()))
 }
 
 /// What `invitation` (the signed invitation's bytes) offers at the host
@@ -786,7 +850,9 @@ struct JsWindow {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct JsPresence {
-    seq: u64,
+    /// This view's sequence, as the shell wire carries it: receivers order
+    /// views by it, and one at or below the last they took is a repeat.
+    seq: u32,
     sent_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     focus: Option<JsRecord>,
@@ -889,7 +955,7 @@ fn shell_to_js(shell: collab_types::presence::ShellPresence) -> JsPresence {
             record: window.record.clone(),
         });
     JsPresence {
-        seq: u64::from(shell.seq),
+        seq: shell.seq,
         sent_at_ms: shell.sent_at_ms,
         focus,
         pointer: None,
@@ -973,7 +1039,7 @@ fn shell_from_js(
         }
     }
     Ok(Some(collab_types::presence::ShellPresence {
-        seq: u32::try_from(value.seq).unwrap_or(u32::MAX),
+        seq: value.seq,
         sent_at_ms: value.sent_at_ms,
         label: participant.label.clone(),
         agent: participant.kind == "agent",

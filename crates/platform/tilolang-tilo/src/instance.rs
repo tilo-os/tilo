@@ -808,7 +808,7 @@ impl Instance {
         host.runtime()
             .set_web(PlatformWeb(Rc::clone(&self.platform)));
         let platform = Rc::clone(&self.platform);
-        host.runtime().set_zone(move || platform.zone());
+        host.set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);
         host.runtime().set_zone_name(move || platform.zone_name());
         let platform = Rc::clone(&self.platform);
@@ -1907,28 +1907,20 @@ impl Instance {
 
     // ----- frames --------------------------------------------------------------------------
 
-    /// The first half of a frame over the record's chunks: [`Self::sync`] of the record (chunk
-    /// [`crate::chunk::FIRST`]), and each chunk above it this replica holds into the store,
-    /// which reads and writes there the resources the record's manifest places in it.
+    /// The first half of a frame over the record's chunks: every chunk of the record this
+    /// replica holds into the store, which reads and writes there the resources the record's
+    /// manifest places in it, and reads the ones it was not sent when a read or a write reaches
+    /// them ([`Host::sync_chunks`]); and the record's frame ([`Self::sync`]).
     pub fn sync_chunks(&mut self, chunks: &crate::chunk::Chunks) {
-        let above = || {
-            chunks
-                .docs()
-                .filter(|(chunk, _)| *chunk != crate::chunk::FIRST)
-        };
-        // The chunks go into the store before the record's frame derives over them, and again
-        // after it, when the frame is the one that opened the store.
         let mut moved = false;
         if let Some(host) = self.host.borrow().as_ref().cloned() {
-            for (chunk, doc) in above() {
-                moved |= host.sync_chunk(chunk, doc);
-            }
+            moved |= host.sync_chunks(chunks);
         }
+        // The record's frame reads the store the chunks were brought into, and opens the host
+        // when it was not there yet: the chunks go in again after it, then.
         self.sync(chunks.first());
         if let Some(host) = self.host.borrow().as_ref().cloned() {
-            for (chunk, doc) in above() {
-                moved |= host.sync_chunk(chunk, doc);
-            }
+            moved |= host.sync_chunks(chunks);
         }
         if moved {
             self.moved = true;

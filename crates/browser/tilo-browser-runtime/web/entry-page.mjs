@@ -22,7 +22,7 @@ import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './door-wait-list.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
-import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, profileDevice, withCustody} from './peer.mjs';
+import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, syncProfile} from './identity-actions.mjs';
@@ -35,10 +35,10 @@ import {createReconnect, domReconnectView} from './reconnect.mjs';
 import {followConnection} from './connection-status.mjs';
 import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
-import {createWorkspaceActions, INVITE, invitedLine} from './workspace-actions.mjs';
+import {createWorkspaceActions, invitedLine} from './workspace-actions.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces,
-  heldWorkspaces, hostDeviceOf, hostToReconnect, isPublicHome, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
+  heldWorkspaces, hostDeviceOf, hostToReconnect, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
   keptMembership, listedWorkspaces,
   membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
   settleFailedWorkspace, workspaceActions as workspaceSwitchActions, workspaceChoices,
@@ -104,6 +104,91 @@ function card(text, choices, name) {
       actions.append(button);
     });
     form.append(message, actions);
+    document.body.append(form);
+  });
+}
+
+/** What each role lets someone do, in the words the desktop's role chooser
+ * uses (`workspace-settings-role-<role>-preview`), so an invitation says what
+ * it gives, not only its name. */
+const ROLE_WORDS = {
+  owner: 'you can manage people, permissions and settings',
+  moderator: 'you can edit shared work and remove other people’s messages',
+  editor: 'you can view, comment on and edit shared work',
+  commenter: 'you can add comments, but not edit shared work',
+  viewer: 'you can view shared work, but not comment or edit it',
+};
+
+/** The colour an initial is drawn in on `background`, `#rrggbb`: black or
+ * white, whichever has more contrast, by WCAG relative luminance. */
+function readableOn(background) {
+  const channels = [1, 3, 5].map(at => parseInt(background.slice(at, at + 2), 16) / 255)
+    .map(channel => channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+  const luminance = 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+  // Where black and white read alike (contrast 4.58:1 each way).
+  return luminance > 0.179 ? '#101114' : '#ffffff';
+}
+
+/** What an invitation offers, before the person joins: who it is from, the
+ * workspace it is for and how many people are in it, and what the role lets
+ * them do. `inviterColour` is the presence colour of who made it, where the
+ * page has one for them. Resolves to whether they join. */
+function invitationCard(offer, inviterColour) {
+  return new Promise(resolve => {
+    const form = document.createElement('form');
+    form.className = 'tilo-entry-card tilo-invite';
+    form.dataset.card = 'invite';
+    const inviter = offer.inviter?.name || 'Someone';
+    const who = document.createElement('div');
+    who.className = 'tilo-invite-who';
+    // The picture a person sets is not the workspace's to hand to someone
+    // who is not in it yet; their initial is, as the desktop draws who it
+    // has no picture of — in the colour presence gives them everywhere else
+    // the desktop shows them.
+    const face = document.createElement('span');
+    face.className = 'tilo-invite-face';
+    face.setAttribute('aria-hidden', 'true');
+    face.textContent = [...inviter][0]?.toUpperCase() ?? '?';
+    if (typeof inviterColour === 'string' && /^#[0-9a-f]{6}$/i.test(inviterColour)) {
+      face.style.background = inviterColour;
+      face.style.color = readableOn(inviterColour);
+    }
+    const name = document.createElement('span');
+    name.className = 'tilo-invite-name';
+    name.textContent = inviter;
+    who.append(face, name);
+    const lead = document.createElement('p');
+    lead.className = 'tilo-invite-lead';
+    lead.textContent = 'invites you to';
+    const workspace = document.createElement('p');
+    workspace.className = 'tilo-invite-workspace';
+    workspace.textContent = offer.workspaceName;
+    const place = document.createElement('div');
+    place.className = 'tilo-invite-place';
+    place.append(workspace);
+    if (Number.isInteger(offer.members) && offer.members > 0) {
+      const people = document.createElement('p');
+      people.className = 'tilo-invite-people';
+      people.textContent = offer.members === 1 ? '1 person' : `${offer.members} people`;
+      place.append(people);
+    }
+    const role = typeof offer.role === 'string' && offer.role ? offer.role : 'member';
+    const roleLine = document.createElement('p');
+    roleLine.className = 'tilo-invite-role';
+    const roleName = document.createElement('strong');
+    roleName.textContent = role[0].toUpperCase() + role.slice(1);
+    roleLine.append(roleName, ` — ${ROLE_WORDS[role] ?? 'you join the workspace'}.`);
+    const actions = document.createElement('div');
+    actions.className = 'tilo-entry-actions';
+    for (const [label, join] of [['Join', true], ['Not now', false]]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = label;
+      if (join) button.className = 'tilo-entry-primary';
+      button.addEventListener('click', () => { form.remove(); resolve(join); });
+      actions.append(button);
+    }
+    form.append(who, lead, place, roleLine, actions);
     document.body.append(form);
   });
 }
@@ -661,7 +746,6 @@ export async function startEntryPage({mode}) {
   let enteredViaDoor = false;
   /** The workspace whose door this page was let in through, or waits at. */
   let visitedAt = null;
-  globalThis.tiloInvites = 0;
   /** Keeping the person this page joined as (`identity-actions.mjs`), once there is one. */
   let identityActions = null;
   /** Setting up a machine (`machine-setup.mjs`), once the page is open. */
@@ -716,7 +800,6 @@ export async function startEntryPage({mode}) {
     },
     ...(query.get('room') ? {room: query.get('room')} : {}),
     ...(query.get('workspace') ? {workspaceName: query.get('workspace')} : {}),
-    ...(query.has('invite') ? {onInvite: () => { globalThis.tiloInvites += 1; }} : {}),
     // The directory sheet's Join, which its door granted: the page joins with
     // the invitation it answered, then shows the workspace.
     onJoinGranted: joined => { void openGrantedWorkspace(joined); },
@@ -891,11 +974,20 @@ export async function startEntryPage({mode}) {
         wait: () => Promise.reject(new Error('the home workspace did not let this device in'))});
     },
     inspectInvitation: (origin, invitation) => inspectInvitation(origin, invitation, {runtime}),
+    // A link's `invite` names the invitation its host keeps: the page opens
+    // it before anything reads it.
+    openInvitation: (origin, secret) => openInvitation(origin, secret, {runtime}),
+    // The invite sheet this page's desktop shows, when the page is in a
+    // workspace: made and listed through that workspace's host, in links
+    // that open this page.
+    invite: ({peer, entry}) => peer?.workspace && !embed ? {base: entry.base, origin: peer.origin,
+      workspace: peer.workspace, name: displayName ?? '', user: peer.userPublicKey ?? ''} : null,
     confirmInvitation: offer => {
       workspaceName = offer.workspaceName || workspaceName;
       invitedTo = offer.workspaceName || null;
-      return card(`${offer.inviter?.name ?? 'Someone'} invites you to “${offer.workspaceName}” as ${offer.role}.`,
-        [['Join', true], ['Not now', false]]);
+      const inviter = offer.inviter?.userPublicKey;
+      return invitationCard(offer,
+        typeof inviter === 'string' ? runtime?.presenceColor?.(inviter) : undefined);
     },
     joinWorkspace: async options => {
       const identity = await browserPerson();
@@ -932,7 +1024,6 @@ export async function startEntryPage({mode}) {
     },
     // An embed lists no host actions, so it has nothing to invite with:
     // the desktop offers no Invite there rather than one that does nothing.
-    ...(embed ? {} : {onInvite: () => { void workspaceActions?.perform(INVITE.id); }}),
     pairDevice: async ({origin, room, userPublicKey, invite, workspace}) => {
       displayName = chosenDisplayName(userPublicKey) ?? defaultDisplayName(userPublicKey);
       let waiting = () => {};
@@ -1118,29 +1209,23 @@ export async function startEntryPage({mode}) {
     };
     hostActions?.('machine').setHostActions([SET_UP]);
     const person = () => page.peer?.userPublicKey ?? currentIdentity()?.userPublicKey;
-    const workspaceLink = (origin, room) => page.link.format({mode: 'desktop', target: {scope: {kind: 'room', host: origin, room}}});
-    // Whether the home's door lets only its members in (`admission` in its
-    // presence): then its bare link admits nobody new, and inviting someone
-    // is an invitation of their own.
-    let inviteOnlyHome = false;
-    const homeDoor = page.entry?.home?.admission;
-    if (homeDoor) {
-      void fetch(new URL('presence', homeDoor)).then(response => (response.ok ? response.json() : null))
-        .then(presence => { inviteOnlyHome = presence?.admission === 'invite'; }, () => {});
-    }
     // Only a desktop lists host actions and shows banners.
     workspaceActions = hostActions ? createWorkspaceActions({
       peer: page.peer,
       machines: () => (person() ? ownedHosts(person()) : []),
       lobby: async origin => connectPeer({origin, identity: await rootOfThisPage(page.peer), runtime, displayName, live: false}),
-      inviteLink: invitation => {
-        const url = workspaceLink(page.peer.origin, page.peer.workspace);
-        return `${url}${new URL(url).hash.includes('?') ? '&' : '?'}invite=${invitation}`;
+      // The invitation's short link, sealed onto this site's shelf, as the
+      // sheet makes it: the site keeps ciphertext it cannot read and the key
+      // rides in the link's fragment. A shelf that answers with nothing
+      // leaves the invitation's own text, which joins just the same.
+      inviteLink: async invitation => {
+        try {
+          return await runtime.sealedInvitationLink(page.entry.base, page.peer.origin, invitation);
+        } catch (error) {
+          console.warn('invitation not shelved:', error?.message ?? error);
+          return invitation;
+        }
       },
-      // A public workspace's link is its bare entry: anyone opening it joins
-      // through the door, as a guest.
-      publicLink: () => (!inviteOnlyHome && remembering(() => isPublicHome({home: page.entry?.home, homeWorkspace: homeWorkspaceOf(page.entry),
-        scope: here.kind === 'room' ? {...here, room: here.room ?? page.peer?.workspace} : null})) ? page.entry.base : null),
       open: async ({origin, room, name, hostDevice: holder}) => {
         keepJoinedHost({origin, room, userPublicKey: (await rootOfThisPage(page.peer)).userPublicKey});
         remembering(() => rememberEntered({origin, room, name, hostDevice: holder}));
@@ -1151,7 +1236,6 @@ export async function startEntryPage({mode}) {
         askWorkspaceName: save => askLine({label: 'Name of the new workspace', action: 'Create', save}),
         chooseMachine: origins => card('Create the workspace on', [...origins.map(origin => [new URL(origin).host, origin]), ['Cancel', null]]),
         share: shareCard,
-        copy: text => navigator.clipboard.writeText(text).then(() => true, () => false),
         waitingList: waitingCard,
         fail: text => card(text, [['Close', null]]),
       },

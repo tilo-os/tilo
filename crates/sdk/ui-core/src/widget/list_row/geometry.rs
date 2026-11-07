@@ -691,22 +691,36 @@ impl ListRowFace<'_> {
     pub fn leading_rect(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> Rect {
         let m = self.metrics(theme);
         let geo = self.geometry(rect, &m, text, theme);
-        match self.leading {
-            Some(RowLeading::Checkbox { icon: None, .. }) => {
-                // The whole leading column, row-tall: a box is a small target.
-                Rect::new(geo.leading.x0 - m.bleed, rect.y0, geo.text_x, rect.y1)
-            }
-            Some(RowLeading::Checkbox { icon: Some(_), .. }) => {
-                // Only the box takes the press: the glyph after it is what the row is.
-                Rect::new(
-                    geo.leading.x0 - m.bleed,
-                    rect.y0,
-                    geo.leading.x0 + m.icon,
-                    rect.y1,
-                )
-            }
-            _ => geo.leading,
-        }
+        let Some(RowLeading::Checkbox { icon, .. }) = self.leading else {
+            return geo.leading;
+        };
+        let hit = match icon {
+            // The whole leading column, row-tall: a box is a small target.
+            None => Rect::new(geo.leading.x0 - m.bleed, rect.y0, geo.text_x, rect.y1),
+            // Only the box takes the press; the glyph after it is what the row is, unless the
+            // target grown below reaches it.
+            Some(_) => Rect::new(
+                geo.leading.x0 - m.bleed,
+                rect.y0,
+                geo.leading.x0 + m.icon,
+                rect.y1,
+            ),
+        };
+        // `rect` is the row's band, which bleeds into the list's gutter as the rest of the row
+        // does: a press on the box stays in it.
+        self.reach_target(hit, checkbox_box(geo.leading, icon, &m), rect)
+    }
+
+    /// `hit` grown about `boxed` to the smallest target a pointer needs, kept inside `row` by
+    /// moving it, never by shrinking it: a press at the row's edge still reaches all of it.
+    fn reach_target(&self, hit: Rect, boxed: Rect, row: Rect) -> Rect {
+        let side = self.check_target;
+        let grown = hit.union(Rect::from_center_size(boxed.center(), (side, side)));
+        let width = grown.width().min(row.width());
+        let height = grown.height().min(row.height());
+        let x0 = grown.x0.clamp(row.x0, row.x1 - width);
+        let y0 = grown.y0.clamp(row.y0, row.y1 - height);
+        Rect::new(x0, y0, x0 + width, y0 + height)
     }
 
     /// Where the title starts: the inset separator starts here too.
@@ -718,5 +732,19 @@ impl ListRowFace<'_> {
         theme: &Theme,
     ) -> f64 {
         self.geometry(rect, m, text, theme).text_x
+    }
+}
+
+/// Where a row draws the box it leads with, in `slot` (its leading column): first in the column,
+/// with the glyph after it where the row says what kind of thing it is.
+pub(super) fn checkbox_box(slot: Rect, icon: Option<crate::icons::Icon>, m: &RowMetrics) -> Rect {
+    match icon {
+        Some(_) => Rect::new(
+            slot.x0,
+            slot.center().y - m.icon / 2.0,
+            slot.x0 + m.icon,
+            slot.center().y + m.icon / 2.0,
+        ),
+        None => Rect::from_center_size(slot.center(), (m.icon, m.icon)),
     }
 }

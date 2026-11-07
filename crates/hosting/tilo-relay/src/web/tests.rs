@@ -499,6 +499,7 @@ async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
         sealed: sealed.to_owned(),
         expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
         delete: delete.clone(),
+        host: None,
     })
     .unwrap();
     // Below the site's own path, as `entry.json` names it, and with no

@@ -435,7 +435,7 @@ impl Inner {
     /// The chunk the resource at `at` is read and written in: of an item, the chunk its map is
     /// stored in (from the index, or the item's own chunk when the index does not name it), else
     /// the chunk the record's manifest places the resource in.
-    fn at_chunk(&self, at: &ResourceRef) -> Result<ChunkNo, StoreError> {
+    pub(super) fn at_chunk(&self, at: &ResourceRef) -> Result<ChunkNo, StoreError> {
         let (app, _) = self.locate(at)?;
         let Some(item) = &at.item else {
             return Ok(self.chunks.chunk(&at.doc));

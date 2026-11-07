@@ -10,7 +10,7 @@
 //! hold a [`HostHandle`]: an id that finds its host in a thread-local registry, on the thread
 //! that built it. A call from another thread is refused with a message.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -151,6 +151,12 @@ pub(crate) struct HostInner {
     /// The resource the last action planned returned, whoever invoked it, with the action:
     /// what its invocation answers.
     returned: RefCell<Option<(String, ResourceRef)>>,
+    /// The chunks of the workspace record this replica holds, as the host was last given them,
+    /// shared with the store's chunk loader: a chunk the store was not sent is read from here
+    /// when a read or a write reaches it.
+    chunks: Rc<RefCell<crate::chunk::Chunks>>,
+    /// Whether the store's chunk loader reads [`Self::chunks`].
+    chunk_loader: Cell<bool>,
 }
 
 thread_local! {
@@ -927,6 +933,8 @@ impl Host {
             suspended: RefCell::default(),
             produced: RefCell::default(),
             returned: RefCell::default(),
+            chunks: Rc::default(),
+            chunk_loader: Cell::new(false),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
         Ok(Self { inner })
@@ -965,10 +973,34 @@ impl Host {
         self.inner.store.set_loader(loader);
     }
 
+    /// How the host gets a chunk the store was not sent: when a window shows a row in it, a
+    /// lookup routes to it, or a write is addressed to it.
+    pub fn set_chunk_loader(&self, loader: crate::store::ChunkLoader) {
+        self.inner.store.set_chunk_loader(loader);
+    }
+
     /// Replace what `now` reads (the system time until then): tests and captures fix it. The
-    /// clock answers ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`.
+    /// clock answers ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. The store reads it too, so a list
+    /// whose filter reads the clock is written again when it passes what its items hold
+    /// ([`TiloStore::set_now`]).
     pub fn set_clock(&self, clock: impl Fn() -> String + 'static) {
-        self.inner.runtime.set_clock(clock);
+        let clock = Rc::new(clock);
+        self.inner.store.set_now({
+            let clock = Rc::clone(&clock);
+            move || clock()
+        });
+        self.inner.runtime.set_clock(move || clock());
+    }
+
+    /// Where the person is, in seconds east of UTC (until then: 0): what `today` reads, and the
+    /// day the store writes the columns that read the clock for ([`TiloStore::set_zone`]).
+    pub fn set_zone(&self, zone: impl Fn() -> i64 + 'static) {
+        let zone = Rc::new(zone);
+        self.inner.store.set_zone({
+            let zone = Rc::clone(&zone);
+            move || zone()
+        });
+        self.inner.runtime.set_zone(move || zone());
     }
 
     /// Where the words packages and the platform show come from, in the person's language
@@ -1272,15 +1304,37 @@ impl Host {
         self.inner.packages.borrow().iter().find_map(find)
     }
 
-    /// Bring the runtime's view of the workspace record up to date; see [`TiloStore::sync_from`].
-    pub fn sync_from(&self, record: &tilo_resource::Doc) -> bool {
-        self.inner.store.sync_from(record)
+    /// Bring the runtime's view of the workspace record up to date: its own chunk
+    /// ([`crate::chunk::FIRST`]) and every chunk above it the replica holds; see
+    /// [`TiloStore::sync`]. A chunk the replica does not hold is taken in too: how a replica
+    /// that was sent them all opens.
+    pub fn sync(&self, record: &crate::chunk::Chunks) -> bool {
+        self.inner.store.sync(record)
     }
 
-    /// Bring the runtime's view of the chunk `chunk` of the workspace record up to date; see
-    /// [`TiloStore::sync_chunk`].
-    pub fn sync_chunk(&self, chunk: crate::chunk::ChunkNo, doc: &tilo_resource::Doc) -> bool {
-        self.inner.store.sync_chunk(chunk, doc)
+    /// Bring the runtime's view up to date with the chunks the replica holds of `record`, and
+    /// let it read the rest from `record` when a read or a write reaches them; see
+    /// [`TiloStore::sync_held`]. What a window opens with.
+    pub fn sync_chunks(&self, record: &crate::chunk::Chunks) -> bool {
+        // What the chunk loader reads from: the chunks the replica holds now, so one that
+        // arrives later is read with the changes it has then.
+        *self.inner.chunks.borrow_mut() = record.clone();
+        if !self.inner.chunk_loader.replace(true) {
+            let chunks = Rc::clone(&self.inner.chunks);
+            self.inner.store.set_chunk_loader(Box::new(move |chunk| {
+                chunks.borrow().mirror(chunk).cloned()
+            }));
+        }
+        let moved = self.inner.store.sync_held(record);
+        // The lists a window opens over must hold every row the workspace does, and an index
+        // that reflects fewer chunks than the manifest names cannot say the rows it lacks.
+        moved | self.inner.store.load_short()
+    }
+
+    /// Bring the runtime's view of a record kept as one document up to date; see
+    /// [`TiloStore::sync_from`].
+    pub fn sync_from(&self, record: &tilo_resource::Doc) -> bool {
+        self.inner.store.sync_from(record)
     }
 
     /// Whether the runtime reads exactly what the workspace record `record` holds; see

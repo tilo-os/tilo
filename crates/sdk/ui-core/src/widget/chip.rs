@@ -630,6 +630,9 @@ pub struct Chip {
     on_toggle: Option<Box<dyn FnMut(bool)>>,
     /// Told each time a person presses the "×".
     on_remove: Option<Box<dyn FnMut()>>,
+    /// What pressing the "×" does, when the view bound it: the action runs through the chip's
+    /// custody, as the chip's own press does.
+    remove_press: crate::widget::Press,
     /// The chip's own flips, published as its view actions.
     toggle_verb: Option<super::control_verb::ControlVerb<bool>>,
     remove_verb: Option<super::control_verb::ControlVerb<bool>>,
@@ -706,6 +709,7 @@ impl Chip {
             removed: false,
             on_toggle: None,
             on_remove: None,
+            remove_press: crate::widget::Press::default(),
             toggle_verb: None,
             remove_verb: None,
             rect: Rect::ZERO,
@@ -954,6 +958,27 @@ impl Chip {
         self.dirty = true;
     }
 
+    /// Pressing the "×" presses what the view bound to it (`press`): the chip takes it away
+    /// through the same door as anything else it runs.
+    #[must_use]
+    pub fn with_remove_press(self, press: crate::widget::Press) -> Self {
+        let mut chip = self;
+        chip.set_remove_press(press);
+        chip
+    }
+
+    /// [`Self::with_remove_press`] on a chip already built.
+    pub fn set_remove_press(&mut self, press: crate::widget::Press) {
+        if press.is_none() {
+            return;
+        }
+        self.removable = true;
+        self.remove_verb = None;
+        self.on_remove = None;
+        self.remove_press = press;
+        self.dirty = true;
+    }
+
     /// The selection was flipped by a person.
     fn flipped(&mut self) {
         let selected = !self.selected;
@@ -970,6 +995,11 @@ impl Chip {
 
     /// The "×" was pressed.
     fn remove_pressed(&mut self) {
+        if !self.remove_press.is_none() {
+            self.removed = true;
+            self.remove_press.run();
+            return;
+        }
         if let Some(verb) = &mut self.remove_verb {
             verb.emit(true);
             return;
@@ -1360,6 +1390,7 @@ impl crate::widget::controls::ActionControls for Chip {
         attachment: crate::control_custody::CustodyAttachment,
     ) {
         self.activation.install_custody(domain, attachment);
+        self.remove_press.install_custody(domain, attachment);
         for verb in [self.toggle_verb.as_mut(), self.remove_verb.as_mut()]
             .into_iter()
             .flatten()
@@ -1383,6 +1414,7 @@ impl crate::widget::controls::ActionControls for Chip {
                     .as_mut()
                     .and_then(super::control_verb::ControlVerb::take)
             })
+            .or_else(|| self.remove_press.take())
             .or_else(|| {
                 crate::widget::Widget::children_mut(self)
                     .into_iter()
@@ -1398,6 +1430,7 @@ impl crate::widget::controls::ActionControls for Chip {
         if let Some(verb) = &self.remove_verb {
             bindings.push(verb.metadata(control_id));
         }
+        bindings.extend(self.remove_press.metadata(control_id));
         for child in crate::widget::Widget::children(self) {
             bindings.extend(crate::widget::controls::control_action_bindings(child));
         }
@@ -1408,6 +1441,7 @@ impl crate::widget::controls::ActionControls for Chip {
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         self.activation.refresh_availability(allowed);
+        self.remove_press.refresh_availability(allowed);
         for verb in [self.toggle_verb.as_mut(), self.remove_verb.as_mut()]
             .into_iter()
             .flatten()
@@ -1843,12 +1877,47 @@ mod tests {
             assert!(!c.take_toggled(), "nothing flipped");
         }
 
+        /// A chip whose remove the view bound to an action runs that action once, through the
+        /// chip's own control door, and removes itself.
+        fn a_chip_whose_remove_is_bound_runs_the_action_it_names_once() {
+            let mut spec = tilo_actions::ResourceSpec::new("res-tag", "test.tag", "Tag");
+            spec = spec.with_action(
+                tilo_actions::ActionSpec::operation(
+                    "remove",
+                    "Remove",
+                    tilo_actions::OperationKind::Effect,
+                    "test.tag.effect",
+                    &(),
+                )
+                .expect("a test action"),
+            );
+            let binding =
+                tilo_actions::ActionBinding::unit_for(&spec, "remove").expect("published");
+            let address = binding.address().clone();
+            let mut chip = Chip::new("tag").with_remove_press(crate::widget::Press::of(
+                crate::component::Event::Action(binding),
+            ));
+            chip.remove_pressed();
+            assert!(chip.removed, "the press removes the chip");
+            let taken = crate::widget::controls::take_control_invocation(&mut chip);
+            assert_eq!(
+                taken.as_ref().map(|taken| taken.address.clone()),
+                Some(address),
+                "one press runs the remove once"
+            );
+            assert!(
+                crate::widget::controls::take_control_invocation(&mut chip).is_none(),
+                "the press is taken once"
+            );
+        }
+
         selectable_chip_toggles_on_body_click();
         plain_chip_does_not_toggle();
         removable_chip_fires_remove_on_x_click();
         removable_and_selectable_x_wins_over_toggle();
         accessibility_toggle_vs_static();
         a_selected_chip_with_a_press_runs_the_press();
+        a_chip_whose_remove_is_bound_runs_the_action_it_names_once();
     }
 
     /// Lay a chip out through the shared solver (the `App` / `FrameHarness`

@@ -50,6 +50,8 @@ pub type Pred = tilolang::pred::Pred<FieldRead>;
 
 pub use tilolang::pred::Lit;
 
+pub use crate::query::{ClockField, NextChange};
+
 /// A field a [`Pred`] reads: a register, a counter or a text of the item, and what it holds
 /// when nobody wrote it (the declared default).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1449,6 +1451,24 @@ pub trait Store {
         order: Option<&crate::query::Order>,
     ) -> Result<Option<ResourceRef>, StoreError> {
         Ok(self.select(ty, pred, order)?.into_iter().next())
+    }
+
+    /// When what a query that read the clock answers next changes, given the fields it compared
+    /// with it ([`ClockField`]): the smallest value among them that lies after now, so the view
+    /// wakes at the instant the item holding it comes to count and reads again, and does not run
+    /// the clock to find it ([`NextChange`]). A store that cannot tell leaves the answer `Unknown`
+    /// and the clock's grain wakes the view instead.
+    ///
+    /// # Errors
+    ///
+    /// A store that cannot read what it indexed.
+    fn next_clock_change(
+        &self,
+        ty: &TypeId,
+        fields: &[ClockField],
+    ) -> Result<NextChange, StoreError> {
+        let _ = (ty, fields);
+        Ok(NextChange::Unknown)
     }
 
     /// The resources linked to `at`: those an action made from it, those whose rich text

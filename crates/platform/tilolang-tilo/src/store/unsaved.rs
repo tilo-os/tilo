@@ -6,7 +6,7 @@
 //! any write — so reads see it at once — but committing it queues nothing ([`commit_derived`]).
 //! It stays in the mirror's open transaction and the overlay, which is what reads answer from.
 //!
-//! The record moving on ([`crate::store::TiloStore::sync_from`]) drops the store's saved writes
+//! The record moving on ([`crate::store::TiloStore::sync`]) drops the store's saved writes
 //! (the record has them) and leaves the derived ones: [`Inner::drop_committed_local`] takes the
 //! saved ones out of [`super::Inner::local`], [`Inner::rescan`] keeps the derived docs known,
 //! and [`Inner::reapply_derived`] writes them onto the record's new copy again. An origin's
@@ -149,7 +149,12 @@ impl Inner {
             overlay,
             snapshot: Some(&snapshot),
         };
-        let mut derive = crate::index::derive::Derive::new(&self.chunks, &self.index, &self.nested);
+        let mut derive = crate::index::derive::Derive::new(
+            &self.chunks,
+            &self.index,
+            &self.nested,
+            self.clock.read(),
+        );
         if let Err(error) = derive.changes(&mut sink, &write.app, &write.reached()) {
             tracing::warn!(app = write.app, %error, "a change was not indexed");
         }
@@ -312,7 +317,8 @@ impl Inner {
                     overlay: &mut overlay,
                     snapshot: Some(&held.snapshot),
                 };
-                let mut derive = Derive::new(&self.chunks, &self.index, &self.nested);
+                let mut derive =
+                    Derive::new(&self.chunks, &self.index, &self.nested, self.clock.read());
                 if let Err(error) = derive.changes(&mut sink, &write.app, &write.reached()) {
                     tracing::warn!(app = write.app, %error, "a change was not indexed");
                 }
@@ -397,7 +403,8 @@ impl Inner {
                 overlay: Arc::make_mut(&mut self.overlay),
                 snapshot: Some(&snapshot),
             };
-            let mut derive = Derive::new(&self.chunks, &self.index, &self.nested);
+            let mut derive =
+                Derive::new(&self.chunks, &self.index, &self.nested, self.clock.read());
             if let Err(error) = derive.versions(&mut sink, app, &ends) {
                 tracing::warn!(app, %error, "a change's versions were not indexed");
             }

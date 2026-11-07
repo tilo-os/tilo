@@ -264,8 +264,11 @@ export function createMediaPump({runtime, id, voice, workspace, active, report =
   const routes = new Map();
   let closed = false;
   let timer;
+  // A page's lane is served whatever its own call is doing: Chat watches who
+  // is in each voice channel with no call here, so it hears a call start and
+  // hears it end, and only this look finds the request a drawing frame made.
   function schedule() {
-    if (closed || timer !== undefined || ['idle', 'ended'].includes(voice.call.state.phase)) return;
+    if (closed || timer !== undefined) return;
     timer = clock.setTimeout(() => {timer = undefined; pump();}, 500);
   }
   function pump() {

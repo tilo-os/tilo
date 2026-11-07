@@ -9,13 +9,12 @@
 //! drop is one action on its model; the board then shows the card where the model puts it.
 
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use crate::component::{Component, Described, Event, ResourceId, SlotType, Source, Value};
 use crate::icons::Icon;
 use crate::widget::{
-    Card, CardBody, CardProps, ContextMenuArea, Element, MenuEntry, MenuItemProps, SectionHeader,
-    Widget, capability::capability_mut,
+    Card, CardBody, CardProps, ContextMenuArea, Element, MenuEntry, MenuItemProps, Press,
+    SectionHeader, Widget, capability::capability_mut,
 };
 
 use super::{Board, BoardDrop};
@@ -91,7 +90,7 @@ pub struct BoardCardProps {
     #[component(slot(default))]
     pub body: Vec<Element>,
     /// The card was pressed: open what it stands for.
-    #[component(event)]
+    #[component(event(press))]
     pub activate: Event,
     /// Another card was dropped just before this one: carries that card.
     #[component(event(value = ResourceId))]
@@ -150,7 +149,8 @@ struct Command {
     group: Option<String>,
     enabled: bool,
     reason: Option<String>,
-    run: Rc<dyn Fn()>,
+    /// What choosing the row presses: the action the view bound to it, or the view's own event.
+    press: Press,
 }
 
 impl Command {
@@ -175,17 +175,18 @@ impl Command {
             group,
             enabled: !disabled,
             reason,
-            run: choose.command().unwrap_or_else(|| Rc::new(|| {})),
+            press: Press::of(choose),
         }
     }
 
     fn entry(&self) -> MenuEntry {
-        let run = Rc::clone(&self.run);
+        let run = self.press.runner();
         let entry = if self.destructive {
             MenuEntry::destructive(self.label.clone(), move || run())
         } else {
             MenuEntry::new(self.label.clone(), move || run())
-        };
+        }
+        .for_press(self.press.clone());
         let entry = match self.icon {
             Some(icon) => entry.with_icon(icon),
             None => entry,
@@ -506,6 +507,91 @@ mod tests {
             (900, 600),
             Theme::dark(),
         )
+    }
+
+    /// The action a view binds to a card's press.
+    fn published(resource: &str, action: &str) -> tilo_actions::ActionBinding<()> {
+        let mut spec = tilo_actions::ResourceSpec::new(resource, "test.card", "Card");
+        spec = spec.with_action(
+            tilo_actions::ActionSpec::operation(
+                action,
+                action,
+                tilo_actions::OperationKind::Effect,
+                "test.card.effect",
+                &action,
+            )
+            .expect("a test action"),
+        );
+        tilo_actions::ActionBinding::unit_for(&spec, action).expect("the card publishes it")
+    }
+
+    /// A card pressed runs the action its view bound once, through the door its own control
+    /// reports to: the card is the part the board shows, and its press is the action's route.
+    #[test]
+    fn a_card_bound_to_an_action_runs_it_once_as_the_person_presses_it() {
+        let bound = published("res-a", "open");
+        let address = bound.address().clone();
+        let mut card = card_body(
+            "a",
+            vec![Box::new(Text::new("body"))],
+            Some(ResourceId("res-a".into())),
+            false,
+            Event::Action(bound),
+        );
+        let mut doc = automerge::AutoCommit::new();
+        let mut state = crate::widget::Edits::lend(&mut doc);
+        let path = automerge::ROOT;
+        // What assistive technology asks of the card, and what a press on it does.
+        assert!(
+            card.perform_action(&crate::a11y::Action::Activate, &[], &mut state, &path),
+            "the card takes the press"
+        );
+        let taken = crate::widget::controls::take_control_invocation(&mut *card);
+        assert_eq!(
+            taken.as_ref().map(|taken| taken.address.clone()),
+            Some(address),
+            "one press runs the card's action once"
+        );
+        assert!(
+            crate::widget::controls::take_control_invocation(&mut *card).is_none(),
+            "the press is taken once"
+        );
+    }
+
+    /// A board built from a view's props hands the host the control every card's press is: the
+    /// inventory names the action with the card's own control.
+    #[test]
+    fn a_boards_inventory_carries_the_action_its_card_binds() {
+        let bound = published("res-a", "open");
+        let address = bound.address().clone();
+        let board: Board = Described::from_props(
+            "board",
+            BoardProps {
+                name: Some("Plan".into()),
+                lanes: vec![BoardLaneProps {
+                    key: "todo".into(),
+                    cards: vec![BoardCardProps {
+                        key: "a".into(),
+                        item: Some(ResourceId("res-a".into())),
+                        body: vec![Box::new(Text::new("body"))],
+                        activate: Event::Action(bound),
+                        ..BoardCardProps::default()
+                    }],
+                    ..BoardLaneProps::default()
+                }],
+            },
+        );
+        let bindings = crate::widget::controls::control_action_bindings(&board);
+        let card = bindings
+            .iter()
+            .find(|binding| {
+                matches!(
+                    &binding.kind,
+                    crate::widget::ControlBindingKind::Action(found) if *found == address
+                )
+            })
+            .expect("the card's press is a control of the board");
+        assert_eq!(card.control_id, "a", "named by the card's own key");
     }
 
     /// A lane nobody named, holding the cards `keys`.

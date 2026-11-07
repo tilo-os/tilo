@@ -203,12 +203,14 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
         })
         .collect();
     for f in &ty.search.filters {
-        // A filter on the time it is asked at or on the person it is asked for holds of
-        // different items as time passes or for each of them: it is answered from the columns of
-        // the fields it reads, never kept as a column of its own.
+        // A filter on the person it is asked for holds of different items for each of them: it
+        // is answered from the columns of the fields it reads, never kept as a column of its
+        // own. A filter on the time it is asked at is kept, written at the clock the index is
+        // derived at and written again as the clock passes what changes its answer
+        // ([`super::index::clock`]), so a query asks for it by name like any other filter.
         if f.pred
             .as_ref()
-            .is_some_and(|pred| pred.reads_clock() || pred.reads_viewer())
+            .is_some_and(tilolang::pred::Pred::reads_viewer)
         {
             continue;
         }

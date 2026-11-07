@@ -157,6 +157,15 @@ pub struct SealedLink {
 }
 
 impl SealedLink {
+    /// What a link of another site carries instead of the shelf's route: the
+    /// handle and the key, which together open the invitation at its shelf.
+    /// A page whose own link opens it puts this in its fragment, so the link
+    /// stays short and the site it is opened at reads its own route.
+    #[must_use]
+    pub fn ref_text(&self) -> String {
+        format!("{}{}", self.handle, self.key)
+    }
+
     /// The link as a person hands it over.
     #[must_use]
     pub fn to_text(&self) -> String {
@@ -193,6 +202,17 @@ pub fn parse_link(text: &str) -> Option<SealedLink> {
         handle: handle.to_owned(),
         key: key.to_owned(),
     })
+}
+
+/// The handle and key a link's fragment carries ([`SealedLink::ref_text`]),
+/// read apart: the shelf that keeps the bytes, and the key that opens them.
+#[must_use]
+pub fn parse_ref(text: &str) -> Option<(&str, &str)> {
+    let text = text.trim();
+    if !spelled(text, HANDLE_CHARS + KEY_CHARS) {
+        return None;
+    }
+    Some(text.split_at(HANDLE_CHARS))
 }
 
 /// Whether `text` is `chars` characters of base64url.
@@ -307,6 +327,27 @@ mod tests {
             "a link names a site by http or https"
         );
         assert!(parse_link("not a link with a space/i/abcdefghijklmnop").is_none());
+    }
+
+    #[test]
+    fn the_fragment_of_a_link_reads_back_as_its_handle_and_key() {
+        let sealed = seal(INVITATION).unwrap();
+        let key = ENGINE.encode(sealed.key.expose_secret());
+        let text = SealedLink {
+            site: "https://tilo.coffee".to_owned(),
+            handle: sealed.handle.clone(),
+            key: key.clone(),
+        }
+        .ref_text();
+        let (handle, read) = parse_ref(&text).unwrap();
+        assert_eq!(handle, sealed.handle);
+        assert_eq!(read, key, "the key the site opens it with");
+        // An invitation's own text names no shelf and opens here already.
+        assert!(parse_ref(&encode_text(INVITATION)).is_none());
+        assert!(parse_ref(&format!("{text}x")).is_none());
+        assert!(parse_ref("not base64url at all").is_none());
+        let padded = format!(" {text} ");
+        assert_eq!(parse_ref(&padded).unwrap(), (handle, read));
     }
 
     fn encode_text(bytes: &[u8]) -> String {

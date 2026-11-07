@@ -213,5 +213,13 @@ pub struct WorkspaceSummary {
     pub members: Vec<GovernedMember>,
 }
 
+impl WorkspaceSummary {
+    /// How many people the workspace has now: everyone it has not removed.
+    #[must_use]
+    pub fn people(&self) -> usize {
+        self.members.iter().filter(|member| !member.removed).count()
+    }
+}
+
 #[cfg(test)]
 mod wire_tests;

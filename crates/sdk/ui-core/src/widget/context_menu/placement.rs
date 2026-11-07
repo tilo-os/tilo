@@ -49,7 +49,7 @@ impl ContextMenu {
             let height =
                 PADDING * 2.0 + self.query_height() + self.content_height().max(ROW_HEIGHT);
             let width = self.legacy_width();
-            self.rect = on_device_pixels(Rect::new(
+            self.rect = floating_surface::on_device_pixels(Rect::new(
                 anchor.x0,
                 anchor.y0,
                 anchor.x0 + width,
@@ -82,7 +82,7 @@ impl ContextMenu {
             // with it: the panel starts one inset above the row.
             let height = full.min(viewport.height().max(0.0));
             let row = anchor.inflate(0.0, PADDING);
-            self.rect = on_device_pixels(
+            self.rect = floating_surface::on_device_pixels(
                 floating_surface::place_aligned(
                     row,
                     (width, height),
@@ -144,7 +144,7 @@ impl ContextMenu {
             }
             _ => rect,
         };
-        self.rect = on_device_pixels(rect);
+        self.rect = floating_surface::on_device_pixels(rect);
         self.place_scroll();
     }
 
@@ -180,16 +180,4 @@ impl ContextMenu {
 /// A box with no area: the point a pointer opened a menu at.
 pub(super) fn is_point(at: Rect) -> bool {
     at.width() == 0.0 && at.height() == 0.0
-}
-
-/// `rect` with its edges on the device pixels the frame draws on: a panel
-/// placed against a measured label width or a rounded row would otherwise
-/// stand between two pixels and be painted soft across both. Its leading
-/// edges round out and its trailing edges up, so a snap never takes room
-/// from a row.
-fn on_device_pixels(rect: Rect) -> Rect {
-    let scale = f64::from(crate::widget::device_scale()).max(f64::MIN_POSITIVE);
-    let down = |edge: f64| (edge * scale).floor() / scale;
-    let up = |edge: f64| (edge * scale).ceil() / scale;
-    Rect::new(down(rect.x0), down(rect.y0), up(rect.x1), up(rect.y1))
 }

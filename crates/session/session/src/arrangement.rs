@@ -459,6 +459,12 @@ impl Arrangement {
     /// id its place takes. Every id is this device's: a place made here is
     /// this person's, synced by the record like any other.
     ///
+    /// A workspace with no row yet — one just joined, whose first window is
+    /// what makes the row it goes in (`DesktopHost`, "the first window opened
+    /// there makes the strip it goes in") — is given a row here: a place put
+    /// on the canvas is that window, and refusing it would leave a person who
+    /// joined a workspace unable to place anything in it.
+    ///
     /// # Errors
     /// The desk has no workspace in front to put anything on.
     pub fn surface_at(&self) -> Result<Surface, String> {
@@ -494,29 +500,64 @@ impl Arrangement {
                 place: self.handle.mint_id(),
             });
         }
-        let workspace = tree
-            .active_workspace()
-            .ok_or("the desk has no workspace in front")?;
-        let row = tree
-            .active_strip
-            .get(&workspace.slot)
-            .copied()
-            .or_else(|| workspace.strips.first().map(|row| row.id))
-            .ok_or("the workspace in front has no row")?;
+        let (workspace, row) = {
+            let workspace = tree
+                .active_workspace()
+                .ok_or("the desk has no workspace in front")?;
+            let row = tree
+                .active_strip
+                .get(&workspace.slot)
+                .copied()
+                .or_else(|| workspace.strips.first().map(|row| row.id));
+            (workspace.slot, row)
+        };
+        drop(tree);
+        // A workspace that holds no row yet — one just joined, whose first window is what
+        // makes the row it goes in — is given one here: a place put on the canvas is that
+        // window, and refusing it would leave a person who joined a workspace unable to
+        // place anything in it.
+        let row = match row {
+            Some(row) => row,
+            None => self.make_row(workspace)?,
+        };
         let strip = self.handle.mint_id();
         let place = self.handle.mint_id();
         Ok(Surface {
-            workspace: workspace.slot.0,
+            workspace: workspace.0,
             row: row.0,
             strip,
             place,
         })
     }
 
-    /// Place the resource a text typed at `at` finds, as `asked`'s: the top
-    /// result of the system's `find` (`find`) that a place can show, resolved
-    /// against what the session publishes now ([`Catalog`]), standing at `at`
-    /// through the arranging action [`ArrangementAction::Place`] — one
+    /// A row for the workspace `workspace` that holds none: the desk's own
+    /// first row of it, named `Main`, which its first window stands in — as
+    /// a workspace made here starts. Made before the place, so the record the
+    /// place is put in is one the desk shows.
+    fn make_row(&self, workspace: WorkspaceSlot) -> Result<StripId, String> {
+        let id = StripId(self.handle.mint_id());
+        let mut tree = self.handle.read(Clone::clone);
+        let Some(held) = tree
+            .workspaces
+            .iter_mut()
+            .find(|held| held.slot == workspace)
+        else {
+            return Err("the workspace in front went while a place was made".to_owned());
+        };
+        if let Some(row) = held.strips.first() {
+            // Another part of the desk made it first: its row stands.
+            return Ok(row.id);
+        }
+        held.strips.push(Strip::new(id, "Main"));
+        tree.active_strip.insert(workspace, id);
+        self.handle.replace_tree(tree);
+        Ok(id)
+    }
+
+    /// Place the resource a text typed at `at` finds on the canvas, as `asked`'s:
+    /// the top result of the system's `find` (`find`) that a place can show,
+    /// resolved against what the session publishes now ([`Catalog`]), standing at
+    /// `at` through the arranging action [`ArrangementAction::Place`] — one
     /// attributed, undoable change of the person's record (shell.md §8). `view`
     /// empty shows the resource's primary view. `strip` names the strip the
     /// found resource joins as a tab (a strip id on the desk), else it takes a

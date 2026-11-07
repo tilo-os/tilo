@@ -13,8 +13,16 @@ extern crate runtime_dylib;
 fn main() -> std::process::ExitCode {
     // The system runs this app's connector for an outside service in a process of its own,
     // with no window and no package of its own: the app's instances in the tilolang host reach
-    // it. It needs no module, so this comes before the package is installed.
+    // it. It needs no module, so this comes before the package is installed. It has no window
+    // to log beside, so its own log is all a failure in it says: the session reads what it
+    // writes to stderr.
     if let Ok(origin) = std::env::var(tilolang_mail::CONNECTOR_ORIGIN_ENV) {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(
+                tilo_startup_metrics::log_directives(std::env::var("RUST_LOG").ok().as_deref()),
+            ))
+            .with_writer(std::io::stderr)
+            .init();
         return match run_connector(&origin) {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {

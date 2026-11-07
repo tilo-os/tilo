@@ -18,7 +18,7 @@ use crate::icons::Icon;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::selection::KeySelection;
 use crate::widget::{
-    Decorator, Element, ListModel, ListRow, MenuItem, MenuItemProps, TreeMarks, TreeRow,
+    Decorator, Element, ListModel, ListRow, MenuItem, MenuItemProps, Press, TreeMarks, TreeRow,
     VirtualList, Widget,
 };
 
@@ -269,7 +269,8 @@ struct Command {
     group: Option<String>,
     enabled: bool,
     reason: Option<String>,
-    run: Rc<dyn Fn()>,
+    /// What choosing the row presses: the action the view bound to it, or the view's own event.
+    press: Press,
 }
 
 impl Command {
@@ -294,17 +295,18 @@ impl Command {
             group,
             enabled: !disabled,
             reason,
-            run: choose.command().unwrap_or_else(|| Rc::new(|| {})),
+            press: Press::of(choose),
         }
     }
 
     fn entry(&self) -> MenuItem {
-        let run = Rc::clone(&self.run);
+        let run = self.press.runner();
         let item = if self.destructive {
             MenuItem::destructive_action(self.label.clone(), move || run())
         } else {
             MenuItem::action(self.label.clone(), move || run())
-        };
+        }
+        .for_press(self.press.clone());
         let item = match self.icon {
             Some(icon) => item.with_icon(icon),
             None => item,

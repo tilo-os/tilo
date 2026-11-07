@@ -66,7 +66,7 @@ pub struct ListRowProps {
     pub checkbox: Option<Bound<bool>>,
     /// The checkbox was pressed: what a check is, in the app's words. A task and every step
     /// under it are done in one thing to undo; with no `check`, a press changes the bound value.
-    #[component(event)]
+    #[component(event(press))]
     pub check: Event,
     /// The pace the row's own motion plays at: its mark coming and going, and the row arriving,
     /// leaving and changing places in its list. Unset, the theme's.
@@ -75,7 +75,7 @@ pub struct ListRowProps {
     /// as that line and its inset, for a reference under content rather than a list of items.
     pub dense: bool,
     /// The row was activated (a click, Enter, an assistive technology): open what it shows.
-    #[component(event)]
+    #[component(event(press))]
     pub activate: Event,
     /// The row reads as subordinate to the rows around it: its title in the weaker ink, as an
     /// outline's quieter branch does.
@@ -119,13 +119,6 @@ impl ListRowProps {
 
 impl Described for ListRow {
     type Props = ListRowProps;
-
-    /// The check and the activation are the row's own actions: the widget holds their bindings,
-    /// so a press is a route an agent's invocation of the action lands on, and both run from the
-    /// door. A swipe uncovers a command drawn as its own control.
-    fn press_events() -> &'static [&'static str] {
-        &["check", "activate"]
-    }
 
     fn from_props(key: &str, props: ListRowProps) -> Self {
         let mut row = Self::new(key, String::new());

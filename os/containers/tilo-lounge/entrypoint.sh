@@ -15,6 +15,12 @@
 #                             TILO_ROOMS_DEFAULT_ROLE
 #   TILO_ROOMS_WEB_ENTRY      the Tilo app's web entry the links it mints open
 #
+# The operator may declare more owners and moderators than the workspace's
+# owner root, in a file `{"owners": [hex], "moderators": [hex]}` the host
+# reads again whenever it changes, so a person's role reaches the workspace
+# while it runs:
+#   TILO_ROOMS_ROLES_FILE    that file's path (unset: the owner root alone)
+#
 # The pages' live plane is WebTransport on UDP, which the ingress publishes
 # separately from the HTTP routes: it binds TILO_ROOMS_LIVE and pages dial
 # TILO_ROOMS_LIVE_ORIGIN. The HTTPS listener behind the ingress binds
@@ -35,7 +41,8 @@ known='TILO_ROOMS_PERSISTENT TILO_ROOMS_NAME TILO_ROOMS_DESCRIPTION TILO_ROOMS_A
 TILO_ROOMS_WAIT_LIST_MAX TILO_ROOMS_PUBLIC_API TILO_ROOMS_LIVE_ORIGIN
 TILO_ROOMS_DEFAULT_ROLE TILO_ROOMS_CHAT_CHANNELS TILO_ROOMS_FEEDBACK_CHANNEL
 TILO_ROOMS_SEED_APPS TILO_ROOMS_AUTHOR_APPS TILO_ROOMS_BOTS TILO_ROOMS_LAYOUT
-TILO_ROOMS_INACTIVE_AFTER_DAYS TILO_ROOMS_ROOT_FILE TILO_ROOMS_STATE
+TILO_ROOMS_INACTIVE_AFTER_DAYS TILO_ROOMS_ROOT_FILE TILO_ROOMS_ROLES_FILE
+TILO_ROOMS_STATE
 TILO_ROOMS_WEB_ENTRY TILO_ROOMS_SITE_ORIGINS TILO_ROOMS_RELAY_ORIGIN
 TILO_ROOMS_RELAY_PLAIN TILO_ROOMS_LIVE TILO_ROOMS_LIVE_ORIGIN TILO_ROOMS_WEB
 TILO_ROOMS_HTTP TILO_ROOMS_FETCH_PROXY
@@ -142,6 +149,12 @@ if [ -n "$wait_list" ]; then
 fi
 if [ "${TILO_ROOMS_FETCH_PROXY:-1}" != 0 ]; then
   set -- "$@" --fetch-proxy
+fi
+# The roles the operator declares beside the workspace's owner root: a file
+# the host takes in again whenever it changes, so a role granted while the
+# workspace runs reaches it without a restart.
+if [ -n "${TILO_ROOMS_ROLES_FILE:-}" ]; then
+  set -- "$@" --roles-file "$TILO_ROOMS_ROLES_FILE"
 fi
 
 # A chat with no channel has nowhere for a visitor's first message to go, and

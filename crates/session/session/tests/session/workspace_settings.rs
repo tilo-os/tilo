@@ -959,8 +959,16 @@ fn workspace_settings_general_leaves_the_workspace() {
 }
 
 /// One agent as Chat's record of `workspace` holds it: its id, its name, the
-/// model it plans with and whether it still works here.
-type StoredAgent = (String, String, Option<String>, bool);
+/// model it plans with, whether it still works here, what it may spend a day
+/// and the day it last counted, with what it spent.
+type StoredAgent = (
+    String,
+    String,
+    Option<String>,
+    bool,
+    Option<u64>,
+    Option<(String, u64)>,
+);
 
 /// What Chat's record of `workspace`'s agents holds, as the device's store
 /// keeps it: read without taking its writer (Chat owns the record), the
@@ -1008,6 +1016,11 @@ fn read_chat_agents(data: &std::path::Path, workspace: &str) -> Option<Vec<Store
                     agent.name.clone(),
                     agent.model.clone(),
                     agent.is_active(),
+                    agent.spend_limit_micros,
+                    agent
+                        .spent
+                        .as_ref()
+                        .map(|spent| (spent.day.clone(), spent.cost_micros)),
                 )
             })
             .collect(),
@@ -1129,13 +1142,13 @@ fn workspace_settings_makes_the_workspaces_agents() {
         held.is_some_and(|agents| {
             agents
                 .iter()
-                .any(|(id, name, _, active)| id == "analyst" && name == "Analyst" && *active)
+                .any(|(id, name, _, active, ..)| id == "analyst" && name == "Analyst" && *active)
         })
     });
     assert!(
         held.as_deref().is_some_and(|agents| agents
             .iter()
-            .any(|(id, name, _, active)| id == "analyst" && name == "Analyst" && *active)),
+            .any(|(id, name, _, active, ..)| id == "analyst" && name == "Analyst" && *active)),
         "Chat's record holds the agent the tab made: {held:?}"
     );
 }
@@ -1163,13 +1176,13 @@ fn workspace_settings_retires_the_workspaces_agents() {
         held.is_some_and(|agents| {
             agents
                 .iter()
-                .any(|(id, name, _, active)| id == "analyst" && name == "Analyst" && !active)
+                .any(|(id, name, _, active, ..)| id == "analyst" && name == "Analyst" && !active)
         })
     });
     assert!(
         held.as_deref().is_some_and(|agents| agents
             .iter()
-            .any(|(id, name, _, active)| id == "analyst" && name == "Analyst" && !active)),
+            .any(|(id, name, _, active, ..)| id == "analyst" && name == "Analyst" && !active)),
         "Chat's record keeps the retired agent and its name: {held:?}"
     );
     let live = session.handle().read(|tree| {
@@ -1179,6 +1192,78 @@ fn workspace_settings_retires_the_workspaces_agents() {
             .len()
     });
     assert_eq!(live, 0, "the workspace holds nothing of the agent again");
+}
+
+/// An agent's keeper sets what it may spend a day from its review: the
+/// record keeps the limit, and the row counts the day against it.
+#[test]
+fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
+    let _settled = ui::motion::testing::settled();
+    let home = tilo_test_env::TestHome::new().expect("a home of its own");
+    settings_offer_a_model();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    own_workspace(&session, &[]);
+    let workspace = front_workspace(&session);
+    let mut app = agents_tab(&mut session);
+    make_agent(&mut session, &mut app, "Analyst");
+    press(&mut app, "ws-agents-review-analyst");
+    settle(&mut session, &mut app);
+    let limit = shown_review(&session).limit.expect("the day's limit");
+    assert_eq!(limit.summary, "No limit", "nobody set a day yet");
+    assert_eq!(limit.today, "$0 today");
+    assert!(limit.can_choose, "the person here keeps it");
+    app.harness()
+        .perform_named(
+            "ws-agent-limit-field",
+            &ui::a11y::Action::SetValue("5".to_owned()),
+        )
+        .expect("type the day's limit");
+    app.settle();
+    press(&mut app, "ws-agent-limit-set");
+    settle(&mut session, &mut app);
+    let limit = shown_review(&session).limit.expect("the day's limit");
+    assert_eq!(limit.summary, "$5 a day", "the limit is the record's now");
+    assert_eq!(limit.today, "$0 today");
+    // The field takes the room, Set keeps its own at the row's right end, and
+    // the two share one line on the desk as they do in the sheet.
+    let drawn = app.harness().targets();
+    let field = drawn["ws-agent-limit-field"];
+    let button = drawn["ws-agent-limit-set"];
+    assert!(
+        field.width() >= button.width() * 3.0,
+        "the field grows beside Set: field {field:?}, button {button:?}"
+    );
+    assert!(
+        (field.center().y - button.center().y).abs() <= 1.0,
+        "the field and Set share a line: field {field:?}, button {button:?}"
+    );
+    assert!(
+        button.x0 >= field.x1 && button.x0 - field.x1 <= 16.0,
+        "Set sits at the field's right end: field {field:?}, button {button:?}"
+    );
+    capture(&mut app, "workspace-settings-agent-review-limit");
+    press(&mut app, "ws-agent-back");
+    settle(&mut session, &mut app);
+    let row = listed_agent(&session, "analyst");
+    assert_eq!(
+        row.spend, "$0 of $5 today",
+        "the row counts the day against what the keeper allows, under who keeps it"
+    );
+    capture(&mut app, "workspace-settings-agents-spend");
+    let held = held_agents(&mut session, &home, &workspace, |held| {
+        held.is_some_and(|agents| {
+            agents
+                .iter()
+                .any(|(id, _, _, _, limit, _)| id == "analyst" && *limit == Some(5_000_000))
+        })
+    });
+    assert!(
+        held.as_deref().is_some_and(|agents| agents
+            .iter()
+            .any(|(id, _, _, _, limit, _)| id == "analyst" && *limit == Some(5_000_000))),
+        "Chat's record keeps the day's limit: {held:?}"
+    );
 }
 
 /// An agent the workspace admitted before Chat kept records of them is made
@@ -1221,13 +1306,13 @@ fn workspace_settings_reads_an_agents_admission_into_chats_record() {
         held.is_some_and(|agents| {
             agents
                 .iter()
-                .any(|(id, name, _, active)| id == "helper" && name == "Agent 1" && *active)
+                .any(|(id, name, _, active, ..)| id == "helper" && name == "Agent 1" && *active)
         })
     });
     assert!(
         held.as_deref().is_some_and(|agents| agents
             .iter()
-            .any(|(id, name, _, active)| id == "helper" && name == "Agent 1" && *active)),
+            .any(|(id, name, _, active, ..)| id == "helper" && name == "Agent 1" && *active)),
         "Chat's record names the admitted agent, under its id and numbered around the names here: {held:?}"
     );
 }

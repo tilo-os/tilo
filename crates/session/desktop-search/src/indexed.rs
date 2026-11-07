@@ -845,7 +845,7 @@ mod tests {
         let content = IndexedContent::new(index, str::to_owned, "u_me");
         let hits = content.query("ada");
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].subtitle.as_deref(), Some("Agent · kept by you"));
+        assert_eq!(hits[0].subtitle.as_deref(), Some("Kept by you"));
         let Some(ui::search::SearchRow::Command(row)) = &hits[0].row else {
             panic!("an agent is drawn with its own face: {:?}", hits[0].row);
         };

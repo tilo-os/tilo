@@ -55,7 +55,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
     async inspectInvitation(post, invitation) {
       calls.inspected = [...invitation];
       return JSON.stringify({kind: 'invitation', room: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor', expiresAtNs: '9',
-        inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
+        members: 4, inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
     },
     async askToJoin(post, invitation, root, custody, requestId, name, label, token) {
       calls.asked = {invitation: [...invitation], root, requestId, name, label, token: token && new TextDecoder().decode(token)};
@@ -272,6 +272,7 @@ test("the live layer reads the members' presence from the session, on their own 
   say(runtime, [{kind: 'arrived', publisher: OTHER}, {kind: 'shell', publisher: OTHER, frame: {
     seq: 1, sentAtMs: nowMs, participant: {kind: 'person', label: 'Visitor', color: '#e5484d', activity: null},
     focus: {app: 'so.tilo.notes', record: 'note-1'},
+    selection: {anchor: 'aa', head: 'ab'},
     layout: {size: [1440, 852], windows: [{app: 'so.tilo.notes', record: '0000000000000001', rect: [0, 0, 5000, 5000], focused: true}]},
   }}]);
   await until(() => presence.length, 'the member\'s shell');
@@ -280,10 +281,22 @@ test("the live layer reads the members' presence from the session, on their own 
   const [remote] = peer.live.remoteState(performance.now() + 50);
   assert.equal(remote.participant.label, 'Visitor');
   assert.deepEqual(remote.focus, {app: 'so.tilo.notes', record: 'note-1'});
+  assert.deepEqual(remote.selection, {anchor: 'aa', head: 'ab'});
 
   say(runtime, [{kind: 'pointer', publisher: OTHER, tab: '7', at: [1, 2], sentAtMs: Date.now()}]);
   await until(() => peer.live.remoteState(performance.now() + 50)[0].pointer, 'the pointer');
   assert.deepEqual(peer.live.remoteState(performance.now() + 50)[0].pointer, {tile: {tab: '7'}, at: [1, 2]});
+
+  // A shell is the whole of what its member says of itself: the caret and
+  // window their next one leaves out are gone (they left the channel with
+  // the call), while what their other messages say — their pointer — stays.
+  say(runtime, [{kind: 'shell', publisher: OTHER, frame: {
+    seq: 9, sentAtMs: Date.now(), participant: {kind: 'person', label: 'Visitor', color: '#e5484d', activity: null},
+    layout: {size: [1440, 852], windows: []},
+  }}]);
+  await until(() => peer.live.remoteState(performance.now() + 50)[0].selection === null, 'the caret withdrawn');
+  assert.equal(peer.live.remoteState(performance.now() + 50)[0].focus, null, 'the window they left too');
+  assert.deepEqual(peer.live.remoteState(performance.now() + 50)[0].pointer, {tile: {tab: '7'}, at: [1, 2]}, 'their pointer stays');
 
   const record = {app: 'so.tilo.notes', record: 'note-1'};
   say(runtime, [{kind: 'preview', publisher: OTHER, record, seq: 1, ops: [{kind: 'insert', at: '01', text: 'x'}]}]);
@@ -930,7 +943,7 @@ test('recertification retires voice before disposing the certified peer', async 
   await peer.dispose();
 });
 
-test('joining with an invitation waits for the owner, then connects with the root-certified device', async () => {
+test('an invitation asks the door to admit the root-certified device, and a door that answers waiting is polled', async () => {
   const runtime = fakeRuntime();
   const store = memoryStore();
   const rows = new Map();
@@ -938,8 +951,10 @@ test('joining with an invitation waits for the owner, then connects with the roo
   const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
   const offer = await inspectInvitation('https://host.example:8443', 'AQID', {runtime});
   assert.deepEqual(runtime.calls.inspected, [1, 2, 3]);
+  // What the card says comes from here: the workspace, how many people are in
+  // it, the part offered and who offers it.
   assert.deepEqual(offer, {workspaceName: 'Acme', role: 'editor', room: WORKSPACE, workspaceId: '7', expiresAtNs: '9',
-    inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
+    members: 4, inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
 
   const progress = [];
   const peer = await joinWorkspace({

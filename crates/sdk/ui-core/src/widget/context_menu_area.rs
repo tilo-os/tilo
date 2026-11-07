@@ -23,6 +23,9 @@ use crate::theme::Theme;
 pub struct MenuEntry {
     item: MenuItem,
     run: Option<Rc<dyn Fn()>>,
+    /// What choosing it presses, when the view bound it: the action runs through the area's
+    /// custody, so a press of the row and anyone else running the action take the one path.
+    press: crate::widget::Press,
     /// An emoji bar's way to the emoji picker: set when its last cell was chosen, and where
     /// the picked emoji goes.
     more: Option<(Rc<std::cell::Cell<bool>>, crate::component::Event)>,
@@ -34,6 +37,7 @@ impl MenuEntry {
         Self {
             item: MenuItem::selection(label),
             run: Some(Rc::new(run)),
+            press: crate::widget::Press::default(),
             more: None,
         }
     }
@@ -43,6 +47,7 @@ impl MenuEntry {
         Self {
             item: MenuItem::destructive_selection(label),
             run: Some(Rc::new(run)),
+            press: crate::widget::Press::default(),
             more: None,
         }
     }
@@ -53,6 +58,7 @@ impl MenuEntry {
         Self {
             item: MenuItem::Caption(text.into()),
             run: None,
+            press: crate::widget::Press::default(),
             more: None,
         }
     }
@@ -62,8 +68,20 @@ impl MenuEntry {
         Self {
             item: MenuItem::separator(),
             run: None,
+            press: crate::widget::Press::default(),
             more: None,
         }
+    }
+
+    /// Choosing the entry presses what the view bound to it (`press`): the row runs the action
+    /// itself, and the menu names it as the row's binding.
+    #[must_use]
+    pub fn for_press(mut self, press: crate::widget::Press) -> Self {
+        if let Some(address) = press.address() {
+            self.item = self.item.for_action(address);
+        }
+        self.press = press;
+        self
     }
 
     /// Name the run of commands this one stands in (`group: "Due"`): consecutive
@@ -157,6 +175,7 @@ impl MenuEntry {
         Self {
             item: row,
             run: None,
+            press: crate::widget::Press::default(),
             more: None,
         }
     }
@@ -244,6 +263,7 @@ impl MenuEntry {
         Self {
             item,
             run: Some(run),
+            press: crate::widget::Press::default(),
             more: Some((picker, pick)),
         }
     }
@@ -328,6 +348,8 @@ pub struct ContextMenuArea {
     /// What opened the open menu, and so where it stands.
     opening: Option<Opening>,
     runs: Vec<Option<Rc<dyn Fn()>>>,
+    /// What each entry presses, in step with `runs`.
+    presses: Vec<crate::widget::Press>,
     cursor: Point,
     /// The pointer's last move, replayed to the content once a command
     /// ran, so what the command asked of it (a rename beginning) happens
@@ -368,6 +390,7 @@ impl ContextMenuArea {
             menu: ContextMenu::new(),
             opening: None,
             runs: Vec::new(),
+            presses: Vec::new(),
             cursor: Point::ZERO,
             moved: None,
             pending: None,
@@ -418,11 +441,13 @@ impl ContextMenuArea {
         let offered = entries.iter().any(|entry| entry.run.is_some());
         let mut menu = ContextMenu::new();
         self.runs.clear();
+        self.presses.clear();
         self.more.clear();
         if offered {
             for entry in entries {
                 menu.push(entry.item);
                 self.runs.push(entry.run);
+                self.presses.push(entry.press);
                 self.more.extend(entry.more);
             }
         }
@@ -484,6 +509,11 @@ impl ContextMenuArea {
 
     /// Choose the entry at `index` as a click would.
     pub fn choose(&mut self, index: usize) {
+        if let Some(press) = self.presses.get(index).filter(|press| !press.is_none()) {
+            self.menu.close();
+            press.run();
+            return;
+        }
         if let Some(Some(run)) = self.runs.get(index) {
             self.menu.close();
             let run = Rc::clone(run);
@@ -882,6 +912,44 @@ impl super::Decorator for ContextMenuArea {
             children.push(&mut self.menu);
         }
         children
+    }
+}
+
+impl crate::widget::controls::ActionControls for ContextMenuArea {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        crate::widget::controls::install_control_custody(&mut *self.content, domain, attachment);
+        for press in &self.presses {
+            press.install_custody(domain, attachment);
+        }
+        crate::widget::controls::install_control_custody(&mut self.menu, domain, attachment);
+    }
+
+    /// A row pressed before the menu closed hands its invocation over here.
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        crate::widget::controls::take_control_invocation(&mut *self.content)
+            .or_else(|| self.presses.iter().find_map(crate::widget::Press::take))
+            .or_else(|| crate::widget::controls::take_control_invocation(&mut self.menu))
+    }
+
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = crate::widget::controls::control_action_bindings(&*self.content);
+        bindings.extend(crate::widget::controls::control_action_bindings(&self.menu));
+        bindings
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        crate::widget::controls::refresh_control_action_availability(&mut *self.content, allowed);
+        for press in &self.presses {
+            press.refresh_availability(allowed);
+        }
+        crate::widget::controls::refresh_control_action_availability(&mut self.menu, allowed);
     }
 }
 

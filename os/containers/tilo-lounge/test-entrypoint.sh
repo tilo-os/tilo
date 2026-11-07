@@ -119,6 +119,7 @@ lounge \
   TILO_ROOMS_BOTS='/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes;/opt/echo.json a=b' \
   TILO_ROOMS_LAYOUT=personal \
   TILO_ROOMS_INACTIVE_AFTER_DAYS=7 \
+  TILO_ROOMS_ROLES_FILE=/run/tilo-rooms/roles.json \
   TILO_ROOMS_FETCH_PROXY=0 \
   TILO_ROOMS_WEB=127.0.0.1:0 \
   TILO_ROOMS_RELAY_PLAIN=0.0.0.0:9880 \
@@ -165,6 +166,7 @@ pair --discord-redirect-url https://eu1.tilo.coffee/discord/callback || fail "th
 pair --discord-authorize-url https://discord.com/oauth2/authorize || fail "the Discord consent page did not reach the host"
 pair --layout personal || fail "the layout setting did not reach the host"
 pair --inactive-after-days 7 || fail "the inactivity setting did not reach the host"
+pair --roles-file /run/tilo-rooms/roles.json || fail "the roles file did not reach the host"
 grep -Fqx -- --fetch-proxy "$work/args" && fail "fetch proxy 0 still asked for the proxy"
 grep -Fqx -- shared "$work/args" && fail "the shared layout default was not replaced"
 grep -Fqx -- 0.0.0.0:9780 "$work/args" && fail "the plain listener default was not replaced"

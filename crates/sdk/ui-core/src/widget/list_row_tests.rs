@@ -124,6 +124,26 @@ fn row_height_comes_from_measured_line_boxes_and_grows_with_text() {
     }
 }
 
+/// A note is a line of the row's own under its text: the builder reaches the face, the line
+/// is measured, and the reader is told it with the row.
+#[test]
+fn a_rows_note_is_a_line_of_its_own_under_its_text() {
+    let row = ListRow::new("note-row", "Claude")
+        .secondary("Kept by you")
+        .note("$0.42 of $5 today");
+    assert_eq!(
+        row.with_face(|face| face.note.map(str::to_owned)),
+        Some("$0.42 of $5 today".to_owned()),
+        "the builder's note is the face's"
+    );
+    let plain = ListRowFace::new("Claude").secondary("Kept by you");
+    let noted = plain.clone().note("$0.42 of $5 today");
+    assert!(
+        face_height(&noted, 1.0) > face_height(&plain, 1.0),
+        "the note is a line under the row's text, not on it"
+    );
+}
+
 /// A dense row is a quiet reference under content: one line at the caption's size with the
 /// small glyph, as tall as that line and its inset rather than the list's row height, and a
 /// finger's press on one still grows it to its target.
@@ -852,7 +872,10 @@ fn every_leading_kind_paints_in_its_column_and_titles_line_up() {
         );
         let lead = face.leading_rect(rect, &mut text, &theme);
         assert!(lead.width() > 0.0, "{kind:?} has a column");
-        assert!(face.text_x(rect, &m, &mut text, &theme) >= lead.x1 - 0.01);
+        assert!(
+            rect.x0 - 0.01 <= lead.x0 && lead.x1 <= rect.x1 + 0.01,
+            "{kind:?} is pressed inside its row"
+        );
     }
     assert!(painted.get(), "a leading painter runs");
     // A wide thumbnail takes a wider column than a square one.
@@ -869,6 +892,78 @@ fn every_leading_kind_paints_in_its_column_and_titles_line_up() {
         rect,
     );
     assert!(wide.leading.width() > square.leading.width());
+}
+
+/// The box a row leads with is a control of its own: a finger's press on it reaches the target a
+/// finger needs, inside the row, while the box it draws keeps the size of its column and the row
+/// keeps its height.
+#[test]
+fn a_rows_box_presses_as_far_as_the_pointer_needs() {
+    use crate::interaction::InteractionEnvironment;
+    let theme = Theme::dark();
+    let row = || {
+        ListRow::new("milk", "Milk")
+            .checkbox(false, |_| {})
+            .on_activate(|| {})
+    };
+    let mut widths = Vec::new();
+    for (name, input) in [
+        ("a pointer", InteractionEnvironment::POINTER),
+        ("a finger", InteractionEnvironment::TOUCH),
+    ] {
+        let mut h = FrameHarness::for_root(
+            crate::State::new(),
+            Column::new().push(Box::new(row())),
+            (360, 300),
+            theme.clone(),
+        );
+        h.set_interaction_environment(input);
+        h.relayout_at((360, 300)).expect("layout");
+        let inspection = h.inspection();
+        let node = find(&inspection.root, "ListRow").expect("the row");
+        let row_rect = rect_of(node);
+        let boxed = node
+            .semantics
+            .as_ref()
+            .and_then(|semantics| {
+                semantics
+                    .children
+                    .iter()
+                    .find(|child| child.role == crate::a11y::Role::Checkbox)
+            })
+            .expect("the row's box is a control of its own")
+            .bounds
+            .expect("a box a reader presses says where it stands")
+            .to_rect();
+        let target = f64::from(input.minimum_target());
+        assert!(
+            boxed.width() >= target - 0.5 && boxed.height() >= target - 0.5,
+            "as {name} presses it, the box takes a press {target}×{target} wide: {boxed:?}"
+        );
+        // The row's lift, which bleeds into the list's gutter as the row does.
+        let lift = row_rect.inflate(crate::chrome::row_bleed(&theme), 0.0);
+        assert!(
+            lift.x0 - 0.5 <= boxed.x0
+                && boxed.x1 <= lift.x1 + 0.5
+                && lift.y0 - 0.5 <= boxed.y0
+                && boxed.y1 <= lift.y1 + 0.5,
+            "the box's press stays inside its row as {name} presses it: {boxed:?} in {lift:?}"
+        );
+        assert!(
+            boxed.width() > m_icon(&theme),
+            "the press reaches past the box it draws, {boxed:?}"
+        );
+        widths.push(boxed.width());
+    }
+    assert!(
+        widths[1] > widths[0],
+        "a finger's press on the box is wider than a mouse's: {widths:?}"
+    );
+}
+
+/// The edge a row draws its leading box at, from the theme's metrics.
+fn m_icon(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.metrics.icon_control)
 }
 
 #[test]
@@ -1467,6 +1562,37 @@ fn delete_runs_the_destructive_action_the_row_swipes_to() {
     let mut harness = FrameHarness::for_root(crate::State::new(), kept, (420, 80), Theme::dark());
     harness.key("Delete");
     assert_eq!(ran.get(), 0, "a plain row action is not destructive");
+}
+
+/// The swipe a view bound to an action runs that action once, through the row's control door.
+#[test]
+fn a_swipe_bound_to_an_action_runs_it_once_as_the_person_swipes_to_it() {
+    let mut spec = tilo_actions::ResourceSpec::new("res-milk", "test.errand", "Errand");
+    spec = spec.with_action(
+        tilo_actions::ActionSpec::operation(
+            "delete",
+            "Delete",
+            tilo_actions::OperationKind::Effect,
+            "test.errand.effect",
+            &(),
+        )
+        .expect("a test action"),
+    );
+    let binding = tilo_actions::ActionBinding::unit_for(&spec, "delete").expect("published");
+    let address = binding.address().clone();
+    let mut row =
+        ListRow::new("milk", "Buy milk").swipe_binding(Icon::Trash, "Delete", true, binding);
+    row.swipe.as_mut().expect("a swipe").run();
+    let taken = crate::widget::controls::take_control_invocation(&mut row);
+    assert_eq!(
+        taken.as_ref().map(|taken| taken.address.clone()),
+        Some(address),
+        "one swipe runs the action once"
+    );
+    assert!(
+        crate::widget::controls::take_control_invocation(&mut row).is_none(),
+        "the swipe is taken once"
+    );
 }
 
 #[test]

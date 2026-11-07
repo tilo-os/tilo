@@ -1652,12 +1652,12 @@ mod tests {
                 .insert(UserId("quill".into()), "Release Notes Agent".into());
             assert_eq!(
                 presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
-                "Release Notes Agent · renaming"
+                "Release Notes Agent: renaming"
             );
             presence.names.clear();
             assert_eq!(
                 presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
-                "Agent · renaming"
+                "Agent: renaming"
             );
         }
         // phase: agent_identity_is_textual_and_does_not_fall_back_to_a_raw_id
@@ -1682,7 +1682,7 @@ mod tests {
             keyed.actor = InteractionActor::new(key, ActorKind::Person);
             assert_eq!(
                 presence.interaction_status_label(&keyed),
-                "Collaborator · renaming"
+                "Collaborator: renaming"
             );
             let agent = UserId("quill".into());
             presence.set_display_name(agent.clone(), "Claude");

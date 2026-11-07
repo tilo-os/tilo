@@ -301,13 +301,70 @@ test('the desktop gets the entry’s About links, no host pill on the person’s
   page.router.stop?.();
 });
 
-test('a workspace mount keeps Invite alongside host, About, presence and title forwarding', async () => {
+test('a sealed link’s page is the site’s own, wherever the link reached it', async () => {
+  const asked = [];
+  const fetch = async url => { asked.push(String(url)); return {ok: false}; };
+  assert.deepEqual(await readEntry({mode: 'desktop',
+    location: {pathname: '/i/abcdefghijklmnop', href: 'https://tilo.coffee/i/abcdefghijklmnop'}, fetch}),
+    {base: 'https://tilo.coffee/'});
+  assert.deepEqual(asked, ['https://tilo.coffee/entry.json']);
+});
+
+test('a sealed link admits through the site’s shelf and opens the workspace it names, as that workspace’s own link', async () => {
+  const site = 'https://tilo.coffee';
+  const handle = 'abcdefghijklmnop';
+  const key = 'A'.repeat(43);
+  const opened = [];
+  const inspected = [];
+  const confirmed = [];
+  const joined = [];
+  const formatted = [];
+  const replaced = [];
+  let parsed = false;
+  const runtime = {
+    parseLink: () => { parsed = true; throw new Error('a sealed link names no route'); },
+    formatLink: route => { formatted.push(JSON.parse(route)); return `${site}/#/@rooms.example/w/WORKSPACE`; },
+  };
+  const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
+  const offer = {room: 'WORKSPACE', workspaceName: 'Lounge', role: 'commenter', members: 4,
+    inviter: {name: 'Nimble Panda', userPublicKey: 'ab'.repeat(32)}};
+  const peer = {workspace: 'WORKSPACE', origin: 'https://rooms.example', userPublicKey: 'cd'.repeat(32),
+    whenReady: async () => {}, mountDesktop: async () => ({navigation})};
+  const window = {
+    __tiloLinkSecrets: Object.freeze({invite: key}),
+    location: {pathname: `/i/${handle}`, href: `${site}/i/${handle}#${key}`, hash: `#${key}`, host: 'tilo.coffee'},
+    history: {state: null, replaceState: (state, title, url) => replaced.push(url), pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const deps = {
+    loadRuntime: async () => runtime,
+    fetch: async () => ({ok: true, json: async () => ({home: {name: 'Lounge', host: {origin: 'https://rooms.example'}}})}),
+    // The site keeps the invitation, not the link: the page opens it there,
+    // with the handle and the key the fragment carried.
+    openInvitation: async (at, secret) => { opened.push([at, secret]); return {invitation: 'OPENED', host: 'https://rooms.example'}; },
+    inspectInvitation: async (origin, invitation) => { inspected.push([origin, invitation]); return offer; },
+    confirmInvitation: async shown => { confirmed.push(shown); return true; },
+    joinWorkspace: async options => { joined.push(options); return peer; },
+  };
+  const page = await boot({mode: 'desktop', window, deps});
+  assert.equal(parsed, false, 'a sealed link reads no route of its own');
+  assert.deepEqual(opened, [[site, handle + key]]);
+  assert.deepEqual(inspected, [['https://rooms.example', 'OPENED']]);
+  assert.deepEqual(confirmed, [offer], 'the person is shown the invitation before it is joined');
+  assert.equal(joined[0].origin, 'https://rooms.example');
+  assert.equal(joined[0].invitation, 'OPENED');
+  assert.deepEqual(formatted[0], {mode: 'desktop', target: {scope: {kind: 'room', host: 'https://rooms.example', room: 'WORKSPACE'}}});
+  assert.equal(replaced[0], `${site}/#/@rooms.example/w/WORKSPACE`);
+  page.router.stop();
+});
+
+test('a workspace mount keeps its invite sheet alongside host, About, presence and title forwarding', async () => {
   const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
   const about = {source: 'https://example.org/source'};
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
   let mounted;
-  let invited = 0;
-  const peer = {workspace: 'WORKSPACE', whenReady: async () => {}, mountDesktop: async (_element, options) => { mounted = options; return {navigation}; }};
+  const peer = {workspace: 'WORKSPACE', origin: 'https://rooms.example', userPublicKey: 'ab'.repeat(32),
+    whenReady: async () => {}, mountDesktop: async (_element, options) => { mounted = options; return {navigation}; }};
   const window = {
     __tiloLinkSecrets: Object.freeze({}), document: {title: 'Tilo'},
     location: {href: 'https://rooms.example/open/', hash: ''},
@@ -317,10 +374,13 @@ test('a workspace mount keeps Invite alongside host, About, presence and title f
   const page = await boot({mode: 'desktop', window, diagnostics: {onStatus: status => statuses.push(status)}, deps: {
     loadRuntime: async () => ({formatLink: () => 'https://rooms.example/open/#/WORKSPACE'}),
     fetch: async () => ({ok: true, json: async () => ({home, about})}),
-    enterViaHost: async () => peer, onInvite: () => { invited += 1; },
+    enterViaHost: async () => peer,
+    // The invite sheet this page's desktop shows, made through the workspace's host.
+    invite: ({peer: joined}) => joined?.workspace ? {base: 'https://rooms.example/open/', origin: joined.origin,
+      workspace: joined.workspace, name: 'Reader', user: joined.userPublicKey} : null,
   }});
-  mounted.onInvite();
-  assert.equal(invited, 1);
+  assert.deepEqual(mounted.invite, {base: 'https://rooms.example/open/', origin: 'https://rooms.example',
+    workspace: 'WORKSPACE', name: 'Reader', user: 'ab'.repeat(32)});
   assert.equal(mounted.host, 'rooms.example');
   assert.deepEqual(mounted.about, about);
   assert.equal(mounted.presenceUrl, 'https://rooms.example/presence');

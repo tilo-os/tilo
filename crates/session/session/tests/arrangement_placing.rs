@@ -458,3 +458,93 @@ fn text_that_finds_nothing_places_nothing_and_says_why() {
         "nothing was placed"
     );
 }
+
+// (5) A workspace that holds no row yet takes a place all the same: a
+// workspace just joined has no rows until its first window, and that window
+// may be one the person places on the canvas — text typed there, or a
+// conversation an ask starts.
+#[test]
+fn a_workspace_with_no_row_yet_takes_a_place_and_the_row_it_stands_in() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    let (app, _) = with_mailbox(&mut session);
+    // The workspace in front as a join leaves it: on the desk, holding no row, and with no
+    // row in front of it either.
+    let workspace = {
+        let mut tree = session.handle().read(Clone::clone);
+        let slot = tree
+            .workspaces
+            .first_mut()
+            .expect("a workspace is in front");
+        slot.strips.clear();
+        let slot = slot.slot;
+        tree.active_strip.remove(&slot);
+        session.handle().replace_tree(tree);
+        session.handle().read(|tree| {
+            tree.workspaces
+                .iter()
+                .find(|held| held.slot == slot)
+                .map(|held| held.slot.0)
+                .expect("the workspace is on the desk")
+        })
+    };
+    step(&mut session);
+    assert!(
+        session.handle().read(|tree| {
+            let Some(held) = tree.active_workspace() else {
+                return false;
+            };
+            held.strips.is_empty() && !tree.active_strip.contains_key(&held.slot)
+        }),
+        "the workspace in front holds no row, as one just joined does"
+    );
+
+    let placed = session
+        .invoke(
+            "shell:arrangement",
+            "place",
+            serde_json::json!({
+                "resource": "tl:so.tilo.lang.mail:inbox",
+                "x": 240,
+                "y": 160,
+                "width": 720,
+                "height": 520,
+            })
+            .as_object()
+            .expect("arguments"),
+        )
+        .expect("a workspace with no row takes a place");
+    let _ = placed;
+    settle(&mut session, |session| {
+        arrangement(session)
+            .places
+            .iter()
+            .any(|place| place.record == "tl:so.tilo.lang.mail:inbox")
+    });
+    let entry = arrangement(&session)
+        .places
+        .into_iter()
+        .find(|place| place.record == "tl:so.tilo.lang.mail:inbox")
+        .expect("the found resource stands");
+    assert_eq!(entry.shows, app, "shows follows from the resource's app");
+    // The workspace holds the row the place stands in: the one made for it.
+    let rows = session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .find(|held| held.slot.0 == workspace)
+            .map(|held| {
+                held.strips
+                    .iter()
+                    .map(|row| row.window_groups.len())
+                    .collect::<Vec<_>>()
+            })
+    });
+    assert_eq!(
+        rows.as_deref(),
+        Some([1].as_slice()),
+        "the workspace has the one row, and the place's group stands in it"
+    );
+    let strip = strip_of(&session, number(&entry.strip)).expect("the place has its strip");
+    assert!(strip.placed, "it stands on the canvas");
+}
