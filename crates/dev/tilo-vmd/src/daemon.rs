@@ -233,47 +233,46 @@ fn layer_paths(layers: &LayerStore, generation: &Generation) -> Result<Vec<PathB
     layers.merged_paths(&generation.layers)
 }
 
+/// The merge that reaches the machine's `/usr`.
+///
+/// The `vm` slot's layers come first, then the `device` slot's. A board's own
+/// session and a laptop's login both run in the host's mount namespace, so
+/// their layers and the `vm` slot's are one `systemd-sysext` set
+/// ([`crate::apply::activate`] merges them for a board, a login and a VM-wide
+/// component alike): whichever of the two slots applies, the other's layers
+/// stay merged. A slot of any other kind stacks its own layers over that
+/// machine set, in a view only its own session sees.
 fn system_layers(
     slots: &SlotStore,
     layers: &LayerStore,
     record: &SlotRecord,
     own: Vec<PathBuf>,
 ) -> Result<Vec<PathBuf>, DaemonError> {
-    let login = |r: &SlotRecord| r.device.as_ref().is_some_and(|d| d.login.is_some());
-    let other = match record.kind {
-        SlotKind::Vm => DEVICE_SLOT,
-        SlotKind::Device if login(record) => VM_SLOT,
-        _ => {
-            let vm = slots.load(VM_SLOT)?;
-            let vm_layers = layer_paths(layers, &slots.generation(VM_SLOT, vm.current)?)?;
-            let mut merged = system_layers(slots, layers, &vm, vm_layers)?;
-            for layer in own {
-                if !merged.contains(&layer) {
-                    merged.push(layer);
-                }
+    let mut machine: Vec<PathBuf> = Vec::new();
+    let mut add = |paths: Vec<PathBuf>| {
+        for layer in paths {
+            if !machine.contains(&layer) {
+                machine.push(layer);
             }
-            return Ok(merged);
         }
     };
-    let Some(stored) = slots.stored(other)? else {
-        return Ok(own);
-    };
-    if other == DEVICE_SLOT && !login(&stored) {
-        return Ok(own);
-    }
-    let theirs = layer_paths(layers, &slots.generation(other, stored.current)?)?;
-    let (first, second) = if record.kind == SlotKind::Vm {
-        (own, theirs)
-    } else {
-        (theirs, own)
-    };
-    let mut layers: Vec<PathBuf> = Vec::new();
-    for layer in first.into_iter().chain(second) {
-        if !layers.contains(&layer) {
-            layers.push(layer);
+    for (slot, mine) in [
+        (VM_SLOT, record.kind == SlotKind::Vm),
+        (DEVICE_SLOT, record.kind == SlotKind::Device),
+    ] {
+        if mine {
+            add(own.clone());
+        } else if let Some(stored) = slots.stored(slot)? {
+            add(layer_paths(
+                layers,
+                &slots.generation(slot, stored.current)?,
+            )?);
         }
     }
-    Ok(layers)
+    if !matches!(record.kind, SlotKind::Vm | SlotKind::Device) {
+        add(own);
+    }
+    Ok(machine)
 }
 
 fn prepare_slot_session(
