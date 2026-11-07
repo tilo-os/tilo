@@ -874,7 +874,7 @@ mod locus_tests {
             label = presence.interaction_status_label(&event);
             applied
         });
-        assert_eq!(label, "Ada · checking off");
+        assert_eq!(label, "Ada: checking off");
         assert!(frame.poll_frame().unwrap());
         frame.render_png(&out.join("tasks-agent-checks-second.png"));
         assert!(

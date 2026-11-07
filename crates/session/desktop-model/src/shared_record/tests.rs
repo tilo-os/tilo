@@ -1,6 +1,7 @@
 use tilo_automerge::ApplyIncoming as _;
 
 use super::*;
+use crate::arrangement::FloatCorner;
 use crate::layout::TileContent;
 
 fn tab(id: u64) -> Tab {
@@ -374,6 +375,57 @@ fn a_canvas_and_its_places_read_back_as_written() {
     assert!(
         !write(&mut doc, &written).unwrap(),
         "unchanged writes nothing"
+    );
+}
+
+fn floating(desktop: &mut SharedDesktop, floats: &[(u64, FloatPlace)]) {
+    desktop.tree.workspaces[0]
+        .arrangement
+        .floats
+        .extend(floats.iter().copied());
+}
+
+#[test]
+fn a_float_reads_back_as_written_and_two_people_each_keep_theirs() {
+    let float = FloatPlace::new(FloatCorner::BottomRight, 40, 24, 640, 480);
+    let mut doc = AutoCommit::new();
+    let mut written = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
+    floating(&mut written, &[(100, float)]);
+    assert!(write(&mut doc, &written).unwrap());
+    doc.commit();
+    let back = read(&doc, None).unwrap();
+    let arrangement = &back.tree.workspaces[0].arrangement;
+    assert_eq!(arrangement.kind, ArrangementKind::Strips);
+    assert_eq!(arrangement.float_of(100), Some(float));
+    assert_eq!(arrangement.float_of(200), None, "never floated");
+    assert!(
+        !write(&mut doc, &written).unwrap(),
+        "unchanged writes nothing"
+    );
+
+    let mut doc = AutoCommit::new();
+    let mut base = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
+    write(&mut doc, &base).unwrap();
+    doc.commit();
+    let mut mine = fork(&doc, 1);
+    let mut theirs = fork(&doc, 2);
+    floating(&mut base, &[(100, float.at(8, 8))]);
+    write(&mut mine, &base).unwrap();
+    mine.commit();
+    let mut other = read(&doc, None).unwrap();
+    floating(
+        &mut other,
+        &[(200, FloatPlace::new(FloatCorner::TopLeft, 2, 3, 200, 100))],
+    );
+    write(&mut theirs, &other).unwrap();
+    theirs.commit();
+    merge(&mut mine, &mut theirs);
+    let merged = read(&mine, None).unwrap();
+    let arrangement = &merged.tree.workspaces[0].arrangement;
+    assert_eq!(arrangement.float_of(100), Some(float.at(8, 8)));
+    assert_eq!(
+        arrangement.float_of(200),
+        Some(FloatPlace::new(FloatCorner::TopLeft, 2, 3, 200, 100))
     );
 }
 

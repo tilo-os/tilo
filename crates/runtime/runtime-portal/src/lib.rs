@@ -26,7 +26,10 @@ pub mod agent_transport;
 /// descriptors they carry, so Linux only, like the clients that use it.
 #[cfg(unix)]
 pub mod door;
-#[cfg(target_os = "linux")]
+/// What a process says first on its connection to its session's services:
+/// the launch it is, written on a Unix socket. Only a broker attests it
+/// (its own side reads `/proc`), so writing one is available wherever the
+/// connection is.
 #[cfg(unix)]
 pub mod launch_handoff;
 pub mod local_socket;

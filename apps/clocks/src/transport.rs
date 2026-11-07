@@ -119,7 +119,6 @@ fn summary(snapshot: &ShellSnapshot) -> Summary {
 
 /// Show what Clocks shows now as its live activity, or end it when there is
 /// nothing running and nothing to announce.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn publish(snapshot: &ShellSnapshot) {
     let shown = (snapshot.active || snapshot.notification_id.is_some())
         .then(|| serde_json::to_value(published(snapshot)).ok())
@@ -127,24 +126,11 @@ pub fn publish(snapshot: &ShellSnapshot) {
     ui::collaboration::channel_live_activity::show(shown);
 }
 
-/// The page has no channel of its own outside its windows: what Clocks shows
-/// stays in its window.
-#[cfg(target_arch = "wasm32")]
-pub fn publish(_: &ShellSnapshot) {}
-
 /// The controls pressed on the floating clock since the last call.
-#[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn take_commands() -> Vec<ShellCommand> {
     ui::collaboration::channel_live_activity::take_controls()
         .into_iter()
         .filter_map(|control| serde_json::from_value(control).ok())
         .collect()
-}
-
-/// A page's world has no clock outside the window to press.
-#[cfg(target_arch = "wasm32")]
-#[must_use]
-pub fn take_commands() -> Vec<ShellCommand> {
-    Vec::new()
 }

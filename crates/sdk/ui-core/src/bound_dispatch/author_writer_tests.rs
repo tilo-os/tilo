@@ -218,13 +218,13 @@ fn writers_of(
 }
 
 /// Mounts of one profile and device share a record's document; each writes
-/// as its author's own actor, the record keeps its writer for everything
-/// else and for storage, and a reopened record's author writes as before.
+/// as its author's own actor, and the record keeps its page's writer for
+/// everything else and for storage.
 #[test]
-fn per_author_mounts_write_as_their_authors_and_the_record_keeps_its_writer() {
+fn per_author_mounts_write_as_their_authors_and_the_record_keeps_its_pages_writer() {
     let cache = PortableStorage::new("profile", "device").unwrap();
     let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
-    let (writer, you_writer) = {
+    let writer = {
         let records = RecordOwners::portable(cache.clone())
             .open(APP, "room")
             .unwrap();
@@ -286,17 +286,17 @@ fn per_author_mounts_write_as_their_authors_and_the_record_keeps_its_writer() {
         // The page's cache takes the bytes and its host acknowledges them in
         // its own time: what this test waits for is the hand-over.
         records.try_flush_written().unwrap();
-        (writer, you_writer)
+        writer
     };
 
     let records = RecordOwners::portable(cache).open(APP, "room").unwrap();
     records.open_existing_record_checked(&checkout).unwrap();
-    assert_eq!(
-        records
-            .read(&checkout.id, |doc| doc.get_actor().clone())
-            .unwrap(),
-        writer,
-        "the store keeps the record's writer"
+    let reopened_writer = records
+        .read(&checkout.id, |doc| doc.get_actor().clone())
+        .unwrap();
+    assert_ne!(
+        reopened_writer, writer,
+        "a page writes the record under a writer it mints, never the one a saved row carries"
     );
     let (you, _scope, _owner) = mount(&records, &checkout, "You", 4, true);
     let mut outer = AutoCommit::new();
@@ -304,5 +304,9 @@ fn per_author_mounts_write_as_their_authors_and_the_record_keeps_its_writer() {
         you.with_document(&mut outer, |doc, _| doc.put(ROOT, "you", 2).unwrap())
             .unwrap();
     });
-    assert_eq!(again, [you_writer], "the same author writes as before");
+    assert_eq!(
+        again,
+        [author_writer(&reopened_writer, "You")],
+        "a page's author writes as the writer the page minted"
+    );
 }

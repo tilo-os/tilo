@@ -775,6 +775,10 @@ mod tests {
         use crate::i18n::I18nManager;
         let rich = three_times();
         I18nManager::init("en-US");
+        // A window speaks a language when its own catalogue is written in it;
+        // the toolkit's words in that language then ride along, which is where
+        // a time's are.
+        I18nManager::add_resource("de-DE", "window = Fenster".to_owned());
         I18nManager::register_widget_messages();
         I18nManager::set_locale("de-DE");
         let german = blocks_at(&rich, &reading(chrono::Utc))[0].text.clone();

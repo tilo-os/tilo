@@ -1553,15 +1553,11 @@ fn the_bars_status_shows_the_sounds_published_level() {
 fn dark_mode_from_quick_settings_at(width: i32, height: i32) {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
-    let mut session = session_with_devices(width, height);
+    let mut session = device_session_over(width, height, Device { charging: false });
     until_settled(&mut session, |session| says(session, &desk(session).clock));
-    // A phone's bar keeps the connection and the charge, the sound's control giving way
-    // (`status_icons`): there the bell is the door to the device's settings.
-    let opener = if width < 480 {
-        "Notifications"
-    } else {
-        "Volume, 40%"
-    };
+    // The status opens the settings: the sound's control on a desk, the charge's on a phone,
+    // where the sound gives way and the bell is the notification centre's door.
+    let opener = if width < 480 { "61%" } else { "Volume, 40%" };
     press_at_rest(&mut session, opener);
     until_settled(&mut session, |session| here(session) == "quick-settings");
     until_settled(&mut session, |session| says(session, "Dark mode"));

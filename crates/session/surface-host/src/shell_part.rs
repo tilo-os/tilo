@@ -485,6 +485,25 @@ pub struct ArrangementStripReading {
     pub canvas_y: i64,
     pub canvas_width: i64,
     pub canvas_height: i64,
+    /// Whether the strip's window floats above the workspace's windows,
+    /// rather than standing among them in its row.
+    #[serde(default)]
+    pub floating: bool,
+    /// The corner of the work area a floating window keeps its distance from:
+    /// `top-left`, `top-right`, `bottom-right` or `bottom-left`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub float_corner: String,
+    /// Its distance from that corner's side edge, in canvas pixels.
+    #[serde(default)]
+    pub float_dx: i64,
+    /// Its distance from that corner's top or bottom edge, in canvas pixels.
+    #[serde(default)]
+    pub float_dy: i64,
+    /// Its floating width and height in canvas pixels.
+    #[serde(default)]
+    pub float_width: i64,
+    #[serde(default)]
+    pub float_height: i64,
     pub shell: String,
 }
 

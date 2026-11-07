@@ -4,6 +4,8 @@
 // every window, or a renderer that sizes a buffer past the device's limits,
 // fails its device with a createBindGroup validation error instead.
 //
+import {verb} from '../../tilo-browser-runtime/web/desktop-navigation.mjs';
+
 // usage: node device-limits.mjs BASE_URL [WINDOWS]
 //   BASE_URL  where build.sh's desktop output is served (serve.mjs)
 //   WINDOWS   windows to open (default 36)
@@ -89,7 +91,7 @@ if (!failed(text)) {
   const apps = await evaluate(`fetch('apps.json').then(r => r.json()).then(j => j.applications.map(a => a.id))`);
   for (let i = 0; i < windows && !failed(text); i++) {
     const app = apps[i % apps.length];
-    await evaluate(`(() => { const n = globalThis.tiloMount.navigation; return n.dispatch({kind: 'launch', generation: n.getSnapshot().generation, app: ${JSON.stringify(app)}}); })()`)
+    await evaluate(`tiloMount.navigation.dispatch(${JSON.stringify(verb.openApp(app))})`)
       .catch(error => log.push(`launch ${app}: ${error.message}`));
     await sleep(400);
     text = await status();

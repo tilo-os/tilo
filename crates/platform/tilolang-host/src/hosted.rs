@@ -692,7 +692,9 @@ impl Hosted {
         let mut changed = self
             .record
             .receive_and(&mut self.instance, |event| events.push(event));
-        self.instance.sync(Some(self.record.doc()));
+        // The chunks the replica holds with the record's own frame: the store reads them as what
+        // the window shows reaches into them, and the indexes are built over them.
+        self.instance.sync_chunks(self.record.chunks());
         changed |= self.instance.update();
         changed |= self.chosen();
         if let Some(why) = self.instance.take_stage_failure() {

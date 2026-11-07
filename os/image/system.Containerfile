@@ -97,8 +97,6 @@ COPY \
     os/usr/lib/systemd/user/tilo-projector.socket \
     os/usr/lib/systemd/user/tilo-cache-gc.service \
     os/usr/lib/systemd/user/tilo-cache-gc.timer \
-    os/usr/lib/systemd/user/tilo-app-update.service \
-    os/usr/lib/systemd/user/tilo-app-update.timer \
     os/usr/lib/systemd/user/tilo-public-content-refresh.service \
     os/usr/lib/systemd/user/tilo-public-content-refresh.timer \
     os/usr/lib/systemd/user/tilo-runtime-resident.service \

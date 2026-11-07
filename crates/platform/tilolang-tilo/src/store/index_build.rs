@@ -192,7 +192,18 @@ impl TiloStore {
         // An index built over fewer chunks than the manifest names answers no row in the ones
         // it does not, and a window would show a list shorter than the workspace's.
         drop(inner);
-        self.load_short();
+        let loaded = self.load_short();
+        // What the store was not sent and could read is read: the indexes still waiting for their
+        // record are built now, over every chunk of it ([`Inner::bring_up`] waits for this
+        // rather than building over the chunk that arrived first), or over what the store has
+        // when the chunks cannot be read.
+        let mut inner = self.mutate();
+        let built = inner.build_missing();
+        let any = any || loaded || built;
+        if built {
+            inner.changed();
+            inner.notify_all();
+        }
         any
     }
 
@@ -319,12 +330,53 @@ impl Inner {
         };
         match held.state {
             IndexState::Building(_) => {}
+            // The record names chunks the store does not hold yet, and it can read them: an
+            // index built now would cover the record's own chunk alone, and the catch-up each
+            // chunk that arrived after it would derive the whole record into it again. The
+            // chunks are read first, and the index is built over all of them once
+            // ([`TiloStore::take_in_builds`]).
+            IndexState::Missing if self.waits_for_chunks() => {}
             // Caught up, or built anew when the record lacks its heads. Finding a change by
             // its hash reads the record's whole history: an index at the record's heads, the
             // usual open, asks for none.
             IndexState::Ready => self.catch_up(app),
             IndexState::Missing => self.rebuild(app),
         }
+    }
+
+    /// Whether the store still expects chunks the record's manifest names that it does not hold:
+    /// a workspace opens over the chunks its window shows and reads the rest as it reaches for
+    /// them ([`TiloStore::load_short`]), so an index is built over all of them at once, when none
+    /// is left to read. A store that cannot read them (no loader) builds over what it has.
+    fn waits_for_chunks(&self) -> bool {
+        self.chunk_loader.is_some()
+            && self.chunks.has_record()
+            && self
+                .chunks
+                .placement()
+                .chunks()
+                .iter()
+                .any(|chunk| self.chunks.mirror(*chunk).is_none())
+    }
+
+    /// Build the index of each app still waiting for its record: what a cold open does once the
+    /// chunks of the record are read, once over all of them, and what an open over the record
+    /// alone does over what the store has when the chunks cannot be read.
+    fn build_missing(&mut self) -> bool {
+        if !self.chunks.has_record() {
+            return false;
+        }
+        let missing: Vec<AppId> = self
+            .apps
+            .iter()
+            .filter(|(_, held)| matches!(held.state, IndexState::Missing))
+            .map(|(app, _)| app.clone())
+            .collect();
+        let built = !missing.is_empty();
+        for app in missing {
+            self.rebuild(&app);
+        }
+        built
     }
 
     /// Put a fresh index in place of the broken one of `app`, built from the record (once it
