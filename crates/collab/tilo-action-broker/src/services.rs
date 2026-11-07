@@ -1972,3 +1972,57 @@ pub struct HostServices {
     /// to their other devices. Without it those records stay on this device.
     pub personal: Option<tilo_peer_state::PersonalSync>,
 }
+
+impl HostServices {
+    /// The seams of these services, by name, in the order the struct declares
+    /// them: what a host's list of decisions is checked against, so a seam it
+    /// stops deciding is found here rather than by an app.
+    ///
+    /// A field added above belongs here too: a host must name its decision for
+    /// every seam, and its own test compares its list to this one.
+    pub const SEAMS: &[&str] = &[
+        "approved_checks",
+        "resource_views",
+        "committed_documents",
+        "native_media",
+        "audio_output",
+        "workspace_memberships",
+        "tracker_runs",
+        "agents",
+        "native_certificates",
+        "local_person",
+        "record_changes",
+        "legacy_workspace",
+        "launcher",
+        "published",
+        "workspace_governance",
+        "shortcut_library",
+        "keyboard_shortcuts",
+        "host_steps",
+        "continuations",
+        "search_index",
+        "record_index_changes",
+        "content_store",
+        "workspace_control",
+        "realtime",
+        "speakers",
+        "drives",
+        "applications",
+        "settings",
+        "display_control",
+        "live_activities",
+        "wifi_continuity",
+        "browser_service_sessions",
+        "nearby_transfer",
+        "file_clipboard",
+        "app_action_access",
+        "app_action_grants",
+        "launchable_catalogue",
+        "record_content",
+        "channel_keys",
+        "action_offload",
+        "own_device",
+        "workspace_nodes",
+        "personal",
+    ];
+}
