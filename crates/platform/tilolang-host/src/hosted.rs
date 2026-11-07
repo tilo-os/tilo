@@ -161,15 +161,27 @@ impl Surface {
         )
     }
 
-    /// The resources the instance publishes: the host's own resource, each package's actions that
-    /// take no record (the instance's own app's with what every app publishes), and the
-    /// workspace's records with their actions.
+    /// The resources the instance publishes: the host's own resource, the workspace's records
+    /// with their actions, and each package's actions that take no record (the instance's own
+    /// app's with what every app publishes).
     ///
     /// `shown` bounds what a record publishes to what the window reaches: its lane's subject and
     /// the rows on screen. `None` is the whole workspace, what a caller that asks the directory
     /// reads.
+    ///
+    /// A record is published before the package catalogue: what the window holds and the actions
+    /// its own resources offer are what a person came to do, so the palette lists them first, and
+    /// the verbs the platform adds for every app (`with_app_actions`) follow the app's own.
     fn resources(&self, shown: Option<&[String]>) -> Vec<ResourceSpec> {
         let mut out = vec![host_resource(&self.committer)];
+        let trees = {
+            let mut publications = self.publications.borrow_mut();
+            match shown {
+                Some(shown) => publications.reached(&self.host, &self.planner, &self.app, shown),
+                None => publications.everything(&self.host, &self.planner),
+            }
+        };
+        out.extend(trees.into_iter().map(|tree| (*tree).clone()));
         let words = self.host.runtime().words();
         for package in self.host.packages() {
             let mut resource = publish_package(&package.meta, &self.planner, &*words);
@@ -180,12 +192,6 @@ impl Surface {
                 out.push(resource);
             }
         }
-        let mut publications = self.publications.borrow_mut();
-        let trees = match shown {
-            Some(shown) => publications.reached(&self.host, &self.planner, &self.app, shown),
-            None => publications.everything(&self.host, &self.planner),
-        };
-        out.extend(trees.into_iter().map(|tree| (*tree).clone()));
         out
     }
 
