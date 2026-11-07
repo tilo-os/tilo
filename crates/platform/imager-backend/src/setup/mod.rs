@@ -18,6 +18,8 @@ pub mod deferred_handoff;
 #[cfg(any(test, feature = "test-support"))]
 #[cfg(target_os = "linux")]
 pub mod discovery_fixture;
+#[cfg(target_os = "linux")]
+pub mod file_digest;
 pub mod flatpak_transfer;
 #[cfg(target_os = "linux")]
 pub mod helper_arguments;

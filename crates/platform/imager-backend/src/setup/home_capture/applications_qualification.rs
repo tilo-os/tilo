@@ -61,43 +61,7 @@ fn protected(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 fn digest(file: &File) -> io::Result<String> {
-    use std::os::unix::fs::FileExt as _;
-    let before = file.metadata()?;
-    let mut offset = 0;
-    let mut hash = Sha256::new();
-    let mut buffer = [0; 64 * 1024];
-    loop {
-        let n = file.read_at(&mut buffer, offset)?;
-        if n == 0 {
-            break;
-        }
-        offset += n as u64;
-        if offset > 1024 * 1024 * 1024 {
-            return Err(invalid());
-        }
-        hash.update(&buffer[..n]);
-    }
-    let after = file.metadata()?;
-    if (
-        before.dev(),
-        before.ino(),
-        before.len(),
-        before.mtime(),
-        before.mtime_nsec(),
-        before.ctime(),
-        before.ctime_nsec(),
-    ) != (
-        after.dev(),
-        after.ino(),
-        after.len(),
-        after.mtime(),
-        after.mtime_nsec(),
-        after.ctime(),
-        after.ctime_nsec(),
-    ) {
-        return Err(invalid());
-    }
-    Ok(hex::encode(hash.finalize()))
+    crate::setup::file_digest::stable(file, 1024 * 1024 * 1024, invalid)
 }
 struct OwnedRoot {
     root: std::sync::Arc<PinnedDirectory>,
