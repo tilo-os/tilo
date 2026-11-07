@@ -31,8 +31,8 @@ use tilo_actions::{
     OperationKind, ParamType, ResourceSpec, ResultSpec,
 };
 use tilo_desktop_model::{
-    ArrangementKind, DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
-    WindowWidth, WorkspaceSlot,
+    ArrangementKind, DesktopTree, FloatCorner, FloatPlace, GroupId, Strip, StripId, Tab, TabId,
+    TileContent, WindowGroup, WindowWidth, WorkspaceSlot,
 };
 use tilo_desktop_surface::DesktopHandle;
 use tilo_surface_host::Published;
@@ -42,6 +42,13 @@ use tilo_surface_host::Published;
 const DEFAULT_WIDTH: i64 = 720;
 /// See [`DEFAULT_WIDTH`].
 const DEFAULT_HEIGHT: i64 = 520;
+
+/// Where a place floats when the action names nothing else: the work area's
+/// bottom-right corner, a window's inset from its edges, at a floating size
+/// smaller than a canvas window.
+const FLOAT_INSET: i64 = 24;
+const FLOAT_WIDTH: u32 = 640;
+const FLOAT_HEIGHT: u32 = 480;
 
 /// The operation type every arranging action carries.
 pub const OPERATION: &str = "tilo.shell.arranging";
@@ -167,6 +174,12 @@ pub enum ArrangementAction {
         y: i64,
         width: i64,
         height: i64,
+        /// Float the place above the workspace's windows at `float`, instead
+        /// of standing it on the canvas: how a conversation popped out of its
+        /// app opens, its draft and scroll kept in the window it already was.
+        /// Left out, the place stands on the canvas as it always did.
+        #[serde(default)]
+        float: Option<FloatPlace>,
     },
     /// Text typed on the canvas: the top result of the system's `find` stands
     /// there as its primary view (or `view`). The session resolves it into a
@@ -185,6 +198,23 @@ pub enum ArrangementAction {
         x: i64,
         #[serde(default)]
         y: i64,
+    },
+    /// Float the place `place` above its workspace's windows at `float`:
+    /// every member sees it there, and the strip it stands in is untouched,
+    /// so snapping it back puts it exactly where it was. Appended last: an
+    /// action already written names a variant by its own name, and none of
+    /// them changed.
+    Float { place: u64, float: FloatPlace },
+    /// Snap the floating place `place` back among its workspace's windows.
+    /// A `row` names the row it goes into, before the place `before` or last,
+    /// as a drag into a gap does; left out, it returns to its own strip.
+    /// Appended last.
+    Snap {
+        place: u64,
+        #[serde(default)]
+        row: Option<u64>,
+        #[serde(default)]
+        before: Option<u64>,
     },
 }
 
@@ -599,6 +629,7 @@ impl Arrangement {
             y: at.1,
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
+            float: None,
         };
         self.ask(asked, action, busy)?;
         Ok(Some(surface.place))
@@ -837,6 +868,7 @@ fn reading_of(tree: &DesktopTree, records: &BTreeMap<TabId, String>, catalog: &C
             });
             for group in &row.window_groups {
                 let canvas = workspace.arrangement.place_of(group.id);
+                let float = workspace.arrangement.float_of(group.id);
                 reading.strips.push(StripReading {
                     key: group.id.to_string(),
                     workspace: workspace.slot.0.to_string(),
@@ -851,6 +883,13 @@ fn reading_of(tree: &DesktopTree, records: &BTreeMap<TabId, String>, catalog: &C
                     canvas_y: canvas.map_or(0, |held| i64::from(held.y)),
                     canvas_width: canvas.map_or(0, |held| i64::from(held.width)),
                     canvas_height: canvas.map_or(0, |held| i64::from(held.height)),
+                    floating: float.is_some(),
+                    float_corner: float
+                        .map_or_else(String::new, |float| float.corner.as_str().to_owned()),
+                    float_dx: float.map_or(0, |float| i64::from(float.dx)),
+                    float_dy: float.map_or(0, |float| i64::from(float.dy)),
+                    float_width: float.map_or(0, |float| i64::from(float.width)),
+                    float_height: float.map_or(0, |float| i64::from(float.height)),
                     shell: SHELL.to_owned(),
                 });
                 for tab in &group.tabs {
@@ -986,6 +1025,7 @@ fn change(
             y,
             width,
             height,
+            float,
         } => place_at(
             tree,
             catalog,
@@ -1000,9 +1040,65 @@ fn change(
                 y: *y,
                 width: *width,
                 height: *height,
+                float: *float,
             },
         ),
+        ArrangementAction::Float { place, float } => float_place(tree, *place, *float),
+        ArrangementAction::Snap { place, row, before } => {
+            snap_back(tree, *place, *row, *before, by_the_person)
+        }
     }
+}
+
+/// Float the place `place` above its workspace's windows at `float`.
+fn float_place(tree: &mut DesktopTree, place: u64, float: FloatPlace) -> Result<bool, String> {
+    let Some((workspace, row, group, _)) = locate(tree, place) else {
+        return Err("that place is not in the arrangement".into());
+    };
+    let Some(held) = tree.workspaces.get_mut(workspace) else {
+        return Err("that place is not in the arrangement".into());
+    };
+    let Some(id) = held
+        .strips
+        .get(row)
+        .and_then(|strip| strip.window_groups.get(group))
+        .map(|group| group.id)
+    else {
+        return Err("that place is not in the arrangement".into());
+    };
+    Ok(held.arrangement.set_float(id, Some(float)))
+}
+
+/// Snap the floating place `place` back among its workspace's windows,
+/// moving it into `row` before `before` when a drop named one; left out, it
+/// returns to the strip it stands in, unchanged. Whether the desk changed.
+fn snap_back(
+    tree: &mut DesktopTree,
+    place: u64,
+    row: Option<u64>,
+    before: Option<u64>,
+    by_the_person: bool,
+) -> Result<bool, String> {
+    let Some((workspace, at, group, _)) = locate(tree, place) else {
+        return Err("that place is not in the arrangement".into());
+    };
+    let Some(id) = tree
+        .workspaces
+        .get(workspace)
+        .and_then(|held| held.strips.get(at))
+        .and_then(|strip| strip.window_groups.get(group))
+        .map(|group| group.id)
+    else {
+        return Err("that place is not in the arrangement".into());
+    };
+    let mut changed = match tree.workspaces.get_mut(workspace) {
+        Some(held) => held.arrangement.set_float(id, None),
+        None => return Err("that place is not in the arrangement".into()),
+    };
+    if let Some(row) = row {
+        changed |= move_place(tree, place, StripId(row), before, None, by_the_person)?;
+    }
+    Ok(changed)
 }
 
 /// The window `place` and where it stands in `tree`: its workspace, its row,
@@ -1168,7 +1264,8 @@ fn close_place(tree: &mut DesktopTree, place: u64) -> bool {
 
 /// What [`change`] is asked to place: the resource `resource`, through
 /// `view`, as the place `place` in its own strip `strip` of the row `row`
-/// of `workspace`, at `(x, y)` canvas pixels, `width` by `height`.
+/// of `workspace`, at `(x, y)` canvas pixels, `width` by `height` — or
+/// floating above them at `float`.
 #[derive(Clone, Copy)]
 struct Placed<'a> {
     workspace: u64,
@@ -1181,6 +1278,7 @@ struct Placed<'a> {
     y: i64,
     width: i64,
     height: i64,
+    float: Option<FloatPlace>,
 }
 
 /// Stand `asked` on the canvas as one of its published views: a window of the
@@ -1262,6 +1360,7 @@ fn place_at(
     });
     if let Some(at) = held_elsewhere {
         join_strip(workspace, at, asked.strip, window, taken)?;
+        float_new(workspace, asked.strip, asked.float);
         return Ok(true);
     }
     let row = if let Some(row) = workspace
@@ -1285,6 +1384,12 @@ fn place_at(
         maximized: false,
         focus_history: Vec::new(),
     });
+    // A floated place stands above the windows, not on the canvas: kept in
+    // its strip's place, snapping it back is exact.
+    if asked.float.is_some() {
+        float_new(workspace, asked.strip, asked.float);
+        return Ok(true);
+    }
     // It stands on the canvas, so the workspace shows its canvas: the person
     // sees what they placed. A place never covers one already there: it takes
     // the free space nearest the point it was asked for (`canvas.md` §6,
@@ -1302,6 +1407,17 @@ fn place_at(
     workspace.arrangement.places.insert(asked.strip, place);
     workspace.arrangement.kind = ArrangementKind::Canvas;
     Ok(true)
+}
+
+/// Float the place `group` at `float`, when the place asked to float at all.
+fn float_new(
+    workspace: &mut tilo_desktop_model::Workspace,
+    group: GroupId,
+    float: Option<FloatPlace>,
+) {
+    if let Some(float) = float {
+        workspace.arrangement.set_float(group, Some(float));
+    }
 }
 
 /// Take `window` into the group `group` already on the workspace's desk, as its tab in front:
@@ -1349,6 +1465,8 @@ fn verb(action: &ArrangementAction) -> &'static str {
         ArrangementAction::Activate { .. } => "activate",
         ArrangementAction::Pin { .. } => "pin",
         ArrangementAction::Place { .. } | ArrangementAction::PlaceFound { .. } => "place",
+        ArrangementAction::Float { .. } => "float",
+        ArrangementAction::Snap { .. } => "snap-back",
         // Refused before it is stepped: it names no change of the desk.
         ArrangementAction::RetiredOpenInto { .. } => "retired",
     }
@@ -1471,6 +1589,90 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
             },
         ),
     ]
+    .into_iter()
+    .chain(float_actions(key))
+    .collect()
+}
+
+/// The actions that float a place and snap it back, its key bound into each
+/// as every place action's is.
+fn float_actions(key: &str) -> Vec<ActionSpec> {
+    let floating = key.to_owned();
+    let snapping = key.to_owned();
+    vec![
+        action(
+            "float",
+            "Float a place above its workspace's windows, where every member sees it",
+            vec![
+                optional(
+                    "corner",
+                    ParamType::Text,
+                    "The corner of the work area it keeps its distance from: top-left, top-right, bottom-right (the default) or bottom-left",
+                ),
+                optional(
+                    "dx",
+                    ParamType::Integer,
+                    "Its distance from that corner's side edge, in canvas pixels",
+                ),
+                optional(
+                    "dy",
+                    ParamType::Integer,
+                    "Its distance from that corner's top or bottom edge, in canvas pixels",
+                ),
+                optional("width", ParamType::Integer, "Its width in canvas pixels"),
+                optional("height", ParamType::Integer, "Its height in canvas pixels"),
+            ],
+            move |args| ArrangementAction::Float {
+                place: count_of(&floating),
+                float: FloatPlace::new(
+                    float_corner(args.text("corner")),
+                    float_coord(args.integer("dx"), FLOAT_INSET),
+                    float_coord(args.integer("dy"), FLOAT_INSET),
+                    float_side(args.integer("width"), FLOAT_WIDTH),
+                    float_side(args.integer("height"), FLOAT_HEIGHT),
+                ),
+            },
+        ),
+        action(
+            "snap-back",
+            "Snap a floating place back among its workspace's windows",
+            vec![
+                optional(
+                    "row",
+                    ParamType::Resource,
+                    "The row it goes into; its own when left out",
+                )
+                .of_resource_kind(ROW_KIND),
+                optional(
+                    "before",
+                    ParamType::Resource,
+                    "The place it goes before in that row",
+                )
+                .of_resource_kind(PLACE_KIND),
+            ],
+            move |args| ArrangementAction::Snap {
+                place: count_of(&snapping),
+                row: named(args, "row", Item::Row),
+                before: named(args, "before", Item::Place),
+            },
+        ),
+    ]
+}
+
+/// The corner a `float` action names, the work area's bottom-right when it
+/// names none.
+fn float_corner(text: Option<&str>) -> FloatCorner {
+    text.and_then(FloatCorner::parse).unwrap_or_default()
+}
+
+/// A float's distance from a corner, never negative.
+fn float_coord(value: Option<i64>, default: i64) -> i32 {
+    i32::try_from(value.unwrap_or(default).max(0)).unwrap_or(i32::MAX)
+}
+
+/// A floated window's side, at least one pixel.
+fn float_side(value: Option<i64>, default: u32) -> u32 {
+    u32::try_from(value.unwrap_or_else(|| i64::from(default)).max(1)).unwrap_or(u32::MAX)
 }
 
 /// The actions a strip's own resource offers, its key bound into each: the strip is the resource
@@ -1611,6 +1813,7 @@ fn placing_actions() -> Vec<ActionSpec> {
                 y: args.integer("y").unwrap_or_default(),
                 width: args.integer("width").unwrap_or(DEFAULT_WIDTH),
                 height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
+                float: None,
             },
         ),
         action(

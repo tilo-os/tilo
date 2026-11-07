@@ -84,7 +84,9 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
             group,
             before,
         } => own_all(&[Some(*strip), Some(*group), *before]),
-        DesktopCommand::PlaceGroup { group, .. } => own(*group),
+        DesktopCommand::PlaceGroup { group, .. } | DesktopCommand::FloatGroup { group, .. } => {
+            own(*group)
+        }
         DesktopCommand::MoveTab {
             location: l,
             placement: p,
