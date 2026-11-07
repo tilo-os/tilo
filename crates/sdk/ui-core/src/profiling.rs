@@ -179,6 +179,9 @@ pub struct FrameTiming {
     pub build_layout_us: u64,
     pub apply_layout_us: u64,
     pub draw_us: u64,
+    /// The draw commands the frame's drawn scene encoded: the drawing it
+    /// composed, whether a frame reuses what it kept or draws it again.
+    pub draw_commands: u64,
     pub handle_event_us: u64,
     pub resource_availability_us: u64,
     pub scene_pool_wait_us: u64,
@@ -452,6 +455,13 @@ impl FrameProfiler {
         if let Some(t) = start {
             self.record(pass, t.elapsed());
         }
+    }
+
+    /// Bank the number of draw commands the frame encoded, for a host that
+    /// draws its own scene.
+    #[inline]
+    pub fn record_draw_commands(&mut self, commands: u64) {
+        self.cur.draw_commands = self.cur.draw_commands.saturating_add(commands);
     }
 
     /// Banks one live input event that began at `started` and took `total`,

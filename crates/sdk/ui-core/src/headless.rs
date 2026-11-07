@@ -293,6 +293,7 @@ mod lazy_palette;
 mod nav_gesture;
 #[cfg(test)]
 mod palette_window_tests;
+mod profiling;
 mod retained_layout;
 mod root_access;
 pub use root_access::{Framed, RootAndStateMut, RootMut};
@@ -443,6 +444,9 @@ pub struct FrameHarness {
     replayed_draws: bool,
     /// Windows shown by replaying their drawing, since construction.
     replayed_window_draws: u64,
+    /// The draw commands the frames drawn since construction encoded: how
+    /// much a frame composed, in the drawing itself.
+    drawn_commands: u64,
     /// Frames whose layout failed, skipped ([`Self::skip_frame`]).
     skipped_frames: crate::widget::SkippedFrames,
     /// The report of a frame this harness skipped on its own, until a host
@@ -1529,6 +1533,7 @@ impl FrameHarness {
             settled_history_frames: 0,
             replayed_draws: false,
             replayed_window_draws: 0,
+            drawn_commands: 0,
             skipped_frames: crate::widget::SkippedFrames::default(),
             skip_report: None,
             suppress_pan_replay: false,
@@ -2190,26 +2195,42 @@ impl FrameHarness {
         let _wake = self.enter_wake();
         // What the widgets took up since the last frame (an edit a child
         // made on its own) is written before the document is read again.
-        self.root.settle(
-            &mut crate::widget::Edits::lend(&mut self.state.doc),
-            &self.state.root,
-        );
-        self.root.sync(&self.state.doc, &self.state.root);
+        {
+            let _settle = tilo_resource::profiling::Phase::start("ui.sync.settle");
+            self.root.settle(
+                &mut crate::widget::Edits::lend(&mut self.state.doc),
+                &self.state.root,
+            );
+        }
+        {
+            let _tree = tilo_resource::profiling::Phase::start("ui.sync.tree");
+            self.root.sync(&self.state.doc, &self.state.root);
+        }
         // A sync reads the document only. What it took up is written now,
         // through actions, and shown in this same frame.
         let before = crate::doc::settle_mark(&self.state.doc);
-        self.root.settle(
-            &mut crate::widget::Edits::lend(&mut self.state.doc),
-            &self.state.root,
-        );
+        {
+            let _settle = tilo_resource::profiling::Phase::start("ui.sync.settle");
+            self.root.settle(
+                &mut crate::widget::Edits::lend(&mut self.state.doc),
+                &self.state.root,
+            );
+        }
         let settled = crate::doc::settle_mark(&self.state.doc) != before;
         let submitted = crate::widget::controls::has_pending_control_invocation(self.root.as_ref());
         // A readmission frame lays out the composition its caller's sync replaced, so the tick that
         // asked dispatches through admitted maps once it returns. Ticking here would ask for
         // another readmission and the frames would nest.
         if (settled || submitted) && !READMITTING.get() {
-            self.idle_control_tick();
-            self.update_root();
+            {
+                let _tick = tilo_resource::profiling::Phase::start("ui.sync.idle_tick");
+                self.idle_control_tick();
+            }
+            {
+                let _update = tilo_resource::profiling::Phase::start("ui.sync.update");
+                self.update_root();
+            }
+            let _tree = tilo_resource::profiling::Phase::start("ui.sync.tree");
             self.root.sync(&self.state.doc, &self.state.root);
         }
     }
@@ -3291,7 +3312,10 @@ impl FrameHarness {
         // Select the current record before update, then observe a first
         // asynchronous open before sync can accidentally edit the workspace index.
         self.tick_records();
-        let updated = self.update_root();
+        let updated = {
+            let _update = tilo_resource::profiling::Phase::start("ui.frame_update");
+            self.update_root()
+        };
         self.tick_records();
         if updated || woken {
             self.local_changes = self.local_changes.wrapping_add(1);
@@ -4095,8 +4119,13 @@ impl FrameHarness {
             .replayed_window_draws
             .saturating_add(u64::try_from(replayed).unwrap_or(u64::MAX));
         draw_phase.end();
+        // What the frame composed, in draw commands: a frame that draws only what changed
+        // encodes few, a frame that walks and draws the whole tree encodes all of them.
+        let commands = u64::try_from(self.scene.encoding().draw_tags.len()).unwrap_or(u64::MAX);
+        self.drawn_commands = self.drawn_commands.saturating_add(commands);
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Draw, t_draw);
+            p.record_draw_commands(commands);
         }
         crate::motion::frame_drawn(motions_at);
         self.settle_frame_owed =
@@ -7875,53 +7904,11 @@ impl FrameHarness {
         self.send(&crate::synthetic_input::mouse_wheel(dx, dy));
     }
 
-    // -- Perf harness plumbing (see [`crate::profiling`]) ------------------
-
-    /// Install a capture profiler so [`Self::relayout`] / [`Self::send`] time
-    /// each pass and commit a per-frame sample. Called by
-    /// [`crate::profiling::run_scenario`].
-    pub fn begin_profiling(&mut self) {
-        self.invalidate_local();
-        self.pump_component_wakes();
-        self.profiler = Some(crate::profiling::FrameProfiler::for_capture());
-    }
-
     /// The root's native input diagnostic, as the native runner samples it
     /// (see [`crate::widget::Widget::native_input_snapshot`]).
     pub fn native_input_snapshot(&self) -> Option<serde_json::Value> {
         self.root
             .native_input_snapshot(&self.state.doc, &self.state.root)
-    }
-
-    /// Stop per-pass timing; subsequent frames pay nothing again.
-    pub fn end_profiling(&mut self) {
-        self.invalidate_local();
-        self.profiler = None;
-    }
-
-    /// Render one frame with no input and record it. A frame here is one
-    /// `relayout`, which runs the sync → build → apply → draw passes.
-    pub fn profile_frame(&mut self) {
-        self.invalidate_local();
-        self.pump_component_wakes();
-        self.relayout();
-    }
-
-    /// Discard captured frames (e.g. warmup) without stopping capture.
-    pub fn clear_profile_samples(&mut self) {
-        self.pump_component_wakes();
-        if let Some(p) = self.profiler.as_mut() {
-            p.clear_capture();
-        }
-    }
-
-    /// Take every captured frame so far, draining the buffer.
-    pub fn take_profile_samples(&mut self) -> Vec<crate::profiling::FrameTiming> {
-        self.pump_component_wakes();
-        self.profiler
-            .as_mut()
-            .map(super::profiling::FrameProfiler::take_capture)
-            .unwrap_or_default()
     }
 
     /// Set the held modifier set. Names: `ctrl`, `shift`, `alt`, `logo`, and
