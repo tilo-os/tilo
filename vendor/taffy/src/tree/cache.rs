@@ -36,6 +36,46 @@ impl Default for Cache {
     }
 }
 
+/// Whether `entry`, solved to `cached_size`, answers a query with `known_dimensions` under
+/// `available_space`.
+///
+/// An entry answers when it was solved with the dimensions the query knows. Where the query
+/// knows a dimension the entry left out, the entry answers only if it came to that size under
+/// the space the query offers: the size alone is no answer, because a node measured under a
+/// min-content constraint wraps its content into other lines than the same node at the same
+/// width it is later given. A card whose content is as wide as the column it stands in came to
+/// that width at its min-content wrapping, and handing that height to a definite-width query
+/// stood it three times as tall as its content in a row that centres it.
+fn answers(
+    entry: &CacheEntry<impl Copy>,
+    known_dimensions: Size<Option<f32>>,
+    available_space: Size<AvailableSpace>,
+    cached_size: Size<f32>,
+) -> bool {
+    let axis_answers = |known: Option<f32>,
+                        entry_known: Option<f32>,
+                        cached: f32,
+                        entry_available: AvailableSpace,
+                        available: AvailableSpace| {
+        known == entry_known || (known == Some(cached) && entry_available.is_roughly_equal(available))
+    };
+
+    axis_answers(
+        known_dimensions.width,
+        entry.known_dimensions.width,
+        cached_size.width,
+        entry.available_space.width,
+        available_space.width,
+    ) && axis_answers(
+        known_dimensions.height,
+        entry.known_dimensions.height,
+        cached_size.height,
+        entry.available_space.height,
+        available_space.height,
+    ) && (known_dimensions.width.is_some() || entry.available_space.width.is_roughly_equal(available_space.width))
+        && (known_dimensions.height.is_some() || entry.available_space.height.is_roughly_equal(available_space.height))
+}
+
 impl Cache {
     /// Create a new empty cache
     pub const fn new() -> Self {
@@ -115,32 +155,12 @@ impl Cache {
         match input.run_mode {
             RunMode::PerformLayout => self
                 .final_layout_entry
-                .filter(|entry| {
-                    let cached_size = entry.content.size;
-                    (known_dimensions.width == entry.known_dimensions.width
-                        || known_dimensions.width == Some(cached_size.width))
-                        && (known_dimensions.height == entry.known_dimensions.height
-                            || known_dimensions.height == Some(cached_size.height))
-                        && (known_dimensions.width.is_some()
-                            || entry.available_space.width.is_roughly_equal(available_space.width))
-                        && (known_dimensions.height.is_some()
-                            || entry.available_space.height.is_roughly_equal(available_space.height))
-                })
+                .filter(|entry| answers(entry, known_dimensions, available_space, entry.content.size))
                 .map(|e| e.content),
             RunMode::ComputeSize => {
                 for entry in self.measure_entries.iter().flatten() {
-                    let cached_size = entry.content;
-
-                    if (known_dimensions.width == entry.known_dimensions.width
-                        || known_dimensions.width == Some(cached_size.width))
-                        && (known_dimensions.height == entry.known_dimensions.height
-                            || known_dimensions.height == Some(cached_size.height))
-                        && (known_dimensions.width.is_some()
-                            || entry.available_space.width.is_roughly_equal(available_space.width))
-                        && (known_dimensions.height.is_some()
-                            || entry.available_space.height.is_roughly_equal(available_space.height))
-                    {
-                        return Some(LayoutOutput::from_outer_size(cached_size));
+                    if answers(entry, known_dimensions, available_space, entry.content) {
+                        return Some(LayoutOutput::from_outer_size(entry.content));
                     }
                 }
 
