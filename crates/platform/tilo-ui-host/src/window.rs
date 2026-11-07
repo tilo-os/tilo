@@ -244,8 +244,8 @@ pub struct AppWindow {
     /// The task runs a change mark asked to show ([`ToUi::ShowRun`]), until the window's
     /// host takes them ([`Self::take_shown_runs`]).
     shown_runs: Vec<String>,
-    /// How many presses the window sent the app (`ToApp::Fire`), and how many of them the app
-    /// said it ran (`ToUi::Took`).
+    /// How many presses the window sent the app (`ToApp::Fire`, `ToApp::Invoke`), and how many
+    /// of them the app said it ran (`ToUi::Took`).
     fired: u64,
     took: u64,
     /// What the person typed after presses the app has not run yet, oldest first.
@@ -386,9 +386,10 @@ impl AppWindow {
         &self.actions
     }
 
-    /// The person chose `address` from the window's command palette with `argument`: the app
-    /// runs it as their own step. `argument` is the palette's collected text or canonical JSON
-    /// arguments, as a prompt or typed form encodes them.
+    /// The person chose `address` from the window's command palette with `argument`, or pressed
+    /// a control the app published the action for: the app runs it as their own step. `argument`
+    /// is the palette's collected text or canonical JSON arguments, as a prompt or typed form
+    /// encodes them.
     ///
     /// An action whose key a text field of the view declares (a list's entry) is pressed where
     /// that field stands: the press puts the keyboard in it, as the key does, rather than
@@ -413,6 +414,9 @@ impl AppWindow {
             self.flush();
             return;
         }
+        // A press like any other: what the person types while the app runs it goes where it
+        // leaves the keyboard, and what it makes opens as their input.
+        self.fired = self.fired.saturating_add(1);
         self.tell(ToApp::Invoke { address, argument });
     }
 
