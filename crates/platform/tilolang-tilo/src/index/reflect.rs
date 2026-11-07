@@ -28,6 +28,7 @@ use automerge::ReadDoc as _;
 use serde_json::{Value as Json, json};
 use tilolang::pred::Lit;
 use tilolang_runtime::store::{FieldValue, Left, Reflected, Scalar, TaskRun, Version, VersionKind};
+use tilolang_runtime::value::ResourceRef;
 
 use tilo_resource::Doc;
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
@@ -410,6 +411,22 @@ impl Ends {
             moved: moved.then(|| (stamp.of_fields(fields), kind)),
             restored: false,
         }
+    }
+
+    /// Whether these are the ends of the same invocation's version as `other`: who made it, when
+    /// and by which action, over how many items and from what. A version this device made before
+    /// the record held it says the same of itself, though its causal place is
+    /// [`PROVISIONAL`] and the change that made it is not known yet.
+    #[must_use]
+    pub fn same_invocation(&self, other: &Self) -> bool {
+        let (held, other) = (&self.last.version, &other.last.version);
+        held.who == other.who
+            && held.at == other.at
+            && held.action == other.action
+            && held.task == other.task
+            && held.count == other.count
+            && held.from.as_ref().map(ResourceRef::id_string)
+                == other.from.as_ref().map(ResourceRef::id_string)
     }
 
     /// The newest version of it, as a mark of the resource reads it: what it did to the

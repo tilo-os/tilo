@@ -64,13 +64,13 @@ use tilolang_runtime::store::{
 use tilolang_runtime::value::ResourceRef;
 
 use crate::action::{
-    Authorship, DynAction, DynEdit, Made, RECORDS_KEY, apply_edits, outbox_entries, read_resource,
+    Authorship, DynAction, DynEdit, RECORDS_KEY, apply_edits, outbox_entries, read_resource,
 };
 use crate::background::Waker;
 use crate::chunk::{self, ChunkNo, Chunks, Stamps};
 use crate::index::derive::{Derive, DocReads, Reached, linked_list, split_link};
 use crate::index::lists::Entry;
-use crate::index::overlay::{ListState, Overlay, OverlaySink};
+use crate::index::overlay::{ListState, Overlay};
 use crate::index::view::{self, View};
 use crate::index::{self as idx, Index, IndexError, IndexReads};
 use crate::items::Nested;
@@ -360,6 +360,10 @@ struct Inner {
     /// What the store wrote into the mirror since it last caught up with the record, oldest
     /// first: the mirror's open transaction.
     local: Vec<LocalWrite>,
+    /// The transactions of `local` the record holds ([`Self::settle_versions`]): a change of the
+    /// record's carries what they wrote, so reads hold it from the index and the writes are not
+    /// derived into the overlay again.
+    settled: BTreeSet<Vec<u8>>,
     stats: StoreStats,
     /// Every resource of the workspace: its app and type.
     index: BTreeMap<DocId, (AppId, TypeId)>,
@@ -677,6 +681,7 @@ impl TiloStore {
             inner: Rc::new(RefCell::new(Inner {
                 chunks: Chunks::default(),
                 local: Vec::new(),
+                settled: BTreeSet::new(),
                 stats: StoreStats::default(),
                 index: BTreeMap::new(),
                 apps: BTreeMap::new(),
@@ -1765,107 +1770,6 @@ impl Inner {
             }
         }
         (moved, wholes, notified)
-    }
-
-    /// Derive the store's writes anew into an empty overlay: after a rollback, or once an
-    /// index they were written over changed.
-    fn rebuild_overlay(&mut self) {
-        let mut overlay = Overlay::default();
-        if self.chunks.has_record() {
-            for write in &self.local {
-                let Some(held) = self.apps.get(&write.app).filter(|held| held.ready()) else {
-                    continue;
-                };
-                let mut sink = OverlaySink {
-                    overlay: &mut overlay,
-                    snapshot: Some(&held.snapshot),
-                };
-                let mut derive = Derive::new(&self.chunks, &self.index, &self.nested);
-                if let Err(error) = derive.changes(&mut sink, &write.app, &write.reached()) {
-                    tracing::warn!(app = write.app, %error, "a change was not indexed");
-                }
-                if let Some(ends) = &write.versions
-                    && let Err(error) = derive.versions(&mut sink, &write.app, ends)
-                {
-                    tracing::warn!(app = write.app, %error, "a change's versions were not indexed");
-                }
-                if let Some(ends) = &write.versions {
-                    unsaved::derive_removed(&mut derive, &mut sink, &write.app, ends, &write.items);
-                }
-            }
-        }
-        self.overlay = Arc::new(overlay);
-    }
-
-    /// Take in the versions an action this device committed made, provisional until the
-    /// record holds it: each resource it changed was last changed by its invoker at the time
-    /// the invocation recorded, one it made was made then, and each of its fields it changed
-    /// was changed then (`changed(r, .field)`). Reflection (`created(r)`, `updated(r)`,
-    /// `changed(r, .field)`) and the lists ordered by them read these until the record's own
-    /// replace them with the record's next change; the record's carry the same time, so
-    /// nothing moves then. Returns the fields that changed: each resource's versions.
-    fn provisional_versions(
-        &mut self,
-        app: &str,
-        start: usize,
-        note: &ChangeNote,
-        made: &[Made],
-    ) -> BTreeMap<DocId, Vec<FieldKey>> {
-        let at = note.at.clone().unwrap_or_else(crate::host::system_time);
-        let stamp = idx::reflect::Stamp {
-            version: Version {
-                who: note.invoker.clone(),
-                at,
-                action: note.action.clone(),
-                task: note.group.clone(),
-                from: note.from.clone(),
-                count: note.count.max(1),
-                // No change yet: the action was invoked on top of every change this device
-                // holds, so it orders after each of them recorded in the same second.
-                op: idx::reflect::PROVISIONAL,
-                ..Version::default()
-            },
-        };
-        let mut reached: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
-        let mut ends = Ends::new();
-        for made in made {
-            let resource = made.resource.clone();
-            let end = idx::reflect::Ends::of(
-                &stamp,
-                &made.fields,
-                made.kind,
-                made.kind == tilolang_runtime::store::VersionKind::Removed,
-            );
-            let doc = tilolang_runtime::store::doc_of(&resource).to_owned();
-            reached
-                .entry(doc)
-                .or_default()
-                .extend(version_fields(&resource, &end));
-            ends.insert(resource, end);
-        }
-        // Kept with the action's last write, so they go when its writes go.
-        let Some(write) = self.local.get_mut(start..).and_then(<[_]>::last_mut) else {
-            return BTreeMap::new();
-        };
-        write.versions = Some(ends.clone());
-        let items = write.items.clone();
-        if let (true, Some(held)) = (
-            self.chunks.has_record(),
-            self.apps.get(app).filter(|held| held.ready()),
-        ) {
-            let snapshot = Arc::clone(&held.snapshot);
-            let mut sink = OverlaySink {
-                overlay: Arc::make_mut(&mut self.overlay),
-                snapshot: Some(&snapshot),
-            };
-            let mut derive = Derive::new(&self.chunks, &self.index, &self.nested);
-            if let Err(error) = derive.versions(&mut sink, app, &ends) {
-                tracing::warn!(app, %error, "a change's versions were not indexed");
-            }
-            unsaved::derive_removed(&mut derive, &mut sink, app, &ends, &items);
-        }
-        self.changed_within(&reached);
-        reached
     }
 
     /// Write `edit` on the record `doc` in the transaction `txn`, adding it to `state`: what a

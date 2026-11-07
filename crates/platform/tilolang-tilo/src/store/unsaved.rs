@@ -16,17 +16,21 @@
 //! [`Inner::reapply`] is the plain replay of everything the store wrote, which rollback and
 //! rewind use; the derived writes it leaves in place are the unsaved layer's.
 
-use tilolang_runtime::ids::{AppId, DocId, TypeId};
-use tilolang_runtime::store::{ChangeSummary, FieldKey, ListingChange};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
-use crate::action::apply_edits;
+use tilolang_runtime::ids::{AppId, DocId, TypeId};
+use tilolang_runtime::store::{ChangeNote, ChangeSummary, FieldKey, ListingChange, Version};
+
+use crate::action::{Made, apply_edits};
 use crate::chunk::ChunkNo;
+use crate::index as idx;
 use crate::index::derive::Derive;
-use crate::index::overlay::OverlaySink;
+use crate::index::overlay::{Overlay, OverlaySink};
 use crate::index::reflect::Ends;
 use crate::schema::lookup;
 
-use super::{Inner, ItemTouches, LocalWrite, TxnState, scan_of};
+use super::{Inner, ItemTouches, LocalWrite, TxnState, scan_of, version_fields};
 
 /// Whether a write touches only resources its origin derives
 /// ([`crate::schema::TypeSchema::derived`]): it belongs in the unsaved layer. `touched` names
@@ -253,5 +257,156 @@ impl Inner {
                 }
             }
         }
+    }
+}
+
+impl Inner {
+    /// Derive the store's writes anew into an empty overlay: after a rollback, or once an
+    /// index they were written over changed.
+    pub(super) fn rebuild_overlay(&mut self) {
+        self.derive_overlay(|_| true);
+    }
+
+    /// Derive what an origin derives anew into an empty overlay, and none of the store's writes
+    /// the record holds: what those who read the mirror saw of the record before its change
+    /// ([`super::sync`]).
+    pub(super) fn rebuild_unsaved_overlay(&mut self) {
+        self.derive_overlay(|write| write.derived);
+    }
+
+    /// Derive the writes of `self.local` `keep` holds anew into an empty overlay, and none the
+    /// record holds: what those wrote is the index's ([`Self::settle_versions`]).
+    pub(super) fn derive_overlay(&mut self, keep: impl Fn(&LocalWrite) -> bool) {
+        let mut overlay = Overlay::default();
+        if self.chunks.has_record() {
+            let settled = &self.settled;
+            for write in self
+                .local
+                .iter()
+                .filter(|write| keep(write) && !settled.contains(&write.seed))
+            {
+                let Some(held) = self.apps.get(&write.app).filter(|held| held.ready()) else {
+                    continue;
+                };
+                let mut sink = OverlaySink {
+                    overlay: &mut overlay,
+                    snapshot: Some(&held.snapshot),
+                };
+                let mut derive = Derive::new(&self.chunks, &self.index, &self.nested);
+                if let Err(error) = derive.changes(&mut sink, &write.app, &write.reached()) {
+                    tracing::warn!(app = write.app, %error, "a change was not indexed");
+                }
+                if let Some(ends) = &write.versions
+                    && let Err(error) = derive.versions(&mut sink, &write.app, ends)
+                {
+                    tracing::warn!(app = write.app, %error, "a change's versions were not indexed");
+                }
+                if let Some(ends) = &write.versions {
+                    derive_removed(&mut derive, &mut sink, &write.app, ends, &write.items);
+                }
+            }
+        }
+        self.overlay = Arc::new(overlay);
+    }
+
+    /// Take in the versions an action this device committed made, provisional until the
+    /// record holds it: each resource it changed was last changed by its invoker at the time
+    /// the invocation recorded, one it made was made then, and each of its fields it changed
+    /// was changed then (`changed(r, .field)`). Reflection (`created(r)`, `updated(r)`,
+    /// `changed(r, .field)`) and the lists ordered by them read these until the record's own
+    /// replace them with the record's next change; the record's carry the same time, so
+    /// nothing moves then. Returns the fields that changed: each resource's versions.
+    pub(super) fn provisional_versions(
+        &mut self,
+        app: &str,
+        start: usize,
+        note: &ChangeNote,
+        made: &[Made],
+    ) -> BTreeMap<DocId, Vec<FieldKey>> {
+        let at = note.at.clone().unwrap_or_else(crate::host::system_time);
+        let stamp = idx::reflect::Stamp {
+            version: Version {
+                who: note.invoker.clone(),
+                at,
+                action: note.action.clone(),
+                task: note.group.clone(),
+                from: note.from.clone(),
+                count: note.count.max(1),
+                // No change yet: the action was invoked on top of every change this device
+                // holds, so it orders after each of them recorded in the same second.
+                op: idx::reflect::PROVISIONAL,
+                ..Version::default()
+            },
+        };
+        let mut reached: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
+        let mut ends = super::Ends::new();
+        for made in made {
+            let resource = made.resource.clone();
+            let end = idx::reflect::Ends::of(
+                &stamp,
+                &made.fields,
+                made.kind,
+                made.kind == tilolang_runtime::store::VersionKind::Removed,
+            );
+            let doc = tilolang_runtime::store::doc_of(&resource).to_owned();
+            reached
+                .entry(doc)
+                .or_default()
+                .extend(version_fields(&resource, &end));
+            ends.insert(resource, end);
+        }
+        // Kept with the action's last write, so they go when its writes go.
+        let Some(write) = self.local.get_mut(start..).and_then(<[_]>::last_mut) else {
+            return BTreeMap::new();
+        };
+        write.versions = Some(ends.clone());
+        let items = write.items.clone();
+        if let (true, Some(held)) = (
+            self.chunks.has_record(),
+            self.apps.get(app).filter(|held| held.ready()),
+        ) {
+            let snapshot = Arc::clone(&held.snapshot);
+            let mut sink = OverlaySink {
+                overlay: Arc::make_mut(&mut self.overlay),
+                snapshot: Some(&snapshot),
+            };
+            let mut derive = Derive::new(&self.chunks, &self.index, &self.nested);
+            if let Err(error) = derive.versions(&mut sink, app, &ends) {
+                tracing::warn!(app, %error, "a change's versions were not indexed");
+            }
+            derive_removed(&mut derive, &mut sink, app, &ends, &items);
+        }
+        self.changed_within(&reached);
+        reached
+    }
+
+    /// Drop the versions of the store's writes that `told` are the record's now: a change of the
+    /// record's that carries the very action a write here made tells each version it made
+    /// ([`Self::provisional_versions`]), and the index holds it. The write keeps what it wrote of
+    /// its resources alone, so a rebuild of the overlay reads no version off the index again for
+    /// a change those who read the mirror are told already. A transaction whose every version
+    /// `told` holds is the record's, and stays only for the chunk record it goes to
+    /// ([`Self::derive_overlay`]).
+    pub(super) fn settle_versions(&mut self, told: &super::Ends) {
+        let mut settled = BTreeSet::new();
+        for write in &mut self.local {
+            let Some(versions) = write.versions.as_mut() else {
+                continue;
+            };
+            versions.retain(|resource, end| {
+                !told
+                    .get(resource)
+                    .is_some_and(|held| held.same_invocation(end))
+            });
+            if versions.is_empty() {
+                write.versions = None;
+                settled.insert(write.seed.clone());
+            }
+        }
+        // A write of the record's leaves `local` once its chunk record holds it, and takes its
+        // seed with it.
+        self.settled
+            .retain(|seed| self.local.iter().any(|write| write.seed == *seed));
+        self.settled.extend(settled);
     }
 }
