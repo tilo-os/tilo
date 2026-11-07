@@ -1825,19 +1825,50 @@ fn placing_actions() -> Vec<ActionSpec> {
                 optional("y", ParamType::Integer, "Its canvas y"),
                 optional("width", ParamType::Integer, "Its width in canvas pixels"),
                 optional("height", ParamType::Integer, "Its height in canvas pixels"),
+                // A place that floats stands above the windows rather than
+                // on the canvas: it has no canvas x and y, and the corner
+                // and insets are its own instead (`width` and `height` are
+                // its size). Left out, the place stands on the canvas.
+                optional(
+                    "float",
+                    ParamType::Text,
+                    "Floats it above its workspace's windows at this corner of the work area: top-left, top-right, bottom-right (the default) or bottom-left",
+                ),
+                optional(
+                    "dx",
+                    ParamType::Integer,
+                    "A float's distance from that corner's side edge, in canvas pixels",
+                ),
+                optional(
+                    "dy",
+                    ParamType::Integer,
+                    "A float's distance from that corner's top or bottom edge, in canvas pixels",
+                ),
             ],
-            |args| ArrangementAction::Place {
-                workspace: id_text(args, "workspace"),
-                row: count(args, "row"),
-                strip: count(args, "strip"),
-                place: count(args, "place"),
-                resource: text(args, "resource"),
-                view: args.text("view").unwrap_or_default().to_owned(),
-                x: args.integer("x").unwrap_or_default(),
-                y: args.integer("y").unwrap_or_default(),
-                width: args.integer("width").unwrap_or(DEFAULT_WIDTH),
-                height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
-                float: None,
+            |args| {
+                let float = args.text("float").map(|corner| {
+                    FloatPlace::new(
+                        // ignored-failure: a corner's name that names none stands at the default corner
+                        FloatCorner::parse(corner).unwrap_or_default(),
+                        float_coord(args.integer("dx"), FLOAT_INSET),
+                        float_coord(args.integer("dy"), FLOAT_INSET),
+                        float_side(args.integer("width"), FLOAT_WIDTH),
+                        float_side(args.integer("height"), FLOAT_HEIGHT),
+                    )
+                });
+                ArrangementAction::Place {
+                    workspace: id_text(args, "workspace"),
+                    row: count(args, "row"),
+                    strip: count(args, "strip"),
+                    place: count(args, "place"),
+                    resource: text(args, "resource"),
+                    view: args.text("view").unwrap_or_default().to_owned(),
+                    x: args.integer("x").unwrap_or_default(),
+                    y: args.integer("y").unwrap_or_default(),
+                    width: args.integer("width").unwrap_or(DEFAULT_WIDTH),
+                    height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
+                    float,
+                }
             },
         ),
         action(
