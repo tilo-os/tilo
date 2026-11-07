@@ -1111,3 +1111,133 @@ fn a_layer_that_fills_at_an_aspect_keeps_its_ratio() {
         "it takes the cell's width: {r:?}"
     );
 }
+
+/// The page row a virtual list wraps each row in is a page whose slot takes the row's whole
+/// width. In a row beside another child, that `width: 100%` is measured against a width the
+/// row is still deciding, and the page comes out as tall as its content at the narrowest width
+/// it was measured at: the row's own height must not come from that measurement.
+#[test]
+fn a_page_rows_width_does_not_decide_its_height_in_a_row() {
+    let theme = Theme::dark();
+    for container_height in [200.0_f32, 504.0] {
+        let content = Stack::stack()
+            .with_id("page-row-content")
+            .push(boxed(16.0))
+            .push(boxed(35.0))
+            .push(boxed(28.0));
+        let page = Page::full()
+            .row_after(Rhythm::Section)
+            .push(Box::new(content));
+        let mut line = Stack::row()
+            .fill_width()
+            .align(Align::Center)
+            .push(Box::new(page))
+            .push(Box::new(Spacer::fixed(36.0)));
+        solve_in(
+            &mut line,
+            &theme,
+            436.0,
+            taffy::AvailableSpace::Definite(container_height),
+        );
+        let content = crate::widget::find_test_id(&line, "page-row-content")
+            .expect("the row's content is laid out")
+            .get_rect();
+        assert!(
+            content.height() < 120.0,
+            "at a {container_height}-tall container the row's content is {} tall",
+            content.height()
+        );
+    }
+}
+
+/// The same rule for the wrapper a virtual list puts a row in: the row's page
+/// ([`Page::full().row_after`]) holds the row at the row's own height, and a column inside a
+/// row beside a chip takes the row's height, never the list's. This is the chat transcript's
+/// shape: a message's column, a reaction chip trailing it, in a page row inside the list.
+#[test]
+fn a_message_column_in_a_page_row_keeps_the_rows_height() {
+    let theme = Theme::dark();
+    for rows in [1_usize, 12] {
+        let items: Vec<u32> = (0..rows as u32).collect();
+        let model = crate::widget::VecListModel::new(items, |n| *n).expect("a list model");
+        let list = crate::widget::VirtualList::new(model, 40.0, |_, index, _| {
+            let column = Stack::stack()
+                .with_id(format!("msg{index}"))
+                .push(boxed(16.0))
+                .push(boxed(35.0))
+                .push(boxed(28.0));
+            let line = Stack::row()
+                .fill_width()
+                .align(Align::Center)
+                .push(Box::new(column))
+                .push(Box::new(Spacer::fixed(36.0)));
+            Box::new(Page::full().row_after(Rhythm::Section).push(Box::new(line)))
+                as crate::widget::Element
+        });
+        let mut docked = Stack::stack()
+            .fill_width()
+            .fill_height()
+            .push_fit(Box::new(list), Fit::fill(1.0))
+            .push_fit(Box::new(Spacer::fixed(60.0)), Fit::hug());
+        solve_in(
+            &mut docked,
+            &theme,
+            540.0,
+            taffy::AvailableSpace::Definite(504.0),
+        );
+        let column = crate::widget::find_test_id(&docked, "msg0")
+            .expect("the first message is laid out")
+            .get_rect();
+        assert!(
+            column.height() < 120.0,
+            "with {rows} rows the message column is {} tall: it took the list's room, not its \
+             own content's",
+            column.height()
+        );
+    }
+}
+
+/// A row of a list that fills its column keeps its own height, not the column's: a chat
+/// message's row in a transcript is as tall as what it says, however tall the list around it
+/// is. A slot asking for no aspect gets no derived height, so nothing about a ratio may reach
+/// it — the same rule for a row inside a virtual list as for any other slot.
+#[test]
+fn a_rows_slot_keeps_its_own_height_beside_a_foot() {
+    use crate::widget::{Button, VecListModel, VirtualList};
+    let theme = Theme::dark();
+    for rows in [1_usize, 12] {
+        let items: Vec<u32> = (0..rows as u32).collect();
+        let model = VecListModel::new(items, |n| *n).expect("a list model");
+        let list = VirtualList::new(model, 40.0, |_, index, _| {
+            Box::new(
+                Stack::stack()
+                    .fill_width()
+                    .with_id(format!("row{index}"))
+                    .push(boxed(40.0)),
+            ) as crate::widget::Element
+        });
+        let docked = Stack::stack()
+            .fill_width()
+            .fill_height()
+            .push_fit(Box::new(list), Fit::fill(1.0))
+            .push_fit(Box::new(Button::new("send", "Send")), Fit::hug());
+        let mut column = Stack::stack()
+            .fill_width()
+            .fill_height()
+            .push(Box::new(docked));
+        solve_in(
+            &mut column,
+            &theme,
+            540.0,
+            taffy::AvailableSpace::Definite(560.0),
+        );
+        let row = crate::widget::find_test_id(&column, "row0")
+            .expect("the first row is laid out")
+            .get_rect();
+        assert!(
+            row.height() < 120.0,
+            "with {rows} rows the first is {} tall: it took the list's room, not its own",
+            row.height()
+        );
+    }
+}
