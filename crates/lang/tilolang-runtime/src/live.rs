@@ -603,6 +603,30 @@ impl Live {
                 let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
                 for rows in held.filter(|rows| rows.coll.field == field) {
                     match change.listing(key) {
+                        // Nothing moved for a reader that had read the collection since the
+                        // write: the store measured the steps from the mirror the write left
+                        // open, which every read of it holds. A reader that read the collection
+                        // before the write has not seen the items it placed, and the change
+                        // names them: each goes where the listing has it now, found by what
+                        // orders the listing rather than by reading it item by item.
+                        Some([]) if self.lists.contains_key(&rows.parent) => {
+                            let named: BTreeSet<String> = change
+                                .fields
+                                .iter()
+                                .filter_map(|named| {
+                                    let (holder, field, item) = item_in(core, &named.resource)?;
+                                    (holder == key.resource && field == key.field).then_some(item)
+                                })
+                                .collect();
+                            if !named.is_empty() {
+                                reach.steps.push(Pending {
+                                    holder: id,
+                                    rows: Rc::clone(rows),
+                                    steps: Steps::Moved(named),
+                                    mine,
+                                });
+                            }
+                        }
                         Some([]) => {}
                         Some(splices) if key.field != ANY_FIELD && !rows.coll.derived() => {
                             reach.steps.push(Pending {
