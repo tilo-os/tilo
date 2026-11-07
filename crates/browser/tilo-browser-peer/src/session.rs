@@ -654,9 +654,9 @@ struct Shared {
     /// The current HTTPS session's token, for the page to end it as it
     /// leaves ([`PeerHandle::session_token`]).
     session: Option<String>,
-    /// What the page shows where its live plane would be, when it cannot join
-    /// one at all: set when this browser has no WebTransport to join with
-    /// ([`PeerHandle::live_note`]).
+    /// What the page shows where its live plane would be, when it has none:
+    /// that this browser has no WebTransport to join with, or that no plane
+    /// could be reached ([`PeerHandle::live_note`]).
     live_note: Option<String>,
 }
 
@@ -832,9 +832,9 @@ impl PeerHandle {
         }
     }
 
-    /// Why this page cannot join its workspaces' live plane at all, in the
-    /// words it shows in its place, or `None` while it can (or did): the
-    /// browser has no WebTransport, and the plane has no fallback.
+    /// Why this page shows no live presence, in the words it shows in its
+    /// members' place, or `None` while it has a plane: the browser has no
+    /// WebTransport, or no plane could be reached ([`crate::live::UNREACHABLE`]).
     pub fn live_note(&self) -> Option<String> {
         lock(&self.shared).live_note.clone()
     }
@@ -3764,6 +3764,34 @@ mod tests {
         );
         assert_eq!(super::renew_after(now + 30 * second, now), Duration::ZERO);
         assert_eq!(super::renew_after(now - second, now), Duration::ZERO);
+    }
+
+    /// A page that lists nobody says why: each workspace's plane names what it
+    /// waits for, and only asks that reached no plane count towards the note
+    /// in the members' place.
+    #[test]
+    fn a_plane_that_was_not_reached_is_named_in_the_channel_diagnostics() {
+        let mut planes = plane::Planes::default();
+        planes.later(7, 12_000);
+        assert_eq!(
+            planes.describe(),
+            "plane 7: not joined — no live plane was reached; asking again at 12000"
+        );
+        assert_eq!(planes.missed(7), 1);
+        assert_eq!(planes.missed(7), plane::MISSES_BEFORE_NOTE);
+        planes.refused(7, 60_000);
+        assert_eq!(
+            planes.describe(),
+            "plane 7: not joined — the workspace does not admit this page's plane; asking again \
+             at 60000"
+        );
+        assert_eq!(planes.missed(7), 1, "an answer starts the count again");
+        let mut unsupported = plane::Planes::default();
+        unsupported.no_support();
+        assert_eq!(
+            unsupported.describe(),
+            format!("plane: none — {}", crate::live::UNSUPPORTED)
+        );
     }
 }
 
