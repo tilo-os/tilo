@@ -107,9 +107,9 @@ fn fixture() -> Fixture {
     let mut workspace = Workspace::new(WorkspaceSlot(61), "Content puts");
     workspace.set_owner(owner_id());
     let workspace_id = workspace.id().to_string();
-    workspace.admit_agent("scribe", KindSet::READ);
+    workspace.allow_agent("scribe", KindSet::READ);
     workspace.allow_app(Subject::agent("scribe"), "so.tilo.notes", KindSet::ALL);
-    workspace.admit_agent("porter", KindSet::READ);
+    workspace.allow_agent("porter", KindSet::READ);
     workspace.allow_app(Subject::agent("porter"), CONTENT_PUT_SCOPE, KindSet::ALL);
     // A member who edits what is there but adds nothing to the workspace.
     workspace.admit("ada", Role::Commenter);

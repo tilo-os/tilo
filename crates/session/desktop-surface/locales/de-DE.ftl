@@ -824,27 +824,13 @@ workspace-settings-bot-running = Läuft
 workspace-settings-bot-version = Version { $version }
 workspace-settings-remove-bot = Entfernen
 workspace-settings-agents-header = Agenten
-workspace-settings-service-member = { $access ->
-    [admin] Verwaltet
-    [write] Liest und bearbeitet
-    [comment] Liest und kommentiert
-   *[read] Liest
-} verschlüsselte Inhalte · { $until }
-workspace-settings-service-until-removed = bis zur Entfernung
-workspace-settings-service-ends-soon = Zugriff endet in weniger als einer Minute
-workspace-settings-service-ends-minutes = Zugriff endet in { $minutes } Min.
-workspace-settings-service-ends-hours = Zugriff endet in { $hours } Std.
-workspace-settings-badge-service = Dienst
 workspace-settings-retire-agent = Zurückziehen
 workspace-settings-agent-name = Neuen Agenten benennen
 workspace-settings-agent-name-number = Agent { $number }
 workspace-settings-agent-yours = Deiner
-workspace-settings-agent-status-observer = Kann hier lesen, sonst nichts
-workspace-settings-agent-status-contributor = Kann lesen und kommentieren, fragt vor Änderungen
-workspace-settings-agent-status-operator = Kann lesen und ändern, fragt vor Wirkungen nach außen
-workspace-settings-agent-status-custom = Seine Berechtigungen sind einzeln gesetzt
+workspace-settings-agent-keeper-you = Von dir gehalten
+workspace-settings-agent-keeper = Gehalten von { $name }
 workspace-settings-agent-model-line = Modell: { $model }
-workspace-settings-agent-detail-none = Noch kein Zugriff in diesem Arbeitsbereich
 workspace-settings-agents-unavailable = Die Agenten des Workspace lassen sich auf diesem Gerät nicht lesen
 workspace-settings-agent-name-needed = Benenne den Agenten zuerst
 workspace-settings-review-access = Zugriff prüfen

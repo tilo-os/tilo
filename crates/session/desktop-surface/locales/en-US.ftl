@@ -806,27 +806,13 @@ workspace-settings-bot-running = Running
 workspace-settings-bot-version = Version { $version }
 workspace-settings-remove-bot = Remove
 workspace-settings-agents-header = Agents
-workspace-settings-service-member = { $access ->
-    [admin] Administers
-    [write] Reads and edits
-    [comment] Reads and comments
-   *[read] Reads
-} encrypted content · { $until }
-workspace-settings-service-until-removed = until removed
-workspace-settings-service-ends-soon = access ends within a minute
-workspace-settings-service-ends-minutes = access ends in { $minutes } min
-workspace-settings-service-ends-hours = access ends in { $hours } h
-workspace-settings-badge-service = Service
 workspace-settings-retire-agent = Retire
 workspace-settings-agent-name = Name a new agent
 workspace-settings-agent-name-number = Agent { $number }
 workspace-settings-agent-yours = Yours
-workspace-settings-agent-status-observer = Can read what is here, nothing more
-workspace-settings-agent-status-contributor = Can read and comment, asks before changing
-workspace-settings-agent-status-operator = Can read and change, asks before acting outside
-workspace-settings-agent-status-custom = Its permissions are set one by one
+workspace-settings-agent-keeper-you = Kept by you
+workspace-settings-agent-keeper = Kept by { $name }
 workspace-settings-agent-model-line = Model: { $model }
-workspace-settings-agent-detail-none = No access in this workspace yet
 workspace-settings-agents-unavailable = The workspace's agents cannot be read on this device
 workspace-settings-agent-name-needed = Name the agent first
 workspace-settings-review-access = Review access

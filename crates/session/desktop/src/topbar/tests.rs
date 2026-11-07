@@ -1838,16 +1838,15 @@ fn agent_viewer_is_never_described_as_a_person() {
     tree.active = tree.workspaces[0].slot;
     let workspace = &mut tree.workspaces[0];
     workspace.set_owner("owner");
-    assert!(
-        !crate::workspace_settings::admit_agent(
-            workspace,
-            &"owner".to_string(),
-            "scribe",
-            crate::workspace_settings::AgentPreset::Operator,
-        )
-        .is_empty(),
-        "owner admits agent"
-    );
+    let node = workspace.node();
+    workspace.grant(tilo_action_policy::Grant::new(
+        "agent-member:scribe",
+        tilo_action_policy::Subject::agent("scribe"),
+        node,
+        tilo_action_policy::KindSet::READ,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Subject::person("owner"),
+    ));
     workspace.collaborators.push(
         tilo_desktop_model::Collaborator::new("scribe", "Release Notes Agent").with_session(9),
     );
@@ -1880,15 +1879,15 @@ fn disclosure_keeps_identity_and_target_when_user_switches_workspaces() {
     let shared = &mut tree.workspaces[1];
     shared.name = "Private".into();
     shared.set_owner("owner");
-    assert!(
-        !crate::workspace_settings::admit_agent(
-            shared,
-            &"owner".to_string(),
-            "scribe",
-            crate::workspace_settings::AgentPreset::Operator,
-        )
-        .is_empty()
-    );
+    let node = shared.node();
+    shared.grant(tilo_action_policy::Grant::new(
+        "agent-member:scribe",
+        tilo_action_policy::Subject::agent("scribe"),
+        node,
+        tilo_action_policy::KindSet::READ,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Subject::person("owner"),
+    ));
     shared
         .collaborators
         .push(tilo_desktop_model::Collaborator::new("scribe", "scribe").with_session(9));

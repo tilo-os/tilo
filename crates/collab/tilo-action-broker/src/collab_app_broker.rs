@@ -7874,11 +7874,8 @@ impl AppBrokerState {
             });
         }
         for (agent, _) in agents {
-            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
-                agent: agent.clone(),
-            }
-            .validate()
-            .map_err(|_| "native context contains a noncanonical agent identity")?;
+            tilo_peer_state::workspace_membership::valid_agent_id(&agent)
+                .map_err(|_| "native context contains a noncanonical agent identity")?;
             let is_self = admitted.agent_id.as_deref() == Some(agent.as_str());
             collaborators.push(ui::collaboration::Collaborator {
                 id: format!("agent:{agent}"),
@@ -13595,7 +13592,7 @@ pub mod tests {
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(3), "Foreign");
         workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
-        workspace.admit_agent("scribe", crate::test_support::KindSet::READ);
+        workspace.allow_agent("scribe", crate::test_support::KindSet::READ);
         let route = CrdtRoute::cluster(workspace.id().to_string());
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -13672,7 +13669,7 @@ pub mod tests {
             crate::test_support::Subject::Person(owner),
         ));
         let route = CrdtRoute::cluster(workspace.id().to_string());
-        workspace.admit_agent("scribe", crate::test_support::KindSet::READ);
+        workspace.allow_agent("scribe", crate::test_support::KindSet::READ);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
 
@@ -13913,8 +13910,8 @@ pub mod tests {
             &uuid::Uuid::new_v4().to_string(),
             crate::test_support::KindSet::READ,
         );
-        let collision = workspace.admit_agent(&person, crate::test_support::KindSet::READ);
-        workspace.admit_agent(tide, crate::test_support::KindSet::READ);
+        let collision = workspace.allow_agent(&person, crate::test_support::KindSet::READ);
+        workspace.allow_agent(tide, crate::test_support::KindSet::READ);
         workspace.allow_in_workspace(
             crate::test_support::Subject::agent("wrong-workspace"),
             &uuid::Uuid::new_v4().to_string(),
@@ -14113,7 +14110,7 @@ pub mod tests {
                 .iter()
                 .all(|row| row.id != format!("agent:{person}"))
         );
-        membership.write().workspaces[0].admit_agent(reed, crate::test_support::KindSet::READ);
+        membership.write().workspaces[0].allow_agent(reed, crate::test_support::KindSet::READ);
         state.refresh_workspace_context_services().unwrap();
         let ContextUpdate::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
             panic!("membership addition must be a complete snapshot");
@@ -14200,7 +14197,7 @@ pub mod tests {
         );
         let route = CrdtRoute::cluster(workspace.id().to_string());
         workspace.admit(member_id, crate::test_support::Role::Editor);
-        workspace.admit_agent("operator", crate::test_support::KindSet::READ);
+        workspace.allow_agent("operator", crate::test_support::KindSet::READ);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let workspace_id = tree.workspaces[0].id().to_string();

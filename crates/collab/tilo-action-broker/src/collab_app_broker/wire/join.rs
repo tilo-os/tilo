@@ -220,11 +220,8 @@ impl AppConnection {
                     ));
                 }
                 let participant_handle = participant_handle.to_lowercase();
-                tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
-                    agent: participant_handle.clone(),
-                }
-                .validate()
-                .map_err(BrokerError::failed)?;
+                tilo_peer_state::workspace_membership::valid_agent_id(&participant_handle)
+                    .map_err(BrokerError::failed)?;
                 let roster = state.services.agents.as_deref().ok_or_else(|| {
                     BrokerError::failed("agent session has no workspace record to join on".into())
                 })?;

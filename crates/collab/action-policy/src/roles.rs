@@ -726,26 +726,25 @@ pub fn agent_default(scope: &[TreePath]) -> Preset {
 
 /// What an agent is in a workspace, decided in one place.
 ///
-/// An agent is an ordinary collaborator acting for one person: it never holds
-/// more than that person's role, never more than what its workspace admission
-/// grants it, and never more than [`ROLE_CAP`](agent_policy::ROLE_CAP). Every host — the relay
-/// governing a workspace, every member admitting its ops, the desktop broker
-/// hosting a workspace itself — asks [`role`](agent_policy::role) rather than deciding on its own.
+/// An agent acts for one person, inside a turn that person's message caused
+/// ([`crate::turn::authority`]): it never holds more than that person's role,
+/// and never more than [`ROLE_CAP`](agent_policy::ROLE_CAP). Every host — the
+/// relay governing a workspace, every member admitting its ops, the desktop
+/// broker hosting a workspace itself — asks [`role`](agent_policy::role) rather
+/// than deciding on its own. A workspace's governor admits only its own
+/// person's agents.
 ///
-/// Four questions about agents are still open. Until they are decided each
+/// Two questions about agents are still open. Until they are decided each
 /// keeps the answer the first agent-collaborator release gave it, and each
 /// is changed here:
 ///
 /// 1. Is an agent's role capped at Editor? [`ROLE_CAP`](agent_policy::ROLE_CAP): yes.
-/// 2. May another person's agent join a workspace? [`OTHER_PEOPLES_AGENTS_JOIN`](agent_policy::OTHER_PEOPLES_AGENTS_JOIN):
-///    no; a workspace's governor admits only its own person's agents.
-/// 3. What does withdrawing an agent mean? [`WITHDRAWAL_IS_FINAL`](agent_policy::WITHDRAWAL_IS_FINAL): a
+/// 2. What does withdrawing an agent mean? [`WITHDRAWAL_IS_FINAL`](agent_policy::WITHDRAWAL_IS_FINAL): a
 ///    withdrawn agent device is never admitted again; granting it anew
 ///    needs a new agent key.
-/// 4. Do members enforce the app scope of an agent's delegation? Not yet:
-///    the agent's host does, and members enforce the delegation's workspaces and
-///    expiry only. Enforcing it at members needs the app on every op, which
-///    the workspace's ops do not carry.
+///
+/// A member still admits an agent's ops by its delegation's workspaces and
+/// expiry only: the app scope of its record is enforced by the turn's door.
 pub mod agent_policy {
     use crate::Role;
 
@@ -753,17 +752,13 @@ pub mod agent_policy {
     /// governs a workspace.
     pub const ROLE_CAP: Role = Role::Editor;
 
-    /// Whether a workspace's governor admits an agent of a person other than its
-    /// own (open question 2; see the module documentation).
-    pub const OTHER_PEOPLES_AGENTS_JOIN: bool = false;
-
     /// Whether withdrawing an agent from a workspace is final for its device
-    /// (open question 3; see the module documentation).
+    /// (open question 2; see the module documentation).
     pub const WITHDRAWAL_IS_FINAL: bool = true;
 
     /// The role an agent acts with when its person holds `person` and its
-    /// workspace admission (its preset, or its delegation) grants it `granted`:
-    /// the least of the two and [`ROLE_CAP`]. Never more than either.
+    /// delegation grants it `granted`: the least of the two and [`ROLE_CAP`].
+    /// Never more than either.
     #[must_use]
     pub fn role(person: Role, granted: Role) -> Role {
         person.min(granted).min(ROLE_CAP)
@@ -801,131 +796,6 @@ pub fn agent_turn(workspace: &str, agent: &str, person: &str, bound: &[Rule]) ->
         granted_by: granted_by.clone(),
     }));
     crate::Bound { subject, grants }
-}
-
-/// What an agent admitted to a workspace may do there on its own: the workspace-level
-/// grants it receives. Never a human workspace role. A task a person starts
-/// is theirs: the agent runs it as their delegate ([`agent_delegation`]),
-/// so the preset never narrows what that person asked of it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentPreset {
-    Observer,
-    Contributor,
-    Operator,
-    Custom,
-}
-
-impl AgentPreset {
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "observer" => Some(Self::Observer),
-            "contributor" => Some(Self::Contributor),
-            "operator" => Some(Self::Operator),
-            "custom" => Some(Self::Custom),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub const fn id(self) -> &'static str {
-        match self {
-            Self::Observer => "observer",
-            Self::Contributor => "contributor",
-            Self::Operator => "operator",
-            Self::Custom => "custom",
-        }
-    }
-
-    /// The grants admitting `agent` to `workspace` with this preset, given by
-    /// `granted_by`. Ids are `agent-member:<agent>:<preset>[:<n>]`.
-    #[must_use]
-    pub fn grants(self, workspace: &str, agent: &str, granted_by: &Subject) -> Vec<Grant> {
-        let id = format!("agent-member:{agent}:{}", self.id());
-        let subject = Subject::agent(agent);
-        let grant = |suffix: &str, node: TreePath, kinds: KindSet, answer: Answer| {
-            Grant::new(
-                format!("{id}{suffix}"),
-                subject.clone(),
-                node,
-                kinds,
-                answer,
-                granted_by.clone(),
-            )
-        };
-        let read = grant(
-            "",
-            TreePath::workspace(workspace),
-            KindSet::READ,
-            Answer::Allow,
-        );
-        // An admitted agent takes part in the workspace; it never governs it.
-        let no_governance = grant(
-            ":no-governance",
-            workspace_resource(workspace),
-            KindSet::UNDOABLE.union(KindSet::OUTSIDE),
-            Answer::Deny,
-        );
-        match self {
-            Self::Observer | Self::Custom => vec![read, no_governance],
-            Self::Contributor => vec![
-                read,
-                grant(
-                    ":comments",
-                    comments(workspace),
-                    KindSet::UNDOABLE,
-                    Answer::Allow,
-                ),
-                grant(
-                    ":reactions",
-                    reactions(workspace),
-                    KindSet::UNDOABLE,
-                    Answer::Allow,
-                ),
-                no_governance,
-            ],
-            Self::Operator => vec![
-                grant(
-                    "",
-                    TreePath::workspace(workspace),
-                    KindSet::READ_UNDOABLE,
-                    Answer::Allow,
-                ),
-                grant(
-                    ":outside",
-                    TreePath::workspace(workspace),
-                    KindSet::OUTSIDE,
-                    Answer::Ask,
-                ),
-                no_governance,
-            ],
-        }
-    }
-
-    /// The changes admitting `agent` with this preset to a workspace holding
-    /// `held`: its earlier admission, under any preset, is revoked first, so
-    /// admitting it again changes its preset rather than adding to it.
-    #[must_use]
-    pub fn admission(
-        self,
-        workspace: &str,
-        agent: &str,
-        granted_by: &Subject,
-        held: &[Grant],
-    ) -> Vec<crate::Change> {
-        let prefix = format!("agent-member:{agent}:");
-        let subject = Subject::agent(agent);
-        held.iter()
-            .filter(|grant| grant.subject == subject && grant.id.as_str().starts_with(&prefix))
-            .map(|grant| crate::Change::Revoke(grant.id.clone()))
-            .chain(
-                self.grants(workspace, agent, granted_by)
-                    .into_iter()
-                    .map(crate::Change::Grant),
-            )
-            .collect()
-    }
 }
 
 /// The grant making application `app` an author of its own records in

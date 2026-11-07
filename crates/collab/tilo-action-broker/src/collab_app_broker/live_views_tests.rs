@@ -225,7 +225,7 @@ fn a_live_view_sends_each_new_result_until_cancelled() {
 fn a_caller_without_read_permission_is_refused_and_a_withdrawn_grant_ends_the_view() {
     let counter = Arc::new(Counter::new());
     let (state, tree, _owner, workspace) = broker(Arc::clone(&counter), |workspace| {
-        workspace.admit_agent("scribe", KindSet::READ);
+        workspace.allow_agent("scribe", KindSet::READ);
     });
 
     let stranger = Caller::local_agent("intruder").in_workspace(workspace.clone());

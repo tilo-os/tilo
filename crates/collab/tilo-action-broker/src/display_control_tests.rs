@@ -454,7 +454,7 @@ async fn display_control_keeps_the_original_published_caller_and_refuses_unknown
             {
                 use crate::test_support::{Grants as _, KindSet, Subject};
                 let workspace = &mut env.membership.write().workspaces[0];
-                workspace.admit_agent("display-agent", KindSet::ALL);
+                workspace.allow_agent("display-agent", KindSet::ALL);
                 workspace.allow_app(
                     Subject::agent("display-agent"),
                     &env.route.app_id,

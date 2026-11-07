@@ -729,7 +729,7 @@ mod identity_admin_tests {
     use super::super::action_host::RowScope;
     use super::super::{AppBrokerState, BrokerChannels, FanoutState, PeerPublisher};
     use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
-    use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
+    use crate::test_support::{Grants as _, Workspace, WorkspaceSlot, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::{
         ActionHostError, Caller, Completer, Confirmation, InvokeArgument, InvokeRequest, Pending,
@@ -853,11 +853,7 @@ mod identity_admin_tests {
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceSlot(9), "Identities");
         workspace.set_owner(owner.clone());
-        workspace.admit_agent_preset(
-            "planner",
-            tilo_action_policy::roles::AgentPreset::Observer,
-            &tilo_action_policy::Subject::person(owner.clone()),
-        );
+        workspace.allow_agent("planner", crate::test_support::KindSet::READ);
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -1641,7 +1637,7 @@ mod settings_records_tests {
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceSlot(9), "Settings");
         workspace.set_owner(owner.clone());
-        workspace.admit_agent("scribe", KindSet::READ);
+        workspace.allow_agent("scribe", KindSet::READ);
         workspace.allow_app(Subject::agent("scribe"), APP, KindSet::ALL);
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();

@@ -6,14 +6,12 @@ use super::{
     AppBrokerState, Arc, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
     PublishedSurface,
 };
-use tilo_action_policy::roles::AgentPreset;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
 const APP: &str = "so.tilo.desktop";
 const RECORD: &str = "membership";
 const WORKSPACE: &str = "desktop:workspace";
-const AGENT_PREFIX: &str = "desktop:agent:";
 
 /// Which of a workspace's two published surfaces: this device's own membership
 /// changes, and the workspace's governance under the provider every client
@@ -60,16 +58,9 @@ impl AppBrokerState {
     ) -> Result<super::StagedJob, String> {
         command.validate()?;
         let (resource, action, argument) = match command {
-            WorkspaceMembershipCommand::AddAgent { agent, preset } => {
-                let argument = format!(
-                    "{}{}",
-                    tilo_actions::ARGUMENTS_JSON_PREFIX,
-                    serde_json::json!({"agent": agent, "preset": preset.id()})
-                );
-                (WORKSPACE.into(), "add-agent", Some(argument))
-            }
-            WorkspaceMembershipCommand::RemoveAgent { agent } => {
-                (format!("{AGENT_PREFIX}{agent}"), "remove", None)
+            WorkspaceMembershipCommand::RetiredAddAgent { .. }
+            | WorkspaceMembershipCommand::RetiredRemoveAgent { .. } => {
+                return Err(tilo_peer_state::workspace_membership::RETIRED_AGENT_MEMBERSHIP.into());
             }
             WorkspaceMembershipCommand::GrantAppAuthorship { app } => {
                 let argument = format!(
@@ -591,18 +582,12 @@ impl AppBrokerState {
         let Some(authority) = &self.membership else {
             return Ok(());
         };
-        let now = self.policy_now_ns()?;
         // Describe every workspace on one borrowed sample; the membership
         // service is asked about each workspace only after the borrow ends.
         let workspaces = authority.decide_in_tree(|tree| {
             tree.workspaces
                 .iter()
-                .map(|workspace| {
-                    (
-                        workspace.id().to_string(),
-                        membership_actions(workspace, now / 1_000_000_000),
-                    )
-                })
+                .map(|workspace| (workspace.id().to_string(), membership_actions()))
                 .collect::<Vec<_>>()
         })?;
         for (workspace, mut actions) in workspaces {
@@ -819,19 +804,6 @@ fn membership_command(envelope: &InvocationEnvelope) -> Result<WorkspaceMembersh
     }
     let command = if let Some(command) = bot_command(envelope)? {
         command
-    } else if envelope.resource == WORKSPACE && envelope.action == "add-agent" {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct AddAgent {
-            agent: String,
-            preset: String,
-        }
-        let encoded = bounded_argument(envelope, "agent membership")?;
-        let input: AddAgent = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
-        WorkspaceMembershipCommand::AddAgent {
-            agent: input.agent.trim().to_lowercase(),
-            preset: AgentPreset::parse(&input.preset).ok_or("unknown agent membership preset")?,
-        }
     } else if envelope.resource == WORKSPACE && envelope.action == "grant-app-authorship" {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -860,13 +832,6 @@ fn membership_command(envelope: &InvocationEnvelope) -> Result<WorkspaceMembersh
         let encoded = bounded_argument(envelope, "grant")?;
         let input: TakeBack = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
         WorkspaceMembershipCommand::Revoke { grant: input.grant }
-    } else if let Some(agent) = envelope.resource.strip_prefix(AGENT_PREFIX)
-        && envelope.action == "remove"
-        && envelope.argument.is_none()
-    {
-        WorkspaceMembershipCommand::RemoveAgent {
-            agent: agent.into(),
-        }
     } else {
         return Err("unknown workspace membership command".into());
     };
@@ -1036,26 +1001,8 @@ fn argument_limit(action: &str) -> usize {
     }
 }
 
-fn membership_actions(workspace: &tilo_desktop_model::Workspace, now: u64) -> Vec<PublishedAction> {
+fn membership_actions() -> Vec<PublishedAction> {
     let mut actions = vec![membership_action(
-        WORKSPACE,
-        "add-agent",
-        "Workspace",
-        "Add agent",
-        vec![
-            tilo_actions::ActionParam::required(
-                "agent",
-                tilo_actions::ParamType::Text,
-                "Stable agent id",
-            ),
-            tilo_actions::ActionParam::required(
-                "preset",
-                tilo_actions::ParamType::Text,
-                "observer, contributor, operator, or custom",
-            ),
-        ],
-    )];
-    actions.push(membership_action(
         WORKSPACE,
         GRANT_APP_AUTHORSHIP,
         "Workspace",
@@ -1065,7 +1012,7 @@ fn membership_actions(workspace: &tilo_desktop_model::Workspace, now: u64) -> Ve
             tilo_actions::ParamType::Text,
             "Application id",
         )],
-    ));
+    )];
     actions.push(membership_action(
         WORKSPACE,
         "grant",
@@ -1089,20 +1036,6 @@ fn membership_actions(workspace: &tilo_desktop_model::Workspace, now: u64) -> Ve
         )],
     ));
     actions.extend(bot_actions());
-    actions.extend(
-        workspace
-            .agent_members_at(now)
-            .into_iter()
-            .map(|(agent, _)| {
-                membership_action(
-                    &format!("{AGENT_PREFIX}{agent}"),
-                    "remove",
-                    &agent,
-                    "Remove agent",
-                    Vec::new(),
-                )
-            }),
-    );
     actions
 }
 
@@ -1553,11 +1486,9 @@ mod tests {
                 )
                 .0;
                 state.refresh_workspace_membership_services().unwrap();
-                // The workspace's own governance is offered, so adding and
-                // removing an agent and giving and taking back a grant are
-                // actions here.
-                let mut expected = vec![
-                    (WORKSPACE, "add-agent"),
+                // The workspace's own governance is offered, so giving and
+                // taking back a grant are actions here.
+                let expected = vec![
                     (WORKSPACE, "grant-app-authorship"),
                     (WORKSPACE, "grant"),
                     (WORKSPACE, "revoke"),
@@ -1579,10 +1510,11 @@ mod tests {
                         .workspaces
                         .first_mut()
                         .unwrap()
-                        .admit_agent("scribe", KindSet::READ);
+                        .allow_agent("scribe", KindSet::READ);
                 }
                 state.refresh_workspace_membership_services().unwrap();
-                expected.push(("desktop:agent:scribe", "remove"));
+                // Admission is the record's: the agent it names changes no
+                // membership action here.
                 assert_membership_action_set(&state, &workspace, &expected);
                 assert!(
                     !expected
@@ -1739,9 +1671,8 @@ mod tests {
                 assert_eq!(state.published_surfaces_generation(), 0);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 1);
-                assert_eq!(membership_surface_counts(&state, &workspace), (1, 17));
+                assert_eq!(membership_surface_counts(&state, &workspace), (1, 16));
                 let mut expected = vec![
-                    (WORKSPACE, "add-agent"),
                     (WORKSPACE, "grant-app-authorship"),
                     (WORKSPACE, "grant"),
                     (WORKSPACE, "revoke"),
@@ -1775,15 +1706,15 @@ mod tests {
                         .workspaces
                         .first_mut()
                         .unwrap()
-                        .admit_agent("scribe", KindSet::READ);
+                        .allow_agent("scribe", KindSet::READ);
                 }
                 state.refresh_workspace_membership_services().unwrap();
-                assert_eq!(state.published_surfaces_generation(), 2);
-                assert_eq!(membership_surface_counts(&state, &workspace), (1, 18));
-                expected.push(("desktop:agent:scribe", "remove"));
-                assert_membership_action_set(&state, &workspace, &expected);
-                state.refresh_workspace_membership_services().unwrap();
-                assert_eq!(state.published_surfaces_generation(), 2);
+                assert_eq!(
+                    state.published_surfaces_generation(),
+                    1,
+                    "an admitted agent adds no membership action"
+                );
+                assert_eq!(membership_surface_counts(&state, &workspace), (1, 16));
                 assert_membership_action_set(&state, &workspace, &expected);
                 let peer = *state
                     .workspace_membership_peers
@@ -1793,14 +1724,14 @@ mod tests {
                     .unwrap();
                 state.invocation_subscribers.lock().unwrap().remove(&peer);
                 for _ in 0..16 {
-                    if state.published_surfaces_generation() == 3 {
+                    if state.published_surfaces_generation() == 2 {
                         break;
                     }
                     tokio::task::yield_now().await;
                 }
                 assert_eq!(
                     state.published_surfaces_generation(),
-                    3,
+                    2,
                     "real service retirement invalidates discovery"
                 );
                 assert_eq!(membership_surface_counts(&state, &workspace), (0, 0));
@@ -1883,17 +1814,14 @@ mod tests {
 
     #[test]
     fn public_arguments_choose_only_closed_commands() {
-        let add = envelope(
-            WORKSPACE,
-            "add-agent",
-            Some(serde_json::json!({"agent": " Scribe ", "preset": "custom"})),
-        );
-        assert_eq!(
-            membership_command(&add).unwrap(),
-            WorkspaceMembershipCommand::AddAgent {
-                agent: "scribe".into(),
-                preset: AgentPreset::Custom,
-            }
+        assert!(
+            membership_command(&envelope(
+                WORKSPACE,
+                "add-agent",
+                Some(serde_json::json!({"agent": "scribe", "preset": "custom"}))
+            ))
+            .is_err(),
+            "agent admission by preset is retired"
         );
         for field in [
             "caller",
@@ -2062,7 +1990,7 @@ mod tests {
             "a change to the people is made on the workspace's governance, not elsewhere"
         );
         assert!(
-            membership_command(&envelope(WORKSPACE, "add-agent", None)).is_err(),
+            membership_command(&envelope(WORKSPACE, "grant", None)).is_err(),
             "the closed membership verbs keep their own arguments"
         );
     }
@@ -2071,7 +1999,7 @@ mod tests {
     fn membership_actions_are_admin_only() {
         let workspace =
             tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Membership");
-        let actions = membership_actions(&workspace, 0);
+        let actions = membership_actions();
         assert!(actions.iter().all(|action| {
             action.contract.kind == tilo_actions::ActionKind::Outside
                 && action.operation_kind == tilo_actions::OperationKind::Effect
@@ -2207,7 +2135,7 @@ mod tests {
                 };
                 for (resource, action) in [
                     (governance_resource(&workspace), "call"),
-                    ("desktop:workspace".to_owned(), "add-agent"),
+                    ("desktop:workspace".to_owned(), "grant"),
                 ] {
                     let request = request(&resource, action);
                     assert!(

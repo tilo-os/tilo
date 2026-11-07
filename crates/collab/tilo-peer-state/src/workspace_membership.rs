@@ -1,6 +1,5 @@
 //! Typed native workspace membership commands, not grant or identity blobs.
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::roles::AgentPreset;
 use tilo_action_policy::{Answer, Grant, GrantId, KindSet, TreePath};
 
 use crate::installation::{Installation, InstallationId};
@@ -258,13 +257,36 @@ fn validate_bot_entry(entry: &str) -> Result<(), String> {
 pub const RETIRED_TASK_GRANTS: &str =
     "a task's grants are retired; an issue's grants are ordinary grants";
 
+/// Why a retired agent membership command is refused.
+pub const RETIRED_AGENT_MEMBERSHIP: &str =
+    "agent membership by preset is retired; an agent is a chat.agent record";
+
+/// The preset an agent was admitted with, as workspaces hold it. Admission by
+/// preset is retired ([`WorkspaceMembershipCommand::RetiredAddAgent`]): this
+/// reads what a workspace holds and decides nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetiredAgentPreset {
+    Observer,
+    Contributor,
+    Operator,
+    Custom,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceMembershipCommand {
-    AddAgent {
+    /// Retired with admission by preset: an agent works in a workspace because
+    /// the workspace's `chat.agent` record names it and its keeper is a
+    /// participant. It keeps the commands after it at their encoded positions,
+    /// still reads where workspaces hold it, and is refused.
+    #[serde(rename = "AddAgent")]
+    RetiredAddAgent {
         agent: String,
-        preset: AgentPreset,
+        preset: RetiredAgentPreset,
     },
-    RemoveAgent {
+    /// Retired with admission by preset, as [`Self::RetiredAddAgent`].
+    #[serde(rename = "RemoveAgent")]
+    RetiredRemoveAgent {
         agent: String,
     },
     /// Delegate normal app authorship after an authenticated person opens it.
@@ -470,8 +492,9 @@ impl WorkspaceMembershipCommand {
     #[must_use]
     pub fn agent(&self) -> Option<&str> {
         match self {
-            Self::AddAgent { agent, .. } | Self::RemoveAgent { agent } => Some(agent),
             Self::GrantAppAuthorship { .. }
+            | Self::RetiredAddAgent { .. }
+            | Self::RetiredRemoveAgent { .. }
             | Self::RetiredGrantForTask { .. }
             | Self::RetiredRevokeForTask { .. }
             | Self::Grant { .. }
@@ -504,6 +527,12 @@ impl WorkspaceMembershipCommand {
             Self::RetiredGrantForTask { .. } | Self::RetiredRevokeForTask { .. }
         ) {
             return Err(RETIRED_TASK_GRANTS.into());
+        }
+        if matches!(
+            self,
+            Self::RetiredAddAgent { .. } | Self::RetiredRemoveAgent { .. }
+        ) {
+            return Err(RETIRED_AGENT_MEMBERSHIP.into());
         }
         if let Self::InstallBot(install) = self {
             install.installation.validate()?;
@@ -574,24 +603,30 @@ impl WorkspaceMembershipCommand {
             // The share's id and node are checked as its grants are made.
             return Ok(());
         }
-        let agent = self.agent().ok_or("missing canonical agent identifier")?;
-        if agent.is_empty()
-            || agent.len() > 128
-            || agent.trim() != agent
-            || agent.to_lowercase() != agent
-            || agent.chars().any(char::is_control)
-        {
-            return Err("invalid canonical workspace agent identifier".into());
-        }
-        // A task agent is made for one task under a device's delegation and
-        // is never a collaborator: its id is never admitted as one.
-        if matches!(self, Self::AddAgent { .. })
-            && crate::join::task_delegation::is_task_agent(agent)
-        {
-            return Err("a task agent's id is never a collaborator's".into());
-        }
         Ok(())
     }
+}
+
+/// Whether `agent` is an id a workspace names an agent by: lowercase, trimmed,
+/// bounded, with no control characters.
+///
+/// # Errors
+/// It is not.
+pub fn valid_agent_id(agent: &str) -> Result<(), String> {
+    if agent.is_empty()
+        || agent.len() > 128
+        || agent.trim() != agent
+        || agent.to_lowercase() != agent
+        || agent.chars().any(char::is_control)
+    {
+        return Err("invalid canonical workspace agent identifier".into());
+    }
+    // A task agent is made for one task under a device's delegation and is
+    // never a collaborator: its id is never admitted as one.
+    if crate::join::task_delegation::is_task_agent(agent) {
+        return Err("a task agent's id is never a collaborator's".into());
+    }
+    Ok(())
 }
 
 /// A member change names its person by their user root key, and a grant
@@ -621,64 +656,6 @@ fn validate_member_change(change: &tilo_action_policy::Change) -> Result<(), Str
 mod tests {
     use super::*;
     use tilo_action_policy::{Answer, Subject, TreePath, roles};
-
-    #[test]
-    fn presets_are_closed_admission_markers_without_admin_authority() {
-        use tilo_action_policy::{ActionKind, Authority, Context, Party, WorkspacePolicy};
-        let workspace = WorkspacePolicy::new("room", "owner");
-        let content = TreePath::workspace("room").app("notes").resource("page");
-        let comment = content.clone().field(roles::COMMENTS_FIELD).action("add");
-        let invite = roles::governance_action("room", roles::governance::INVITE);
-        for (id, read, undoable, comments, outside) in [
-            (
-                "observer",
-                Answer::Allow,
-                Answer::Deny,
-                Answer::Deny,
-                Answer::Deny,
-            ),
-            (
-                "contributor",
-                Answer::Allow,
-                Answer::Deny,
-                Answer::Allow,
-                Answer::Deny,
-            ),
-            (
-                "operator",
-                Answer::Allow,
-                Answer::Allow,
-                Answer::Allow,
-                Answer::Ask,
-            ),
-            (
-                "custom",
-                Answer::Allow,
-                Answer::Deny,
-                Answer::Deny,
-                Answer::Deny,
-            ),
-        ] {
-            let preset = AgentPreset::parse(id).unwrap();
-            assert_eq!(preset.id(), id);
-            let grants = preset.grants("room", "scribe", &Subject::person("owner"));
-            let authority = Authority::person(workspace.party("owner"))
-                .bounded_by(Party::new(vec![Subject::agent("scribe")], &grants));
-            let at = |node: &TreePath, kind| authority.decide(node, kind, &Context::at(0)).answer;
-            assert_eq!(at(&content, ActionKind::Read), read, "{id}");
-            assert_eq!(at(&content, ActionKind::Undoable), undoable, "{id}");
-            assert_eq!(at(&comment, ActionKind::Undoable), comments, "{id}");
-            assert_eq!(at(&content, ActionKind::Outside), outside, "{id}");
-            assert_eq!(
-                at(&invite, roles::GOVERNANCE_KIND),
-                Answer::Deny,
-                "{id} never governs"
-            );
-        }
-        for unknown in ["admin", "owner", "Observer", "operator ", ""] {
-            assert!(AgentPreset::parse(unknown).is_none());
-        }
-    }
 
     #[test]
     fn a_bot_request_names_a_canonical_entry_and_version() {
@@ -744,22 +721,11 @@ mod tests {
     }
 
     #[test]
-    fn commands_refuse_ambiguous_or_unbounded_agent_identifiers() {
+    fn agent_identifiers_are_canonical() {
         for agent in ["", "Scribe", " scribe", "scribe\n", &"x".repeat(129)] {
-            assert!(
-                WorkspaceMembershipCommand::RemoveAgent {
-                    agent: agent.into()
-                }
-                .validate()
-                .is_err()
-            );
+            assert!(valid_agent_id(agent).is_err(), "{agent:?}");
         }
-        WorkspaceMembershipCommand::AddAgent {
-            agent: "scribe".into(),
-            preset: AgentPreset::Observer,
-        }
-        .validate()
-        .unwrap();
+        valid_agent_id("scribe").unwrap();
     }
 
     /// Postcard names a variant by its position; workspaces keep these commands,
@@ -768,7 +734,14 @@ mod tests {
     fn a_membership_command_keeps_its_bytes_around_the_retired_task_grants() {
         let cases: Vec<(WorkspaceMembershipCommand, Vec<u8>)> = vec![
             (
-                WorkspaceMembershipCommand::RemoveAgent { agent: "a".into() },
+                WorkspaceMembershipCommand::RetiredAddAgent {
+                    agent: "a".into(),
+                    preset: RetiredAgentPreset::Observer,
+                },
+                vec![0x00, 0x01, b'a', 0x00],
+            ),
+            (
+                WorkspaceMembershipCommand::RetiredRemoveAgent { agent: "a".into() },
                 vec![0x01, 0x01, b'a'],
             ),
             (
@@ -839,6 +812,14 @@ mod tests {
                 answer: Answer::Allow,
             }
         );
+    }
+
+    #[test]
+    fn a_retired_agent_membership_command_reads_and_is_refused() {
+        for held in [[0x00, 0x01, b'a', 0x02].as_slice(), &[0x01, 0x01, b'a']] {
+            let command = postcard::from_bytes::<WorkspaceMembershipCommand>(held).unwrap();
+            assert_eq!(command.validate(), Err(RETIRED_AGENT_MEMBERSHIP.into()));
+        }
     }
 
     #[test]

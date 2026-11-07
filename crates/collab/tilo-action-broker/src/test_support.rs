@@ -25,8 +25,8 @@ pub trait Grants {
     ) -> GrantId;
     /// Let `subject` take actions of `kinds` at the workspace `workspace`.
     fn allow_in_workspace(&mut self, subject: Subject, workspace: &str, kinds: KindSet) -> GrantId;
-    /// Admit the agent `agent` to the workspace for actions of `kinds`.
-    fn admit_agent(&mut self, agent: &str, kinds: KindSet) -> GrantId {
+    /// Let the agent `agent` take actions of `kinds` in the workspace.
+    fn allow_agent(&mut self, agent: &str, kinds: KindSet) -> GrantId {
         self.allow(Subject::agent(agent), &TreePath::root(), kinds)
     }
     /// Let `subject` take actions of `kinds` anywhere in the app `app`.

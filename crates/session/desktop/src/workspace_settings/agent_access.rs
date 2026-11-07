@@ -346,16 +346,28 @@ mod tests {
     const AGENT: &str = "scribe";
     const MAIL: &str = "so.tilo.mail";
 
+    /// A workspace where the agent may change it all and asks before
+    /// reaching outside.
     fn ws() -> Workspace {
         let mut ws = Workspace::new(WorkspaceSlot::from(31), "access");
         ws.set_owner(OWNER);
-        let edit = super::super::admit_agent(
-            &mut ws,
-            &OWNER.to_string(),
-            AGENT,
-            super::super::AgentPreset::Operator,
-        );
-        assert!(!edit.is_empty());
+        let node = ws.node();
+        ws.grant(tilo_action_policy::Grant::new(
+            format!("agent-member:{AGENT}"),
+            Subject::agent(AGENT),
+            node.clone(),
+            tilo_action_policy::KindSet::READ_UNDOABLE,
+            Answer::Allow,
+            Subject::person(OWNER),
+        ));
+        ws.grant(tilo_action_policy::Grant::new(
+            format!("agent-member:{AGENT}:outside"),
+            Subject::agent(AGENT),
+            node,
+            tilo_action_policy::KindSet::OUTSIDE,
+            Answer::Ask,
+            Subject::person(OWNER),
+        ));
         ws
     }
 
@@ -450,44 +462,6 @@ mod tests {
         );
         assert_eq!(edit.revoked.len(), 1);
         assert!(agent_exceptions(&ws, AGENT, &super::super::NoAppDirectory).is_empty());
-    }
-
-    #[test]
-    fn answers_keep_the_agents_preset_and_stay_out_of_custom() {
-        let mut ws = ws();
-        set_agent_answers(
-            &mut ws,
-            &OWNER.to_string(),
-            AGENT,
-            &[
-                (AnswerScope::app(MAIL), ActionKind::Read, Some(Answer::Deny)),
-                (
-                    AnswerScope::app(MAIL),
-                    ActionKind::Outside,
-                    Some(Answer::Ask),
-                ),
-            ],
-        );
-        assert_eq!(
-            super::super::agent_authority_preset(&ws, AGENT),
-            super::super::AgentPreset::Operator,
-            "a narrowing answer is no broad grant"
-        );
-        set_agent_answers(
-            &mut ws,
-            &OWNER.to_string(),
-            AGENT,
-            &[(
-                AnswerScope::app(MAIL),
-                ActionKind::Outside,
-                Some(Answer::Allow),
-            )],
-        );
-        assert_eq!(
-            super::super::agent_authority_preset(&ws, AGENT),
-            super::super::AgentPreset::Custom,
-            "letting it reach outside unasked needs a conscious review"
-        );
     }
 
     #[test]

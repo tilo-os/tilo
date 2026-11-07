@@ -220,10 +220,7 @@ pub(super) fn admit_kept_agent(
     admitted: &mut AdmittedJoinIdentity,
     agent_id: &str,
 ) -> Result<(), String> {
-    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
-        agent: agent_id.to_owned(),
-    }
-    .validate()?;
+    tilo_peer_state::workspace_membership::valid_agent_id(agent_id)?;
     if admitted.verified.capped {
         return Err(format!(
             "the agent {agent_id} runs only on a device of the session that keeps it"

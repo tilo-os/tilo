@@ -882,7 +882,7 @@ fn continuation_fixture() -> (
     let mut workspace = Workspace::new(WorkspaceSlot(53), "Effect continuation");
     workspace.set_owner("a1".repeat(32));
     let workspace_id = workspace.id().to_string();
-    workspace.admit_agent("scribe", KindSet::READ);
+    workspace.allow_agent("scribe", KindSet::READ);
     workspace.allow_app(Subject::agent("scribe"), "so.tilo.test", KindSet::ALL);
     workspace.admit("b2".repeat(32), Role::Editor);
     workspace.deny(
@@ -1442,10 +1442,10 @@ fn agent_answered(
     bool,
 ) {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
-    let person = tilo_action_policy::Subject::person("a1".repeat(32));
+    let owner = "a1".repeat(32);
+    let person = tilo_action_policy::Subject::person(owner.clone());
     let (state, person_caller, mut app) = fixture_granting(Vec::new(), Vec::new(), |workspace| {
-        let mut grants =
-            tilo_action_policy::roles::AgentPreset::Operator.grants(workspace, "scribe", &person);
+        let mut grants = tilo_action_policy::roles::agent_turn(workspace, "scribe", &owner, &[]).grants;
         grants.push(agent_answers::grant(
             workspace,
             "scribe",
@@ -1538,18 +1538,23 @@ fn an_agents_change_the_person_allowed_runs() {
     }
 }
 
-/// An agent the desktop's door admitted as an observer member acts for the
-/// person who admitted it, yet may do no more than the workspace grants it: the
-/// owner's authority does not widen it, and it carries none of the
-/// delegation the person's own device gives the agents it hands a session
-/// to. That device-handed session, with the same member grants, does carry
-/// it: its change is offered and asks first.
+/// An agent acting for the person who admitted it may do no more than the
+/// workspace grants it: the owner's authority does not widen it, and it
+/// carries none of the delegation the person's own device gives the agents it
+/// hands a session to. That device-handed session, with the same member
+/// grants, does carry it: its change is offered and asks first.
 #[test]
 fn an_admitted_agent_acting_for_its_person_holds_only_its_own_grants() {
     let owner = "a1".repeat(32);
-    let person = tilo_action_policy::Subject::person(owner.clone());
     let (state, owner_caller, mut app) = fixture_granting(Vec::new(), Vec::new(), |workspace| {
-        tilo_action_policy::roles::AgentPreset::Observer.grants(workspace, "scribe", &person)
+        vec![tilo_action_policy::Grant::new(
+            "agent-member:scribe",
+            tilo_action_policy::Subject::agent("scribe"),
+            tilo_action_policy::TreePath::workspace(workspace),
+            tilo_action_policy::KindSet::READ,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Subject::person(&owner),
+        )]
     });
     let workspace = owner_caller
         .workspace()

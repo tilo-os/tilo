@@ -2,7 +2,7 @@ use super::{NativeTaskActionRequirement, TrackerRun};
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::turn::Looked;
-use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath, roles::AgentPreset};
+use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
 use tilo_automerge::ApplyIncoming;
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -129,12 +129,13 @@ fn policy_fixture(workspace: &str) -> (StatePeer, DeviceCert, SigningKey, std::t
     admitted_fixture(workspace, collab_types::Role::Editor, None)
 }
 
-/// A workspace where the starter holds `role` and the agent is admitted with
-/// `preset`, or, without one, holds a workspace-wide grant of every kind.
+/// A workspace where the starter holds `role` and the agent holds a
+/// workspace-wide grant of `kinds`, or, without one, of every kind. An agent
+/// that reaches anywhere is asked first, as a person's delegate is.
 fn admitted_fixture(
     workspace: &str,
     role: collab_types::Role,
-    preset: Option<AgentPreset>,
+    kinds: Option<KindSet>,
 ) -> (StatePeer, DeviceCert, SigningKey, std::time::SystemTime) {
     let governor = certificate(1, 2);
     let starter = certificate(3, 4);
@@ -171,19 +172,26 @@ fn admitted_fixture(
         now,
     )
     .unwrap();
-    let admission = preset.map_or_else(
-        || {
-            vec![Grant::new(
-                "agent",
-                Subject::agent("scribe"),
-                TreePath::workspace(workspace),
-                KindSet::ALL,
-                Answer::Allow,
-                Subject::person("governor"),
-            )]
-        },
-        |preset| preset.grants(workspace, "scribe", &Subject::person("governor")),
-    );
+    let kinds = kinds.unwrap_or(KindSet::ALL);
+    let admission = [
+        Grant::new(
+            "agent",
+            Subject::agent("scribe"),
+            TreePath::workspace(workspace),
+            kinds,
+            Answer::Allow,
+            Subject::person("governor"),
+        ),
+        Grant::new(
+            "agent:outside",
+            Subject::agent("scribe"),
+            TreePath::workspace(workspace),
+            KindSet::OUTSIDE,
+            Answer::Ask,
+            Subject::person("governor"),
+        ),
+    ];
+    let admission = admission.to_vec();
     peer.governance_mut()
         .put_governed_grants(&admission, &key, now)
         .unwrap();
@@ -507,20 +515,20 @@ fn an_attended_action_asks_every_time_and_ordinary_kinds_follow_the_answers() {
     assert!(!awaits(&choose, &peer), "deny refuses outright");
 }
 
-/// A task a person starts runs on their behalf: an agent admitted with the
-/// default presets, which grant it no changes of its own, takes the changes
-/// its starter may take, held to the answers the workspace keeps for it.
+/// A task a person starts runs on their behalf: an agent that may change
+/// nothing of its own takes the changes its starter may take, held to the
+/// answers the workspace keeps for it.
 #[test]
-fn a_run_takes_its_starters_changes_whatever_preset_admitted_its_agent() {
+fn a_run_takes_its_starters_changes_whatever_its_agent_holds() {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
-    for preset in [AgentPreset::Observer, AgentPreset::Contributor] {
+    for kinds in [KindSet::READ, KindSet::READ_UNDOABLE] {
         let workspace = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
         let (mut peer, starter, key, now) =
-            admitted_fixture(workspace, collab_types::Role::Editor, Some(preset));
+            admitted_fixture(workspace, collab_types::Role::Editor, Some(kinds));
         let requirement = approve_task(&starter);
         requirement
             .check_run(&peer, workspace, now)
-            .unwrap_or_else(|error| panic!("{preset:?}: {error}"));
+            .unwrap_or_else(|error| panic!("{kinds:?}: {error}"));
 
         // Outside effects still ask first by default.
         let mut outside = requirement.clone();
@@ -560,7 +568,7 @@ fn a_run_takes_its_starters_changes_whatever_preset_admitted_its_agent() {
                 tilo_action_policy::ActionKind::Undoable,
                 &tilo_action_policy::Context::at_time(now),
             );
-        assert_eq!(own.answer, Answer::Deny, "{preset:?}");
+        assert_eq!(own.answer, Answer::Deny);
     }
 }
 
@@ -573,7 +581,7 @@ fn a_grant_naming_the_issue_lets_its_runs_act_without_asking() {
     let (mut peer, starter, key, now) = admitted_fixture(
         workspace,
         collab_types::Role::Editor,
-        Some(AgentPreset::Operator),
+        Some(KindSet::READ_UNDOABLE),
     );
     let notes = TreePath::workspace(workspace).app("so.tilo.notes");
     peer.governance_mut()
@@ -668,7 +676,7 @@ fn a_run_never_exceeds_a_starter_who_may_not_change_the_note() {
     let (mut peer, starter, key, now) = admitted_fixture(
         workspace,
         collab_types::Role::Editor,
-        Some(AgentPreset::Operator),
+        Some(KindSet::READ_UNDOABLE),
     );
     peer.governance_mut()
         .put_governed_grants(
@@ -691,7 +699,7 @@ fn a_run_never_exceeds_a_starter_who_may_not_change_the_note() {
     let (peer, commenter, _key, now) = admitted_fixture(
         workspace,
         collab_types::Role::Commenter,
-        Some(AgentPreset::Operator),
+        Some(KindSet::READ_UNDOABLE),
     );
     let refused = approve_task(&commenter)
         .check_run(&peer, workspace, now)
@@ -711,7 +719,7 @@ fn allowing_one_page_read_for_the_issue_answers_the_runs_other_page_reads() {
     let (mut peer, starter, key, now) = admitted_fixture(
         workspace,
         collab_types::Role::Editor,
-        Some(AgentPreset::Operator),
+        Some(KindSet::READ_UNDOABLE),
     );
     peer.governance_mut()
         .put_governed_grants(

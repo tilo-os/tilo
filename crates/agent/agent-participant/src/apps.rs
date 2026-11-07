@@ -170,7 +170,7 @@ pub enum ReplicaActor {
     /// The host's own device acting for its user (workspace actions): the
     /// record's owner, as a browser tab of the owner is.
     Owner,
-    /// A delegated agent, at Editor under the operator preset.
+    /// A delegated agent, at the cap its record bounds it to.
     Agent,
     /// An installed bot: its installer's standing bounded by the bot's
     /// grants, built by the host from the workspace's policy before each run.
@@ -978,13 +978,9 @@ fn replica_standing(
     let mut invoker = tilo_actions::ActionInvoker::actor(participant);
     let permissions = match actor {
         ReplicaActor::Agent => {
-            let operator = policy::roles::AgentPreset::Operator.grants(
-                workspace,
-                participant,
-                &policy::Subject::person(participant),
-            );
+            let bound = policy::roles::agent_turn(workspace, participant, participant, &[]);
             PermissionContext::member_of(workspace, participant, Role::Editor)
-                .acting_as(policy::Subject::agent(participant), operator)
+                .acting_as(policy::Subject::agent(participant), bound.grants)
         }
         ReplicaActor::Owner => PermissionContext::member_of(workspace, participant, Role::Owner),
         ReplicaActor::Bot {

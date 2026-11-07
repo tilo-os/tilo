@@ -615,24 +615,16 @@ fn workspace_in_front(fed: &Feeding<'_>) -> Option<Workspace> {
     fed.handle.read(|tree| tree.active_workspace().cloned())
 }
 
-/// Make an agent called `name` where the workspace keeps its agents, and
-/// admit it with the grants it works with here: the name and the record are
-/// Chat's, the grants are the workspace's own governance, and both are
-/// decided again on their own paths.
+/// Make an agent called `name` where the workspace keeps its agents: the
+/// record is the agent's admission, and Chat's grants decide who may make
+/// one.
 fn add_agent(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, name: &str) {
     let workspace = workspace_in_front(fed);
-    let id = match fed.tabs.agents.create(workspace.as_ref(), fed.person, name) {
-        Ok(id) => id,
-        Err(reason) => return refuse(seat, fed, &reason),
-    };
-    govern(seat, fed, |ws, actor| {
-        Ok(domain::admit_agent(
-            ws,
-            actor,
-            &id,
-            domain::AgentPreset::Contributor,
-        ))
-    });
+    // The record is the admission: the agent works here because Chat's
+    // record names it and this person keeps it.
+    if let Err(reason) = fed.tabs.agents.create(workspace.as_ref(), fed.person, name) {
+        refuse(seat, fed, &reason);
+    }
 }
 
 /// Retire the agent `agent`, and take back what the workspace admitted it

@@ -10,7 +10,6 @@ use crate::services::{
     WorkspaceMemberships,
 };
 use ed25519_dalek::{Signer as _, SigningKey};
-use tilo_action_policy::roles::AgentPreset;
 use tilo_peer_state::owner_commit::{
     CommitFuture, CommitOperation, OwnerCommitRequest, OwnerCommitService,
 };
@@ -51,6 +50,8 @@ struct Native {
 
 /// The issue the fixture's agent runs.
 const ISSUE: &str = "tasks.tracker/issues/release";
+/// The grant admitting the fixture's agent to read the workspace.
+const AGENT_GRANT: &str = "agent-member:scribe";
 fn workspace_id() -> tilo_desktop_model::WorkspaceId {
     tilo_desktop_model::WorkspaceId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap()
 }
@@ -355,11 +356,19 @@ impl Fixture {
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: native.certificate.clone(),
-                command: WorkspaceMembershipCommand::AddAgent {
-                    agent: "scribe".into(),
-                    // Reading only, as a fresh session admits an agent:
-                    // what its runs may do comes from their starter.
-                    preset: AgentPreset::Observer,
+                // Reading only, as a fresh session admits an agent: what
+                // its runs may do comes from their starter.
+                command: WorkspaceMembershipCommand::Grant {
+                    grant: tilo_action_policy::Grant::new(
+                        AGENT_GRANT,
+                        tilo_action_policy::Subject::agent("scribe"),
+                        tilo_action_policy::TreePath::workspace(&workspace_id().to_string()),
+                        tilo_action_policy::KindSet::READ,
+                        tilo_action_policy::Answer::Allow,
+                        tilo_action_policy::Subject::person(hex::encode(
+                            native.certificate.user_public_key,
+                        )),
+                    ),
                 },
             },
         };
@@ -458,8 +467,8 @@ impl Fixture {
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: self.native.certificate.clone(),
-                command: WorkspaceMembershipCommand::RemoveAgent {
-                    agent: "scribe".into(),
+                command: WorkspaceMembershipCommand::Revoke {
+                    grant: tilo_action_policy::GrantId::new(AGENT_GRANT),
                 },
             },
         };

@@ -383,7 +383,7 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                 let target = "host:org.example.App.desktop";
                 {
                     let workspace = &mut env.membership.write().workspaces[0];
-                    workspace.admit_agent("scribe", KindSet::READ);
+                    workspace.allow_agent("scribe", KindSet::READ);
                     workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
                 }
                 let target_grant_id = (scenario != "denied").then(|| {
@@ -571,7 +571,7 @@ async fn an_apps_open_for_an_agents_invocation_is_admitted_as_its_child() {
             let elsewhere = "so.tilo.notes";
             {
                 let workspace = &mut env.membership.write().workspaces[0];
-                workspace.admit_agent("scribe", KindSet::READ);
+                workspace.allow_agent("scribe", KindSet::READ);
                 workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
                 workspace.allow_app(Subject::agent("scribe"), target, KindSet::ALL);
             }

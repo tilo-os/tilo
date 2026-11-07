@@ -214,7 +214,7 @@ async fn an_agents_invocation_opens_what_the_agent_may_open() {
             let (rig, launcher) = pressed_opens_rig(&env).await;
             {
                 let workspace = &mut env.membership.write().workspaces[0];
-                workspace.admit_agent("scribe", KindSet::READ);
+                workspace.allow_agent("scribe", KindSet::READ);
                 workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
                 workspace.allow_app(Subject::agent("scribe"), "so.tilo.chat", KindSet::ALL);
             }
