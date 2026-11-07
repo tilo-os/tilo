@@ -679,16 +679,17 @@ impl Session {
         published
     }
 
-    /// The host's frames and the window's, until neither has anything left to do: how many
-    /// turns it took.
-    fn settle(&mut self) -> u32 {
+    /// The host's frames and the window's, until neither has anything left to do. It reports
+    /// nothing: a turn here waits on work the instance does off the frame, and how many turns
+    /// that wait took is the machine's, not the window's. What a test counts of an interaction
+    /// is the work it did (`StoreStats`, `ReadStats`), and what it holds is the state it left —
+    /// `FrameHarness::frame_schedule` says whether the window came to rest.
+    fn settle(&mut self) {
         // An index built off the frame is what the window waits for: this is how long the wait
         // is given before the frames are taken to be at rest.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         let mut quiet = 0_u32;
-        let mut turns = 0_u32;
         while quiet < QUIET_TURNS {
-            turns = turns.saturating_add(1);
             let changed = self.host.turn();
             self.window.frame();
             let waiting = (!self.index_ready() || self.search_index_pending())
@@ -709,7 +710,6 @@ impl Session {
                 }
             }
         }
-        turns
     }
 
     /// Whether the window's instance reads the workspace's indexes: until then it shows the
