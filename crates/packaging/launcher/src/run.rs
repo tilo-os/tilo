@@ -1089,17 +1089,23 @@ fn verified_bundle(
         // A per-user bundle is writable by the user's unconfined processes,
         // so every byte must be proven, not assumed: files sealed with
         // fs-verity at install by their publisher-signed digest are proven
-        // by the kernel without being read, the rest are hashed in full.
-        runtime_bundle::verify_bundle_verity_with(path, &verify_opts).map(|(manifest, check)| {
-            tracing::debug!(
-                bundle = %path.display(),
-                by_verity = check.by_verity,
-                hashed = check.hashed,
-                hashed_bytes = check.hashed_bytes,
-                "per-user runtime verified"
-            );
-            manifest
-        })
+        // by the kernel without being read, and files a launch already
+        // proved are proven to be the same files (same inode, size, times)
+        // by the record it left. Everything else is hashed in full.
+        let records = crate::appdir::prepare_runtime_records();
+        runtime_bundle::verify_bundle_recorded_with(path, &verify_opts, records.as_deref()).map(
+            |(manifest, check)| {
+                tracing::debug!(
+                    bundle = %path.display(),
+                    by_verity = check.by_verity,
+                    by_record = check.by_record,
+                    hashed = check.hashed,
+                    hashed_bytes = check.hashed_bytes,
+                    "per-user runtime verified"
+                );
+                manifest
+            },
+        )
     };
     match verified {
         Ok(manifest) => {

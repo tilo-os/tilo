@@ -23,7 +23,7 @@ name = "runtime_bundle"
 path = "src/lib.rs"
 
 [dependencies]
-tilo-files = { path = "../../platform/tilo-files" }
+tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
 # The publisher key file the bundle is signed with.
 registry-types = { path = "../registry-types" }
 tilo-clock = { path = "../../platform/tilo-clock" }

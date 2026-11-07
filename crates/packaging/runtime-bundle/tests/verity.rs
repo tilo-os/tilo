@@ -188,6 +188,7 @@ fn without_fs_verity_the_launch_check_hashes_and_refuses_a_modified_byte() {
         check,
         PayloadCheck {
             by_verity: 0,
+            by_record: 0,
             hashed: manifest.files.len(),
             hashed_bytes: total,
         }
@@ -283,6 +284,7 @@ fn a_sealed_bundle_verifies_unread_and_still_refuses_a_modified_byte() {
         check,
         PayloadCheck {
             by_verity: manifest.files.len(),
+            by_record: 0,
             hashed: 0,
             hashed_bytes: 0,
         }

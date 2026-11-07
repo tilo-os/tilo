@@ -31,6 +31,12 @@ impl Identity {
         }
     }
 
+    /// Identify the inode an open file reads from: replacing the path's
+    /// entry afterwards cannot name another file's identity.
+    pub fn of_file(file: &std::fs::File) -> io::Result<Self> {
+        Self::from_metadata(&file.metadata()?)
+    }
+
     fn from_metadata(metadata: &Metadata) -> io::Result<Self> {
         Ok(Self {
             len: metadata.len(),
