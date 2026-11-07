@@ -992,22 +992,6 @@ impl ProviderConfig {
         self.interaction_models.insert(kind.id().to_owned(), chosen);
         Ok(())
     }
-
-    /// Every model of the enabled providers, in Settings' order: what a
-    /// model picker offers besides the agent's own.
-    pub fn offered_models(&self) -> impl Iterator<Item = OfferedModel> + '_ {
-        self.profiles
-            .iter()
-            .filter(|profile| profile.enabled)
-            .flat_map(|profile| {
-                profile.models.iter().map(|model| OfferedModel {
-                    profile: profile.id.clone(),
-                    provider: profile.label.clone(),
-                    model: model.id.clone(),
-                    label: model.display_label().to_string(),
-                })
-            })
-    }
 }
 
 impl ProviderConfig {
