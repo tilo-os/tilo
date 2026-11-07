@@ -202,25 +202,32 @@ const paletteRows = async tab => {
   })()`));
 };
 // A person's search: the chord, the query, and Enter on the row the palette
-// offers for it. The rows are read before Enter, so Enter chooses the row the
-// query found rather than racing the search that fills it.
+// offers for it. The host answers a query a moment after the last key, and the
+// rows it shows before that answer are the previous query's: they are read
+// until two reads agree and the row asked for is the one Enter acts on — the
+// first result under the palette's heading, which is what the highlight sits
+// on. Reading only for the row's presence raced that answer and sent Enter to
+// a row left over from the query before.
 const search = async (tab, command, query, row) => {
   await click(tab, 640, 700);
   await key(tab, 'k', command);
   await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, 60_000);
   await type(tab, query);
+  const first = rows => (rows ? rows[rows.indexOf('Results') + 1] ?? null : null);
+  let last = null;
   const deadline = Date.now() + 60_000;
   for (;;) {
     const rows = await paletteRows(tab);
-    if (rows && rows.includes(row)) {
+    if (first(rows) === row && last && JSON.stringify(rows) === JSON.stringify(last)) {
       await key(tab, 'Enter');
       return rows;
     }
+    last = rows;
     if (Date.now() > deadline) {
       await dump(tab, `timeout-rows-for-${query}`);
-      failed(`the palette offers no ${row} for "${query}": ${JSON.stringify(rows)}`);
+      failed(`the palette offers no ${row} first for "${query}": ${JSON.stringify(rows)}`);
     }
-    await sleep(250);
+    await sleep(300);
   }
 };
 // A canvas-drawn desktop takes the pointer; the search chord is Ctrl+K away
@@ -772,17 +779,18 @@ try {
   const applications = (await nav(a.tab))?.applications ?? [];
   if (!applications.length) failed('the Lounge offers no app');
   const opened = [];
+  const started = Date.now();
   for (const application of applications) {
-    const rows = await search(a.tab, a.command, application.label.toLowerCase(), application.label);
+    await search(a.tab, a.command, application.label.toLowerCase(), application.label);
     await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(application.id)})`,
       `the window of ${application.label}`, 120_000);
-    await sleep(400);
     const shot = await a.tab.screenshot();
     if (shot) writeFileSync(`${out}/app-${application.id.replace(/[^a-z0-9]+/gi, '-')}.png`, shot);
     opened.push(application.id);
   }
-  report.applications = {offered: applications.map(application => application.id), opened};
-  console.log(`ok: each of the ${applications.length} apps the Lounge offers opened from the search`);
+  const spent = Math.round((Date.now() - started) / 1000);
+  report.applications = {offered: applications.map(application => application.id), opened, seconds: spent};
+  console.log(`ok: each of the ${applications.length} apps the Lounge offers opened from the search (${spent}s)`);
 
   // Two fingers sideways over Notes, which does not scroll that way: the
   // strip pans by the gesture and the windows stay as they were.
