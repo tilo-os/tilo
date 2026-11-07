@@ -96,7 +96,7 @@ const APPS: [Seed; 6] = [
 pub fn seeded(person: &str) -> Result<RecordService, String> {
     let mut record = tilo_resource::Doc::new();
     let host = Host::new(&record, Principal::new(person), || None).map_err(|e| e.to_string())?;
-    host.set_words(crate::i18n::PackageWords);
+    host.set_words(crate::i18n::SeededWords);
     let mut scenarios = Vec::new();
     let mut imports = Vec::new();
     for seed in &APPS {

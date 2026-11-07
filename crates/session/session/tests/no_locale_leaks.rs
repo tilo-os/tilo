@@ -194,6 +194,40 @@ fn a_window_with_its_pack_installed_reads_its_language() {
     }
 }
 
+/// A package the session reads for someone else says nothing about the
+/// language the session draws in: seeding a demo app that ships German (Notes
+/// does) leaves the session's own words — the toolkit's — English on a German
+/// device. The same words are the package's own when the process is that
+/// package's window, and then they are German.
+#[test]
+fn a_seeded_packages_words_do_not_make_the_session_speak_its_language() {
+    let notes = WINDOWS
+        .iter()
+        .find(|window| window.name == "Notes")
+        .expect("Notes is one of the windows");
+    let (locale, german) = notes.german.expect("Notes ships German");
+    let seed = [(locale.to_owned(), german.to_owned())];
+    let session = WINDOWS
+        .iter()
+        .find(|window| window.name == "the session's menus and notices")
+        .expect("the session is one of the windows");
+    let show_all = || I18nManager::format("search-show-all", &[("count", ArgValue::from(13))]);
+
+    I18nManager::install("en-US", "de-DE", &shipped_source(session)).expect("the session installs");
+    I18nManager::add_shared_resource(&seed[0].0, seed[0].1.clone());
+    assert_eq!(show_all(), "Show all 13");
+    assert_eq!(
+        I18nManager::lookup_plain("block-editor-empty"),
+        "Write something…"
+    );
+
+    // The same package in a process that is its own window: its language is
+    // the window's.
+    I18nManager::install("en-US", "de-DE", &shipped_source(notes)).expect("Notes installs");
+    I18nManager::add_resource(&seed[0].0, seed[0].1.clone());
+    assert_eq!(show_all(), "Alle 13 zeigen");
+}
+
 /// The two strings a person read in German inside an English session, read
 /// where they were drawn.
 #[test]

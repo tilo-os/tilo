@@ -162,7 +162,7 @@ pub struct I18nManager {
     /// no longer shown.
     bundles: HashMap<LanguageIdentifier, LoadedBundle>,
     /// The languages a window catalogue added on this thread is in: the
-    /// languages this window speaks (see [`Self::window_locale`]).
+    /// languages this window speaks (see [`Self::speaking_locale`]).
     spoken: Vec<LanguageIdentifier>,
     source_locale: LanguageIdentifier,
     /// The source catalogue rebuilt under the active locale, keyed by the
@@ -224,7 +224,7 @@ impl CatalogText {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Role {
     /// The window's own words: they are written in a language, and a language
-    /// they are written in is one the window speaks ([`I18nManager::window_locale`]).
+    /// they are written in is one the window speaks ([`I18nManager::speaking_locale`]).
     Window,
     /// Words shared with every window (the toolkit's widget labels, the
     /// Settings index): they ride along in the language the window selected
@@ -705,7 +705,7 @@ impl I18nManager {
     }
 
     /// Whether this window speaks `locale`'s language: a catalogue of its own
-    /// is in it (see [`Self::window_locale`]).
+    /// is in it (see [`Self::speaking_locale`]).
     fn speaks(&self, locale: &LanguageIdentifier) -> bool {
         self.spoken
             .iter()
@@ -755,7 +755,7 @@ impl I18nManager {
     /// catalogue added ahead of parsed widget labels parses the locale anew.
     ///
     /// A [`Role::Window`] catalogue makes `locale`'s language one this window
-    /// speaks ([`Self::window_locale`]); a [`Role::Shared`] one rides along
+    /// speaks ([`Self::speaking_locale`]); a [`Role::Shared`] one rides along
     /// in it and never does.
     fn add_catalog(&mut self, locale: LanguageIdentifier, text: CatalogText, role: Role) {
         if role == Role::Window
@@ -844,7 +844,20 @@ impl I18nManager {
         Self::install(source_locale, &active, catalogs)
     }
 
+    /// The words of the window this process draws, in `locale`: a language it
+    /// is written in becomes one the window speaks.
     pub fn add_resource(locale: &str, ftl_source: String) {
+        Self::add_resource_as(locale, ftl_source, Role::Window);
+    }
+
+    /// The words of another window's package, one this process reads or runs
+    /// for someone else: they ride along like the toolkit's labels and say
+    /// nothing about the language this process draws in.
+    pub fn add_shared_resource(locale: &str, ftl_source: String) {
+        Self::add_resource_as(locale, ftl_source, Role::Shared);
+    }
+
+    fn add_resource_as(locale: &str, ftl_source: String, role: Role) {
         let locale = parse_locale_or_default(locale);
         // A malformed `.ftl` resource degrades to "not loaded" — `lookup`
         // already falls back to the raw key when no message is found,
@@ -855,7 +868,7 @@ impl I18nManager {
         };
         MANAGER.with(|m| {
             if let Some(manager) = m.borrow_mut().as_mut() {
-                manager.add_catalog(locale, CatalogText::Parsed(resource), Role::Window);
+                manager.add_catalog(locale, CatalogText::Parsed(resource), role);
             }
         });
     }
@@ -912,12 +925,29 @@ impl I18nManager {
         })
     }
 
+    /// The locale the window selected: the person's choice when Settings or
+    /// the device named one, whatever the window's own catalogues carry. For
+    /// the language its words resolve in, see [`Self::window_locale`].
     #[must_use]
     pub fn current_locale() -> String {
         MANAGER.with(|manager| {
             manager.borrow().as_ref().map_or_else(
                 || "en-US".to_owned(),
                 |manager| manager.current_locale.to_string(),
+            )
+        })
+    }
+
+    /// The language this thread's window resolves in: the selected locale when
+    /// the window's own catalogues are in it, the source language otherwise
+    /// (the rule of [`I18nManager::speaking_locale`]). Dates, numbers and
+    /// history read in it, so a surface reads in one language throughout.
+    #[must_use]
+    pub fn window_locale() -> String {
+        MANAGER.with(|manager| {
+            manager.borrow().as_ref().map_or_else(
+                || "en-US".to_owned(),
+                |manager| manager.speaking_locale().to_string(),
             )
         })
     }
@@ -1042,7 +1072,7 @@ impl I18nManager {
     /// reads every toolkit word in German inside an otherwise English window,
     /// whenever the window's own German is not installed (an app that ships
     /// English only, a device whose language pack is missing).
-    fn window_locale(&self) -> &LanguageIdentifier {
+    fn speaking_locale(&self) -> &LanguageIdentifier {
         if self.speaks(&self.current_locale) {
             &self.current_locale
         } else {
@@ -1051,7 +1081,7 @@ impl I18nManager {
     }
 
     fn resolve(&self, resolution: &mut Resolution<'_, '_>) -> Option<String> {
-        let current = self.window_locale();
+        let current = self.speaking_locale();
         let same_language = |locale: &&LanguageIdentifier| locale.language == current.language;
         let order = || self.catalogs.iter().map(|(locale, _)| locale);
         let generic = order()
@@ -1356,7 +1386,7 @@ impl EmbeddedCatalog {
     /// a catalogue every window shows (the toolkit's widget labels, the
     /// Settings index) is written in languages the window itself may not
     /// speak, and must not make it speak them. See
-    /// [`I18nManager::window_locale`].
+    /// [`I18nManager::speaking_locale`].
     #[must_use]
     pub const fn as_shared(mut self) -> Self {
         self.shared = true;
