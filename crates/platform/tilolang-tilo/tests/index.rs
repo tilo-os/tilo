@@ -16,7 +16,7 @@ use tilolang_tilo::host::{Host, Opening};
 use tilolang_tilo::publish::PlanRequest;
 use tilolang_tilo::record::DynValue;
 
-use crate::fixtures::{Replica, TODO, field_id};
+use crate::fixtures::{Replica, TODO, field_id, type_id};
 
 const APP: &str = "so.tilo.todo";
 const KIND: &str = "tl.so.tilo.todo.TodoList";
@@ -209,9 +209,38 @@ fn workspace() -> (Replica, String, String) {
     (ada, root.doc, lock)
 }
 
+/// Each replica adds the list's first item before the two meet: the record keeps one of the maps
+/// the items sit in, and the items of the other go with it. The index kept change by change holds
+/// the item the record holds, and no row for the one it does not.
+#[test]
+fn an_index_keeps_no_item_of_an_item_map_the_record_does_not() {
+    let (mut ada, root, lock) = workspace();
+    let mut grace = ada.fork("grace", &[(TODO, &lock)]);
+    let ada_first = plan(&ada, "add", json!({ "text": "ada's" }), &root);
+    ada.apply(&ada_first);
+    let grace_first = plan(&grace, "add", json!({ "text": "grace's" }), &root);
+    grace.apply(&grace_first);
+    ada.sync_with(&mut grace);
+    for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+        assert_eq!(kept(replica), anew(replica, &lock), "{name}");
+        // What a person sees: the rows of the list are the items the record holds.
+        let items = items(replica, &root);
+        let meta = &replica.host.packages()[0].meta;
+        let list = ResourceRef::root(&root, type_id(meta, "TodoList"));
+        let spec = tilolang_runtime::store::FieldSpec {
+            id: field_id(meta, "TodoList", "items"),
+            kind: tilolang_runtime::meta::FieldKind::Collection,
+        };
+        let listed = tilolang_runtime::store::Store::listing(replica.host.store(), &list, &spec)
+            .unwrap()
+            .ids();
+        assert_eq!(listed, items, "{name}: the rows are the record's items");
+    }
+}
+
 #[test]
 fn an_index_kept_change_by_change_holds_what_deriving_it_anew_holds() {
-    for seed in [7_u64, 1234, 98_765] {
+    for seed in [7_u64, 8, 1234, 4096, 98_765, 654_321] {
         let mut rng = Rng(seed);
         let (mut ada, root, lock) = workspace();
         let mut grace = ada.fork("grace", &[(TODO, &lock)]);

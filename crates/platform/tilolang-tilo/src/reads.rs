@@ -50,6 +50,17 @@ pub fn resource_obj(doc: &Doc, app: &str, id: &str) -> Option<ObjId> {
         .find_map(|old| map_at(doc, &map_at(doc, &records, old)?, id))
 }
 
+/// Whether the record holds more than one map of the items of `doc` of `app`: two replicas made
+/// one before they met, and the items of the map the record does not keep are not in it.
+fn items_made_twice(record: &Doc, app: &str, doc: &str) -> bool {
+    let Some(root) = resource_obj(record, app, doc) else {
+        return false;
+    };
+    record
+        .get_all(&root, ITEMS_KEY)
+        .is_ok_and(|held| held.len() > 1)
+}
+
 /// The type stored in `$type` of the map `obj`.
 pub fn type_at(doc: &Doc, obj: &ObjId) -> Option<TypeId> {
     match doc.get(obj, TYPE_KEY) {
@@ -579,8 +590,11 @@ impl ChangedBuilder {
     ) {
         let Some(Some(item)) = below.first().copied() else {
             // The map the record's items sit in, made with the first of them and removed with
-            // the last: the items it gains or loses are named by their own writes.
-            if !made {
+            // the last: the items it gains or loses are named by their own writes. One a
+            // replica made as well — two copies of the map, of which the record keeps one —
+            // takes the items of the copy it replaces with it, and no write of theirs is here
+            // to name them: the record is derived whole.
+            if !made || items_made_twice(record, app, doc) {
                 self.whole(doc);
             }
             return;
