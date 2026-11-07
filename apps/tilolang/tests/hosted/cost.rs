@@ -323,9 +323,10 @@ fn record_has_task(session: &Session, title: &str) -> bool {
             matches!(item.get(&field.id), Some(tilolang_tilo::DynValue::Text(text)) if text == title)
         })
     };
+    let chunks = tilolang_tilo::chunk::Chunks::of(doc.clone());
     tilolang_tilo::action::resource_ids(doc, TASKS)
         .into_iter()
-        .filter_map(|id| tilolang_tilo::action::read_resource(doc, TASKS, &id).ok())
+        .filter_map(|id| tilolang_tilo::action::read_resource(&chunks, TASKS, &id).ok())
         .any(|record| {
             record
                 .schema()
