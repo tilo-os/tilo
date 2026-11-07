@@ -236,12 +236,11 @@ pub struct WindowGroup {
     /// Slot width in flight. Layout reads this so an open grows from 0,
     /// a close collapses the slot, and a resize retargets without a jump.
     width_spring: Option<FrameSpring<f64>>,
-    /// The width the window's bar and content are laid out at while its slot
-    /// width is in flight: the wide end of the motion. A widening window
-    /// reflows to the width it is going to as the motion starts, its app's
-    /// new frame arriving under the growing slot's clip; a narrowing one
-    /// keeps the width it had, clipped by the slot, and reflows once it
-    /// rests. Never on every frame. Read only while `width_spring` is set.
+    /// The width the window's bar and content are laid out at while its slot width is in flight:
+    /// the wide end of the motion. A widening window reflows to the width it is going to as the
+    /// motion starts, its app's new frame arriving under the growing slot's clip; a narrowing one
+    /// keeps the width it had, clipped by the slot, and reflows once it rests. Never on every
+    /// frame; read only while `width_spring` is stepping.
     content_px: f64,
     /// The width the window had when it began to restore from maximized:
     /// what it stays laid out at, clipped by its shrinking frame, until the
@@ -257,12 +256,10 @@ pub struct WindowGroup {
     /// `TileHost`'s shape stable. Swept once `elapsed > CLOSE_FADE_MS`.
     closing_hosts: HashMap<u64, Instant>,
     style_dirty: bool,
-    /// The tab id the current taffy tile-node was built for.
-    /// `build_layout` only builds the *active* tab's host, so on an
-    /// active-tab switch the cached node still belongs to the old one —
-    /// without a rebuild the new tab inherits a childless leaf and
-    /// renders at a stale top-left rect. `take_structure_dirty` diffs
-    /// this against the live active id to force that rebuild.
+    /// The tab id the current taffy tile-node was built for. `build_layout` builds only the
+    /// *active* tab's host, so on an active-tab switch the cached node still belongs to the old
+    /// one, and without a rebuild the new tab inherits a childless leaf and renders at a stale
+    /// rect; `take_structure_dirty` diffs this against the live active id to force that rebuild.
     built_active: Option<u64>,
     /// The window's node in the retained layout tree, while it has one.
     node: Option<NodeId>,
@@ -740,22 +737,18 @@ impl WindowGroup {
     }
 
     /// A frame was presented by a host that never marks this group drawn
-    /// ([`super::GroupRow::frame_presented`]): the next frame may step the
-    /// width spring. If a rebuild skipped its step because the token was
-    /// still spent (it came after a tick that rebuilt without painting),
-    /// nothing has asked for the rebuild that would step it, and the spring
-    /// would stay where it stopped while the group kept asking for
-    /// animation frames, so ask for one.
+    /// ([`super::GroupRow::frame_presented`]), so the next frame may step the width spring. If a
+    /// rebuild skipped its step because the token was still spent, nothing has asked for the
+    /// rebuild that would step it, and the spring would stay where it stopped while the group kept
+    /// asking for animation frames.
     pub fn frame_presented(&mut self) {
         self.next_frame();
     }
 
-    /// A new frame may step the width spring and rebuild a closing group
-    /// once more. Called when the group is drawn, and by a row for groups
-    /// it culled from a frame, so an off-screen transition still ends. A
-    /// step skipped since the last frame (a settle rebuild of the frame
-    /// that started the spring) asks for the rebuild that takes it, or the
-    /// spring would stay where it stopped.
+    /// A new frame may step the width spring and rebuild a closing group once more. Called when the
+    /// group is drawn, and by a row for groups it culled, so an off-screen transition still ends. A
+    /// step skipped since the last frame asks for the rebuild that takes it, or the spring would
+    /// stay where it stopped.
     pub fn next_frame(&mut self) {
         // A slot in flight takes its next step in the next frame's layout,
         // which restyles its node in place; a remount that took this
@@ -801,12 +794,10 @@ impl WindowGroup {
         }
     }
 
-    /// Tell the group how much of its top edge something overlays now — the
-    /// desktop's top bar while it shows over a window that reaches under an
-    /// auto-hiding top bar — so the window's bar stands below it instead of
-    /// under it. Zero while the desktop's bar stands above the window.
-    /// Whether a maximized window here fills its display: nothing of the
-    /// desktop's (a docked top bar) stands beside it.
+    /// Tell the group how much of its top edge something overlays now (the desktop's top bar while
+    /// it shows over a window reaching under an auto-hiding one), so the window's bar stands below
+    /// it. Zero while the desktop's bar stands above the window; whether a maximized window here
+    /// fills its display: nothing of the desktop's stands beside it.
     pub fn set_fills_display(&mut self, fills: bool) {
         self.fills_display = fills;
     }
@@ -1065,12 +1056,10 @@ impl WindowGroup {
         self.edge_drag.map(|drag| drag.live_px)
     }
 
-    /// End an edge drag. Committed, the width is stored as the share of the
-    /// strip it landed on and handed to the shell to persist; cancelled (an
-    /// Escape, focus loss), the window goes back to the width it had. Returns
-    /// the change in laid-out width the commit itself makes: the stored share
-    /// resolves to whole pixels on its own grid, so the row can keep the
-    /// fixed edge exactly where it was.
+    /// End an edge drag. Committed, the width is stored as the share of the strip it landed on and
+    /// handed to the shell to persist; cancelled (an Escape, focus loss), the window goes back to
+    /// the width it had. Returns the change in laid-out width the commit itself makes, since the
+    /// stored share resolves to whole pixels on its own grid.
     pub fn end_edge_drag(&mut self, commit: bool) -> f64 {
         let Some(drag) = self.edge_drag.take() else {
             return 0.0;
@@ -1677,12 +1666,10 @@ impl WindowGroup {
         Some((desc, host))
     }
 
-    /// The sibling path — splitting into a *brand-new* group — plays the
-    /// group-level fade instead, in `GroupRow::split_tab_into_new_group`,
-    /// so the two never double up.
-    ///
-    /// The new tab is shown at once; until it has drawn, the window keeps
-    /// showing the tab it showed before, and then cross-fades to it.
+    /// The sibling path — splitting into a *brand-new* group — plays the group-level fade instead,
+    /// in `GroupRow::split_tab_into_new_group`, so the two never double up. The new tab is shown at
+    /// once; until it has drawn, the window keeps showing the tab it showed before, and then
+    /// cross-fades to it.
     pub fn insert_detached_tab(&mut self, idx: usize, desc: TabDescriptor, host: TileHost) {
         let id = desc.id;
         let before = self.bar.active_id();
@@ -5295,12 +5282,10 @@ mod tests {
         }
 
         {
-            // The host's frame: rebuild when a widget asks (the row steps
-            // the spring in its build, a frame may take two passes), then a
-            // painted frame turns the token. A tick that rebuilds while the
-            // presenter is still busy paints nothing; the step the next
-            // rebuild skips must not leave the slot stopped part-way, asking
-            // for frames forever.
+            // The host's frame: rebuild when a widget asks (the row steps the spring in its build,
+            // a frame may take two passes), then a painted frame turns the token. A tick that
+            // rebuilds while the presenter is still busy paints nothing, and the step the next
+            // rebuild skips must not leave the slot stopped part-way, asking for frames forever.
             let mut g = group_opening("Notes", true, crate::arriving::Source::Local);
             g.set_strip_usable_px(1200.0);
             let t0 = crate::time::now();
