@@ -1559,7 +1559,11 @@ impl<'d> Derive<'d> {
                     (Some(before), None) => {
                         self.leave(sink, &path, &before)?;
                         self.remove_tree(sink, &path)?;
-                        sink.put_text(&path, LEFT, &in_of(&before.0, &before.1))?;
+                        // It went with the item that held it, as a card goes with its column:
+                        // `leave` keeps the row of what left for the item holding it, and
+                        // where it left from is not kept for an item the record no longer
+                        // holds. A derivation of the record anew writes it the same way, and
+                        // the index reads the same however it was derived.
                     }
                     (None, Some(place)) => {
                         // An item that was in no collection, and that the changes did not
