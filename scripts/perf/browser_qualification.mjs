@@ -10,7 +10,8 @@
 //          --renderer gpu|swiftshader [--rounds N]
 //          [--activations N] [--demo-seconds S] [--idle-seconds S]
 //          [--typing-keys N] [--expect-revision SHA] [--allow-dev] [--max-load L]
-//          [--cpu-throttle F] [--frame-timeout S] [--viewport WxH] [--enforce-goals]
+//          [--cpu-throttle F] [--network MEGABITS/MS] [--frame-timeout S] [--viewport WxH]
+//          [--enforce-goals]
 //
 // Each round is a fresh browser context (empty HTTP cache and storage) at the
 // workload's viewport (FHD, 1920x1080 at DPR 1, unless --viewport), and
@@ -40,6 +41,11 @@
 // --cpu-throttle F slows the page's CPU F times (DevTools CPU throttling), a
 // stand-in for older hardware on a fast host; it is part of the report's
 // workload, and its records are a different series.
+//
+// --network MEGABITS/MS gives every request the throughput and round-trip
+// latency of that line (DevTools network emulation), so the load's time and
+// bytes are a first visit's on a home connection instead of loopback's. It is
+// part of the workload too, and its records are a different series.
 //
 // Chrome runs with its frame-rate limit and vsync off, so a frame is presented
 // as soon as the runtime has one: the 120 Hz input, not a 60 Hz headless
@@ -98,7 +104,8 @@ export const RENDERERS = ['gpu', 'swiftshader'];
 const VIEWPORT = {width: 1920, height: 1080, deviceScaleFactor: 1};
 const USAGE = 'usage: browser_qualification.mjs BUNDLE_DIR --out REPORT_JSON --renderer gpu|swiftshader '
   + '[--rounds N] [--activations N] [--demo-seconds S] [--idle-seconds S] [--typing-keys N] [--expect-revision SHA] '
-  + '[--allow-dev] [--max-load L] [--cpu-throttle F] [--frame-timeout S] [--viewport WxH] [--enforce-goals]';
+  + '[--allow-dev] [--max-load L] [--cpu-throttle F] [--network MEGABITS/MS] [--frame-timeout S] '
+  + '[--viewport WxH] [--enforce-goals]';
 
 export class Invalid extends Error {}
 
@@ -107,6 +114,23 @@ export function parseViewport(text) {
   const match = /^(\d{3,4})x(\d{3,4})$/.exec(text ?? '');
   if (!match) throw Error('--viewport is WIDTHxHEIGHT, for example 1920x1080');
   return {width: Number(match[1]), height: Number(match[2]), deviceScaleFactor: 1};
+}
+
+/**
+ * `20mbit/40ms`: the download throughput and round-trip latency of a home
+ * line, which a first visit is felt on and a loopback run never is. Chrome
+ * emulates both on every request the page makes, so the load is the transfer
+ * a person waits for (the bundle's own bytes, compressed as the edge serves
+ * them) rather than the bundle folder's.
+ */
+export function parseNetwork(text) {
+  const match = /^(\d+(?:\.\d+)?)mbit\/(\d+)ms$/.exec(text ?? '');
+  if (!match) throw Error('--network is MEGABITS/MS, for example 20mbit/40ms');
+  const megabits = Number(match[1]);
+  const latency = Number(match[2]);
+  if (!(megabits > 0)) throw Error('--network needs a throughput above zero');
+  // DevTools takes bytes per second, not bits.
+  return {megabits, latencyMs: latency, bytesPerSecond: Math.round(megabits * 1e6 / 8)};
 }
 
 /** `promise`, or an Invalid run after `ms`: a step that never answers must fail, not hang. */
@@ -136,6 +160,7 @@ export function parseArgs(argv) {
     } else if (arg === '--out') options.out = argv[++i];
     else if (arg === '--renderer') options.renderer = argv[++i];
     else if (arg === '--viewport') options.viewport = parseViewport(argv[++i]);
+    else if (arg === '--network') options.network = parseNetwork(argv[++i]);
     else if (arg === '--expect-revision') options.expectRevision = argv[++i];
     else if (arg === '--allow-dev') options.allowDev = true;
     else if (arg === '--enforce-goals') options.enforceGoals = true;
@@ -215,6 +240,18 @@ export function transfer(entries, origin, until) {
   const resources = entries.filter(entry => entry.startTime <= until);
   const bytes = resources.reduce((sum, entry) => sum + (Number(entry.encodedBodySize) || 0), 0);
   return {bytes, requests: resources.length, crossOrigin: resources.filter(entry => entry.origin !== origin).length};
+}
+
+/**
+ * The start module — the runtime every page fetches before it can present
+ * anything — as the page received it: its encoded bytes (what came over the
+ * wire) and how long its fetch took, from request to the last byte. `null`
+ * when the page has no entry for it (then the run is invalid).
+ */
+export function startModule(entries) {
+  const entry = entries.find(one => one.status === 200 && one.name.endsWith('/pkg/tilo_browser_runtime_bg.wasm'));
+  if (!entry) return null;
+  return {bytes: Number(entry.encodedBodySize) || 0, ms: Math.max(0, (entry.responseEnd ?? 0) - entry.startTime)};
 }
 
 /** The renderer a WebGPU adapter's info names. */
@@ -331,7 +368,8 @@ const RUNTIME = `(await import(new URL('pkg/tilo_browser_runtime.js', document.b
 // load KPI's bytes and request count are those that started before the
 // desktop's first presented frame (`globalThis.__tiloPhases.presented`).
 const RESOURCES = `performance.getEntriesByType('resource').map(e => ({name: e.name, status: e.responseStatus ?? 200,
-  origin: new URL(e.name).origin, startTime: e.startTime, encodedBodySize: e.encodedBodySize}))`;
+  origin: new URL(e.name).origin, startTime: e.startTime, responseEnd: e.responseEnd,
+  encodedBodySize: e.encodedBodySize}))`;
 
 // Resolves with the time of the first presented frame after `frames` for
 // which `ready()` holds, or NaN after `timeoutMs`.
@@ -621,7 +659,7 @@ export function keyEvent(character) {
 
 // --- one round ----------------------------------------------------------------
 
-async function freshPage(browser, {cpuThrottle, frameTimeout, viewport}) {
+async function freshPage(browser, {cpuThrottle, network, frameTimeout, viewport}) {
   const {result: {browserContextId}} = await browser.send('Target.createBrowserContext', {disposeOnDetach: true});
   const {result: {targetId}} = await browser.send('Target.createTarget', {url: 'about:blank', browserContextId});
   const {result: {sessionId}} = await browser.send('Target.attachToTarget', {targetId, flatten: true});
@@ -651,6 +689,12 @@ async function freshPage(browser, {cpuThrottle, frameTimeout, viewport}) {
   await send('Emulation.setDeviceMetricsOverride', {...viewport, mobile: false});
   await send('Emulation.setFocusEmulationEnabled', {enabled: true});
   if (cpuThrottle > 1) await send('Emulation.setCPUThrottlingRate', {rate: cpuThrottle});
+  if (network) {
+    await send('Network.enable');
+    await send('Network.emulateNetworkConditions', {offline: false, latency: network.latencyMs,
+      downloadThroughput: network.bytesPerSecond, uploadThroughput: network.bytesPerSecond,
+      connectionType: 'wifi'});
+  }
   await send('Page.addScriptToEvaluateOnNewDocument', {source: PHASE_PROBE});
   return {send, evaluate, errors, close: async () => { off(); await browser.send('Target.closeTarget', {targetId}); }};
 }
@@ -796,6 +840,7 @@ export function summarize(rounds, load = {}) {
     load_ms: stats(rounds.map(r => r.loadMs)),
     transfer_bytes: stats(load.transferBytes ?? []),
     request_count: stats(load.requests ?? []),
+    start_module_bytes: stats(load.startModuleBytes ?? []),
     open_ms: stats(rounds.flatMap(r => r.opens.map(o => o.ms))),
     open_ready_ms: stats(rounds.flatMap(r => r.opens.map(o => o.readyMs))),
     activate_ms: stats(rounds.flatMap(r => r.activations)),
@@ -860,8 +905,10 @@ export function formatSummary(report) {
     `browser qualification: bundle ${report.bundle.revision.slice(0, 12)} (${report.bundle.profile}, digest ${report.bundle.digest.slice(0, 12)}, runtime ${report.bundle.runtimeSha256.slice(0, 12)})`,
     `  ${report.browser.product} | adapter ${report.renderer}: ${Object.values(report.adapter ?? {}).filter(Boolean).join(' ')} | ${report.viewport.width}x${report.viewport.height}@${report.viewport.deviceScaleFactor}`,
     `  host ${report.host.cpu} x${report.host.cpus}, load ${report.host.before.load1} before, ${report.host.after.load1} after`
-      + `${report.workload.cpuThrottle > 1 ? `, CPU throttled ${report.workload.cpuThrottle}x` : ''}`,
+      + `${report.workload.cpuThrottle > 1 ? `, CPU throttled ${report.workload.cpuThrottle}x` : ''}`
+      + `${report.workload.network ? `, network ${report.workload.network.megabits} Mbit/${report.workload.network.latencyMs} ms` : ''}`,
     row('load (ms)', s.load_ms), row('load bytes (B)', s.transfer_bytes), row('load requests', s.request_count),
+    row('start module (B)', s.start_module_bytes),
     row('open (ms)', s.open_ms), row('open ready (ms)', s.open_ready_ms),
     row('activate (ms)', s.activate_ms),
     row('demo interval (ms)', s.demo_interval_ms), row('demo work (ms)', s.demo_work_ms), row('demo fps', s.demo_fps),
@@ -927,21 +974,28 @@ async function main() {
     const loadedRuntime = rounds.every(r => r.resources.some(entry => entry.status === 200 && entry.name.endsWith('/pkg/tilo_browser_runtime_bg.wasm')));
     if (!loadedRuntime) throw new Invalid('the page never loaded the bundle\'s runtime module');
     const loadBytes = rounds.map(r => transfer(r.resources, origin, r.loadMs));
+    const startModules = rounds.map(r => startModule(r.resources));
+    if (startModules.some(module => module === null)) {
+      throw new Invalid('the page has no resource entry for the bundle\'s runtime module');
+    }
     if (loadBytes.some(t => t.bytes <= 0 || t.requests <= 0)) {
       throw new Invalid('the page reported no resource entries before its desktop presented');
     }
     const after = hostState();
     checkHost(after, options.maxLoad, 'after the run');
-    const summary = summarize(rounds, {transferBytes: loadBytes.map(t => t.bytes), requests: loadBytes.map(t => t.requests)});
+    const summary = summarize(rounds, {transferBytes: loadBytes.map(t => t.bytes), requests: loadBytes.map(t => t.requests),
+      startModuleBytes: startModules.map(module => module.bytes)});
     const host = {...before, before, after, maxLoad: options.maxLoad ?? null, platform: `${os.platform()} ${os.release()} ${os.arch()}`};
     const report = {schema: 1, measuredAt: new Date().toISOString(), bundle, renderer: options.renderer,
       adapter: rounds[0].adapter, browser: {product: version.product, userAgent: version.userAgent},
       viewport: options.viewport, host,
       load: {bytes: loadBytes.map(t => t.bytes), requests: loadBytes.map(t => t.requests),
-        crossOrigin: loadBytes.map(t => t.crossOrigin)},
+        crossOrigin: loadBytes.map(t => t.crossOrigin),
+        startModule: startModules.map(module => ({bytes: module.bytes, ms: Math.round(module.ms)}))},
       workload: {rounds: options.rounds, activations: options.activations, demoSeconds: options.demoSeconds,
         idleSeconds: options.idleSeconds, typingKeys: options.typingKeys, typingIntervalMs: TYPING_INTERVAL_MS,
-        cpuThrottle: options.cpuThrottle, apps: rounds[0].apps, inputHz: 120, chromeFlags: flags},
+        cpuThrottle: options.cpuThrottle, network: options.network ?? null, apps: rounds[0].apps, inputHz: 120,
+        chromeFlags: flags},
       summary, goals: judgeGoals(summary), attribution: attribute(rounds), typing: attributeTyping(rounds),
       idle: attributeIdle(rounds),
       samples: {
@@ -951,6 +1005,7 @@ async function main() {
         demo_work_ms: rounds.flatMap(r => r.demo.work), idle_per_s: rounds.map(r => r.idle.perS),
         typing_ms: rounds.flatMap(r => r.typing.latencies), typing_work_ms: rounds.flatMap(r => r.typing.work),
         transfer_bytes: loadBytes.map(t => t.bytes), request_count: loadBytes.map(t => t.requests),
+        start_module_bytes: startModules.map(module => module.bytes),
       },
       rounds: rounds.map(({resources, ...r}) => ({...r, demo: {frames: r.demo.frames, wheels: r.demo.wheels,
         seconds: r.demo.seconds, fps: r.demo.fps, moved: r.demo.moved, stages: r.demo.stages,

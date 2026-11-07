@@ -1465,6 +1465,24 @@ max = 90.0
 baseline_min_runs = 1
 source = "resource entries that started before the desktop's first presented frame, fresh browser context (headless, SwiftShader)"
 
+# The start module is what every visitor downloads before the page can present
+# anything, so its size is the first visit's floor: a counter, not a timing, so
+# a rise is a regression at once. Measured at 8,791,307 B on 2026-11-07 (the
+# module 29,425,061 B raw), the ceiling is that plus the 1% headroom the
+# build-time budget keeps, rounded up to 64 KiB.
+#
+# It is the only budget on the bytes the page serves: tools/web/wasm-size-budget
+# holds the raw bytes of the desktop bundle the app-sdk lane builds
+# (`tilo-app build --target web`), which is a smaller module than the runtime's
+# own `build.sh --bundle desktop` output that ships. A cut that moves either one
+# lowers this ceiling too.
+[kpi."browser.load.start_module_bytes"]
+unit = "bytes"
+max = 8912896.0
+enforce = true
+baseline_min_runs = 1
+source = "encoded bytes of pkg/tilo_browser_runtime_bg.wasm in the desktop bundle's first load, fresh browser context (headless, SwiftShader)"
+
 [kpi."browser.open.first_frame"]
 unit = "ms"
 p99 = 250.0

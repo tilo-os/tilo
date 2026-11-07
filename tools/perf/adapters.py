@@ -474,6 +474,7 @@ BROWSER_KPIS = {
     "load_ms": ("browser.load.desktop_presented", "ms"),
     "transfer_bytes": ("browser.load.transfer_bytes", "bytes"),
     "request_count": ("browser.load.request_count", "count"),
+    "start_module_bytes": ("browser.load.start_module_bytes", "bytes"),
     "open_ms": ("browser.open.first_frame", "ms"),
     "open_ready_ms": ("browser.open.ready", "ms"),
     "activate_ms": ("browser.activate.first_frame", "ms"),
@@ -513,6 +514,8 @@ def browser_qualification(report: dict[str, Any], env: dict[str, Any],
                          f"{' (dirty)' if bundle['dirty'] else ''}, not {env['commit']}")
     if workload.get("cpuThrottle", 1) != 1:
         raise ValueError(f"the page's CPU was throttled {workload['cpuThrottle']}x")
+    if workload.get("network"):
+        raise ValueError(f"the page's network was emulated at {workload['network']}")
     samples = report["samples"]
     demo = float(workload.get("demoSeconds", 0)) > 0
     typing = int(workload.get("typingKeys", 0)) > 0
