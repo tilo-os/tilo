@@ -36,8 +36,8 @@
 //! opens it elsewhere, and a headless session, which serves no seat, opens it
 //! only when asked to (`--headless-owner-control`, under
 //! `headless-owner-control.sock` there). Whichever it binds it prints
-//! (`TILO_ADMIN_CONTROL=`); `--seed-apps` publishes the tilolang notes,
-//! tasks, chat and mail apps filled with their seed data
+//! (`TILO_ADMIN_CONTROL=`); `--seed-apps` publishes the records of the tilolang apps installed
+//! in this session's own app store, each filled with its first scenario's seed data
 //! ([`tilo_session::seeded_apps`]), also in development builds only.
 //! SIGTERM, SIGINT and SIGHUP end the session as ending on its own does, so
 //! what it mounted and bound goes with it.
@@ -235,8 +235,8 @@ struct CommandLine {
     /// the path the command line named, else the seat's own
     /// (`--headless-owner-control` opts a headless session in).
     admin_control: Option<std::path::PathBuf>,
-    /// Whether the session publishes the seeded tilolang apps
-    /// (`--seed-apps`, in a development build).
+    /// Whether the session publishes the records of the tilolang apps installed in its app
+    /// store (`--seed-apps`, in a development build).
     seed_apps: bool,
 }
 
@@ -730,7 +730,9 @@ fn start(
         options.config.idle = tilo_compositor::IdleConfig::never();
     }
     if seed_apps {
-        match tilo_session::seeded_apps::seeded(&tilo_session::identity::seated_person(&options)) {
+        match tilo_session::seeded_apps::seeded_from_env(&tilo_session::identity::seated_person(
+            &options,
+        )) {
             Ok(apps) => options.services.push(Box::new(apps)),
             Err(error) => eprintln!("tilo-session: the seeded apps did not load: {error}"),
         }

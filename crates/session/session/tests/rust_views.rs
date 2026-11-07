@@ -107,7 +107,7 @@ impl Service for Channels {
 /// hooks at `root`, the framed canvas in front.
 fn session(root: &std::path::Path) -> Session {
     let program = std::env::current_exe().expect("this test's program");
-    let apps = tilo_session::seeded_apps::seeded(common::PERSON).expect("the seeded apps");
+    let apps = common::seeded_apps();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,

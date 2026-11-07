@@ -1,0 +1,139 @@
+//! A development session's tilolang apps are installed packages, and the session plans their
+//! connectors from what it installed.
+//!
+//! `dist/dev/shell-run.sh` builds each app of `apps/tl` into a signed `.tapp` and installs it
+//! into the session's own app store; the session then reads each app from its store row, the way
+//! it reads a device's installed apps, and the manifest it reads there is what the launcher and
+//! the connector planning see (`tilo_session::mount::apps::Apps::plan_connector`). So the YouTube
+//! client's connector is planned from its installed manifest, and Mail's from its own: their
+//! origins are the apps' declarations, never something a test or a seed path supplies.
+//!
+//! Nothing here loads a package into the session from a test's own copy: what runs is what the
+//! store holds, which is what a person's device would hold.
+
+#![cfg(target_os = "linux")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion"
+)]
+
+mod common;
+
+use tilo_app_launch::SessionEnvironment;
+use tilo_service::Service as _;
+use tilo_session::mount::apps::Apps;
+
+/// Every app of the development session is a package the session's store holds, built from
+/// `apps/tl` and installed with its signed manifest.
+#[test]
+fn every_dev_session_app_is_an_installed_package() {
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let store = home.data().join("tilo-apps");
+    let runtime = home.state().join("tilolang");
+    std::fs::create_dir_all(&runtime).expect("a directory for the build");
+    let installed = common::dev_apps::install(&store, &runtime);
+    home.env().set("TILO_APPS_DATA_DIR", &store);
+    for app in installed {
+        let found = tilo_installed_apps::read_one_from_env(&app)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("{app} is installed in the session's store"));
+        assert_eq!(found.package_id, app, "the store's row is the app's own id");
+        assert!(
+            found
+                .payload_root
+                .join(tilolang_tilo::bundle::WASM_FILE)
+                .is_file(),
+            "{app} is installed as a tilolang package: {}",
+            found.payload_root.display()
+        );
+        assert!(
+            found.manifest_path.is_file(),
+            "{app} has the manifest its install signed"
+        );
+    }
+}
+
+/// The session plans each app's connector from its installed manifest: the YouTube client's
+/// `youtube` connector and Mail's `imap` one are the apps' own declarations, and their launch is
+/// the app's own with the origin named (`--tilolang-connector <origin>`).
+#[test]
+fn the_installed_apps_connectors_are_planned_from_their_manifests() {
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let store = home.data().join("tilo-apps");
+    let runtime = home.state().join("tilolang");
+    std::fs::create_dir_all(&runtime).expect("a directory for the build");
+    common::dev_apps::install(&store, &runtime);
+    home.env().set("TILO_APPS_DATA_DIR", &store);
+
+    // The launcher a connector's launch is planned through: what it would start is read from
+    // the plan, so a stand-in that starts nothing is the launcher here.
+    let launcher = tilo_test_env::stand_in(home.home().join("tilo-launcher"), "exit 0\n")
+        .expect("a launcher to plan through");
+    let apps = Apps::with_launcher(
+        SessionEnvironment::from_process(),
+        None,
+        Some(launcher.path().to_owned()),
+    );
+    let workspace = apps.workspace_named("workspace-1");
+    for (app, origin) in [
+        ("so.tilo.lang.tube", "youtube"),
+        ("so.tilo.lang.mail", "imap"),
+    ] {
+        let planned = apps
+            .plan_connector(app, origin, &workspace)
+            .unwrap_or_else(|why| {
+                panic!("{app}'s {origin} connector is planned: {why}");
+            });
+        assert_eq!(planned.app, app);
+        let named = planned
+            .args
+            .iter()
+            .position(|arg| arg == "--tilolang-connector")
+            .unwrap_or_else(|| panic!("{app}'s launch is a connector: {:?}", planned.args));
+        assert_eq!(
+            planned.args.get(named + 1).map(String::as_str),
+            Some(origin),
+            "{app}'s launch is its connector for {origin}: {:?}",
+            planned.args
+        );
+    }
+}
+
+/// Each installed app's first scenario fills the session's records: the seeded YouTube client
+/// holds the channels its subscriptions feed shows, and Notes its notebook, so what those apps
+/// draw and what a search's answer lands beside are there. Nothing here seeds after the fact:
+/// the scenario is the package's own, run once as a development session runs it.
+#[test]
+fn the_installed_apps_scenarios_fill_the_sessions_records() {
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let store = home.data().join("tilo-apps");
+    let scratch = home.state().join("tilolang");
+    std::fs::create_dir_all(&scratch).expect("a directory for the build");
+    common::dev_apps::install(&store, &scratch);
+    home.env().set("TILO_APPS_DATA_DIR", &store);
+
+    let apps = common::seeded_apps_in(&store);
+    let mut kinds = std::collections::BTreeSet::new();
+    fn walk(
+        resources: &[tilo_actions::ResourceSpec],
+        kinds: &mut std::collections::BTreeSet<String>,
+    ) {
+        for resource in resources {
+            kinds.insert(resource.kind.clone());
+            walk(&resource.children, kinds);
+        }
+    }
+    walk(&apps.resources(), &mut kinds);
+    for kind in [
+        "tl.so.tilo.lang.tube.Channel",
+        "tl.so.tilo.lang.tube.Video",
+        "tl.so.tilo.lang.notes.Note",
+    ] {
+        assert!(kinds.contains(kind), "{kind} is seeded: {kinds:?}");
+    }
+}

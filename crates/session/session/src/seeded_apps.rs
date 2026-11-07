@@ -1,121 +1,68 @@
 //! The tilolang apps a development session starts with (`tilo-session --seed-apps`, honoured by
-//! development builds only): notes, tasks, chat, mail and the video app, loaded from
-//! `apps/tl` into one workspace record, each filled by its first scenario (the seed data its
-//! shots and tests start from), and published as the session publishes a room's records
-//! ([`tilolang_tilo::records_service::RecordService`]): every note, task, channel and mailbox is
-//! a resource the session's `find` finds, an arrangement places and an agent reads and changes
-//! through its actions.
+//! development builds only): notes, tasks, chat, mail and the video app.
 //!
-//! This is a demo, chosen on the command line: a person's session starts its apps empty.
+//! Each is an **installed package**, as it is on a person's device: the app's `.tapp` is
+//! installed into the session's own package store (`dist/dev/shell-run.sh` builds and installs
+//! them), the session reads each app's payload from its store row, and the app runs through the
+//! launcher like any other. Loading it here publishes the records it keeps: the app's root made
+//! and filled by its first scenario (the seed data its shots and tests start from), published as
+//! the session publishes a room's records ([`tilolang_tilo::records_service::RecordService`]), so
+//! every note, task, channel and mailbox is a resource the session's `find` finds, an
+//! arrangement places and an agent reads and changes through its actions.
+//!
+//! There is no second way for an app to reach a session: an app that is not installed is not run,
+//! and an app that is installed has the manifest the launcher and connector planning read. Its
+//! scenario data is the only fixture here, and a person's session starts its apps empty.
 
+use tilo_installed_apps::InstalledApp;
+use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::records_service::RecordService;
 use tilolang_tilo::runtime::Principal;
-use tilolang_tilo::tilolang::{IdsLock, PackageSource, compile_package_source};
 
 /// Whether this build seeds the apps `--seed-apps` asks for: development builds only.
 pub const SEEDED_BY_THIS_BUILD: bool = cfg!(debug_assertions);
 
-/// An app started here: its id, its source, the ids it was compiled with, and the catalogues it
-/// ships its words in, as an installed app carries them in its module.
-struct Seed {
-    app: &'static str,
-    source: &'static str,
-    ids: &'static str,
-    locales: &'static [(&'static str, &'static str)],
-}
-
-const APPS: [Seed; 6] = [
-    Seed {
-        app: "so.tilo.lang.discussion",
-        source: include_str!("../../../../apps/tl/discussion/app.tl"),
-        ids: include_str!("../../../../apps/tl/discussion/app.ids"),
-        locales: &[(
-            "en-US",
-            include_str!("../../../../apps/tl/discussion/locales/en-US.ftl"),
-        )],
-    },
-    Seed {
-        app: "so.tilo.lang.notes",
-        source: include_str!("../../../../apps/tl/notes/app.tl"),
-        ids: include_str!("../../../../apps/tl/notes/app.ids"),
-        locales: &[
-            (
-                "en-US",
-                include_str!("../../../../apps/tl/notes/locales/en-US.ftl"),
-            ),
-            (
-                "de-DE",
-                include_str!("../../../../apps/tl/notes/locales/de-DE.ftl"),
-            ),
-        ],
-    },
-    Seed {
-        app: "so.tilo.lang.tasks",
-        source: include_str!("../../../../apps/tl/tasks/app.tl"),
-        ids: include_str!("../../../../apps/tl/tasks/app.ids"),
-        locales: &[(
-            "en-US",
-            include_str!("../../../../apps/tl/tasks/locales/en-US.ftl"),
-        )],
-    },
-    Seed {
-        app: "so.tilo.lang.chat",
-        source: include_str!("../../../../apps/tl/chat/app.tl"),
-        ids: include_str!("../../../../apps/tl/chat/app.ids"),
-        locales: &[(
-            "en-US",
-            include_str!("../../../../apps/tl/chat/locales/en-US.ftl"),
-        )],
-    },
-    Seed {
-        app: "so.tilo.lang.mail",
-        source: include_str!("../../../../apps/tl/mail/app.tl"),
-        ids: include_str!("../../../../apps/tl/mail/app.ids"),
-        locales: &[(
-            "en-US",
-            include_str!("../../../../apps/tl/mail/locales/en-US.ftl"),
-        )],
-    },
-    Seed {
-        app: "so.tilo.lang.tube",
-        source: include_str!("../../../../apps/tl/tube/app.tl"),
-        ids: include_str!("../../../../apps/tl/tube/app.ids"),
-        locales: &[(
-            "en-US",
-            include_str!("../../../../apps/tl/tube/locales/en-US.ftl"),
-        )],
-    },
+/// The tilolang apps a development session installs and seeds, in the order a session reads
+/// them: the packages they use meet each other as [`seeded`] loads them.
+pub const APPS: [&str; 6] = [
+    "so.tilo.lang.discussion",
+    "so.tilo.lang.notes",
+    "so.tilo.lang.tasks",
+    "so.tilo.lang.chat",
+    "so.tilo.lang.mail",
+    "so.tilo.lang.tube",
 ];
 
-/// Discussion, notes, tasks, chat and mail in one workspace record of `person`'s, each app's
-/// root made and filled by its first scenario as `person`'s steps, published for them.
+/// The records of the installed apps [`APPS`] names, in one workspace record of `person`'s:
+/// each app's root made and filled by its first scenario as `person`'s steps, published for
+/// them.
 ///
 /// # Errors
-/// An app does not compile or load, or its scenario does not run.
-pub fn seeded(person: &str) -> Result<RecordService, String> {
+/// An app of [`APPS`] is not installed as a tilolang package, its payload does not read, or its
+/// scenario does not run.
+pub fn seeded(person: &str, catalog: &package_store::Catalog) -> Result<RecordService, String> {
+    let installed = installed_apps(catalog)?;
     let mut record = tilo_resource::Doc::new();
     let host = Host::new(&record, Principal::new(person), || None).map_err(|e| e.to_string())?;
     host.set_words(crate::i18n::PackageWords);
+    // A package's imported modules ride in its own bundle, so any order loads; the packages a
+    // session reads first are loaded first, so a package that another one shows is the one it
+    // was compiled against.
     let mut scenarios = Vec::new();
-    let mut imports = Vec::new();
-    for seed in &APPS {
-        let source = PackageSource::single(seed.source).with_locales(
-            seed.locales
-                .iter()
-                .map(|(locale, text)| ((*locale).to_owned(), (*text).to_owned())),
-        );
-        let ids = IdsLock::parse(seed.ids).map_err(|error| format!("{}: {error}", seed.app))?;
-        let compiled = compile_package_source(&source, &ids, &imports)
-            .map_err(|diagnostics| format!("{}: {diagnostics:?}", seed.app))?;
+    for app in &installed {
+        let bundle = Bundle::read(&app.payload_root)
+            .map_err(|error| format!("{}: {error}", app.package_id))?;
         let package = host
-            .load_compiled(&compiled)
-            .map_err(|error| format!("{}: {error}", seed.app))?;
-        imports.push(package.meta.clone());
-        scenarios.push((seed.app, package.meta.scenarios.first().cloned()));
+            .load_bundle(&bundle)
+            .map_err(|error| format!("{}: {error}", app.package_id))?;
+        scenarios.push((
+            package.meta.app.clone(),
+            package.meta.scenarios.first().cloned(),
+        ));
     }
     for (app, scenario) in scenarios {
-        host.root_of(app)
+        host.root_of(&app)
             .map_err(|error| format!("{app}'s root: {error}"))?;
         commit(&host, &mut record, person)?;
         let Some(scenario) = scenario else {
@@ -129,6 +76,43 @@ pub fn seeded(person: &str) -> Result<RecordService, String> {
     let mut service = RecordService::new(record, host, person);
     tilo_service::Service::settle(&mut service);
     Ok(service)
+}
+
+/// [`seeded`] over the app store the environment names (`$TILO_APPS_DATA_DIR`, else the
+/// person's `$XDG_DATA_HOME/tilo-apps`).
+///
+/// # Errors
+/// The store cannot be located, or [`seeded`] fails.
+pub fn seeded_from_env(person: &str) -> Result<RecordService, String> {
+    let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
+    seeded(person, &catalog)
+}
+
+/// The installed packages [`APPS`] names, each an app of the language: a payload that carries
+/// the compiled module (a Rust app's payload does not).
+///
+/// # Errors
+/// One of [`APPS`] is not installed, or is installed as a package of another kind.
+fn installed_apps(catalog: &package_store::Catalog) -> Result<Vec<InstalledApp>, String> {
+    let installed = tilo_installed_apps::read(catalog).map_err(|error| error.to_string())?;
+    let mut apps = Vec::new();
+    for app in APPS {
+        let found = installed
+            .iter()
+            .find(|installed| installed.package_id == app)
+            .ok_or_else(|| format!("{app} is not installed in this session's app store"))?;
+        if !found
+            .payload_root
+            .join(tilolang_tilo::bundle::WASM_FILE)
+            .is_file()
+        {
+            return Err(format!(
+                "{app} is installed as a package that is not a tilolang app"
+            ));
+        }
+        apps.push(found.clone());
+    }
+    Ok(apps)
 }
 
 /// Commit what `host` committed to `record`, each as a step of `person`'s.

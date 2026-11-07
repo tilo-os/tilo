@@ -17,12 +17,14 @@
     reason = "test fixtures shared by the session's test binaries: a helper a binary does not use is not an error, and a failed step is the assertion"
 )]
 
+pub mod dev_apps;
 pub mod people;
 pub mod window;
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
@@ -457,6 +459,75 @@ pub fn seeded_session(root: &Path) -> Session {
     seeded_session_with(root, None)
 }
 
+/// The app store this test process's tilolang apps are installed in, built the first time it is
+/// asked for: [`dev_apps::install`] builds each app from this tree into a signed `.tapp` and
+/// puts it in the store, the way a device has them. Every session a test starts reads that
+/// store, as it would read a device's own.
+///
+/// The store lives under the run's temporary directory (`$TMPDIR`), which the test harness
+/// gives the run and removes with it, so a process builds the apps once. `TILO_APPS_DATA_DIR`
+/// names it for the rest of the process, behind the environment lock the other scopes take, so
+/// a test that sets its own store in a scope takes it back on drop.
+///
+/// # Panics
+/// A package does not build or install, or the host has no Tilo runtime to run them on.
+pub fn app_store() -> &'static Path {
+    static STORE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| {
+        let root = std::env::temp_dir().join(format!("tilo-test-apps-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("a directory for the apps");
+        let installed = dev_apps::install(&root, &root.join("build"));
+        assert_eq!(
+            installed.len(),
+            6,
+            "every app of the development session is installed: {installed:?}"
+        );
+        // The store the environment names is the one the session's launcher reads, and the one
+        // its connector planning plans from. Held behind the environment lock so no scope that
+        // sets the variable is running as this is written.
+        {
+            let _lock = tilo_test_env::lock();
+            // SAFETY: the lock is the one every scope that touches the environment holds.
+            unsafe { std::env::set_var("TILO_APPS_DATA_DIR", &root) };
+        }
+        root
+    })
+}
+
+/// The records of the tilolang apps installed in [`app_store`], each filled by its first
+/// scenario, published for [`PERSON`]: what a development session seeds.
+///
+/// # Panics
+/// The apps do not load.
+pub fn seeded_apps() -> RecordService {
+    seeded_apps_in(app_store())
+}
+
+/// [`seeded_apps`] for the tilolang apps installed in the store `store`: a test that installed
+/// them in its own home's store reads them from there, as a device does.
+///
+/// # Panics
+/// The apps do not load.
+pub fn seeded_apps_in(store: &Path) -> RecordService {
+    let catalog = package_store::Catalog::at(store, None);
+    tilo_session::seeded_apps::seeded(PERSON, &catalog).expect("the seeded apps")
+}
+
+/// Build the tilolang apps a development session runs into the store `store`, from this tree's
+/// packages, each naming the image's installed Tilo runtime.
+///
+/// # Panics
+/// A package does not build or install, or the host has no Tilo runtime to run them on.
+pub fn install_apps_in(store: &Path, scratch: &Path) {
+    std::fs::create_dir_all(scratch).expect("a directory for the build");
+    let installed = dev_apps::install(store, scratch);
+    assert_eq!(
+        installed.len(),
+        6,
+        "every app of the development session is installed: {installed:?}"
+    );
+}
+
 /// [`seeded_session`], with the runs of what the person asks the session's agents played by
 /// `runs` when a test brings them (the agent's side of the run channel); the session keeps its
 /// own otherwise.
@@ -465,20 +536,32 @@ pub fn seeded_session_with(
     runs: Option<std::sync::Arc<tilo_agent_runs::AgentRuns>>,
 ) -> Session {
     let program = std::env::current_exe().expect("this test's program");
-    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    seeded_session_at(root, runs, vec![program], None)
+}
+
+/// [`seeded_session_with`] with `apps` starting them (a stand-in launcher a test brought), and
+/// the programs named as admitted to act as the person ahead of time.
+pub fn seeded_session_at(
+    root: &Path,
+    runs: Option<std::sync::Arc<tilo_agent_runs::AgentRuns>>,
+    admit_repl: Vec<std::path::PathBuf>,
+    apps: Option<Rc<dyn tilo_session::AppActions>>,
+) -> Session {
+    let seeded = seeded_apps();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
             shell: true,
             collab: false,
-            services: vec![Box::new(apps)],
+            services: vec![Box::new(seeded)],
             questions: Some(Questions::new()),
             action_plane: ActionPlane::At(root.join("plane.sock")),
             agent_door: Some(root.join("agent.sock")),
-            admit_repl: vec![program],
+            admit_repl,
             test_control: Some(root.join("test-control.sock")),
             agent_runs: runs,
+            apps,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],

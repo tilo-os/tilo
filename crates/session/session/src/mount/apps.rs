@@ -313,7 +313,7 @@ impl Apps {
     /// # Errors
     /// The package is not installed here, its manifest does not declare `origin`, or no
     /// launcher can start it.
-    pub(crate) fn plan_connector(
+    pub fn plan_connector(
         &self,
         app: &str,
         origin: &str,
