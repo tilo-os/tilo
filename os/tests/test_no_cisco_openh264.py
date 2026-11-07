@@ -116,18 +116,27 @@ class Gate(unittest.TestCase):
 
 class Wiring(unittest.TestCase):
     def test_snapshot_is_resolved_without_ciscos_repository(self):
-        lines = SNAPSHOT.read_text().splitlines()
+        # The configured base runs the mirror script, and the script is what
+        # drops the repository; every stage that resolves packages descends
+        # from the base it configured.
+        script = (REPO / 'os/dev/configure-fedora-mirrors.sh').read_text()
+        self.assertIn('rm -f "$repos/fedora-cisco-openh264.repo"', script,
+                      'configure-fedora-mirrors must drop the fedora-cisco-openh264 repository')
+        text = SNAPSHOT.read_text()
+        lines = text.splitlines()
         stage = None
-        removed = None
+        configured = None
         for index, line in enumerate(lines):
             if line.startswith('FROM '):
                 stage = line.split()[-1]
-            if 'rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo' in line and not line.lstrip().startswith('#'):
-                removed = (index, stage)
-        self.assertIsNotNone(removed, 'Containerfile.rpms must drop the fedora-cisco-openh264 repository')
-        self.assertEqual(removed[1], 'configured-base')
+            if line.strip() == 'RUN configure-fedora-mirrors' and stage == 'configured-base':
+                configured = index
+        self.assertIsNotNone(
+            configured, 'Containerfile.rpms must configure its repositories in the base it resolves from')
+        self.assertIn('COPY os/dev/configure-fedora-mirrors.sh /usr/local/bin/configure-fedora-mirrors', text)
+        self.assertIn('FROM configured-base AS resolve', text)
         first_resolve = next(i for i, line in enumerate(lines) if '--store=/tmp/tilo-install' in line)
-        self.assertLess(removed[0], first_resolve)
+        self.assertLess(configured, first_resolve)
 
     def test_snapshot_gate_runs_before_the_repository_is_published(self):
         text = SNAPSHOT.read_text()
