@@ -1144,6 +1144,28 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_this_device_hosts_commits_here_without_a_host_address() {
+        use tilo_action_broker::owner_commits::OwnerCustody as _;
+
+        let state = tempfile::tempdir().expect("a state directory");
+        let (identity, _) = identity(DeviceCapabilities::member());
+        let engine = engine(state.path(), identity);
+        let workspace = WorkspaceId::new();
+        engine.found(WorkspaceSlot(7), workspace, "Desk");
+
+        assert!(
+            engine
+                .owner
+                .with_current(workspace, |view| Ok(view.transport_hint().is_err()))
+                .expect("the workspace is held here"),
+            "a workspace this device founded names no host to dial"
+        );
+        engine
+            .check_custody(&engine.owner, workspace)
+            .expect("its own member acts there, its host being in this process");
+    }
+
+    #[test]
     fn a_workspace_made_here_and_held_nowhere_else_may_be_deleted() {
         let state = tempfile::tempdir().expect("a state directory");
         let (identity, _) = identity(DeviceCapabilities::member());
