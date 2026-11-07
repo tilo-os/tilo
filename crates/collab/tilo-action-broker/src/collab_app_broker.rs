@@ -12190,27 +12190,8 @@ pub mod tests {
     include!("local_directory_surface.rs");
 
     impl LocalDirectoryFixture {
-        /// Install the source only after the production certificate, signature,
-        /// enrolled-device and current workspace admission checks succeed.
-        pub fn authenticate_source(&mut self, presentation: &[u8]) -> Result<CapRole, String> {
-            let source = verify_join_identity(
-                &self.route,
-                presentation,
-                self.state.membership.as_ref(),
-                self.state.trusted_devices.as_deref().map(Vec::as_slice),
-                self.state.services.native_certificates.as_deref(),
-            )?;
-            let role = source.role;
-            self.source_identity = Some(source);
-            self.reconnect_directory();
-            Ok(role)
-        }
-
         pub fn query_count(&self) -> usize {
             self.directory_state.borrow().query_count
-        }
-        pub fn disconnect_directory(&self) {
-            self.directories.remove(self.peer_id);
         }
         pub fn reconnect_directory(&self) {
             self.directories.directories.borrow_mut().insert(
@@ -12238,10 +12219,6 @@ pub mod tests {
         /// The parameters the directory's action takes.
         pub fn set_params(&self, params: Vec<tilo_actions::ActionParam>) {
             self.directory_state.borrow_mut().params = params;
-        }
-
-        pub fn set_result_spec(&self, result: tilo_actions::ResultSpec) {
-            self.directory_state.borrow_mut().result = result;
         }
 
         fn invocation_channel(&self) -> runtime_collab::ChannelHandle {
@@ -12300,43 +12277,11 @@ pub mod tests {
                 .await
         }
 
-        pub fn set_resolve_mode(&self, mode: DirectoryResolveMode) {
-            self.directory_state.borrow_mut().resolve_mode = mode;
-        }
-
         pub fn take_invocation_identity(&mut self) -> Option<(u64, tilo_actions::InvocationId)> {
             self.invocation_rx
                 .try_recv()
                 .ok()
                 .map(|invocation| (invocation.id, invocation.invocation))
-        }
-
-        pub fn take_invocation_actor(&mut self) -> Option<String> {
-            self.invocation_rx
-                .try_recv()
-                .ok()
-                .map(|invocation| invocation.actor)
-        }
-
-        /// The next delivered invocation's actor and the invoker the host
-        /// recorded for it.
-        pub fn take_invocation_invoker(
-            &mut self,
-        ) -> Option<(String, Option<tilo_actions::ActionInvoker>)> {
-            self.invocation_rx.try_recv().ok().map(|invocation| {
-                let invoker = invocation
-                    .context
-                    .as_ref()
-                    .and_then(|context| context.invoker.clone());
-                (invocation.actor, invoker)
-            })
-        }
-
-        pub fn take_invocation_argument(&mut self) -> Option<Option<String>> {
-            self.invocation_rx
-                .try_recv()
-                .ok()
-                .map(|invocation| invocation.argument)
         }
 
         pub fn resolve_count(&self) -> usize {
@@ -12632,12 +12577,6 @@ pub mod tests {
         membership: crate::test_support::WorkspaceTreeHandle,
     ) -> LocalDirectoryFixture {
         local_directory_fixture_with_peer(membership, Some(71))
-    }
-
-    pub fn local_directory_fixture_with_first_allocated_peer(
-        membership: crate::test_support::WorkspaceTreeHandle,
-    ) -> LocalDirectoryFixture {
-        local_directory_fixture_with_peer(membership, None)
     }
 
     fn local_directory_fixture_with_peer(

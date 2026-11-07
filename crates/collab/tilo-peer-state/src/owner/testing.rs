@@ -181,11 +181,6 @@ pub fn enroll_into(
         .unwrap();
     Ok(governor)
 }
-/// Most outgoing entries one workspace holds.
-pub const MAX_OUTGOING_ENTRIES: usize = publication::MAX_ENTRIES;
-/// Largest outgoing publication one workspace holds.
-pub const MAX_OUTGOING_BYTES: usize = publication::MAX_BYTES;
-
 pub fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
@@ -458,10 +453,6 @@ pub fn append_local(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<()
 pub fn peer_mut(view: &mut NativeCommittedView) -> &mut StatePeer {
     &mut view.peer
 }
-#[must_use]
-pub fn durable_peer(view: &NativeCommittedView) -> &[u8] {
-    &view.record.peer
-}
 /// Record the live peer as the view's durable peer.
 ///
 /// # Errors
@@ -472,16 +463,6 @@ pub fn seal(view: &mut NativeCommittedView) -> Result<(), String> {
 }
 pub fn bump_generation(view: &mut NativeCommittedView) {
     view.record.generation = view.record.generation.saturating_add(1);
-}
-pub fn insert_workspace(
-    storage: &mut NativeAuthorityStorage,
-    workspace: WorkspaceId,
-    view: NativeCommittedView,
-) {
-    storage.workspaces.insert(workspace, view.record);
-}
-pub fn bump_revision(storage: &mut NativeAuthorityStorage) {
-    storage.revision = storage.revision.saturating_add(1);
 }
 /// What a record keeps of one workspace.
 pub struct Stored {
