@@ -1210,6 +1210,13 @@ impl DesktopChrome {
             }
             ChromeIntent::ShowActivity(_) => self.activity_by(None),
             ChromeIntent::ToggleWorkspaceMenu { at } => {
+                // The press that took it down is still being delivered, and
+                // the bar answers it: the same press does not raise it again.
+                // A secondary press elsewhere asks for the menu there, which
+                // is the point it names, not this one.
+                if at.is_none() && self.overlays.dismissed_recently(Slot::WorkspaceMenu) {
+                    return;
+                }
                 if self.tilo_menu.is_menu_open() {
                     self.tilo_menu.toggle(Rect::ZERO, self.rect);
                 }
@@ -1247,6 +1254,11 @@ impl DesktopChrome {
                 }
             }
             ChromeIntent::ToggleTiloMenu => {
+                // As the workspace's: the press that closed it does not open
+                // it again on its way out.
+                if self.overlays.dismissed_recently(Slot::TiloMenu) {
+                    return;
+                }
                 self.workspace_menu.close();
                 self.tilo_menu.set_actions(self.tilo_menu_actions());
                 self.tilo_menu.toggle(self.bar.tilo_mark_rect(), self.rect);
