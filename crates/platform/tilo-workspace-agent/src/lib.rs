@@ -54,6 +54,23 @@ const MAX_MODEL: usize = 200;
 /// The most rules one bound holds.
 pub const MAX_BOUND: usize = 64;
 
+/// The most a keeper may let an agent spend in a day, in millionths of the
+/// currency: ten thousand, far past what a day's work costs.
+pub const MAX_SPEND_LIMIT_MICROS: u64 = 10_000_000_000;
+
+/// What an agent spent on one day, as its keeper counted it.
+///
+/// The counter is kept per day, so a day that ends starts it again: a later
+/// day's first charge replaces it, and no reading of an old day is a reading
+/// of this one ([`Agent::spent_on`]).
+#[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Spent {
+    /// The day it counts, `YYYY-MM-DD` by its keeper's clock.
+    pub day: String,
+    /// What it spent that day, in millionths of the currency.
+    pub cost_micros: u64,
+}
+
 /// One rule of an agent's bound, as the record stores it: the node, the
 /// action kinds and the answer, each in the text form
 /// [`tilo_action_policy::Rule`] is stored and sent in.
@@ -152,6 +169,11 @@ pub struct Agent {
     /// What it may do, narrowed from its keeper's grants; empty follows the
     /// default.
     pub bound: Vec<Bound>,
+    /// The most its keeper lets it spend in a day, in millionths of the
+    /// currency; `None` spends unmetered.
+    pub spend_limit_micros: Option<u64>,
+    /// What it spent on the last day its keeper counted.
+    pub spent: Option<Spent>,
     /// Whether it works here.
     pub state: AgentState,
     /// When it was made, in milliseconds since the Unix epoch.
@@ -196,6 +218,24 @@ impl Agent {
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.state == AgentState::Active
+    }
+
+    /// What it spent on `day`, in millionths of the currency: nothing on a
+    /// day its keeper has not charged, so a new day starts it at zero.
+    #[must_use]
+    pub fn spent_on(&self, day: &str) -> u64 {
+        self.spent
+            .as_ref()
+            .filter(|spent| spent.day == day)
+            .map_or(0, |spent| spent.cost_micros)
+    }
+
+    /// Whether it may still spend on `day`: its keeper's limit is not
+    /// reached yet, or there is none.
+    #[must_use]
+    pub fn within_budget(&self, day: &str) -> bool {
+        self.spend_limit_micros
+            .is_none_or(|limit| self.spent_on(day) < limit)
     }
 
     /// What it may do, as the policy reads it: the stored narrowing, or
@@ -308,9 +348,78 @@ impl WorkspaceAgents {
             keeper,
             model,
             bound: Vec::new(),
+            spend_limit_micros: None,
+            spent: None,
             state: AgentState::Active,
             created_at: cx.now_ms(),
         });
+        Ok(())
+    }
+
+    /// Set the most an agent may spend in a day.
+    ///
+    /// The keeper's to choose, as the model is: their credentials pay for it.
+    /// A limit of zero stops it working until its keeper raises it again;
+    /// none spends unmetered. The day is its keeper's clock's, so a limit
+    /// counts from midnight where the keeper sits.
+    #[action(item = agents)]
+    pub fn set_agent_spend_limit(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The agent")] agent: Id,
+        #[param(
+            "The most it may spend in a day, in millionths of the currency; none for no limit"
+        )]
+        limit_micros: Option<u64>,
+    ) -> Result<(), Refusal> {
+        let me = author(cx)?;
+        let found = self
+            .agents
+            .find_mut(&agent)
+            .ok_or_else(|| no_such(&agent))?;
+        if !same_person(&found.keeper, &me) {
+            return Err(Refusal::new(
+                "only the agent's keeper sets the most it may spend in a day",
+            ));
+        }
+        found.spend_limit_micros = checked_limit(limit_micros)?;
+        Ok(())
+    }
+
+    /// Charge what an agent spent to the day's counter.
+    ///
+    /// The keeper's to write, on the device that runs the agent, from what the
+    /// model gateway charged for each call: an agent never counts its own
+    /// spending. A later day than the one counted starts the counter again; an
+    /// earlier one is already over and changes nothing.
+    #[action(item = agents)]
+    pub fn record_agent_spend(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The agent")] agent: Id,
+        #[param("The day counted, YYYY-MM-DD by its keeper's clock")] day: String,
+        #[param("What it spent that day, in millionths of the currency")] cost_micros: u64,
+    ) -> Result<(), Refusal> {
+        let me = author(cx)?;
+        let day = checked_day(&day)?;
+        let found = self
+            .agents
+            .find_mut(&agent)
+            .ok_or_else(|| no_such(&agent))?;
+        if !same_person(&found.keeper, &me) {
+            return Err(Refusal::new(
+                "only the agent's keeper counts what it spends",
+            ));
+        }
+        let counted = match &found.spent {
+            Some(spent) if spent.day == day => Some(Spent {
+                day,
+                cost_micros: spent.cost_micros.saturating_add(cost_micros),
+            }),
+            Some(spent) if spent.day.as_str() > day.as_str() => return Ok(()),
+            _ => Some(Spent { day, cost_micros }),
+        };
+        found.spent = counted;
         Ok(())
     }
 
@@ -452,6 +561,10 @@ impl WorkspaceAgents {
             person(&agent.keeper)?;
             if let Some(model) = &agent.model {
                 check_model(model)?;
+            }
+            checked_limit(agent.spend_limit_micros)?;
+            if let Some(spent) = &agent.spent {
+                checked_day(&spent.day)?;
             }
             if agent.bound.len() > MAX_BOUND {
                 return Err(Refusal::new(format!(
@@ -627,6 +740,51 @@ fn chosen_model(model: Option<String>) -> Result<Option<String>, Refusal> {
     }
     check_model(&model)?;
     Ok(Some(model))
+}
+
+/// An amount a person reads, in millionths of the currency: `$5`, `$0.42`,
+/// `$12.50` — whole when it is, two places when it has cents, never more.
+#[must_use]
+pub fn money(micros: u64) -> String {
+    let cents = micros / 10_000;
+    let (units, hundredths) = (cents / 100, cents % 100);
+    let units = units.to_string();
+    let mut grouped = String::new();
+    for (place, digit) in units.chars().rev().enumerate() {
+        if place > 0 && place % 3 == 0 {
+            grouped.insert(0, ',');
+        }
+        grouped.insert(0, digit);
+    }
+    if hundredths == 0 {
+        format!("${grouped}")
+    } else {
+        format!("${grouped}.{hundredths:02}")
+    }
+}
+
+/// The most a keeper may set as a day's limit, or `None` for no limit.
+fn checked_limit(limit: Option<u64>) -> Result<Option<u64>, Refusal> {
+    match limit {
+        Some(limit) if limit > MAX_SPEND_LIMIT_MICROS => Err(Refusal::new(format!(
+            "a day's limit is at most {}",
+            money(MAX_SPEND_LIMIT_MICROS)
+        ))),
+        limit => Ok(limit),
+    }
+}
+
+/// A day as the counter keeps it, `YYYY-MM-DD` by its keeper's clock.
+fn checked_day(day: &str) -> Result<String, Refusal> {
+    let day = day.trim();
+    let digits = day.split('-').map(str::len).collect::<Vec<_>>();
+    let shaped = digits == [4, 2, 2] && day.chars().all(|c| c.is_ascii_digit() || c == '-');
+    if !shaped {
+        return Err(Refusal::new(
+            "a day is counted as YYYY-MM-DD, by the keeper's clock",
+        ));
+    }
+    Ok(day.to_owned())
 }
 
 fn check_model(model: &str) -> Result<(), Refusal> {
