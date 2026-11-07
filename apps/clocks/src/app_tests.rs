@@ -526,11 +526,24 @@ fn the_repeat_days_read_in_the_interface_language() {
     let days = [WeekdayKey::ALL[0], WeekdayKey::ALL[2], WeekdayKey::ALL[4]]
         .into_iter()
         .collect::<BTreeSet<_>>();
+    // A window that speaks German reads its days in German, from the toolkit's
+    // own catalogue rather than the machine's preference.
+    ui::I18nManager::install(
+        "en-US",
+        "de-DE",
+        &[
+            ("en-US", "clocks-window = Clocks"),
+            ("de-DE", "clocks-window = Uhr"),
+        ],
+    )
+    .unwrap();
+    ui::I18nManager::register_widget_messages();
+    assert_eq!(repeat_summary(&days), "Mo., Mi., Fr.");
+    // Clocks ships English alone, so its window reads in English on a device
+    // set to German: one language throughout, days included.
     ui::I18nManager::init("en-US");
     ui::I18nManager::register_widget_messages();
     ui::I18nManager::set_locale("de-DE");
-    assert_eq!(repeat_summary(&days), "Mo., Mi., Fr.");
-    ui::I18nManager::set_locale("en-US");
     assert_eq!(repeat_summary(&days), "Mon, Wed, Fri");
 }
 
