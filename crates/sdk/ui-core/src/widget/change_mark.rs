@@ -418,9 +418,3 @@ impl component::Described for ChangeMark {
         Some(column)
     }
 }
-
-/// The described entry of `ChangeMark`.
-#[must_use]
-pub fn entry() -> component::Entry {
-    component::entry::<ChangeMark>()
-}
