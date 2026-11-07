@@ -50,6 +50,13 @@ impl ContextMenu {
         self.alone.is_some() && self.send_to.is_open()
     }
 
+    /// Whether the box with no menu around it is on screen: open, arriving,
+    /// or leaving.
+    #[must_use]
+    pub fn send_to_alone_drawn(&self) -> bool {
+        self.alone.is_some() && (self.send_to.is_open() || self.send_to.is_drawn())
+    }
+
     /// Hand what the person does to the send-to box beside this menu: a
     /// press in it, a key while the keyboard is in it, and Tab between the
     /// box's fields and the menu's rows. Whether it took it.

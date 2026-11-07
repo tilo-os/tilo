@@ -23,6 +23,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::floating_surface::{Recipient, RecipientKind};
+use crate::motion::Appearing;
 use crate::paint::PaintCtx;
 use crate::platform::PlatformConventions;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
@@ -100,6 +101,10 @@ pub struct SendToBox {
     /// Whether it is drawn as it is (`motion::Appearing`): it arrives with
     /// its menu and leaves with it.
     dirty: bool,
+    /// How it comes and goes: from the menu it stands beside.
+    appear: Appearing,
+    /// The point it comes from and returns to, on its menu.
+    anchor: Point,
 }
 
 impl Default for SendToBox {
@@ -136,12 +141,27 @@ impl SendToBox {
             text_scale: 1.0,
             sent: false,
             dirty: true,
+            appear: Appearing::closed(),
+            anchor: Point::ZERO,
         }
     }
 
     #[must_use]
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// Whether any of it is on screen: open, arriving with its menu, or
+    /// leaving with it.
+    #[must_use]
+    pub fn is_drawn(&self) -> bool {
+        self.appear.is_drawn()
+    }
+
+    /// Whether it moves now, so the frame pump keeps drawing.
+    #[must_use]
+    pub fn is_moving(&self) -> bool {
+        self.appear.is_moving()
     }
 
     /// Where the box stands.
@@ -265,7 +285,8 @@ impl SendToBox {
     /// or its leading side where the window leaves no room, or under it where
     /// neither side holds it, inside the window.
     pub fn place(&mut self, menu: Rect, viewport: Option<Rect>) {
-        if !self.open {
+        self.anchor = menu.center();
+        if !self.open && !self.appear.is_drawn() {
             self.rect = Rect::ZERO;
             self.layout = Layout::default();
             return;
@@ -276,13 +297,15 @@ impl SendToBox {
         let scale = self.text_scale;
         let width = f64::from(WIDTH) * scale;
         let height = self.height();
+        let gap = f64::from(GAP) * scale;
+        // Its menu's own reach stands in when nothing knows the window: the
+        // box still lands beside the menu rather than anywhere.
         let viewport = self.viewport.unwrap_or(Rect::new(
             menu.x0,
             menu.y0,
-            menu.x1 + width * 2.0,
-            menu.y1 + height * 2.0,
+            menu.x1 + gap + width,
+            menu.y1.max(menu.y0 + height),
         ));
-        let gap = f64::from(GAP) * scale;
         let trailing = menu.x1 + gap;
         let leading = menu.x0 - gap - width;
         // Kept inside the window, whatever the window leaves.
@@ -742,12 +765,32 @@ impl SendToBox {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if !self.open {
+        self.appear.follow(self.open, theme.motion());
+        if !self.appear.is_drawn() {
             return;
         }
         self.theme = theme.clone();
         self.text_scale = f64::from(theme.text_scale);
         self.layout = self.build_layout();
+        let elevation = &theme.tokens.elevation.floating;
+        let reach = f64::from(elevation.blur) * 2.0 + f64::from(elevation.offset_y).abs() + 2.0;
+        let bounds = self.rect.inflate(reach, reach);
+        let pose = self.appear.pose(self.rect, self.anchor);
+        pose.paint(scene, transform, bounds, |scene, transform| {
+            self.paint_body(scene, transform, text_renderer, theme);
+        });
+        self.dirty = false;
+    }
+
+    /// Its panel and what stands on it, drawn in the pose [`Self::paint`]
+    /// gives: it comes and goes with its menu.
+    fn paint_body(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let radius = panel::radius(theme);
         panel::paint_rounded(scene, transform, self.rect, radius, theme);
         let ground = crate::chrome::panel_ground(theme);
@@ -998,7 +1041,6 @@ impl SendToBox {
             None,
             &style,
         );
-        self.dirty = false;
     }
 
     /// What assistive technology reads: the recipient field with its chips,

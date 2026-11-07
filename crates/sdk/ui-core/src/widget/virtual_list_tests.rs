@@ -1594,6 +1594,49 @@ fn a_second_click_activates_and_a_right_click_opens_the_rows_menu() {
 }
 
 #[test]
+fn a_right_click_opened_rows_menu_keeps_its_send_to_box_after_the_release() {
+    use crate::shared_selection::{SharedSelection, set_send_host_available};
+    use winit::event::{ElementState, MouseButton};
+
+    set_send_host_available(true);
+    let mut list = plain_rows(10)
+        .with_context_menu(
+            |_: &VecListModel<u32, u32>, _| vec![MenuItem::action("Open issue", || {})],
+            |_, _| {},
+        )
+        .with_row_about(|key: &u32| Some(SharedSelection::of_text(&format!("issue {key}"))));
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    let row = list.rect.y0
+        + list.viewport.item_view_top(3).unwrap()
+        + list.viewport.item_height(3).unwrap() / 2.0;
+    dispatch(&mut list, &cursor(row), &taffy, node);
+    dispatch(
+        &mut list,
+        &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
+        &taffy,
+        node,
+    );
+    dispatch(
+        &mut list,
+        &crate::synthetic_input::mouse_input(ElementState::Released, MouseButton::Right),
+        &taffy,
+        node,
+    );
+    let menu = list
+        .menus
+        .owned()
+        .expect("the list owns its menu")
+        .context_menu();
+    assert!(list.context_menu_is_open(), "the menu stays open");
+    assert!(
+        menu.send_to().is_open(),
+        "the box beside it stays open once the button is up"
+    );
+    assert_eq!(menu.send_to().subjects().len(), 1);
+    set_send_host_available(false);
+}
+
+#[test]
 fn the_menu_key_and_shift_f10_open_the_focused_rows_menu() {
     let menus = Rc::new(RefCell::new(Vec::new()));
     let m = Rc::clone(&menus);

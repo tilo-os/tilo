@@ -763,12 +763,18 @@ impl ContextMenu {
             self.send_to.unfocus();
             self.send_to.place(self.rect, self.viewport);
             tracing::debug!(
+                menu = self as *const Self as usize,
                 subjects = ?self.send_to.subjects(),
                 box_rect = ?self.send_to.rect(),
                 "a menu about something opened its send-to box"
             );
-        } else if self.about.is_some() {
-            tracing::debug!("a menu about something opens no box: this window has no shell");
+        } else {
+            tracing::debug!(
+                menu = self as *const Self as usize,
+                about = self.about.is_some(),
+                host = crate::shared_selection::send_host_available(),
+                "a menu opened without its send-to box"
+            );
         }
         self.dirty = true;
     }
@@ -1002,12 +1008,6 @@ impl ContextMenu {
         self.scroll.offset().y
     }
 
-    /// The box that docks beside this menu, for the placement it takes.
-    #[cfg(test)]
-    pub(crate) fn send_to_box(&self) -> &super::SendToBox {
-        &self.send_to
-    }
-
     /// Painted (clipped) geometry of an action row, in host coordinates.
     pub fn item_rect(&self, index: usize) -> Option<Rect> {
         if !matches!(self.items.get(index), Some(MenuItem::Action { .. })) {
@@ -1096,6 +1096,11 @@ impl ContextMenu {
 
     /// Safe to call when already closed.
     pub fn close(&mut self) {
+        tracing::debug!(
+            menu = self as *const Self as usize,
+            box_open = self.send_to.is_open(),
+            "a menu closed"
+        );
         self.send_to.close();
         self.alone = None;
         self.pinned_top = None;
@@ -1897,9 +1902,17 @@ impl Widget for ContextMenu {
     ) {
         self.set_text_scale(theme.text_scale);
         self.cache_theme(theme);
+        // A menu without a viewport of its own flips and shifts inside the
+        // window it is presented in, and so does everything it opens beside
+        // it.
+        if self.viewport.is_none()
+            && let Some(window) = presence.viewport.get()
+        {
+            self.set_viewport(Some(window));
+        }
         // A box with no menu around it stands on its own: the menu's
         // arriving and leaving is not its.
-        if self.send_to_alone_open() {
+        if self.send_to_alone_drawn() {
             self.send_to.drain_answer();
             let anchor = self.alone.unwrap_or(self.rect);
             self.send_to.place(anchor, self.viewport);
@@ -1912,13 +1925,6 @@ impl Widget for ContextMenu {
         if !self.appear.is_drawn() {
             self.drawn = crate::motion::Pose::REST;
             return;
-        }
-        // A menu without a viewport of its own flips and shifts inside the
-        // window it is presented in.
-        if self.viewport.is_none()
-            && let Some(window) = presence.viewport.get()
-        {
-            self.set_viewport(Some(window));
         }
 
         // Measure against its labels: a menu hugs them, and its rows grow
@@ -1945,22 +1951,16 @@ impl Widget for ContextMenu {
         if let Some((_, menu)) = self.submenu.as_mut() {
             menu.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
-        if self.send_to.is_open() {
+        if self.send_to.is_open() || self.send_to.is_drawn() {
             self.send_to.drain_answer();
             self.send_to.place(self.rect, self.viewport);
-            tracing::debug!(
-                menu = ?self.rect,
-                viewport = ?self.viewport,
-                window = ?presence.viewport.get(),
-                box_rect = ?self.send_to.rect(),
-                "the box stands beside its menu"
-            );
             self.send_to.paint(scene, transform, text_renderer, theme);
         }
     }
 
     fn needs_animation_frame(&self) -> bool {
         self.appear.is_moving()
+            || self.send_to.is_moving()
             || self.scroll.needs_animation_frame(&self.theme)
             || self
                 .submenu

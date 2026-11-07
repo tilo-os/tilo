@@ -791,9 +791,9 @@ fn a_menu_near_the_trailing_edge_keeps_its_send_to_box_in_the_window() {
     let mut scene = Scene::new();
     menu.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
     let menu_rect = menu.get_rect();
-    let box_rect = menu.send_to_box().rect();
+    let box_rect = menu.send_to().rect();
     assert!(
-        menu.send_to_box().is_open(),
+        menu.send_to().is_open(),
         "a menu about something carries the box"
     );
     assert!(

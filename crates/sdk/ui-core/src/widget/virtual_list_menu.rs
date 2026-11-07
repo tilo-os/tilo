@@ -288,9 +288,9 @@ impl<M: ListModel> VirtualList<M> {
     /// Whether the open menu needs a frame: it arrives, leaves, or a key moved its highlight.
     /// A closed menu paints nothing, so it asks for none.
     pub(super) fn menu_needs_redraw(&self) -> bool {
-        self.menus
-            .owned()
-            .is_some_and(|menu| menu.menu.is_open() && menu.menu.needs_redraw())
+        self.menus.owned().is_some_and(|menu| {
+            (menu.menu.is_open() && menu.menu.needs_redraw()) || menu.menu.send_to().is_drawn()
+        })
     }
 
     /// The open menu's semantics, its targets namespaced into the list's.
