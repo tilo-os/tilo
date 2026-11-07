@@ -52,6 +52,11 @@ die() { printf 'shell-run: %s\n' "$*" >&2; exit 1; }
 # The tilolang apps a development session installs, by the directory under `apps/tl`:
 # the package id of each is its `app` declaration's.
 tl_apps=(discussion notes tasks chat mail tube)
+# The Rust apps it installs beside them, by the directory under `apps/`: Chat's record
+# (`so.tilo.chat`) is the one the session's agents answer in and the one the canvas's ask
+# conversation is a channel of (`docs/designs/app-language/shell.md` §8.1), so a session
+# that asks must have it, as a person's device has the app installed.
+rust_apps=(chat)
 build=1
 size=1280x800
 apps=(--seed-apps)
@@ -69,7 +74,7 @@ done
 
 bin=$repo_root/target/debug
 if ((build)); then
-    say "building tilo-session, tilolang, tilo-control, tilo-launcher, tilo-install and tilo-runtime-bundle"
+    say "building tilo-session, tilolang, tilo-control, tilo-launcher, tilo-install, tilo-app-package and tilo-runtime-bundle"
     # A shot of a Rust app's view on the canvas builds the session with Tube's sample
     # resources and views linked (`--dev-rust-views`, development builds only).
     session_features=()
@@ -78,9 +83,10 @@ if ((build)); then
         "${session_features[@]}" \
         -p tilolang-cli --bin tilolang -p tilo-control --bin tilo-control \
         -p launcher --bin tilo-launcher -p install --bin tilo-install \
+        -p tilo-app-package-cli --bin tilo-app-package \
         -p runtime-bundle --bin tilo-runtime-bundle)
 fi
-for tool in tilo-session tilolang tilo-control tilo-launcher tilo-install tilo-runtime-bundle; do
+for tool in tilo-session tilolang tilo-control tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle; do
     [[ -x $bin/$tool ]] || die "no $bin/$tool (run without --no-build)"
 done
 # The thin-app build every Tilo runtime here is made of: `dist/dev/nested-session-build.sh`
@@ -231,13 +237,53 @@ install_apps() {
     ((${#tapps[@]})) || die "the tilolang apps built no package"
     for tapp in "${tapps[@]}"; do
         say "installing $(basename "$tapp")"
-        env HOME="$home" XDG_DATA_HOME="$home/.local/share" \
-            TILO_APPS_DATA_DIR="$store" TILO_RUNTIME_BUNDLE_DIR="$runtimes" \
-            TILO_SYSTEM_INTERFACES="$repo_root/os/usr/share/tilo/system-interfaces.toml" \
-            "$bin/tilo-install" install "$tapp" --allow-self-signed \
-            >/dev/null
+        install_tapp "$tapp"
+    done
+    # The Rust apps, packed the way `dist/dev/nested-session.sh` packs one: its binary from the
+    # thin app build, its surface and its manifest, the runtime stamped to the one this session
+    # runs and the manifest signed with this session's publisher key.
+    local package
+    for app in "${rust_apps[@]}"; do
+        package=$(python3 "$repo_root/tools/apps/app_release.py" --apps "$app" \
+            | jq -r '.catalog[0] | [.binary, .id, .manifest] | @tsv') \
+            || die "app_release.py cannot describe the $app app"
+        local binary id manifest
+        IFS=$'\t' read -r binary id manifest <<<"$package"
+        local built=$thin/$binary
+        [[ -x $built ]] || die "no $built: run dist/dev/nested-session-build.sh with $app in TILO_NESTED_APPS"
+        local work=$scratch/rust-app-$app
+        rm -rf "$work"
+        mkdir -p "$work/payload/bin"
+        install -pm 0755 "$built" "$work/payload/bin/$binary"
+        local surface
+        surface=$repo_root/$(dirname "$manifest")/surface.toml
+        [[ -f $surface ]] && install -pm 0644 "$surface" "$work/payload/surface.toml"
+        local staged=$work/manifest.toml
+        sed "s|^\(identity  *= *\)\"ed25519:[0-9a-fA-F]*\"|\1\"ed25519:$pubkey\"|" \
+            "$repo_root/$manifest" > "$staged"
+        "$repo_root/os/scripts/stamp-runtime.sh" "$staged" "$app_runtime"
+        python3 "$repo_root/tools/apps/app_package_isa.py" stage --arch "$(uname -m)" \
+            --manifest "$staged" --binary "$work/payload/bin/$binary" --output "$staged"
+        local tapp=$work/$app.tapp
+        "$bin/tilo-app-package" pack --manifest "$staged" --payload "$work/payload" \
+            --identity "$identity" --output "$tapp" --local-build >/dev/null
+        say "installing $id"
+        install_tapp "$tapp" --force
+        rm -rf "$work"
     done
     rm -rf "$out"
+}
+
+# Install the package at `tapp` into the session's own store, as `tilo-install` installs a
+# person's app: signed with this session's key, which the launcher's trust file names.
+install_tapp() {
+    local tapp=$1
+    shift
+    env HOME="$home" XDG_DATA_HOME="$home/.local/share" \
+        TILO_APPS_DATA_DIR="$store" TILO_RUNTIME_BUNDLE_DIR="$runtimes" \
+        TILO_SYSTEM_INTERFACES="$repo_root/os/usr/share/tilo/system-interfaces.toml" \
+        "$bin/tilo-install" install "$tapp" --allow-self-signed "$@" \
+        >/dev/null
 }
 if ((${#apps[@]})); then
     install_apps

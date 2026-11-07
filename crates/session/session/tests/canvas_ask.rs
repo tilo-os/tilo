@@ -84,25 +84,34 @@ fn workspace(session: &Session) -> String {
 }
 
 /// Chat's record of the workspace in front, as a window of it reads the record:
-/// from the store every app of the workspace opens, under the owner Chat keeps
-/// it.
+/// read from the document on disk, the store every app of the workspace opens,
+/// never by holding a writer the session is still writing through. `chat.workspace`
+/// is Chat's own primary record, kept under the owner's package store.
 fn chat(session: &Session) -> Option<Chat> {
-    use tilo_app::framework::WorkspaceRecord;
-    let records = ui::record::workspace::WorkspaceRecords::in_workspace(
-        ui::record::RecordOwners::new(cli::data_home()),
-        workspace(session),
-        ui::permissions::UserId(PERSON.to_owned()),
-    );
-    let id = ui::record::RecordId::package_primary();
-    let record = WorkspaceRecord::<Chat>::open_at(
-        &records,
-        "so.tilo.chat",
-        id.as_str(),
-        ("chat", "Chat"),
-        None,
-        None,
-    )?;
-    Some(record.get().as_ref().clone())
+    let data = cli::data_home();
+    let workspace = workspace(session);
+    std::thread::spawn(move || read_chat(&data, &workspace))
+        .join()
+        .ok()
+        .flatten()
+}
+
+fn read_chat(data: &std::path::Path, workspace: &str) -> Option<Chat> {
+    let record = ui::record::RecordId::package_primary().storage_key();
+    let store = app_state::FsStore::new(data.to_path_buf());
+    let stored = durable_store::DurableStore::read(
+        &store,
+        &durable_store::StorageKey::record("so.tilo.chat", workspace, record),
+    )
+    .ok()
+    .flatten()?;
+    // A window appends as it changes, and this read may land on a tail it has
+    // not finished writing: what came before it is the record as the last
+    // finished write left it, which is what Chat loads.
+    let options = automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore);
+    let doc = automerge::AutoCommit::load_with_options(&stored.bytes, options).ok()?;
+    let state = tilo_app::tilo_resource::Reader::<Chat>::read(&doc).ok()?;
+    Some(state.state().as_ref().clone())
 }
 
 /// The channels Chat's record holds, as `(id, participant keys)`.
