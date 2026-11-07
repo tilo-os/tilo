@@ -706,7 +706,7 @@ fn a_record_written_before_chunks_opens_as_one_chunk_and_is_not_rewritten() {
 /// same. The next write folds them into the one the record keeps, on both.
 #[test]
 fn a_manifest_two_replicas_wrote_places_every_chunk_on_both() {
-    let (_host, mut docs, _meta, root, _ids) = board();
+    let (_host, mut docs, _meta, _root, _ids) = board();
     docs.doc(chunk::FIRST).commit();
     let manifests = |doc: &AutoCommit| {
         use automerge::ReadDoc as _;
