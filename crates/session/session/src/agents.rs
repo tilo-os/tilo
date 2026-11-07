@@ -194,6 +194,53 @@ impl Agents {
         }
     }
 
+    /// The agent this workspace's person asks: the one the session keeps for
+    /// them here — whoever the record lists first, by its own order — and,
+    /// where the record lists none, an agent made in it first (shell.md §8.1,
+    /// "Asking from the canvas": "the workspace's kept agent kept with
+    /// `WorkspaceAgents` when it has none"). The agent made is named for its
+    /// keeper and kept by them, so this device starts it and answers its
+    /// turns.
+    ///
+    /// Returns the agent's id, or `None` when the workspace keeps no record
+    /// of its agents to name one, or when the record refused the agent it
+    /// was asked to make.
+    pub(crate) fn keep_one(
+        &self,
+        workspace: &str,
+        policy: &WorkspacePolicy,
+        person: &str,
+    ) -> Option<String> {
+        let record = self.record(workspace, policy, person)?;
+        let state = record.get();
+        if let Some(held) = state
+            .active()
+            .find(|agent| same_person(&agent.keeper, person))
+        {
+            return Some(held.id.0.clone());
+        }
+        let name = state.free_id(&crate::i18n::t_args(
+            "session-agent-name",
+            &[("number", 1i64.into())],
+        ));
+        let name = tilo_resource::NonBlank::parse(&name)?;
+        let id = record.get().free_id(name.as_str());
+        let made = record.invoke(&Record::CREATE_AGENT.with(actions::CreateAgent {
+            name,
+            keeper: Some(person.to_owned()),
+            id: Some(id.clone()),
+            model: None,
+            colour: None,
+        }));
+        match made {
+            Ok(()) => Some(id),
+            Err(error) => {
+                tracing::warn!(%error, %workspace, "an agent for the person was not made");
+                None
+            }
+        }
+    }
+
     /// The workspace's agents record, opened here where it is not, at the
     /// grants the pass read.
     fn record(

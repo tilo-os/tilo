@@ -1352,7 +1352,8 @@ impl Chat {
     }
 
     /// Make channel `id` named `name`, refusing a category that is not
-    /// here and a name that is only `#`.
+    /// here and a name that is only `#`. `participants` is who the
+    /// conversation is with, empty for a channel of the whole workspace.
     fn make_channel(
         &mut self,
         id: Id,
@@ -1360,6 +1361,7 @@ impl Chat {
         category: Option<Id>,
         kind: Option<ChannelKind>,
         topic: Option<String>,
+        participants: Vec<Atom>,
     ) -> Result<(), Refusal> {
         if let Some(category) = &category
             && !self.categories.contains(category)
@@ -1376,6 +1378,7 @@ impl Chat {
                     .map(|topic| topic.trim().to_owned())
                     .unwrap_or_default(),
                 kind: kind.unwrap_or_default(),
+                participants,
                 ..Conversation::default()
             },
         );
@@ -1518,7 +1521,7 @@ impl Chat {
         #[param("What the channel is about")] topic: Option<String>,
     ) -> Result<(), Refusal> {
         let id = cx.id();
-        self.make_channel(id, &name, category, kind, topic)
+        self.make_channel(id, &name, category, kind, topic, Vec::new())
     }
 
     /// New channel with an id.
@@ -1526,6 +1529,11 @@ impl Chat {
     /// A channel under an id of your choosing, so a later step can name it
     /// before it exists (`chat.workspace/channels/<id>`). Naming a channel
     /// that exists leaves it as it is.
+    ///
+    /// `participants` says who the conversation is with, by
+    /// [`Participant::key`] (`person:<root>`, `agent:<id>`): a conversation an
+    /// agent takes part in is one whose agents answer the person's messages in
+    /// it. None is a channel of the whole workspace.
     #[action(moderation, audience = "agents")]
     pub fn create_channel_with_id(
         &mut self,
@@ -1536,6 +1544,8 @@ impl Chat {
             ChannelKind,
         >,
         #[param("What the channel is about")] topic: Option<String>,
+        #[param("Who the conversation is with, by participant key; none for the whole workspace")]
+        participants: Option<Vec<String>>,
     ) -> Result<(), Refusal> {
         let id = given_channel_id(&id)?;
         // A step run again, or two seeds naming one channel, meet on the
@@ -1543,7 +1553,18 @@ impl Chat {
         if self.channels.contains(&id) {
             return Ok(());
         }
-        self.make_channel(id, &name, category, kind, topic)
+        let participants = participants
+            .unwrap_or_default()
+            .iter()
+            .map(|key| {
+                Participant::parse(key.trim())
+                    .map(|participant| participant.atom())
+                    .ok_or_else(|| {
+                        Refusal::new(format!("`{key}` names no person or agent of the workspace"))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.make_channel(id, &name, category, kind, topic, participants)
     }
 
     /// Delete category.

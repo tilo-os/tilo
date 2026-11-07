@@ -612,6 +612,7 @@ fn the_workspaces_channels_are_arranged_in_one_go() {
                 category: Some(id(under)),
                 kind: None,
                 topic: None,
+                participants: None,
             }),
         )
         .unwrap();
