@@ -131,6 +131,10 @@ impl Surface {
         );
         let mut publications = Publications::new(host);
         publications.set_waker(wake.clone());
+        // This surface is a window's: it publishes the records the window draws and the
+        // resources its invocations name, not the whole workspace. What a caller that asks the
+        // directory reads is read from the workspace on demand (`everything`).
+        publications.window();
         let planner: Arc<dyn Planner> = handle.clone();
         let surface = Self {
             app: app.to_owned(),

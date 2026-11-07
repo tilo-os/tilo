@@ -656,6 +656,11 @@ pub struct Publications {
     packages: Vec<tilolang_runtime::PackageId>,
     /// Whether nothing is published yet: the first update publishes every record.
     fresh: bool,
+    /// Whether records are published whole up front, without a window bounding them: what a
+    /// host without frames publishes ([`Self::settle`]), and what a caller that reads the whole
+    /// workspace (the session's service, the directory) is served. A window's surface turns it
+    /// off ([`Self::window`]) and publishes what it reaches instead ([`Self::reached`]).
+    whole: bool,
     /// How many records the updates have looked at, one per record per turn.
     visited: u64,
     /// How many times the updates read every record in full: only the first update, and a turn
@@ -852,7 +857,8 @@ fn indexed_item(
 }
 
 impl Publications {
-    /// Nothing published yet; the first [`Self::update`] publishes every record.
+    /// Nothing published yet; the first [`Self::update`] publishes every record whole: what a
+    /// host without frames publishes, and what the session's own service and the directory read.
     #[must_use]
     pub fn new(host: &crate::host::Host) -> Self {
         Self {
@@ -868,6 +874,7 @@ impl Publications {
             words: host.runtime().words().revision(),
             packages: host.package_ids(),
             fresh: true,
+            whole: true,
             visited: 0,
             sweeps: 0,
             moved: 0,
@@ -876,6 +883,17 @@ impl Publications {
             reached: std::collections::BTreeSet::new(),
             shown: None,
         }
+    }
+
+    /// Publish what a window reaches, not the whole workspace: a window's surface holds the
+    /// rows on screen ([`Self::reached`]) and the resource an invocation names
+    /// ([`Self::addressed`]), and nothing else until it reaches it. A workspace of ten thousand
+    /// costs an open what it shows.
+    ///
+    /// A caller that reads the whole workspace (the session's own service, the directory) keeps
+    /// publishing every record ([`Self::everything`]).
+    pub fn window(&mut self) {
+        self.whole = false;
     }
 
     /// The action types of the package `app`, built once per package and planner, described in
@@ -981,10 +999,6 @@ impl Publications {
     /// without frames.
     pub fn settle(&mut self, host: &crate::host::Host, planner: &Arc<dyn Planner>) -> Vec<String> {
         let mut touched = self.update(host, planner);
-        // A host without frames has no window to bound what it publishes by: every record is
-        // published, read off the frame.
-        let mut relabels = Some(Vec::new());
-        self.publish_everything(host, planner, &mut relabels, &mut touched);
         while let Some((docs, building)) = self.building.take() {
             self.take_in(host, planner, &docs, building.wait(), &mut touched);
             touched.extend(self.update(host, planner));
@@ -1341,11 +1355,19 @@ impl Publications {
         let reloaded = std::mem::replace(&mut self.packages, host.package_ids()) != self.packages;
         let all = std::mem::take(&mut self.fresh) || reworded || reloaded || changes.everything;
         if all {
-            // Nothing is published up front: what a window reaches is published when it reaches
-            // it ([`Self::reached`]), and a caller that reads the whole workspace asks for it
-            // ([`Self::everything`]). A workspace of ten thousand costs an open what it shows.
-            *relabels = None;
-            self.forget(&mut touched);
+            if self.whole {
+                // A caller that reads the whole workspace — a host without frames, the
+                // session's own service, the directory — publishes every record, read off the
+                // frame. No window bounds it, so nothing of it goes unpublished.
+                self.publish_everything(host, planner, relabels, &mut touched);
+            } else {
+                // Nothing is published up front: what a window reaches is published when it
+                // reaches it ([`Self::reached`]), and a caller that reads the whole workspace
+                // asks for it ([`Self::everything`]). A workspace of ten thousand costs an open
+                // what it shows.
+                *relabels = None;
+                self.forget(&mut touched);
+            }
         } else {
             // Nothing changed: no record is looked at, whether the workspace holds one or ten
             // thousand.
@@ -1426,8 +1448,9 @@ impl Publications {
             }
             // Nothing of it is published: what a window reaches of it is built when it reaches
             // it ([`Self::reached`]), so a change to a record no one published reads no more of
-            // it than the surface of what the window shows, which is published again.
-            if !self.trees.contains_key(doc) {
+            // it than the surface of what the window shows, which is published again. A
+            // publication of the whole workspace builds it whole, as it builds every record.
+            if !self.trees.contains_key(doc) && !self.whole {
                 touched.push(doc.to_owned());
                 *relabels = None;
                 continue;
@@ -1441,7 +1464,8 @@ impl Publications {
                     .cloned()
                     .collect()
             });
-            let whole = changes.whole.contains(doc)
+            let whole = !self.trees.contains_key(doc)
+                || changes.whole.contains(doc)
                 || fields.as_ref().is_some_and(|fields| {
                     fields
                         .iter()
